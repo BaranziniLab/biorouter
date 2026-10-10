@@ -120,16 +120,30 @@
 
 /* Both tabs keep one height (two tile rows), so the heatmap never jumps. */
 .br-usage-panels {
+  display: grid;
   min-block-size: 112px;
 }
 
-.br-usage-panel:focus-visible {
-  outline: none;
+/* A tab switch CROSSFADES (spec 3.9): the panels share one grid cell, so the
+   outgoing one never takes a row of its own and the card does not move. The
+   incoming panel fades in over `--dur-fast-max`; the outgoing one only fades,
+   over `--dur-fast` (an exit takes the faster tier), and Radix keeps it mounted
+   until that animation ends (`Presence` reads `animation-name`), so it is a
+   real two-layer crossfade and not a cut. The first panel mounts at rest. */
+.br-usage-panel {
+  grid-area: 1 / 1;
+  min-inline-size: 0;
 }
 
-/* A tab switch fades the incoming panel in; the first panel mounts at rest. */
-.br-usage-panel[data-animate] {
+.br-usage-panel[data-state='active'][data-animate] {
   animation: br-fade-in var(--dur-fast-max) var(--ease-out);
+}
+
+/* `br-fade-out` ends `visibility: hidden`, so the leaving panel drops out of
+   the tab order and the accessibility tree at the end of its fade. */
+.br-usage-panel[data-state='inactive'] {
+  pointer-events: none;
+  animation: br-fade-out var(--dur-fast) var(--ease-out) both;
 }
 
 .br-usage-card-heatmap {
@@ -139,6 +153,9 @@
 .br-usage-card-foot {
   display: flex;
   min-inline-size: 0;
+  /* One 12px text line (16px); the loading card's footer holds this too, so the
+     card keeps its height when the real one replaces it. */
+  min-block-size: 16px;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -215,7 +232,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .br-stat-value[data-animate],
-  .br-usage-panel[data-animate] {
+  .br-usage-panel[data-state='active'][data-animate],
+  .br-usage-panel[data-state='inactive'] {
     animation: none;
   }
 }

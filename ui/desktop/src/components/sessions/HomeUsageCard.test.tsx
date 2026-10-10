@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActivityWindow, DailyActivity, UsageReportRow } from '../../api';
+import { expectedHeatmapWeeks } from '../../utils/usageStats';
 import { homeUsageCopy as copy } from '../usage/copy';
 import { HOME_USAGE_RANGE_STORAGE_KEY, HomeUsageCard, HomeUsageCardLoading } from './HomeUsageCard';
 import { resetHeatmapRevealForTests } from './UsageHeatmap';
@@ -165,6 +166,13 @@ describe('HomeUsageCard', () => {
         group: 'model',
       },
     });
+  });
+
+  it('adds no Tab stop for a panel: the InfoTips and the grid are the stops', () => {
+    render(<HomeUsageCard window={windowOf()} />);
+    // Radix makes a tabpanel a stop; one with nothing to scroll and no ring is a
+    // keyboard dead end.
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
   });
 
   it('mounts at rest: the first figures do not fade in', () => {
@@ -334,6 +342,9 @@ describe('HomeUsageCardLoading', () => {
     expect(screen.getAllByTestId('home-usage-tile-skeleton')).toHaveLength(6);
     for (const tab of screen.getAllByRole('tab')) expect(tab).toBeDisabled();
     for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
-    expect(container.querySelectorAll('[data-testid="heatmap-loading-cell"]').length).toBe(371);
+    // One column per week the real heatmap will fill (53 or 54), seven cells each.
+    expect(container.querySelectorAll('[data-testid="heatmap-loading-cell"]').length).toBe(
+      7 * expectedHeatmapWeeks(371)
+    );
   });
 });

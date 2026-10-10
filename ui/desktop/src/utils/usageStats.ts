@@ -61,6 +61,32 @@ export function rangeStartSeconds(end: string, range: UsageRange): number {
   return Math.floor(parseIsoDay(rangeStart(end, range)).getTime() / 1000);
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * Columns the heatmap draws for a window: one per week, the first padded back
+ * to Sunday. A 371-day window is 53 columns only when it starts on a Sunday and
+ * 54 on every other weekday, so the count is computed and never written down.
+ */
+export function heatmapWeeks(start: string, end: string): number {
+  const first = parseIsoDay(start);
+  first.setDate(first.getDate() - first.getDay());
+  const total = Math.round((parseIsoDay(end).getTime() - first.getTime()) / DAY_MS) + 1;
+  return Math.ceil(total / 7);
+}
+
+/**
+ * The columns the daemon's `days`-day window ending on `today` will fill. The
+ * loading grid draws this many, so the card keeps its width and height when the
+ * real heatmap replaces it.
+ */
+export function expectedHeatmapWeeks(days: number, today: Date = new Date()): number {
+  const end = isoDay(today);
+  const start = parseIsoDay(end);
+  start.setDate(start.getDate() - (days - 1));
+  return heatmapWeeks(isoDay(start), end);
+}
+
 export interface UsageStats {
   /** Chats started in range. */
   chats: number;

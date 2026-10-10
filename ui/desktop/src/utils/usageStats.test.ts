@@ -4,9 +4,11 @@ import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
   deriveUsageStats,
+  expectedHeatmapWeeks,
   favoriteModel,
   formatShare,
   formatTokensCompact,
+  heatmapWeeks,
   isUsageRange,
   modelBreakdown,
   rangeStart,
@@ -83,6 +85,26 @@ describe('ranges', () => {
   it('turns the start into local-midnight unix seconds for the report query', () => {
     const expected = Math.floor(new Date(2026, 9, 3).getTime() / 1000);
     expect(rangeStartSeconds('2026-10-09', '7d')).toBe(expected);
+  });
+});
+
+describe('heatmap columns', () => {
+  it('counts one column per week, the first padded back to Sunday', () => {
+    // Sunday to Saturday: exactly two weeks.
+    expect(heatmapWeeks('2026-03-01', '2026-03-14')).toBe(2);
+    // A Saturday start pads six days back, and the ragged last week is a column.
+    expect(heatmapWeeks('2025-10-04', '2026-10-09')).toBe(54);
+    // A 371-day window that starts on a Sunday is exactly 53 weeks.
+    expect(heatmapWeeks('2025-10-05', '2026-10-10')).toBe(53);
+  });
+
+  it('predicts the daemon window from today, so the loading grid is as wide as the real one', () => {
+    // Fri 2026-10-09: the window starts on a Saturday.
+    expect(expectedHeatmapWeeks(371, new Date(2026, 9, 9))).toBe(54);
+    // Sat 2026-10-10: it starts on a Sunday.
+    expect(expectedHeatmapWeeks(371, new Date(2026, 9, 10))).toBe(53);
+    // A window whose end is a Sunday starts on a Monday.
+    expect(expectedHeatmapWeeks(371, new Date(2026, 9, 11))).toBe(54);
   });
 });
 

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActivityWindow } from '../../api';
+import { expectedHeatmapWeeks } from '../../utils/usageStats';
 import {
   HeatmapLegend,
   LOADING_WEEKS,
@@ -470,5 +471,30 @@ describe('UsageHeatmapLoading', () => {
     expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
     expect(screen.queryByText('Loading activity')).toBeNull();
     expect(container).toHaveTextContent('');
+  });
+
+  it('is as wide as the heatmap that replaces it, so the card keeps its height', () => {
+    // The 371 days ending Sat 2026-10-10 fill 53 columns; ending Fri 2026-10-09, 54.
+    for (const [end, today] of [
+      ['2026-10-10', new Date(2026, 9, 10)],
+      ['2026-10-09', new Date(2026, 9, 9)],
+    ] as const) {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 370);
+      const iso = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+      const real = render(<UsageHeatmap window={windowOf({ start: iso, end })} />);
+      const realWeeks = real.container
+        .querySelector<HTMLElement>('.biorouter-heatmap')!
+        .style.getPropertyValue('--heat-weeks');
+      real.unmount();
+
+      const loading = render(<UsageHeatmapLoading weeks={expectedHeatmapWeeks(371, today)} />);
+      expect(
+        loading.container
+          .querySelector<HTMLElement>('.biorouter-heatmap')!
+          .style.getPropertyValue('--heat-weeks')
+      ).toBe(realWeeks);
+      loading.unmount();
+    }
   });
 });

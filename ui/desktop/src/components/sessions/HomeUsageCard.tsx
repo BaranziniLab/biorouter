@@ -2,12 +2,14 @@ import * as React from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
 
 import { getUsageReport, type ActivityWindow, type UsageReportRow } from '../../api';
+import { HOME_ACTIVITY_DAYS } from '../../utils/homeInsightsCache';
 import { userActionHeaders } from '../../utils/userAction';
 import { isBrowserSurface } from '../../utils/surface';
 import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
   deriveUsageStats,
+  expectedHeatmapWeeks,
   favoriteModel,
   formatCount,
   formatShare,
@@ -316,8 +318,12 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
 
         <div className="br-usage-card-body">
           <div className="br-usage-panels">
+            {/* `tabIndex={-1}`: Radix makes every panel a Tab stop, and these have
+                nothing to scroll and no ring to show for it. The InfoTips inside
+                are their own stops. */}
             <TabsPrimitive.Content
               value="overview"
+              tabIndex={-1}
               className="br-usage-panel"
               data-animate={tabSwitched ? '' : undefined}
             >
@@ -326,6 +332,7 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
             {modelsAvailable ? (
               <TabsPrimitive.Content
                 value="models"
+                tabIndex={-1}
                 className="br-usage-panel"
                 data-animate={tabSwitched ? '' : undefined}
               >
@@ -350,6 +357,7 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
  * status is named for assistive tech.
  */
 export function HomeUsageCardLoading() {
+  const weeks = React.useMemo(() => expectedHeatmapWeeks(HOME_ACTIVITY_DAYS), []);
   return (
     <section aria-label={copy.region} className="br-usage-card" data-testid="home-usage-card">
       <Tabs value="overview">
@@ -387,7 +395,7 @@ export function HomeUsageCardLoading() {
             </div>
           </div>
           <div className="br-usage-card-heatmap">
-            <UsageHeatmapLoading />
+            <UsageHeatmapLoading weeks={weeks} />
           </div>
           <div className="br-usage-card-foot" aria-hidden="true">
             <span />

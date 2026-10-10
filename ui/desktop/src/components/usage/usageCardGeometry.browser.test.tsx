@@ -12,7 +12,9 @@
  *  - six tiles in three columns, two under a 480px container, figures at 24px;
  *  - the heatmap is fluid: one equal column per week, square cells, a 3px gap,
  *    filling the card's 726px inner width; month labels are 12px;
- *  - both tabs keep one height (the panels' 112px floor).
+ *  - both tabs keep one height (the panels' 112px floor);
+ *  - the tab panels share one grid cell, so a crossfade moves nothing, and the
+ *    leaving panel fades out on its own animation (Radix keeps it mounted for it).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -138,14 +140,17 @@ describe('Home usage card in a real layout engine', () => {
     await browser?.close();
   }, 120_000);
 
-  async function open(width: number): Promise<Page> {
+  async function open(
+    width: number,
+    { reducedMotion = 'reduce', html = cardHtml(width) } = {}
+  ): Promise<Page> {
     const tab = await browser!.newPage({
       viewport: { width: 1000, height: 900 },
-      reducedMotion: 'reduce',
+      reducedMotion: reducedMotion as 'reduce' | 'no-preference',
     });
     await tab.setContent(
       `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>` +
-        `<div style="padding:20px">${cardHtml(width)}</div></body></html>`
+        `<div style="padding:20px">${html}</div></body></html>`
     );
     return tab;
   }
@@ -252,6 +257,47 @@ describe('Home usage card in a real layout engine', () => {
       expect(m.monthFont).toBe('12px');
     } finally {
       await tab.close();
+    }
+  });
+
+  it('stacks the tab panels in one cell, so a crossfade never moves the card', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const stack =
+      `<section class="br-usage-card" style="width:760px"><div class="br-usage-card-body">` +
+      `<div class="br-usage-panels" id="stack">` +
+      `<div class="br-usage-panel" id="incoming" data-state="active" data-animate>` +
+      renderToStaticMarkup(<StatGrid items={TILES} />) +
+      `</div>` +
+      `<div class="br-usage-panel" id="outgoing" data-state="inactive">` +
+      `<ul class="br-usage-models"><li class="br-usage-model">One model</li></ul>` +
+      `</div></div></div></section>`;
+    for (const [reducedMotion, fade] of [
+      ['no-preference', { incoming: 'br-fade-in', outgoing: 'br-fade-out' }],
+      ['reduce', { incoming: 'none', outgoing: 'none' }],
+    ] as const) {
+      const tab = await open(760, { reducedMotion, html: stack });
+      try {
+        const m = await tab.evaluate(() => {
+          const box = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+          const name = (id: string) => getComputedStyle(document.getElementById(id)!).animationName;
+          return {
+            incoming: box('incoming'),
+            outgoing: box('outgoing'),
+            stack: box('stack').height,
+            incomingAnimation: name('incoming'),
+            outgoingAnimation: name('outgoing'),
+          };
+        });
+        // Same cell: the same box, so the heatmap below never jumps mid-fade.
+        expect(m.outgoing.left).toBe(m.incoming.left);
+        expect(m.outgoing.top).toBe(m.incoming.top);
+        expect(m.outgoing.width).toBe(m.incoming.width);
+        expect(m.stack).toBeGreaterThanOrEqual(112);
+        expect(m.incomingAnimation).toBe(fade.incoming);
+        expect(m.outgoingAnimation).toBe(fade.outgoing);
+      } finally {
+        await tab.close();
+      }
     }
   });
 });

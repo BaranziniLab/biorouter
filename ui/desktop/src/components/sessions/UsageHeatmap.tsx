@@ -23,8 +23,11 @@ import { isoDay, parseIsoDay } from '../../utils/usageStats';
 
 const DAY_MS = 86_400_000;
 
-/** The loading skeleton draws the full 53-week window, so the card keeps its height. */
-export const LOADING_WEEKS = 53;
+/**
+ * The loading skeleton's width when its caller does not say: 54, what a 371-day
+ * window fills on six days of the week (`expectedHeatmapWeeks` says it exactly).
+ */
+export const LOADING_WEEKS = 54;
 
 type Cell = {
   key: string;
@@ -241,13 +244,16 @@ export function StreakGlyph() {
   return <i aria-hidden="true" className="biorouter-heatmap-swatch bg-heat-0" data-streak="true" />;
 }
 
-/** The grid's skeleton: the same 53 weeks, breathing, and nothing to read. */
-export function UsageHeatmapLoading() {
+/**
+ * The grid's skeleton: the window's weeks, breathing, and nothing to read. Pass
+ * `weeks` (`expectedHeatmapWeeks`) so it is as tall as the heatmap that replaces it.
+ */
+export function UsageHeatmapLoading({ weeks = LOADING_WEEKS }: { weeks?: number }) {
   return (
     <div
       className="biorouter-heatmap"
       aria-hidden="true"
-      style={{ '--heat-weeks': LOADING_WEEKS } as React.CSSProperties}
+      style={{ '--heat-weeks': weeks } as React.CSSProperties}
     >
       <div className="biorouter-heatmap-months">
         <span className="biorouter-heatmap-loading-line h-3 w-7 rounded-inner bg-heat-0" />
@@ -255,7 +261,7 @@ export function UsageHeatmapLoading() {
       <div className="biorouter-heatmap-grid">
         {Array.from({ length: 7 }, (_, row) => (
           <div key={row} className="biorouter-heatmap-row">
-            {Array.from({ length: LOADING_WEEKS }, (_, column) => (
+            {Array.from({ length: weeks }, (_, column) => (
               <i
                 key={column}
                 data-testid="heatmap-loading-cell"
