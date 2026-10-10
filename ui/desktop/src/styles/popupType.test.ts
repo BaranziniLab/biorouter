@@ -65,6 +65,35 @@ describe('composer popup typography', () => {
     expect(code.includes('font-sans')).toBe(false);
   });
 
+  /**
+   * Spec 3.7 acceptance: "No mono anywhere in the composer." Mono is for
+   * machine strings (principle 3); a count, a cost or a folder name is not one.
+   * The one sanctioned use is the working folder's full path, which lives in the
+   * folder chip's tooltip, not on the line.
+   */
+  const MONO_ALLOWED: Record<string, number> = { 'DirSwitcher.tsx': 1 };
+  const composerSurfaces = [
+    ...popups.map((file) => join(DIR, file)),
+    join(DIR, '..', 'ContextWindowIndicator.tsx'),
+    join(DIR, '..', 'settings', 'models', 'bottom_bar', 'ModelsBottomBar.tsx'),
+  ];
+
+  it.each(composerSurfaces)('%s draws no visible text in mono', (path) => {
+    const code = codeOnly(readFileSync(path, 'utf8'));
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const uses = code.match(/font-mono/g)?.length ?? 0;
+    expect(uses, `${name}: mono is for machine strings in tooltips only`).toBeLessThanOrEqual(
+      MONO_ALLOWED[name] ?? 0
+    );
+  });
+
+  it('keeps the pickers stylesheet on the type tokens', () => {
+    const css = codeOnly(readFileSync(join(DIR, 'pickers.css'), 'utf8'));
+    expect(css, 'a raw px font size').not.toMatch(/font-size:\s*\d/);
+    expect(css, 'a font stack').not.toMatch(/font-family/);
+    expect(css).toMatch(/font-size: var\(--text-secondary\)/);
+  });
+
   // Guard the guard. Without this, a stripper that quietly stopped working
   // would make BOTH rules above vacuous and every one of them would still be
   // green — which is the more dangerous half of the bug this file keeps hitting.

@@ -394,7 +394,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   strokeLinecap="round"
                   strokeDasharray={RING_CIRCUMFERENCE}
                   strokeDashoffset={strokeOffset}
-                  className="transition-[stroke-dashoffset] duration-[var(--dur-med-min)]"
+                  className="transition-[stroke-dashoffset] duration-[var(--dur-med-min)] ease-[var(--ease-out)]"
                   transform="rotate(-90 8 8)"
                 />
               </svg>
