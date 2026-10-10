@@ -4197,8 +4197,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* ⚠ **This step promotes THREE chips at once, which is why it sits at 1140
    and not at the 1060 a first measurement suggested.** `Predicate` moved into
    `More` to stop the row clipping in the band below (see `GraphFacetStrip`), so
-   crossing this line now restores Predicate, Source AND Status together, plus
-   the readout. Swept in 10px steps across 720–1760: at 1060 the row overflowed
+   crossing this line now restores Predicate, Source AND Status together.
+   Swept in 10px steps across 720–1760: at 1060 the row overflowed
    its column by 44px and did not clear until 1110. The lesson is the sweep, not
    the number — both overflow seams this ladder has had were invisible at the
    four canonical pane sizes and showed up only against every width in between,
@@ -4210,9 +4210,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   }
   .br-facet-extra {
     display: inline-flex;
-  }
-  .br-knowledge-readout {
-    display: flex;
   }
 }
 
@@ -4235,6 +4232,18 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   .br-facet-legend {
     display: none;
   }
+  /* @ws WS-KNOWLEDGE begin: filter readout */
+  /* The readout ("Showing 3 of 16") and the Clear button's label wait for the
+     width the Legend control gives back. They used to appear at 1140, beside
+     all four facets AND the Legend, and with a filter engaged the row needed
+     ~977px in an 820px column at the common 1152 pane: the readout painted over
+     the Legend. Swept in 20px steps from 700 to 1500, idle and engaged: it
+     overlapped from 1140 to 1220, and at no width once this moved. Below this
+     step Clear is the bare icon, and its Tooltip carries the count. */
+  .br-knowledge-readout {
+    display: flex;
+  }
+  /* @ws WS-KNOWLEDGE end: filter readout */
 }
 
 /* @ws WS-KNOWLEDGE begin: no height step */
@@ -4272,6 +4281,22 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   border-color: var(--background-accent);
   background: var(--background-accent);
 }
+/* @ws WS-KNOWLEDGE begin: engaged facet focus */
+/* ⚠ **A solid accent fill cannot take the grey focus surface.** `.biorouter-focus-
+   surface:focus-visible` (every facet carries the class) paints
+   `--background-focus` under the label, and an engaged facet's label is
+   `--text-on-accent`: white on a light grey, unreadable. It happened to the
+   keyboard user the moment a facet's menu closed and focus came back to it
+   (measured in the browser: "Type 1" washed out). The design system's own answer
+   for an accent fill is `.biorouter-focus-surface-accent`: brighten the token,
+   and frame it in `--text-on-accent`. Restated here at higher specificity
+   because the class is one, and a facet's resting rule owns its fill. */
+.br-facet[data-engaged='true']:focus-visible {
+  border-color: var(--background-accent-hover);
+  background: var(--background-accent-hover);
+  box-shadow: inset 0 0 0 2px var(--text-on-accent);
+}
+/* @ws WS-KNOWLEDGE end: engaged facet focus */
 
 /* ⚠ **THERE IS NO CANVAS-ANCHORED LEGEND CARD, AND THAT IS DELIBERATE.**
    An earlier revision floated the legend over the canvas between 940 and 1400,

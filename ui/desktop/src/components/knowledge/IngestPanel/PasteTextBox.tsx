@@ -67,9 +67,11 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         placeholder={knowledgeCopy.ingest.pasteTitlePlaceholder}
         aria-label="Title for the pasted source"
       />
-      {/* The `Textarea` primitive, the one multi-line field: Input's edge, radius
-          and focus, resizing vertically only. Five rows because this is a paste
-          target. */}
+      {/* The `Textarea` primitive, the one multi-line field: Input's edge and
+          radius, resizing vertically only. Five rows because this is a paste
+          target. It keeps the focus surface this box has always carried
+          (`focusSurface.test.ts` pins it for the Knowledge controls that write
+          their own background). */}
       <Textarea
         ref={textRef}
         rows={5}
@@ -77,6 +79,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         onChange={(e) => setText(e.target.value)}
         placeholder={knowledgeCopy.ingest.pastePlaceholder}
         aria-label="Text to stage"
+        className="biorouter-focus-surface"
       />
 
       {detectedUrls.length > 0 && (

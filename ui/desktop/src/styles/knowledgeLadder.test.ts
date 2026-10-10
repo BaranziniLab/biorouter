@@ -135,3 +135,37 @@ describe('the Knowledge pane ladder', () => {
     expect(menu.sort()).toEqual(extra.sort());
   });
 });
+
+/**
+ * The filter strip's two states that jsdom cannot see, asserted at the source like the ladder.
+ * Both were found by driving a real render of the pane, not by a test.
+ */
+describe('the filter strip', () => {
+  /**
+   * ⚠ **The readout and the Clear label wait for the step where the Legend chip retires.** They
+   * used to appear at 1140 beside all four facets AND the Legend: with a filter engaged the row
+   * needed ~977px in an 820px column at the common 1152px pane, and "Showing 3 of 16" painted
+   * over the Legend. Below the step Clear is the bare icon, whose Tooltip carries the count.
+   */
+  it('shows the readout only at the step where the Legend chip gives its room back', () => {
+    const at = (px: number) => {
+      const from = CSS.indexOf(`@container br-knowledge-pane (min-width: ${px}px)`);
+      const next = CSS.indexOf('@container br-knowledge-pane', from + 1);
+      return CSS.slice(from, next === -1 ? undefined : next);
+    };
+    expect(at(1140)).not.toContain('.br-knowledge-readout');
+    expect(at(1400)).toMatch(/\.br-knowledge-readout\s*\{\s*display:\s*flex/);
+  });
+
+  /**
+   * ⚠ **A solid accent fill cannot take the grey focus surface** (white `--text-on-accent` over
+   * `--background-focus`). An engaged facet that has focus keeps its accent, brightened, framed
+   * in the on-accent ink: the design system's own `.biorouter-focus-surface-accent` recipe.
+   */
+  it('keeps an engaged facet readable under keyboard focus', () => {
+    const rule = CSS.match(/\.br-facet\[data-engaged='true'\]:focus-visible\s*\{([^}]*)\}/);
+    expect(rule, 'an engaged facet needs its own focus-visible rule').not.toBeNull();
+    expect(rule![1]).toContain('background: var(--background-accent-hover)');
+    expect(rule![1]).toContain('inset 0 0 0 2px var(--text-on-accent)');
+  });
+});

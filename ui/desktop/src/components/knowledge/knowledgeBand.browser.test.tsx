@@ -275,6 +275,31 @@ describe('the Knowledge band in a real layout engine', () => {
     });
   }
 
+  // The group break the merged band had dropped: with the band's 8px between children the pair
+  // began right after the counts and the row read as "38 links Sources Graph".
+  it('sets the Sources/Graph pair apart from the counts, by more than the tabs are apart', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const width of [760, 812]) {
+      const tab = await open(width);
+      try {
+        const summary = (await box(tab, '#summary'))!;
+        const tabs = await tab.evaluate(() =>
+          [...document.querySelectorAll('.br-knowledge-tabs [role="tab"]')].map((el) => {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right };
+          })
+        );
+        expect(tabs).toHaveLength(2);
+        const breakBefore = tabs[0].left - summary.right;
+        const betweenTabs = tabs[1].left - tabs[0].right;
+        expect(breakBefore, `${width}px`).toBeGreaterThanOrEqual(24);
+        expect(breakBefore, `${width}px`).toBeGreaterThan(betweenTabs);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
   it('shows the Sources/Graph tabs only below the 860px step', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const [width, shown] of [
