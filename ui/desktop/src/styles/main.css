@@ -1657,11 +1657,26 @@
     border-color: var(--border-subtle);
   }
 
+  /* @ws WS-TOKENS begin: body size */
+  /* The document default is `text-body`, 14px: the scale's UI-prose step, so
+     anything that names no size (a dialog's paragraph, a raw input, a menu's
+     text) lands ON the scale instead of at 16px, which the 2026-10 redesign
+     retired (spec §2.1, wave 2). It used to be `calc(1rem * scale)`;
+     the Text size preference still applies, because `vite-plugins/fontScale.mjs`
+     scales `--text-body` where it is defined, and a token read is never scaled
+     twice (`fontScale.test.ts` reads this rule through the plugin).
+
+     Only the SIZE moves. The line height stays Tailwind's inherited unitless
+     1.5 (21px here): a fixed 20px would be inherited by every rule that sets a
+     size without a line height, cramping its larger text, and a new ratio would
+     move Crew's lines, which are the reference. `html` stays 16px, so rem-based
+     spacing is unchanged. */
   body {
-    font-size: calc(1rem * var(--app-font-scale, 1));
+    font-size: var(--text-body);
     @apply text-text-default;
     font-family: var(--font-sans);
   }
+  /* @ws WS-TOKENS end: body size */
 
   /* P5 / D-15 — focus is a SURFACE SHIFT, never a ring.
      An outline drawn around the control reads as an alarm on a surface whose

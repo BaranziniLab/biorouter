@@ -127,6 +127,24 @@ describe('the type roles', () => {
 });
 
 /**
+ * The document default (wave 2). Anything that names no size inherits `body`, so
+ * `body` itself must be a step on the scale: it was 16px, a size the redesign
+ * retired, and every unsized dialog paragraph, raw input and menu text rendered
+ * at it. Only the size is pinned; the line height stays inherited (main.css says
+ * why).
+ */
+describe('the document default', () => {
+  it('sets body to text-body, not to a rem or px literal', () => {
+    const rules = [...CODE.matchAll(/(^|[\s}])body\s*\{([^}]*)\}/g)].map((m) => m[2]);
+    const sizes = rules.flatMap((rule) =>
+      [...rule.matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim())
+    );
+    expect(sizes).toEqual(['var(--text-body)']);
+    expect(rules.join('\n')).not.toMatch(/line-height/);
+  });
+});
+
+/**
  * tailwind-merge has to be taught every role, or `cn()` reads `text-prose` as a
  * text COLOUR and drops the real colour beside it (typography audit R7). The
  * list lives in `src/utils.ts`; this keeps it in step with the stylesheet.
