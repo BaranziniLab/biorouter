@@ -274,7 +274,7 @@ describe('summarizeToolCall', () => {
         }}
       />
     );
-    expect(screen.getByText(/Starting “Audit extension permissions”/)).toBeInTheDocument();
+    expect(screen.getByText(/Started “Audit extension permissions”/)).toBeInTheDocument();
     expect(screen.queryByText(/Updating #1/)).not.toBeInTheDocument();
   });
 
@@ -538,11 +538,12 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    expect(screen.getByText(/Reading package\.json/)).toBeInTheDocument();
+    // No response and no running turn: the verb says the call stopped.
+    expect(screen.getByText('Stopped reading package.json')).toBeInTheDocument();
     expect(screen.queryByText('command')).not.toBeInTheDocument();
     expect(screen.queryByText('/Users/wgu/Desktop/biorouter/package.json')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByText(/Reading package\.json/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/reading package\.json/).closest('button') as HTMLElement);
 
     expect(screen.getByText('command')).toBeInTheDocument();
     expect(screen.getByText('view')).toBeInTheDocument();
@@ -571,22 +572,22 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    const trigger = screen.getByText(/Running npm run typecheck/).closest('button') as HTMLElement;
+    const trigger = screen.getByText(/running npm run typecheck/).closest('button') as HTMLElement;
 
-    expect(trigger).toHaveClass('h-6');
-    expect(trigger).toHaveClass('min-h-0');
-    expect(trigger).toHaveClass('!px-0');
-    // The chevron is VISIBLE AT REST. This asserted `opacity-0` — it was
-    // pinning the defect: with the marker hidden until hover, nothing on a
-    // freshly loaded transcript said the row opened at all, so the whole tool
-    // detail view was discoverable only by accident. Muted-but-present at rest,
-    // full ink on hover and on keyboard focus.
-    const chevron = trigger.querySelector('svg:last-child');
+    // One 28px transcript line (TranscriptRow): its geometry is authored CSS on
+    // these classes, measured in a real browser, not Tailwind height classes.
+    expect(trigger).toHaveClass('br-transcript-row-head');
+    // The chevron is VISIBLE AT REST: with the marker hidden until hover,
+    // nothing on a freshly loaded transcript said the row opened at all. It is
+    // muted at rest (60%) and full ink on hover, focus and while open.
+    const chevron = trigger.lastElementChild;
+    expect(chevron).toHaveClass('br-transcript-row-chevron');
     expect(chevron).not.toHaveClass('opacity-0');
-    expect(chevron).toHaveClass('opacity-60', 'group-hover:opacity-100');
-    // No tool response ever arrived and the turn is not running, so the card
-    // reports the truth ("No result") rather than the old fabricated "Finished".
-    expect(screen.getByText(/No result/)).toBeInTheDocument();
+    // No tool response ever arrived and the turn is not running, so the verb
+    // reports the truth ("Stopped") rather than a fabricated "Finished", and
+    // there is no suffix.
+    expect(trigger).toHaveTextContent('Stopped running npm run typecheck');
+    expect(screen.queryByText(/No result/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
     expect(screen.queryByText('cmd')).not.toBeInTheDocument();
 
@@ -629,7 +630,9 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    fireEvent.click(screen.getByText('Attempt the command').closest('button') as HTMLElement);
+    fireEvent.click(
+      screen.getByText('Failed: Attempt the command').closest('button') as HTMLElement
+    );
 
     const step = screen.getByText('1. Attempt the command');
     expect(step).toHaveAttribute('title', 'Tool: developer/shell');
@@ -668,7 +671,7 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    expect(screen.getByText(/Running partially-started-command/)).toBeInTheDocument();
+    expect(screen.getByText('Ran partially-started-command')).toBeInTheDocument();
     expect(screen.queryByText('Tool details unavailable')).not.toBeInTheDocument();
   });
 
@@ -719,7 +722,7 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Running make-report/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/Ran make-report/).closest('button') as HTMLElement);
 
     const dump = [...container.querySelectorAll('pre')].find((node) =>
       node.textContent?.includes('file:///tmp/report.csv')
@@ -761,7 +764,7 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/^Failed/).closest('button') as HTMLElement);
 
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('Record missing-record was not found')).toBeInTheDocument();
@@ -809,7 +812,7 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/^Failed/).closest('button') as HTMLElement);
 
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('Error: No matches found for: web search')).toBeInTheDocument();
@@ -886,7 +889,7 @@ describe('summarizeToolCall', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Running build-site/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/Ran build-site/).closest('button') as HTMLElement);
     fireEvent.click(screen.getByRole('button', { name: 'dist/index.html' }));
 
     expect(onOpenArtifact).toHaveBeenCalledWith({
@@ -967,13 +970,14 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
 
-    expect(screen.getByText('Reading manifest.json')).toBeInTheDocument();
-    expect(screen.getByText('Running lss /tmp').parentElement?.textContent).toContain('· failed');
+    expect(screen.getByText('Read manifest.json')).toBeInTheDocument();
+    // The failing call's verb says so; there is no separate "· failed" suffix.
+    expect(screen.getByText('Failed to run lss /tmp')).toBeInTheDocument();
+    expect(screen.queryByText(/· failed/)).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+\. developer__/)).not.toBeInTheDocument();
 
-    // Expanding the failing call reveals its exact args and its real error.
+    // The failing call shows its exact args and its real error.
     expect(screen.getByText('lss /tmp')).toBeInTheDocument();
-    expect(screen.getByText('Running lss /tmp failed')).toBeInTheDocument();
     expect(
       screen.getByText('Tool error from developer__shell: lss: command not found')
     ).toBeInTheDocument();
@@ -1089,8 +1093,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
 
+    expect(screen.getByText('3 not recorded')).toBeInTheDocument();
     expect(
-      screen.getByText('3 executed calls were not recorded, so their details are unavailable.')
+      screen.getByText(/3 executed calls were not recorded, so their details are unavailable\./)
     ).toBeInTheDocument();
   });
 
@@ -1123,8 +1128,9 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     fireEvent.click(
       screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
     );
+    expect(screen.getByText('2 not recorded')).toBeInTheDocument();
     expect(
-      screen.getByText('2 executed calls were not recorded, so their details are unavailable.')
+      screen.getByText(/2 executed calls were not recorded, so their details are unavailable\./)
     ).toBeInTheDocument();
   });
 
@@ -1165,7 +1171,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen
-        .getByText('Agent Drafter Build App → Agent Drafter Smoke App')
+        .getByText('Stopped: Agent Drafter Build App → Agent Drafter Smoke App')
         .closest('button') as HTMLElement
     );
     expect(screen.getByText('1. Agent Drafter Build App')).toHaveAttribute(
@@ -1174,7 +1180,8 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
     expect(screen.getByText('2. Agent Drafter Configure App (uses 1)')).toBeInTheDocument();
     expect(screen.getByText('3. Agent Drafter Smoke App (uses 2)')).toBeInTheDocument();
-    expect(screen.queryByText(/(?:Step|Update task|Operation no\.)/)).not.toBeInTheDocument();
+    // "Steps" is the well's section label; a numbered placeholder is "Step 1".
+    expect(screen.queryByText(/(?:Step \d|Update task|Operation no\.)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();
   });
 
@@ -1220,7 +1227,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
       />
     );
 
-    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/^Failed/).closest('button') as HTMLElement);
 
     expect(screen.queryByText('Error: the cache directory is missing')).not.toBeInTheDocument();
     expect(
@@ -1283,20 +1290,18 @@ describe('ToolCallWithResponse nested todo metadata', () => {
   };
 
   it.each([
-    { status: 'in_progress', expected: 'Starting “Verify actual nested task 🧬”' },
-    { status: 'completed', expected: 'Marking “Verify actual nested task 🧬” complete' },
-    { status: 'pending', expected: 'Returning “Verify actual nested task 🧬” to pending' },
+    { status: 'in_progress', expected: 'Started “Verify actual nested task 🧬”' },
+    { status: 'completed', expected: 'Marked “Verify actual nested task 🧬” complete' },
+    { status: 'pending', expected: 'Returned “Verify actual nested task 🧬” to pending' },
   ])('names a successful $status row from the matching task metadata', ({ status, expected }) => {
     renderNestedCalls([{ ...record, args: JSON.stringify({ id: '#1', status }) }]);
     expect(screen.getByText(expected)).toBeInTheDocument();
-    expect(
-      screen.queryByText(new RegExp(`(?:Starting|Marking|Returning) “${planTitle}”`))
-    ).toBeNull();
+    expect(screen.queryByText(new RegExp(`(?:Started|Marked|Returned) “${planTitle}”`))).toBeNull();
   });
 
   it('keeps an earlier successful task title when a later call fails the outer step', () => {
     renderNestedCalls([record], true);
-    expect(screen.getByText('Marking “Verify actual nested task 🧬” complete')).toBeInTheDocument();
+    expect(screen.getByText('Marked “Verify actual nested task 🧬” complete')).toBeInTheDocument();
   });
 
   it.each([
@@ -1318,37 +1323,38 @@ describe('ToolCallWithResponse nested todo metadata', () => {
     },
   ])('falls back to the task number for $label', ({ patch }) => {
     renderNestedCalls([{ ...record, ...patch }]);
-    expect(screen.getByText('Marking task #1 complete')).toBeInTheDocument();
-    expect(screen.queryByText(/Marking “/)).toBeNull();
+    // A failed record says so in its verb; every other fallback reads as done.
+    expect(screen.getByText(/^(?:Marked|Failed to mark) task #1 complete$/)).toBeInTheDocument();
+    expect(screen.queryByText(/(?:Marked|mark) “/)).toBeNull();
     expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
   });
 
   it('does not infer a title from the declared graph when recorded arguments are truncated', () => {
     renderNestedCalls([{ ...record, args: '{"id":"1"' }]);
-    expect(screen.getByText('Updating a task')).toBeInTheDocument();
-    expect(screen.queryByText('Updating “Verify actual nested task 🧬”')).toBeNull();
-    expect(screen.queryByText(`Updating “${planTitle}”`)).toBeNull();
+    expect(screen.getByText('Updated a task')).toBeInTheDocument();
+    expect(screen.queryByText('Updated “Verify actual nested task 🧬”')).toBeNull();
+    expect(screen.queryByText(`Updated “${planTitle}”`)).toBeNull();
   });
 
   it('does not apply Todo metadata to a different tool', () => {
     renderNestedCalls([
       { ...record, tool: 'todo__todo_add', args: JSON.stringify({ items: ['One'] }) },
     ]);
-    expect(screen.getByText('Adding 1 task')).toBeInTheDocument();
+    expect(screen.getByText('Added 1 task')).toBeInTheDocument();
     expect(screen.queryByText(/Verify actual nested task/)).toBeNull();
   });
 
   it('renders a task title as text, never links, images, or HTML', () => {
     const title = '[link](https://evil.invalid) ![pixel](https://evil.invalid/x) <img src=x>';
     const { container } = renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);
-    expect(screen.getByText(`Marking “${title}” complete`)).toBeInTheDocument();
+    expect(screen.getByText(`Marked “${title}” complete`)).toBeInTheDocument();
     expect(container.querySelector('a')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
   });
 
   it('shortens Unicode titles without creating lone surrogate code units', () => {
     renderNestedCalls([{ ...record, todo_task: { id: '1', title: '🧬'.repeat(110) } }]);
-    const label = screen.getByText(/^Marking “/).textContent ?? '';
+    const label = screen.getByText(/^Marked “/).textContent ?? '';
     expect(Array.from(label).length).toBeLessThanOrEqual(115);
     expect(label).toContain('…');
     expect(
@@ -1385,7 +1391,9 @@ describe('ToolCallWithResponse status derivation', () => {
     );
 
     expect(screen.getByLabelText('Tool status: loading')).toBeInTheDocument();
-    expect(screen.getByText(/Working on/)).toBeInTheDocument();
+    // The verb carries the state; no "Working through the tool call" suffix.
+    expect(screen.getByText('Running npm run typecheck')).toBeInTheDocument();
+    expect(screen.queryByText(/Working through/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
   });
 
@@ -1420,7 +1428,8 @@ describe('ToolCallWithResponse status derivation', () => {
     );
 
     expect(screen.getByLabelText('Tool status: pending')).toBeInTheDocument();
-    expect(screen.getByText(/No result/)).toBeInTheDocument();
+    expect(screen.getByText('Stopped running npm run typecheck')).toBeInTheDocument();
+    expect(screen.queryByText(/No result/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Tool status: success')).not.toBeInTheDocument();
   });
@@ -1607,7 +1616,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
       />
     );
 
-    fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/(?:Ran|Failed to run) ls/).closest('button') as HTMLElement);
 
     expect(screen.getByText('HRV rose by 12ms.')).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('untrusted="true"');
@@ -1638,7 +1647,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
       />
     );
 
-    fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/(?:Ran|Failed to run) ls/).closest('button') as HTMLElement);
 
     expect(screen.getByText('ls: no such file')).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('<tool-output');
@@ -1674,7 +1683,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
       />
     );
 
-    fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/(?:Ran|Failed to run) ls/).closest('button') as HTMLElement);
 
     expect(document.body.textContent).toContain('[BIOROUTER GUARDRAIL]');
     expect(document.body.textContent).toContain('Ignore all previous instructions.');
@@ -1703,7 +1712,7 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
       />
     );
 
-    fireEvent.click(screen.getByText(/Running ls/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(/(?:Ran|Failed to run) ls/).closest('button') as HTMLElement);
 
     expect(screen.getByText('plain output from an older session')).toBeInTheDocument();
   });

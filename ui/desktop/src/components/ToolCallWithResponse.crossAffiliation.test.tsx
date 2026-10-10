@@ -161,7 +161,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // transcript is an ordinary tool failure — and an accept control on one
     // would be an offer to approve a boundary nobody crossed.
     renderTranscript('The command could not be started');
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();
   });
@@ -172,7 +172,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // Pressing a control there would record a real acceptance and leave the
     // retry refused.
     renderTranscript(bareRefusal);
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();
   });
@@ -202,7 +202,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // `{isExpanded && <div>{children}</div>}`, so a collapsed call has its body
     // genuinely ABSENT from the DOM rather than merely hidden — which is what
     // lets this assert the default rather than a style.
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(screen.queryByText(/Cross-institutional data flow/)).not.toBeInTheDocument();
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();

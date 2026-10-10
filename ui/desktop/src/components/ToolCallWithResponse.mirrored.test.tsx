@@ -100,14 +100,13 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
     );
 
     // Name: summarised exactly as the same call from an API provider is.
-    const row = screen.getByText(/Running npm run typecheck/);
+    const row = screen.getByText('Ran npm run typecheck');
     expect(row).toBeInTheDocument();
-    // Status: a result arrived and it is not an error, so "Ran …", never
-    // "Problem with" and never the pending "No result".
-    expect(screen.getByText(/^Ran/)).toBeInTheDocument();
-    expect(screen.queryByText(/Problem with/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/No result/)).not.toBeInTheDocument();
-    expect(screen.getByText(/1 result ready/)).toBeInTheDocument();
+    // Status: a result arrived and it is not an error, so "Ran …" (the verb
+    // carries the state), never "Failed" and never "Stopped", and no suffix.
+    expect(screen.queryByText(/Failed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Stopped/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/result ready/)).not.toBeInTheDocument();
 
     // Arguments: collapsed at rest, reachable in two clicks like any other card.
     expect(screen.queryByText('command')).not.toBeInTheDocument();
@@ -135,11 +134,11 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
     // A mirrored failure travels as a SUCCESSFUL transport carrying
     // `isError: true` — the spelling `getToolResultError` reads — so the card
     // preserves the failure text without a colored background.
-    expect(screen.getByText(/Problem with/)).toBeInTheDocument();
-    expect(screen.getByText(/Tool call failed/)).toBeInTheDocument();
+    const row = screen.getByText('Failed to run npm run typecheck');
     expect(container.querySelector('.bg-background-danger\\/5')).toBeNull();
 
-    fireEvent.click(screen.getByText(/Problem with/).closest('button') as HTMLElement);
+    fireEvent.click(row.closest('button') as HTMLElement);
+    expect(screen.getByText(/Tool call failed/)).toBeInTheDocument();
     expect(screen.getByText('command not found: npm')).toBeInTheDocument();
   });
 
@@ -153,7 +152,7 @@ describe('a mirrored tool call renders as an ordinary tool call', () => {
       />
     );
 
-    expect(screen.getByText(/Working on/)).toBeInTheDocument();
+    expect(screen.getByText('Running npm run typecheck')).toBeInTheDocument();
     expect(screen.queryByText(/^Ran/)).not.toBeInTheDocument();
   });
 });
@@ -171,9 +170,12 @@ describe('the child-executed affordance', () => {
 
     const label = screen.getByText(CHILD_LABEL);
     expect(label).toBeInTheDocument();
-    // Honest, and explained on hover rather than shouted in the row.
-    expect(label).toHaveAttribute(
-      'title',
+    // Honest, and explained by an InfoTip beside the row (hover, Tab focus or
+    // click) rather than shouted in it, and never in `title=`.
+    expect(label).not.toHaveAttribute('title');
+    expect(
+      screen.getByRole('button', { name: 'About Not gated by Biorouter' })
+    ).toHaveAccessibleDescription(
       expect.stringContaining("ran inside the coding agent's own sandbox")
     );
     // Quiet: the row's own muted type, no badge, no status colour of its own.
@@ -181,8 +183,7 @@ describe('the child-executed affordance', () => {
     expect(label.className).not.toContain('text-text-default');
     expect(label.className).not.toContain('bg-');
     // Everything else about the card is unchanged.
-    expect(screen.getByText(/Running npm run typecheck/)).toBeInTheDocument();
-    expect(screen.getByText(/^Ran/)).toBeInTheDocument();
+    expect(screen.getByText('Ran npm run typecheck')).toBeInTheDocument();
   });
 
   it('shows it when only the response carries the marker', () => {
@@ -240,7 +241,9 @@ describe('parity with an API-provider tool call', () => {
         toolResponse={mirroredResponse(executed, { isError })}
         onOpenArtifact={noopOpenArtifact}
       />
-    ).container.innerHTML.replace(/aria-controls="[^"]+"/g, 'aria-controls="content"');
+    )
+      .container.innerHTML.replace(/aria-controls="[^"]+"/g, 'aria-controls="content"')
+      .replace(/id="radix-[^"]+"/g, 'id="content"');
 
   it('renders a bridged pair identically to a pair with no metadata at all', () => {
     expect(renderPair('bridged')).toBe(renderPair(undefined));

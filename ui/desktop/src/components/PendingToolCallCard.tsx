@@ -1,8 +1,8 @@
-import './tool-call.css';
 import React from 'react';
-import { ToolIconWithStatus } from './ToolCallStatusIndicator';
-import { getToolCallIcon } from '../utils/toolIconMapping';
+import { toolGlyphFor } from '../utils/toolGlyph';
 import { toolIdentifierToTitleCase } from '../utils';
+import { TranscriptRow } from './TranscriptRow';
+import { TOOL_ROW_COPY } from './toolCallCopy';
 import type { PendingToolCallView } from '../hooks/chatStreamStore';
 
 /**
@@ -20,24 +20,24 @@ import type { PendingToolCallView } from '../hooks/chatStreamStore';
  */
 export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = ({ pending }) => {
   const toolSummary = toolIdentifierToTitleCase(pending.name.split('__').pop() ?? pending.name);
+  // No arguments yet, so the ladder answers from the name alone.
+  const glyph = toolGlyphFor(pending.name);
+  // The same 28px line the real call will draw, static (nothing to open yet)
+  // and breathing like any running row, so the swap to the real card is a
+  // change of words, not of shape.
   return (
-    <div
-      className="br-tool-pending mt-3 text-text-muted"
-      data-testid="pending-tool-call"
-      data-tool-id={pending.id}
-    >
-      <div className="flex h-6 items-center">
-        <span className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden font-sans text-sm leading-6">
-          <ToolIconWithStatus
-            ToolIcon={getToolCallIcon(pending.name)}
-            status="loading"
-            className="mt-px"
-          />
-          <span className="br-tool-running min-w-0 flex-1 truncate">
-            <span>Preparing</span> <span>{toolSummary}</span>
-          </span>
-        </span>
-      </div>
+    <div className="mt-1" data-testid="pending-tool-call" data-tool-id={pending.id}>
+      <TranscriptRow
+        icon={glyph.Icon}
+        glyph={glyph.kind}
+        label={
+          <>
+            <span>{TOOL_ROW_COPY.preparing}</span> <span>{toolSummary}</span>
+          </>
+        }
+        running
+        statusLabel={TOOL_ROW_COPY.statusLabel('loading')}
+      />
     </div>
   );
 };

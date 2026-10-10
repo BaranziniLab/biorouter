@@ -1,4 +1,6 @@
 import { useId, useState } from 'react';
+import './tool-call.css';
+import { TOOL_ROW_COPY } from './toolCallCopy';
 
 const PREVIEW_LINES = 6;
 const PREVIEW_CHARACTERS = 600;
@@ -56,12 +58,12 @@ export function ToolContentPreview({
       {long && (
         <button
           type="button"
-          className="br-tool-more mt-1 text-xs text-text-muted hover:text-text-default focus-visible:text-text-default"
+          className="br-tool-more mt-1"
           aria-expanded={expanded}
           aria-controls={id}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? 'Show less' : 'Show more'}
+          {expanded ? TOOL_ROW_COPY.showLess : TOOL_ROW_COPY.showMore}
         </button>
       )}
     </div>

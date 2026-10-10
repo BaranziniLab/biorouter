@@ -1,7 +1,7 @@
 import './tool-call.css';
 import { ToolContentPreview } from './ToolContentPreview';
-import { ToolIconWithStatus, ToolCallStatus } from './ToolCallStatusIndicator';
-import { getToolCallIcon } from '../utils/toolIconMapping';
+import { ToolCallStatus } from './ToolCallStatusIndicator';
+import { toolGlyphFor } from '../utils/toolGlyph';
 import React from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
@@ -18,18 +18,21 @@ import {
   ToolResponseMessageContent,
   NotificationEvent,
 } from '../types/message';
-import { cn, toolIdentifierToTitleCase } from '../utils';
+import { toolIdentifierToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
-import { ChevronRight } from './icons/app-icons';
+import { Progress as ProgressBarPrimitive } from './ui/progress';
+import { AlertTriangle } from './icons/app-icons';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
-import { NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { stripHiddenCharacters } from '../utils/untrustedText';
+import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
+import { InfoTip } from './ui/info-tip';
+import { TOOL_ROW_COPY, toolRowLabel, type ToolRowState } from './toolCallCopy';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -240,15 +243,6 @@ export function providerExecutionOf(
   return seen;
 }
 
-/**
- * The full sentence behind the row's short label. Kept out of the visible row
- * because D-17 says a tool call is a LINE, not a card — the row states the fact,
- * the tooltip explains it.
- */
-const CHILD_EXECUTED_TITLE =
-  "This tool ran inside the coding agent's own sandbox. Biorouter's inspectors, " +
-  'permission mode, .biorouterignore and privacy gates did not apply to it.';
-
 function normalizedToolResultValue(toolResult: unknown): Record<string, unknown> | null {
   const result = recordOf(toolResult);
   if (!result) return null;
@@ -348,22 +342,23 @@ class ToolCallRenderBoundary extends React.Component<
   render() {
     if (!this.state.error) return this.props.children;
 
+    // An error row, not a toast surface in the transcript: the line says what
+    // failed and that the chat goes on; the technical text waits in the well.
     return (
-      <NotificationSurface
-        status="error"
-        role="alert"
-        title="Tool details unavailable"
-        message="This tool returned an unexpected response. The chat can continue."
-      >
-        <details className="mt-2.5 text-xs text-text-muted">
-          <summary className="w-fit cursor-pointer select-none font-medium text-text-default">
-            Technical details
-          </summary>
-          <div className="mt-2 whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">
-            {this.state.error.message}
-          </div>
-        </details>
-      </NotificationSurface>
+      <div role="alert" className="w-full min-w-0">
+        <TranscriptRow
+          icon={AlertTriangle}
+          tone="danger"
+          label={TOOL_ROW_COPY.renderFailed}
+          meta={`· ${TOOL_ROW_COPY.renderFailedMessage}`}
+        >
+          <TranscriptRowSection label={TOOL_ROW_COPY.details}>
+            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+              {this.state.error.message}
+            </pre>
+          </TranscriptRowSection>
+        </TranscriptRow>
+      </div>
     );
   }
 }
@@ -401,7 +396,9 @@ function ToolCallWithResponseContent({
 
   return (
     <>
-      <div className="w-full overflow-hidden rounded-md text-sm font-sans">
+      {/* No `overflow-hidden` here: it clipped the row's focus edge. Overflow
+          is handled inside the well, where long output scrolls. */}
+      <div className="w-full min-w-0">
         <ToolCallView
           {...{
             isCancelledMessage,
@@ -428,7 +425,7 @@ function ToolCallWithResponseContent({
             : null;
           if (resourceContent && isUIResource(resourceContent)) {
             return (
-              <div key={index} className="mt-3">
+              <div key={index} className="mt-2">
                 <MCPUIResourceRenderer content={resourceContent} onOpenArtifact={onOpenArtifact} />
               </div>
             );
@@ -437,81 +434,6 @@ function ToolCallWithResponseContent({
           }
         })}
     </>
-  );
-}
-
-/**
- * ONE inset grid for everything a tool call opens into.
- *
- * Six met inside this one component — `pr-4 pl-6 pb-2`, `px-4 py-2`, `pl-4 pr-4
- * pb-2`, `pl-6 pr-2 pb-2`, `pl-4 pr-4 py-4` and `p-4` — so expanding two
- * different tool rows in the same transcript stepped the content in by two
- * different amounts, and nesting a disclosure inside a disclosure compounded the
- * disagreement. 12px on the sides and the bottom, 4px on top because the
- * disclosure row above has already opened the gap.
- */
-const TOOL_INTERIOR_CLASS = 'px-3 pt-1 pb-3';
-
-/**
- * ONE label recipe for a nested disclosure row. Was `pl-2 font-sans text-sm
- * text-text-muted` in four places and `pl-2 py-1 font-sans text-sm …` in two
- * more — the same sentence with a different vertical rhythm depending on which
- * one you opened.
- */
-const TOOL_DISCLOSURE_LABEL_CLASS = 'pl-2 text-secondary text-text-muted';
-
-interface ToolCallExpandableProps {
-  label: string | React.ReactNode;
-  isStartExpanded?: boolean;
-  isForceExpand?: boolean;
-  children: React.ReactNode;
-  className?: string;
-}
-
-function ToolCallExpandable({
-  label,
-  isStartExpanded = false,
-  isForceExpand,
-  children,
-  className = '',
-}: ToolCallExpandableProps) {
-  const contentId = React.useId();
-  const [isExpandedState, setIsExpanded] = React.useState<boolean | null>(null);
-  const isExpanded = isExpandedState === null ? isStartExpanded : isExpandedState;
-  const toggleExpand = () => setIsExpanded(!isExpanded);
-  React.useEffect(() => {
-    if (isForceExpand) setIsExpanded(true);
-  }, [isForceExpand]);
-
-  return (
-    <div className={className}>
-      <button
-        type="button"
-        aria-expanded={isExpanded}
-        aria-controls={contentId}
-        onClick={toggleExpand}
-        className="br-tool-disclosure group inline-flex items-center h-6 min-h-0 max-w-full justify-start !px-0 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
-      >
-        <span className="flex min-w-0 max-w-full items-center overflow-hidden font-sans text-sm leading-6">
-          {label}
-        </span>
-        {/* VISIBLE AT REST. It used to be `opacity-0` until hover, so nothing on
-            a freshly loaded transcript said these rows open at all — a first-run
-            user had to discover the whole tool detail view by accidentally
-            hovering it. It is now muted-but-present, brightening on hover and on
-            keyboard focus, and it takes the row's 16px icon size rather than
-            14px so it does not sit in a cluster with a 16px tool glyph at a
-            different scale (§3.8b: never two sizes in one cluster). */}
-        <ChevronRight
-          className={cn(
-            'ml-1.5 size-4 shrink-0 opacity-60',
-            'transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100',
-            isExpanded && 'rotate-90 opacity-100'
-          )}
-        />
-      </button>
-      {isExpanded && <div id={contentId}>{children}</div>}
-    </div>
   );
 }
 
@@ -1346,129 +1268,91 @@ function ToolCallView({
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
   const toolSummary = summarizeToolCall(toolCall, toolResponse?.toolResult);
+  // The verb carries the state ("Running ls", "Ran ls", "Failed to run ls",
+  // "Stopped running ls"), so the row needs no suffix. The one exception is a
+  // real progress message from a tool that is still working: issue #72's shell
+  // heartbeat is how a quiet, slow command tells a person it is not hung.
+  const rowState: ToolRowState =
+    loadingStatus === 'loading'
+      ? 'running'
+      : loadingStatus === 'error'
+        ? 'failed'
+        : loadingStatus === 'interrupted'
+          ? 'stopped'
+          : 'done';
   const latestProgress = progressEntries[0]?.message;
   const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : undefined;
   const liveDetail =
-    loadingStatus === 'loading'
-      ? compactValue(latestProgress || latestLog || 'Working through the tool call')
-      : loadingStatus === 'error'
-        ? 'Tool call failed'
-        : loadingStatus === 'interrupted'
-          ? 'No result'
-          : toolResults.length > 0
-            ? `${toolResults.length} result${toolResults.length === 1 ? '' : 's'} ready`
-            : null;
+    loadingStatus === 'loading' && (latestProgress || latestLog)
+      ? compactValue(latestProgress || latestLog, MAX_LIVE_DETAIL_LENGTH)
+      : null;
 
-  const toolLabel = (
-    <span className="flex items-center gap-2 min-w-0 text-left leading-6">
-      <ToolIconWithStatus
-        ToolIcon={getToolCallIcon(toolCall.name)}
-        status={toolCallStatus}
-        className="mt-px"
-      />
-      {/* The summary truncates; the status suffix does not.
-          Both used to live inside ONE `truncate` span, so a single ellipsis
-          budget covered them and the SUFFIX was what got eaten — consecutive
-          rows read "· 1 …", "· 1 result rea…", and where the command was
-          longest, nothing at all while the chevron survived. The suffix is the
-          shorter and more valuable of the two (it says whether there is
-          anything to open), so it is the part that must never be cut. Making
-          this a flex row with a `min-w-0` truncating summary and a `shrink-0`
-          suffix is the fix; a wider clipper would only move the threshold. */}
-      <span
-        className={cn(
-          'flex min-w-0 flex-1 items-baseline',
-          loadingStatus === 'loading' && 'br-tool-running'
-        )}
-      >
-        <span className="min-w-0 truncate">
-          {loadingStatus === 'loading'
-            ? 'Working on'
-            : loadingStatus === 'error'
-              ? 'Problem with'
-              : loadingStatus === 'interrupted'
-                ? 'Stopped'
-                : 'Ran'}{' '}
-          <span>{toolSummary}</span>
-        </span>
-        {liveDetail && (
-          <span className={cn('shrink-0 whitespace-nowrap pl-1')}>· {liveDetail}</span>
-        )}
-        {/* The ONE deliberate visual difference in the whole mirror feature. A
-            `child` call ran in the coding agent's own sandbox and passed none of
-            Biorouter's gates, and a person reading a command row is entitled to
-            know that. Quiet by design — muted text in the row's own type, no
-            badge, no colour, no outline (D-17: a tool call is a line, not a
-            card) — because it states a provenance, not a failure. `bridged`
-            passed every gate an API provider's call passes, so it renders with
-            nothing here at all. */}
-        {providerExecution === 'child' && (
-          <span className="shrink-0 whitespace-nowrap pl-1" title={CHILD_EXECUTED_TITLE}>
-            · not gated by Biorouter
-          </span>
-        )}
-      </span>
-    </span>
-  );
-  return (
-    // ⚠ A grantable cross-institutional refusal starts EXPANDED (issue #56, Task
-    // 57). A failed tool call is otherwise a collapsed line, and a way out that
-    // only exists behind a disclosure most people never open is the hard block
-    // this task exists to remove, one click further away. Every other failure
-    // keeps the quiet default — including this same refusal replayed in a saved
-    // transcript, where `acceptOffer` is null because there is no chat to accept
-    // against and the disclosure would open onto nothing.
-    <ToolCallExpandable
-      isStartExpanded={acceptOffer !== null}
-      isForceExpand={false}
-      label={toolLabel}
-    >
-      {(() => {
-        const toolName = toolCall.name.substring(toolCall.name.lastIndexOf('__') + 2);
-        const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
-        const code = toolCall.arguments?.code as unknown as string | undefined;
-        const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
+  // One answer to "which glyph": the full name first, then the arguments
+  // (`text_editor` view vs write), then the extension's family (WS-ICONS).
+  const glyph = toolGlyphFor(toolCall.name, toolCall.arguments);
+  const toolName = getToolName(toolCall.name);
+  const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
+  const code = toolCall.arguments?.code as unknown as string | undefined;
+  const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
+  const visibleResults = isCancelledMessage
+    ? []
+    : toolResults.filter(
+        (result) =>
+          !(
+            toolError &&
+            'text' in result &&
+            typeof result.text === 'string' &&
+            result.text.trim() === toolError.trim()
+          )
+      );
+  const showProgress = toolResults.length === 0 && progressEntries.length > 0;
+  const hasBody =
+    hasToolGraph ||
+    Boolean(isToolDetails) ||
+    executedCalls.length > 0 ||
+    droppedExecutedCalls > 0 ||
+    Boolean(toolError) ||
+    (logs?.length ?? 0) > 0 ||
+    showProgress ||
+    visibleResults.length > 0;
 
-        if (hasToolGraph) {
-          return (
-            <div className="border-t border-border-subtle">
-              <ToolGraphView
-                toolGraph={toolGraph}
-                code={typeof code === 'string' ? code : undefined}
-              />
-              <ToolDetailsView
-                toolCall={{
-                  arguments: Object.fromEntries(
-                    Object.entries(toolCall.arguments).filter(
-                      ([key]) => key !== 'tool_graph' && key !== 'code'
-                    )
-                  ),
-                }}
-              />
-            </div>
-          );
-        }
+  // The ONE deliberate visual difference in the whole mirror feature. A `child`
+  // call ran in the coding agent's own sandbox and passed none of Biorouter's
+  // gates, and a person reading a command row is entitled to know that. Quiet
+  // by design: muted text in the row's own type, no badge, no colour (D-17).
+  // `bridged` passed every gate an API provider's call passes, so it renders
+  // with nothing here at all. The explanation sits in an InfoTip beside the
+  // row, never in `title=`, so a keyboard reaches it.
+  const metaParts = [liveDetail, providerExecution === 'child' ? TOOL_ROW_COPY.notGated : null]
+    .filter((part): part is string => Boolean(part))
+    .map((part) => `· ${part}`);
 
-        if (isToolDetails) {
-          return (
-            <div className="border-t border-border-subtle">
-              <ToolDetailsView toolCall={toolCall} />
-            </div>
-          );
-        }
-
-        return null;
-      })()}
+  const body = hasBody ? (
+    <>
+      {hasToolGraph ? (
+        <>
+          <ToolGraphView toolGraph={toolGraph} code={typeof code === 'string' ? code : undefined} />
+          <ToolDetailsView
+            toolCall={{
+              arguments: Object.fromEntries(
+                Object.entries(toolCall.arguments).filter(
+                  ([key]) => key !== 'tool_graph' && key !== 'code'
+                )
+              ),
+            }}
+          />
+        </>
+      ) : isToolDetails ? (
+        <ToolDetailsView toolCall={toolCall} />
+      ) : null}
 
       {(executedCalls.length > 0 || droppedExecutedCalls > 0) && (
-        <div className="border-t border-border-subtle">
-          <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
-        </div>
+        <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
       )}
 
       {toolError && (
-        <div className="border-t border-border-subtle p-3">
-          <ToolFailureNotice title="Tool call failed" message={toolError} />
+        <div className="flex min-w-0 flex-col gap-2">
+          <ToolFailureNotice title={TOOL_ROW_COPY.error} message={toolError} />
           {/*
             Issue #56, DR-26 / Task 57 — the accept control, on the surface the
             refusal lands on and directly under the daemon's own words. DR-26
@@ -1483,75 +1367,85 @@ function ToolCallView({
       )}
 
       {logs && logs.length > 0 && (
-        <div className="border-t border-border-subtle">
-          <ToolLogsView logs={logs} working={loadingStatus === 'loading'} />
-        </div>
+        <ToolLogsView logs={logs} working={loadingStatus === 'loading'} />
       )}
 
-      {toolResults.length === 0 &&
-        progressEntries.length > 0 &&
-        progressEntries.map((entry, index) => (
-          <div className="p-3 border-t border-border-subtle" key={index}>
-            <ProgressBar progress={entry.progress} total={entry.total} message={entry.message} />
-          </div>
-        ))}
-
-      {/* Tool Output */}
-      {!isCancelledMessage && (
-        <>
-          {toolResults
-            .filter(
-              (result) =>
-                !(
-                  toolError &&
-                  'text' in result &&
-                  typeof result.text === 'string' &&
-                  result.text.trim() === toolError.trim()
-                )
-            )
-            .map((result, index) => (
-              <div key={index} className={cn('border-t border-border-subtle')}>
-                <ToolResultView
-                  result={result}
-                  onOpenArtifact={onOpenArtifact}
-                  workingDir={workingDir}
-                />
-              </div>
-            ))}
-        </>
+      {showProgress && (
+        <TranscriptRowSection label={TOOL_ROW_COPY.progress}>
+          {progressEntries.map((entry, index) => (
+            <ToolProgress
+              key={index}
+              progress={entry.progress}
+              total={entry.total}
+              message={entry.message}
+            />
+          ))}
+        </TranscriptRowSection>
       )}
-    </ToolCallExpandable>
+
+      {visibleResults.map((result, index) => (
+        <ToolResultView
+          key={index}
+          result={result}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        />
+      ))}
+    </>
+  ) : null;
+
+  return (
+    // ⚠ A grantable cross-institutional refusal starts EXPANDED (issue #56, Task
+    // 57). A failed tool call is otherwise a collapsed line, and a way out that
+    // only exists behind a disclosure most people never open is the hard block
+    // this task exists to remove, one click further away. Every other failure
+    // keeps the quiet default — including this same refusal replayed in a saved
+    // transcript, where `acceptOffer` is null because there is no chat to accept
+    // against and the disclosure would open onto nothing.
+    <TranscriptRow
+      icon={glyph.Icon}
+      glyph={glyph.kind}
+      label={toolRowLabel(toolSummary, rowState)}
+      meta={metaParts.length > 0 ? metaParts.join(' ') : undefined}
+      running={loadingStatus === 'loading'}
+      statusLabel={TOOL_ROW_COPY.statusLabel(toolCallStatus)}
+      defaultOpen={acceptOffer !== null}
+      triggerClassName="br-tool-disclosure"
+      trailing={
+        providerExecution === 'child' ? (
+          <InfoTip label={TOOL_ROW_COPY.notGatedName} help={TOOL_ROW_COPY.notGatedHelp} />
+        ) : undefined
+      }
+    >
+      {body}
+    </TranscriptRow>
   );
 }
 
-function ToolFailureNotice({ title, message }: { title: string; message: string }) {
+/** Longest live progress line the collapsed row carries before it is elided. */
+const MAX_LIVE_DETAIL_LENGTH = 64;
+
+function ToolFailureNotice({ title, message }: { title?: string; message: string }) {
   return (
-    <div role="alert" className="text-text-muted">
-      <div className="text-sm font-medium">{title}</div>
+    <div role="alert" className="min-w-0">
+      {title && <div className="text-secondary text-text-danger">{title}</div>}
       <ToolContentPreview text={message}>
-        {(text) => <div className="mt-1 whitespace-pre-wrap break-words text-sm">{text}</div>}
+        {(text) => (
+          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-code text-text-default [overflow-wrap:anywhere]">
+            {text}
+          </pre>
+        )}
       </ToolContentPreview>
     </div>
-  );
-}
-
-function ToolSection({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section>
-      <div className="px-3 pt-2 text-xs text-text-muted">{label}</div>
-      {children}
-    </section>
   );
 }
 
 function ToolDetailsView({ toolCall }: { toolCall: { arguments: Record<string, unknown> } }) {
   if (Object.keys(toolCall.arguments).length === 0) return null;
   return (
-    <ToolSection label="Input">
-      <div className={TOOL_INTERIOR_CLASS}>
-        <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
-      </div>
-    </ToolSection>
+    <TranscriptRowSection label={TOOL_ROW_COPY.input}>
+      <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
+    </TranscriptRowSection>
   );
 }
 
@@ -1567,61 +1461,61 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
   const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
 
   return (
-    <div className={TOOL_INTERIOR_CLASS}>
-      <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
-        {toolGraph.map((node, index) => {
-          const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
-          return (
-            <li key={index} title={`Tool: ${node.tool}`}>
-              {index + 1}. {toolGraphNodeLabel(node)}
-              {dependencies && ` (uses ${dependencies})`}
-            </li>
-          );
-        })}
-      </ol>
+    <>
+      <TranscriptRowSection label={TOOL_ROW_COPY.steps}>
+        <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
+          {toolGraph.map((node, index) => {
+            const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
+            return (
+              <li key={index} title={TOOL_ROW_COPY.stepTool(node.tool)}>
+                {index + 1}. {toolGraphNodeLabel(node)}
+                {dependencies && TOOL_ROW_COPY.stepUses(dependencies)}
+              </li>
+            );
+          })}
+        </ol>
+      </TranscriptRowSection>
       {code && (
-        <div className="-mx-3 mt-2 border-t border-border-subtle">
-          <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Code</span>}>
-            {/* bg-background-code: the ground the syntax palette is verified
-                against (see MarkdownContent's CodeBlock). No line numbers, so
-                long lines may wrap (never combine wrapping with line numbers
-                in react-syntax-highlighter). */}
-            <div className="w-full overflow-x-auto bg-background-code">
-              <ToolContentPreview text={code}>
-                {(text) => (
-                  <SyntaxHighlighter
-                    style={codeStyle}
-                    language="javascript"
-                    PreTag="div"
-                    customStyle={{
-                      margin: 0,
-                      padding: 'calc(12px * var(--app-font-scale, 1))',
-                      background: 'transparent',
-                      width: '100%',
-                      maxWidth: '100%',
-                    }}
-                    codeTagProps={{
-                      style: {
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'break-word',
-                        fontFamily: CODE_FONT_FAMILY,
-                        fontSize: CODE_FONT_SIZE,
-                        lineHeight: CODE_LINE_HEIGHT,
-                      },
-                    }}
-                    showLineNumbers={false}
-                    wrapLines={false}
-                  >
-                    {text}
-                  </SyntaxHighlighter>
-                )}
-              </ToolContentPreview>
-            </div>
-          </ToolSection>
-        </div>
+        <TranscriptRowSection label={TOOL_ROW_COPY.code}>
+          {/* Straight on the well: `--background-well` is the ground fenced
+              code sits on everywhere, and a second box inside the well would
+              be a box in a box. No line numbers, so long lines may wrap (never
+              combine wrapping with line numbers in react-syntax-highlighter). */}
+          <div className="w-full overflow-x-auto">
+            <ToolContentPreview text={code}>
+              {(text) => (
+                <SyntaxHighlighter
+                  style={codeStyle}
+                  language="javascript"
+                  PreTag="div"
+                  customStyle={{
+                    margin: 0,
+                    padding: 0,
+                    background: 'transparent',
+                    width: '100%',
+                    maxWidth: '100%',
+                  }}
+                  codeTagProps={{
+                    style: {
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'break-word',
+                      fontFamily: CODE_FONT_FAMILY,
+                      fontSize: CODE_FONT_SIZE,
+                      lineHeight: CODE_LINE_HEIGHT,
+                    },
+                  }}
+                  showLineNumbers={false}
+                  wrapLines={false}
+                >
+                  {text}
+                </SyntaxHighlighter>
+              )}
+            </ToolContentPreview>
+          </div>
+        </TranscriptRowSection>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1645,27 +1539,28 @@ function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValu
 function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
   const total = calls.length + dropped;
   return (
-    <ToolSection
+    <TranscriptRowSection
       label={
-        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>
-          {dropped > 0
-            ? `Recorded calls (${calls.length} of ${total} executed)`
-            : `Executed calls (${calls.length})`}
-        </span>
+        dropped > 0
+          ? TOOL_ROW_COPY.recordedCalls(calls.length, total)
+          : TOOL_ROW_COPY.executedCalls(calls.length)
       }
     >
-      <div className={TOOL_INTERIOR_CLASS}>
+      <div className="flex min-w-0 flex-col gap-2">
         {calls.map((call, index) => (
           <ExecutedCallRow key={index} call={call} />
         ))}
         {dropped > 0 && (
-          <div className="py-1 text-supporting text-text-muted">
-            {dropped} executed call{dropped === 1 ? ' was' : 's were'} not recorded, so{' '}
-            {dropped === 1 ? 'its' : 'their'} details are unavailable.
+          <div className="flex items-center gap-1 text-supporting text-text-muted">
+            <span>{TOOL_ROW_COPY.notRecorded(dropped)}</span>
+            <InfoTip
+              label={TOOL_ROW_COPY.notRecorded(dropped)}
+              help={TOOL_ROW_COPY.notRecordedHelp(dropped)}
+            />
           </div>
         )}
       </div>
-    </ToolSection>
+    </TranscriptRowSection>
   );
 }
 
@@ -1681,23 +1576,16 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
     : null;
   const summary =
     taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
+  const glyph = toolGlyphFor(call.tool, parsedArgs);
   return (
-    <ToolSection
-      label={
-        <span className="flex min-w-0 items-center gap-2 text-left leading-6">
-          <ToolIconWithStatus
-            ToolIcon={getToolCallIcon(call.tool)}
-            status={call.status === 'error' ? 'error' : 'success'}
-            className="mt-px"
-          />
-          <span className="min-w-0 flex-1 truncate text-text-muted">
-            <span className="text-text-default">{summary}</span>
-            {call.status === 'error' && ' · failed'}
-          </span>
-        </span>
-      }
-    >
-      <div className={TOOL_INTERIOR_CLASS}>
+    <div className="min-w-0">
+      <TranscriptRow
+        icon={glyph.Icon}
+        glyph={glyph.kind}
+        label={toolRowLabel(summary, call.status === 'error' ? 'failed' : 'done')}
+        statusLabel={TOOL_ROW_COPY.statusLabel(call.status === 'error' ? 'error' : 'success')}
+      />
+      <div className="flex min-w-0 flex-col gap-2 pl-6">
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
           <ToolCallArguments args={parsedArgs} />
         ) : call.args ? (
@@ -1710,15 +1598,11 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
             )}
           </ToolContentPreview>
         ) : (
-          <div className="text-supporting text-text-muted">No arguments recorded.</div>
+          <div className="text-supporting text-text-muted">{TOOL_ROW_COPY.noArguments}</div>
         )}
-        {call.error && (
-          <div className="mt-2">
-            <ToolFailureNotice title={`${summary} failed`} message={call.error} />
-          </div>
-        )}
+        {call.error && <ToolFailureNotice message={call.error} />}
       </div>
-    </ToolSection>
+    </div>
   );
 }
 
@@ -1741,57 +1625,55 @@ function ToolResultView({ result, onOpenArtifact, workingDir }: ToolResultViewPr
   const hasResource = (c: Content): c is Content & { resource: unknown } => 'resource' in c;
 
   return (
-    <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Output</span>}>
-      <div className={TOOL_INTERIOR_CLASS}>
-        {hasText(result) && (
-          <ToolContentPreview text={result.text}>
-            {(text, truncated) =>
-              truncated ? (
-                <pre className="whitespace-pre-wrap break-words font-mono text-code [overflow-wrap:anywhere]">
-                  {text}
-                </pre>
-              ) : (
-                <MarkdownContent
-                  content={text}
-                  className="whitespace-pre-wrap max-w-full overflow-x-auto"
-                  onOpenArtifact={onOpenArtifact}
-                  workingDir={workingDir}
-                />
-              )
-            }
-          </ToolContentPreview>
-        )}
-        {hasImage(result) && (
-          <img
-            src={`data:${result.mimeType};base64,${result.data}`}
-            alt="Tool result"
-            className="max-w-full h-auto rounded-md my-2"
-            onError={(e) => {
-              console.error('Failed to load image');
-              e.currentTarget.style.display = 'none';
-            }}
-          />
-        )}
-        {hasResource(result) && (
-          // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
-          // — the same value class the other two raw dumps in this file render
-          // in `font-mono text-code` (ExecutedCallArguments above, and the
-          // malformed-args fallback beside it). All three are disclosures of
-          // ONE tool call, so expanding "Output" and "Executed calls"
-          // put pretty-printed JSON on screen in two typefaces at once.
-          // A proportional face also defeats the point of the <pre>: the
-          // two-space indent `stringify` emits only reads as structure when the
-          // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
-          <ToolContentPreview text={JSON.stringify(result, null, 2)}>
-            {(text) => (
-              <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+    <TranscriptRowSection label={TOOL_ROW_COPY.output}>
+      {hasText(result) && (
+        <ToolContentPreview text={result.text}>
+          {(text, truncated) =>
+            truncated ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-code [overflow-wrap:anywhere]">
                 {text}
               </pre>
-            )}
-          </ToolContentPreview>
-        )}
-      </div>
-    </ToolSection>
+            ) : (
+              <MarkdownContent
+                content={text}
+                className="whitespace-pre-wrap max-w-full overflow-x-auto"
+                onOpenArtifact={onOpenArtifact}
+                workingDir={workingDir}
+              />
+            )
+          }
+        </ToolContentPreview>
+      )}
+      {hasImage(result) && (
+        <img
+          src={`data:${result.mimeType};base64,${result.data}`}
+          alt={TOOL_ROW_COPY.imageAlt}
+          className="h-auto max-w-full rounded-element"
+          onError={(e) => {
+            console.error('Failed to load image');
+            e.currentTarget.style.display = 'none';
+          }}
+        />
+      )}
+      {hasResource(result) && (
+        // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
+        // — the same value class the other two raw dumps in this file render
+        // in `font-mono text-code` (ExecutedCallArguments above, and the
+        // malformed-args fallback beside it). All three are disclosures of
+        // ONE tool call, so expanding "Output" and "Executed calls"
+        // put pretty-printed JSON on screen in two typefaces at once.
+        // A proportional face also defeats the point of the <pre>: the
+        // two-space indent `stringify` emits only reads as structure when the
+        // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
+        <ToolContentPreview text={JSON.stringify(result, null, 2)}>
+          {(text) => (
+            <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+              {text}
+            </pre>
+          )}
+        </ToolContentPreview>
+      )}
+    </TranscriptRowSection>
   );
 }
 
@@ -1816,40 +1698,33 @@ function ToolLogsView({ logs, working }: { logs: string[]; working: boolean }) {
   }, [logs.length]);
 
   return (
-    <ToolSection label={working ? 'Live logs' : 'Logs'}>
-      <div className={TOOL_INTERIOR_CLASS}>
-        <ToolContentPreview text={logs.join('\n')} tail>
-          {(text) => (
-            <div ref={boxRef} className="max-h-80 overflow-y-auto" data-testid="tool-logs-box">
-              <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
-                {text}
-              </pre>
-            </div>
-          )}
-        </ToolContentPreview>
-      </div>
-    </ToolSection>
+    <TranscriptRowSection label={working ? TOOL_ROW_COPY.liveLogs : TOOL_ROW_COPY.logs}>
+      <ToolContentPreview text={logs.join('\n')} tail>
+        {(text) => (
+          <div ref={boxRef} className="max-h-80 overflow-y-auto" data-testid="tool-logs-box">
+            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
+              {text}
+            </pre>
+          </div>
+        )}
+      </ToolContentPreview>
+    </TranscriptRowSection>
   );
 }
 
-const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken'>) => {
-  const isDeterminate = typeof total === 'number';
-  const percent = isDeterminate ? Math.min((progress / total!) * 100, 100) : 0;
-
+/** The shared `Progress` bar, thin, with the tool's own message above it. */
+const ToolProgress = ({ progress, total, message }: Omit<Progress, 'progressToken'>) => {
+  const isDeterminate = typeof total === 'number' && total > 0;
   return (
-    <div className="w-full space-y-2">
-      {message && <div className="font-sans text-sm text-text-muted">{message}</div>}
-
-      <div className="w-full bg-background-muted rounded-md h-4 overflow-hidden relative">
-        {isDeterminate ? (
-          <div
-            className="bg-background-accent h-full w-full origin-left transition-transform duration-[var(--motion-base)] ease-[var(--ease-out)]"
-            style={{ transform: `scaleX(${Math.min(Math.max(percent / 100, 0), 1)})` }}
-          />
-        ) : (
-          <div className="absolute inset-0 animate-pulse bg-background-accent" />
-        )}
-      </div>
+    <div className="flex w-full min-w-0 flex-col gap-1">
+      {message && <div className="text-supporting text-text-muted">{message}</div>}
+      <ProgressBarPrimitive
+        className="br-tool-progress"
+        value={isDeterminate ? progress : 0}
+        max={isDeterminate ? total : 100}
+        indeterminate={!isDeterminate}
+        label={message || TOOL_ROW_COPY.progressLabel}
+      />
     </div>
   );
 };

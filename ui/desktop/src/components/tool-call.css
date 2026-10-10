@@ -1,39 +1,40 @@
-.br-tool-disclosure {
-  color: var(--text-muted);
-  background: transparent;
+/* @ws WS-TOOLS begin: tool rows */
+/*
+ * The row itself, its chevron, hover, focus and the running pulse live in
+ * `transcript-row.css` (TranscriptRow). This file holds only what is specific
+ * to a tool call's well.
+ */
+
+/* "Show more" under a long argument, result or log. A text control, so its
+   focus is the row recipe (D-15): the focus fill plus an inset edge, drawn on
+   a 4px bleed so the edge clears the letters. */
+.br-tool-more {
+  margin-inline: -4px;
+  padding: 0 4px;
   border: 0;
-  cursor: pointer;
-}
-.br-tool-disclosure:hover,
-.br-tool-disclosure:focus-visible,
-.br-tool-pending:hover {
-  color: var(--text-default);
+  border-radius: var(--radius-inner);
   background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  transition: color var(--dur-fast-min) var(--ease-out);
 }
-.br-tool-disclosure:focus-visible,
+
+.br-tool-more:hover {
+  color: var(--text-default);
+}
+
 .br-tool-more:focus-visible {
-  outline: 2px solid var(--border-strong);
-  outline-offset: 2px;
+  outline: none;
+  color: var(--text-default);
+  background: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
-.br-tool-running {
-  animation: br-tool-text-pulse 2.4s ease-in-out infinite;
+
+/* A tool's progress bar is the thin track (4px): it sits in a 13px row's
+   well, where the default 8px pill reads as a control. */
+.br-progress.br-tool-progress {
+  height: 4px;
 }
-.br-tool-disclosure:hover .br-tool-running,
-.br-tool-disclosure:focus-visible .br-tool-running,
-.br-tool-pending:hover .br-tool-running {
-  animation: none;
-}
-@keyframes br-tool-text-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.7;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .br-tool-running {
-    animation: none;
-  }
-}
+/* @ws WS-TOOLS end: tool rows */
