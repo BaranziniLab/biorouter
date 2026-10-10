@@ -650,7 +650,7 @@ export default function WorkflowsView() {
           {/* The Field recipe (label, 6px, control, one live line), written out
               because the control carries a leading "/" the Field cannot clone
               onto. The error replaces the helper, in danger ink. */}
-          <div className="br-field flex min-w-0 flex-col gap-1.5 pb-1" data-slot="field">
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5 pb-1" data-slot="field">
             <label htmlFor="workflow-slash-command" className="text-label text-text-default">
               {copy.slash.inputLabel}
             </label>

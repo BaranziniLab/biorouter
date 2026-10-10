@@ -13,10 +13,11 @@
  *    opened the workflow editor (the row's own handler took it) or, on a Built apps row, did
  *    nothing. `document.elementFromPoint` is the instrument; `pointer-events: none` on
  *    `.br-row-actions-meta` (WS-PRIMITIVES, from `requests/WS-PRIMITIVES/WS-VIEWS-A-3.md`) is the rule.
- * 2. **The editors' text areas are tall.** `.br-textarea` (main.css) is unlayered and sets its own
- *    `min-block-size` and `resize`, so a Tailwind `min-h-[400px]` on the same element loses to it:
- *    the Instructions and Response schema editors were 74px tall, three rows, in an 800px dialog.
- *    `workflows.css` carries the authored rule that wins.
+ * 2. **The editors' text areas are tall.** `.br-textarea` (main.css) sets its own three-row
+ *    `min-block-size` and `resize`. It was unlayered, so a Tailwind `min-h-[400px]` on the same
+ *    element lost to it and the Instructions and Response schema editors were 74px tall in an
+ *    800px dialog (it is layered now). `workflows.css` carries the authored rule, and the case
+ *    below injects the primitive's rule UNLAYERED, the worst case for it.
  *
  * The real `RowActions` is bundled with esbuild and rendered by React in Chromium, styled by the
  * authored `@ws WS-PRIMITIVES` blocks of `styles/main.css` and by this workstream's own CSS.

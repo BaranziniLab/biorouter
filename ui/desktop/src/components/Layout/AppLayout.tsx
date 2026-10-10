@@ -211,7 +211,7 @@ const AppLayoutContent: React.FC = () => {
 
   return (
     <div
-      className="relative flex w-full flex-1 animate-fade-in"
+      className="relative flex w-full flex-1"
       style={
         {
           [TITLEBAR_CONTROL_RESERVE_PROPERTY]: `${getTitlebarControlReserve(safeIsMacOS)}px`,

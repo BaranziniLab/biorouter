@@ -99,7 +99,7 @@ function FieldWithAction({
     'aria-invalid': error ? true : undefined,
   });
   return (
-    <div className="br-field flex min-w-0 flex-col gap-1.5" data-slot="field">
+    <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-slot="field">
       <div className="flex min-w-0 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center">
           <label htmlFor={id} className="text-label text-text-default">

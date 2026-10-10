@@ -100,7 +100,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
           onChange={(e) => setLocalValue(e.target.value)}
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? 'instructions-editor-error' : undefined}
-          className="br-workflow-editor-field font-mono text-code"
+          className="br-workflow-editor-field"
           placeholder={workflowFormCopy.instructionsPlaceholder}
         />
         {error && (

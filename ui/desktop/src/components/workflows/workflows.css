@@ -55,12 +55,12 @@
   }
 }
 
-/* The response-schema and instructions editors' text areas fill their dialog.
-   ⚠ `.br-textarea` (main.css) is UNLAYERED and sets its own `min-block-size` and `resize`, so a
-   Tailwind `min-h-[400px]` or `resize-none` on the same element loses to it whatever its
-   specificity: measured in Chromium, the editor was 74px tall (three rows) in an 800px dialog.
-   This rule is authored at higher specificity for that reason, and also because a newly written
-   arbitrary utility can fail to generate under BIOROUTER_NO_HMR. */
+/* The response-schema and instructions editors' text areas fill their dialog. The primitive's
+   `.br-textarea` sets a three-row `min-block-size` and `resize: vertical`. It was UNLAYERED when
+   this rule was written, which made a Tailwind `min-h-[400px]` or `resize-none` lose to it
+   (measured in Chromium: 74px tall in an 800px dialog); it is layered now, so a utility would win
+   too. The height stays authored here, at higher specificity than the primitive's, because a newly
+   written arbitrary utility can fail to generate under BIOROUTER_NO_HMR (CLAUDE.md). */
 .br-textarea.br-workflow-editor-field {
   min-block-size: 400px;
   resize: none;
