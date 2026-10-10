@@ -14,6 +14,7 @@ import {
   Archive as _Archive,
   ArrowDown as _ArrowDown,
   ArrowLeft as _ArrowLeft,
+  ArrowRight as _ArrowRight,
   ArrowUp as _ArrowUp,
   BookMarked as _BookMarked,
   BookOpen as _BookOpen,
@@ -133,6 +134,7 @@ import {
   Sun as _Sun,
   Target as _Target,
   Terminal as _Terminal,
+  TextQuote as _TextQuote,
   Tornado as _Tornado,
   Trash2 as _Trash2,
   Upload as _Upload,
@@ -179,6 +181,9 @@ export const AppWindowMac = light(_AppWindowMac);
 export const Archive = light(_Archive);
 export const ArrowDown = light(_ArrowDown);
 export const ArrowLeft = light(_ArrowLeft);
+/** Go on: Resume a saved chat (was Sparkles, which also meant ingest and an
+ * empty graph). */
+export const ArrowRight = light(_ArrowRight);
 export const ArrowUp = light(_ArrowUp);
 export const BookMarked = light(_BookMarked);
 export const BookOpen = light(_BookOpen);
@@ -389,6 +394,8 @@ export const NewChat = light(_SquarePen);
 export const Sun = light(_Sun);
 export const Target = light(_Target);
 export const Terminal = light(_Terminal);
+/** Quote the selected text into the chat (the preview panel's selection action). */
+export const TextQuote = light(_TextQuote);
 export const Tornado = light(_Tornado);
 export const Trash2 = light(_Trash2);
 export const Upload = light(_Upload);
