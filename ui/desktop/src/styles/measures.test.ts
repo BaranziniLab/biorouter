@@ -426,14 +426,15 @@ describe('the comment stripper the measure rule depends on', () => {
   /**
    * Deliberately NOT `size="chat"`, which the rule above already asserts: a
    * self-check that fails for the same reason as the rule it underwrites tells
-   * you nothing about the instrument. These two classes are applied, are not
-   * the subject of any other assertion here, and one of them (`px-6`) sits on
-   * the very line a too-eager stripper would eat.
+   * you nothing about the instrument. These are applied classes on the
+   * transcript's reading column, not the subject of any other assertion here.
+   * (They were `biorouter-page-header` and `px-6` until the transcript moved
+   * onto the page band, spec 3.10, and stopped hand-writing its header.)
    */
   it('keeps the classes that are actually applied', () => {
     const code = codeWithoutComments(HISTORY);
-    expect(code).toContain('biorouter-page-header');
-    expect(code).toContain('px-6');
+    expect(HISTORY).toMatch(/className="[^"]*\bflex-col\b[^"]*\bpx-6\b[^"]*"/);
+    expect(code).toMatch(/className="[^"]*\bflex-col\b[^"]*\bpx-6\b[^"]*"/);
   });
 });
 
