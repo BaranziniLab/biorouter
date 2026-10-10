@@ -49,9 +49,11 @@ export async function toggleExtensionDefault({
     await addToConfig(extensionConfig.name, extensionConfig, enabled);
   } catch (error) {
     console.error(`Failed to update ${itemKind} default in config:`, error);
+    // The title is the name, so the message is only what could not be done; "default" was the
+    // config's word for it, not the person's.
     toastService.error({
       title: extensionConfig.name,
-      msg: `Failed to update ${itemKind} default`,
+      msg: enabled ? 'Could not turn on' : 'Could not turn off',
     });
     throw error;
   }
@@ -70,7 +72,7 @@ export async function activateExtensionDefault({
     await addToConfig(extensionConfig.name, extensionConfig, true);
     toastService.success({
       title: extensionConfig.name,
-      msg: 'Extension added as default',
+      msg: 'Extension added and enabled',
     });
   } catch (error) {
     console.error('Failed to add extension to config:', error);

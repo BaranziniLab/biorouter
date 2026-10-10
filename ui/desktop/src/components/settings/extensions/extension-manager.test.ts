@@ -13,7 +13,7 @@ vi.mock('../../../toasts', () => ({
   },
 }));
 
-import { toggleExtensionDefault } from './extension-manager';
+import { activateExtensionDefault, toggleExtensionDefault } from './extension-manager';
 
 const capability: ExtensionConfig = {
   type: 'platform',
@@ -54,11 +54,12 @@ describe('toggleExtensionDefault', () => {
 
   // A failure is the one thing worth a toast: then the switch is what is wrong.
   it.each([
-    ['extension', undefined, 'Failed to update extension default'],
-    ['capability', 'capability' as const, 'Failed to update capability default'],
-  ])(
-    'still raises the error toast and rethrows when a %s cannot be saved',
-    async (_k, itemKind, msg) => {
+    ['extension', undefined, 'toggleOn', 'Could not turn on'],
+    ['extension', undefined, 'toggleOff', 'Could not turn off'],
+    ['capability', 'capability' as const, 'toggleOn', 'Could not turn on'],
+  ] as const)(
+    'still raises the error toast and rethrows when a %s cannot be saved (%s)',
+    async (_k, itemKind, toggle, msg) => {
       const failure = new Error('disk full');
       const addToConfig = vi.fn(async () => {
         throw failure;
@@ -66,7 +67,7 @@ describe('toggleExtensionDefault', () => {
 
       await expect(
         toggleExtensionDefault({
-          toggle: 'toggleOn',
+          toggle,
           extensionConfig: capability,
           addToConfig,
           itemKind,
@@ -77,4 +78,34 @@ describe('toggleExtensionDefault', () => {
       expect(mocks.success).not.toHaveBeenCalled();
     }
   );
+});
+
+describe('activateExtensionDefault', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('confirms an added extension in the words the .brxt install uses, naming it once', async () => {
+    const addToConfig = vi.fn(async () => undefined);
+
+    await activateExtensionDefault({ addToConfig, extensionConfig: capability });
+
+    expect(addToConfig).toHaveBeenCalledWith('skills', capability, true);
+    expect(mocks.success).toHaveBeenCalledWith({
+      title: 'skills',
+      msg: 'Extension added and enabled',
+    });
+  });
+
+  it('raises the error toast and rethrows when it cannot be added', async () => {
+    const failure = new Error('disk full');
+    const addToConfig = vi.fn(async () => {
+      throw failure;
+    });
+
+    await expect(
+      activateExtensionDefault({ addToConfig, extensionConfig: capability })
+    ).rejects.toBe(failure);
+
+    expect(mocks.error).toHaveBeenCalledWith({ title: 'skills', msg: 'Failed to add extension' });
+    expect(mocks.success).not.toHaveBeenCalled();
+  });
 });
