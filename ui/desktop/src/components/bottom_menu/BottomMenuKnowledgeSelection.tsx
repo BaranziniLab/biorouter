@@ -1,19 +1,35 @@
-import { useMemo, useState } from 'react';
-import { BookOpen } from '../icons/app-icons';
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import { Input } from '../ui/input';
-import { Switch } from '../ui/switch';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import * as React from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../utils/builtins';
 import { useKnowledge } from '../knowledge/KnowledgeContext';
+import { KNOWLEDGE_COPY, TOOLS_COPY } from './copy';
+import { PickerPanel, PickerRow } from './PickerPanel';
 
-export function BottomMenuKnowledgeSelection() {
+type KnowledgeBase = ReturnType<typeof useKnowledge>['bases'][number];
+
+/** What the knowledge list needs from its picker state (see `useKnowledgePicker`). */
+export interface KnowledgePicker {
+  /** Visible bases, the chip's share of the Tools count. */
+  visibleCount: number;
+  query: string;
+  setQuery: (query: string) => void;
+  bases: KnowledgeBase[];
+  isHidden: (id: string) => boolean;
+  toggle: (id: string) => void;
+  bulk: { label: string; onClick: () => void } | null;
+}
+
+/**
+ * The composer's knowledge-base list: which bases this chat can see. State and
+ * writes come from `KnowledgeContext`, which carries the user-action proof on
+ * every selection read and write.
+ *
+ * @param open whether the list is on screen. Opening it re-reads the daemon, as
+ *   the Knowledge view's picker does: a base created from the CLI or another
+ *   window changes nothing this renderer can hear.
+ */
+export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker {
   const {
     bases,
     visibleBases,
@@ -24,8 +40,14 @@ export function BottomMenuKnowledgeSelection() {
     showAllKnowledgeBases,
     refresh,
   } = useKnowledge();
-  const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (open) void refresh();
+    // `refresh` changes identity with the selection it re-reads; opening is
+    // the event, not a new function.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const filteredBases = useMemo(
     () =>
@@ -63,104 +85,69 @@ export function BottomMenuKnowledgeSelection() {
     setHiddenKbIds(nextHidden);
   };
 
+  return {
+    visibleCount: visibleBases.length,
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    bases: filteredBases,
+    isHidden: (id) => hiddenKbIds.includes(id),
+    toggle: toggleKbHidden,
+    bulk:
+      filteredBases.length > 0
+        ? {
+            label:
+              filteredVisibleCount === 0
+                ? KNOWLEDGE_COPY.showAll(filteredBases.length)
+                : KNOWLEDGE_COPY.hideAll(filteredVisibleCount),
+            onClick: handleBulkToggle,
+          }
+        : null,
+  };
+}
+
+/** The knowledge list inside the Tools popover. */
+export function KnowledgePanel({
+  picker,
+  inChat,
+  inputRef,
+}: {
+  picker: KnowledgePicker;
+  /** In a chat the list is this chat's; on Home it is the default chats inherit. */
+  inChat: boolean;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
   return (
-    <DropdownMenu
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setSearchQuery('');
-        // Re-read on open, as the Knowledge view's picker and manager do: the
-        // provider already follows a turn's end, but a base created from the
-        // CLI or another window changes nothing this renderer can hear.
-        if (nextOpen) void refresh();
-      }}
+    <PickerPanel
+      data-testid="tools-knowledge-panel"
+      listLabel={KNOWLEDGE_COPY.listLabel}
+      searchPlaceholder={KNOWLEDGE_COPY.search}
+      query={picker.query}
+      onQueryChange={picker.setQuery}
+      scopeLabel={inChat ? TOOLS_COPY.scope.thisChat : TOOLS_COPY.scope.defaultForChats}
+      scopeHelp={inChat ? KNOWLEDGE_COPY.helpChat : KNOWLEDGE_COPY.helpDefault}
+      bulk={picker.bulk}
+      emptyText={picker.query ? KNOWLEDGE_COPY.noMatch : KNOWLEDGE_COPY.empty}
+      inputRef={inputRef}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              // `text-supporting`, not the `text-secondary` main.css prescribes
-              // for a dense control — the override is explained once in
-              // ChatInput.tsx, search "THE RAILS' TYPE".
-              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-supporting"
-              aria-label={`Manage knowledge bases (${visibleBases.length} visible)`}
-            >
-              <BookOpen className="mr-0.5 h-4 w-4" />
-              <span>{visibleBases.length}</span>
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top">Manage knowledge bases</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent
-        side="top"
-        align="center"
-        className="w-64"
-        onCloseAutoFocus={(event) => event.preventDefault()}
-      >
-        <div className="p-2">
-          <Input
-            type="text"
-            placeholder="Search knowledge bases..."
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            className="h-8"
-            autoFocus
+      {picker.bases.map((base) => {
+        const hidden = picker.isHidden(base.id);
+        return (
+          <PickerRow
+            key={base.id}
+            name={base.name}
+            checked={!hidden}
+            onToggle={() => picker.toggle(base.id)}
+            // One verb pair per popup (#82): the row says VISIBILITY, or the
+            // switch reads as the enable/disable toggle the other two lists use.
+            label={KNOWLEDGE_COPY.rowLabel(base.name, hidden)}
+            badge={
+              isBuiltinKnowledgeBase(base.id) ? (
+                <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+              ) : undefined
+            }
           />
-          {filteredBases.length > 0 && (
-            <button
-              type="button"
-              onClick={handleBulkToggle}
-              className="mt-1.5 cursor-pointer text-supporting text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
-            >
-              {filteredVisibleCount === 0
-                ? `Show all (${filteredBases.length})`
-                : `Hide all (${filteredVisibleCount})`}
-            </button>
-          )}
-        </div>
-        <div className="max-h-[400px] overflow-y-auto">
-          {filteredBases.length === 0 ? (
-            <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {searchQuery ? 'No knowledge bases found' : 'No knowledge bases available'}
-            </div>
-          ) : (
-            filteredBases.map((base) => {
-              const hidden = hiddenKbIds.includes(base.id);
-              return (
-                <DropdownMenuCheckboxItem
-                  key={base.id}
-                  checked={!hidden}
-                  showIndicator={false}
-                  onCheckedChange={() => toggleKbHidden(base.id)}
-                  onSelect={(event) => event.preventDefault()}
-                  className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
-                  // One verb pair per popup (#82 category 5). The trigger's
-                  // label, the bulk button and this row all have to say
-                  // VISIBILITY, or the switch reads as the enable/disable
-                  // toggle the other two popups use for a different thing.
-                  aria-label={`${base.name}, ${hidden ? 'hidden from' : 'visible to'} this chat`}
-                >
-                  <div className="flex min-w-0 items-center gap-1.5 pr-2">
-                    {/* Siblings pass a `title` so a truncated name is still
-                        readable; this row had none. */}
-                    <div className="truncate font-medium text-text-default" title={base.name}>
-                      {base.name}
-                    </div>
-                    {isBuiltinKnowledgeBase(base.id) && (
-                      <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
-                    )}
-                  </div>
-                  <div className="pointer-events-none" aria-hidden="true">
-                    <Switch checked={!hidden} variant="mono" tabIndex={-1} aria-hidden="true" />
-                  </div>
-                </DropdownMenuCheckboxItem>
-              );
-            })
-          )}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        );
+      })}
+    </PickerPanel>
   );
 }

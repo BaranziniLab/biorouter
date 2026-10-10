@@ -1,8 +1,28 @@
+import * as React from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeProvider } from '../knowledge/KnowledgeContext';
-import { BottomMenuKnowledgeSelection } from './BottomMenuKnowledgeSelection';
+import { KnowledgePanel, useKnowledgePicker } from './BottomMenuKnowledgeSelection';
+
+/**
+ * The knowledge list as the Tools chip holds it (spec 3.7). The harness's
+ * button stands in for the chip and states the hook's count.
+ */
+function BottomMenuKnowledgeSelection() {
+  const [open, setOpen] = React.useState(false);
+  const picker = useKnowledgePicker({ open });
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={`Manage knowledge bases (${picker.visibleCount} visible)`}
+        onClick={() => setOpen((current) => !current)}
+      />
+      {open && <KnowledgePanel picker={picker} inChat />}
+    </>
+  );
+}
 
 /**
  * QA 2026-09-10 F6: the chip read "Manage knowledge bases (2 visible)" over

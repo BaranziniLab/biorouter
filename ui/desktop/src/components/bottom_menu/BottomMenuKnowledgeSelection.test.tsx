@@ -1,7 +1,28 @@
+import * as React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BottomMenuKnowledgeSelection } from './BottomMenuKnowledgeSelection';
+import { KnowledgePanel, useKnowledgePicker } from './BottomMenuKnowledgeSelection';
+import { KNOWLEDGE_COPY, TOOLS_COPY } from './copy';
+
+/**
+ * The knowledge list as the Tools chip holds it (spec 3.7). The harness's
+ * button stands in for the chip and states the hook's count.
+ */
+function BottomMenuKnowledgeSelection() {
+  const [open, setOpen] = React.useState(false);
+  const picker = useKnowledgePicker({ open });
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={`Manage knowledge bases (${picker.visibleCount} visible)`}
+        onClick={() => setOpen((current) => !current)}
+      />
+      {open && <KnowledgePanel picker={picker} inChat />}
+    </>
+  );
+}
 
 const DEFAULT_BASES = [
   { id: 'soul', name: 'Soul' },
@@ -84,46 +105,38 @@ describe('BottomMenuKnowledgeSelection', () => {
     mocks.state.hiddenKbIds = [];
   });
 
-  it('uses the same compact searchable menu layout as skills', async () => {
-    const user = userEvent.setup();
+  it('uses the one picker shell: a search field, a scope line and option rows', async () => {
     render(<BottomMenuKnowledgeSelection />);
 
     const trigger = screen.getByRole('button', { name: 'Manage knowledge bases (2 visible)' });
-    expect(trigger).not.toHaveAttribute('title');
+    fireEvent.click(trigger);
 
-    await user.hover(trigger);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Manage knowledge bases');
-    expect(screen.queryByText('2 KBs visible')).not.toBeInTheDocument();
+    const list = await screen.findByRole('listbox', { name: KNOWLEDGE_COPY.listLabel });
+    expect(list).toHaveAttribute('aria-multiselectable', 'true');
+    const field = screen.getByPlaceholderText(KNOWLEDGE_COPY.search);
+    expect(field).toHaveAttribute('role', 'combobox');
+    expect(screen.getByText(TOOLS_COPY.scope.thisChat)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${TOOLS_COPY.scope.about}` })
+    ).toHaveAccessibleDescription(KNOWLEDGE_COPY.helpChat);
 
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
-
-    const menu = await screen.findByRole('menu');
-    // ⚠ Width only. `font-sans` used to be pinned here and on two of the five
-    // popups, absent on the other three — a no-op today (`--font-sans` is
-    // already the body font) but a latent divergence that read as deliberate
-    // intent which was not there. The search input carries no type class
-    // either: the Input primitive already owns it, and a call site restating
-    // the size is how the four popups on this rail drifted to three different
-    // row sizes in the first place.
-    expect(menu).toHaveClass('w-64');
-    expect(menu).not.toHaveClass('font-sans');
-    expect(screen.getByPlaceholderText('Search knowledge bases...')).toHaveClass('h-8');
-    expect(screen.queryByText('Chat knowledge discovery')).not.toBeInTheDocument();
-
-    const soul = screen.getByRole('menuitemcheckbox', { name: /Soul/ });
-    expect(soul).toHaveClass('px-2', 'py-2');
-    // ⚠ No size class on the row label. It inherits `text-secondary` (13/18)
-    // from the shared menu row, which is the declared token for menu rows.
-    // Pinning `text-sm` here is what held this popup a step larger than the
-    // Extensions popup beside it on the same rail.
-    expect(screen.getByText('Soul')).toHaveClass('font-medium');
+    // One verb pair per popup (#82): each row says VISIBILITY in its name.
+    const soul = screen.getByRole('option', { name: 'Soul, visible to this chat' });
+    expect(soul).toHaveAttribute('aria-selected', 'true');
+    // No size class on the row label: the shared menu row owns it.
     expect(screen.getByText('Soul')).not.toHaveClass('text-sm');
 
-    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
-      target: { value: 'brain' },
-    });
+    fireEvent.change(field, { target: { value: 'brain' } });
     expect(screen.queryByText('Soul')).not.toBeInTheDocument();
     expect(screen.getByText('brainstorm')).toBeInTheDocument();
+  });
+
+  it('toggles a base with one write when its row is chosen', () => {
+    render(<BottomMenuKnowledgeSelection />);
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    fireEvent.click(screen.getByRole('option', { name: /^brainstorm/ }));
+    expect(mocks.toggleKbHidden).toHaveBeenCalledWith('brainstorm');
+    expect(contextWrites()).toBe(1);
   });
 
   // "Hide all (2)" under a search must hide both matches. Applying the bulk
@@ -140,12 +153,9 @@ describe('BottomMenuKnowledgeSelection', () => {
     mocks.state.hiddenKbIds = ['soul'];
     render(<BottomMenuKnowledgeSelection />);
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Manage knowledge bases/ }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    await screen.findByRole('menu');
-    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    await screen.findByRole('listbox');
+    fireEvent.change(screen.getByPlaceholderText(KNOWLEDGE_COPY.search), {
       target: { value: 'brain' },
     });
 
@@ -168,12 +178,9 @@ describe('BottomMenuKnowledgeSelection', () => {
     mocks.state.hiddenKbIds = ['brainmap', 'brainstorm', 'soul'];
     render(<BottomMenuKnowledgeSelection />);
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: /Manage knowledge bases/ }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    await screen.findByRole('menu');
-    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    await screen.findByRole('listbox');
+    fireEvent.change(screen.getByPlaceholderText(KNOWLEDGE_COPY.search), {
       target: { value: 'brain' },
     });
 

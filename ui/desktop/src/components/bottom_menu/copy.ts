@@ -23,7 +23,7 @@ export const TOOLS_COPY = {
     `Tools: ${count(extensions, 'extension', 'extensions')}, ${count(skills, 'skill', 'skills')}, ${count(knowledge, 'knowledge base', 'knowledge bases')}`,
   chipTooltip: (extensions: number, skills: number, knowledge: number) =>
     `${count(extensions, 'extension', 'extensions')} · ${count(skills, 'skill', 'skills')} · ${count(knowledge, 'knowledge base', 'knowledge bases')}`,
-  segmentsLabel: 'Show',
+  segmentsLabel: 'Tool lists',
   segments: {
     extensions: 'Extensions',
     skills: 'Skills',
@@ -35,7 +35,8 @@ export const TOOLS_COPY = {
     nextChat: 'Next chat',
     newChats: 'New chats',
     defaultForChats: 'Default',
-    about: 'scope',
+    /** The InfoTip's name reads "About where changes apply". */
+    about: 'where changes apply',
   },
 } as const;
 

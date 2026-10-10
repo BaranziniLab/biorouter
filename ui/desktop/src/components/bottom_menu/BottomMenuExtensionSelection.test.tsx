@@ -1,7 +1,35 @@
+import * as React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BottomMenuExtensionSelection } from './BottomMenuExtensionSelection';
+import { ExtensionsPanel, useExtensionPicker } from './BottomMenuExtensionSelection';
+import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
+
+/**
+ * The extensions list as the Tools chip holds it (spec 3.7): the hook lives for
+ * the whole time the composer does, the panel shows while its list is open. The
+ * harness's button stands in for the chip and states the hook's count the way
+ * the old standalone chip did, so every count assertion reads one label.
+ */
+function BottomMenuExtensionSelection({ sessionId }: { sessionId: string | null }) {
+  const [open, setOpen] = React.useState(false);
+  const picker = useExtensionPicker(sessionId, { open, onOpenRequest: () => setOpen(true) });
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={`Manage extensions (${picker.activeCount} added)`}
+        onClick={() => setOpen((current) => !current)}
+      />
+      {open && <ExtensionsPanel picker={picker} />}
+    </>
+  );
+}
+
+/** Opens (or closes) the harness's list. */
+function toggleList() {
+  fireEvent.click(screen.getByLabelText(/Manage extensions/));
+}
 
 const mocks = vi.hoisted(() => ({
   overrides: new Map<string, boolean>(),
@@ -159,7 +187,7 @@ describe('BottomMenuExtensionSelection', () => {
         })
       )
     );
-    expect(screen.queryByPlaceholderText('Search extensions...')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(EXTENSIONS_COPY.search)).not.toBeInTheDocument();
 
     act(() =>
       window.dispatchEvent(
@@ -169,28 +197,28 @@ describe('BottomMenuExtensionSelection', () => {
       )
     );
 
-    expect(await screen.findByPlaceholderText('Search extensions...')).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText(EXTENSIONS_COPY.search)).toBeInTheDocument();
   });
 
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
     const trigger = screen.getByLabelText(/Manage extensions/);
     expect(trigger).not.toHaveAttribute('title');
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    fireEvent.click(trigger);
 
-    const toggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    const toggle = await screen.findByRole('option', { name: 'example' });
+    expect(toggle).toHaveAttribute('aria-selected', 'false');
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
 
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument());
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    toggleList();
+    await waitFor(() => expect(screen.queryByRole('option')).not.toBeInTheDocument());
+    fireEvent.click(trigger);
 
-    const reopenedToggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
-    expect(reopenedToggle).toHaveAttribute('aria-checked', 'true');
+    const reopenedToggle = await screen.findByRole('option', { name: 'example' });
+    expect(reopenedToggle).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(reopenedToggle);
-    await waitFor(() => expect(reopenedToggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(reopenedToggle).toHaveAttribute('aria-selected', 'false'));
     expect(mocks.overrides.get('example')).toBe(false);
   });
 
@@ -234,11 +262,8 @@ describe('BottomMenuExtensionSelection', () => {
 
     // …and the menu lists every user extension, attached or not, so the chip is
     // a count over the chat rather than over the rows beneath it.
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
-    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);
+    toggleList();
+    expect(await screen.findAllByRole('option')).toHaveLength(3);
   });
 
   /**
@@ -304,11 +329,8 @@ describe('BottomMenuExtensionSelection', () => {
       expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument()
     );
 
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
-    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'example' }));
+    toggleList();
+    fireEvent.click(await screen.findByRole('option', { name: 'example' }));
 
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument()
@@ -341,13 +363,10 @@ describe('BottomMenuExtensionSelection', () => {
     mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
+    toggleList();
 
-    const example = await screen.findByRole('menuitemcheckbox', { name: 'example' });
-    expect(example).toHaveAttribute('aria-checked', 'false');
+    const example = await screen.findByRole('option', { name: 'example' });
+    expect(example).toHaveAttribute('aria-selected', 'false');
     await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalledTimes(2));
     const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
 
@@ -364,7 +383,7 @@ describe('BottomMenuExtensionSelection', () => {
       path: { session_id: 'session-1' },
       headers: { 'X-User-Action': 'test-proof' },
     });
-    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(example).toHaveAttribute('aria-selected', 'true'));
     expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument();
 
     const callsBeforeDetach = mocks.getSessionExtensions.mock.calls.length;
@@ -375,7 +394,7 @@ describe('BottomMenuExtensionSelection', () => {
       () => expect(mocks.getSessionExtensions.mock.calls.length).toBeGreaterThan(callsBeforeDetach),
       { timeout: 1_500 }
     );
-    await waitFor(() => expect(example).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(example).toHaveAttribute('aria-selected', 'false'));
     expect(screen.getByLabelText('Manage extensions (0 added)')).toBeInTheDocument();
   });
 
@@ -394,7 +413,7 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (0 added)')).toBeInTheDocument()
     );
-    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('option')).not.toBeInTheDocument();
     const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
 
     mocks.getSessionExtensions.mockResolvedValue({
@@ -457,37 +476,76 @@ describe('BottomMenuExtensionSelection', () => {
    * reads as a setting that failed to save. It is a per-chat control being read
    * as a global one: `/agent/add_extension` persists into that SESSION's own
    * extension state and never touches `config.yaml`, and the hub view's
-   * overrides live in a map `createSession` clears. Making it write the config
-   * instead would be the wrong repair — disabling an extension in one chat would
-   * disable it everywhere — so the menu has to say what it does.
-   *
-   * ⚠ Asserted on the SCOPE WORD, not on the sentence, because the two views say
-   * genuinely different things and a single phrase would be wrong in one of them.
+   * overrides live in a map `createSession` clears. So the list says what it
+   * does: a visible scope word, and the full sentence in its InfoTip (spec 3.7),
+   * which a screen reader hears as the glyph's description.
    */
   it('says the session toggle applies to this chat, and where the default lives', async () => {
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
-    await screen.findAllByRole('menuitemcheckbox');
+    toggleList();
+    await screen.findAllByRole('option');
 
-    expect(screen.getByText(/Applies to this chat\./)).toBeInTheDocument();
-    expect(screen.getByText(/Settings → Extensions/)).toBeInTheDocument();
+    expect(screen.getByText(TOOLS_COPY.scope.thisChat)).toBeInTheDocument();
+    const help = screen.getByRole('button', { name: `About ${TOOLS_COPY.scope.about}` });
+    expect(help).toHaveAccessibleDescription(EXTENSIONS_COPY.helpChat);
+    expect(EXTENSIONS_COPY.helpChat).toMatch(/Settings → Extensions/);
+    // The explanation is not a visible paragraph any more.
+    expect(screen.queryByText(/^Changes apply/, { selector: ':not(.sr-only)' })).toBeNull();
   });
 
   it('says the hub toggle applies to the next chat, not to "new chats"', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
-    await screen.findAllByRole('menuitemcheckbox');
+    toggleList();
+    await screen.findAllByRole('option');
 
     // `clearExtensionOverrides` runs on session creation, so the override shapes
     // exactly one chat — "in new chats" was an over-promise.
-    expect(screen.getByText(/Applies to the next chat you start\./)).toBeInTheDocument();
-    expect(screen.queryByText(/Applies to this chat\./)).not.toBeInTheDocument();
+    expect(screen.getByText(TOOLS_COPY.scope.nextChat)).toBeInTheDocument();
+    const help = screen.getByRole('button', { name: `About ${TOOLS_COPY.scope.about}` });
+    expect(help).toHaveAccessibleDescription(EXTENSIONS_COPY.helpNextChat);
+    expect(screen.queryByText(TOOLS_COPY.scope.thisChat)).not.toBeInTheDocument();
+  });
+
+  /**
+   * Decision 6.9: the switch is the confirmation. A success toast for every
+   * toggle was noise; an error still says what failed.
+   */
+  it('raises no success toast for a toggle', async () => {
+    const { toastService } = await import('../../toasts');
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    toggleList();
+    fireEvent.click(await screen.findByRole('option', { name: 'example' }));
+    await waitFor(() => expect(mocks.addToAgent).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: /^(Enable|Disable) all/ }));
+    await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalled());
+    expect(toastService.success).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Spec 3.7 and primitives defect 6: the description is the row's tooltip and
+   * its accessible description, never `title=` (AppTooltipLayer would copy a
+   * title into the row's name) and never text inside the option (which would
+   * become part of its name).
+   */
+  it('describes a row without renaming it', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    toggleList();
+    const example = await screen.findByRole('option', { name: 'example' });
+    expect(example).toHaveAttribute('aria-description', 'Example extension');
+    expect(example.querySelector('[title]')).toBeNull();
+    expect(example).not.toHaveAttribute('title');
+  });
+
+  it('filters as the person types, with focus staying in the field', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    toggleList();
+    const field = await screen.findByPlaceholderText(EXTENSIONS_COPY.search);
+    field.focus();
+    fireEvent.change(field, { target: { value: 'spo' } });
+    expect(screen.getAllByRole('option').map((row) => row.textContent)).toEqual(['spoke']);
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: 'zzz' } });
+    expect(screen.getByText(EXTENSIONS_COPY.noMatch)).toBeInTheDocument();
   });
 
   /**
@@ -500,9 +558,9 @@ describe('BottomMenuExtensionSelection', () => {
 
     // Four extensions enabled in the config, two of them capabilities → 2.
     const trigger = screen.getByLabelText('Manage extensions (2 added)');
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    fireEvent.click(trigger);
 
-    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);
+    expect(await screen.findAllByRole('option')).toHaveLength(3);
     expect(screen.getByText('example')).toBeInTheDocument();
     expect(screen.getByText('spoke')).toBeInTheDocument();
     expect(screen.getByText('notetaker')).toBeInTheDocument();
@@ -518,22 +576,19 @@ describe('BottomMenuExtensionSelection', () => {
       () => new Promise<void>((resolve) => (resolveEnable = resolve))
     );
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
-    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
-      button: 0,
-      ctrlKey: false,
-    });
+    toggleList();
 
-    const toggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
+    const toggle = await screen.findByRole('option', { name: 'example' });
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'false'));
 
     expect(mocks.addToAgent).toHaveBeenCalledTimes(1);
     expect(mocks.removeFromAgent).not.toHaveBeenCalled();
     resolveEnable?.();
 
     await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'false'));
   });
 });
