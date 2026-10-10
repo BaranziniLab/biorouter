@@ -157,6 +157,27 @@ describe('the tab overflow menu filter', () => {
     }
   });
 
+  it('Space on a row opens that row, as Enter does, and leaves the field empty', () => {
+    const restore = stubOverflowing();
+    try {
+      const { props } = renderStrip(eight);
+      openMenu();
+      const field = screen.getByTestId('chat-tab-overflow-filter') as HTMLInputElement;
+      fireEvent.keyDown(field, { key: 'ArrowDown' });
+      const first = screen.getAllByRole('menuitem')[0];
+      expect(first).toHaveFocus();
+
+      fireEvent.keyDown(first, { key: ' ' });
+      expect(props.onSelect).toHaveBeenCalledWith('tab-1');
+      // The menu closed on the selection; reopening it starts from an empty field.
+      expect(screen.queryByTestId('chat-tab-overflow-filter')).toBeNull();
+      openMenu();
+      expect((screen.getByTestId('chat-tab-overflow-filter') as HTMLInputElement).value).toBe('');
+    } finally {
+      restore();
+    }
+  });
+
   it('marks the tab you are on with the trailing check, not with weight', () => {
     const restore = stubOverflowing();
     try {

@@ -964,6 +964,10 @@ function TabOverflowMenu({
     const field = filterRef.current;
     if (!field || event.target === field) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Space on a row opens that row (Radix's item has already handled it by the
+    // time the key bubbles here), exactly as Enter does: sending it to the field
+    // would also leave a stray space in the filter after the menu has closed.
+    if (event.key === ' ') return;
     if (event.key.length === 1) {
       event.preventDefault();
       field.focus();
@@ -1044,6 +1048,7 @@ function TabOverflowMenu({
                   {isActive ? (
                     // The menus' one selection mark: a trailing check (spec 2.6).
                     <Check
+                      role="img"
                       className="size-4 text-text-default"
                       aria-label={chatTabStripCopy.current}
                     />
