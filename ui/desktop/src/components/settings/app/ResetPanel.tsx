@@ -283,7 +283,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           <>
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               disabled={resetting}
               onClick={() => setOpen(false)}
             >
@@ -299,7 +299,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
                 ? resetCopy.resetting
                 : everything
                   ? resetCopy.resetEverything
-                  : resetCopy.resetSelected}
+                  : resetCopy.reset}
             </Button>
           </>
         }

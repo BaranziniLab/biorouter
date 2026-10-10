@@ -80,7 +80,7 @@ export const BioRouterHintsModal = ({
               {hintsDialogCopy.saved}
             </span>
           )}
-          <Button variant="outline" onClick={() => setIsBioRouterHintsModalOpen(false)}>
+          <Button variant="secondary" onClick={() => setIsBioRouterHintsModalOpen(false)}>
             {hintsDialogCopy.close}
           </Button>
           <Button onClick={writeFile} disabled={isSaving}>

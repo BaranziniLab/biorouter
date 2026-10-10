@@ -380,7 +380,7 @@ export default function PrivacyPanel() {
               Turn off privacy tiers
             </Button>
             <Button
-              variant="outline"
+              variant="secondary"
               onClick={() => {
                 setConfirming(false);
                 setTyped('');

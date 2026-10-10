@@ -99,7 +99,7 @@ describe('ResetPanel', () => {
     const dialog = openDialog();
     await within(dialog).findByText('12 chats');
 
-    const confirm = within(dialog).getByRole('button', { name: resetCopy.resetSelected });
+    const confirm = within(dialog).getByRole('button', { name: resetCopy.reset });
     expect(confirm).toBeDisabled();
 
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Built apps' }));
@@ -109,7 +109,7 @@ describe('ResetPanel', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.selectAll }));
     expect(within(dialog).getByRole('button', { name: resetCopy.resetEverything })).toBeEnabled();
     fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.clear }));
-    expect(within(dialog).getByRole('button', { name: resetCopy.resetSelected })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: resetCopy.reset })).toBeDisabled();
   });
 
   it('submits only the selected categories', async () => {
@@ -119,7 +119,7 @@ describe('ResetPanel', () => {
     await within(dialog).findByText('12 chats');
 
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Chat & usage history' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.resetSelected }));
+    fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.reset }));
 
     await waitFor(() => {
       expect(mocks.resetAppData).toHaveBeenCalledWith({
@@ -150,7 +150,7 @@ describe('ResetPanel', () => {
     expect(mocks.previewReset).toHaveBeenCalledWith({ headers: PROOF, throwOnError: true });
 
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Workflows' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.resetSelected }));
+    fireEvent.click(within(dialog).getByRole('button', { name: resetCopy.reset }));
 
     await waitFor(() => expect(mocks.resetAppData).toHaveBeenCalledTimes(1));
     expect(mocks.resetAppData.mock.calls[0][0].headers).toEqual(PROOF);

@@ -135,7 +135,7 @@ export default function PermissionModal({
               {permissionDialogCopy.saveFailed}
             </p>
           )}
-          <Button variant="outline" onClick={onClose} disabled={saveStatus === 'saving'}>
+          <Button variant="secondary" onClick={onClose} disabled={saveStatus === 'saving'}>
             {permissionDialogCopy.cancel}
           </Button>
           <Button

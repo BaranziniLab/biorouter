@@ -79,7 +79,8 @@ export const resetCopy = {
   selectedCount: (selected: number, total: number) => `${selected} of ${total} selected`,
   selectName: (title: string) => `Select ${title} for reset`,
   cancel: 'Cancel',
-  resetSelected: 'Reset selected',
+  /** The dialog's one destructive button; it reads `resetEverything` when every box is checked. */
+  reset: 'Reset',
   resetEverything: 'Reset everything',
   resetting: 'Resetting…',
   complete: 'Reset complete. Factory defaults have been restored for the selected areas.',
