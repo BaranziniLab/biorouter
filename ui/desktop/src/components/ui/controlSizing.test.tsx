@@ -77,3 +77,18 @@ describe('text fields rest on the control edge', () => {
     );
   });
 });
+
+describe('the compact button draws a 14px glyph', () => {
+  it('names the rung for main.css, which sizes an unsized svg to 14px', () => {
+    const css = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+    render(
+      <Button size="xs" aria-label="Copy">
+        <svg />
+      </Button>
+    );
+    expect(screen.getByRole('button', { name: 'Copy' })).toHaveClass('br-button-xs');
+    expect(css).toMatch(
+      /\.br-button-xs svg:not\(\[class\*='size-'\]\) \{\s*inline-size:\s*14px;\s*block-size:\s*14px;/
+    );
+  });
+});

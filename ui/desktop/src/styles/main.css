@@ -97,9 +97,10 @@
      lived on 12/13/14 with 17 for one title; the 2026-10 redesign brought the
      rest of the app onto the same five steps and retired 10, 11, 15, 16, 19,
      20, 28 and 30. `text-caps` moved from 11px to 12px so the caps label is not
-     a sixth size, and `text-heading` / `text-display` became aliases of
-     `text-subheading` / `text-title` until their last call sites move (wave 2
-     deletes both names here and in `src/utils.ts`).
+     a sixth size. `text-display` (was 30/36) is gone: its last two call sites
+     moved to `text-title`. `text-heading` (was 20/28) stays as an alias of
+     `text-subheading` until its one CSS use moves, then goes with its entry in
+     `src/utils.ts`.
 
      TWO VISIBLE WEIGHTS. The face is Arial (the website's stack), which draws
      400 and 700 only: 500 renders as 400 and 600 as 700 (measured, typography
@@ -115,14 +116,6 @@
 
      Nothing below 12px exists. Anything smaller is deleted, not migrated. */
 
-  /* DEPRECATED alias of `text-title` (was 30/36, "metric readouts"). Two call
-     sites remain (`settings/app/UpdateSection.tsx`, `AppSettingsSection.tsx`);
-     their owner moves them to `text-title`, then wave 2 deletes the role. */
-  --text-display: var(--text-title);
-  --text-display--line-height: var(--text-title--line-height);
-  --text-display--font-weight: var(--text-title--font-weight);
-  --text-display--letter-spacing: var(--text-title--letter-spacing);
-
   /* The one large step: the Home greeting, the document h1, the preview's
      front-matter title and stat values (with `tabular-nums`). Weight 400, not
      600 (owner decision 6.2): at 24px the size carries the hierarchy, and a
@@ -133,7 +126,8 @@
   --text-title--letter-spacing: -0.01em;
 
   /* DEPRECATED alias of `text-subheading` (was 20/28). One CSS use remains
-     (the copy-field code display); wave 2 deletes the role. */
+     (the copy-field code display, WS-PRIMITIVES' family); the role goes when it
+     moves. */
   --text-heading: var(--text-subheading);
   --text-heading--line-height: var(--text-subheading--line-height);
   --text-heading--font-weight: var(--text-subheading--font-weight);
@@ -4919,6 +4913,12 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 .br-scroll-root:is(:hover, [data-scrolling]) > .br-scroll-viewport::-webkit-scrollbar-thumb {
   background-color: var(--border-strong);
+}
+
+/* Button `size="xs"` (24px): a 14px glyph unless the call site sized it. */
+.br-button-xs svg:not([class*='size-']) {
+  inline-size: 14px;
+  block-size: 14px;
 }
 
 /* Checkbox (`ui/Checkbox.tsx`): a 16px box (radius 4, a 1.5px `--border-control` edge) inside a

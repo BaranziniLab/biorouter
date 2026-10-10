@@ -59,7 +59,10 @@ const buttonVariants = cva(
       // retires the old 24/32/36/40 ladder and, with it, the off-scale 28px that
       // row actions were hand-rolling because no rung offered it.
       size: {
-        xs: 'h-control-compact gap-1 [&_svg:not([class*=size-])]:size-3',
+        // The compact rung draws its glyph at 14px (spec 2.6, the chip and inline-help icon size),
+        // authored as `.br-button-xs` in main.css because a new arbitrary variant can fail to
+        // generate under BIOROUTER_NO_HMR.
+        xs: 'br-button-xs h-control-compact gap-1',
         default: 'h-control-md',
         sm: 'h-control-sm gap-1.5',
         lg: 'h-control-lg',

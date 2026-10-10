@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dial
  * close affordance, and the dismissal policy. Before it there were six
  * hand-rolled shells and fifteen distinct `max-w` values; two of those shells
  * (`SetupModal`, `InterruptionHandler`) painted their own scrim and are gone,
- * and `BaseModal` lost its last consumer to this file.
+ * and `BaseModal` lost its last consumer to this file (and was then deleted).
  *
  * It COMPOSES `components/ui/dialog` rather than replacing it — the Radix
  * primitive still owns the portal, the scrim, the focus trap and the ×. In
