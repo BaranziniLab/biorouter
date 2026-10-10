@@ -156,6 +156,8 @@ export default function PrivacyPanel() {
     // can assert WHERE it sits among its siblings, not merely that it mounted.
     <section
       id={SETTINGS_SECTION_IDS.privacy}
+      // Named like every `SettingSection`, so a screen reader lists it among the page's regions.
+      aria-labelledby={`${SETTINGS_SECTION_IDS.privacy}-title`}
       className="biorouter-settings-section"
       data-privacy-panel
     >
@@ -169,7 +171,12 @@ export default function PrivacyPanel() {
           and the rest instead of standing 12px to their left. The boxes below keep the
           column's own edge, as every row's hover fill does. */}
       <div className="biorouter-settings-section-header br-setting-section-header">
-        <h2 className="br-setting-section-title text-caps text-text-muted">Privacy</h2>
+        <h2
+          id={`${SETTINGS_SECTION_IDS.privacy}-title`}
+          className="br-setting-section-title text-caps text-text-muted"
+        >
+          Privacy
+        </h2>
       </div>
 
       <div className="space-y-3">

@@ -65,6 +65,17 @@ describe('Settings > Privacy', () => {
     );
   });
 
+  it('is a region named by its heading, as every other settings section is', async () => {
+    render(<PrivacyPanel />);
+    const region = await screen.findByRole('region', { name: 'Privacy' });
+    expect(region).toHaveAttribute('data-privacy-panel');
+    // The heading carries the same 12px inset as every SettingSection title (br-setting-section-*),
+    // so PRIVACY lines up with GENERAL; a bare header stood 12px to the left of them.
+    expect(screen.getByRole('heading', { level: 2, name: 'Privacy' })).toHaveClass(
+      'br-setting-section-title'
+    );
+  });
+
   it('does not turn off on a single click — it asks for the phrase first', async () => {
     const user = userEvent.setup();
     render(<PrivacyPanel />);
