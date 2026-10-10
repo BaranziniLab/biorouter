@@ -12,6 +12,13 @@
 > 2026-08-21/22 against `7ac2de4b`; re-measure rather than trusting a number that has since moved.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
+> **Superseded in part (2026-10).** The Codex simplicity redesign (section 3.12 of
+> [its implementation spec](../../design/codex-simplicity-redesign/implementation-spec.md)) merged
+> the title and subject bands into one 44px `PageHeader` band, moved the tier control's trigger
+> into that band as a badge-button (its confirmation is unchanged), flattened the Sources rail and
+> graph into flush columns, made the facet strip 44px, and retired the height step. The container
+> ladder (860/940/1140/1400) is unchanged.
+
 The companion mockup is [`knowledge-redesign-studio.html`](knowledge-redesign-studio.html) — open it
 in a browser, no server needed. It renders **the same page markup at four real pane sizes** (760,
 946, 1040, 1626 px), laid out by the very `@container` queries R-08 specifies; its pop-up section is

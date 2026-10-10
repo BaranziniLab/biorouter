@@ -2725,7 +2725,8 @@ Never colour alone: shape plus glyph plus word.
 > `ui/desktop/src/components/ui/PrivacyBadge.tsx`, which is the authority.
 >
 > 1. **The glyph is a PADLOCK, not a shield.** The app was marking one fact with three unrelated
->    figures: a padlocked speech bubble on a private conversation (`chatKind.ts`), a shield on a
+>    figures: a padlocked speech bubble on a private conversation (since replaced by the lock
+>    badge on every chat kind's glyph, `ChatKindIcon`), a shield on a
 >    private extension, and a bare dot on a private model. They are the same tier, so they are now
 >    the same mark, and `Shield` has been removed from the icon barrel. Do not reintroduce a second
 >    privacy glyph for a fourth subject — name the *subject* in words beside the padlock instead.

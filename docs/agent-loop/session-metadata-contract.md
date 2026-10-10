@@ -142,7 +142,7 @@ carry either, and they are rendered differently — a "Subagent" badge versus "b
 | History nesting | `session_type === 'sub_agent'` **and** a `parent_session_id` resolving to a top-level row (`ui/desktop/src/components/sessions/sessionGrouping.ts`) |
 | History "Show subagent runs" toggle | Whether `sub_agent` rows are fetched at all, then `withoutSubagents` at every read of the shared cache |
 | The "Subagent" badge on a History row | The row's own `session_type`, so an unnested child is still labelled |
-| Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` over the title |
+| Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` (and, for a Crew task, `origin` then `working_dir`) over the title |
 | `workspace_list` | `parent_session_id` and `only_subagents` as independent filters |
 | CLI | `crates/biorouter-cli/src/commands/session_grouping.rs`, the same two fields |
 

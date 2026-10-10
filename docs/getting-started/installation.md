@@ -156,7 +156,7 @@ Available built-in capabilities: Developer, Biorouter Copilot, Web & Documents, 
 
 Any MCP-compatible server can be added as an extension.
 
-**Desktop:** Sidebar > Extensions > Add custom extension > enter the command and configuration.
+**Desktop:** Sidebar > Extensions > Add > Custom extension… > enter the command and configuration.
 
 **CLI example (GitHub MCP server):**
 

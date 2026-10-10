@@ -102,12 +102,11 @@ govern how the content uses the room.
 
 It is derived rather than chosen — the **288px sidebar default**
 (`SIDEBAR_DEFAULT_WIDTH` in `components/ui/sidebarWidth.ts`) plus the 760px
-reading column (`--measure-chat`) — because Home's usage heatmap is the one
-element whose size is *computed* rather than declared: it fits its cells to the
-box it is given, so a window narrow enough to squeeze the reading column squeezes
-the grid with it. `styles/measures.test.ts` asserts the arithmetic, so changing
-either the sidebar's bounds or the chat measure fails there instead of quietly
-letting the window compress the heatmap again.
+reading column (`--measure-chat`) — because the reading column is the one Home's
+usage card, its heatmap and the composer share: below it, the card's 53-week grid
+(one fluid column per week, `UsageHeatmap.tsx`) shrinks its cells with the column.
+`styles/measures.test.ts` asserts the arithmetic, so changing either the
+sidebar's bounds or the chat measure fails there.
 
 ⚠ **The sidebar's DEFAULT, not its minimum** — the sidebar is user-resizable
 (216–360px, default 288), and this line read *"240px sidebar (`SIDEBAR_WIDTH`,
@@ -127,7 +126,8 @@ ladder, below which the sidebar auto-collapses to an overlay and costs the chat
 nothing. `measures.test.ts` pins that identity too, so raising the max without
 moving the ladder fails loudly.
 
-Measured against the real stylesheet **with the then-240px sidebar**, the cliff
+Measured against the real stylesheet **with the then-240px sidebar** and the
+fitted heatmap that the 2026-10 redesign replaced, the cliff
 was at 989px of content width (23px cells at 989, 22px at 988, stepping down to
 16px by 800px). ⚠ That 989 is a *window* width and therefore carries the sidebar
 of the day inside it: what the heatmap reacts to is its own column, so the cliff
@@ -136,12 +136,9 @@ moves with the sidebar. The measurement is really a **749px column**
 window — which 1048 clears by the same 11px the old 1000 cleared 989 by.
 
 The height axis is deliberately **not** capped to the same standard. A short
-window shrinks the heatmap's cells too, but the `minHeight` that would prevent it
-lands near 700–800px, which is unusable on a 1280×800 display once the menu bar
-and Dock are removed — a worse bug than the one being fixed. The heatmap keeps
-its chrome locked to its own grid instead (`UsageHeatmap`'s `heatStyle` sets the
-block's width from the fitted footprint), so a compressed grid stays a coherent
-block rather than leaving its labels and legend pinned to the old edge.
+window no longer shrinks anything: the hero compacts and then hides (container
+queries on `.biorouter-home-content`), and below that Home scrolls. The
+heatmap's cells follow the card's width only.
 
 ### Not this: Settings and Chat history, on the chat measure by decision (2026-09-07)
 

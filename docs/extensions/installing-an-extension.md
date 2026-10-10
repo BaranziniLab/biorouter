@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** contributors, and operators deciding how to configure extensions safely.
 
-Four surfaces install extensions: **Browse Extensions** in the desktop app, the **Add Extension** file drop beside it, `biorouter extension install` at a terminal, and an agent asked to do it in chat. They are one transaction with four front doors — [`crates/biorouter/src/extension_install/`](../../crates/biorouter/src/extension_install/) — and before that existed they were three implementations that disagreed on the one thing that matters.
+Four surfaces install extensions: **Add** then **Browse marketplace** in the desktop app, **Add** then **Install from file (.brxt)** beside it, `biorouter extension install` at a terminal, and an agent asked to do it in chat. They are one transaction with four front doors — [`crates/biorouter/src/extension_install/`](../../crates/biorouter/src/extension_install/) — and before that existed they were three implementations that disagreed on the one thing that matters.
 
 ---
 
@@ -81,11 +81,11 @@ Two consequences worth knowing:
 
 ## Per-surface behaviour
 
-### Desktop — Browse Extensions
+### Desktop: Browse marketplace
 
 Add downloads the bundle inside the installer, so progress, failure, **Retry** and **Back to marketplace** are all one surface. Local-file controls never appear on this route (issue #116). If the manifest declares values, the configuration step opens; if it declares none, the button says **Install extension** and installs.
 
-### Desktop — Add Extension (local `.brxt`)
+### Desktop: Install from file (local `.brxt`)
 
 Keeps the drag/drop and file picker, including after a bundle is loaded, so a mis-picked file can be replaced. A path preloaded over IPC (double-clicking a `.brxt` in Finder) is still this route — a preloaded path means "a file is chosen", never "this came from the marketplace".
 

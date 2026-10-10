@@ -35,14 +35,14 @@ Subagents used to be opaque: you saw a spinner, then a summary. In the desktop a
 
 ### The subagent tab
 
-When a subagent starts, a tab opens **in the background** (it never steals the composer you are typing into) carrying a `subagent` badge and a header that shows:
+When a subagent starts, a tab opens **in the background** (it never steals the composer you are typing into) carrying a `subagent` badge and, at the top of its transcript, one line that shows:
 
-- **spawned by** — a link back to the conversation that delegated the work;
-- **the spawn context** — the exact instructions and system prompt the child was started with, expandable;
-- **the child's grants** — which extensions, skills and knowledge bases it was given;
-- **Stop** — the kill switch.
+- **Subagent of**: a link back to the chat that delegated the work;
+- **the child's grants**: how many extensions and knowledge bases it was given; hover or focus a count for the names;
+- **Context**: the exact instructions and system prompt the child was started with, expandable;
+- **Stop**: the kill switch.
 
-Below the header is the child's live transcript, streaming its tool calls as they happen.
+Below that line is the child's live transcript, streaming its tool calls as they happen.
 
 ### Watch, steer, stop
 
@@ -50,7 +50,7 @@ Three things you can do from that tab:
 
 - **Watch.** Read the transcript as it streams. You are not interrupting anything.
 - **Steer.** Type into the tab's ordinary composer. While the child's turn is running your message is injected as a mid-turn correction ("stop at step 3 and summarise"); between turns it starts a new turn or leaves a note. Either way it is labelled in the transcript as a **direct user message**, permanently.
-- **Stop.** The header's Stop control cancels the child's turn. The parent's tool call then resolves promptly, carrying whatever the child had produced — it is not left hanging. What it resolves *as* depends on how far the child got: a child stopped mid-tool-call, with no text to show for it, comes back `incomplete`; a child that had already written a summary returns that summary and can still be labelled `completed`, because the envelope is classified from the transcript rather than from the fact of the cancellation. Do not read `completed` as proof the child finished on its own.
+- **Stop.** The line's Stop control cancels the child's turn. The parent's tool call then resolves promptly, carrying whatever the child had produced — it is not left hanging. What it resolves *as* depends on how far the child got: a child stopped mid-tool-call, with no text to show for it, comes back `incomplete`; a child that had already written a summary returns that summary and can still be labelled `completed`, because the envelope is classified from the transcript rather than from the fact of the cancellation. Do not read `completed` as proof the child finished on its own.
 
 > **Watch is the only one of the three in a browser.** On a page served by `biorouter serve` the tab has no composer and no Stop: steering and stopping a subagent need proof that a person acted, which only the desktop application holds. The tab says so in place of both controls rather than refusing on click — see [Browser access](../deployment/browser-access.md#what-a-browser-can-and-cannot-do).
 
