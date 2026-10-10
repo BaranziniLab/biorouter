@@ -1427,7 +1427,7 @@ describe('ToolCallWithResponse status derivation', () => {
       />
     );
 
-    expect(screen.getByLabelText('Tool status: pending')).toBeInTheDocument();
+    expect(screen.getByLabelText('Tool status: stopped')).toBeInTheDocument();
     expect(screen.getByText('Stopped running npm run typecheck')).toBeInTheDocument();
     expect(screen.queryByText(/No result/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Finished/)).not.toBeInTheDocument();

@@ -5,5 +5,6 @@
  * verb carries the state ("Running", "Ran", "Failed to", "Stopped"), and
  * `TranscriptRow` renders `Tool status: {status}` as a visually hidden image
  * beside the glyph, with the glyph's kind stamped as `data-tool-glyph`.
+ * `stopped` is a call the turn ended without an answer for.
  */
-export type ToolCallStatus = 'pending' | 'loading' | 'success' | 'error';
+export type ToolCallStatus = 'loading' | 'success' | 'error' | 'stopped';

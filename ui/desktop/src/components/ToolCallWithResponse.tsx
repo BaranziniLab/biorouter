@@ -1309,7 +1309,9 @@ function ToolCallView({
       case 'loading':
         return 'loading';
       default:
-        return 'pending';
+        // The turn ended with no answer: the verb says "Stopped", so the
+        // spoken status must not say "pending".
+        return 'stopped';
     }
   };
 
