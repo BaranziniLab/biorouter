@@ -20,12 +20,13 @@ import { describe, expect, it } from 'vitest';
  * The vocabulary itself is written up in
  * `docs/desktop-ui/settings-visual-vocabulary.md`; this file is its teeth.
  *
- * ⚠ **The exclusions are a stated scope, not an amnesty.** Extensions, the
- * provider-configuration page, dictation, the tunnel and session sharing share
- * these primitives and will inherit the rules; they were left out because
- * sweeping them triples the diff (the permission modals left the list on
- * 2026-10-10, once they sat on ModalShell and SettingRow). Deleting a name from a
- * root's list is how that work gets finished — adding one is how the rules rot.
+ * ⚠ **The exclusions are a stated scope, not an amnesty.** Dictation, the tunnel
+ * and session sharing are the only folders still left out, and only because they
+ * are unmounted: no route renders them, so there is no surface to hold to the
+ * rules. Everything else that was ever on the list (the permission modals, the
+ * provider-configuration page, the extension rows) left it on 2026-10-10, once it
+ * sat on ModalShell and SettingRow, and Knowledge and BAAM joined as roots of
+ * their own. Adding a name back is how the rules rot.
  */
 const SETTINGS_DIR = __dirname;
 /**
@@ -54,7 +55,8 @@ const HISTORY_DIR = join(__dirname, '..', 'sessions');
 const ROOTS: { dir: string; outOfScope: string[] }[] = [
   {
     dir: SETTINGS_DIR,
-    outOfScope: ['extensions/', 'dictation/', 'tunnel/', 'sessions/'],
+    // Unmounted (spec 3.13 leaves them alone): `sessions/` here is session SHARING.
+    outOfScope: ['dictation/', 'tunnel/', 'sessions/'],
   },
   // Home's usage surfaces (SessionsInsights, HomeUsageCard, UsageHeatmap) sit in
   // this directory too and follow the vocabulary since the 2026-10 redesign.
@@ -66,10 +68,9 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   // on the chat measure and the shared page header.
   //
   // ⚠ `components/extensions/` is the extensions PAGE. The extension rows live
-  // in `components/settings/extensions/`, which is in the settings root's own
-  // out-of-scope list above and STAYS there: sweeping it triples the diff, and
-  // deleting the name from that list is how that work gets finished. Adding
-  // this root does not reach it — different tree, different root.
+  // in `components/settings/extensions/`, which the settings root walks (it left
+  // that root's out-of-scope list on 2026-10-10). The two trees are different
+  // roots: adding or losing one never reaches the other.
   { dir: join(SETTINGS_DIR, '../workflows'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../extensions'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../skills'), outOfScope: [] },
@@ -215,6 +216,32 @@ describe('the settings vocabulary', () => {
       expect(covered).toContain(file);
     }
     expect(FILES.some(({ rel }) => rel.startsWith('settings/'))).toBe(true);
+  });
+
+  /**
+   * The folders that left an exclusion list (or became a root) in the wave-2 sweep, one named
+   * file each. `finds sources under every root` is satisfied by the settings directory alone, so
+   * a re-added `extensions/` or `providers/` exclusion would otherwise change no assertion while
+   * the rules quietly stopped covering the extension rows or the provider pages.
+   */
+  it('walks the folders the wave-2 sweep brought in', () => {
+    const covered = new Set(FILES.map(({ rel }) => rel));
+    for (const file of [
+      'settings/extensions/ExtensionsSection.tsx',
+      'settings/extensions/subcomponents/ExtensionItem.tsx',
+      'settings/extensions/modal/ExtensionModal.tsx',
+      'settings/providers/ProviderCatalog.tsx',
+      'settings/providers/ProviderSettingsPage.tsx',
+      'settings/permission/PermissionModal.tsx',
+      'baam/MarketplaceDialog.tsx',
+      'knowledge/KnowledgeView.tsx',
+    ]) {
+      expect(covered).toContain(file);
+    }
+    // The three unmounted folders stay out, and nothing else in the settings tree does.
+    for (const rel of covered) {
+      expect(rel).not.toMatch(/^settings\/(dictation|tunnel|sessions)\//);
+    }
   });
 
   /**

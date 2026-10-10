@@ -427,11 +427,11 @@ bare "No extensions available" line for an empty state, a hand-rolled centred bl
 Retry button for another, `text-caps … uppercase` group headers where `text-caps` already
 uppercases, and an accent-filled Run button living inside a workflow row.
 
-⚠ **`components/settings/extensions/` is still out of scope**, and its exclusion is not a
-sibling of these roots. That directory holds the extension ROWS, which `components/extensions/`
-merely lays out; it stays in the settings root's own out-of-scope list for the reason the
-original scope note gives — sweeping it triples the diff. The chat-measure pass touched it for
-`min-w-0` / `truncate` only. Deleting its name from that list is how the work gets finished.
+⚠ **`components/settings/extensions/` is governed through the settings root, not through this
+one.** That directory holds the extension ROWS, which `components/extensions/` merely lays out,
+so the two are different trees with different roots. Its name left the settings root's
+out-of-scope list on 2026-10-10, once the rows sat on the shared row anatomy; losing either
+root, or putting the name back, is caught by the test that names one file in each tree.
 
 **The Scheduler** (`components/schedule/`) was swept onto it on 2026-09-07 as well. Two of its
 constructions are worth naming because they are what the vocabulary looks like on a surface
@@ -451,17 +451,20 @@ that is not Settings:
 
 ## What this does not cover
 
-Extensions, the provider-configuration page, dictation, the tunnel and session sharing share
-these primitives and will inherit the rules, but were not swept when the vocabulary landed.
-They are named in the per-root `outOfScope` lists in `settingsVocabulary.test.ts`; deleting a
-name from one of those lists, or adding a root for a directory the walker has never reached, is
-how the work gets finished.
+Dictation, the tunnel and session sharing (`components/settings/{dictation,tunnel,sessions}/`)
+are the only folders the walker still skips. No route mounts them, so there is no screen to hold
+to the rules, and they are named in the settings root's `outOfScope` list in
+`settingsVocabulary.test.ts`. Do not add a name to a list to get a test green: a folder that is
+mounted belongs under the rules, and a root for a directory the walker has never reached is
+added with a line of its own.
 
-The 2026-10 redesign's final sweep has started on those lists. The permission dialogs moved
-onto `ModalShell` and `SettingRow` on 2026-10-09 and their folder left the exclusions on
-2026-10-10. Home's usage surfaces (`SessionsInsights`, `HomeUsageCard`, `UsageHeatmap`) sit
-in the chat-history root and follow the vocabulary since the same date, and BAAM
-(`components/baam/`) and Knowledge (`components/knowledge/`) are roots of their own.
+The 2026-10 redesign's final sweep emptied the rest of those lists on 2026-10-10. The permission
+dialogs, the provider pages (`components/settings/providers/`) and the extension rows
+(`components/settings/extensions/`) sit on `ModalShell`, `SettingRow` and the shared row, and
+their folders are walked by the settings root. Home's usage surfaces (`SessionsInsights`,
+`HomeUsageCard`, `UsageHeatmap`) sit in the chat-history root, and BAAM (`components/baam/`) and
+Knowledge (`components/knowledge/`) are roots of their own. A test names one file in each of
+those trees, so a root that resolves to nothing fails instead of passing vacuously.
 
 `ui/ConfirmationModal.tsx`'s `sm:max-w-[425px]` is left alone: it is a shared primitive, so
 moving it onto the `MODAL_SIZE` ladder changes every confirmation in the app rather than one
