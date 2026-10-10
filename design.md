@@ -1912,6 +1912,13 @@ Deleted from call sites: every `tracking-*` utility except those a role carries,
 `text-display` and `text-heading` are deleted; a title is `text-title` and a dialog or section heading is `text-subheading`.
 `styles/typeScale.test.ts` pins the roles and guards the call sites.
 
+The document default is `text-body`: `body` sets `font-size: var(--text-body)`, 14px, where it used to be
+16px (`calc(1rem * scale)`). Anything that names no size (a dialog's paragraph, a raw input, a menu's text)
+now lands on the scale. Only the size moved: the line height is still the inherited unitless 1.5, because a
+fixed 20px would cramp every larger size set without a line height, and `html` stays 16px, so rem spacing
+is unchanged. The Text size preference still scales it, through the token. It moved last, at the end of
+wave 2 and before the vision loop, so the loop reviews the final sizes.
+
 ### 9.4 · Spacing, rows, bands, radii
 
 | Token | Value | Use |
@@ -2023,8 +2030,10 @@ opens on focus only after a Tab.
   radius 8, rest edge `--border-control`. Buttons keep the 24, 28, 32 and 36px ladder, radius 8, 12px
   padding and `text-label`; `secondary` is the default secondary action and `destructive` is a 22% danger wash
   with danger ink.
-- **Dialogs and sheets.** The overlay fades over 250ms; the panel goes from opacity 0 and scale 0.98 to 1 over
-  250ms; exit is opacity and scale 0.98 over 125ms. A sheet is 300ms in and 125ms out. Tabs keep 36px, 2px
+- **Dialogs and sheets.** A `ModalShell` takes Crew's placement by default: its top edge is pinned at
+  `max(10vh, 48px)` so it grows downward only, and a hairline sits under the header. `anchor="center"` is
+  the exception, with a reason at the call site. The overlay fades over 250ms; the panel goes from opacity
+  0 and scale 0.98 to 1 over 250ms; exit is opacity and scale 0.98 over 125ms. A sheet is 300ms in and 125ms out. Tabs keep 36px, 2px
   `--accent-bar` underline and a 20px gap; the underline is one indicator that travels (175ms).
 - **Filter field.** One 28px list filter for every view band, with a leading 16px `Search` glyph, the
   placeholder "Filter", and ⌘F to focus it.
@@ -2074,7 +2083,8 @@ opens on focus only after a Tab.
 Moves that were still waiting on other owners, and where each stands at the end of wave 2: the
 `--motion-*` aliases and `text-heading` are deleted, and `styles/typeScale.test.ts` is strict (no guarded
 file may carry a legacy type class or a px font size; `ModelAndProviderContext.tsx` and the other frozen
-files are out of scope). Still open: `body` defaults to 16px and moves to `var(--text-body)` last, behind a
-visual sweep (KaTeX and any element without a size inherit it). `.claude/commands/frontend-design.md` was
-regenerated from Parts 1 to 3 and Part 9 at the end of wave 2 (2026-10-10), with the coordinator's approval;
-if the vision loop changes this part, bring that file back in line with it.
+files are out of scope). `body` moved from 16px to `var(--text-body)` (9.3) before the vision loop, which is
+the visual sweep the move waited for. `.claude/commands/frontend-design.md` was regenerated from Parts 1 to 3
+and Part 9 at the end of wave 2 (2026-10-10), with the coordinator's approval, and brought in line again
+after the body move and the dialog placement ruling; if the vision loop changes this part, bring that file
+back in line with it.
