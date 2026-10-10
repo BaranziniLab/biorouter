@@ -56,6 +56,12 @@ jobs:
       - name: Check the docs privacy checker still catches what it must
         run: node --test landing/scripts/check-docs-privacy.test.mjs
 
+      # The site's look rules: the type scale, two weights, tracking tokens, no
+      # caps labels, the shared easing and the control heights. It reads the
+      # stylesheets as text, and its mutants show each rule failing first.
+      - name: Check the site stylesheets keep the look rules
+        run: node --test landing/scripts/look-rules.test.mjs
+
       - name: Check the BAAM private set agrees in all three committed copies
         run: node landing/scripts/check-consistency.mjs --check
 

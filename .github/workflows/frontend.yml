@@ -242,6 +242,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: node landing/scripts/assemble-docs.mjs --check
 
+      # The site's look rules (landing/README.md, "Look rules"): the type scale,
+      # two weights, tracking tokens, no caps labels, the shared easing and the
+      # control heights. Pre-merge, like the docs privacy suite above; the Pages
+      # deploy runs it again. Its mutants show each rule failing first.
+      - name: Site stylesheets keep the look rules
+        if: ${{ !cancelled() }}
+        run: node --test landing/scripts/look-rules.test.mjs
+
   # ── The BAAM shelf in a real browser ──────────────────────────────────────
   # The generator job above proves the CATALOG is right. This proves the PAGE
   # is: that the privacy facet matches a card's declared tier rather than a
