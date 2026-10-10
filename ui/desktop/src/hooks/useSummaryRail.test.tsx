@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SUMMARY_RAIL_EXIT_FALLBACK_MS,
   SUMMARY_RAIL_SHOW_SETTLE_MS,
+  summaryRailChat,
   useSummaryRail,
   type SummaryRailController,
   type UseSummaryRailOptions,
@@ -202,6 +203,70 @@ describe('useSummaryRail', () => {
     expect(onGlide).toHaveBeenCalledWith(140, 'open');
     // Only that one commit: later geometry changes are still again.
     expect(latest.still).toBe(true);
+  });
+
+  describe("a new chat's first turn (V2-08)", () => {
+    const empty = {
+      clean: true,
+      messageCount: 0,
+      loading: false,
+      running: false,
+      creatingChat: false,
+    };
+
+    it('counts from the commit that starts creating the chat, before any message exists', () => {
+      expect(summaryRailChat(empty)).toEqual({ active: false, chatPhase: 'idle' });
+      expect(summaryRailChat({ ...empty, clean: false, creatingChat: true })).toEqual({
+        active: true,
+        chatPhase: 'running',
+      });
+      // The created chat loads, then its message arrives with the stream.
+      expect(
+        summaryRailChat({ ...empty, clean: false, creatingChat: true, loading: true })
+      ).toEqual({ active: true, chatPhase: 'loading' });
+      expect(
+        summaryRailChat({
+          ...empty,
+          clean: false,
+          creatingChat: true,
+          messageCount: 1,
+          running: true,
+        })
+      ).toEqual({ active: true, chatPhase: 'running' });
+      // `isCreatingSession` is never cleared after a chat is created: once the
+      // message is in the transcript it no longer makes an idle chat "running".
+      expect(
+        summaryRailChat({ ...empty, clean: false, creatingChat: true, messageCount: 2 })
+      ).toEqual({ active: true, chatPhase: 'idle' });
+    });
+
+    it('is not active in the empty state, nor while a workflow form waits', () => {
+      expect(summaryRailChat({ ...empty, creatingChat: true }).active).toBe(false);
+      expect(summaryRailChat({ ...empty, clean: false }).active).toBe(false);
+    });
+
+    it('enters and glides ONCE, in the creating commit, and stays put as the chat fills', () => {
+      const onGlide = vi.fn();
+      const view = mount({ ...summaryRailChat(empty), onGlide });
+      expect(latest.shown).toBe(false);
+      commits = [];
+      view.update(summaryRailChat({ ...empty, clean: false, creatingChat: true }));
+      expect(latest.shown).toBe(true);
+      expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
+      expect(onGlide).toHaveBeenCalledWith(140, 'open');
+      view.update(summaryRailChat({ ...empty, clean: false, creatingChat: true, loading: true }));
+      view.update(
+        summaryRailChat({
+          ...empty,
+          clean: false,
+          creatingChat: true,
+          messageCount: 1,
+          running: true,
+        })
+      );
+      expect(latest.shown).toBe(true);
+      expect(onGlide).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('a chat that becomes active because its history arrived appears at rest', () => {

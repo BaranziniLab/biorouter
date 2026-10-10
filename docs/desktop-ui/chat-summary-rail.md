@@ -60,12 +60,20 @@ browser` (`summaryRailVisible`).
   default (`Layout/summaryRailPreference.ts`). Every mounted chat reads one store through
   `useSyncExternalStore`, and the `storage` event carries a change to a second window. A person
   who closed the rail is never overridden, and a new to-do item does not reopen it.
-- **Active** means the chat is not the empty new-chat screen and has a message or a running turn.
-  An empty chat shows no rail; the rail arrives with the first turn.
+- **Active** means the chat is not the empty new-chat screen and has a message or a running turn
+  (`summaryRailChat`). An empty chat shows no rail; the rail arrives with the first turn. A new
+  chat's first turn counts from the commit that starts creating the chat, which is the commit in
+  which the composer leaves the empty state; the message and the running stream arrive about
+  300ms later. Waiting for them made the composer move twice: to the centre, then 140px left.
 - **Timing** (`hooks/useSummaryRail.ts`): the pane is measured synchronously on mount, so a tab
   switch or a reload shows the rail at once and at rest. A narrowing hides it at once; a widening
   shows it only after the width has held still for 160ms, so a sidebar sweep does not make the
   column jump halfway. The rail never resizes the window.
+- **The observer must survive StrictMode.** The renderer runs in `<StrictMode>`, which unmounts
+  every effect once and mounts it again. The teardown therefore forgets the element it observed
+  as well as disconnecting, so the attach effect observes it again. A teardown that only
+  disconnected left the rail with no observer at all: it kept its mount-time width while the
+  window, the sidebar and the preview moved, and never came back after a hide.
 - **First turn or history load**: both turn a chat active, but only a turn that starts in this
   mount enters the rail. `BaseChat` passes the stream's phase (`loading`, `running` or `idle`),
   and a chat that becomes active while loading, or whose transcript lands with no turn running
@@ -155,7 +163,7 @@ or the pointer is over the summary.
 | Test | Holds |
 |---|---|
 | `components/Layout/yieldLadder.test.ts` | Each seam one pixel apart (1055/1056, 1067/1068), the width steps (1056 → 240, 1076 → 260, 1096 → 280), the full measure across every pane width, the side-preview subtraction (1975/1976 at the default preview), a stacked preview, an unmeasured pane, and the window table |
-| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the first turn enters but a loaded history (fetched, cached or rejoining a turn) does not, the toggle's entrance, exit and glide |
+| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the first turn enters (from the commit that creates a new chat, once) but a loaded history (fetched, cached or rejoining a turn) does not, the toggle's entrance, exit and glide, and one live observer under StrictMode |
 | `components/summary/ChatSummaryRail.test.tsx` | The card mounts entered when geometry showed it, plays its entrance once, ignores its children's animations, reports its exit (or its cancelled exit) and re-arms the entrance when reopened mid-exit |
 | `Layout/summaryRailPreference.test.ts` | The per-viewer store, its default and the `storage` event |
 | `hooks/useColumnGlide.test.ts` | No glide while resizing, under reduced motion or under 8px; the composer left to its own FLIP; the scroll anchor |

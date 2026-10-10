@@ -58,10 +58,31 @@ describe('BaseChat: the summary button and the rail', () => {
       code.indexOf('useSummaryRail({'),
       code.indexOf('});', code.indexOf('useSummaryRail({'))
     );
-    expect(call).toMatch(/chatPhase:/);
-    expect(call).toContain("'loading'");
-    expect(call).toContain("'running'");
-    expect(call).toContain('ChatState.LoadingConversation');
+    expect(call).toMatch(/active: summaryActive,/);
+    expect(call).toMatch(/chatPhase: summaryRailChatState\.chatPhase,/);
+    const state = code.slice(
+      code.indexOf('summaryRailChat({'),
+      code.indexOf('});', code.indexOf('summaryRailChat({'))
+    );
+    expect(state).toContain('clean: isCleanConversation,');
+    expect(state).toContain('loading: chatState === ChatState.LoadingConversation,');
+    expect(state).toContain('running: isRunningState(chatState),');
+    expect(code).toMatch(/const summaryActive = summaryRailChatState\.active;/);
+  });
+
+  it('starts a new chat’s first turn in the commit that creates it, with the composer’s FLIP (V2-08)', () => {
+    const state = code.slice(
+      code.indexOf('summaryRailChat({'),
+      code.indexOf('});', code.indexOf('summaryRailChat({'))
+    );
+    // The commit that sets `isCreatingSession` is the one whose composer FLIP
+    // leaves the empty state; the rail must already be in the grid then.
+    expect(state).toContain('creatingChat: isCreatingSession,');
+    // And the FLIP's layout effect runs first, so the rail's glide finds the
+    // composer moving and leaves it alone (useColumnGlide's isAnimating).
+    const flip = code.indexOf('translate3d(${deltaX}px, ${deltaY}px, 0)');
+    expect(flip).toBeGreaterThan(-1);
+    expect(flip).toBeLessThan(code.indexOf('useSummaryRail({'));
   });
 
   it('merges the two split-box styles after both spreads', () => {

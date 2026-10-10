@@ -48,6 +48,52 @@ export const SUMMARY_RAIL_EXIT_FALLBACK_MS = 200;
  */
 export type SummaryRailChatPhase = 'loading' | 'running' | 'idle';
 
+/** What the chat knows about itself, for {@link summaryRailChat}. */
+export interface SummaryRailChatInputs {
+  /** The empty state is on screen (BaseChat's `isCleanConversation`). */
+  clean: boolean;
+  messageCount: number;
+  /** The transcript is being fetched (`ChatState.LoadingConversation`). */
+  loading: boolean;
+  /** A turn is under way (`isRunningState`). */
+  running: boolean;
+  /**
+   * The person sent the first message of a chat that does not exist yet, and
+   * it is being created (BaseChat's `isCreatingSession`). The turn has begun as
+   * far as anyone can see: the composer leaves the empty state in this commit.
+   */
+  creatingChat: boolean;
+}
+
+/**
+ * Whether the chat is `active` for the rail, and its {@link SummaryRailChatPhase}.
+ *
+ * A new chat's first turn starts in the commit where the composer leaves the
+ * empty state, which is the commit that begins creating the chat: the message
+ * and the running stream only arrive about 300ms later, once the chat exists.
+ * Counting that commit as the turn's start seats the rail in the same frame the
+ * composer's FLIP measures its target, so the composer makes ONE move, straight
+ * to its place beside the rail, and only the transcript glides (spec 3.5 item
+ * 5, V2-08). Waiting for the stream made it move twice: the FLIP to the centre,
+ * then the glide 140px left.
+ */
+export function summaryRailChat({
+  clean,
+  messageCount,
+  loading,
+  running,
+  creatingChat,
+}: SummaryRailChatInputs): { active: boolean; chatPhase: SummaryRailChatPhase } {
+  // Only until the transcript holds the message: from then on it is a chat
+  // with a turn like any other (`isCreatingSession` is never cleared after a
+  // chat is created).
+  const firstTurnStarting = creatingChat && messageCount === 0;
+  return {
+    active: !clean && (messageCount > 0 || running || firstTurnStarting),
+    chatPhase: loading ? 'loading' : running || firstTurnStarting ? 'running' : 'idle',
+  };
+}
+
 /** Spread onto the split box beside the artifact panel's own props. */
 export interface SummaryRailSplitPaneProps {
   'data-summary-rail'?: '';

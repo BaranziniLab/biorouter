@@ -56,7 +56,7 @@ import { ChatSummaryRail } from './summary/ChatSummaryRail';
 import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
-import { useSummaryRail } from '../hooks/useSummaryRail';
+import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -2280,18 +2280,24 @@ function BaseChatContent({
   //
   // `isCleanConversation` alone would also count the loading screen and a
   // workflow's parameter form, then drop the rail when the chat turns out empty.
-  const summaryActive = !isCleanConversation && (messages.length > 0 || isRunningState(chatState));
+  // A new chat's first turn counts from the commit that starts creating it, the
+  // one in which the composer's FLIP above leaves the empty state: the rail is
+  // then already in the grid when the FLIP measures its target, so the composer
+  // moves once and only the transcript glides (V2-08).
+  const summaryRailChatState = summaryRailChat({
+    clean: isCleanConversation,
+    messageCount: messages.length,
+    loading: chatState === ChatState.LoadingConversation,
+    running: isRunningState(chatState),
+    creatingChat: isCreatingSession,
+  });
+  const summaryActive = summaryRailChatState.active;
   const summaryRail = useSummaryRail({
     splitPaneRef,
     active: summaryActive,
     // A reload, a tab opened from History or a cached transcript also turns the
     // chat active; only a turn that starts here enters the rail.
-    chatPhase:
-      chatState === ChatState.LoadingConversation
-        ? 'loading'
-        : isRunningState(chatState)
-          ? 'running'
-          : 'idle',
+    chatPhase: summaryRailChatState.chatPhase,
     isMobile,
     previewMode: previewMounted ? previewMode : null,
     previewWidth: previewSideWidth,
