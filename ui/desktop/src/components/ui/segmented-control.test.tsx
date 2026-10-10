@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+
+import * as themeTokens from '../../../scripts/lib/theme-tokens.mjs';
 
 import { SegmentedControl, type SegmentedOption } from './segmented-control';
 
@@ -125,5 +129,66 @@ describe('SegmentedControl', () => {
       />
     );
     expect(screen.getByRole('radio', { name: 'Preview' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * The chosen segment is RAISED: its ground is lighter than the track it sits in, in light and in
+ * dark, in every family. The spec names the thumb's ground as `--background-default`; that is
+ * lighter than `--background-muted` in light and DARKER in dark (the neutrals step up from the
+ * page), so the chosen segment looked sunken there. jsdom paints nothing, so the order is read
+ * from the stylesheet's own tokens, the way `check-contrast.mjs` reads them.
+ */
+describe('SegmentedControl thumb ground (dark reads raised, not sunken)', () => {
+  type Scope = { decls: Record<string, string>; theme: Record<string, string> };
+  const tokens = themeTokens as unknown as {
+    buildScopes(css: string): Record<string, Scope>;
+    resolveHex(name: string, scope: Scope): string | null;
+    contrast(a: string, b: string): number;
+  };
+  const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+  const scopes = tokens.buildScopes(css);
+
+  const lightness = (hex: string) => {
+    const channel = (offset: number) => parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  };
+
+  const thumbToken = (dark: boolean): string => {
+    const rule = dark
+      ? css.match(/\.dark \.br-segmented-thumb,[^{]*\{([^}]*)\}/)
+      : css.match(/\n\.br-segmented-thumb \{([^}]*)\}/);
+    expect(rule, `a ${dark ? 'dark' : 'light'} thumb rule`).toBeTruthy();
+    const ground = rule![1].match(/background:\s*var\((--[a-z-]+)\)/);
+    expect(ground, 'the thumb paints a token').toBeTruthy();
+    return ground![1];
+  };
+
+  it('is lighter than the track in all six scopes', () => {
+    expect(Object.keys(scopes)).toHaveLength(6);
+    for (const [name, scope] of Object.entries(scopes)) {
+      const token = thumbToken(name.endsWith(':dark'));
+      const thumb = tokens.resolveHex(token, scope);
+      const track = tokens.resolveHex('--background-muted', scope);
+      expect(thumb, `${name}: ${token} resolves`).toBeTruthy();
+      expect(track, `${name}: --background-muted resolves`).toBeTruthy();
+      expect(lightness(thumb!), `${name}: the thumb (${token}) is raised`).toBeGreaterThan(
+        lightness(track!)
+      );
+    }
+  });
+
+  it('keeps the selected ink readable on that ground (--text-default over the thumb, 4.5:1)', () => {
+    for (const [name, scope] of Object.entries(scopes)) {
+      const thumb = tokens.resolveHex(thumbToken(name.endsWith(':dark')), scope)!;
+      const ink = tokens.resolveHex('--text-default', scope)!;
+      expect(tokens.contrast(ink, thumb), `${name}: selected ink`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it('paints the pre-measurement fallback segment on the same ground as the thumb', () => {
+    expect(css).toMatch(
+      /\.dark \.br-segmented-thumb,\s*\.dark \.br-segmented\[data-placed='false'\] \.br-segmented-item\[data-state='checked'\]\s*\{\s*background: var\(--background-strong\);/
+    );
   });
 });

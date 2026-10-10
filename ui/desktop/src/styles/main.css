@@ -4815,6 +4815,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   opacity: 0;
 }
 
+/* Dark: the neutrals step UP from the page, so `--background-default` (#1b1b19) is DARKER than the
+   track (`--background-muted`, #232320) and the chosen segment read as sunken with a hairline. A
+   raised thumb is a step lighter than its track in both modes, so dark takes `--background-strong`.
+   `segmented-control.test.tsx` measures the order in every family. */
+.dark .br-segmented-thumb,
+.dark .br-segmented[data-placed='false'] .br-segmented-item[data-state='checked'] {
+  background: var(--background-strong);
+}
+
 /* `fill`: equal columns, so the thumb is computed rather than measured. */
 .br-segmented[data-fill='true'] > .br-segmented-thumb {
   inset-inline-start: 2px;
