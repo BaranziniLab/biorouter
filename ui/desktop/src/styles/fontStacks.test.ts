@@ -94,7 +94,7 @@ describe('the interface face is the website face', () => {
   it('leads with Arial and never names Inter, which is the mark only', () => {
     expect(body[0]).toBe('Arial');
     expect(body).not.toContain('Inter');
-    expect(body.at(-1)).toBe('sans-serif');
+    expect(body[body.length - 1]).toBe('sans-serif');
   });
 
   it('keeps --font-heading and --font-sans as aliases of the body role', () => {
