@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AddSkillModal from './AddSkillModal';
+import { ADD_SKILL_COPY } from './copy';
 import type { ImportPreview } from '../../api';
 
 const mocks = vi.hoisted(() => ({
@@ -81,7 +82,7 @@ describe('AddSkillModal', () => {
       url: 'https://github.com/heygen-com/hyperframes',
     });
     expect(await screen.findByText('HyperFrames')).toBeInTheDocument();
-    expect(screen.getByText('entry point: hyperframes')).toBeInTheDocument();
+    expect(screen.getByText(ADD_SKILL_COPY.entryPoint('hyperframes'))).toBeInTheDocument();
     // The components keep their declared names, prefix or no prefix.
     expect(screen.getByText(/media-use/)).toBeInTheDocument();
   });
@@ -185,12 +186,33 @@ describe('AddSkillModal', () => {
     mocks.getPathForFile.mockReturnValueOnce('');
     render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
 
-    const dropZone = screen.getByText('Or drop a skill file here').parentElement!;
+    const dropZone = screen.getByRole('button', { name: ADD_SKILL_COPY.dropZoneName });
     fireEvent.drop(dropZone, {
       dataTransfer: { files: [new File(['x'], 'pack.zip')] },
     });
 
     expect(await screen.findByText(/running on another machine/)).toBeInTheDocument();
     expect(mocks.previewSkillPackage).not.toHaveBeenCalled();
+  });
+});
+
+describe('AddSkillModal: help on demand, not on the page', () => {
+  it('keeps the repository explanation out of view and on the field as its description', () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+
+    expect(
+      screen.getByRole('textbox', { name: ADD_SKILL_COPY.repositoryLabel })
+    ).toHaveAccessibleDescription(ADD_SKILL_COPY.repositoryHelp);
+    expect(
+      screen.getByRole('button', { name: `About ${ADD_SKILL_COPY.repositoryLabel.toLowerCase()}` })
+    ).toBeInTheDocument();
+  });
+
+  it('makes the drop zone one line that the keyboard can reach', () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+
+    const zone = screen.getByRole('button', { name: ADD_SKILL_COPY.dropZoneName });
+    expect(zone).toHaveTextContent(ADD_SKILL_COPY.dropZone);
+    expect(zone.textContent).toBe(ADD_SKILL_COPY.dropZone);
   });
 });

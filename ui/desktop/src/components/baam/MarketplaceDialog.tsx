@@ -3,8 +3,8 @@ import * as React from 'react';
 import { ModalShell } from '../ModalShell';
 import { Input } from '../ui/input';
 import { Skeleton } from '../ui/skeleton';
-import { Info, Search } from '../icons/app-icons';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { InfoTip } from '../ui/info-tip';
+import { Search } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { catalogFreshnessLine } from './registry';
 import { MARKETPLACE_COPY } from './copy';
@@ -24,8 +24,8 @@ import { MARKETPLACE_COPY } from './copy';
  *   list. The list keeps a floor height (`marketplace.css`) for the same reason.
  * - One visible line under the title, "From the Biorouter marketplace", plus the
  *   catalog's freshness when it is not live (§10.2: a last-good catalog is
- *   dated, not dismissed as offline). The dialog's own instructions sit in a
- *   help tip beside it, linked as a description so a screen reader hears them.
+ *   dated, not dismissed as offline). The dialog's own instructions sit in an
+ *   InfoTip beside it, linked as a description so a screen reader hears them.
  * - The search field: the `Input` primitive with a leading glyph, placeholder
  *   "Search", named by `searchLabel`.
  * - The list states: skeleton rows while loading, one error line, one empty
@@ -100,7 +100,7 @@ export function MarketplaceDialog({
             {MARKETPLACE_COPY.subtitle}
             {freshness && <span className="text-text-subtle"> · {freshness}</span>}
           </span>
-          <MarketplaceHelp label={title} text={help} />
+          <InfoTip label={title.toLowerCase()} help={help} />
         </span>
       }
       footer={footer}
@@ -251,41 +251,6 @@ function MarketplaceRowSkeleton() {
         <Skeleton className="mt-1.5 h-3 w-72 max-w-full" />
       </div>
     </div>
-  );
-}
-
-/**
- * The help tip beside the subtitle.
- *
- * ⚠ Interim: the app-wide `InfoTip` primitive (WS-PRIMITIVES, spec §2.6) is
- * being written alongside this file. This follows its contract so the swap is a
- * one-line change: a 24px button named "About {label}" holding a 14px glyph, a
- * tooltip on hover and on Tab focus, and the same text in a visually hidden
- * node the trigger is described by, so no hover is needed to hear it.
- */
-function MarketplaceHelp({ label, text }: { label: string; text: string }) {
-  const id = React.useId();
-  return (
-    <>
-      <Tooltip delayDuration={200}>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label={`About ${label.toLowerCase()}`}
-            aria-describedby={id}
-            className="biorouter-focus-surface -my-[5px] inline-flex h-6 w-6 items-center justify-center rounded-inner text-text-subtle hover:text-text-default"
-          >
-            <Info aria-hidden="true" className="h-3.5 w-3.5" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="start" className="max-w-[280px] font-normal">
-          {text}
-        </TooltipContent>
-      </Tooltip>
-      <span id={id} className="sr-only">
-        {text}
-      </span>
-    </>
   );
 }
 

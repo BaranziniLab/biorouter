@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import CustomSkillModal from './CustomSkillModal';
+import { CUSTOM_SKILL_COPY } from './copy';
 
 afterEach(cleanup);
 
@@ -30,5 +31,21 @@ describe('CustomSkillModal', () => {
 
     finishWrite(false);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save skill' })).toBeEnabled());
+  });
+});
+
+describe('CustomSkillModal: one line of guidance', () => {
+  it('states the requirement and keeps where the file goes in the help', () => {
+    render(<CustomSkillModal onClose={() => {}} onSaved={() => {}} />);
+
+    expect(
+      screen.getByRole('dialog', { name: CUSTOM_SKILL_COPY.title })
+    ).toHaveAccessibleDescription(expect.stringContaining(CUSTOM_SKILL_COPY.subtitle));
+    expect(
+      screen.getByRole('button', { name: `About ${CUSTOM_SKILL_COPY.title.toLowerCase()}` })
+    ).toHaveAccessibleDescription(CUSTOM_SKILL_COPY.help);
+    expect(
+      screen.getByRole('textbox', { name: CUSTOM_SKILL_COPY.editorLabel })
+    ).toBeInTheDocument();
   });
 });
