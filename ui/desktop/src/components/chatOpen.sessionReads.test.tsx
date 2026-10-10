@@ -50,17 +50,10 @@ vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({
     <div data-testid="tier-probe">{privacyTier ?? 'unresolved'}</div>
   ),
 }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
+// The Tools chip's lists read three daemon endpoints of their own; this file
+// counts the chat-row reads, so the chip is out of the picture.
+vi.mock('./bottom_menu/ToolsChip', () => ({
+  ToolsChip: () => null,
 }));
 vi.mock('./bottom_menu/CostTracker', () => ({
   CostTracker: () => null,
