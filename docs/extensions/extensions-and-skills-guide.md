@@ -102,7 +102,7 @@ extensions:
 |---|---|
 | Toggle (desktop) | Sidebar → **Extensions** → toggle switch next to each extension |
 | Toggle (CLI) | `biorouter configure` → **Toggle Extensions** |
-| Remove (desktop) | Sidebar → **Extensions** → gear icon → **Remove Extension** |
+| Remove (desktop) | Sidebar → **Extensions** → the row's **⋯** menu → **Remove…** |
 
 Extensions enabled dynamically during a session (via the Extension Manager) are only active for that session. To persist an extension across sessions, enable it through Settings or the config file.
 
@@ -110,11 +110,11 @@ Extensions enabled dynamically during a session (via the Extension Manager) are 
 
 BAAM is the Biorouter agent, extension, and skill marketplace. Its catalog is the machine-readable [`landing/registry.json`](../../landing/registry.json), published at <https://biorouter.ucsf.edu/registry.json> and browsable at <https://biorouter.ucsf.edu/baam.html>. Biorouter reads that registry to list and one-click-install extensions (`.brxt` bundles) and skills (`.zip`), so the marketplace is the shortest path to a curated extension — reach for the manual steps above when you are adding something that is not in the catalog.
 
-Marketplace installs never ask you for a file. **Extensions** → **Browse Extensions** → **Add** downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
+Marketplace installs never ask you for a file. **Extensions** → **Add** → **Browse marketplace**, then **Add** on an entry, downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
 
-The **Add Extension** button beside it is the local route, and that one does take a file: drag a `.brxt` onto it, or browse for one.
+**Extensions** → **Add** → **Install from file (.brxt)** is the local route, and that one does take a file: drop a `.brxt` on the drop zone, or click it to choose one.
 
-Both marketplace browsers — **Browse Extensions**, and **Browse Skills** on the **Skills** page — search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
+Both marketplace browsers, **Browse marketplace** on the **Extensions** page and on the **Skills** page, search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
 
 If an extension needs an API key, passcode or token, Biorouter asks for it in its own dialog and stores it in your operating system's credential store. **Never type a credential into the chat** — it cannot configure anything from there, and it would be visible to every model that reads the conversation. The same is true of the command line: `biorouter extension install` prompts with echo off rather than taking a value as an argument. See [Installing an extension, and where its credentials go](installing-an-extension.md).
 
