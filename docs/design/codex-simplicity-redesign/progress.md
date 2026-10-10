@@ -16,8 +16,8 @@ Requirement IDs (`R-nn`) and workstream names (`WS-...`) are defined in the
 |-------|--------|-------|
 | 1. Research and audit | Done | 20 agents: Codex, Claude usage, motion; shell, chat interface, summary, typography, primitives, preview, usage, two view groups, two settings halves, Crew reference, website, icons, baseline screenshots. |
 | 2. Specification | Done | [implementation-spec.md](implementation-spec.md): synthesis, critic pass, coordinator rulings (section 8). |
-| 3. Foundations | In progress | Wave 0 contracts (spec section 4). |
-| 4. Surfaces | In progress | Wave 1, in parallel with wave 0 where no contract is needed. |
+| 3. Foundations | Done | All ten wave 0 contracts landed. |
+| 4. Surfaces | In progress | 20 of 21 workstreams implemented; the website is finishing; then the integration gate and the wave 2 sweeps. |
 | 5. Verification loops | Not started | |
 | 6. Review and pull request | Not started | |
 
@@ -29,26 +29,26 @@ spec's tables are authoritative where this summary is shorter.
 
 | Workstream | Owns (summary) | Wave 0 contract | Status |
 |------------|----------------|-----------------|--------|
-| WS-TOKENS | `styles/main.css` token blocks, `styles/motion.ts`, `ui/desktop/themes/**`, token scripts, `design.md` | type roles, motion tokens and classes | In progress |
-| WS-PRIMITIVES | `components/ui/**` (not the sidebar files), `ModalShell.tsx`, Crew fix list | `InfoTip`, `SegmentedControl`, `SettingRow`, `RowActions`, `Field`, `FilterInput`, `Spinner`, `PopoverAnchor` | In progress |
-| WS-ICONS | `components/icons/**`, `chats/{chatKind.ts,ChatKindIcon.tsx}`, `utils/{toolIconMapping.tsx,toolGlyph.ts}`, `ItemIcon.tsx` | `toolGlyph.ts`, `chatKind.ts` with the crew kind | In progress |
-| WS-SIDEBAR | `BioRouterSidebar/**`, `ui/{sidebar.tsx,sidebarWidth.ts}`, `TitlebarControls.tsx`, `chats/**` (rest), session name, delete and export helpers | `renameSessionOptimistically`, `chatDateBuckets`, `exportConversation`, row menu props | In progress |
-| WS-HISTORY | `sessions/**` (not the usage files), `utils/dateUtils.ts` | none | In progress |
-| WS-SUMMARY | `BaseChat.tsx`, `ChatSummary.tsx`, `components/summary/**`, rail hooks, `Layout/yieldLadder.ts` | none | In progress |
-| WS-TRANSCRIPT | messages, markdown, activity, `subagent/**` | none | In progress |
-| WS-TOOLS | tool call rows and cards, `tool-call.css` | `TranscriptRow` | In progress |
-| WS-COMPOSER | `ChatInput.tsx`, `MessageQueue.tsx`, `MentionPopover.tsx`, `Hub.tsx` | none | In progress |
-| WS-PICKERS | `bottom_menu/**`, `ContextWindowIndicator.tsx`, `ModelsBottomBar.tsx`, `CopilotControl.tsx` | `ToolsChip`, `ModelEffortChip`, `ComposerFooter` | In progress |
-| WS-PREVIEW | `artifacts/**`, `.artifact-harness/**` | `sideWidth` on the panel controller | In progress |
-| WS-USAGE | `sessions/{SessionsInsights,UsageHeatmap,HomeUsageCard}.tsx`, `components/usage/**`, `settings/usage/**` | none | In progress |
-| WS-VIEWS-A | `Layout/{PageHeader,MainPanelLayout,ReadableContent,AppLayout}.tsx`, `workflows/**`, `schedule/**`, `applications/**` | `PageHeader` band API | In progress |
-| WS-EXTENSIONS | `extensions/**`, `settings/extensions/**`, install modals | none | In progress |
-| WS-SKILLS | `skills/**`, `baam/**` | `MarketplaceDialog` | In progress |
-| WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | In progress |
-| WS-SETTINGS-A | `SettingsView.tsx`, `settings/{app,chat,mode,permission,response_styles}/**`, theme selectors | section ids for deep links | In progress |
-| WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | In progress |
-| WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Copilot setup | none | In progress |
-| WS-MOTION | `chatGroups/**`, find in chat, `App.tsx`, `toasts.tsx`, `alerts/**`, `main.ts` window regions, terminal dock | none | In progress |
+| WS-TOKENS | `styles/main.css` token blocks, `styles/motion.ts`, `ui/desktop/themes/**`, token scripts, `design.md` | type roles, motion tokens and classes | Implemented and reviewed; vision check pending |
+| WS-PRIMITIVES | `components/ui/**` (not the sidebar files), `ModalShell.tsx`, Crew fix list | `InfoTip`, `SegmentedControl`, `SettingRow`, `RowActions`, `Field`, `FilterInput`, `Spinner`, `PopoverAnchor` | Implemented; review running |
+| WS-ICONS | `components/icons/**`, `chats/{chatKind.ts,ChatKindIcon.tsx}`, `utils/{toolIconMapping.tsx,toolGlyph.ts}`, `ItemIcon.tsx` | `toolGlyph.ts`, `chatKind.ts` with the crew kind | Implemented and reviewed; vision check pending |
+| WS-SIDEBAR | `BioRouterSidebar/**`, `ui/{sidebar.tsx,sidebarWidth.ts}`, `TitlebarControls.tsx`, `chats/**` (rest), session name, delete and export helpers | `renameSessionOptimistically`, `chatDateBuckets`, `exportConversation`, row menu props | Implemented and reviewed; vision check pending |
+| WS-HISTORY | `sessions/**` (not the usage files), `utils/dateUtils.ts` | none | Implemented and reviewed; vision check pending |
+| WS-SUMMARY | `BaseChat.tsx`, `ChatSummary.tsx`, `components/summary/**`, rail hooks, `Layout/yieldLadder.ts` | none | Implemented and reviewed; vision check pending |
+| WS-TRANSCRIPT | messages, markdown, activity, `subagent/**` | none | Implemented and reviewed; vision check pending |
+| WS-TOOLS | tool call rows and cards, `tool-call.css` | `TranscriptRow` | Implemented and reviewed; vision check pending |
+| WS-COMPOSER | `ChatInput.tsx`, `MessageQueue.tsx`, `MentionPopover.tsx`, `Hub.tsx` | none | Implemented and reviewed; vision check pending |
+| WS-PICKERS | `bottom_menu/**`, `ContextWindowIndicator.tsx`, `ModelsBottomBar.tsx`, `CopilotControl.tsx` | `ToolsChip`, `ModelEffortChip`, `ComposerFooter` | Implemented and reviewed; vision check pending |
+| WS-PREVIEW | `artifacts/**`, `.artifact-harness/**` | `sideWidth` on the panel controller | Implemented and reviewed; vision check pending |
+| WS-USAGE | `sessions/{SessionsInsights,UsageHeatmap,HomeUsageCard}.tsx`, `components/usage/**`, `settings/usage/**` | none | Implemented and reviewed; vision check pending |
+| WS-VIEWS-A | `Layout/{PageHeader,MainPanelLayout,ReadableContent,AppLayout}.tsx`, `workflows/**`, `schedule/**`, `applications/**` | `PageHeader` band API | Implemented and reviewed; vision check pending |
+| WS-EXTENSIONS | `extensions/**`, `settings/extensions/**`, install modals | none | Implemented; review running |
+| WS-SKILLS | `skills/**`, `baam/**` | `MarketplaceDialog` | Implemented and reviewed; vision check pending |
+| WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | Implemented and reviewed; vision check pending |
+| WS-SETTINGS-A | `SettingsView.tsx`, `settings/{app,chat,mode,permission,response_styles}/**`, theme selectors | section ids for deep links | Implemented and reviewed; vision check pending |
+| WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | Implemented; review running |
+| WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Copilot setup | none | Implemented and reviewed; vision check pending |
+| WS-MOTION | `chatGroups/**`, find in chat, `App.tsx`, `toasts.tsx`, `alerts/**`, `main.ts` window regions, terminal dock | none | Implemented and reviewed; vision check pending |
 | WS-LANDING | `landing/**`, `docs/website/**` | none | In progress |
 | Coordinator | `docs/design/codex-simplicity-redesign/**`, `CLAUDE.md`, `scripts/check-crew-manual.mjs`, `docs/crew/**`, the shared dev app instance | ownership copy | Done |
 
@@ -113,6 +113,14 @@ spec's tables are authoritative where this summary is shorter.
 - Implementation resumed through a pool of eight agents at a time: each resumed workstream picks
   up its predecessor's notes, commits and uncommitted edits; a reviewer follows each one; a gate
   then runs the full lint, format and test suites.
+- The resumed run finished 37 of 42 agents before the usage limit hit again: 219 more commits.
+  Twenty workstreams are implemented, and seventeen of those are also reviewed. Still open: the
+  website workstream, three reviews (primitives, models and providers, extensions), the pending
+  requests between workstreams, and about 30 coordinator requests (doc wording, e2e locators, the
+  Cmd+Opt+R rename shortcut in `main.ts`, approved).
+- Started the finishing run: a coordinator delegate applies or routes the coordinator requests,
+  then the website resumes, the three reviews and every inbox run, then the full gate loop, then
+  the wave 2 sweeps (alias deletions, the switch variant removal, stricter guards) and a final gate.
 
 ## Related documentation
 
