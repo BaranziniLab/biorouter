@@ -531,10 +531,6 @@ export const KnowledgeGraph = glyph(
   </>
 );
 
-/** The previous name of the Knowledge mark, kept so existing importers draw
- * the same figure as `ENTITY_ICONS.knowledge`. New code reads the entity map. */
-export const KnowledgeIcon = KnowledgeGraph;
-
 /**
  * A skill: a tile carrying a bolt, an ability the agent loads when it needs
  * it. Replaces `Layers`, which also meant "By model" in Usage and said nothing
