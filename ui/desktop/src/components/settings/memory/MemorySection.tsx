@@ -38,9 +38,15 @@ import './memory.css';
  * flat per-category text file, so the store records the category, the scope,
  * whatever tags the model attached, and the file's size and modification time.
  * It does **not** record when an individual memory was written, which
- * conversation wrote it, or which model — so this section says "category file
- * last modified" rather than dating each row, and says so out loud rather than
- * showing a timestamp that would be read as the row's own.
+ * conversation wrote it, or which model — so the only date is the category
+ * file's, worded "Updated" in the tooltip on the category's name, and no row
+ * carries a timestamp that would be read as its own.
+ *
+ * Layout (spec 3.14): one `SettingSection` of one-line rows. A store is a
+ * heading (Global, This project) with its count on the right and an InfoTip
+ * holding who can read it and where it lives; a category is a row whose meta
+ * is its count and whose delete glyph waits for the pointer; an open
+ * category's entries are sibling rows under it, never inside it.
  */
 
 const scopeNoun = (scope: MemoryScope) => (scope === 'global' ? 'global' : 'local');
@@ -315,7 +321,10 @@ function StoreFrame({
   return (
     <div className="br-memory-store" role="group" aria-labelledby={headingId}>
       <div className="br-memory-store-head">
-        <h3 id={headingId} className="br-memory-store-title text-label text-text-default">
+        <h3
+          id={headingId}
+          className="br-memory-store-title text-secondary font-semibold text-text-default"
+        >
           {heading}
         </h3>
         {help ? <InfoTip label={heading}>{help}</InfoTip> : null}
