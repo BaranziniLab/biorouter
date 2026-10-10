@@ -1,52 +1,36 @@
 import React, { useState } from 'react';
 import {
-  X,
-  Send,
-  StopSquare,
-  MessageSquarePlus,
-  GripVertical,
+  ArrowUp,
   ChevronDown,
   ChevronUp,
+  GripVertical,
+  MessageSquarePlus,
+  X,
 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import type { UserAttachment } from '../types/message';
 import { ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, splitComposerText } from '../utils/composerRefs';
-import { getSteerShortcutText } from '../utils/keyboardShortcuts';
+import { getSteerAriaKeyShortcuts, getSteerShortcutText } from '../utils/keyboardShortcuts';
 import { SteerUnavailableNote } from './privacy/SteerUnavailableNote';
 import { steerUnavailableReason } from './privacy/steerUnavailableCopy';
+import { COMPOSER_COPY } from './composer/copy';
+import { cn } from '../utils';
+import './composer/composer.css';
 
-const STEER_TITLE = 'Add to current turn without stopping';
-const STOP_AND_SEND_TITLE = 'Stop current turn, then send as a new turn';
+const COPY = COMPOSER_COPY.queue;
 
 /**
- * Hover text for an "Add now" button.
+ * Tooltip for an "Add now" button.
  *
  * The Cmd/Ctrl+Enter fallback in `ChatInput` steers the FRONT of the queue and
- * only the front, so the chord is advertised on that row alone. Teaching it on
- * every row would name a key that does something else (it would take message
- * one) for every row but the first.
+ * only the front, so the chord is named on that row alone (in the tooltip and
+ * in `aria-keyshortcuts`). Naming it on every row would name a key that does
+ * something else (it would take message one) for every row but the first.
  */
-const steerTitle = (isNext: boolean) =>
-  isNext ? `${STEER_TITLE} (${getSteerShortcutText()})` : STEER_TITLE;
-
-const SteerActionContent = () => (
-  <>
-    <MessageSquarePlus className="w-3 h-3" aria-hidden="true" />
-    <span className="text-[11px] leading-none">Add now</span>
-  </>
-);
-
-const StopAndSendActionContent = () => (
-  <>
-    <span className="inline-flex items-center gap-0.5" aria-hidden="true">
-      <StopSquare className="w-3 h-3" />
-      <span className="text-[10px] leading-none">→</span>
-      <Send className="w-3 h-3" />
-    </span>
-    <span className="text-[11px] leading-none">Stop &amp; send</span>
-  </>
-);
+const steerTooltip = (isNext: boolean) =>
+  isNext ? `${COPY.addNowTooltip} (${getSteerShortcutText()})` : COPY.addNowTooltip;
 
 interface QueuedMessage {
   id: string;
@@ -58,11 +42,11 @@ interface QueuedMessage {
 /**
  * Is this message eligible for a soft interrupt?
  *
- * A soft interrupt is plain text — a message with attachments still has to wait
+ * A soft interrupt is plain text: a message with attachments still has to wait
  * for the turn to end (or stop it). Exported because `ChatInput`'s
  * Cmd/Ctrl+Enter fallback steers the front of the queue, and a shortcut that
  * re-derived eligibility would drift from the button it mirrors: the two must
- * ask ONE question. The caller supplies the other half — whether steering is
+ * ask ONE question. The caller supplies the other half, whether steering is
  * available at all (`onSteerMessage` here, `canSteer` there).
  */
 export const canSteerMessage = (message: Pick<QueuedMessage, 'attachments'>): boolean =>
@@ -84,6 +68,59 @@ interface MessageQueueProps {
   isPaused?: boolean;
 }
 
+/** A 24px ghost icon button whose name is also its tooltip, unless `tooltip` says more. */
+function QueueAction({
+  label,
+  tooltip,
+  onClick,
+  disabled,
+  danger,
+  keyShortcuts,
+  children,
+}: {
+  label: string;
+  tooltip?: string;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  disabled?: boolean;
+  danger?: boolean;
+  keyShortcuts?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* The span keeps the tooltip reachable while the button is disabled. */}
+        <span className="inline-flex">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            shape="round"
+            aria-label={label}
+            aria-keyshortcuts={keyShortcuts}
+            disabled={disabled}
+            onClick={onClick}
+            className={cn(
+              'text-text-muted hover:text-text-default',
+              danger && 'hover:text-text-danger'
+            )}
+          >
+            {children}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * The messages waiting for the running turn, at the top of the composer card.
+ *
+ * Codex's queue: one "Queued · N" line, then each message as `↳ text`. Folded,
+ * it is one line holding the next message and its two actions; unfolded, every
+ * row reveals its actions on hover or focus.
+ */
 export const MessageQueue: React.FC<MessageQueueProps> = ({
   queuedMessages,
   onRemoveMessage,
@@ -113,13 +150,13 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
    *
    * Read here rather than passed in, on `HostManagedModelNote`'s contract: a
    * prop is a thing a call site can forget, and the one that forgot would leave
-   * a button that answers 403 and says nothing — which is the defect.
+   * a button that answers 403 and says nothing, which is the defect.
    */
   const steerRefusal = steerUnavailableReason();
 
   /**
    * Does the steer apply at all right now? `onSteerMessage` is `undefined`
-   * whenever no turn is in flight, so this is also "is there a running turn" —
+   * whenever no turn is in flight, so this is also "is there a running turn",
    * and it is what decides whether the note has anything to explain. A queue
    * sitting in front of an idle agent is missing no control.
    */
@@ -172,173 +209,145 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
     setDragOverItem(null);
   };
 
-  const formatTimestamp = (timestamp: number) => {
-    const now = Date.now();
-    const diff = now - timestamp;
-    if (diff < 60000) return 'now';
-    if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
-    return `${Math.floor(diff / 3600000)}h`;
+  const attachmentCount = (message: QueuedMessage) => message.attachments?.length ?? 0;
+
+  const endEditing = () => {
+    setEditingMessage(null);
+    if (editingMessageIdRef) editingMessageIdRef.current = null;
+    if (onTriggerQueueProcessing) {
+      setTimeout(onTriggerQueueProcessing, 100);
+    }
+    setEditContent('');
   };
 
-  const nextMessage = queuedMessages[0];
-  const remainingCount = queuedMessages.length - 1;
-  // Issue #65 — the queue draws inside the composer, so the same rule holds:
-  // never the raw `<biorouter-ref …>` markup. This builds the *string* form,
-  // for `title` and aria; the visible row renders the same content through
-  // `ResourceRefText`, which draws the references as chips.
-  const messageLabel = (message: QueuedMessage) => {
-    const attachmentCount = message.attachments?.length ?? 0;
-    const { body, refs } = splitComposerText(message.content);
-    const named = refs.map((ref) => ref.label?.trim() || ref.value);
-    const text = [body.trim(), ...named].filter(Boolean).join(' · ');
-    if (text && attachmentCount > 0)
-      return `${text} (${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'})`;
-    if (text) return text;
-    if (attachmentCount > 0)
-      return `${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`;
-    return 'Queued message';
+  const startEditing = (message: QueuedMessage) => {
+    setEditingMessage(message.id);
+    if (editingMessageIdRef) editingMessageIdRef.current = message.id;
+    setEditContent(message.content);
   };
 
-  // Status dot: accent when active/next, muted when paused.
-  const statusDot = (
-    <span
-      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isPaused ? 'bg-text-muted' : 'bg-background-accent animate-pulse'}`}
-      aria-hidden="true"
-    />
+  /**
+   * The message as one line. Issue #65: the queue draws inside the composer, so
+   * the same rule holds: never the raw `<biorouter-ref …>` markup.
+   * `ResourceRefText` draws the references as chips.
+   */
+  const messageText = (message: QueuedMessage) => (
+    <>
+      <ResourceRefText text={message.content.trim()} />
+      {attachmentCount(message) > 0 && (
+        <span className="text-text-muted">
+          {message.content.trim() ? ' · ' : ''}
+          {COPY.attachments(attachmentCount(message))}
+        </span>
+      )}
+    </>
   );
 
-  // Compact collapsed bar — single line, sidebar-row sized.
-  if (!isExpanded) {
+  /** The two ways a queued message can reach the running turn early. */
+  const turnActions = (message: QueuedMessage, isNext: boolean) => {
+    const editing = editingMessage === message.id;
     return (
-      <div className={className}>
-        <div
-          className="flex items-center gap-2 px-3 py-1.5 bg-background-default hover:bg-background-muted transition-colors cursor-pointer"
-          onClick={() => setIsExpanded(true)}
-          role="button"
-          aria-label={`${queuedMessages.length} message${
-            queuedMessages.length !== 1 ? 's' : ''
-          } queued. Expand queue.`}
-        >
-          {statusDot}
-          <span className="text-[11px] font-medium text-text-muted flex-shrink-0">
-            {isPaused ? 'Paused' : 'Next'}
-          </span>
-
-          <p
-            className="flex-1 min-w-0 text-xs text-text-default truncate"
-            title={messageLabel(nextMessage)}
-          >
-            <ResourceRefText text={nextMessage.content.trim()} />
-          </p>
-
-          {remainingCount > 0 && (
-            <span className="flex-shrink-0 text-[11px] text-text-muted bg-background-medium border border-border-subtle px-1.5 py-0.5 rounded-md font-medium">
-              +{remainingCount}
-            </span>
-          )}
-
-          {isSteerable(nextMessage) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSteerMessage?.(nextMessage.id);
-              }}
-              className="h-6 px-1.5 gap-1 flex-shrink-0 text-text-muted hover:text-text-default"
-              title={steerTitle(true)}
-              aria-label="Add this message to the current turn"
-            >
-              <SteerActionContent />
-            </Button>
-          )}
-
-          {onStopAndSend && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                onStopAndSend(nextMessage.id);
-              }}
-              className="h-6 px-1.5 gap-1 flex-shrink-0 text-text-muted hover:text-text-default"
-              title={STOP_AND_SEND_TITLE}
-              aria-label="Stop the current turn and send this message as a new turn"
-            >
-              <StopAndSendActionContent />
-            </Button>
-          )}
-
-          <Button
-            variant="ghost"
-            size="sm"
+      <>
+        {isSteerable(message) && (
+          <QueueAction
+            label={COPY.addNowLabel}
+            tooltip={editing ? COPY.cannotSendWhileEditing : steerTooltip(isNext)}
+            keyShortcuts={isNext ? getSteerAriaKeyShortcuts() : undefined}
+            disabled={editing}
             onClick={(e) => {
               e.stopPropagation();
-              setIsExpanded(true);
+              onSteerMessage?.(message.id);
             }}
-            className="h-6 w-6 p-0 flex-shrink-0 text-text-muted hover:text-text-default"
-            title="Expand queue"
           >
-            <ChevronDown className="w-3.5 h-3.5" />
-          </Button>
+            <MessageSquarePlus className="size-3.5" aria-hidden />
+          </QueueAction>
+        )}
+        {onStopAndSend && (
+          <QueueAction
+            label={COPY.stopAndSendLabel}
+            tooltip={editing ? COPY.cannotSendWhileEditing : COPY.stopAndSendTooltip}
+            disabled={editing}
+            onClick={(e) => {
+              e.stopPropagation();
+              onStopAndSend(message.id);
+            }}
+          >
+            <ArrowUp className="size-3.5" aria-hidden />
+          </QueueAction>
+        )}
+      </>
+    );
+  };
+
+  const countLabel = `${isPaused ? COPY.paused : COPY.header} · ${queuedMessages.length}`;
+
+  if (!isExpanded) {
+    const nextMessage = queuedMessages[0];
+    return (
+      <div className={cn('br-queue', className)} data-testid="message-queue">
+        {/* The whole line unfolds the queue for a pointer; the chevron is the
+            keyboard's way in, and the name tests and screen readers use. */}
+        <div className="br-queue-line" onClick={() => setIsExpanded(true)}>
+          <span className="br-queue-count">{countLabel}</span>
+          <span className="br-queue-arrow" aria-hidden>
+            ↳
+          </span>
+          <p className="br-queue-text">{messageText(nextMessage)}</p>
+          <div className="br-queue-actions" data-visible="">
+            {turnActions(nextMessage, true)}
+            <QueueAction
+              label={COPY.expand(queuedMessages.length)}
+              tooltip={COMPOSER_COPY.queue.header}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsExpanded(true);
+              }}
+            >
+              <ChevronDown className="size-3.5" aria-hidden />
+            </QueueAction>
+          </div>
         </div>
         {/* SD-8: the reason the "Add now" above is missing, in the row it is
-            missing from. `short` because the collapsed bar is the compact
-            shape, and a three-line block under a one-line strip would be the
-            note shouting louder than the queue it annotates.
-
-            Mounted on `steerApplies` alone — the note itself renders nothing on
-            the desktop, so this condition is "is there a turn to steer", not
-            "which surface is this". */}
+            missing from. Mounted on `steerApplies` alone: the note itself
+            renders nothing on the desktop, so this condition is "is there a
+            turn to steer", not "which surface is this". */}
         {steerApplies && <SteerUnavailableNote short />}
       </div>
     );
   }
 
-  // Expanded list — compact rows, still scannable.
   return (
-    <div className={className}>
-      {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-background-default border-b border-border-subtle">
-        {statusDot}
-        <span className="text-[11px] font-medium text-text-default flex-shrink-0">
-          {isPaused ? 'Queue paused' : 'Message queue'}
-        </span>
-        <span className="text-[11px] text-text-muted flex-shrink-0">
-          {queuedMessages.length} {isPaused ? 'waiting' : 'queued'}
-        </span>
-
-        <div className="flex-1" />
-
-        {queuedMessages.length > 1 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClearQueue}
-            className="h-6 px-2 text-[11px] text-text-muted hover:text-text-danger"
-            title="Clear all queued messages"
-          >
-            Clear
-          </Button>
-        )}
-
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setIsExpanded(false)}
-          className="h-6 w-6 p-0 text-text-muted hover:text-text-default"
-          title="Collapse queue"
-        >
-          <ChevronUp className="w-3.5 h-3.5" />
-        </Button>
+    <div className={cn('br-queue', className)} data-testid="message-queue">
+      <div className="br-queue-line">
+        <span className="br-queue-count">{countLabel}</span>
+        <span className="flex-1" />
+        <div className="br-queue-actions" data-visible="">
+          {queuedMessages.length > 1 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={onClearQueue}
+              className="text-supporting text-text-muted hover:text-text-danger"
+            >
+              {COPY.clear}
+            </Button>
+          )}
+          <QueueAction label={COPY.collapse} onClick={() => setIsExpanded(false)}>
+            <ChevronUp className="size-3.5" aria-hidden />
+          </QueueAction>
+        </div>
       </div>
 
-      {/* Message rows */}
-      <div className="px-2 py-1.5 space-y-1 bg-background-default max-h-56 overflow-y-auto">
+      <ul className="br-queue-list">
         {queuedMessages.map((message, index) => (
-          <div
+          <li
             key={message.id}
-            className={`group relative flex items-center gap-2 rounded-md px-2 py-1.5 border transition-colors ${draggedItem === message.id ? 'opacity-60 border-border-strong bg-background-medium' : dragOverItem === message.id ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted hover:bg-background-medium'}`}
+            className="br-queue-row"
+            data-dragging={draggedItem === message.id ? '' : undefined}
+            data-drag-over={
+              dragOverItem === message.id && draggedItem !== message.id ? '' : undefined
+            }
             draggable={onReorderMessages ? true : false}
             onDragStart={(e) => handleDragStart(e, message.id)}
             onDragOver={(e) => handleDragOver(e, message.id)}
@@ -346,151 +355,74 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             onDrop={(e) => handleDrop(e, message.id)}
             onDragEnd={handleDragEnd}
           >
-            {/* Drag handle */}
-            {onReorderMessages && (
-              <div
-                className="opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing flex-shrink-0"
-                aria-label="Drag to reorder"
-              >
-                <GripVertical className="w-3.5 h-3.5 text-text-muted" />
-              </div>
+            {onReorderMessages ? (
+              <span className="br-queue-grip" aria-label={COPY.dragToReorder} role="img">
+                <GripVertical className="size-3.5" />
+              </span>
+            ) : (
+              <span className="br-queue-arrow" aria-hidden>
+                ↳
+              </span>
             )}
 
-            {/* Position indicator */}
-            <span
-              className={`flex items-center justify-center w-4 h-4 flex-shrink-0 rounded-full text-[11px] font-semibold ${index === 0 && !isPaused ? 'bg-background-accent text-text-on-accent' : 'bg-background-strong text-text-muted'}`}
-            >
-              {index + 1}
-            </span>
-
-            {/* Content / inline editor */}
-            <div className="flex-1 min-w-0">
-              {editingMessage === message.id ? (
-                <div className="space-y-1.5">
-                  <textarea
-                    value={splitComposerText(editContent).body}
-                    onChange={(e) =>
-                      setEditContent(
-                        joinComposerText(e.target.value, splitComposerText(editContent).refs)
-                      )
-                    }
-                    className="w-full text-xs bg-background-default border border-border-subtle rounded-md px-2 py-1 resize-none focus:border-border-strong"
-                    rows={Math.min(Math.ceil(editContent.length / 60), 4)}
-                    autoFocus
-                  />
-                  <div className="flex gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        if (onEditMessage) {
-                          onEditMessage(message.id, editContent);
-                        }
-                        setEditingMessage(null);
-                        if (editingMessageIdRef) editingMessageIdRef.current = null;
-                        if (onTriggerQueueProcessing) {
-                          setTimeout(onTriggerQueueProcessing, 100);
-                        }
-                        setEditContent('');
-                      }}
-                      className="h-6 px-2 text-[11px]"
-                    >
-                      Save
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setEditingMessage(null);
-                        if (editingMessageIdRef) editingMessageIdRef.current = null;
-                        if (onTriggerQueueProcessing) {
-                          setTimeout(onTriggerQueueProcessing, 100);
-                        }
-                        setEditContent('');
-                      }}
-                      className="h-6 px-2 text-[11px]"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
+            {editingMessage === message.id ? (
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1">
+                <textarea
+                  value={splitComposerText(editContent).body}
+                  onChange={(e) =>
+                    setEditContent(
+                      joinComposerText(e.target.value, splitComposerText(editContent).refs)
+                    )
+                  }
+                  className="w-full resize-none rounded-element border border-border-subtle bg-background-default px-2 py-1 text-secondary focus:border-border-strong"
+                  rows={Math.max(1, Math.min(Math.ceil(editContent.length / 60), 4))}
+                  autoFocus
+                />
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="xs"
+                    className="text-supporting"
+                    onClick={() => {
+                      onEditMessage?.(message.id, editContent);
+                      endEditing();
+                    }}
+                  >
+                    {COPY.save}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    className="text-supporting"
+                    onClick={endEditing}
+                  >
+                    {COPY.cancel}
+                  </Button>
                 </div>
-              ) : (
-                <p
-                  className="text-xs text-text-default truncate cursor-pointer hover:text-text-default"
-                  title={`${messageLabel(message)} (Click to edit text)`}
-                  onClick={() => {
-                    setEditingMessage(message.id);
-                    if (editingMessageIdRef) editingMessageIdRef.current = message.id;
-                    setEditContent(message.content);
-                  }}
-                >
-                  <ResourceRefText text={message.content.trim()} />
-                  {(message.attachments?.length ?? 0) > 0 && (
-                    <span className="text-text-muted">
-                      {` (${message.attachments!.length} attachment${
-                        message.attachments!.length === 1 ? '' : 's'
-                      })`}
-                    </span>
-                  )}
-                </p>
-              )}
-            </div>
-
-            {/* Right-side meta + actions */}
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <span className="text-[11px] text-text-muted font-mono">
-                {formatTimestamp(message.timestamp)}
-              </span>
-
-              {isSteerable(message) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onSteerMessage?.(message.id)}
-                  disabled={editingMessage === message.id}
-                  className={`h-6 px-1.5 gap-1 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
-                  title={
-                    editingMessage === message.id
-                      ? 'Cannot send while editing'
-                      : steerTitle(index === 0)
-                  }
-                  aria-label="Add this message to the current turn"
-                >
-                  <SteerActionContent />
-                </Button>
-              )}
-
-              {onStopAndSend && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onStopAndSend(message.id)}
-                  disabled={editingMessage === message.id}
-                  className={`h-6 px-1.5 gap-1 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
-                  title={
-                    editingMessage === message.id
-                      ? 'Cannot send while editing'
-                      : STOP_AND_SEND_TITLE
-                  }
-                  aria-label="Stop the current turn and send this message as a new turn"
-                >
-                  <StopAndSendActionContent />
-                </Button>
-              )}
-
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onRemoveMessage(message.id)}
-                className="h-6 w-6 p-0 text-text-muted hover:text-text-danger opacity-0 group-hover:opacity-100 transition-opacity"
-                title="Remove this message from queue"
+              </div>
+            ) : (
+              // The text is the edit control: a button, so the keyboard reaches
+              // it, named by what it holds.
+              <button
+                type="button"
+                className="br-queue-text br-queue-edit"
+                onClick={() => startEditing(message)}
               >
-                <X className="w-3 h-3" />
-              </Button>
+                {messageText(message)}
+              </button>
+            )}
+
+            <div className="br-queue-actions">
+              {turnActions(message, index === 0)}
+              <QueueAction label={COPY.remove} danger onClick={() => onRemoveMessage(message.id)}>
+                <X className="size-3.5" aria-hidden />
+              </QueueAction>
             </div>
-          </div>
+          </li>
         ))}
-      </div>
+      </ul>
       {/* SD-8, once for the whole list rather than once per row: the reason is
           the daemon's, not this message's, so repeating it under every row
           would say one true thing N times. */}

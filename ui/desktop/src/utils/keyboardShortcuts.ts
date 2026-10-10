@@ -17,3 +17,11 @@ export function getSearchShortcutText(): string {
 export function getSteerShortcutText(): string {
   return isMac() ? '⌘↵' : 'Ctrl+↵';
 }
+
+/**
+ * The same chord in `aria-keyshortcuts` syntax, so a control that the chord
+ * also reaches can announce it to a screen reader without a visible hint.
+ */
+export function getSteerAriaKeyShortcuts(): string {
+  return isMac() ? 'Meta+Enter' : 'Control+Enter';
+}

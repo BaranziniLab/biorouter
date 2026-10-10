@@ -3185,7 +3185,6 @@ export default function ChatInput({
             onTriggerQueueProcessing={handleResumeQueue}
             editingMessageIdRef={editingMessageIdRef}
             isPaused={queuePausedRef.current}
-            className="border-b border-border-subtle"
           />
         )}
         {/* No-model hint. Same shape as the vision-mismatch banner below and for

@@ -1,0 +1,283 @@
+/* @ws WS-COMPOSER begin: the chat composer's own recipes
+   ============================================================
+   The chat composer (ChatInput, its queue, its chips row, its controls row and
+   the mention menu). One surface, so its CSS lives beside it rather than in
+   `main.css`; the card itself (`.biorouter-composer-card`, its focus edge and
+   its working edge) stays in `main.css` because Crew's composer shares it.
+
+   Authored CSS keyed on classes and `data-*`, never newly written Tailwind
+   strings: under `BIOROUTER_NO_HMR` the class scanner can miss a new utility.
+   Motion is tokens only, and every hover is neutral (`--overlay-hover`).
+   ============================================================ */
+
+/* ── The queue, at the top of the card ───────────────────────────────────── */
+
+.br-queue {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0 0 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* One line: "Queued · 2  ↳ text  [actions]". 28px, like a dense row. */
+.br-queue-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+  cursor: default;
+}
+
+.br-queue-count {
+  flex: none;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.br-queue-arrow {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.br-queue-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+  text-align: left;
+}
+
+.br-queue-edit {
+  cursor: text;
+  border-radius: var(--radius-inner);
+}
+
+.br-queue-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 14rem;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+/* A row bleeds 8px past the text edge so its hover fill has room, Crew's
+   recipe; the glyph column then sits back on the card's text edge. */
+.br-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+  margin: 0 -8px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-queue-row:hover,
+.br-queue-row[data-drag-over] {
+  background-color: var(--overlay-hover);
+}
+
+.br-queue-row[data-dragging] {
+  opacity: 0.6;
+}
+
+.br-queue-grip {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: grab;
+}
+
+.br-queue-row[data-dragging] .br-queue-grip {
+  cursor: grabbing;
+}
+
+/* Row actions appear when wanted (principle 6): on hover, on focus inside the
+   row, and always on a display that cannot hover. Only opacity changes, so the
+   buttons stay in the tab order. The folded line's actions are always shown. */
+.br-queue-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-queue-actions[data-visible],
+.br-queue-row:hover .br-queue-actions,
+.br-queue-row:focus-within .br-queue-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .br-queue-actions {
+    opacity: 1;
+  }
+}
+
+/* ── Notices inside the card (no model, an image the model cannot read) ─── */
+
+.br-composer-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  min-height: 24px;
+  margin: 0 0 4px;
+  color: var(--text-muted);
+}
+
+.br-composer-notice__icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* ── What goes with the message, above the text ─────────────────────────── */
+
+.br-composer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.br-composer-chips > li {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A 48px image thumbnail. The remove control sits in its corner and appears on
+   hover or focus, like a row action. */
+.br-composer-thumb {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  background: var(--background-muted);
+}
+
+.br-composer-thumb[data-error] {
+  border-color: var(--border-danger);
+}
+
+.br-composer-thumb > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Translucent, never solid: the image stays visible under the spinner. */
+.br-composer-thumb__scrim {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  color: var(--text-default);
+}
+
+.br-composer-thumb__remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-composer-thumb:hover .br-composer-thumb__remove,
+.br-composer-thumb:focus-within .br-composer-thumb__remove {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .br-composer-thumb__remove {
+    opacity: 1;
+  }
+}
+
+/* The 16px remove target inside a chip: muted ink, neutral hover. */
+.br-composer-chip-action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-right: -2px;
+  border-radius: var(--radius-inner);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-composer-chip-action:hover {
+  background-color: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+/* ── The controls row inside the card: [+] [Tools]  ·  [model] (Send) ───── */
+
+.br-composer-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 32px;
+  margin-top: 4px;
+  /* Pull the `+` glyph back onto the card's text edge: a 28px ghost button
+     holds its 16px glyph 6px in. */
+  margin-left: -6px;
+}
+
+.br-composer-controls__spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The model chip may shrink (it truncates); Send never does. */
+.br-composer-controls__model {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+/* ── The mention and slash-command menu ─────────────────────────────────── */
+
+.br-mention-menu {
+  z-index: var(--z-modal-dropdown);
+}
+
+/* @ws WS-COMPOSER end: the chat composer's own recipes */
