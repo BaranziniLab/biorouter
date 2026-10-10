@@ -327,6 +327,11 @@ interface ChatInputProps {
   };
   /** Real per-model usage rows from the token ledger (Issue #1 breakdown). */
   modelCostRows?: ModelCostRow[];
+  /**
+   * @deprecated Read by nothing: the composer has no entrance of its own (the
+   * route's one fade belongs to `useRouteFade`). Kept only until BaseChat stops
+   * passing it; then delete.
+   */
   disableAnimation?: boolean;
   workflow?: Workflow | null;
   workflowAccepted?: boolean;
@@ -377,7 +382,6 @@ export default function ChatInput({
   accumulatedOutputTokens,
   messagesLength = 0,
   workingDirLocked,
-  disableAnimation = false,
   sessionCosts,
   modelCostRows,
   workflowAccepted,
@@ -2193,7 +2197,7 @@ export default function ChatInput({
         if (!sessionId) {
           toastWarning({
             title: 'Start a chat first',
-            msg: '/diverge continues an existing conversation in a new chat. Send a message before using it.',
+            msg: '/diverge continues a chat in a new one. Send a message before using it.',
           });
           return;
         }
@@ -2775,7 +2779,7 @@ export default function ChatInput({
     // The drop target is the WRAPPER, so a file dropped on the footer still
     // attaches.
     <div
-      className={cn('relative flex w-full flex-col gap-1', !disableAnimation && 'page-transition')}
+      className="relative flex w-full flex-col gap-1"
       data-drop-zone="true"
       data-drag-active={isDraggingOver ? 'true' : 'false'}
       onDrop={handleLocalDrop}

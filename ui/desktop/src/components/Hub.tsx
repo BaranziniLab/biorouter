@@ -117,8 +117,9 @@ export default function Hub({
               carries, on the same `mx-3` rails. Home is the route the app
               LAUNCHES on, and a switch turned off outside the app takes effect
               at a launch, so a note that only chats carried would first be
-              seen after the user had already started one. */}
-          <PrivacyTiersOffNote className="mx-3 mb-2" />
+              seen after the user had already started one. The notices above a
+              composer stack 4px apart (spec 3.7). */}
+          <PrivacyTiersOffNote className="mx-3 mb-1" />
           <ChatInput
             sessionId={null}
             // Home's composer is left and come back to like a tab's: what it
@@ -139,7 +140,6 @@ export default function Hub({
             droppedFiles={[]}
             onFilesProcessed={() => {}}
             messagesLength={0}
-            disableAnimation={false}
             sessionCosts={undefined}
             toolCount={0}
             onWorkingDirChange={setWorkingDir}

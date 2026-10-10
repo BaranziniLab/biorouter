@@ -8,6 +8,7 @@ import {
   X,
 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { Textarea } from './ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import type { UserAttachment } from '../types/message';
 import { ResourceRefText } from './ResourceRefChip';
@@ -367,15 +368,18 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
             {editingMessage === message.id ? (
               <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1">
-                <textarea
+                {/* The shared field (spec 2.6): the control edge, the app's
+                    focus, three rows at least. */}
+                <Textarea
                   value={splitComposerText(editContent).body}
                   onChange={(e) =>
                     setEditContent(
                       joinComposerText(e.target.value, splitComposerText(editContent).refs)
                     )
                   }
-                  className="w-full resize-none rounded-element border border-border-subtle bg-background-default px-2 py-1 text-secondary focus:border-border-strong"
-                  rows={Math.max(1, Math.min(Math.ceil(editContent.length / 60), 4))}
+                  aria-label={COPY.fallbackLabel}
+                  className="resize-none text-secondary"
+                  rows={Math.min(Math.ceil(editContent.length / 60), 4)}
                   autoFocus
                 />
                 <div className="flex gap-1">

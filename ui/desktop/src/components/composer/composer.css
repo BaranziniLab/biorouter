@@ -253,6 +253,58 @@
   color: var(--text-default);
 }
 
+/* A quotation (`QuotedTextChip`): the markdown blockquote's recipe, a 2px rule
+   and 12px of air with no fill, so it never draws a box inside the card or a
+   message bubble. The source on one line, the words under it, four lines at
+   most before they scroll. */
+.br-quote-chip {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding-left: 12px;
+  border-left: 2px solid var(--border-strong);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.br-quote-chip__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.br-quote-chip__source {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-default);
+}
+
+.br-quote-chip__text {
+  max-height: calc(4 * var(--text-secondary--line-height));
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+/* Inside the queue's one line the quote folds to one line too: the source,
+   then the words, cut with an ellipsis. */
+.br-queue-text .br-quote-chip__body {
+  flex-direction: row;
+  gap: 4px;
+}
+
+.br-queue-text .br-quote-chip__text {
+  max-height: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* ── The text ──────────────────────────────────────────────────────────── */
 
 /* The field sizes to what is typed, one line to ten (14px on a 20px line, plus
@@ -306,6 +358,32 @@
 
 .br-mention-menu {
   z-index: var(--z-modal-dropdown);
+  /* The menus' one entrance (spec 2.6): fade in, from 97% and 4px toward the
+     caret below it, over `--dur-fast-max`. Written with the individual
+     `translate` and `scale` properties so it composes with the inline
+     `transform` that lifts the menu above the caret; `top left` of the box is
+     the menu's bottom corner once lifted, the corner nearest the caret. */
+  transform-origin: top left;
+  animation: br-mention-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+@keyframes br-mention-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+    scale: 0.97;
+  }
+  to {
+    opacity: 1;
+    translate: none;
+    scale: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-mention-menu {
+    animation-name: br-fade-in;
+  }
 }
 
 /* The list is driven from the textarea, so the highlight follows

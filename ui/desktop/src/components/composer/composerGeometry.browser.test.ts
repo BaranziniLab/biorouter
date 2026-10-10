@@ -13,7 +13,10 @@
  *  - the controls row is 32px, the `+` glyph sits on the text's left edge, and
  *    Send ends the row at the card's inner right edge;
  *  - a queue row is 28px and its actions appear only on hover;
- *  - an image thumbnail is 48px and its loading scrim is translucent.
+ *  - an image thumbnail is 48px and its loading scrim is translucent;
+ *  - a quotation is a 2px rule with no fill (never a box in the card), its
+ *    words stop at four lines, and in a queue row it folds to the row's line;
+ *  - the mention menu enters with the menus' one animation.
  *
  * The class names below are asserted to be the ones `ChatInput.tsx` and the
  * composer components use, so this markup cannot drift from the real one
@@ -38,12 +41,14 @@ const TOKENS = `:root {
   --radius-element: 8px;
   --border-subtle: #e5e3df;
   --border-danger: #c0392b;
+  --border-strong: #d2d2cd;
   --background-muted: #f4f3f1;
   --overlay-hover: rgb(31 30 28 / 0.05);
   --scrim: rgba(31, 30, 28, 0.18);
   --text-default: #1f1e1c;
   --text-muted: #6b6862;
   --dur-fast-min: 0ms;
+  --dur-fast-max: 0ms;
   --ease-out: linear;
   --z-modal-dropdown: 500;
 }
@@ -60,6 +65,12 @@ const CARD = `display: flex; flex-direction: column; width: 640px; border: 1px s
 const BUTTON = (size: number) =>
   `display: inline-flex; align-items: center; justify-content: center; width: ${size}px; height: ${size}px; flex: none;`;
 const GLYPH = 'display: block; width: 16px; height: 16px; background: #000;';
+/** `QuotedTextChip`'s markup; the words at `text-secondary`'s 13/18. */
+const QUOTE = (id: string, words: string) =>
+  `<span id="${id}" class="br-quote-chip"><span class="br-quote-chip__body">` +
+  `<span class="br-quote-chip__source">Response</span>` +
+  `<span id="${id}-text" class="br-quote-chip__text" style="font-size: 13px; line-height: 18px">${words}</span>` +
+  `</span></span>`;
 
 const MARKUP = `
 <div id="card" style="${CARD}">
@@ -72,6 +83,10 @@ const MARKUP = `
           <button style="${BUTTON(24)}">x</button>
         </div>
       </li>
+      <li id="queue-quote-row" class="br-queue-row">
+        <span class="br-queue-arrow">↳</span>
+        <button class="br-queue-text br-queue-edit">${QUOTE('queue-quote', 'a\nquoted\nreply')}</button>
+      </li>
     </ul>
   </div>
   <ul class="br-composer-chips">
@@ -80,6 +95,7 @@ const MARKUP = `
         <div id="scrim" class="br-composer-thumb__scrim"></div>
       </div>
     </li>
+    <li>${QUOTE('quote', Array.from({ length: 6 }, (_, i) => `line ${i}`).join('\n'))}</li>
   </ul>
   <textarea id="text" rows="1" class="br-composer-input"
     style="display: block; width: 100%; resize: none; border: 0; padding: 6px 0; line-height: 20px; font-size: 14px;"></textarea>
@@ -90,7 +106,8 @@ const MARKUP = `
     <div class="br-composer-controls__model"><button style="height: 28px; padding: 0 8px;">gpt-5.6-sol</button></div>
     <button id="send" style="${BUTTON(32)}"><i style="${GLYPH}"></i></button>
   </div>
-</div>`;
+</div>
+<div id="mention" class="br-mention-menu" style="position: fixed; left: 40px; top: 860px; width: 320px; height: 64px; transform: translateY(-100%)"></div>`;
 
 const launchChromium = async (): Promise<Browser | null> => {
   for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
@@ -136,6 +153,8 @@ describe('the composer recipes in a real layout engine', () => {
       read('../ChatInput.tsx'),
       read('ComposerChips.tsx'),
       read('../MessageQueue.tsx'),
+      read('../QuotedTextChip.tsx'),
+      read('../MentionPopover.tsx'),
     ].join('\n');
     for (const name of [
       'br-composer-input',
@@ -147,6 +166,11 @@ describe('the composer recipes in a real layout engine', () => {
       'br-composer-thumb__scrim',
       'br-queue-row',
       'br-queue-actions',
+      'br-quote-chip',
+      'br-quote-chip__body',
+      'br-quote-chip__source',
+      'br-quote-chip__text',
+      'br-mention-menu',
     ]) {
       expect(source, name).toContain(name);
     }
@@ -208,5 +232,44 @@ describe('the composer recipes in a real layout engine', () => {
     const alpha = Number(/rgba\([^)]*,\s*([\d.]+)\)/.exec(background)?.[1] ?? '1');
     expect(alpha).toBeGreaterThan(0);
     expect(alpha).toBeLessThan(1);
+  });
+
+  it('draws a quotation as a 2px rule with no fill, its words capped at four lines', async (ctx) => {
+    if (!page) return ctx.skip();
+    const style = await page.$eval('#quote', (el) => {
+      const cs = getComputedStyle(el);
+      return {
+        background: cs.backgroundColor,
+        left: cs.borderLeftWidth,
+        top: cs.borderTopWidth,
+        padding: cs.paddingLeft,
+      };
+    });
+    expect(style.background).toBe('rgba(0, 0, 0, 0)');
+    expect(style.left).toBe('2px');
+    expect(style.top).toBe('0px');
+    // The words sit 12px inside the rule.
+    expect((await box('#quote-text')).x - (await box('#quote')).x).toBe(2 + 12);
+    expect((await box('#quote-text')).height).toBe(4 * 18);
+    const scrolls = await page.$eval('#quote-text', (el) => el.scrollHeight > el.clientHeight);
+    expect(scrolls).toBe(true);
+  });
+
+  it('folds a quotation in a queue row to the row line', async (ctx) => {
+    if (!page) return ctx.skip();
+    expect((await box('#queue-quote-row')).height).toBe(28);
+    expect((await box('#queue-quote-text')).height).toBe(18);
+  });
+
+  it('opens the mention menu with the menus entrance, composed with its lift', async (ctx) => {
+    if (!page) return ctx.skip();
+    const motion = await page.$eval('#mention', (el) => {
+      const cs = getComputedStyle(el);
+      return { name: cs.animationName, origin: cs.transformOrigin, transform: cs.transform };
+    });
+    expect(motion.name).toBe('br-mention-in');
+    expect(motion.origin).toBe('0px 0px');
+    // The inline lift is untouched by the animation (it moves `translate` and `scale`).
+    expect(motion.transform).toBe('matrix(1, 0, 0, 1, 0, -64)');
   });
 });
