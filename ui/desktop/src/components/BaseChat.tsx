@@ -1358,7 +1358,6 @@ function BaseChatContent({
     string[] | null | undefined
   >(undefined);
 
-  const disableAnimation = location.state?.disableAnimation || false;
   const [hasStartedUsingWorkflow, setHasStartedUsingWorkflow] = React.useState(false);
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
@@ -2422,7 +2421,7 @@ function BaseChatContent({
         of it is too. A subagent's tab in a browser loses its composer, not the
         notice that every gate on this machine is off.
       */}
-      <PrivacyTiersOffNote className="mx-3 mb-2" />
+      <PrivacyTiersOffNote className="mx-3 mb-1" />
       {/*
         SD-8: in a browser, a delegated subagent's chat gets the reason it has
         no composer IN PLACE of everything below — the continuation banner's
@@ -2491,13 +2490,14 @@ function BaseChatContent({
 
         ⚠ NOT inside `ChatInput`: that component is one card and a footer line
         held together by a 4px gap, and a block inside it would join the group
-        and read as more chrome on the input. `mb-2` puts this outside it.
+        and read as more chrome on the input. The notices stack 4px apart above the
+        card (spec 3.7), so one reads as a quiet line over it, not as part of it.
 
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
-        <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
-        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-2" />
+        <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-1" />
+        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-1" />
         {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
         <PendingChatModelContext.Provider value={pendingChatModelScope}>
           <ChatInput
@@ -2539,7 +2539,6 @@ function BaseChatContent({
             onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
             messagesLength={messages.length}
             workingDirLocked={workingDirLocked}
-            disableAnimation={disableAnimation}
             sessionCosts={sessionCosts}
             modelCostRows={modelRows}
             workflow={workflow}

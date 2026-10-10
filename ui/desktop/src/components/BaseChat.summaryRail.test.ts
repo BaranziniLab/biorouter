@@ -101,6 +101,19 @@ describe('BaseChat: the edits it applies for other areas', () => {
     expect(card).toContain('summaryCopy.loadError.action');
   });
 
+  it('stacks the notices above the composer 4px apart and passes ChatInput no animation flag', () => {
+    // Spec 3.7: PrivacyTiersOffNote, PinnedModelNote and the crew access bar keep a 4px gap
+    // (Home's Hub uses the same), so a notice reads as a quiet line over the card.
+    for (const notice of ['PrivacyTiersOffNote', 'PinnedModelNote', 'ChatCrewAccessBar']) {
+      const tag = code.match(new RegExp(`<${notice}\\b[^>]*?/>`))?.[0] ?? '';
+      expect(tag, notice).toContain('mb-1');
+      expect(tag, notice).not.toContain('mb-2');
+    }
+    // ChatInput ignores it (the route's one fade is useRouteFade), so BaseChat stops reading it.
+    expect(code).not.toMatch(/disableAnimation=\{/);
+    expect(code).not.toContain('location.state?.disableAnimation');
+  });
+
   it('renames through the one shared helper', () => {
     expect(code).toMatch(/await renameSessionOptimistically\(/);
   });
