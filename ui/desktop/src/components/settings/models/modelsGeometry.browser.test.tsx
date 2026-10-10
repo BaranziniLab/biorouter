@@ -384,9 +384,14 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
               .map((button) => rect(button)),
             menus: rows.map((row) => {
               const button = row.querySelector('button[aria-label^="More actions"]')!;
+              const meta = row.querySelector('.br-row-actions-meta');
               return {
                 box: rect(button),
                 opacity: Number(getComputedStyle(button.closest('.br-row-actions')!).opacity),
+                // An installed row's quiet status; the ⋯ takes its cell over on hover.
+                meta: meta
+                  ? { box: rect(meta), opacity: Number(getComputedStyle(meta).opacity) }
+                  : null,
               };
             }),
           };
@@ -401,6 +406,18 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
         near(menu.box.right, before.change.right, 'the ⋯ against the Change… button');
         expect(menu.opacity).toBe(0);
       }
+
+      // Only the installed model says "Installed", on the same right edge as the ⋯ and the buttons.
+      expect(before.menus[0].meta).not.toBeNull();
+      expect(before.menus[1].meta).toBeNull();
+      near(before.menus[0].meta!.box.right, before.change.right, 'Installed against Change…');
+      expect(before.menus[0].meta!.opacity).toBe(1);
+
+      await tab.locator('[data-testid="local-model-gemma4"]').hover();
+      await tab.waitForTimeout(250);
+      const installedHover = await measure();
+      expect(installedHover.menus[0].meta!.opacity).toBe(0);
+      expect(installedHover.menus[0].opacity).toBe(1);
 
       await tab.locator('[data-testid="local-model-gemma4-12b"]').hover();
       await tab.waitForTimeout(250);

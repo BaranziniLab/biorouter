@@ -144,12 +144,17 @@ describe('LocalModelInventory', () => {
     expect(await screen.findByRole('button', { name: 'Install Gemma 4 E4B' })).toBeEnabled();
     expect(screen.queryByText(localModelsCopy.warmUp)).not.toBeInTheDocument();
 
+    expect(screen.queryByText(localModelsCopy.installed)).not.toBeInTheDocument();
+
     mockLlamacppStatus.mockResolvedValue(
       statusResponse({}, { downloaded: true, download_status: 'downloaded' })
     );
     fireEvent.click(screen.getByRole('button', { name: localModelsCopy.refresh }));
     await screen.findByText('1 of 1 installed');
     expect(screen.queryByRole('button', { name: 'Install Gemma 4 E4B' })).not.toBeInTheDocument();
+    // An installed row says so, quietly, in the cell its ⋯ takes over on hover.
+    const installed = screen.getByText(localModelsCopy.installed);
+    expect(installed.closest('.br-row-actions-meta')).not.toBeNull();
   });
 
   it('says a model is large for this Mac only when it is above the recommendation', async () => {

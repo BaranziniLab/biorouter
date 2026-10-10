@@ -32,6 +32,8 @@ export const localModelsCopy = {
   installedCount: (installed: number, total: number) => `${installed} of ${total} installed`,
   refresh: 'Refresh local models',
   install: 'Install',
+  /** The quiet status an installed row shows at rest; the ⋯ takes its place on hover. */
+  installed: 'Installed',
   installing: 'Installing',
   more: (name: string) => `More actions for ${name}`,
   viewInfo: 'View info',

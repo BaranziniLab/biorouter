@@ -21,6 +21,7 @@ import { RowActions, RowContextMenu, type RowActionItem } from '../../ui/row-act
 import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
 import { Spinner } from '../../ui/spinner';
+import { StatusDot } from '../../ui/status-dot';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
@@ -508,6 +509,15 @@ export default function LocalModelInventory() {
                     menu={items}
                     size="sm"
                     menuLabel={localModelsCopy.more(model.display_name)}
+                    // What an installed row says at rest, in the cell the ⋯ takes over on hover.
+                    meta={
+                      installed ? (
+                        <span className="br-local-model-installed">
+                          <StatusDot tone="success" />
+                          {localModelsCopy.installed}
+                        </span>
+                      ) : undefined
+                    }
                   />
                 </div>
               </div>
