@@ -28,7 +28,6 @@ export const localModelsCopy = {
   section: 'Local models',
   sectionHelp:
     'Models that run on this computer, so chats with them never leave it. Each one downloads once.',
-  checking: 'Checking local models…',
   /** "2 of 7 installed", the section's count. */
   installedCount: (installed: number, total: number) => `${installed} of ${total} installed`,
   refresh: 'Refresh local models',
@@ -37,9 +36,7 @@ export const localModelsCopy = {
   more: (name: string) => `More actions for ${name}`,
   viewInfo: 'View info',
   warmUp: 'Warm up',
-  warmingUp: 'Warming up',
   delete: 'Delete',
-  deleting: 'Deleting',
   retry: 'Retry',
   /** The one warning word a row shows, and only when the model is bigger than the machine's memory. */
   largeForThisMac: 'Large for this Mac',

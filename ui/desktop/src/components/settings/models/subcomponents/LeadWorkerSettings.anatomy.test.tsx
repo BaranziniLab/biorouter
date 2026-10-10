@@ -63,6 +63,8 @@ describe('LeadWorkerSettings anatomy', () => {
     ).toBeInTheDocument();
     // The InfoTip is a sibling of the label, so it cannot flip the switch.
     expect(toggle.closest('label')).toBeNull();
+    // And it is described by it, so a screen reader hears the help on reaching the switch.
+    expect(toggle).toHaveAccessibleDescription(leadWorkerCopy.modeHelp);
   });
 
   it('labels both model fields and gives each its own InfoTip', async () => {

@@ -4,7 +4,7 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { Button } from '../../../ui/button';
 import { Select } from '../../../ui/Select';
 import { Input } from '../../../ui/input';
-import { InfoTip } from '../../../ui/info-tip';
+import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { Switch } from '../../../ui/switch';
 import { Skeleton } from '../../../ui/skeleton';
 import { ModalShell } from '../../../ModalShell';
@@ -81,6 +81,8 @@ const renderLeadWorkerOption = (rawOption: unknown, meta: { context: 'menu' | 'v
 
 export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps) {
   const { read, upsert, getProviders, getProviderModels, remove } = useConfig();
+  // The switch hears its explanation when it is reached, not only when the glyph is hovered.
+  const modeHelpId = useInfoTipId();
   const { currentModel } = useModelAndProvider();
   const [leadModel, setLeadModel] = useState<string>('');
   const [workerModel, setWorkerModel] = useState<string>('');
@@ -326,6 +328,9 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           <Button
             onClick={handleSave}
             disabled={hostManaged || barred || (isEnabled && (!leadModel || !workerModel))}
+            // The name is set here so AppTooltipLayer does not turn the reason into it (it copies
+            // a `title` into `aria-label` on a control that has neither a label nor a name).
+            aria-label={leadWorkerCopy.save}
             title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
           >
             {leadWorkerCopy.save}
@@ -341,9 +346,14 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             <label htmlFor="enable-lead-worker" className="text-label text-text-default">
               {leadWorkerCopy.mode}
             </label>
-            <InfoTip label={leadWorkerCopy.mode} help={leadWorkerCopy.modeHelp} />
+            <InfoTip label={leadWorkerCopy.mode} help={leadWorkerCopy.modeHelp} id={modeHelpId} />
           </div>
-          <Switch id="enable-lead-worker" checked={isEnabled} onCheckedChange={setIsEnabled} />
+          <Switch
+            id="enable-lead-worker"
+            checked={isEnabled}
+            onCheckedChange={setIsEnabled}
+            aria-describedby={modeHelpId}
+          />
         </div>
 
         <div className="br-model-fields" data-enabled={isEnabled ? 'true' : 'false'}>
@@ -541,16 +551,18 @@ function NumberRow({
   onChange: (value: number) => void;
   disabled: boolean;
 }) {
+  const helpId = useInfoTipId();
   return (
     <div className="br-model-form-row">
       <div className="br-model-form-head">
         <label htmlFor={id} className="text-label text-text-default">
           {label}
         </label>
-        <InfoTip label={label} help={help} />
+        <InfoTip label={label} help={help} id={helpId} />
       </div>
       <Input
         id={id}
+        aria-describedby={helpId}
         type="number"
         min={min}
         max={max}

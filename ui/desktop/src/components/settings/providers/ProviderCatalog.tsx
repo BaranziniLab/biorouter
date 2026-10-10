@@ -531,7 +531,7 @@ export default function ProviderCatalog({
           tone="warning"
           role="status"
           testId="azure-retired-endpoint-notice"
-          className="mx-4 mb-2"
+          className="mx-3 mb-2"
           action={
             <Button
               size="sm"

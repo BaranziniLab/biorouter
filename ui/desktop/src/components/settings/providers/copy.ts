@@ -42,7 +42,6 @@ export const customProviderCopy = {
   apiUrl: 'API URL',
   apiKey: 'API key',
   models: 'Available models',
-  modelsHelp: 'Separate the names with commas.',
   localModel: 'This is a local model (no auth required)',
   streaming: 'Provider supports streaming responses',
   cancel: 'Cancel',

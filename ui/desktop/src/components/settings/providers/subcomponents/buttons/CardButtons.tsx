@@ -2,6 +2,7 @@ import React from 'react';
 import { Button } from '../../../../ui/button';
 import clsx from 'clsx';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../../ui/Tooltip';
+import { catalogCopy } from '../../copy';
 
 interface ActionButtonProps extends React.ComponentProps<typeof Button> {
   /** Icon component to render, e.g. `RefreshCw` from lucide-react */
@@ -57,7 +58,7 @@ export function ConfigureSettingsButton({ tooltip, className, text, ...props }: 
     <ActionButton
       tooltip={tooltip}
       variant="secondary"
-      text={text ?? 'Configure'}
+      text={text ?? catalogCopy.configure}
       className={clsx('cursor-pointer', className)}
       {...props}
     />
@@ -71,7 +72,7 @@ export function RocketButton({ tooltip, className, text, ...props }: ActionButto
       data-testid="provider-launch-button"
       tooltip={tooltip}
       variant="secondary"
-      text={text ?? 'Launch'}
+      text={text ?? catalogCopy.launch}
       className={clsx('cursor-pointer', className)}
       {...props}
     />
