@@ -91,7 +91,7 @@ import { startChatFailureNotice } from '../utils/startChatFailure';
 import { restoreComposerText } from '../utils/composerRestore';
 import { composerDraftKeyForTab, existingChatComposerDraftKey } from '../utils/composerDrafts';
 import { Greeting } from './common/Greeting';
-import { navigateWithViewTransition } from '../utils/navigationUtils';
+import { navigateToRoute } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import { useArtifactPanel } from './artifacts/useArtifactPanel';
@@ -1927,7 +1927,7 @@ function BaseChatContent({
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
-        navigateWithViewTransition(
+        navigateToRoute(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
           {
