@@ -33,12 +33,16 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge({
   extend: {
     theme: {
+      // `heading` and `display` are deprecated aliases of `subheading` and
+      // `title` (redesign 2026-10). They stay registered until their last call
+      // sites move, then leave this list in the same change as `main.css`.
       text: [
         'display',
         'title',
         'heading',
         'subheading',
         'body',
+        'prose',
         'label',
         'secondary',
         'supporting',
@@ -65,6 +69,7 @@ const twMerge = extendTailwindMerge({
         'tab',
         'row',
         'row-rail',
+        'row-nav',
         'dialog-sm',
         'dialog-md',
         'dialog-lg',
@@ -74,7 +79,6 @@ const twMerge = extendTailwindMerge({
         'measure-graph',
         'knowledge-rail-sources',
         'knowledge-rail-detail',
-        'knowledge-subject-height',
         'knowledge-filter-height',
       ],
       // All five elevations, not just the new one. The four that shipped before

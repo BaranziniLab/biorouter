@@ -81,7 +81,8 @@
   --font-heading: var(--font-body); /* a family may re-point this; body is the default */
   --font-code: var(--font-mono);
 
-  /* ── Type: semantic roles on a 14px base, 4px grid (Astryx A-02) ──────────
+  /* @ws WS-TOKENS begin: type roles */
+  /* ── Type: five sizes, two visible weights (redesign 2026-10, spec §2.1) ──
      The canonical scale was documented in design.md and had NO tokens, so
      Tailwind's defaults stood in and the two most characteristic steps had no
      utility at all — which is how the app accumulated 149 × `text-[11px]`,
@@ -90,7 +91,20 @@
      These are ROLES, not sizes: a row title is `text-label` because it labels a
      control, and it stays `text-label` if the size ever changes. Each carries
      its own line-height, weight and tracking, so a call site can no longer pick
-     14px and forget the 500 weight that makes it a control label.
+     14px and forget the weight that makes it a control label.
+
+     THE SCALE IS 12 · 13 · 14 · 17 · 24, and nothing else renders. Crew already
+     lived on 12/13/14 with 17 for one title; the 2026-10 redesign brought the
+     rest of the app onto the same five steps and retired 10, 11, 15, 16, 19,
+     20, 28 and 30. `text-caps` moved from 11px to 12px so the caps label is not
+     a sixth size, and `text-heading` / `text-display` became aliases of
+     `text-subheading` / `text-title` until their last call sites move (wave 2
+     deletes both names here and in `src/utils.ts`).
+
+     TWO VISIBLE WEIGHTS. The face is Arial (the website's stack), which draws
+     400 and 700 only: 500 renders as 400 and 600 as 700 (measured, typography
+     audit §5). So a state must never be carried by 500 alone; 600 is the one
+     strong weight, and it is drawn as bold.
 
      NAMESPACE HAZARD: Tailwind v4 requires font-size tokens to live under
      `--text-*`, which is also what this app names its ink COLOURS in `:root`
@@ -99,30 +113,50 @@
      so `text-text-muted` is ink and `text-supporting` is a size — but never add
      a colour to this block, or `text-danger` would silently become a font size.
 
-     Nothing below 11px exists. Anything smaller is deleted, not migrated. */
-  --text-display: 30px; /* metric readouts */
-  --text-display--line-height: 36px;
-  --text-display--font-weight: 400;
-  --text-display--letter-spacing: -0.01em;
+     Nothing below 12px exists. Anything smaller is deleted, not migrated. */
 
-  --text-title: 24px; /* page titles */
+  /* DEPRECATED alias of `text-title` (was 30/36, "metric readouts"). Two call
+     sites remain (`settings/app/UpdateSection.tsx`, `AppSettingsSection.tsx`);
+     their owner moves them to `text-title`, then wave 2 deletes the role. */
+  --text-display: var(--text-title);
+  --text-display--line-height: var(--text-title--line-height);
+  --text-display--font-weight: var(--text-title--font-weight);
+  --text-display--letter-spacing: var(--text-title--letter-spacing);
+
+  /* The one large step: the Home greeting, the document h1, the preview's
+     front-matter title and stat values (with `tabular-nums`). Weight 400, not
+     600 (owner decision 6.2): at 24px the size carries the hierarchy, and a
+     bold Arial headline is the loudest thing on any screen it sits on. */
+  --text-title: 24px;
   --text-title--line-height: 32px;
-  --text-title--font-weight: 600;
+  --text-title--font-weight: 400;
   --text-title--letter-spacing: -0.01em;
 
-  --text-heading: 20px; /* section headings, markdown h1 */
-  --text-heading--line-height: 28px;
-  --text-heading--font-weight: 600;
+  /* DEPRECATED alias of `text-subheading` (was 20/28). One CSS use remains
+     (the copy-field code display); wave 2 deletes the role. */
+  --text-heading: var(--text-subheading);
+  --text-heading--line-height: var(--text-subheading--line-height);
+  --text-heading--font-weight: var(--text-subheading--font-weight);
 
-  --text-subheading: 17px; /* card and panel titles, markdown h2, empty-state titles */
+  /* Dialog titles, empty-state titles, markdown h1 and h2 in chat, markdown h2
+     in documents. */
+  --text-subheading: 17px;
   --text-subheading--line-height: 24px;
   --text-subheading--font-weight: 600;
 
-  --text-body: 14px; /* message text, prose, table cells */
+  --text-body: 14px; /* UI prose and values */
   --text-body--line-height: 20px;
   --text-body--font-weight: 400;
 
-  --text-label: 14px; /* EVERY control's text, row titles, markdown h3 */
+  /* Reading text: chat markdown, document prose and Crew messages. The same 14px
+     as `text-body` on a 21px line, the measure Crew's timeline already reads at
+     (`crew/timeline/timeline.css`), instead of chat's old 1.7 (23.8px). One
+     reading rhythm for every message in the app. */
+  --text-prose: 14px;
+  --text-prose--line-height: 21px;
+  --text-prose--font-weight: 400;
+
+  --text-label: 14px; /* control text, row titles, band titles, field labels */
   --text-label--line-height: 20px;
   --text-label--font-weight: 500;
 
@@ -131,43 +165,53 @@
      14px does not fit a 34px strip beside 12px metadata" and each invented its
      own way out. One exception, written once, beats a new role per section.
 
-     The rule: a control's text is `text-label`. The single exception is a
-     control inside a dense strip (<=36px) whose neighbours are metadata — it
-     takes `text-secondary`. It does NOT drop to `text-supporting`; a control
-     that renders at metadata size stops looking like something you can press.
-     Do not add a `text-control-dense`: Astryx's own rule is that font size does
-     not change with control height, and this one exception is the whole
-     concession to a surface that genuinely runs denser. */
-  --text-secondary: 13px; /* tab labels, menu rows, dense descriptions, dense controls */
+     The rule: a control's text is `text-label`. The exception is a control
+     inside a dense strip (<=36px) whose neighbours are metadata, and the
+     redesign's dense lists (sidebar rows, menu rows, tab labels, segmented
+     labels, tool-call rows, table cells, composer controls) — they take
+     `text-secondary`. It does NOT drop to `text-supporting`; a control that
+     renders at metadata size stops looking like something you can press. Do
+     not add a `text-control-dense`: font size does not change with control
+     height, and this one exception is the whole concession to a surface that
+     genuinely runs denser. */
+  --text-secondary: 13px;
   --text-secondary--line-height: 18px;
   --text-secondary--font-weight: 400;
 
-  --text-supporting: 12px; /* timestamps, metadata, captions, counts */
+  /* Metadata, times, counts, helper and tooltip text, sidebar bucket and group
+     labels, menu group labels, table heads, footnotes. */
+  --text-supporting: 12px;
   --text-supporting--line-height: 16px;
   --text-supporting--font-weight: 400;
 
   /* The chip role. 12/500 is what the design of record specifies for a chip and
      what the role set was missing, which is why `badge.tsx` was still carrying a
      raw `text-[11px] font-medium` after every other primitive had moved: no role
-     could serve it. `text-caps` bakes in uppercase and +0.08em tracking, both
-     wrong on a sentence-case chip; `text-supporting` is 12/400 and would drop
-     the weight that makes a chip read as a discrete object rather than as
-     metadata that happens to have a background.
+     could serve it. `text-caps` bakes in uppercase and tracking, both wrong on a
+     sentence-case chip; `text-supporting` is 12/400.
 
      It shares a size with `text-supporting` and differs only in weight, and that
-     is the distinction: supporting text is READ, a chip is COUNTED. */
+     is the distinction: supporting text is READ, a chip is COUNTED. (Under Arial
+     the 500 renders as 400, so a chip is told apart by its ground, never by its
+     weight alone.) */
   --text-chip: 12px;
   --text-chip--line-height: 16px;
   --text-chip--font-weight: 500;
 
-  --text-caps: 11px; /* section labels — the ONE caps style */
+  /* The ONE caps style, for page section labels only (Settings sections, view
+     group labels, Crew). 12px, not 11: a sixth size for one label was the
+     price of the old value. The tracking halves to +0.04em because 12px caps
+     need less air than 11px ones did. Sidebar group headers, menu group labels
+     and bucket labels are sentence case at `text-supporting`, never caps. */
+  --text-caps: 12px;
   --text-caps--line-height: 16px;
   --text-caps--font-weight: 500;
-  --text-caps--letter-spacing: 0.08em;
+  --text-caps--letter-spacing: 0.04em;
 
   --text-code: 13px; /* code blocks and terminal — byte-identical to each other */
   --text-code--line-height: 20px;
   --text-code--font-weight: 400;
+  /* @ws WS-TOKENS end: type roles */
 
   /* ── Motion defaults ──────────────────────────────────────────────────────
      Tailwind ships its own 150ms / cubic-bezier(0.4, 0, 0.2, 1) and was never
@@ -258,6 +302,7 @@
      `--radius-container`. */
   --radius-full: 9999px;
 
+  /* @ws WS-TOKENS begin: motion tokens */
   /* ── Duration: three tiers, min / default / max (Astryx §5) ───────────────
      The governing rule is legible in the values: THE BIGGER THE ELEMENT, THE
      SLOWER THE MOTION. A menu item answering the pointer at 450ms feels broken;
@@ -265,23 +310,32 @@
      by how important it is.
 
      Entrances are staged; EXITS ARE FAST OR INSTANT — an element you are
-     leaving must never delay you. */
-  --dur-fast-min: 95ms; /* menu-item hover, row hover, table rows — highest-frequency feedback */
-  --dur-fast: 125ms; /* buttons, switches, inputs, chips — control state changes */
-  --dur-fast-max: 175ms; /* menus, tooltips, the tab indicator */
-  --dur-med-min: 250ms; /* progress fill, small layout settles */
-  --dur-med: 300ms; /* sidebar collapse, panel resize, accordion, long-message expand */
-  --dur-med-max: 450ms; /* dialogs, the command palette */
+     leaving must never delay you. Every exit of a small surface takes
+     `--dur-fast`, one tier below its entrance, and travels half the distance.
+
+     JavaScript reads these as numbers from `styles/motion.ts` (`DUR`,
+     `EASE_OUT`, `EASE_SPRING`), because a WAAPI timing object cannot read a
+     custom property. `styles/motion.test.ts` pins each number to the line here:
+     change a value in both places or the test fails. */
+  --dur-fast-min: 95ms; /* row and menu-item hover, row-action reveal, tooltip exit */
+  --dur-fast: 125ms; /* control state changes; every exit of a small surface */
+  --dur-fast-max: 175ms; /* entrances of small surfaces, tab enter, crossfade in, chevrons */
+  --dur-med-min: 250ms; /* dialog enter, progress fill, side and stack crossfade */
+  --dur-med: 300ms; /* panels: preview, summary rail, conversation glide, sidebar, disclosure */
+  --dur-med-max: 450ms; /* DEPRECATED: no uses; deleted in the redesign's wave 2 */
   /* The slow tier has exactly one member. It is not "a slower dialog" — it is
-     the period of an ambient loop that never ends (the spinner), and giving it
-     min/max variants would invite it to be used for transitions. */
+     the period of an ambient loop that never ends (the spinner, the pulses), and
+     giving it min/max variants would invite it to be used for transitions. Loops
+     run on multiples of it: `calc(var(--dur-slow) * n)`. */
   --dur-slow: 525ms;
 
   /* Deprecated aliases. The three-token scale was correct; it just had no way to
      express the difference between a row hover and a tab indicator. Re-pointed
      rather than retuned, so existing sites shift by at most 5ms — except
      `--motion-slow`, which was 260ms and is now the 300ms medium tier it was
-     always describing. Sweep call sites to `--dur-*` and delete this block. */
+     always describing. Each owner sweeps its call sites to `--dur-*`
+     (fast → `--dur-fast`, base → `--dur-fast-max`, slow → `--dur-med`); the
+     redesign's wave 2 deletes this block. */
   --motion-fast: var(--dur-fast);
   --motion-base: var(--dur-fast-max);
   --motion-slow: var(--dur-med);
@@ -290,13 +344,15 @@
      two general-purpose easings has no easing — it has a coin flip at every call
      site, which is how this app ended up running four curves for one hover. */
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
-  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* DEPRECATED: defined, never used. Deleted in the sweep. */
-  /* Gentle overshoot for physical gestures — tab reorder/select settle and the
-     drag-ghost lift (#37). Reserved for TRANSFORMS: an overshooting colour or
-     opacity clamps and reads as a flicker, so colour keeps --ease-out.
-     This is the one sanctioned exception to "one curve"; it survives because the
-     tab-drag choreography is the best-reasoned motion in the app. */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* DEPRECATED: one stray use; deleted in wave 2. */
+  /* Gentle overshoot for physical gestures — tab reorder/select settle, the
+     drag-ghost lift (#37) and the segmented control's sliding thumb. Reserved
+     for TRANSFORMS: an overshooting colour or opacity clamps and reads as a
+     flicker, so colour keeps --ease-out. This is the one sanctioned exception
+     to "one curve"; it survives because the tab-drag choreography is the
+     best-reasoned motion in the app. */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* @ws WS-TOKENS end: motion tokens */
 
   /* ── Interaction tints (Astryx A-05) ─────────────────────────────────────
      Hover and press are INK AT AN ALPHA, composited over whatever ground the
@@ -335,6 +391,26 @@
      and lighter than `--border-strong` (which encloses). */
   --border-emphasized: color-mix(in oklab, var(--text-default) 24%, transparent);
 
+  /* @ws WS-TOKENS begin: control edges */
+  /* The resting EDGE of a control you operate: every input, checkbox, radio,
+     select trigger and the switch knob's ring (redesign spec §2.3). It replaces
+     `--border-emphasized` on those controls because ink at 24% measured 1.6:1 on
+     white, under the 3:1 a control's boundary owes (WCAG 1.4.11), so an empty
+     field or an unchecked box read as a smudge.
+
+     HEX, NOT A MIX, on purpose: `check-contrast.mjs` resolves hex only, and it
+     holds this edge to 3:1 on `--background-default` and `--background-card` in
+     all six scopes. The neutrals are shared by every family, so one light and
+     one dark value (`.dark` below) serve all three; no family block restates
+     them. Chosen against the switch, not just the field: the off knob's ring must
+     also clear 3:1 against `--control-track-off`, which is what keeps the track
+     a quiet step off the page rather than a mid-grey slab. */
+  --border-control: #86847f;
+  /* The Switch's off track: a visible step off the page (1.19:1) that the knob's
+     `--border-control` ring still clears at 3:1. */
+  --control-track-off: #ebebe8;
+  /* @ws WS-TOKENS end: control edges */
+
   /* ── Geometry: the control ladder and the bands (Astryx §2.3) ─────────────
      Every value below is already written down in the adoption document; what it
      did not have was a NAME, which is why the app runs four bar heights, four
@@ -368,7 +444,9 @@
 
   /* Icon boxes, named for WHERE the glyph sits, because that is the rule §3.8b
      states and the one the app breaks: never two sizes in one cluster. */
-  --icon-chip: 14px; /* inside a chip — nowhere else */
+  /* @ws WS-TOKENS begin: icon-chip note */
+  --icon-chip: 14px; /* inside a chip, and the inline help glyph (InfoTip) — nowhere else */
+  /* @ws WS-TOKENS end: icon-chip note */
   --icon-row: 16px; /* a row, a control, a toolbar: the default */
   --icon-banner: 20px; /* banners, empty states */
 
@@ -452,6 +530,13 @@
   /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
      select option) and the content list. They are separate because they answer
      different questions — a rail row is navigation, a content row is data. */
+  /* @ws WS-TOKENS begin: nav row */
+  /* The app sidebar's rows, and nothing else: 28px at 13px text (redesign
+     decision 6.1), the density of the Codex and Claude Code sidebars that the
+     owner asked for (message 12). Every other part of the row follows Crew's
+     recipe; Crew's own rail and every menu row keep `--row-height-rail`. */
+  --row-height-nav: 28px;
+  /* @ws WS-TOKENS end: nav row */
   --row-height-rail: 32px;
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode. A-03 retunes to 36px in phase 8. */
 
@@ -588,16 +673,17 @@
   --knowledge-rail-sources: 300px;
   --knowledge-rail-detail: 340px;
 
-  /* The Knowledge section's two in-page bands (redesign R-02, R-08). Both are
-     48px and NEITHER is `--chrome-height`: that 44px value is shared by the
-     three chrome bands that meet at one continuous top edge and move together
-     or not at all, and both of these sit inside the page. They are separate
-     tokens rather than one because they answer to different arguments — the
-     subject bar is sized by its switcher, the filter bar by a 32px control plus
-     real padding-block, which the 36px `--dock-height` it replaces did not
-     have (it left 2px of air above and below a 32px input). */
-  --knowledge-subject-height: 48px;
+  /* @ws WS-TOKENS begin: knowledge band token */
+  /* The Knowledge filter bar (redesign R-02, R-08): 48px, and NOT
+     `--chrome-height`: that 44px value is shared by the three chrome bands that
+     meet at one continuous top edge and move together or not at all, and this
+     bar sits inside the page. It is sized by a 32px control plus real
+     padding-block, which the 36px `--dock-height` it replaces did not have (it
+     left 2px of air above and below a 32px input). Its sibling
+     `--knowledge-subject-height` had no reader left and was deleted in the
+     2026-10 redesign. */
   --knowledge-filter-height: 48px;
+  /* @ws WS-TOKENS end: knowledge band token */
 
   /* The pane ladder (R-08). Container-query breakpoints, NOT viewport ones —
      the section's one `md:` media query tests the window while the thing that
@@ -918,6 +1004,12 @@
   --border-subtle: #302f2c;
   --border-strong: var(--color-neutral-700);
   --border-input: #4a4945;
+  /* @ws WS-TOKENS begin: control edges (dark) */
+  /* See the light pair in `:root`. 4.31:1 on the page and the card; the off
+     track sits 1.36:1 off the page and the knob ring clears 3:1 against it. */
+  --border-control: #817f7a;
+  --control-track-off: #33332f;
+  /* @ws WS-TOKENS end: control edges (dark) */
   --border-default: var(--border-subtle);
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
@@ -946,7 +1038,12 @@
   --background-focus: #35342f;
   --border-focus: #9c9a93;
 
-  --heat-0: #1e1d1b;
+  /* @ws WS-TOKENS begin: dark heat-0 */
+  /* One step up from #1e1d1b, which measured 1.02:1 on the card and left a
+     zero day invisible. 1.33:1 on `--background-card`, held at 1.3 by
+     `check-contrast.mjs`. Each family file sets the same value. */
+  --heat-0: #32312e;
+  /* @ws WS-TOKENS end: dark heat-0 */
   --heat-1: #4a3524;
   --heat-2: #7a4d2e;
   --heat-3: #b0653a;
@@ -1165,7 +1262,7 @@
   --ring: #a5a39d;
   --background-focus: #35342f;
   --border-focus: #9c9a93;
-  --heat-0: #1e1d1b;
+  --heat-0: #32312e;
   --heat-1: #0e5258;
   --heat-2: #14828c;
   --heat-3: #16a0ac;
@@ -1355,8 +1452,8 @@
   --ring: #a5a39d;
   --background-focus: #35342f;
   --border-focus: #9c9a93;
-  --heat-0: #1e1d1b;
-  --heat-1: #4a2a0e;
+  --heat-0: #32312e;
+  --heat-1: #5c3410;
   --heat-2: #7a4413;
   --heat-3: #b45f18;
   --heat-4: #ee6c1a;
@@ -1452,6 +1549,10 @@
   --color-border-default: var(--border-default);
   --color-border-subtle: var(--border-subtle);
   --color-border-input: var(--border-input);
+  /* @ws WS-TOKENS begin: control edge mirrors */
+  --color-border-control: var(--border-control);
+  --color-control-track-off: var(--control-track-off);
+  /* @ws WS-TOKENS end: control edge mirrors */
   --color-border-strong: var(--border-strong);
   --color-border-danger: var(--border-danger);
   --color-border-success: var(--border-success);
@@ -1561,6 +1662,9 @@
 
   --spacing-row: var(--row-height);
   --spacing-row-rail: var(--row-height-rail);
+  /* @ws WS-TOKENS begin: nav row mirror */
+  --spacing-row-nav: var(--row-height-nav);
+  /* @ws WS-TOKENS end: nav row mirror */
 
   --spacing-dialog-sm: var(--dialog-sm);
   --spacing-dialog-md: var(--dialog-md);
@@ -1579,7 +1683,6 @@
      Only `grid-cols` keeps the `[var(…)]` form: it has no token shorthand. */
   --spacing-knowledge-rail-sources: var(--knowledge-rail-sources);
   --spacing-knowledge-rail-detail: var(--knowledge-rail-detail);
-  --spacing-knowledge-subject-height: var(--knowledge-subject-height);
   --spacing-knowledge-filter-height: var(--knowledge-filter-height);
 }
 
@@ -2008,6 +2111,24 @@ input[type='radio']:checked ~ [data-radio-ring] {
   }
 }
 
+/* @ws WS-TOKENS begin: resize rule */
+/* ── Layout snaps while geometry is being dragged (spec principle 9) ────────
+   `AppLayout` puts `biorouter-window-resizing` on <body> while the window is
+   resizing (cleared 180ms after the last event) and the sidebar's handle puts
+   `biorouter-sidebar-resizing` there while it drags. Any element whose geometry
+   follows layout opts in with `data-motion-layout`, and this one rule stops
+   BOTH its transitions and its animations for the duration. The older rule in
+   the preview's resizing block zeroes transitions on four named selectors only,
+   so a keyframe (a rail fading in, a pane sliding) kept playing against the
+   drag. JavaScript asks the same question through `isWindowResizing()` in
+   `styles/motion.ts`. */
+body.biorouter-window-resizing [data-motion-layout],
+body.biorouter-sidebar-resizing [data-motion-layout] {
+  transition-duration: 0ms !important;
+  animation: none !important;
+}
+/* @ws WS-TOKENS end: resize rule */
+
 /* animations */
 @keyframes appear {
   from {
@@ -2028,6 +2149,148 @@ input[type='radio']:checked ~ [data-radio-ring] {
     transform: translateY(0);
   }
 }
+
+/* @ws WS-TOKENS begin: shared motion classes */
+/* ── Shared motion classes (redesign spec §2.4) ─────────────────────────────
+   Crew's motion recipes, promoted under `br-` names so every surface outside
+   Crew uses the same three gestures (principle 11: never borrow a `crew-*`
+   class outside `crew/`; Crew keeps its own copies). Tokens only, one curve,
+   exits a tier faster than entrances, and every rule restates its rest under
+   reduced motion in the block below. `styles/motion.test.ts` pins all of it.
+
+   MOUNTING IS NOT OPENING. Put these classes on content that ARRIVES while the
+   person watches (a live row, a step change), never on content that mounts
+   because of navigation, a reload, a tab switch or a history load: that
+   content appears at rest. */
+
+/* The one entrance for a transcript block or a list row arriving live: rise
+   4px and fade in over `--dur-fast-max`. When several arrive together, stagger
+   them 30ms apart and animate at most five (`MOTION` in `styles/motion.ts`);
+   the rest appear at rest. */
+.br-enter {
+  animation: br-enter var(--dur-fast-max) var(--ease-out) both;
+}
+
+@keyframes br-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The cross-fade, for a thing changing state in place (a button label, a
+   status chip, a card's step): stack the outgoing and incoming items in one
+   grid cell; the incoming rises 8px and fades in over `--dur-fast-max`, the
+   outgoing only fades, over `--dur-fast`. Keep the outgoing item mounted with
+   `data-state='closed'` until its `animationend` to cross-fade rather than
+   cut. Widths snap; only opacity and transform move. */
+.br-crossfade {
+  display: grid;
+  min-width: 0;
+}
+
+.br-crossfade > .br-crossfade-item {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.br-crossfade-item[data-state='open'] {
+  animation: br-crossfade-in var(--dur-fast-max) var(--ease-out);
+}
+
+.br-crossfade-item[data-state='closed'] {
+  visibility: hidden;
+  pointer-events: none;
+  animation: br-fade-out var(--dur-fast) var(--ease-out);
+}
+
+@keyframes br-crossfade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes br-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Ends `visibility: hidden`, so an element leaving with it drops out of the
+   tab order at the end, never before (it stays visible mid-fade). */
+@keyframes br-fade-out {
+  from {
+    visibility: visible;
+    opacity: 1;
+  }
+  to {
+    visibility: hidden;
+    opacity: 0;
+  }
+}
+
+/* The highlight wash, for the thing the person was just sent to (a deep link
+   into Settings, a freshly installed extension, a new row they asked for): it
+   takes `--overlay-selected` and lets it go over three `--dur-slow` periods
+   (1575ms) on the one curve. Add the class, remove it on `animationend`, which
+   fires under reduced motion too because the rest below is a hold, not
+   `animation: none`. */
+.br-highlight {
+  animation: br-highlight-wash calc(var(--dur-slow) * 3) var(--ease-out);
+}
+
+@keyframes br-highlight-wash {
+  from {
+    background-color: var(--overlay-selected);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+@keyframes br-highlight-hold {
+  from,
+  to {
+    background-color: var(--overlay-selected);
+  }
+}
+
+/* Reduced motion: movement becomes a fade (the global reset above then
+   shortens it), and the highlight is SHOWN for its full period and then
+   removed with no transition. The hold is the one place this outranks the
+   global reset on purpose: at 0.01ms the wash would be lost, not shown, and a
+   hold moves nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .br-enter {
+    animation-name: br-fade-in;
+  }
+
+  .br-crossfade-item[data-state='open'] {
+    animation: br-fade-in var(--dur-fast-max) var(--ease-out);
+  }
+
+  .br-crossfade-item[data-state='closed'] {
+    animation: br-fade-out var(--dur-fast) var(--ease-out);
+  }
+
+  .br-highlight {
+    animation-name: br-highlight-hold;
+    animation-duration: calc(var(--dur-slow) * 3) !important;
+  }
+}
+/* @ws WS-TOKENS end: shared motion classes */
 
 /* Subtle entrance for tool-call cards appearing mid-stream. Kept short + small
    (frequency-of-use rule) and transform/opacity only. */
@@ -2173,9 +2436,11 @@ input[type='radio']:checked ~ [data-radio-ring] {
   color: var(--text-muted);
 }
 
+/* @ws WS-TOKENS begin: fade-slide-up utility */
 .animate-fade-slide-up {
-  animation: fade-slide-up var(--motion-base) var(--ease-out) forwards;
+  animation: fade-slide-up var(--dur-fast-max) var(--ease-out) forwards;
 }
+/* @ws WS-TOKENS end: fade-slide-up utility */
 
 /* Tool-call cards otherwise pop into the transcript with zero motion when a tool
    is invoked mid-stream. A short, small, opacity-forward entrance settles them in
@@ -5428,23 +5693,24 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   }
 }
 
+/* @ws WS-TOKENS begin: text-caps transform */
 /*
  * `text-caps` carries the transform, not just the metrics.
  *
  * Tailwind's `--text-*` namespace can express a size, a line-height, a weight
  * and a tracking, but not a `text-transform` — so the generated `.text-caps`
- * utility gave a call site 11px at 500 with +0.08em tracking and left the
+ * utility gave a call site 12px at 500 with +0.04em tracking and left the
  * casing to be remembered separately. That is a role that only works if you
  * also know the thing it is named after: a site that forgets `uppercase` gets
- * tracked-out 11px LOWERCASE, which does not read as a mistake, it reads as a
- * rendering bug. Tracking that wide is a typographic device that only makes
- * sense on capitals.
+ * tracked-out LOWERCASE, which does not read as a mistake, it reads as a
+ * rendering bug. Tracking is a typographic device that only makes sense on
+ * capitals.
  *
- * Folding the transform in makes the role complete: `text-caps` is now the
- * whole caps style, and it is the app's ONLY one. `uppercase` sitting beside it
- * at existing call sites is harmless and redundant — the phase-10 sweep removes
- * those. A site that genuinely wants 11px un-capsed does not exist by design;
- * the smallest non-caps role is `text-supporting` at 12px.
+ * Folding the transform in makes the role complete: `text-caps` is the whole
+ * caps style, and it is the app's ONLY one, for page section labels only (the
+ * 2026-10 redesign). `uppercase` sitting beside it at existing call sites is
+ * redundant and each owner deletes it. Sidebar group headers, menu group
+ * labels and bucket labels are sentence case at `text-supporting`.
  *
  * Layered into `utilities` so it composes with the generated rule (which sets
  * the four other properties) rather than fighting it, and so an explicit
@@ -5455,6 +5721,7 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
     text-transform: uppercase;
   }
 }
+/* @ws WS-TOKENS end: text-caps transform */
 
 /*
  * Prism token class names are unprefixed — `token table`, `token list`, `token

@@ -120,9 +120,9 @@ function closingBrace(open) {
 /**
  * The `@theme inline` mirror blocks, as `{ open, close }` brace offsets. Every
  * one counts, because Tailwind reads every `@theme` block. Not `blocks()` from
- * lib/theme-tokens.mjs: that one counts braces inside comments and runs an
- * unclosed block to the end of the file — the two ways this read can silently
- * widen back into the bug described above.
+ * lib/theme-tokens.mjs: it blanks comments too (since 2026-10) but still runs
+ * an unclosed block to the end of the file, the one way this read could
+ * silently widen back into the bug described above.
  */
 const mirrorBlocks = [];
 for (const m of code.matchAll(/^@theme[ \t]+inline[ \t]*\{/gm)) {

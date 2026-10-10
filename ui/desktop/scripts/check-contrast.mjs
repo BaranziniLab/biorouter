@@ -523,6 +523,69 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     ]);
   }
 
+  // ── The 2026-10 redesign (implementation spec §2.3) ──────────────────────
+  //
+  // Control edges. `--border-control` is the resting boundary of every input,
+  // checkbox, radio, select trigger and the switch knob's ring, so it owes SC
+  // 1.4.11's 3:1 against the grounds a control sits on. It replaced
+  // `--border-emphasized` (ink at 24%, 1.6:1 on white) on those controls.
+  for (const g of ['--background-default', '--background-card']) {
+    assert(`${theme}: control edge (border-control) on ${g}`, '--border-control', g, 3.0, scope);
+  }
+  // The Switch. Off, the knob is the page ground ringed in `--border-control`
+  // on `--control-track-off`: the ring is what shows where the knob is, so it
+  // owes 3:1 against the track it sits on. That is what fixed the track's
+  // lightness: a mid-grey track (the spec's starting point, ink at 24%) cannot
+  // clear 3:1 against a ring that also clears 3:1 against white. The track must
+  // still be a step off the page (1.1 flags a collapse, the same floor as the
+  // other surface steps in this file). On, the knob is `--text-on-accent` on
+  // the accent track.
+  assert(
+    `${theme}: switch off knob ring on its track`,
+    '--border-control',
+    '--control-track-off',
+    3.0,
+    scope
+  );
+  assert(
+    `${theme}: switch off track is a step off the page`,
+    '--control-track-off',
+    '--background-default',
+    1.1,
+    scope
+  );
+  assert(
+    `${theme}: switch on knob on the accent track`,
+    '--text-on-accent',
+    '--background-accent',
+    3.0,
+    scope
+  );
+  // The heatmap's zero day must be visible on the usage card. In dark it was
+  // #1e1d1b, 1.02:1 on the card, so an idle day vanished; it is now held to
+  // 1.3. Light is held to 1.1, a collapse floor only: #eeeeea measures 1.16 on
+  // white and reads as a step, because contrast ratios compress toward black and
+  // the same ratio is a far smaller visible step in dark than in light. Raising
+  // light to 1.3 would retune the light ramp, which the spec keeps unchanged.
+  // The first step must also stay a step above zero, or lifting heat-0 would
+  // merge it with heat-1 (Roche Limit dark measured 1.01:1 until its heat-1
+  // moved up one step).
+  assert(
+    `${theme}: heatmap zero day on the card`,
+    '--heat-0',
+    '--background-card',
+    theme.endsWith(':dark') ? 1.3 : 1.1,
+    scope
+  );
+  assert(`${theme}: heatmap first step off the zero day`, '--heat-1', '--heat-0', 1.1, scope);
+  // The lock badge on a private chat's glyph is the family accent
+  // (`.br-icon-lock-badge`, ink `--text-accent`) and it carries the privacy
+  // state, so it owes 3:1 on every row it can sit on: the resting sidebar, the
+  // active row and the page (a tab, a header, a History row).
+  for (const g of ['--sidebar', '--sidebar-active', '--background-default']) {
+    assert(`${theme}: private lock badge (text-accent) on ${g}`, '--text-accent', g, 3.0, scope);
+  }
+
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to
   // SC 1.4.11's 3:1, and Roche Limit's design doc used to guarantee it. The
   // measured picture, per family, light mode:

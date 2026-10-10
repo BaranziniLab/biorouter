@@ -241,8 +241,8 @@ export default {
       ring: '#a5a39d',
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',
-      'heat-0': '#1e1d1b',
-      'heat-1': '#4a2a0e',
+      'heat-0': '#32312e', // one step up from #1e1d1b: zero days read on the dark card (redesign 2.3)
+      'heat-1': '#5c3410', // was #4a2a0e: 1.01:1 against the lifted heat-0; a step above it again
       'heat-2': '#7a4413',
       'heat-3': '#b45f18',
       'heat-4': '#ee6c1a',
