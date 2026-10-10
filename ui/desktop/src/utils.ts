@@ -33,11 +33,10 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge({
   extend: {
     theme: {
-      // `heading` and `display` are deprecated aliases of `subheading` and
-      // `title` (redesign 2026-10). They stay registered until their last call
-      // sites move, then leave this list in the same change as `main.css`.
+      // `heading` is a deprecated alias of `subheading` (redesign 2026-10). It
+      // stays registered until its last call site moves, then leaves this list
+      // in the same change as `main.css`. `display` is already gone.
       text: [
-        'display',
         'title',
         'heading',
         'subheading',

@@ -69,7 +69,6 @@ describe('the type roles', () => {
         'caps',
         'chip',
         'code',
-        'display',
         'heading',
         'label',
         'prose',
@@ -112,15 +111,15 @@ describe('the type roles', () => {
       .filter(([, parts]) => parts['letter-spacing'])
       .map(([role]) => role)
       .sort();
-    expect(tracked).toEqual(['caps', 'display', 'title']);
+    expect(tracked).toEqual(['caps', 'title']);
     expect(resolve('caps', 'letter-spacing')).toBe('0.04em');
     expect(resolve('title', 'letter-spacing')).toBe('-0.01em');
   });
 
-  /** The two retired roles are aliases, not sizes of their own. */
-  it('keeps text-heading and text-display as aliases until wave 2 deletes them', () => {
+  /** The retired role is an alias, not a size of its own, and `display` is gone. */
+  it('keeps text-heading as an alias until its last use moves, and has no text-display', () => {
     expect(ROLES.get('heading')?.size).toBe('var(--text-subheading)');
-    expect(ROLES.get('display')?.size).toBe('var(--text-title)');
+    expect(ROLES.has('display')).toBe(false);
   });
 
   /** `text-caps` carries its casing; the generated utility cannot. */
@@ -148,8 +147,8 @@ describe('tailwind-merge knows every role', () => {
  *
  * What is counted, per file (comments are stripped first, so a note explaining
  * the rule cannot trip it):
- *  - `.ts` / `.tsx`: a legacy size class (`text-xs|sm|base|lg|xl|2xl…` or
- *    `text-[Npx]`), a `tracking-*` class, a bare `uppercase` class (`text-caps`
+ *  - `.ts` / `.tsx`: a legacy size class (`text-xs|sm|base|lg|xl|2xl…`,
+ *    `text-[Npx]`, or the retired `text-heading` / `text-display`), a `tracking-*` class, a bare `uppercase` class (`text-caps`
  *    carries its own casing) and `font-bold` (Arial draws 400 and 700, so the
  *    strong weight is `font-semibold`, which the face renders as bold anyway).
  *  - `.css`: a `font-size` in px (a role is a `--text-*` token) and a
@@ -177,7 +176,8 @@ const OUT_OF_SCOPE = [
 ];
 
 const CLASS_RULES: Record<string, RegExp> = {
-  'legacy size class': /(?<![\w-])text-(?:xs|sm|base|lg|[2-9]?xl|\[\d+(?:\.\d+)?px\])(?![\w-])/g,
+  'legacy size class':
+    /(?<![\w-])text-(?:xs|sm|base|lg|[2-9]?xl|heading|display|\[\d+(?:\.\d+)?px\])(?![\w-])/g,
   'tracking class': /(?<![\w-])tracking-[\w[]/g,
   'bare uppercase': /(?<![\w-])uppercase(?![\w-])/g,
   'font-bold': /(?<![\w-])font-bold(?![\w-])/g,
