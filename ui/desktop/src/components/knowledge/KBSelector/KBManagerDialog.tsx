@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Copy,
   Download,
   FolderInput,
   FolderPlus,
@@ -13,6 +14,7 @@ import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { Skeleton } from '../../ui/skeleton';
@@ -27,10 +29,13 @@ import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ModalShell } from '../../ModalShell';
 import BuiltInBadge from '../../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/builtins';
+import { copyToClipboard } from '../../../utils/clipboard';
+import { toastError, toastSuccess } from '../../../toasts';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 import { KbDot } from '../KbDot';
-import { kbFormatLabel, LEGACY_FORMAT_TITLE } from '../kbFormat';
+import { kbFormatLabel } from '../kbFormat';
 import { KbFormatChooser } from './KbFormatChooser';
 
 interface Props {
@@ -212,6 +217,20 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     }
   }
 
+  // The id is no longer printed on every row (principle 10, Crew's "IDs for
+  // support"); it is one menu item away for the person who needs it.
+  async function handleCopyId(base: KbListEntry) {
+    if (await copyToClipboard(base.id, null)) {
+      toastSuccess({
+        title: knowledgeCopy.manager.copied,
+        msg: base.id,
+        toastOptions: { autoClose: 2000 },
+      });
+    } else {
+      toastError({ title: knowledgeCopy.manager.copyFailed, msg: base.id });
+    }
+  }
+
   async function handleImport(file: File | null) {
     if (!file) return;
     setError(null);
@@ -238,25 +257,23 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           size="lg"
           purpose={busyId !== null ? 'required' : 'form'}
           scrollBody
-          title="Knowledge bases"
-          subtitle="Choose which knowledge bases this chat uses, and which one of them is the primary: the base a knowledge write lands in when none is named."
-          bodyClassName="px-0"
-          footer={
-            <div className="flex w-full flex-wrap items-center justify-between gap-2">
-              <p className="min-w-0 flex-1 text-supporting text-text-muted">
-                Tip: the switch decides whether a base is in this chat; clicking its name makes it
-                the primary. Bases left out are still reachable by naming them explicitly.
-              </p>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => onOpenChange(false)}
-                disabled={busyId !== null}
-              >
-                Close
-              </Button>
-            </div>
+          title={knowledgeCopy.manager.title}
+          // ONE sentence, because ModalShell makes the subtitle the dialog's
+          // `aria-describedby` (ModalShell.test.tsx names this dialog). The rest
+          // of the explanation, and the footer Tip that repeated it, are the
+          // InfoTip at the end of the line (spec 3.12). The dialog has its ×, so
+          // there is no footer.
+          subtitle={
+            <span className="inline-flex items-center gap-1">
+              {knowledgeCopy.manager.subtitle}
+              <InfoTip
+                label={knowledgeCopy.manager.infoLabel}
+                help={knowledgeCopy.manager.info}
+                side="bottom"
+              />
+            </span>
           }
+          bodyClassName="px-0"
         >
           {/* ⚠ **Pinned** (R-07). Search and the two create paths lived in the
             scrolling body, so at the app's own minimum 600px window height —
@@ -319,7 +336,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
             {draftMode && (
               // An element inside the 12px dialog container takes the next step
               // DOWN, so 8px — not the 12px this block used to carry.
-              <div className="mt-4 rounded-element border border-border-subtle p-3">
+              <div className="mt-3">
                 <div className="mb-2 text-label">{`Rename "${draftMode.base.name}"`}</div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <Input
@@ -410,7 +427,12 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                         <KbDot color={base.color} />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <div className="truncate text-label text-text-default">{base.name}</div>
+                            <div
+                              id={`kb-row-name-${base.id}`}
+                              className="truncate text-label text-text-default"
+                            >
+                              {base.name}
+                            </div>
                             {isBuiltinKnowledgeBase(base.id) && (
                               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
                             )}
@@ -432,14 +454,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                               manifest deserializes as `okf` and a badge written
                               against the field alone would call every legacy base
                               OKF. */}
-                            <Badge
-                              uppercase
-                              title={
-                                kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined
-                              }
-                            >
-                              {kbFormatLabel(base)}
-                            </Badge>
+                            <Badge>{kbFormatLabel(base)}</Badge>
                             {base.tier !== 'public' && <PrivacyBadge tier={base.tier} />}
                             {/* ⚠ **No `Not in this chat` badge** (R-07). The switch
                               at the end of this row already states membership,
@@ -447,35 +462,31 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                               40px row carry 12 visual objects. */}
                           </div>
                         </div>
-                        {isPrimary && (
-                          <Badge uppercase tone="accent">
-                            Primary
-                          </Badge>
-                        )}
+                        {/* Neutral, not accent: the accent marks state and adds
+                            zest, and a word on one row of a list is neither
+                            (principle 7). */}
+                        {isPrimary && <Badge>{knowledgeCopy.manager.primary}</Badge>}
                       </button>
 
                       <div className="flex shrink-0 items-center gap-2">
                         {/* Unwrapped. The switch is its own affordance and carries
                           its own name; the bordered `px-2 py-1` box around it was
                           a second control drawn around a control. */}
+                        {/* Named by the row's label, the base's name (spec 2.6):
+                          the switch says whether the base is in this chat. */}
                         <Switch
                           checked={!hidden}
                           onCheckedChange={() => toggleKbHidden(base.id)}
-                          variant="mono"
-                          aria-label={`Include ${base.name} in this chat`}
+                          aria-labelledby={`kb-row-name-${base.id}`}
                         />
                         {/* ⚠ **ONE overflow control, not three** (R-07). Export,
                           rename and ⋯ reserved a fixed 160px cluster at the end
-                          of every row before the name column got anything —
-                          40 for the switch, three 32px buttons and three 8px
-                          gaps — on a 582px row. Export and rename are not
-                          frequent enough to each own a permanent target, so
-                          they join the menu that was already there and the
-                          reclaimed width carries what the row could never show:
-                          how big the base is and when it last changed. */}
-                        <span className="shrink-0 font-mono text-supporting tabular-nums text-text-muted">
-                          {base.id}
-                        </span>
+                          of every row before the name column got anything.
+                          Export and rename are not frequent enough to each own
+                          a permanent target, so they join the menu, and so does
+                          the base's id: it used to be printed in mono on every
+                          row, and an id belongs behind "Copy ID" (principle
+                          10). */}
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -496,6 +507,10 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                             <DropdownMenuItem onSelect={() => startRename(base)}>
                               <Pencil aria-hidden="true" />
                               Rename knowledge base
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => void handleCopyId(base)}>
+                              <Copy aria-hidden="true" />
+                              {knowledgeCopy.manager.copyId}
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             {/* A destructive control never sits visible in a hover

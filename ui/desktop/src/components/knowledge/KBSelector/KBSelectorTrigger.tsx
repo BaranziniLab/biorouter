@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { KbDot } from '../KbDot';
 import { KBSelectorMenu } from './KBSelectorMenu';
@@ -46,7 +48,9 @@ interface Props {
  * - **It opens an anchored picker, not a 760px modal.** Clicking a selector
  *   should show you the list, not a management console.
  * - **The `KB` badge is dropped**, so the control needs an accessible name of
- *   its own — the surrounding `<h1>` is not one.
+ *   its own — the surrounding `<h1>` is not one. The name carries the base and
+ *   the "+n" count ("Knowledge base: Notes, and 2 more in this chat"), and the
+ *   count's explanation is a Tooltip, not a native `title` (spec 3.12).
  *
  * `gap-2` and not `gap-2.5`: 10px is off the 4px grid. `text-label` and not
  * `text-label font-semibold`: 14/600 is not a step in the type scale.
@@ -73,41 +77,51 @@ export function KBSelectorTrigger({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          data-testid="knowledge-kb-selector-trigger"
-          aria-label="Knowledge base"
-          aria-expanded={open}
-          className={
-            variant === 'subject'
-              ? // Borderless at rest, content-sized, with the band's own label
-                // type. `min-w-0` so a long base name truncates rather than
-                // pushing the badges and counts out of the row.
-                'biorouter-focus-surface flex h-control-md min-w-0 max-w-[22rem] items-center gap-2 rounded-element border border-transparent px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:border-border-subtle hover:bg-background-medium'
-              : 'biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
-          }
-        >
-          <KbDot color={primaryKb?.color} />
-          <span
-            className={`min-w-0 flex-1 truncate text-left${variant === 'subject' ? ' font-medium' : ''}`}
-          >
-            {primaryKb?.name ?? 'No primary knowledge base'}
-          </span>
-          {otherBaseCount > 0 && (
-            <span
-              className="shrink-0 text-supporting text-text-muted"
-              title={`${otherBaseCount} more knowledge base${otherBaseCount === 1 ? '' : 's'} in this chat`}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              data-testid="knowledge-kb-selector-trigger"
+              aria-label={knowledgeCopy.selector.name(
+                primaryKb?.name ?? knowledgeCopy.noPrimary,
+                otherBaseCount
+              )}
+              aria-expanded={open}
+              className={
+                variant === 'subject'
+                  ? // Borderless at rest, content-sized, with the band's own label
+                    // type. `min-w-0` so a long base name truncates rather than
+                    // pushing the badges and counts out of the row.
+                    'biorouter-focus-surface flex h-control-md min-w-0 max-w-[22rem] items-center gap-2 rounded-element border border-transparent px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:border-border-subtle hover:bg-background-medium'
+                  : 'biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
+              }
             >
-              +{otherBaseCount}
-            </span>
-          )}
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-icon-row w-icon-row shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
-          />
-        </button>
-      </PopoverTrigger>
+              <KbDot color={primaryKb?.color} />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {primaryKb?.name ?? knowledgeCopy.noPrimary}
+              </span>
+              {otherBaseCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="shrink-0 text-supporting tabular-nums text-text-muted"
+                >
+                  +{otherBaseCount}
+                </span>
+              )}
+              <ChevronDown
+                aria-hidden="true"
+                className={`h-icon-row w-icon-row shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        {otherBaseCount > 0 && !open && (
+          <TooltipContent side="bottom">
+            {knowledgeCopy.selector.others(otherBaseCount)}
+          </TooltipContent>
+        )}
+      </Tooltip>
       <PopoverContent
         align="start"
         sideOffset={6}

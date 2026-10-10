@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBManagerDialog } from './KBManagerDialog';
+import { knowledgeCopy } from '../copy';
 
 /**
  * The list-and-search half of the old `KBSelectorPalette.test.tsx`, ported when
@@ -95,11 +96,37 @@ describe('KBManagerDialog', () => {
   // Two states per row, never three. Under the merged model membership and the
   // primary are the only two things a base can be, and the row body is the
   // "make primary" affordance.
+  //
+  // Spec 2.6: a switch is named by its row's visible label, the base's name, so
+  // the name never depends on state and never reads "Toggle …" or "Include …".
   it('offers exactly one membership switch per row', () => {
     open();
-    expect(screen.getByLabelText('Include Alpha in this chat')).toBeInTheDocument();
-    expect(screen.getByLabelText('Include Beta in this chat')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Beta' })).toBeInTheDocument();
     expect(screen.getAllByRole('switch')).toHaveLength(2);
+  });
+
+  // Spec 3.12: one sentence under the title (it is the dialog's description),
+  // the rest in an InfoTip, no footer Tip, and no mono id on any row: the id is
+  // behind "Copy ID" in the row's menu.
+  it('says one sentence, keeps ids off the rows, and copies an id from the menu', async () => {
+    open();
+    const dialog = screen.getByRole('dialog', { name: knowledgeCopy.manager.title });
+    expect(dialog).toHaveAccessibleDescription(
+      expect.stringContaining(knowledgeCopy.manager.subtitle)
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${knowledgeCopy.manager.infoLabel}` })
+    ).toHaveAccessibleDescription(knowledgeCopy.manager.info);
+    expect(screen.queryByText(/^Tip:/)).toBeNull();
+
+    const row = screen.getByRole('option', { name: /Alpha/ }).closest('.biorouter-list-row')!;
+    expect(within(row as HTMLElement).queryByText('alpha')).toBeNull();
+
+    await userEvent.click(screen.getByLabelText('More actions for Alpha'));
+    expect(
+      await screen.findByRole('menuitem', { name: knowledgeCopy.manager.copyId })
+    ).toBeInTheDocument();
   });
 
   // Picking a primary used to close the palette, which made the selector feel

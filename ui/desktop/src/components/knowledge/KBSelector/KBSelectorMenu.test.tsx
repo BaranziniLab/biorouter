@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBSelectorMenu } from './KBSelectorMenu';
+import { knowledgeCopy } from '../copy';
 import type { Manifest } from '../../../api/types.gen';
 
 /**
@@ -161,9 +162,13 @@ describe('KBSelectorMenu', () => {
       state.canFollowDefaultPrimary = true;
       renderMenu();
 
-      expect(screen.getByText(/no primary knowledge base/i)).toBeInTheDocument();
+      // Spec 3.12: one line, "Not following your default", and the way back.
+      // What the click does is the button's description (and its Tooltip).
+      expect(screen.getByText(knowledgeCopy.selector.notFollowing)).toBeInTheDocument();
       const follow = screen.getByTestId('knowledge-kb-follow-default');
-      expect(follow).toHaveTextContent('Alpha');
+      expect(follow).toHaveTextContent('Use Alpha');
+      expect(follow).toHaveAccessibleDescription(knowledgeCopy.selector.useDefaultHint('Alpha'));
+      expect(follow).not.toHaveAttribute('title');
 
       await userEvent.click(follow);
       expect(mocks.followDefaultPrimary).toHaveBeenCalledTimes(1);
@@ -176,7 +181,7 @@ describe('KBSelectorMenu', () => {
       state.canFollowDefaultPrimary = true;
       renderMenu();
 
-      expect(screen.getByText(/its own primary/i)).toBeInTheDocument();
+      expect(screen.getByText(knowledgeCopy.selector.notFollowing)).toBeInTheDocument();
       expect(screen.getByTestId('knowledge-kb-follow-default')).toBeInTheDocument();
     });
 

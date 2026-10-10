@@ -73,4 +73,50 @@ export const knowledgeCopy = {
     checkingModel: 'Checking which model this knowledge base digests with…',
     errorDetails: 'Error details',
   },
+
+  /** The base switcher in the band, and its picker. */
+  selector: {
+    /** The trigger's accessible name: the base, and how many more this chat uses. */
+    name: (base: string, others: number) =>
+      `Knowledge base: ${base}${others > 0 ? `, and ${others} more in this chat` : ''}`,
+    /** The "+n" count's Tooltip. */
+    others: (n: number) => `${n} more knowledge ${n === 1 ? 'base' : 'bases'} in this chat`,
+    notFollowing: 'Not following your default',
+    useDefault: (name: string) => `Use ${name}`,
+    useDefaultHint: (name: string) =>
+      `This chat will use ${name}, and will keep following your default if it changes.`,
+  },
+
+  /** The base manager dialog. */
+  manager: {
+    title: 'Knowledge bases',
+    /** One sentence, because it is the dialog's `aria-describedby` (ModalShell). */
+    subtitle: 'Choose the bases this chat uses.',
+    infoLabel: 'Knowledge bases in this chat',
+    info: 'The primary is where knowledge is written when no base is named. Bases left out can still be named.',
+    primary: 'Primary',
+    copyId: 'Copy ID',
+    copied: 'Copied the ID',
+    copyFailed: 'Could not copy the ID',
+  },
+
+  /** The create dialog (format chooser). */
+  format: {
+    title: 'Create knowledge base',
+    folder: (id: string) => `knowledge/${id}/`,
+    folderLabel: 'Folder:',
+    folderInfoLabel: 'Folder name',
+    folderInfo: 'The id may change if it is taken.',
+    permanent: 'You can’t change the format later.',
+    okf: {
+      name: 'General knowledge',
+      line: 'General notes and project context',
+      info: 'Any page type and any link name, and nothing is rejected. Validation reports broken links only.',
+    },
+    biookf: {
+      name: 'Curated biomedical',
+      line: 'Curated biomedical literature',
+      info: '28 page types and 35 link predicates, checked; every link names its evidence and a primary source. Validation names the closest legal value.',
+    },
+  },
 } as const;

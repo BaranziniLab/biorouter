@@ -3,9 +3,12 @@ import { AlertTriangle } from '../../icons/app-icons';
 import type { KbFormat } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
+import { Note } from '../../ui/note';
 import CustomRadio from '../../ui/CustomRadio';
 import { ModalShell } from '../../ModalShell';
+import { knowledgeCopy } from '../copy';
 import { previewKbId } from '../kbFormat';
 
 interface Props {
@@ -18,53 +21,26 @@ interface Props {
 }
 
 /**
- * One row of the format radiogroup: the name, its short code, the "pick this
- * when" line, and the three facts under it.
+ * One row of the format radiogroup: the name, its short code and one line saying what it is
+ * for. The facts that used to sit under each option (three sentences each, six on screen at
+ * once) are the option's InfoTip now (spec 3.12).
  *
- * The three slots map onto `CustomRadio`'s own — `label`, `secondaryLabel`,
- * `rightContent` — rather than re-rolling a `.biorouter-list-row` around a
- * radio glyph. The primitive already renders its own `<label htmlFor>`, so
- * nesting it inside a `div role="radio"` would put a `<label>` inside a radio
- * role and leave three slots unused, and it would author a fourth radio
- * geometry beside the 22px-ring-in-a-24px-target one that ships.
+ * The slots map onto `CustomRadio`'s own `label` and `secondaryLabel`. The InfoTip is the radio
+ * label's SIBLING, never inside it: a click on the glyph inside a `<label>` would also pick the
+ * radio (spec 2.6, InfoTip "Never").
  *
- * ⚠ **The badge carries the SHORT CODE and the label carries what it is**, which
- * is a deliberate reading of §4.3's "the format name plus its `Badge uppercase`
- * short code". Taken literally the two are the same word, so the row rendered as
- * `OKF ⟨OKF⟩` — a stutter that teaches nothing. Splitting them gives the badge a
- * job (it is the same mark the subject band, the picker and the manager row
- * show, so the user learns the mapping at the moment of choosing) and the label
- * a job (what the format is for).
+ * ⚠ **The badge carries the SHORT CODE and the label carries what it is.** Taken literally the
+ * two are the same word, so the row rendered as `OKF ⟨OKF⟩`, a stutter that teaches nothing. The
+ * badge is the same mark the band and the manager rows show, so the user learns the mapping at
+ * the moment of choosing.
  */
 const FORMATS: {
   value: KbFormat;
-  name: string;
   code: string;
-  when: string;
-  facts: [string, string, string];
+  copy: { name: string; line: string; info: string };
 }[] = [
-  {
-    value: 'okf',
-    name: 'General knowledge',
-    code: 'OKF',
-    when: 'You are keeping notes, project context, retrieval material, or anything that is not curated biology.',
-    facts: [
-      'Any page type, any link name. Nothing is ever rejected.',
-      'Best when you do not yet know how the material will be structured.',
-      'Validation reports broken links only.',
-    ],
-  },
-  {
-    value: 'biookf',
-    name: 'Curated biomedical',
-    code: 'BioOKF',
-    when: 'You are curating biomedical literature or building a base another institution will read.',
-    facts: [
-      '28 page types and 35 link predicates, checked.',
-      'Every link must name its evidence: knowledge level, agent type, and a primary source.',
-      'Validation flags anything outside the vocabulary and names the closest legal value.',
-    ],
-  },
+  { value: 'okf', code: 'OKF', copy: knowledgeCopy.format.okf },
+  { value: 'biookf', code: 'BioOKF', copy: knowledgeCopy.format.biookf },
 ];
 
 /**
@@ -131,8 +107,7 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
       }}
       size="md"
       purpose={busy ? 'required' : 'form'}
-      title="Create knowledge base"
-      subtitle="Pick a name and the format its pages are written in."
+      title={knowledgeCopy.format.title}
       footer={
         <>
           <Button
@@ -174,53 +149,50 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
             placeholder="Knowledge base name"
             autoFocus
           />
-          <p className="mt-1 text-supporting text-text-muted">
-            Will be created as <span className="font-mono">knowledge/{id || '…'}/</span> — the final
-            id may differ if that name is taken.
-          </p>
+          {/* The id is a PREVIEW: the daemon owns slugs and collisions, so the
+              line says where the folder will probably go and the InfoTip says
+              that it can change. */}
+          <div className="mt-1 flex min-w-0 items-center gap-1 text-supporting text-text-muted">
+            <span className="shrink-0">{knowledgeCopy.format.folderLabel}</span>
+            <span className="min-w-0 truncate font-mono">
+              {knowledgeCopy.format.folder(id || '…')}
+            </span>
+            <InfoTip
+              label={knowledgeCopy.format.folderInfoLabel}
+              help={knowledgeCopy.format.folderInfo}
+            />
+          </div>
         </div>
 
         <div role="radiogroup" aria-label="Knowledge base format" className="flex flex-col">
           {FORMATS.map((entry) => (
-            <div key={entry.value}>
+            <div key={entry.value} className="flex items-center gap-1">
               <CustomRadio
                 id={`kb-format-${entry.value}`}
                 name="kb-format"
                 value={entry.value}
                 checked={format === entry.value}
                 onChange={() => setFormat(entry.value)}
+                className="min-w-0 flex-1"
                 label={
                   <span className="flex items-center gap-2">
-                    {entry.name}
-                    <Badge uppercase>{entry.code}</Badge>
+                    {entry.copy.name}
+                    <Badge>{entry.code}</Badge>
                   </span>
                 }
-                secondaryLabel={entry.when}
+                secondaryLabel={entry.copy.line}
               />
-              {/* A plain `<ul>` with no marks. The draft gave each item a 4px
-                  `--radius-full` dot; A-04 permits `--radius-full` on exactly
-                  three things — status dots, the switch knob, avatars — and a
-                  list bullet is none of them, and 4px is below the 8px diameter
-                  §4.2 fixes for the dot object. */}
-              <ul className="ml-8 list-none space-y-1 pb-2 text-supporting text-text-muted">
-                {entry.facts.map((fact) => (
-                  <li key={fact}>{fact}</li>
-                ))}
-              </ul>
+              <InfoTip label={entry.copy.name} help={entry.copy.info} side="left" />
             </div>
           ))}
         </div>
 
-        <div className="flex items-start gap-2 rounded-element bg-wash-warning p-3">
-          <AlertTriangle
-            aria-hidden="true"
-            className="mt-px h-icon-banner w-icon-banner shrink-0 text-text-warning"
-          />
-          <p className="text-supporting text-text-default">
-            You cannot change a knowledge base&rsquo;s format yet. Pick BioOKF only if you want the
-            biomedical vocabulary enforced from the first page.
-          </p>
-        </div>
+        {/* The irreversibility notice is not decoration: `kb_migrate_format` is
+            deferred by DR-22, so the choice is permanent in this build. One line;
+            when migration ships, this Note is deleted. */}
+        <Note tone="warning" icon={AlertTriangle}>
+          {knowledgeCopy.format.permanent}
+        </Note>
 
         {error && (
           <p role="alert" className="text-body text-text-danger">

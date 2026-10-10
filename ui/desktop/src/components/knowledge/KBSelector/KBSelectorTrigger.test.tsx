@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBSelectorTrigger } from './KBSelectorTrigger';
+import { knowledgeCopy } from '../copy';
 import type { Manifest } from '../../../api/types.gen';
 
 const state = vi.hoisted(() => ({
@@ -32,6 +33,18 @@ describe('KBSelectorTrigger', () => {
     render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
     expect(screen.getByText('alpha')).toBeInTheDocument();
     expect(screen.getByText('+2')).toBeInTheDocument();
+  });
+
+  // Spec 3.12: the count is in the trigger's accessible name, so a screen reader
+  // hears what "+2" means, and its explanation is a Tooltip, not a native
+  // `title` on a span no keyboard could reach.
+  it('puts the count in the accessible name, and nothing in a native title', () => {
+    state.primaryKb = base('alpha');
+    state.visibleBases = [base('alpha'), base('beta'), base('gamma')];
+    render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
+    const trigger = screen.getByRole('button', { name: knowledgeCopy.selector.name('alpha', 2) });
+    expect(trigger).toHaveAccessibleName('Knowledge base: alpha, and 2 more in this chat');
+    expect(trigger.querySelectorAll('[title]')).toHaveLength(0);
   });
 
   // With no primary the name slot names nothing, so every visible base is
