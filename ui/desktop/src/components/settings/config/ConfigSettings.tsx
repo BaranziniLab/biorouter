@@ -448,7 +448,9 @@ function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: 
       data-testid="config-privacy-summary"
       className="mb-4 rounded-container border border-border-subtle px-3 py-2.5"
     >
-      <dl className="grid grid-cols-[minmax(0,200px)_1fr] gap-x-3 gap-y-1 text-body">
+      {/* The first column is the fields' 200px less the box's 1px border and 12px padding, so a value
+          starts exactly where the inputs below it do (at 13px it sat to their right). */}
+      <dl className="grid grid-cols-[minmax(0,187px)_1fr] gap-x-3 gap-y-1 text-body">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
             <dt className="text-text-muted">{label}</dt>
