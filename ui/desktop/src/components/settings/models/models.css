@@ -1,0 +1,39 @@
+/*
+ * Settings > Models: the Local models section (codex simplicity redesign, spec 3.13).
+ *
+ * Authored here, next to the component, rather than as new Tailwind strings: a newly written
+ * utility can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell
+ * geometry"), and the 24px header is a measurement.
+ */
+
+/* The section header's action: the "2 of 7 installed" count and the refresh glyph. The header is
+   24px tall like every other section's; the 28px button reaches into the row's own padding
+   instead of growing it. */
+.br-local-models-header-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-local-models-refresh {
+  margin-block: -2px;
+}
+
+/* The row's trailing cluster: Install (not installed yet) beside the hover-revealed ⋯. */
+.br-local-model-actions {
+  gap: 4px;
+}
+
+/* What is happening to a model right now replaces its facts line: a spinner and the daemon's
+   own words, wrapping rather than truncating (a pull reports "pulling manifest 42%"). */
+.br-local-model-busy {
+  display: flex;
+  min-inline-size: 0;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.br-local-model-busy > svg {
+  flex: none;
+  margin-block-start: 1px;
+}

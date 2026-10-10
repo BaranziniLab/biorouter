@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import LocalModelInventory from './LocalModelInventory';
+import { localModelsCopy } from './copy';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import {
   llamaServerStore,
   resetLlamaServerStoreForTests,
@@ -90,6 +93,13 @@ const statusResponse = (
   },
 });
 
+/** Open a row's ⋯ menu (the name carries the model, so each row's is distinct). */
+const openRowMenu = async (displayName = 'Gemma 4 E4B') => {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: localModelsCopy.more(displayName) }));
+  return user;
+};
+
 describe('LocalModelInventory', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -103,20 +113,80 @@ describe('LocalModelInventory', () => {
     vi.useRealTimers();
   });
 
-  it('shows the expected-speed hint next to the download size in each row (#35)', async () => {
+  it('shows one facts line per row: speed word, download size and context window (#35)', async () => {
     render(<LocalModelInventory />);
-    const row = await screen.findByText(
-      /Gemma 4 · 9\.6 GB · Fast — ~4B active parameters · 131,072 context/
+    // 131072 tokens is 128k; the rest of the speed hint, the family and the model id are in the
+    // info dialog, so a row is a name and one line.
+    expect(await screen.findByText('Fast · 9.6 GB · 128k context')).toBeInTheDocument();
+    expect(screen.queryByText(/Gemma 4 ·/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/gemma4:latest/)).not.toBeInTheDocument();
+  });
+
+  it('is a Local models section with the count and a refresh glyph in its header', async () => {
+    const { container } = render(<LocalModelInventory />);
+    expect(await screen.findByText('0 of 1 installed')).toBeInTheDocument();
+    const section = container.querySelector(`#${SETTINGS_SECTION_IDS.localModels}`) as HTMLElement;
+    expect(section).not.toBeNull();
+    expect(
+      within(section).getByRole('heading', { name: localModelsCopy.section })
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole('button', { name: localModelsCopy.refresh })
+    ).toBeInTheDocument();
+    // The explanation is the section's InfoTip, never a paragraph.
+    expect(
+      within(section).getByRole('button', { name: `About ${localModelsCopy.section}` })
+    ).toBeInTheDocument();
+  });
+
+  it('installs from the row; an installed row has the ⋯ menu and no Install button', async () => {
+    render(<LocalModelInventory />);
+    expect(await screen.findByRole('button', { name: 'Install Gemma 4 E4B' })).toBeEnabled();
+    expect(screen.queryByText(localModelsCopy.warmUp)).not.toBeInTheDocument();
+
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { downloaded: true, download_status: 'downloaded' })
     );
-    expect(row).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: localModelsCopy.refresh }));
+    await screen.findByText('1 of 1 installed');
+    expect(screen.queryByRole('button', { name: 'Install Gemma 4 E4B' })).not.toBeInTheDocument();
+  });
+
+  it('says a model is large for this Mac only when it is above the recommendation', async () => {
+    render(<LocalModelInventory />);
+    await screen.findByText('Fast · 9.6 GB · 128k context');
+    expect(screen.queryByText(localModelsCopy.largeForThisMac)).not.toBeInTheDocument();
+
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { suitability_status: 'above_recommendation' })
+    );
+    fireEvent.click(screen.getByRole('button', { name: localModelsCopy.refresh }));
+    expect(await screen.findByText(localModelsCopy.largeForThisMac)).toBeInTheDocument();
+  });
+
+  it('keeps View info, Warm up and Delete in the row menu, Delete in danger ink', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { downloaded: true, download_status: 'downloaded' })
+    );
+    render(<LocalModelInventory />);
+    await openRowMenu();
+
+    expect(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: localModelsCopy.warmUp })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: localModelsCopy.delete })).toHaveClass(
+      'data-[variant=destructive]:text-text-danger'
+    );
   });
 
   it('shows the expected-speed detail row in the model info dialog (#35)', async () => {
     render(<LocalModelInventory />);
-    fireEvent.click(await screen.findByText('View info'));
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
 
     expect(await screen.findByText('Expected speed')).toBeInTheDocument();
-    expect(screen.getAllByText(/Fast — ~4B active parameters/).length).toBeGreaterThanOrEqual(2);
+    // The row keeps only the speed word; the whole hint is the dialog's.
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Fast — ~4B active parameters/)).toBeInTheDocument();
   });
 
   /// A model id is a NAME, so it is set in the body font — the way the composer
@@ -134,7 +204,8 @@ describe('LocalModelInventory', () => {
   /// whatever the class says. This asserts the CLASS on the value element.
   it('sets model ids in the body font and paths in monospace (#F-21)', async () => {
     render(<LocalModelInventory />);
-    fireEvent.click(await screen.findByText('View info'));
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
 
     const valueFor = async (label: string) => {
       const node = await screen.findByText(label);
@@ -275,6 +346,7 @@ describe('LocalModelInventory', () => {
         })
     );
     render(<LocalModelInventory />);
+    await openRowMenu();
     const warm = await screen.findByText('Warm up');
 
     vi.useFakeTimers();
@@ -323,6 +395,7 @@ describe('LocalModelInventory', () => {
       },
     });
     render(<LocalModelInventory />);
+    await openRowMenu();
     const warm = await screen.findByText('Warm up');
 
     vi.useFakeTimers();
