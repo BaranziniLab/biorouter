@@ -833,6 +833,11 @@ export default function RecentChats({
                           type="button"
                           className="br-nav-row br-sidebar-quiet-row no-drag"
                           data-row={moreKey(group)}
+                          data-testid={`sidebar-folder-more-${group.key}`}
+                          // A disclosure of the folder's other rows. `aria-expanded`
+                          // also tells the overlay sidebar this is not a choice, so
+                          // showing more rows does not close the panel.
+                          aria-expanded={more === 'less'}
                           tabIndex={roving.tabIndexFor(moreKey(group))}
                           onFocus={() => roving.onRowFocus(moreKey(group))}
                           onClick={() =>
