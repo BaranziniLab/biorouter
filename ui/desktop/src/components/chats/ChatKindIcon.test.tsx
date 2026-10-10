@@ -208,4 +208,13 @@ describe('the lock badge and the glyph slot are authored', () => {
     expect(body).toMatch(/width:\s*var\(--icon-row\)/);
     expect(body).toMatch(/height:\s*var\(--icon-row\)/);
   });
+
+  /** The active tab is the strip's active row; `chatKindGlyph.browser.test.tsx`
+   * measures the ink, this pins that the rule is authored and not a utility. */
+  it("hands an active tab's ink to its glyph", () => {
+    const body =
+      CSS.match(/\.br-tab\[data-active=['"]true['"]\]\s+\.br-chat-kind-icon\s*\{([^}]*)\}/)?.[1] ??
+      '';
+    expect(body).toMatch(/color:\s*inherit/);
+  });
 });

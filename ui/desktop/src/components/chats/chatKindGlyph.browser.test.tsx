@@ -7,7 +7,10 @@
  * of a private glyph paints in the family accent while the body keeps the
  * row's muted ink (spec 3.3: "body muted, badge --text-accent, on every row
  * including the active one"), and the glyph takes the 16px row slot even when
- * a caller still passes a 14px size class.
+ * a caller still passes a 14px size class. A second test paints the document
+ * tab strip: the active tab's glyph follows the tab's ink (and the unfocused
+ * group's muted ink), and a tier nobody has read is dimmed while a private
+ * glyph under the master switch's "off" draws no badge.
  *
  * Tailwind does not run here, so the three utilities the glyph carries are
  * written out below inside `@layer utilities`, where Tailwind puts them. That
@@ -85,6 +88,45 @@ function sheet(): string {
 const html = (family: string, dark: boolean) =>
   `<!doctype html><html data-theme="${family}"${dark ? ' class="dark"' : ''}><head><meta charset="utf-8">` +
   `<style>${MAIN_CSS}</style><style>${UTILITIES}</style></head><body>${sheet()}</body></html>`;
+
+/** Three chat tabs as the strip draws them: selected, at rest, and selected in
+ * an unfocused group. The glyph sits inside the tab's inner button, as it does
+ * in `ChatTabStrip`; the button gets Tailwind preflight's `color: inherit`. */
+function tabsHtml(family: string, dark: boolean): string {
+  const tab = (id: string, active: boolean, tier: 'public' | 'private') =>
+    `<div class="br-tab" data-tab="${id}"${active ? ' data-active="true"' : ''}><button class="inner">${renderToStaticMarkup(
+      <ChatKindIcon session={{ name: 'Cohort query' }} tier={tier} className="h-4 w-4" />
+    )}<span class="title">${id}</span></button></div>`;
+  return (
+    `<!doctype html><html data-theme="${family}"${dark ? ' class="dark"' : ''}><head><meta charset="utf-8">` +
+    `<style>${MAIN_CSS}</style><style>${UTILITIES}
+      button.inner { color: inherit; font: inherit; background: none; border: 0; padding: 0;
+        display: flex; align-items: center; gap: 8px; }
+      .br-tab { color: var(--text-muted); }
+    </style></head><body>` +
+    `<div class="br-tabstrip">${tab('active', true, 'private')}${tab('rest', false, 'private')}</div>` +
+    `<div class="br-tabstrip" data-group-active="false">${tab('unfocused', true, 'public')}</div>` +
+    `<span class="probe-accent">a</span><span class="probe-muted">m</span></body></html>`
+  );
+}
+
+/** One glyph per tier state: read as public, not yet read, read as private. */
+function statesHtml(family: string, dark: boolean): string {
+  const glyph = (id: string, tier?: 'public' | 'private') =>
+    renderToStaticMarkup(
+      <ChatKindIcon
+        session={{ name: 'Cohort query' }}
+        tier={tier}
+        testId={id}
+        className="h-4 w-4"
+      />
+    );
+  return (
+    `<!doctype html><html data-theme="${family}"${dark ? ' class="dark"' : ''}><head><meta charset="utf-8">` +
+    `<style>${MAIN_CSS}</style><style>${UTILITIES}</style></head><body>` +
+    `${glyph('public', 'public')}${glyph('unknown')}${glyph('private', 'private')}</body></html>`
+  );
+}
 
 const launchChromium = async (): Promise<Browser | null> => {
   for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
@@ -188,4 +230,76 @@ describe('chat glyphs in a real engine', () => {
       }, 30_000);
     }
   }
+  /**
+   * The strip's "active row". The tab family sets `color` on `.br-tab`, and the
+   * glyph's own `text-text-muted` utility would pin it muted beside a
+   * default-ink title; `.br-tab[data-active='true'] .br-chat-kind-icon` hands
+   * the tab's ink back. Measured on all three families, both modes, and on an
+   * unfocused group where the selected tab's ink goes muted again.
+   */
+  for (const family of ['parchment', 'alma-mater', 'roche-limit']) {
+    for (const dark of [false, true]) {
+      it(`${family} ${dark ? 'dark' : 'light'}: a tab glyph follows the tab's ink`, async () => {
+        if (!browser) return;
+        const page = await browser.newPage({ viewport: { width: 520, height: 200 } });
+        try {
+          await page.setContent(tabsHtml(family, dark), { waitUntil: 'load' });
+          const ink = await page.evaluate(() => {
+            const read = (id: string) => {
+              const tab = document.querySelector<HTMLElement>(`[data-tab="${id}"]`)!;
+              const svg = tab.querySelector<SVGSVGElement>('svg.br-chat-kind-icon')!;
+              const badge = svg.querySelector('.br-icon-lock-badge rect');
+              return {
+                glyph: getComputedStyle(svg).color,
+                title: getComputedStyle(tab.querySelector('.title')!).color,
+                badge: badge ? getComputedStyle(badge).stroke : null,
+              };
+            };
+            return {
+              active: read('active'),
+              rest: read('rest'),
+              unfocused: read('unfocused'),
+              muted: getComputedStyle(document.querySelector('.probe-muted')!).color,
+              accent: getComputedStyle(document.querySelector('.probe-accent')!).color,
+            };
+          });
+          // Active, focused strip: glyph and title share one ink, and it is not the muted one.
+          expect(ink.active.glyph).toBe(ink.active.title);
+          expect(ink.active.glyph).not.toBe(ink.muted);
+          // A tab at rest keeps the muted body.
+          expect(ink.rest.glyph).toBe(ink.muted);
+          // The selected tab of an unfocused group stops claiming the emphasis, glyph included.
+          expect(ink.unfocused.title).toBe(ink.muted);
+          expect(ink.unfocused.glyph).toBe(ink.muted);
+          // A private glyph's badge keeps the accent in every tab state.
+          expect(ink.active.badge).toBe(ink.accent);
+          expect(ink.rest.badge).toBe(ink.accent);
+        } finally {
+          await page.close();
+        }
+      }, 30_000);
+    }
+  }
+
+  it('dims a tier nobody has read and draws no badge for it', async () => {
+    if (!browser) return;
+    const page = await browser.newPage({ viewport: { width: 520, height: 120 } });
+    try {
+      await page.setContent(statesHtml('parchment', false), { waitUntil: 'load' });
+      const states = await page.evaluate(() =>
+        [...document.querySelectorAll<SVGSVGElement>('svg.br-chat-kind-icon')].map((svg) => ({
+          id: svg.getAttribute('data-testid') ?? '',
+          opacity: getComputedStyle(svg).opacity,
+          badge: svg.querySelector('.br-icon-lock-badge') !== null,
+        }))
+      );
+      expect(states).toEqual([
+        { id: 'public', opacity: '1', badge: false },
+        { id: 'unknown', opacity: '0.4', badge: false },
+        { id: 'private', opacity: '1', badge: true },
+      ]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
 });
