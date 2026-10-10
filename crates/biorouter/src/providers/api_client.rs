@@ -17,7 +17,24 @@ pub struct ApiClient {
     auth: AuthMethod,
     default_headers: HeaderMap,
     timeout: Duration,
+    /// How `timeout` is applied; see [`TimeoutMode`].
+    timeout_mode: TimeoutMode,
     tls_config: Option<TlsConfig>,
+}
+
+/// How an [`ApiClient`] applies its `timeout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimeoutMode {
+    /// `timeout` is the deadline for the whole request, streamed body included.
+    Overall,
+    /// No overall deadline; `timeout` only bounds silence between reads.
+    ///
+    /// For local inference servers (Ollama, Llama Server). A healthy local turn
+    /// can stream for longer than any fixed deadline on a slow machine, and a
+    /// deadline that fires mid-stream kills a working generation and, being
+    /// classified transient, re-sends the whole prompt to a server that is still
+    /// busy with the abandoned one. What has to be bounded there is a stall.
+    IdleOnly,
 }
 
 /// Overall request-timeout default (seconds). Deliberately generous so a healthy
@@ -60,6 +77,7 @@ fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
 fn tune_client_builder(
     builder: reqwest::ClientBuilder,
     timeout: Duration,
+    mode: TimeoutMode,
 ) -> reqwest::ClientBuilder {
     let connect = std::env::var("BIOROUTER_HTTP_CONNECT_TIMEOUT_SECS")
         .ok()
@@ -84,9 +102,12 @@ fn tune_client_builder(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| 300.max(timeout.as_secs()));
+    let builder = match mode {
+        TimeoutMode::Overall => builder.timeout(timeout),
+        TimeoutMode::IdleOnly => builder,
+    };
     builder
         .redirect(same_origin_redirect_policy())
-        .timeout(timeout)
         .connect_timeout(Duration::from_secs(connect))
         .read_timeout(Duration::from_secs(read))
         .tcp_keepalive(Duration::from_secs(30))
@@ -283,7 +304,25 @@ impl ApiClient {
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {
-        let mut client_builder = tune_client_builder(Client::builder(), timeout);
+        Self::build(host, auth, timeout, TimeoutMode::Overall)
+    }
+
+    /// A client for a local inference server: no overall deadline, and `idle`
+    /// bounds only the silence between reads (prefill included, since a local
+    /// server sends nothing until the prompt is processed). See
+    /// [`TimeoutMode::IdleOnly`]. `BIOROUTER_HTTP_READ_TIMEOUT_SECS` still
+    /// overrides the stall bound, as it does for every client.
+    pub fn with_idle_timeout(host: String, auth: AuthMethod, idle: Duration) -> Result<Self> {
+        Self::build(host, auth, idle, TimeoutMode::IdleOnly)
+    }
+
+    fn build(
+        host: String,
+        auth: AuthMethod,
+        timeout: Duration,
+        timeout_mode: TimeoutMode,
+    ) -> Result<Self> {
+        let mut client_builder = tune_client_builder(Client::builder(), timeout, timeout_mode);
 
         // Configure TLS if needed
         let tls_config = TlsConfig::from_config()?;
@@ -299,13 +338,15 @@ impl ApiClient {
             auth,
             default_headers: HeaderMap::new(),
             timeout,
+            timeout_mode,
             tls_config,
         })
     }
 
     fn rebuild_client(&mut self) -> Result<()> {
-        let mut client_builder = tune_client_builder(Client::builder(), self.timeout)
-            .default_headers(self.default_headers.clone());
+        let mut client_builder =
+            tune_client_builder(Client::builder(), self.timeout, self.timeout_mode)
+                .default_headers(self.default_headers.clone());
 
         // Configure TLS if needed
         if let Some(ref tls_config) = self.tls_config {
@@ -479,6 +520,7 @@ impl fmt::Debug for ApiClient {
             .field("host", &self.host)
             .field("auth", &"[auth method]")
             .field("timeout", &self.timeout)
+            .field("timeout_mode", &self.timeout_mode)
             .field("default_headers", &self.default_headers)
             .finish_non_exhaustive()
     }
