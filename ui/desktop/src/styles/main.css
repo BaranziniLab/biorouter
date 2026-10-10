@@ -316,7 +316,6 @@
   --dur-fast-max: 175ms; /* entrances of small surfaces, tab enter, crossfade in, chevrons */
   --dur-med-min: 250ms; /* dialog enter, progress fill, side and stack crossfade */
   --dur-med: 300ms; /* panels: preview, summary rail, conversation glide, sidebar, disclosure */
-  --dur-med-max: 450ms; /* DEPRECATED: no uses; deleted in the redesign's wave 2 */
   /* The slow tier has exactly one member. It is not "a slower dialog" — it is
      the period of an ambient loop that never ends (the spinner, the pulses), and
      giving it min/max variants would invite it to be used for transitions. Loops
@@ -338,7 +337,6 @@
      two general-purpose easings has no easing — it has a coin flip at every call
      site, which is how this app ended up running four curves for one hover. */
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
-  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* DEPRECATED: one stray use; deleted in wave 2. */
   /* Gentle overshoot for physical gestures — tab reorder/select settle, the
      drag-ghost lift (#37) and the segmented control's sliding thumb. Reserved
      for TRANSFORMS: an overshooting colour or opacity clamps and reads as a

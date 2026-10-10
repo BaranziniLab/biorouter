@@ -74,6 +74,15 @@ describe('the TS mirror equals the CSS tokens', () => {
     expect(declaration('--ease-spring')).toBe(EASE_SPRING);
   });
 
+  /**
+   * The tokens the redesign retired. `--dur-med-max` had no use and `--ease-in`
+   * one stray one, so a third tier and a second general-purpose curve are
+   * gone; a new `duration-[var(--dur-med-max)]` would silently animate for 0s.
+   */
+  it.each(['--dur-med-max', '--ease-in'])('no longer declares %s', (token) => {
+    expect(CODE).not.toMatch(new RegExp(`(?:^|[\\s;{])${token}:`));
+  });
+
   /** Exits are a tier faster than entrances; the ladder must stay ordered. */
   it('keeps the ladder strictly increasing', () => {
     const ladder = [DUR.fastMin, DUR.fast, DUR.fastMax, DUR.medMin, DUR.med, DUR.slow];
