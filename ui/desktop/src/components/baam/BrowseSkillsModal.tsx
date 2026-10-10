@@ -294,6 +294,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                 disabled={installed || installing}
                 leading={
                   <Checkbox
+                    // Named by the skill alone; the row's other text is its context.
+                    aria-label={skill.name}
                     checked={checked}
                     disabled={installed || installing}
                     onChange={() => toggle(skill.id)}
