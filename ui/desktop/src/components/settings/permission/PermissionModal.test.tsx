@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PermissionModal from './PermissionModal';
 
@@ -39,7 +40,9 @@ describe('PermissionModal', () => {
     );
 
     expect(await screen.findByText('Search Available Extensions')).toBeInTheDocument();
-    expect(screen.getByText('Find extensions that can help with a task')).toBeInTheDocument();
+    // The description is the row's help: the select hears it, and it is not a visible paragraph.
+    const select = screen.getByRole('button', { name: /Search Available Extensions Ask before/ });
+    expect(select).toHaveAccessibleDescription('Find extensions that can help with a task');
     expect(getTools).toHaveBeenCalledWith({
       query: { extension_name: 'Extension Manager', session_id: '' },
     });
@@ -83,5 +86,36 @@ describe('PermissionModal', () => {
 
     await waitFor(() => expect(getTools).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('No configurable tools')).toBeInTheDocument();
+  });
+
+  it('saves a changed rule through the one Save changes button', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    getTools.mockResolvedValue({
+      data: [
+        {
+          name: 'developer__shell',
+          description: 'Run a shell command.',
+          parameters: [],
+          permission: 'ask_before',
+        },
+      ],
+    });
+    upsertPermissions.mockResolvedValue({ data: {} });
+    render(<PermissionModal extensionName="developer" onClose={onClose} />);
+
+    const save = await screen.findByRole('button', { name: 'Save changes' });
+    expect(save).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: /Shell Ask before/ }));
+    await user.click(await screen.findByRole('menuitemradio', { name: 'Always allow' }));
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() =>
+      expect(upsertPermissions).toHaveBeenCalledWith({
+        body: { tool_permissions: [{ tool_name: 'developer__shell', permission: 'always_allow' }] },
+      })
+    );
+    expect(onClose).toHaveBeenCalled();
   });
 });

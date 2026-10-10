@@ -7,6 +7,7 @@ import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
 import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
 import { getConfigurableExtensions } from './PermissionRulesModal';
+import { permissionDialogCopy } from '../chat/copy';
 
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -88,10 +89,10 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
               </svg>
             </div>
             <h1 className="text-title text-text-default mt-4">Permission rules</h1>
-            <p className="text-text-muted">
-              Hidden instructions that will be passed to the provider to help direct and add context
-              to your responses.
-            </p>
+            {/* #38: this said "Hidden instructions that will be passed to the provider", which
+                describes project hints, not permission rules. The route is unreachable from the
+                app (spec §3.13 leaves it alone); only its words are corrected. */}
+            <p className="text-text-muted">{permissionDialogCopy.rulesSubtitle}</p>
           </div>
 
           {/* Content Area */}

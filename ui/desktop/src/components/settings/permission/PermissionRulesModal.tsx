@@ -1,17 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
 import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
-import { ChevronRight, SlidersHorizontal } from '../../icons/app-icons';
+import { ChevronRight } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
+import { ModalShell } from '../../ModalShell';
 import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
 import { nameToKey } from '../extensions/utils';
+import { permissionDialogCopy } from '../chat/copy';
 
 export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
   return extensions
@@ -19,6 +14,10 @@ export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
     .sort((a, b) => getFriendlyTitle(a).localeCompare(getFriendlyTitle(b)));
 }
 
+/**
+ * One enabled extension: a row that opens its tool rules. A name and at most one truncated line
+ * of description (principle 4), then a chevron; no icon tile.
+ */
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const title = getFriendlyTitle(extension);
@@ -26,24 +25,19 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
 
   return (
     <>
-      <Button
-        className="biorouter-settings-row h-auto min-h-14 w-full justify-between gap-4 px-3 py-3 text-left whitespace-normal"
+      <button
+        type="button"
+        className="biorouter-settings-row flex w-full min-w-0 items-center gap-3 px-3 py-2.5 text-left"
         onClick={() => setIsModalOpen(true)}
-        variant="ghost"
-        size="lg"
       >
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-text-default break-words [overflow-wrap:anywhere]">
-            {title}
-          </span>
+          <span className="block truncate text-label text-text-default">{title}</span>
           {description && (
-            <span className="mt-0.5 block text-xs font-normal leading-5 text-text-muted break-words [overflow-wrap:anywhere]">
-              {description}
-            </span>
+            <span className="block truncate text-supporting text-text-muted">{description}</span>
           )}
         </span>
-        <ChevronRight className="h-4 w-4 flex-shrink-0" />
-      </Button>
+        <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-text-muted" />
+      </button>
       {isModalOpen && (
         <PermissionModal
           onClose={() => setIsModalOpen(false)}
@@ -60,6 +54,10 @@ interface PermissionRulesModalProps {
   onClose: () => void;
 }
 
+/**
+ * Settings > Chat > Approvals > Tool permissions > Edit…: the enabled extensions, each opening
+ * its own tool rules. `ModalShell` `lg` with a scrolling body (spec §3.13).
+ */
 export default function PermissionRulesModal({ isOpen, onClose }: PermissionRulesModalProps) {
   const { getExtensions } = useConfig();
   const getExtensionsRef = useRef(getExtensions);
@@ -87,55 +85,50 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
   }, [fetchExtensions, isOpen]);
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] p-0 flex flex-col overflow-hidden sm:max-w-[720px]">
-        <DialogHeader className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-5 sm:px-6">
-          <div className="flex min-w-0 items-start gap-3 pr-6">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-element bg-background-medium text-text-default">
-              <SlidersHorizontal className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 pt-0.5">
-              <DialogTitle className="text-base font-semibold text-text-default">
-                Tool permissions
-              </DialogTitle>
-              <DialogDescription className="mt-1 text-sm leading-5 text-text-muted break-words">
-                Choose how Manual and Smart modes handle tools from each enabled extension.
-              </DialogDescription>
-            </div>
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => !open && onClose()}
+      size="lg"
+      scrollBody
+      title={permissionDialogCopy.rulesTitle}
+      subtitle={permissionDialogCopy.rulesSubtitle}
+    >
+      <div className="py-3">
+        {status === 'loading' && (
+          <p className="py-8 text-center text-supporting text-text-muted">
+            {permissionDialogCopy.loadingExtensions}
+          </p>
+        )}
+
+        {status === 'error' && (
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <p className="text-supporting text-text-muted">
+              {permissionDialogCopy.extensionsFailed}
+            </p>
+            <Button variant="secondary" size="sm" onClick={fetchExtensions}>
+              {permissionDialogCopy.tryAgain}
+            </Button>
           </div>
-        </DialogHeader>
+        )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
-          {status === 'loading' && (
-            <div className="flex min-h-36 items-center justify-center text-sm text-text-muted">
-              Loading enabled extensions…
-            </div>
-          )}
+        {status === 'ready' && extensions.length === 0 && (
+          <p className="py-8 text-center text-supporting text-text-muted">
+            {permissionDialogCopy.noExtensions}
+          </p>
+        )}
 
-          {status === 'error' && (
-            <div className="flex min-h-36 flex-col items-center justify-center gap-3 text-center">
-              <p className="text-sm text-text-muted">Enabled extensions could not be loaded.</p>
-              <Button variant="outline" size="sm" onClick={fetchExtensions}>
-                Try again
-              </Button>
-            </div>
-          )}
-
-          {status === 'ready' && extensions.length === 0 && (
-            <div className="flex min-h-36 items-center justify-center text-center text-sm text-text-muted">
-              No enabled extensions have configurable tool permissions.
-            </div>
-          )}
-
-          {status === 'ready' && extensions.length > 0 && (
-            <div className="biorouter-settings-list" aria-label="Enabled extension permissions">
-              {extensions.map((extension) => (
-                <RuleItem key={nameToKey(extension.name)} extension={extension} />
-              ))}
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
+        {status === 'ready' && extensions.length > 0 && (
+          <div
+            className="biorouter-settings-list"
+            role="group"
+            aria-label={permissionDialogCopy.rulesListLabel}
+          >
+            {extensions.map((extension) => (
+              <RuleItem key={nameToKey(extension.name)} extension={extension} />
+            ))}
+          </div>
+        )}
+      </div>
+    </ModalShell>
   );
 }

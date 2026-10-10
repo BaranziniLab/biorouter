@@ -1,28 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../../ui/button';
-import { ChevronDownIcon, SlidersHorizontal } from '../../icons/app-icons';
+import { SettingRow } from '../../ui/setting-row';
+import { ModalShell } from '../../ModalShell';
 import { getTools, PermissionLevel, ToolInfo, upsertPermissions } from '../../../api';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
 import { toolIdentifierToTitleCase } from '../../../utils';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from '../../ui/dropdown-menu';
+import { SettingSelect } from '../SettingSelect';
+import { permissionDialogCopy } from '../chat/copy';
 
-const permissionOptions = [
-  { value: 'always_allow', label: 'Always allow' },
-  { value: 'ask_before', label: 'Ask before' },
-  { value: 'never_allow', label: 'Never allow' },
-] as { value: PermissionLevel; label: string }[];
+const permissionOptions = permissionDialogCopy.levels.map((level) => ({
+  value: level.value as PermissionLevel,
+  label: level.label,
+}));
 
 function getFirstSentence(text: string): string {
   const trimmed = text.trim();
@@ -42,6 +30,11 @@ interface PermissionModalProps {
   onClose: () => void;
 }
 
+/**
+ * One extension's tool rules: a `SettingRow` per tool, its first sentence as the InfoTip, and
+ * one select per row (Always allow, Ask before, Never allow). `ModalShell` `lg`, a scrolling
+ * body, and the dialog's one committing action, Save changes (spec §3.13).
+ */
 export default function PermissionModal({
   extensionName,
   extensionLabel = extensionName,
@@ -127,126 +120,86 @@ export default function PermissionModal({
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-[620px]">
-        <DialogHeader className="border-b border-border-subtle px-5 pb-5 pt-5 sm:px-6">
-          <div className="flex min-w-0 items-start gap-3 pr-6">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-element bg-background-medium text-text-default">
-              <SlidersHorizontal className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 pt-0.5">
-              <DialogTitle className="text-base font-semibold text-text-default break-words [overflow-wrap:anywhere]">
-                {extensionLabel}
-              </DialogTitle>
-              <DialogDescription className="mt-1 text-sm leading-5 text-text-muted">
-                Override how this extension’s tools behave in Manual and Smart modes.
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
-
-        <div className="min-h-0 overflow-y-auto px-5 py-4 sm:px-6">
-          {loadStatus === 'loading' && (
-            <div className="flex min-h-40 items-center justify-center text-sm text-text-muted">
-              Loading tools…
-            </div>
-          )}
-
-          {loadStatus === 'error' && (
-            <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-center">
-              <div>
-                <p className="text-sm font-medium text-text-default">Tools could not be loaded</p>
-                <p className="mt-1 max-w-sm text-sm leading-5 text-text-muted">
-                  Check that the extension is installed and can start, then try again.
-                </p>
-              </div>
-              <Button variant="outline" size="sm" onClick={fetchTools}>
-                Try again
-              </Button>
-            </div>
-          )}
-
-          {loadStatus === 'ready' && tools.length === 0 && (
-            <div className="flex min-h-40 flex-col items-center justify-center text-center">
-              <p className="text-sm font-medium text-text-default">No configurable tools</p>
-              <p className="mt-1 max-w-sm text-sm leading-5 text-text-muted">
-                This extension loaded, but it exposes no tools.
-              </p>
-            </div>
-          )}
-
-          {loadStatus === 'ready' && tools.length > 0 && (
-            <div className="biorouter-settings-list">
-              {tools.map((tool) => {
-                const selectedPermission = updatedPermissions[tool.name] || tool.permission;
-                const selectedLabel =
-                  permissionOptions.find((option) => option.value === selectedPermission)?.label ||
-                  'Ask before';
-
-                return (
-                  <div
-                    key={tool.name}
-                    className="biorouter-settings-row flex min-w-0 flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p
-                        className="text-sm font-medium text-text-default break-words [overflow-wrap:anywhere]"
-                        title={tool.name}
-                      >
-                        {getToolLabel(tool.name)}
-                      </p>
-                      {tool.description && (
-                        <p className="mt-0.5 text-xs leading-5 text-text-muted break-words [overflow-wrap:anywhere]">
-                          {getFirstSentence(tool.description)}
-                        </p>
-                      )}
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          className="w-full flex-shrink-0 justify-between sm:w-36"
-                          variant="secondary"
-                          size="sm"
-                        >
-                          {selectedLabel}
-                          <ChevronDownIcon className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-36">
-                        {permissionOptions.map((option) => (
-                          <DropdownMenuItem
-                            key={option.value}
-                            onSelect={() => handleSettingChange(tool.name, option.value)}
-                          >
-                            {option.label}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <DialogFooter className="border-t border-border-subtle px-5 py-4 sm:px-6">
+    <ModalShell
+      open
+      onOpenChange={(open) => !open && onClose()}
+      size="lg"
+      purpose={saveStatus === 'saving' ? 'required' : 'form'}
+      scrollBody
+      title={extensionLabel}
+      subtitle={permissionDialogCopy.toolsSubtitle}
+      footer={
+        <>
           {saveStatus === 'error' && (
-            <p className="mr-auto self-center text-sm text-text-danger">
-              Permissions could not be saved.
+            <p className="mr-auto text-supporting text-text-danger" role="alert">
+              {permissionDialogCopy.saveFailed}
             </p>
           )}
           <Button variant="outline" onClick={onClose} disabled={saveStatus === 'saving'}>
-            Cancel
+            {permissionDialogCopy.cancel}
           </Button>
           <Button
             disabled={!hasChanges || loadStatus !== 'ready' || saveStatus === 'saving'}
             onClick={handleSave}
           >
-            {saveStatus === 'saving' ? 'Saving…' : 'Save changes'}
+            {saveStatus === 'saving' ? permissionDialogCopy.saving : permissionDialogCopy.save}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <div className="py-3">
+        {loadStatus === 'loading' && (
+          <p className="py-8 text-center text-supporting text-text-muted">
+            {permissionDialogCopy.loadingTools}
+          </p>
+        )}
+
+        {loadStatus === 'error' && (
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <div>
+              <p className="text-label text-text-default">{permissionDialogCopy.toolsFailed}</p>
+              <p className="mt-1 text-supporting text-text-muted">
+                {permissionDialogCopy.toolsFailedHelp}
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={fetchTools}>
+              {permissionDialogCopy.tryAgain}
+            </Button>
+          </div>
+        )}
+
+        {loadStatus === 'ready' && tools.length === 0 && (
+          <div className="py-8 text-center">
+            <p className="text-label text-text-default">{permissionDialogCopy.noTools}</p>
+            <p className="mt-1 text-supporting text-text-muted">
+              {permissionDialogCopy.noToolsHelp}
+            </p>
+          </div>
+        )}
+
+        {loadStatus === 'ready' && tools.length > 0 && (
+          <div className="biorouter-settings-list">
+            {tools.map((tool) => {
+              const selectedPermission = updatedPermissions[tool.name] || tool.permission;
+              return (
+                <SettingRow
+                  key={tool.name}
+                  label={getToolLabel(tool.name)}
+                  help={tool.description ? getFirstSentence(tool.description) : undefined}
+                >
+                  <SettingSelect<PermissionLevel>
+                    options={permissionOptions}
+                    value={selectedPermission ?? 'ask_before'}
+                    onValueChange={(next) => handleSettingChange(tool.name, next)}
+                    triggerClassName="w-36"
+                    contentClassName="min-w-36"
+                  />
+                </SettingRow>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </ModalShell>
   );
 }

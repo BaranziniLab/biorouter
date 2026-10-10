@@ -108,3 +108,20 @@ export const permissionDialogCopy = {
     { value: 'never_allow', label: 'Never allow' },
   ],
 } as const;
+
+export const hintsDialogCopy = {
+  title: 'Project hints',
+  /** Before the file's path in the dialog's subtitle. */
+  found: 'Editing',
+  newFile: 'New file at',
+  field: 'Hints',
+  helper: 'Used by new chats while the Developer extension is on.',
+  placeholder: 'Language, frameworks, coding style, important files…',
+  readError: (message: string) => `Could not read .biorouterhints: ${message}`,
+  accessFailed: 'Biorouter could not open the file.',
+  saveFailed: 'Biorouter could not save the file.',
+  saved: 'Saved',
+  close: 'Close',
+  save: 'Save',
+  saving: 'Saving…',
+} as const;

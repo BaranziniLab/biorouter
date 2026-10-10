@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PermissionRulesModal from './PermissionRulesModal';
+import { permissionDialogCopy } from '../chat/copy';
 
 const { getExtensions } = vi.hoisted(() => ({ getExtensions: vi.fn() }));
 
@@ -52,7 +53,10 @@ describe('PermissionRulesModal', () => {
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
     const developer = await screen.findByRole('button', { name: /Developer/ });
-    expect(developer).toHaveClass('whitespace-normal');
+    // One truncated line of description, so a long one cannot grow the row (principle 4).
+    expect(
+      screen.getByText('A very long description that must remain inside the permission row.')
+    ).toHaveClass('truncate');
     expect(screen.queryByText('Synthetic internal grouping')).not.toBeInTheDocument();
     expect(screen.queryByText('Disabled extension')).not.toBeInTheDocument();
 
@@ -66,11 +70,19 @@ describe('PermissionRulesModal', () => {
 
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Enabled extensions could not be loaded.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(await screen.findByText(permissionDialogCopy.extensionsFailed)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: permissionDialogCopy.tryAgain })).toBeInTheDocument();
     expect(error).toHaveBeenCalledWith(
       'Failed to load extensions for permission settings:',
       expect.objectContaining({ message: 'unavailable' })
     );
+  });
+
+  it('is one dialog titled Tool permissions, with no icon tile', async () => {
+    getExtensions.mockResolvedValue([]);
+    render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
+    const dialog = await screen.findByRole('dialog', { name: permissionDialogCopy.rulesTitle });
+    expect(await screen.findByText(permissionDialogCopy.noExtensions)).toBeInTheDocument();
+    expect(dialog.querySelector('svg.h-5')).toBeNull();
   });
 });
