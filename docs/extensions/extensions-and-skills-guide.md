@@ -104,6 +104,8 @@ extensions:
 | Toggle (CLI) | `biorouter configure` → **Toggle Extensions** |
 | Remove (desktop) | Sidebar → **Extensions** → the row's **⋯** menu → **Remove…** |
 
+The page groups extensions as **Enabled** and **Available**. When you switch one with the pointer, its switch changes at once and the row moves to the other group once the pointer leaves the list, so the rows never shift under your cursor. With the keyboard the row moves straight away and the focus follows it.
+
 Extensions enabled dynamically during a session (via the Extension Manager) are only active for that session. To persist an extension across sessions, enable it through Settings or the config file.
 
 ### Installing from the BAAM marketplace
