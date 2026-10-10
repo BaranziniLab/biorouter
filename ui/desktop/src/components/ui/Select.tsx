@@ -38,7 +38,9 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
  *
  * `unstyled` strips react-select's Emotion base styles, but Emotion still injects
  * `fontSize: inherit` on options AFTER Tailwind's layer. Pinning a 14px type role
- * on the menu makes the inherit chain resolve to 14px instead of the <body>'s 16px.
+ * on the menu makes the inherit chain resolve to the menu's own role, not to
+ * whatever the portal target inherits (the <body> default, 14px since the 2026-10
+ * body move and 16px before it).
  * That role is `text-body` (14/20/400), NOT `text-label` — a 500 weight on the menu
  * would erase the weight contrast the selected option uses to mark itself.
  *

@@ -72,12 +72,12 @@ export function WorkflowWarningModal({
             <h3 className="mb-3 text-label text-text-default">Workflow preview</h3>
             <div className="space-y-4">
               {workflowDetails.title && (
-                <p className="text-text-default">
+                <p className="text-body text-text-default">
                   <strong>Title</strong> {workflowDetails.title}
                 </p>
               )}
               {workflowDetails.description && (
-                <p className="text-text-default">
+                <p className="text-body text-text-default">
                   <strong>Description</strong> {workflowDetails.description}
                 </p>
               )}
