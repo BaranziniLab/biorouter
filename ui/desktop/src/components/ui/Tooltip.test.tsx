@@ -203,3 +203,59 @@ describe('a tooltip opens on focus only when Tab moved it', () => {
     expect(seen).toEqual([false]);
   });
 });
+
+describe('the app-level tooltip provider', () => {
+  it('lets every Tooltip under it share one provider, and keeps a fallback outside it', async () => {
+    const { AppTooltipProvider } = await import('./Tooltip');
+    const user = userEvent.setup();
+    render(
+      <AppTooltipProvider delayDuration={0}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button">Attach</button>
+          </TooltipTrigger>
+          <TooltipContent>Attach a file</TooltipContent>
+        </Tooltip>
+      </AppTooltipProvider>
+    );
+    // The shared provider's 0ms delay reaches the root, which therefore mounted no provider of
+    // its own (its own would have waited 500ms).
+    await user.hover(screen.getByRole('button', { name: 'Attach' }));
+    expect(await screen.findByRole('tooltip', {}, { timeout: 300 })).toHaveTextContent(
+      'Attach a file'
+    );
+  });
+
+  it('works with no provider above it (tests, the artifact harness)', async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild>
+          <button type="button">Attach</button>
+        </TooltipTrigger>
+        <TooltipContent>Attach a file</TooltipContent>
+      </Tooltip>
+    );
+    await user.hover(screen.getByRole('button', { name: 'Attach' }));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Attach a file');
+  });
+
+  it('is not fooled by a plain TooltipProvider above it', async () => {
+    const { TooltipProvider } = await import('./Tooltip');
+    const user = userEvent.setup();
+    render(
+      <TooltipProvider delayDuration={0}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button">Attach</button>
+          </TooltipTrigger>
+          <TooltipContent>Attach a file</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+    // The root brings its own 500ms provider, so the shell's instant one cannot reach it.
+    await user.hover(screen.getByRole('button', { name: 'Attach' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+});

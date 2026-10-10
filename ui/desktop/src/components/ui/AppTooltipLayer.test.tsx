@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AppTooltipLayer } from './AppTooltipLayer';
 
@@ -152,5 +153,62 @@ describe('AppTooltipLayer', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 550));
 
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Spec 2.5 / primitives defect 7: the layer listened to every `focusin`, so a dialog or menu
+   * handing focus back to its opener (or a click that focuses a button) popped the opener's title
+   * tooltip, the Q2-56 bug the Radix Tooltip already fixed. It now uses the same Tab gate.
+   */
+  it('stays shut when a program focuses a titled control', async () => {
+    render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title="Native action" />
+      </>
+    );
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('data-biorouter-tooltip', 'Native action'));
+
+    act(() => target.focus());
+    expect(target).toHaveFocus();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 600)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('opens when Tab moves focus onto a titled control', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <AppTooltipLayer />
+        <button type="button">Before</button>
+        <NativeTitleTarget title="Native action" />
+      </>
+    );
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('data-biorouter-tooltip', 'Native action'));
+    act(() => screen.getByRole('button', { name: 'Before' }).focus());
+
+    await user.tab();
+
+    expect(target).toHaveFocus();
+    expect(await screen.findByRole('tooltip', {}, { timeout: 2000 })).toHaveTextContent(
+      'Native action'
+    );
+  });
+
+  it('fades on the motion tokens, not a literal duration', async () => {
+    render(
+      <>
+        <AppTooltipLayer />
+        <NativeTitleTarget title="Native action" />
+      </>
+    );
+    const target = screen.getByTestId('native-title-target');
+    await waitFor(() => expect(target).toHaveAttribute('data-biorouter-tooltip', 'Native action'));
+    fireEvent.pointerOver(target);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveClass('br-tooltip-motion');
+    expect(tooltip.className).not.toMatch(/duration-\[/);
   });
 });
