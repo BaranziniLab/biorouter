@@ -4,14 +4,13 @@ import { DUR, EASE_OUT } from '../styles/motion';
 import { useTextAnimator } from './use-text-animator';
 
 /**
- * The unroll's contract is about the FIRST FRAME, so that is what these pin.
+ * The arrival's contract is about the FIRST FRAME and about its size.
  *
- * The greeting is rendered with its text at full opacity and the animator is
- * what hides the characters so they can arrive. That makes *when* the animator
- * runs the whole behaviour: a turn taken after the browser has painted shows
- * the finished sentence, then blanks it, then unrolls it — the answer, a blink
- * of nothing, then the answer again. A layout effect runs before the paint, so
- * the characters are already hidden in the first frame the user ever sees.
+ * The greeting is rendered with its text at full opacity and the animation is
+ * what holds it at 0 until it fades in. That makes *when* the hook runs the
+ * whole behaviour: a turn taken after the browser has painted shows the
+ * finished sentence, then blanks it, then fades it in. A layout effect runs
+ * before the paint, so the animation is already running in the first frame.
  *
  * jsdom never paints, so none of this can be observed the way a user observes
  * it. What jsdom *can* answer exactly is the question underneath: had the work
@@ -25,8 +24,10 @@ const started: Array<{
   delay: number;
   duration?: number;
   easing?: string;
+  fill?: string;
   keyframes: Record<string, unknown>[];
 }> = [];
+let cancelled = 0;
 
 function Harness({ text, enabled = true }: { text: string; enabled?: boolean }) {
   const ref = useTextAnimator({ text, enabled });
@@ -39,22 +40,29 @@ function Harness({ text, enabled = true }: { text: string; enabled?: boolean }) 
 
 beforeEach(() => {
   started.length = 0;
+  cancelled = 0;
   vi.useFakeTimers();
   // jsdom implements no Web Animations API. The stub records what was started
   // and returns just enough of an `Animation` for the animator to drive.
   Element.prototype.animate = function (
     this: Element,
     keyframes: Record<string, unknown>[],
-    options: { delay?: number; duration?: number; easing?: string }
+    options: { delay?: number; duration?: number; easing?: string; fill?: string }
   ) {
     started.push({
       el: this,
       delay: options?.delay ?? 0,
       duration: options?.duration,
       easing: options?.easing,
+      fill: options?.fill,
       keyframes,
     });
-    return { cancel: () => {}, onfinish: null } as unknown as globalThis.Animation;
+    return {
+      cancel: () => {
+        cancelled += 1;
+      },
+      onfinish: null,
+    } as unknown as globalThis.Animation;
   } as unknown as Element['animate'];
   window.matchMedia = ((q: string) => ({
     matches: false,
@@ -69,42 +77,42 @@ afterEach(() => {
 });
 
 describe('useTextAnimator', () => {
-  it('has hidden the characters and started the unroll before the first paint', () => {
+  it('has started the fade before the first paint', () => {
     const { container } = render(<Harness text="Hello there" />);
 
-    // NOTHING is advanced between the render and these assertions. Anything the
-    // animator defers — a `setTimeout`, or simply being a `useEffect` that the
-    // browser paints ahead of — leaves both of these unsatisfied.
-    expect(started.length).toBeGreaterThan(0);
-
-    const chars = container.querySelectorAll<HTMLElement>('.char');
-    expect(chars.length).toBeGreaterThan(0);
-    expect([...chars].every((c) => c.style.opacity === '0')).toBe(true);
-  });
-
-  it('staggers the characters rather than revealing them together', () => {
-    render(<Harness text="Hello there" />);
-    const delays = started.map((s) => s.delay);
-    expect(new Set(delays).size).toBeGreaterThan(1);
-    expect(delays).toEqual([...delays].sort((a, b) => a - b));
+    // NOTHING is advanced between the render and this assertion. Anything the
+    // hook defers (a `setTimeout`, or simply being a `useEffect` that the
+    // browser paints ahead of) leaves it unsatisfied.
+    expect(started).toHaveLength(1);
+    expect(started[0].el).toBe(container.querySelector('span'));
+    // `backwards` holds the first keyframe only while the fade runs.
+    expect(started[0].fill).toBe('backwards');
   });
 
   /**
-   * The unroll is on the motion tokens (spec 2.4): `--dur-med` on `--ease-out`,
-   * 12ms between characters, and only `opacity` and `transform` move. The old
-   * blur animated `filter`, which principle 9 does not allow.
+   * One element, one fade (spec 2.4: a stagger animates at most five items).
+   * The per-character unroll it replaced split a 44-letter question into 44
+   * staggered elements that took about 950ms to finish.
    */
-  it('moves only opacity and transform, over the medium tier on the one curve', () => {
-    render(<Harness text="Hello there" />);
-    expect(started.length).toBeGreaterThan(1);
-    for (const run of started) {
-      expect(run.duration).toBe(DUR.med);
-      expect(run.easing).toBe(EASE_OUT);
-      for (const frame of run.keyframes) {
-        expect(Object.keys(frame).sort()).toEqual(['opacity', 'transform']);
-      }
-    }
-    expect(started[1].delay - started[0].delay).toBe(12);
+  it('fades the whole line once: opacity only, the fast-max tier on the one curve', () => {
+    const { container } = render(
+      <Harness text="Which patient trends are waiting to be discovered?" />
+    );
+    expect(started).toHaveLength(1);
+    const [fade] = started;
+    expect(fade.duration).toBe(DUR.fastMax);
+    expect(fade.easing).toBe(EASE_OUT);
+    expect(fade.delay).toBe(0);
+    expect(fade.keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+    // No split: the text stays one node, so it is read as a sentence.
+    expect(container.querySelector('span')?.childNodes).toHaveLength(1);
+    expect(container.querySelector('span')?.getAttribute('style')).toBeNull();
+  });
+
+  it('cancels the fade when the heading unmounts, leaving nothing behind', () => {
+    const { unmount } = render(<Harness text="Hello there" />);
+    unmount();
+    expect(cancelled).toBe(1);
   });
 
   /**
