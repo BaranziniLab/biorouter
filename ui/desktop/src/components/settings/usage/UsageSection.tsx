@@ -8,14 +8,18 @@ import {
 } from '../../../api';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
+import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
+import { settingsUsageCopy as copy } from '../../usage/copy';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { fillCalendarDays, UsagePanel } from './UsagePanel';
 
 /**
- * Settings-embedded Usage surface: fetches the month-to-date summary and the
- * matching day- and model-grouped reports, and hands them to the pure
+ * Settings > App > Usage: fetches the month-to-date summary and the matching
+ * day- and model-grouped reports, and hands them to the pure
  * {@link UsagePanel}. Fetch failures remain visible and retryable instead of
- * making the entire settings section disappear.
+ * making the entire settings section disappear. The section's explanation is
+ * its InfoTip; there is no paragraph under the label.
  */
 export default function UsageSection() {
   const [summary, setSummary] = useState<UsageSummaryResponse | null>(null);
@@ -57,7 +61,7 @@ export default function UsageSection() {
       } catch (error) {
         if (cancelled) return;
         console.error('Failed to load usage:', error);
-        setLoadError('Usage data could not be loaded. Check the backend connection and try again.');
+        setLoadError(copy.loadError);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -69,14 +73,11 @@ export default function UsageSection() {
   }, [retryVersion]);
 
   return (
-    <div className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header">
-        <h2 className="mb-1 text-caps text-text-muted">Usage</h2>
-        <p className="text-supporting text-text-muted">
-          Billed tokens and estimated cost for the current month, grouped by day and model.
-        </p>
-      </div>
-
+    <SettingSection
+      id={SETTINGS_SECTION_IDS.usage}
+      title={copy.sectionTitle}
+      help={copy.sectionHelp}
+    >
       {loadError && (
         <Note
           tone="neutral"
@@ -87,32 +88,28 @@ export default function UsageSection() {
             <Button
               type="button"
               size="sm"
-              variant="outline"
+              variant="secondary"
               onClick={() => setRetryVersion((version) => version + 1)}
             >
-              Retry
+              {copy.retry}
             </Button>
           }
         >
           {loadError}
-          {summary ? ' Showing the last loaded month-to-date report.' : ''}
+          {summary ? copy.loadErrorStale : ''}
         </Note>
       )}
 
       {loading && !summary ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-24 w-full" />
-        </div>
+        <Skeleton className="h-10 w-full" data-testid="usage-loading" />
       ) : summary ? (
         <UsagePanel summary={summary} dayRows={dayRows} modelRows={modelRows} />
       ) : null}
       {loading && summary && (
-        <p className="text-supporting text-text-muted" role="status">
-          Refreshing usage…
+        <p className="px-3 text-supporting text-text-muted" role="status">
+          {copy.refreshing}
         </p>
       )}
-    </div>
+    </SettingSection>
   );
 }

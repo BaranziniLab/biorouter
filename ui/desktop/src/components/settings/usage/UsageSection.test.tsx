@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getUsageReport, getUsageSummary } from '../../../api';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import UsageSection from './UsageSection';
 
 vi.mock('../../../api', () => ({
@@ -67,6 +68,24 @@ describe('UsageSection', () => {
     expect(vi.mocked(getUsageReport).mock.calls[1]?.[0]).toMatchObject({
       query: { from: monthStart, group: 'model' },
     });
+  });
+
+  it('is the deep-link target, with its explanation behind an InfoTip', async () => {
+    const { container } = render(<UsageSection />);
+    await screen.findByTestId('usage-panel');
+    const section = container.querySelector(`#${SETTINGS_SECTION_IDS.usage}`);
+    expect(section).not.toBeNull();
+    expect(section).toHaveAccessibleName('Usage');
+    expect(screen.getByRole('button', { name: 'About Usage' })).toHaveAccessibleDescription(
+      'Billed tokens and estimated cost for the current month, grouped by day and model.'
+    );
+    expect(screen.queryByText(/grouped by day and model/, { selector: 'p' })).toBeNull();
+  });
+
+  it('loads as one row-sized skeleton', () => {
+    vi.mocked(getUsageSummary).mockReturnValue(new Promise(() => {}) as never);
+    render(<UsageSection />);
+    expect(screen.getByTestId('usage-loading')).toHaveClass('h-10', 'w-full');
   });
 
   it('keeps a failed fetch visible and offers a working retry', async () => {

@@ -1,21 +1,26 @@
-import { type ReactNode, useState } from 'react';
+import { useState } from 'react';
 import type { UsageReportRow, UsageSummaryResponse, UsageTotals } from '../../../api';
 import {
   billedTokens,
   cacheTokens as combinedCacheTokens,
   knownBilledTokens,
 } from '../../../utils/usageAccounting';
+import { formatTokensCompact } from '../../../utils/usageStats';
+import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
-import { Badge } from '../../ui/badge';
+import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
-import { Activity, Calendar, Clock, Database, Info, Layers } from '../../icons/app-icons';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
+import { SettingRow } from '../../ui/setting-row';
+import { StatGrid, type StatItem } from '../../usage/StatGrid';
+import { settingsUsageCopy as copy } from '../../usage/copy';
+
+/**
+ * Settings > App > Usage (spec 3.9): the BILLING view of the month, which
+ * counts deleted chats and subagent turns (issue #224), unlike Home's activity
+ * card. One row ("This month", its figures, Details), and a 640px dialog with
+ * the shared StatGrid, flat budget rows and two hairline tables. No icon tiles,
+ * no boxes inside boxes, explanations in InfoTips.
+ */
 
 function emptyDayRow(date: string): UsageReportRow {
   return {
@@ -86,6 +91,16 @@ export function formatUsageDate(date: string | null | undefined): string {
   });
 }
 
+/** `2026-07` → `July 2026`; anything else as given. */
+export function formatUsageMonth(month: string): string {
+  const match = month.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return month;
+  return new Date(Number(match[1]), Number(match[2]) - 1, 1).toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
 export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): string {
   if (row.modelId && row.provider) return `${row.provider}/${row.modelId}`;
   if (row.modelId) return row.modelId;
@@ -105,13 +120,10 @@ export function formatBilledTokens(row: UsageReportRow | UsageTotals): string {
   return knownSubtotal > 0 ? formatTokens(knownSubtotal) : 'Unavailable';
 }
 
+/** The app's one compact token format (`usageStats.formatTokensCompact`), with "Not recorded". */
 export function formatCompactTokens(n: number | null | undefined): string {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return 'Not recorded';
-  if (n < 10_000) return formatTokens(n);
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 2,
-  }).format(n);
+  return formatTokensCompact(n);
 }
 
 function billedTokenValue(row: UsageReportRow | UsageTotals): number | null {
@@ -156,62 +168,7 @@ function serverPercent(percent: number | null | undefined): number | null {
   return typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 ? percent : null;
 }
 
-function SummaryMetric({
-  icon,
-  label,
-  value,
-  detail,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <div className="flex min-w-0 items-start gap-3 rounded-element border border-border-subtle bg-background-default p-3">
-      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-element bg-heat-0 text-text-accent">
-        {icon}
-      </span>
-      <div className="min-w-0">
-        <p className="text-caps text-text-subtle">{label}</p>
-        <p className="mt-0.5 truncate text-subheading leading-tight text-text-default tabular-nums">
-          {value}
-        </p>
-        <p className="mt-1 text-supporting leading-tight text-text-muted">{detail}</p>
-      </div>
-    </div>
-  );
-}
-
-function SectionCard({
-  icon,
-  title,
-  description,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-container border border-border-subtle bg-background-card">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-element border border-border-subtle bg-background-default text-text-accent">
-            {icon}
-          </span>
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium text-text-default">{title}</h3>
-            <p className="mt-0.5 text-supporting text-text-muted">{description}</p>
-          </div>
-        </div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
+/** A compact figure with the exact one in its hover title. */
 function CompactTokenValue({
   value,
   fallback = 'Not recorded',
@@ -227,47 +184,32 @@ function CompactTokenValue({
   return <span title={compact === exact ? undefined : exact}>{compact}</span>;
 }
 
-function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boolean }) {
-  const items = [
-    { label: 'Fresh in', value: row.inputTokens },
-    ...(showCache
-      ? [
-          { label: 'Cache read', value: row.cacheReadTokens },
-          { label: 'Cache write', value: row.cacheCreationTokens },
-        ]
-      : []),
-    { label: 'Out', value: row.outputTokens },
-  ];
+/** `500`, or `not recorded` for a bucket the history never kept. */
+function cacheFigure(value: number | null | undefined): string {
+  const formatted = formatTokens(value);
+  return formatted === 'Not recorded' ? 'not recorded' : formatted;
+}
 
+function cacheSplit(row: Pick<UsageReportRow, 'cacheReadTokens' | 'cacheCreationTokens'>): string {
+  return `Cache read ${cacheFigure(row.cacheReadTokens)}, cache write ${cacheFigure(row.cacheCreationTokens)}`;
+}
+
+/**
+ * One line, `3M in · 1M out`, so the model table fits the 640px dialog. The
+ * cache split is the line's hover title, and is read out to a screen reader.
+ */
+function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boolean }) {
+  const split = showCache ? cacheSplit(row) : undefined;
   return (
-    <div
-      className={`grid overflow-hidden rounded-element border border-border-subtle bg-background-muted/30 ${showCache ? 'grid-cols-4' : 'grid-cols-2'}`}
-      data-testid="usage-model-token-flow"
-    >
-      {items.map((item, index) => (
-        <div
-          key={item.label}
-          className={`min-w-0 px-2 py-1.5 ${index > 0 ? 'border-l border-border-subtle' : ''}`}
-        >
-          <p className="whitespace-nowrap text-caps text-text-subtle">{item.label}</p>
-          <p className="mt-0.5 truncate text-supporting font-medium text-text-default tabular-nums">
-            <CompactTokenValue value={item.value} />
-          </p>
-        </div>
-      ))}
-    </div>
+    <span className="whitespace-nowrap" title={split} data-testid="usage-model-token-flow">
+      {formatCompactTokens(row.inputTokens)} in · {formatCompactTokens(row.outputTokens)} out
+      {split ? <span className="sr-only">, {split}</span> : null}
+    </span>
   );
 }
 
-function EmptyTableState({ icon, children }: { icon: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-body text-text-muted">
-      <span className="flex h-9 w-9 items-center justify-center rounded-element bg-background-muted text-text-subtle">
-        {icon}
-      </span>
-      <p>{children}</p>
-    </div>
-  );
+function EmptyTableState({ children }: { children: React.ReactNode }) {
+  return <p className="py-6 text-center text-supporting text-text-muted">{children}</p>;
 }
 
 export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
@@ -277,80 +219,58 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
 
   return (
     <div data-testid="usage-panel">
-      {/* A settings ROW, not a card. A bordered `--background-card` strip was
-          the only boxed ground on the App tab, and the rows either side of it
-          bring no fill of their own. */}
-      <div className="biorouter-settings-list">
-        <div className="biorouter-settings-row flex flex-col gap-3 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-            <Badge tone="accent" variant="chip" className="tabular-nums">
-              {summary.month}
-            </Badge>
-            <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-supporting">
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-text-muted">Tokens</dt>
-                <dd
-                  className="font-medium text-text-default tabular-nums"
-                  title={formatBilledTokens(month)}
-                >
-                  {monthTokens === null
-                    ? formatBilledTokens(month)
-                    : formatCompactTokens(monthTokens)}
-                </dd>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-text-muted">Est. cost</dt>
-                <dd className="font-medium text-text-default tabular-nums">
-                  {formatCostEstimate(month.cost)}
-                </dd>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-text-muted">Turns</dt>
-                <dd className="font-medium text-text-default tabular-nums">
-                  {month.turns.toLocaleString('en-US')}
-                </dd>
-              </div>
-            </dl>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            onClick={() => setReportOpen(true)}
-            aria-label="Open detailed usage report"
-          >
-            View report
-          </Button>
-        </div>
-      </div>
-
-      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
-        <DialogContent
-          className="grid max-h-[min(820px,calc(100vh-2rem))] w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-[1040px]"
-          data-testid="usage-report-dialog"
+      <SettingRow
+        label={copy.rowLabel}
+        help={copy.rowHelp(summary.month)}
+        value={
+          <span className="tabular-nums">
+            <span title={formatBilledTokens(month)}>
+              {monthTokens === null ? formatBilledTokens(month) : formatCompactTokens(monthTokens)}
+            </span>{' '}
+            tokens · <span>{formatCostEstimate(month.cost)}</span> ·{' '}
+            <span>{month.turns.toLocaleString('en-US')}</span>{' '}
+            {month.turns === 1 ? 'turn' : 'turns'}
+          </span>
+        }
+      >
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() => setReportOpen(true)}
+          aria-label={copy.detailsName}
         >
-          <DialogHeader className="mb-0 border-b border-border-subtle bg-background-muted/40 px-6 py-5">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle bg-background-default text-text-accent">
-                <Activity className="h-4 w-4" />
-              </span>
-              <Badge tone="accent" variant="chip" className="tabular-nums">
-                {summary.month}
-              </Badge>
-            </div>
-            <DialogTitle>Usage report</DialogTitle>
-            <DialogDescription>
-              Billed token activity, estimated cost, and model attribution for this month.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="min-h-0 overflow-y-auto px-6 py-5">
-            <UsageReport summary={summary} dayRows={dayRows} modelRows={modelRows} />
-          </div>
-        </DialogContent>
-      </Dialog>
+          {copy.details}
+        </Button>
+      </SettingRow>
+
+      <ModalShell
+        open={reportOpen}
+        onOpenChange={setReportOpen}
+        size="lg"
+        title={copy.dialogTitle(formatUsageMonth(summary.month))}
+        scrollBody
+      >
+        <div className="py-4" data-testid="usage-report-dialog">
+          <UsageReport summary={summary} dayRows={dayRows} modelRows={modelRows} />
+        </div>
+      </ModalShell>
     </div>
   );
 }
+
+/** A caps label over a hairline table: no card, no icon tile, no description. */
+function ReportSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="text-caps text-text-muted">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+const TH = 'px-3 py-2 text-supporting font-medium text-text-muted';
+const TD = 'border-t border-border-subtle px-3 py-2';
 
 export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
   const mtd = summary.monthToDate;
@@ -393,140 +313,114 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
             ? 'Budget percentage unavailable because the known cost is only a partial subtotal.'
             : 'Budget percentage unavailable.';
 
+  const mtdTokens = billedTokenValue(mtd);
+  const exactMtdTokens = formatBilledTokens(mtd);
+  const stats: StatItem[] = [
+    {
+      key: 'tokens',
+      label: copy.tokens,
+      value: mtdTokens === null ? exactMtdTokens : formatCompactTokens(mtdTokens),
+      title:
+        mtdTokens !== null && exactMtdTokens !== formatCompactTokens(mtdTokens)
+          ? exactMtdTokens
+          : undefined,
+      help: showMtdCache
+        ? copy.tokensCacheHelp(
+            cacheFigure(mtd.cacheReadTokens),
+            cacheFigure(mtd.cacheCreationTokens)
+          )
+        : copy.tokensHelp,
+      note: hasIncompleteTokens(mtd) && mtdTokens !== null ? copy.conservative : undefined,
+    },
+    {
+      key: 'cost',
+      label: copy.cost,
+      value: formatCostEstimate(mtd.cost),
+      help: copy.costHelp,
+      note: mtdCostPartial && knownMtdCost !== null ? copy.conservative : undefined,
+    },
+    {
+      key: 'turns',
+      label: copy.turns,
+      value: mtd.turns.toLocaleString('en-US'),
+      help: copy.turnsHelp,
+    },
+  ];
+
   return (
-    <div className="flex flex-col gap-5" data-testid="usage-report">
-      <section
-        className="overflow-hidden rounded-container border border-border-subtle bg-background-card"
-        data-testid="usage-summary-card"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
-          <div>
-            <h3 className="text-sm font-medium text-text-default">Month to date</h3>
-            <p className="mt-0.5 text-supporting text-text-muted">
-              Billed usage recorded across all chats
-            </p>
-          </div>
-          <Badge tone="accent" variant="chip" className="tabular-nums">
-            {summary.month}
-          </Badge>
+    <div className="flex flex-col gap-6" data-testid="usage-report">
+      <StatGrid items={stats} data-testid="usage-summary-stats" />
+
+      {(summary.monthlyTokenLimit != null || summary.monthlyDollarLimit != null) && (
+        <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+          {summary.monthlyTokenLimit != null && (
+            <UsageGauge
+              testid="usage-gauge-tokens"
+              label={copy.tokenBudget}
+              used={formatBilledTokens(mtd)}
+              limit={formatTokens(summary.monthlyTokenLimit)}
+              percent={tokenPercent}
+              unavailableReason={tokenUnavailableReason}
+            />
+          )}
+          {summary.monthlyDollarLimit != null && (
+            <UsageGauge
+              testid="usage-gauge-dollars"
+              label={copy.dollarBudget}
+              used={formatCostEstimate(mtd.cost)}
+              limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
+              percent={dollarPercent}
+              unavailableReason={dollarUnavailableReason}
+            />
+          )}
         </div>
+      )}
 
-        <div className="grid grid-cols-1 gap-2.5 p-3 sm:grid-cols-3">
-          <SummaryMetric
-            icon={<Database className="h-4 w-4" />}
-            label="Billed tokens"
-            value={formatBilledTokens(mtd)}
-            detail={
-              hasIncompleteTokens(mtd) ? 'Known conservative subtotal' : 'Recorded this month'
-            }
-          />
-          <SummaryMetric
-            icon={<Activity className="h-4 w-4" />}
-            label="Estimated cost"
-            value={formatCostEstimate(mtd.cost)}
-            detail={mtdCostPartial ? 'Known conservative subtotal' : 'Based on stored pricing'}
-          />
-          <SummaryMetric
-            icon={<Clock className="h-4 w-4" />}
-            label="Turns"
-            value={mtd.turns.toLocaleString('en-US')}
-            detail="Completed model turns"
-          />
-        </div>
-
-        {showMtdCache && (
-          <div
-            className="flex flex-wrap gap-2 border-t border-border-subtle px-3 py-2.5"
-            data-testid="usage-mtd-cache"
-          >
-            <Badge tone="neutral" variant="chip" className="gap-1.5 font-normal tabular-nums">
-              <span className="text-text-subtle">Cache read</span>
-              <span className="text-text-default">{formatTokens(mtd.cacheReadTokens)}</span>
-            </Badge>
-            <Badge tone="neutral" variant="chip" className="gap-1.5 font-normal tabular-nums">
-              <span className="text-text-subtle">Cache write</span>
-              <span className="text-text-default">{formatTokens(mtd.cacheCreationTokens)}</span>
-            </Badge>
-          </div>
-        )}
-
-        {(summary.monthlyTokenLimit != null || summary.monthlyDollarLimit != null) && (
-          <div className="grid grid-cols-1 gap-2.5 border-t border-border-subtle bg-background-muted/20 p-3 md:grid-cols-2">
-            {summary.monthlyTokenLimit != null && (
-              <UsageGauge
-                testid="usage-gauge-tokens"
-                label="Token budget"
-                used={formatBilledTokens(mtd)}
-                limit={formatTokens(summary.monthlyTokenLimit)}
-                percent={tokenPercent}
-                unavailableReason={tokenUnavailableReason}
-              />
-            )}
-            {summary.monthlyDollarLimit != null && (
-              <UsageGauge
-                testid="usage-gauge-dollars"
-                label="Dollar budget"
-                used={formatCostEstimate(mtd.cost)}
-                limit={`$${summary.monthlyDollarLimit.toFixed(2)}`}
-                percent={dollarPercent}
-                unavailableReason={dollarUnavailableReason}
-              />
-            )}
-          </div>
-        )}
-      </section>
-
-      <SectionCard
-        icon={<Calendar className="h-4 w-4" />}
-        title="By day"
-        description="Calendar activity for the current month"
-      >
+      <ReportSection title={copy.byDay}>
         {dayRows.length === 0 ? (
-          <EmptyTableState icon={<Calendar className="h-4 w-4" />}>
-            No usage this month.
-          </EmptyTableState>
+          <EmptyTableState>{copy.empty}</EmptyTableState>
         ) : (
           <div className="w-full overflow-x-auto" data-testid="usage-day-table-wrap">
             <table
-              className="w-full min-w-[520px] border-collapse text-body"
+              className="w-full table-fixed border-collapse text-secondary"
               data-testid="usage-day-table"
             >
               <colgroup>
-                <col className="w-[36%]" />
-                <col className="w-[18%]" />
-                <col className={showDayCost ? 'w-[26%]' : 'w-[46%]'} />
+                <col className="w-[40%]" />
+                <col className="w-[16%]" />
+                <col className={showDayCost ? 'w-[24%]' : 'w-[44%]'} />
                 {showDayCost && <col className="w-[20%]" />}
               </colgroup>
               <thead>
-                <tr className="text-left text-label text-text-muted">
-                  <th className="px-3 py-2">Day</th>
-                  <th className="px-3 py-2 text-right">Turns</th>
-                  <th className="px-3 py-2 text-right">Billed</th>
-                  {showDayCost && <th className="px-3 py-2 text-right">Cost</th>}
+                <tr className="text-left">
+                  <th className={TH}>{copy.day}</th>
+                  <th className={`${TH} text-right`}>{copy.turns}</th>
+                  <th className={`${TH} text-right`}>{copy.billed}</th>
+                  {showDayCost && <th className={`${TH} text-right`}>{copy.costColumn}</th>}
                 </tr>
               </thead>
               <tbody>
                 {orderedDayRows.map((row) => (
                   <tr
                     key={row.date}
-                    className={`tint-interactive transition-colors ${hasUsage(row) ? 'text-text-default' : 'text-text-subtle'}`}
+                    className={hasUsage(row) ? 'text-text-default' : 'text-text-subtle'}
                   >
-                    <td className="border-t border-border-subtle px-3 py-2 font-medium">
+                    <td className={TD}>
                       <time dateTime={row.date ?? undefined} title={row.date ?? undefined}>
                         {formatUsageDate(row.date)}
                       </time>
                     </td>
-                    <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
+                    <td className={`${TD} text-right text-text-muted tabular-nums`}>
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="border-t border-border-subtle px-3 py-2 text-right font-medium tabular-nums">
+                    <td className={`${TD} text-right tabular-nums`}>
                       <CompactTokenValue
                         value={billedTokenValue(row)}
                         fallback={formatBilledTokens(row)}
                       />
                     </td>
                     {showDayCost && (
-                      <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
+                      <td className={`${TD} text-right text-text-muted tabular-nums`}>
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -536,69 +430,58 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
             </table>
           </div>
         )}
-      </SectionCard>
+      </ReportSection>
 
-      <SectionCard
-        icon={<Layers className="h-4 w-4" />}
-        title="By model"
-        description="Provider attribution and the token flow behind each billed total"
-      >
+      <ReportSection title={copy.byModel}>
         {modelRows.length === 0 ? (
-          <EmptyTableState icon={<Layers className="h-4 w-4" />}>
-            No usage this month.
-          </EmptyTableState>
+          <EmptyTableState>{copy.empty}</EmptyTableState>
         ) : (
           <div className="w-full overflow-x-auto" data-testid="usage-model-table-wrap">
             <table
-              className={`w-full border-collapse text-body ${showModelCache ? 'min-w-[900px]' : 'min-w-[720px]'}`}
+              className="w-full table-fixed border-collapse text-secondary"
               data-testid="usage-model-table"
             >
               <colgroup>
-                <col className="w-[27%]" />
-                <col className="w-[9%]" />
-                <col className={showModelCache ? 'w-[40%]' : 'w-[36%]'} />
-                <col className={showModelCost ? 'w-[13%]' : 'w-[22%]'} />
-                {showModelCost && <col className="w-[11%]" />}
+                <col className={showModelCost ? 'w-[32%]' : 'w-[40%]'} />
+                <col className="w-[12%]" />
+                <col className="w-[28%]" />
+                <col className={showModelCost ? 'w-[14%]' : 'w-[20%]'} />
+                {showModelCost && <col className="w-[14%]" />}
               </colgroup>
               <thead>
-                <tr className="text-left text-label text-text-muted">
-                  <th className="px-3 py-2">Model</th>
-                  <th className="px-3 py-2 text-right">Turns</th>
-                  <th className="px-3 py-2">Token flow</th>
-                  <th className="px-3 py-2 text-right">Billed</th>
-                  {showModelCost && <th className="px-3 py-2 text-right">Cost</th>}
+                <tr className="text-left">
+                  <th className={TH}>{copy.model}</th>
+                  <th className={`${TH} text-right`}>{copy.turns}</th>
+                  <th className={TH}>{copy.tokenFlow}</th>
+                  <th className={`${TH} text-right`}>{copy.billed}</th>
+                  {showModelCost && <th className={`${TH} text-right`}>{copy.costColumn}</th>}
                 </tr>
               </thead>
               <tbody>
                 {modelRows.map((row, index) => (
-                  <tr
-                    key={`${modelLabel(row)}-${index}`}
-                    className="tint-interactive text-text-default transition-colors"
-                  >
-                    <td className="border-t border-border-subtle px-3 py-2">
+                  <tr key={`${modelLabel(row)}-${index}`} className="text-text-default">
+                    <td className={TD}>
                       <div className="min-w-0" title={modelLabel(row)}>
-                        <p className="truncate font-mono text-supporting font-medium">
-                          {row.modelId ?? 'unknown'}
-                        </p>
-                        <p className="mt-1 truncate text-caps text-text-subtle">
-                          {row.provider ?? 'Unattributed provider'}
+                        <p className="truncate">{row.modelId ?? 'unknown'}</p>
+                        <p className="truncate text-supporting text-text-subtle">
+                          {row.provider ?? copy.unattributedProvider}
                         </p>
                       </div>
                     </td>
-                    <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
+                    <td className={`${TD} text-right text-text-muted tabular-nums`}>
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="border-t border-border-subtle px-3 py-2">
+                    <td className={`${TD} tabular-nums text-text-muted`}>
                       <TokenFlowCell row={row} showCache={showModelCache} />
                     </td>
-                    <td className="border-t border-border-subtle px-3 py-2 text-right font-medium tabular-nums">
+                    <td className={`${TD} text-right tabular-nums`}>
                       <CompactTokenValue
                         value={billedTokenValue(row)}
                         fallback={formatBilledTokens(row)}
                       />
                     </td>
                     {showModelCost && (
-                      <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
+                      <td className={`${TD} text-right text-text-muted tabular-nums`}>
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -608,41 +491,27 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
             </table>
           </div>
         )}
-      </SectionCard>
+      </ReportSection>
 
       {(anyIncompleteTokens || anyUnpriced || anyCostExcludesCache) && (
-        <aside
-          className="flex items-start gap-3 rounded-container border border-border-subtle bg-background-muted/40 px-4 py-3"
-          aria-label="Usage data notes"
+        <div
+          className="flex items-center text-supporting text-text-muted"
           data-testid="usage-data-notes"
         >
-          <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-element bg-background-default text-text-muted">
-            <Info className="h-3.5 w-3.5" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-label text-text-default">About these totals</p>
-            <ul className="mt-1.5 space-y-1 text-supporting leading-relaxed text-text-muted">
-              {anyIncompleteTokens && (
-                <li data-testid="usage-incomplete-note" role="status">
-                  Some historical token details were not recorded. Totals are conservative, and
-                  empty cache or cost fields stay hidden.
-                </li>
-              )}
-              {anyUnpriced && (
-                <li data-testid="usage-unpriced-note">
-                  Some historical usage has no stored model or pricing attribution, so its cost
-                  cannot be recovered.
-                </li>
-              )}
-              {anyCostExcludesCache && (
-                <li data-testid="usage-cache-excluded-note">
-                  Some cache cost is unavailable because cache pricing or historical accounting is
-                  incomplete.
-                </li>
-              )}
-            </ul>
-          </div>
-        </aside>
+          <span>{copy.estimates}</span>
+          <InfoTip label={copy.estimatesLabel} help={copy.estimatesHelp} />
+          {/* The specific notes, for a screen reader and for tests; the eye gets
+              the one line and its tip. */}
+          <ul className="sr-only">
+            {anyIncompleteTokens && (
+              <li data-testid="usage-incomplete-note">{copy.incompleteNote}</li>
+            )}
+            {anyUnpriced && <li data-testid="usage-unpriced-note">{copy.unpricedNote}</li>}
+            {anyCostExcludesCache && (
+              <li data-testid="usage-cache-excluded-note">{copy.cacheExcludedNote}</li>
+            )}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -657,16 +526,14 @@ interface UsageGaugeProps {
   unavailableReason: string | null;
 }
 
+/** A flat budget row: the label and `used / limit (pct)`, the bar under them. */
 function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: UsageGaugeProps) {
   const pct = percent ?? 0;
   const clamped = Math.max(0, Math.min(100, pct));
   const over = percent != null && percent > 100;
   return (
-    <div
-      className="rounded-element border border-border-subtle bg-background-default p-3"
-      data-testid={testid}
-    >
-      <div className="flex items-baseline justify-between text-supporting">
+    <div className="flex min-w-0 flex-col gap-1.5" data-testid={testid}>
+      <div className="flex items-baseline justify-between gap-3 text-secondary">
         <span className="text-text-muted">{label}</span>
         <span className="text-text-default tabular-nums">
           {used} / {limit}
@@ -678,20 +545,15 @@ function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: 
         </span>
       </div>
       {unavailableReason ? (
-        <div
-          className="mt-1 rounded-element border border-border-subtle bg-background-medium px-2 py-1 text-supporting text-text-muted"
-          role="status"
-          data-testid={`${testid}-unavailable`}
-        >
+        <p className="text-supporting text-text-muted" data-testid={`${testid}-unavailable`}>
           {unavailableReason}
-        </div>
+        </p>
       ) : (
         // `heat` is the ramp pairing this gauge has always used (a heat-0 track
         // under a heat-3 fill). Past the limit only the FILL turns danger —
         // `track="heat"` pins the ground so the overrun reads as the same gauge
         // rather than as a different control. Both are tones on the one primitive.
         <Progress
-          className="mt-1"
           label={label}
           value={clamped}
           tone={over ? 'danger' : 'heat'}
