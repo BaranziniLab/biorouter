@@ -4902,20 +4902,23 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 /* Text fields (`Input`, `Textarea`; the Select trigger sets the same edge through Emotion): the
-   resting edge is `--border-control` (3:1), not the 1.6:1 `--border-emphasized` utility. This
-   rule is unlayered, so it restates the focus edge of the `@layer base` text-field rule and the
-   invalid edge, or it would out-rank both. */
-.br-field {
-  border-color: var(--border-control);
-}
+   resting edge is `--border-control` (3:1), not the 1.6:1 `--border-emphasized` utility.
+   Layered (`components`), so a caller's own edge utility still wins (the forms pass
+   `border-border-danger` for an invalid field); and because `components` out-ranks the
+   `@layer base` text-field focus rule, the focus and invalid edges are restated here. */
+@layer components {
+  .br-field {
+    border-color: var(--border-control);
+  }
 
-.br-field:focus,
-.br-field:focus-visible {
-  border-color: var(--border-focus);
-}
+  .br-field:focus,
+  .br-field:focus-visible {
+    border-color: var(--border-focus);
+  }
 
-.br-field[aria-invalid='true'] {
-  border-color: var(--border-danger);
+  .br-field[aria-invalid='true'] {
+    border-color: var(--border-danger);
+  }
 }
 
 .br-textarea {

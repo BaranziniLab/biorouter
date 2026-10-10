@@ -47,11 +47,18 @@ describe('shared controls follow the font-size spacing preference', () => {
  */
 describe('text fields rest on the control edge', () => {
   const CSS = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+  // The rules sit in `@layer components`, indented one level.
+  const layer = CSS.slice(CSS.indexOf('@layer components {\n  .br-field {'));
   const body = (selector: string) => {
-    const at = CSS.indexOf(`\n${selector} {`);
-    expect(at, `no rule for ${selector}`).toBeGreaterThanOrEqual(0);
-    return CSS.slice(CSS.indexOf('{', at) + 1, CSS.indexOf('}', at));
+    const at = layer.indexOf(`\n  ${selector.replace(/\n/g, '\n  ')} {`);
+    expect(at, `no layered rule for ${selector}`).toBeGreaterThanOrEqual(0);
+    return layer.slice(layer.indexOf('{', at) + 1, layer.indexOf('}', at));
   };
+
+  it('is layered, so a caller’s border-border-danger still wins over the resting edge', () => {
+    expect(CSS).toContain('@layer components {\n  .br-field {');
+    expect(CSS).not.toMatch(/\n\.br-field \{/);
+  });
 
   it('puts Input and Textarea on .br-field with no faint edge utility', () => {
     render(
