@@ -103,3 +103,52 @@ describe('ScrollArea resize anchor', () => {
     expect(state.top).toBe(713 - 336);
   });
 });
+
+/**
+ * Spec 2.6: the scrollbar rests hidden and shows on hover and while scrolling. The transcript's
+ * native thumb used to be visible all the time (the global rule forces the native scrollbar on,
+ * and `scrollbar-color` paints it). Hover is CSS; "while scrolling" is a root attribute.
+ */
+describe('ScrollArea scrollbar visibility', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('marks the root while scrolling and clears the mark once scrolling settles', async () => {
+    vi.useFakeTimers();
+    const { SCROLLING_SETTLE_MS } = await import('./scroll-area');
+    const { container } = render(
+      <ScrollArea>
+        <div />
+      </ScrollArea>
+    );
+    const root = container.querySelector('.br-scroll-root')!;
+    const viewport = container.querySelector('.br-scroll-viewport')!;
+    expect(root).not.toHaveAttribute('data-scrolling');
+
+    act(() => {
+      viewport.dispatchEvent(new Event('scroll'));
+    });
+    expect(root).toHaveAttribute('data-scrolling');
+
+    act(() => {
+      vi.advanceTimersByTime(SCROLLING_SETTLE_MS + 1);
+    });
+    expect(root).not.toHaveAttribute('data-scrolling');
+  });
+
+  it('hides the thumb at rest and shows it on hover or while scrolling, in main.css', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const css = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+    const body = (selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      expect(at, `no rule for ${selector}`).toBeGreaterThanOrEqual(0);
+      return css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at));
+    };
+    expect(body('.br-scroll-viewport')).toMatch(/scrollbar-color:\s*transparent transparent/);
+    expect(body('.br-scroll-root:is(:hover, [data-scrolling]) > .br-scroll-viewport')).toMatch(
+      /scrollbar-color:\s*var\(--border-strong\) transparent/
+    );
+  });
+});

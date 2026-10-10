@@ -4,7 +4,7 @@ import { cn } from '../../utils';
 /**
  * The progress bar (Astryx §10 "Progress").
  *
- * ONE primitive: an 8px pill track, an accent fill, `width` transitioned at
+ * ONE primitive: an 8px pill track (4px with `size="thin"`), an accent fill, `width` transitioned at
  * `--dur-med-min` (250ms — the tier whose own comment names "progress fill"),
  * an indeterminate sweep, and `role="progressbar"` ALWAYS.
  *
@@ -80,6 +80,8 @@ export interface ProgressProps extends Omit<React.ComponentProps<'div'>, 'role' 
   track?: ProgressTone;
   /** Accessible name. Omit only when passing `aria-labelledby` instead. */
   label?: string;
+  /** `default` is the 8px track; `thin` is 4px, for a gauge inside a row or a card (spec 2.6). */
+  size?: 'default' | 'thin';
   /**
    * Minimum rendered fill width, as a percentage of the track. A download that
    * has started but reports 0% should still show that it is a bar; without this
@@ -103,6 +105,7 @@ export function Progress({
   tone = 'accent',
   track,
   label,
+  size = 'default',
   minVisiblePercent = 0,
   className,
   fillProps,
@@ -124,6 +127,7 @@ export function Progress({
       // ARIA: an indeterminate progressbar has NO `aria-valuenow`. Reporting 0
       // would announce a stalled download that is in fact running.
       aria-valuenow={indeterminate ? undefined : clamped}
+      data-size={size === 'thin' ? 'thin' : undefined}
       className={cn('br-progress', TONE_TRACK[track ?? tone], className)}
       {...props}
     >

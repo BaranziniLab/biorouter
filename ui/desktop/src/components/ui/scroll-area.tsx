@@ -38,6 +38,9 @@ interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAr
   anchorBottomOnResize?: () => boolean;
 }
 
+/** How long after the last scroll event the scrollbar stays shown. */
+export const SCROLLING_SETTLE_MS = 800;
+
 const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
   (
     {
@@ -308,21 +311,40 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       };
     }, [handleScroll]);
 
+    // Spec 2.6: the scrollbar rests hidden and shows on hover and while scrolling. Hover is CSS;
+    // "while scrolling" is this attribute, set on every scroll and cleared once the wheel stops.
+    // A DOM attribute rather than state, so a scroll never re-renders the transcript.
+    React.useEffect(() => {
+      const viewport = viewportRef.current;
+      const root = rootRef.current;
+      if (!viewport || !root) return;
+      let timer: number | null = null;
+      const onScroll = () => {
+        root.setAttribute('data-scrolling', '');
+        if (timer !== null) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          timer = null;
+          root.removeAttribute('data-scrolling');
+        }, SCROLLING_SETTLE_MS);
+      };
+      viewport.addEventListener('scroll', onScroll, { passive: true });
+      return () => {
+        viewport.removeEventListener('scroll', onScroll);
+        if (timer !== null) window.clearTimeout(timer);
+      };
+    }, []);
+
     return (
       <ScrollAreaPrimitive.Root
         ref={rootRef}
-        className={cn('relative overflow-hidden', className)}
+        className={cn('br-scroll-root relative overflow-hidden', className)}
         data-scrolled={isScrolled}
         {...props}
       >
-        <div
-          className={cn(
-            'absolute top-0 left-0 right-0 z-10 transition-opacity duration-[var(--motion-base)]'
-          )}
-        />
+        <div className="absolute top-0 left-0 right-0 z-10" />
         <ScrollAreaPrimitive.Viewport
           ref={viewportRef}
-          className="h-full w-full rounded-[inherit] [&>div]:!block"
+          className="br-scroll-viewport h-full w-full rounded-[inherit] [&>div]:!block"
         >
           <div className={cn(paddingX ? `px-${paddingX}` : '', paddingY ? `py-${paddingY}` : '')}>
             {children}

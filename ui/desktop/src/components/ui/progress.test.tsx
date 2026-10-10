@@ -109,6 +109,17 @@ describe('Progress', () => {
       expect(fill).toMatch(/transition:\s*width var\(--dur-med-min\)/);
     });
 
+    /** Spec 2.6: `size="thin"` is a 4px track; spec 2.4: an ambient loop's period is `--dur-slow` × n. */
+    it('offers a 4px thin track and sweeps on a multiple of --dur-slow', () => {
+      expect(CSS).toMatch(/\.br-progress\[data-size='thin'\]\s*\{\s*height:\s*4px;/);
+      const sweep = CSS.match(/\.br-progress__fill--indeterminate\s*\{([^}]*)\}/)?.[1];
+      expect(sweep).toMatch(/animation:\s*br-progress-sweep calc\(var\(--dur-slow\) \* 3\)/);
+      const { rerender } = render(<Progress label="x" value={10} size="thin" />);
+      expect(screen.getByRole('progressbar')).toHaveAttribute('data-size', 'thin');
+      rerender(<Progress label="x" value={10} />);
+      expect(screen.getByRole('progressbar')).not.toHaveAttribute('data-size');
+    });
+
     it('has an indeterminate sweep, authored as keyframes', () => {
       expect(CSS).toMatch(/\.br-progress__fill--indeterminate\s*\{/);
       expect(CSS).toMatch(/@keyframes br-progress-sweep/);

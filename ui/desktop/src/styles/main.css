@@ -2610,10 +2610,18 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 /* A 40%-wide sliver translated −100% → 250% of ITS OWN width, i.e. from
    fully off the left edge to fully off the right one. */
+/* @ws WS-PRIMITIVES begin: progress */
+/* The period is an ambient loop, so it is a multiple of `--dur-slow` (spec 2.4). */
 .br-progress__fill--indeterminate {
   width: 40%;
-  animation: br-progress-sweep 1.5s var(--ease-out) infinite;
+  animation: br-progress-sweep calc(var(--dur-slow) * 3) var(--ease-out) infinite;
 }
+
+/* `size="thin"`: a 4px track for a gauge that sits inside a row or a card. */
+.br-progress[data-size='thin'] {
+  height: 4px;
+}
+/* @ws WS-PRIMITIVES end: progress */
 
 @keyframes br-progress-sweep {
   from {
@@ -4891,6 +4899,26 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-tabs-content {
   --tw-duration: var(--dur-fast-max);
   --tw-ease: var(--ease-out);
+}
+
+/* ScrollArea (`ui/scroll-area.tsx`): the viewport's native scrollbar rests hidden and shows
+   while the pointer is over the area or it is scrolling (`data-scrolling`, set by the
+   component). `scrollbar-color` for Chromium's standard scrollbar, the thumb pseudo-element for
+   the WebKit one; both beat the global `*` rule by specificity. */
+.br-scroll-viewport {
+  scrollbar-color: transparent transparent;
+}
+
+.br-scroll-viewport::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+
+.br-scroll-root:is(:hover, [data-scrolling]) > .br-scroll-viewport {
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.br-scroll-root:is(:hover, [data-scrolling]) > .br-scroll-viewport::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
 }
 
 /* Checkbox (`ui/Checkbox.tsx`): a 16px box (radius 4, a 1.5px `--border-control` edge) inside a

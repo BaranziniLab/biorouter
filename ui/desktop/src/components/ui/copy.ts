@@ -36,4 +36,8 @@ export const uiCopy = {
     `${label} · ${mac ? '⌘F' : 'Ctrl+F'}`,
   /** A spinner's default spoken name, when it carries one. */
   loading: 'Loading…',
+  /** The badge on something that ships with the app. */
+  builtIn: 'Built-in',
+  /** That badge's default help, read from its InfoTip. */
+  builtInHelp: 'Part of Biorouter. It can be turned off but not deleted.',
 } as const;
