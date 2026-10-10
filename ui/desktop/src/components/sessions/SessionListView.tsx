@@ -249,6 +249,42 @@ function HistoryLoading() {
   );
 }
 
+/**
+ * One cell of a History row's stats: a 14px glyph at the left, the figure at the
+ * right, and for the screen reader "Messages: 6". The cell's width is the
+ * column's (`history.css`), so this never sizes itself to its content.
+ */
+function HistoryStat({
+  icon: Icon,
+  label,
+  value,
+  tooltip,
+  tooltipClassName,
+}: {
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>;
+  label: string;
+  value: string | number;
+  tooltip?: string;
+  tooltipClassName?: string;
+}) {
+  const cell = (
+    <span className="br-history-stat">
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <span className="sr-only">{label}: </span>
+      <span className="whitespace-nowrap">{value}</span>
+    </span>
+  );
+  if (!tooltip) return cell;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{cell}</TooltipTrigger>
+      <TooltipContent side="top" className={tooltipClassName}>
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 interface HistoryRowProps {
   session: Session;
   onSelectSession: (sessionId: string) => void;
@@ -422,47 +458,39 @@ const HistoryRow = React.memo(function HistoryRow({
             </span>
           </button>
 
-          {/* The stats are columns: sans, tabular, each with a minimum width
-              rather than a fixed one, so a 29,988,671-token chat pushes its own
-              cluster out instead of painting over the next glyph. These spans
-              keep flex's default `min-width: auto` on purpose. */}
+          {/* The stats are three fixed columns, the same in every row: sans and
+              tabular, the glyph at each cell's left edge and the figure at its
+              right. A row with no token figure or no extensions leaves its cell
+              empty rather than letting the others slide, so the columns read
+              straight down the list. */}
           <div className="br-history-row-stats text-supporting text-text-muted tabular-nums">
-            <span className="flex items-center gap-1.5">
-              <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="sr-only">{MESSAGES_STAT}: </span>
-              <span className="min-w-8 text-right whitespace-nowrap">{session.message_count}</span>
-            </span>
-            {billedTokenEstimate && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex items-center gap-1.5">
-                    <Target className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="sr-only">{BILLED_TOKENS_STAT}: </span>
-                    <span className="min-w-12 text-right whitespace-nowrap">
-                      {formatBilledTokenEstimate(billedTokenEstimate)}
-                    </span>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  {billedTokenEstimate.lowerBound ? BILLED_TOKENS_LOWER_BOUND : BILLED_TOKENS_EXACT}
-                </TooltipContent>
-              </Tooltip>
+            <HistoryStat
+              icon={MessageSquareText}
+              label={MESSAGES_STAT}
+              value={session.message_count}
+            />
+            {billedTokenEstimate ? (
+              <HistoryStat
+                icon={Target}
+                label={BILLED_TOKENS_STAT}
+                value={formatBilledTokenEstimate(billedTokenEstimate)}
+                tooltip={
+                  billedTokenEstimate.lowerBound ? BILLED_TOKENS_LOWER_BOUND : BILLED_TOKENS_EXACT
+                }
+              />
+            ) : (
+              <span aria-hidden="true" />
             )}
-            {extensionNames.length > 0 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex items-center gap-1.5">
-                    <Puzzle className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="sr-only">{EXTENSIONS_STAT}: </span>
-                    <span className="min-w-4 text-right whitespace-nowrap">
-                      {extensionNames.length}
-                    </span>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-xs">
-                  {extensionNames.join(', ')}
-                </TooltipContent>
-              </Tooltip>
+            {extensionNames.length > 0 ? (
+              <HistoryStat
+                icon={Puzzle}
+                label={EXTENSIONS_STAT}
+                value={extensionNames.length}
+                tooltip={extensionNames.join(', ')}
+                tooltipClassName="max-w-xs"
+              />
+            ) : (
+              <span aria-hidden="true" />
             )}
           </div>
 

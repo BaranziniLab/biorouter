@@ -46,10 +46,22 @@
 }
 
 .br-history-row-stats {
-  display: flex;
+  display: grid;
   flex-shrink: 0;
   align-items: center;
-  gap: 12px;
+  /* Messages · billed tokens · extensions. Wide enough for a 10-digit token
+     figure with its commas beside a 14px glyph; one width for every row so the
+     columns read straight down the list. */
+  grid-template-columns: 56px 96px 36px;
+  column-gap: 12px;
+}
+
+.br-history-stat {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
 
 /* The skeleton-to-content crossfade on a cold load: the content rises in over

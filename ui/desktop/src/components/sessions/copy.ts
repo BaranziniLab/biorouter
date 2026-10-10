@@ -42,7 +42,6 @@ export const RENAME = 'Rename';
 export const renameLabel = (name: string) => `Rename ${name}`;
 export const MORE_ACTIONS = 'More actions';
 export const moreActionsLabel = (name: string) => `More actions for ${name}`;
-export const deleteLabel = (name: string) => `Delete ${name}`;
 export const SUBAGENT_BADGE = 'Subagent';
 export const branchedFrom = (name: string) => `Branched from ${name}`;
 
@@ -62,7 +61,6 @@ export const RENAME_TITLE = 'Rename chat';
 export const RENAME_PLACEHOLDER = 'Chat name';
 export const CANCEL = 'Cancel';
 export const SAVE = 'Save';
-export const SAVING = 'Saving…';
 
 /* The delete dialog and the menu labels are the row menu's own (`chats/copy.ts`),
    shared with the sidebar so the two never word the same act differently. */
@@ -83,7 +81,6 @@ export const IMPORT_INVALID_JSON = 'That file is not valid JSON.';
 
 export const BACK = 'Back';
 export const SHARE = 'Share';
-export const SHARING = 'Sharing…';
 export const SHARE_NOT_SET_UP = 'Chat sharing is not set up on this install.';
 export const RESUME = 'Resume';
 export const LOADING_CHAT = 'Loading chat…';

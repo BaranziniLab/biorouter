@@ -63,7 +63,11 @@ button { font: inherit; border: 0; background: none; padding: 0; }
 .items-center { align-items: center; }
 .gap-2 { gap: 8px; }`;
 
-const row = (id: string, title: string) => `
+const row = (
+  id: string,
+  title: string,
+  stats: [string, string, string] = ['12', '29,988,671', '5']
+) => `
   <div class="biorouter-list-row br-history-row" id="${id}">
     <svg id="${id}-glyph" width="16" height="16" style="flex:none"></svg>
     <button type="button" class="br-history-row-open" id="${id}-open">
@@ -73,7 +77,17 @@ const row = (id: string, title: string) => `
       <span class="br-history-row-meta text-supporting"><span>3:18 PM</span><span>· data</span></span>
     </button>
     <div class="br-history-row-stats text-supporting" id="${id}-stats">
-      <span>12</span><span>29,988,671</span><span>5</span>
+      <span class="br-history-stat" id="${id}-messages"><svg width="14" height="14" style="flex:none"></svg><span>${stats[0]}</span></span>
+      ${
+        stats[1]
+          ? `<span class="br-history-stat" id="${id}-tokens"><svg width="14" height="14" style="flex:none"></svg><span>${stats[1]}</span></span>`
+          : '<span aria-hidden="true"></span>'
+      }
+      ${
+        stats[2]
+          ? `<span class="br-history-stat" id="${id}-ext"><svg width="14" height="14" style="flex:none"></svg><span>${stats[2]}</span></span>`
+          : '<span aria-hidden="true"></span>'
+      }
     </div>
     <div class="br-row-actions-slot">
       <div class="br-row-actions" data-state="closed" id="${id}-actions">
@@ -90,6 +104,7 @@ function page(css: string) {
         <h2 class="br-history-bucket text-supporting" id="bucket">Today</h2>
         <div class="biorouter-list-shell">
           ${row('a', 'A short chat')}
+          ${row('c', 'A chat with no token figure and no extensions', ['7', '', ''])}
           ${row('b', 'A chat whose name is long enough that it can never fit beside its stats and actions in a 712 pixel row')}
         </div>
       </section>
@@ -242,6 +257,36 @@ describe('Chat history rows in a real layout engine', () => {
       expect(truncated).toBe(true);
       const actions = await box(tab, 'b-actions');
       expect(actions.right).toBeLessThanOrEqual((await box(tab, 'b')).right - 12);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('reads the stats as three fixed columns, whatever a row holds', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const edge = (id: string) =>
+        tab.evaluate((el) => {
+          const node = document.getElementById(el)!;
+          const r = node.getBoundingClientRect();
+          const glyph = node.querySelector('svg')!.getBoundingClientRect();
+          const figure = node.querySelector('span')!.getBoundingClientRect();
+          return { left: r.left, width: r.width, glyph: glyph.left, figureRight: figure.right };
+        }, id);
+      // Row `a` holds every figure (a 10-digit token count); row `c` holds only
+      // the message count. The message column must not move.
+      const a = await edge('a-messages');
+      const c = await edge('c-messages');
+      expect(c.left).toBe(a.left);
+      expect(c.width).toBe(a.width);
+      expect(c.glyph).toBe(a.glyph);
+      expect(c.figureRight).toBe(a.figureRight);
+      // The token column of the full row sits after it, 12px on, and its figure
+      // ends at the cell's right edge.
+      const tokens = await edge('a-tokens');
+      expect(tokens.left - (a.left + a.width)).toBe(12);
+      expect(tokens.figureRight).toBeCloseTo(tokens.left + tokens.width, 0);
     } finally {
       await tab.close();
     }
