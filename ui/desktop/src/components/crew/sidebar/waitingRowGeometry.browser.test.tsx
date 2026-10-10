@@ -85,6 +85,9 @@ const PAINT_ONLY = [
   /^(transition|cursor|tint|biorouter-focus|no-drag|lucide)/,
   /^(active|disabled|hover|focus-visible):/,
   /^\[&/,
+  // The compact button's rung class sizes only a glyph that carries no size of its own
+  // (`main.css`, `.br-button-xs`); this row's glyph is `size-3`, so it moves nothing here.
+  /^br-button-xs$/,
 ];
 
 const escapeClass = (name: string) => name.replace(/[.:[\]&]/g, (c) => `\\${c}`);

@@ -100,15 +100,15 @@ describe('saved connections', () => {
     expect(connectionServer({ id: 'x', ssh_target: 'hpc' })).toBe('hpc');
   });
 
-  it('are labelled "name — server" only when two share a name', () => {
+  it('are labelled "name · server" only when two share a name', () => {
     const labels = connectionNames([
       { id: 'a', name: 'lab', ssh_target: 'alice@hpc.ucsf.edu' },
       { id: 'b', name: 'Lab', ssh_target: 'alice@sdsc.edu' },
       { id: 'c', name: 'imaging-core', ssh_target: 'alice@hpc.ucsf.edu' },
       { id: 'd', name: '', ssh_target: 'bob@cluster.example.org' },
     ]);
-    expect(labels.get('a')).toBe('lab — hpc.ucsf.edu');
-    expect(labels.get('b')).toBe('Lab — sdsc.edu');
+    expect(labels.get('a')).toBe('lab · hpc.ucsf.edu');
+    expect(labels.get('b')).toBe('Lab · sdsc.edu');
     expect(labels.get('c')).toBe('imaging-core');
     expect(labels.get('d')).toBe('cluster.example.org');
   });

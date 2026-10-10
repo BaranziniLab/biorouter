@@ -289,12 +289,12 @@ describe('workspace words', () => {
     expect(workspaceLabelFor([connection], connection.id, unnamed)).toBe('Fixture');
   });
 
-  it('asks a typed confirmation for the bare name, never the name — server label', () => {
+  it('asks a typed confirmation for the bare name, never the name · server label', () => {
     const unnamed = makeSnapshot();
     delete unnamed.workspace.name;
     const twin = { ...connection, id: 'conn-2', ssh_target: 'alice@other.example.edu' };
     expect(workspaceLabelFor([connection, twin], connection.id, unnamed)).toBe(
-      'Fixture — hpc.example.edu'
+      'Fixture · hpc.example.edu'
     );
     expect(workspacePhraseFor([connection, twin], connection.id, unnamed)).toBe('Fixture');
     expect(workspacePhraseFor([connection, twin], connection.id, makeSnapshot())).toBe('lab');

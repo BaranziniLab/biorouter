@@ -265,4 +265,34 @@ describe('the Crew column in a real layout engine', () => {
       await tab.close();
     }
   });
+
+  /**
+   * Redesign spec 3.2, D3: a team header's chevron and its name sit 8px apart, the app's default
+   * gap (it was 4px, tighter than every other glyph-and-label pair in the column).
+   */
+  it('spaces a team header’s chevron 8px from its name (D3)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser!.newPage({ viewport: WINDOW });
+    try {
+      await tab.setContent(
+        '<!doctype html><html><head><style>' +
+          TOKENS +
+          css +
+          '</style></head><body><div class="crew-app"><div class="crew-sidebar">' +
+          '<div class="crew-sidebar-team"><div class="crew-sidebar-team-header">' +
+          '<button type="button" class="crew-sidebar-team-toggle" id="toggle">' +
+          '<svg class="crew-sidebar-chevron" id="chevron" viewBox="0 0 16 16"></svg>' +
+          '<bdi class="crew-sidebar-truncate" id="team">chen-lab</bdi>' +
+          '</button></div></div></div></div></body></html>'
+      );
+      const gap = await tab.evaluate(
+        () =>
+          document.getElementById('team')!.getBoundingClientRect().left -
+          document.getElementById('chevron')!.getBoundingClientRect().right
+      );
+      near(gap, 8, 'chevron to team name');
+    } finally {
+      await tab.close();
+    }
+  });
 });

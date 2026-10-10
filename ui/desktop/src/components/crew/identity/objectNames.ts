@@ -12,7 +12,7 @@ import type { CrewPerson } from './types';
  *   only where two teams share a slug.
  * - **Workspaces** render their name, else "{host display name}'s workspace"
  *   for a legacy unnamed one.
- * - **Saved connections** render their local name, as `name — server` only when
+ * - **Saved connections** render their local name, as `name · server` only when
  *   two saved connections share a name.
  *
  * None of these ever falls back to an ID. A legacy name that has nothing
@@ -133,7 +133,7 @@ export function connectionServer(connection: ConnectionNameInput | null | undefi
 
 /**
  * Labels for the saved connections, keyed by ID: each connection's local name,
- * as `name — server` only where two connections share a name (compared by
+ * as `name · server` only where two connections share a name (compared by
  * `nameKey`). A connection with no usable name is labelled by its server.
  */
 export function connectionNames(connections: readonly ConnectionNameInput[]): Map<string, string> {
@@ -153,7 +153,7 @@ export function connectionNames(connections: readonly ConnectionNameInput[]): Ma
     const name = nameOf(connection);
     const server = connectionServer(connection);
     const shared = (counts.get(nameKey(cleanName(name))) ?? 0) > 1;
-    labels.set(connection.id, shared && server && server !== name ? `${name} — ${server}` : name);
+    labels.set(connection.id, shared && server && server !== name ? `${name} · ${server}` : name);
   });
   return labels;
 }
