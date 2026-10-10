@@ -2,16 +2,12 @@ function isMac(): boolean {
   return window.electron?.platform === 'darwin';
 }
 
-export function getNavigationShortcutText(): string {
-  return isMac() ? '⌘↑/⌘↓ to navigate messages' : 'Ctrl+↑/Ctrl+↓ to navigate messages';
-}
-
 export function getSearchShortcutText(): string {
   return isMac() ? '⌘F' : 'Ctrl+F';
 }
 
 /**
- * The BR-61 steer chord, as a glyph — `⌘↵` on a Mac, `Ctrl+↵` elsewhere.
+ * The BR-61 steer chord, as a glyph: `⌘↵` on a Mac, `Ctrl+↵` elsewhere.
  *
  * The binding has existed since BR-61 (`ChatInput`'s Enter handler: Cmd/Ctrl+Enter
  * while a turn is running hands the composer's text to that turn instead of

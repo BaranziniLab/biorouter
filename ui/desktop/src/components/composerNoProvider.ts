@@ -1,8 +1,8 @@
 import type { ModelConfigStatus } from './ModelAndProviderContext';
 
 /**
- * The composer's "no model yet" state — the honest other half of letting a user
- * into the app before they have configured a provider.
+ * The composer's "no model selected" state: the honest other half of letting a
+ * user into the app before they have configured a provider.
  *
  * ⚠ **The decision is here, not at either call site.** The chip and the send
  * guard must agree exactly: a chip that says "Choose a model" over a composer
@@ -14,8 +14,8 @@ import type { ModelConfigStatus } from './ModelAndProviderContext';
 /** What the model chip reads when nothing is configured. */
 export const NO_MODEL_CHIP_LABEL = 'Choose a model';
 
-/** The one line above the composer, and the link on the end of it. */
-export const NO_MODEL_COMPOSER_HINT = 'No model yet — choose a provider to start chatting';
+/** The one line inside the composer card, and the link on the end of it. */
+export const NO_MODEL_COMPOSER_HINT = 'No model selected';
 export const NO_MODEL_COMPOSER_ACTION = 'Choose a provider';
 
 /**

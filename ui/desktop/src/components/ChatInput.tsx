@@ -43,7 +43,8 @@ import { userActionHeaders } from '../utils/userAction';
 import type { SessionClassification } from '../api/types.gen';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
-import { getNavigationShortcutText, getSteerShortcutText } from '../utils/keyboardShortcuts';
+import { getSteerShortcutText } from '../utils/keyboardShortcuts';
+import { COMPOSER_COPY } from './composer/copy';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
@@ -3323,16 +3324,13 @@ export default function ChatInput({
               data-testid="chat-input"
               autoFocus={autoFocusAtMountRef.current}
               id="dynamic-textarea"
-              // The navigation hint is only true once there is something to
-              // navigate. On Home and in a brand-new session the app's primary
-              // input used to invite nothing and explain a shortcut that did
-              // nothing yet; `messagesLength` is already a prop here (#22), so the
-              // placeholder can simply tell the truth in both states.
+              // An invitation, never an instruction: "Ask a follow-up" once the
+              // chat has messages, the open question before that.
               placeholder={
                 crewHold?.placeholder ??
                 ((messagesLength ?? 0) > 0
-                  ? getNavigationShortcutText()
-                  : 'Ask Biorouter anything…')
+                  ? COMPOSER_COPY.placeholderFollowUp
+                  : COMPOSER_COPY.placeholderEmpty)
               }
               value={composerBody}
               onChange={handleChange}

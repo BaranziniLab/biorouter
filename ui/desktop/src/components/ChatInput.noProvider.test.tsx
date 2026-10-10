@@ -70,6 +70,7 @@ vi.mock('../api', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+import { NO_MODEL_COMPOSER_ACTION, NO_MODEL_COMPOSER_HINT } from './composerNoProvider';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -118,7 +119,8 @@ describe('the composer with no model configured', () => {
   it('says why, above the input, with the way out', async () => {
     renderComposer();
     const hint = await screen.findByTestId('composer-no-model-hint');
-    expect(hint).toHaveTextContent('No model yet');
+    expect(hint).toHaveTextContent(NO_MODEL_COMPOSER_HINT);
+    expect(hint).toHaveTextContent(NO_MODEL_COMPOSER_ACTION);
     fireEvent.click(screen.getByTestId('composer-no-model-action'));
     expect(setView).toHaveBeenCalledWith('ConfigureProviders');
   });
