@@ -28,6 +28,79 @@ function ControlledDialog({ dismissible = true, onClose = () => {} }) {
   );
 }
 
+/**
+ * Radix returns focus to a dialog's own `Trigger` and to nothing else. A dialog opened from state
+ * (a button's `onClick`, a keyboard shortcut) left focus on `<body>`, and a keyboard user began
+ * again at the top of the page. `DialogContent` hands focus back to the element that had it when
+ * the dialog opened (the same rule Settings applied dialog by dialog).
+ */
+function StateDialog({
+  onCloseAutoFocus,
+  removeOpenerOnOpen = false,
+}: {
+  onCloseAutoFocus?: (event: Event) => void;
+  removeOpenerOnOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [showOpener, setShowOpener] = useState(true);
+  return (
+    <>
+      {showOpener ? (
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true);
+            if (removeOpenerOnOpen) setShowOpener(false);
+          }}
+        >
+          Open from state
+        </button>
+      ) : null}
+      <button type="button">Elsewhere</button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent aria-describedby={undefined} onCloseAutoFocus={onCloseAutoFocus}>
+          <DialogTitle>State dialog</DialogTitle>
+          <button type="button">Inside action</button>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+describe('DialogContent focus return', () => {
+  it('gives focus back to the control that opened a dialog that has no Trigger', async () => {
+    const user = userEvent.setup();
+    render(<StateDialog />);
+    const opener = screen.getByRole('button', { name: 'Open from state' });
+    await user.click(opener);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+  });
+
+  it('leaves focus to the caller when its own onCloseAutoFocus cancels the return', async () => {
+    const user = userEvent.setup();
+    const cancel = vi.fn((event: Event) => event.preventDefault());
+    render(<StateDialog onCloseAutoFocus={cancel} />);
+    const opener = screen.getByRole('button', { name: 'Open from state' });
+    await user.click(opener);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(opener).not.toHaveFocus();
+  });
+
+  it('leaves an opener that is gone alone, and does not throw', async () => {
+    const user = userEvent.setup();
+    render(<StateDialog removeOpenerOnOpen />);
+    await user.click(screen.getByRole('button', { name: 'Open from state' }));
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Open from state' })).toBeNull();
+  });
+});
+
 describe('DialogContent dismissal contract', () => {
   it('dismisses with Escape and restores focus to the trigger', async () => {
     const user = userEvent.setup();

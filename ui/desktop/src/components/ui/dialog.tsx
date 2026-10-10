@@ -7,6 +7,56 @@ import { XIcon } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { installDialogTabRepair } from './dialogTabRepair';
 
+/**
+ * Give the keyboard focus back to the control that opened a dialog or a sheet (WCAG 2.4.3; the
+ * ARIA dialog pattern). Radix's modal content, when it closes, focuses its own `Trigger` and
+ * nothing else: it cancels the focus scope's usual return to whatever was focused before. A
+ * dialog opened from state, with no Trigger (every one a button's `onClick` mounts), therefore
+ * left focus on `<body>` after Escape, and a keyboard user began again at the top of the page.
+ * Settings fixed it dialog by dialog (`settings/useReturnFocusToOpener.ts`, T3-SH-12); this is the
+ * same rule for every dialog and sheet at once.
+ *
+ * The opener is read in `onOpenAutoFocus`: Radix fires it when the content mounts, before it moves
+ * focus inside, so `document.activeElement` is still the control that was pressed. (It cannot be
+ * read when `DialogContent` first renders: this wrapper is mounted while the dialog is still
+ * closed, and only the Radix content inside it mounts on open.) The caller's own handlers run
+ * first, and `onCloseAutoFocus` wins when it cancels the event (Crew's dialogs return focus
+ * themselves and say so). An opener that has gone by the time the dialog closes (a menu item, a
+ * row that re-rendered) is left alone, and Radix does what it would have done. No ring is forced:
+ * whether returned focus reads as keyboard focus is the browser's call from how the person closed
+ * it (a click on Cancel shows none, Escape does).
+ */
+export function useReturnFocusToOpener(handlers: {
+  onOpenAutoFocus?: (event: Event) => void;
+  onCloseAutoFocus?: (event: Event) => void;
+}): {
+  onOpenAutoFocus: (event: Event) => void;
+  onCloseAutoFocus: (event: Event) => void;
+} {
+  const { onOpenAutoFocus, onCloseAutoFocus } = handlers;
+  const opener = React.useRef<HTMLElement | null>(null);
+  const handleOpen = React.useCallback(
+    (event: Event) => {
+      const active = document.activeElement;
+      opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      onOpenAutoFocus?.(event);
+    },
+    [onOpenAutoFocus]
+  );
+  const handleClose = React.useCallback(
+    (event: Event) => {
+      onCloseAutoFocus?.(event);
+      const target = opener.current;
+      opener.current = null;
+      if (event.defaultPrevented || !target || !target.isConnected) return;
+      event.preventDefault();
+      target.focus();
+    },
+    [onCloseAutoFocus]
+  );
+  return { onOpenAutoFocus: handleOpen, onCloseAutoFocus: handleClose };
+}
+
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
@@ -56,12 +106,15 @@ function DialogContent({
   showCloseButton = dismissible,
   onEscapeKeyDown,
   onPointerDownOutside,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ref,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   dismissible?: boolean;
   showCloseButton?: boolean;
 }) {
+  const returnFocus = useReturnFocusToOpener({ onOpenAutoFocus, onCloseAutoFocus });
   // See `dialogTabRepair`: a `Select` unmounting its live region on blur makes
   // Radix's focus scope swallow the Tab that was moving off it, which left the
   // New schedule dialog's Cancel and "Create schedule" keyboard-unreachable.
@@ -97,6 +150,8 @@ function DialogContent({
         // `aria-hidden` instead — so a screen reader was told this was a dialog
         // but never that it was a modal one.
         aria-modal="true"
+        onOpenAutoFocus={returnFocus.onOpenAutoFocus}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         data-slot="dialog-content"
         className={cn(
           // No radius utility here on purpose: `.biorouter-modal-surface` (main.css,

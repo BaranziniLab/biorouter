@@ -63,15 +63,7 @@ const ALLOWED: Partial<Record<Rule, Record<string, string>>> = {
 
 /** Waiting on the owner's sweep, each with the request that carries the diff. Only shrinks. */
 const PENDING: Partial<Record<Rule, Record<string, string>>> = {
-  'radix-themes': {
-    'settings/providers/modal/subcomponents/forms/CustomProviderForm.tsx':
-      'WS-SETTINGS-M, requests/WS-SETTINGS-M/WS-PRIMITIVES-1.md',
-  },
   'switch-variant': {
-    'settings/capabilities/CapabilitiesSection.tsx':
-      'WS-SETTINGS-B, requests/WS-SETTINGS-B/WS-PRIMITIVES-1.md',
-    'settings/models/subcomponents/LeadWorkerSettings.tsx':
-      'WS-SETTINGS-M, requests/WS-SETTINGS-M/WS-PRIMITIVES-1.md',
     'settings/dictation/VoiceDictationToggle.tsx':
       'Frozen (unmounted Settings folder), requests/coordinator/WS-PRIMITIVES-2.md',
     'settings/sessions/SessionSharingSection.tsx':

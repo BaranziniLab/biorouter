@@ -5,6 +5,7 @@ import * as SheetPrimitive from '@radix-ui/react-dialog';
 import { XIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
+import { useReturnFocusToOpener } from './dialog';
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -65,14 +66,20 @@ function SheetContent({
   className,
   children,
   side = 'right',
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left';
 }) {
+  // A sheet opened from state has no Trigger for Radix to return to (see `dialog.tsx`).
+  const returnFocus = useReturnFocusToOpener({ onOpenAutoFocus, onCloseAutoFocus });
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
+        onOpenAutoFocus={returnFocus.onOpenAutoFocus}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         data-slot="sheet-content"
         className={cn(
           // Motion (spec 2.6): `.br-sheet-motion` in main.css, in over `--dur-med`, out over

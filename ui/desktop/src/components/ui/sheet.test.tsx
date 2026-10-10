@@ -1,4 +1,6 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './sheet';
 
@@ -98,5 +100,33 @@ describe('SheetContent close', () => {
       'data-slot',
       'sheet-close'
     );
+  });
+});
+
+describe('SheetContent focus return', () => {
+  it('gives focus back to the control that opened a sheet that has no Trigger', async () => {
+    const user = userEvent.setup();
+    function FromState() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open drawer
+          </button>
+          <Sheet open={open} onOpenChange={setOpen}>
+            <SheetContent aria-describedby={undefined}>
+              <SheetTitle>Drawer</SheetTitle>
+            </SheetContent>
+          </Sheet>
+        </>
+      );
+    }
+    render(<FromState />);
+    const opener = screen.getByRole('button', { name: 'Open drawer' });
+    await user.click(opener);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
   });
 });

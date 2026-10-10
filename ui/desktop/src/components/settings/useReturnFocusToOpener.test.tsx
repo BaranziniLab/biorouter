@@ -46,7 +46,11 @@ describe('useReturnFocusToOpener', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open' })).toHaveFocus());
   });
 
-  it('is needed: without it the focus falls to the page', async () => {
+  // This used to be the negative control ("without it the focus falls to the page"). The shared
+  // `DialogContent` now hands focus back to whatever opened it by default (WS-PRIMITIVES,
+  // `ui/dialog.tsx` `useReturnFocusToOpener`), so a dialog that passes no handler is no longer
+  // left on `<body>`. The hook above stays a harmless duplicate until its call sites go.
+  it('is no longer needed: the shared dialog returns the focus by default', async () => {
     const user = userEvent.setup();
     render(<Opener returnFocus={false} />);
     await user.click(screen.getByRole('button', { name: 'Open' }));
@@ -55,7 +59,6 @@ describe('useReturnFocusToOpener', () => {
     await user.keyboard('{Escape}');
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.getByRole('button', { name: 'Open' })).not.toHaveFocus();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open' })).toHaveFocus());
   });
 });
