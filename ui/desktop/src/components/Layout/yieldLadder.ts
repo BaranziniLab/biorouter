@@ -140,7 +140,8 @@ export type SummaryRailPreference = 'open' | 'closed';
  *
  * With the default 288px sidebar that is windows of 1344px and wider; below
  * 1120px the sidebar turns into an overlay, so from 1056px windows. Beside a
- * side preview it needs a pane of about 2272px.
+ * side preview at its default width (920px from a 1917px pane) it needs a pane
+ * of 1976px (920 + 1056), a 2264px window with the sidebar open.
  *
  * The pane is the split box, whose width does not depend on the rail, so the
  * answer cannot feed back into its own input. An unmeasured pane (0, NaN, a
@@ -216,8 +217,8 @@ export type PreviewPanelMode = 'side' | 'stack';
  * Measured on real transcript text at the transcript's own 14px/24px face: 440
  * is the first chat column in which no full line runs under 45 characters
  * (average 57.3, shortest 49) — the bottom of the 45–75 character band. The
- * composer's toolbar collapses behind its "+" below 528 (rung 3b), which is a
- * designed state, not a failure, so it does not set this floor.
+ * composer's controls row fits down to the 360px pane floor (its model chip is
+ * the one item that truncates), so it does not set this floor either.
  */
 export const READABLE_CHAT_WIDTH = 440;
 
@@ -479,10 +480,17 @@ export function shouldShowTabOverflowMenu(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Rung 3b — the composer toolbar
+// Rung 3b — the composer toolbar (RETIRED)
 // ---------------------------------------------------------------------------
 
 /**
+ * RETIRED with the one-card composer (WS-COMPOSER, c863487c3): its controls row
+ * is `[+] [Tools N] … [model · effort] [Send]` and nothing collapses behind the
+ * "+" any more; the model chip truncates instead. No component reads this rung.
+ * It stays only while `bottom_menu/useComposerToolbarCollapsed.ts` (no
+ * importers, WS-PICKERS) still imports it; delete both together.
+ *
+ * What it decided:
  * The width the composer's bottom control row needs with every picker expanded:
  * working directory, extensions/skills/knowledge, reasoning effort, model,
  * context gauge, cost, and the send button, with their gaps and dividers. Below

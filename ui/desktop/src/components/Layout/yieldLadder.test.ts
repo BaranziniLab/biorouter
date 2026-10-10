@@ -684,6 +684,16 @@ describe('summaryRailFit (rung 0: the summary rail yields first)', () => {
     expect(fit(1152, null, 'side', 0)).toEqual(shown(280));
   });
 
+  it('docks beside a default-width side preview from a 1976px pane, and not at 1975', () => {
+    // Rung 2 gives a default preview its 920px ceiling from a 1917px pane.
+    const beside = (pane: number) =>
+      fit(pane, null, 'side', previewSideWidth({ paneWidth: pane, userWidth: null }));
+    expect(previewSideWidth({ paneWidth: 1976, userWidth: null })).toBe(920);
+    expect(beside(1975)).toEqual(measuredHidden);
+    expect(beside(1976)).toEqual(shown(240));
+    for (let pane = 800; pane < 1976; pane++) expect(beside(pane).fits, String(pane)).toBe(false);
+  });
+
   it('answers the previous result for a pane it has not measured', () => {
     for (const pane of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(fit(pane, shown(260))).toEqual(shown(260));
