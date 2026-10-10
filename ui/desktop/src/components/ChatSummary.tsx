@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   AlertCircle,
   Check,
@@ -8,20 +8,21 @@ import {
   Pipeline,
 } from './icons/app-icons';
 import { Button } from './ui/button';
-import { cn } from '../utils';
+import { InfoTip } from './ui/info-tip';
+import { Progress } from './ui/progress';
+import { summaryCopy } from './summary/copy';
+import { prefersReducedMotion } from '../styles/motion';
 import type { TodoItem, TodoStatus } from '../utils/sessionTodos';
+import './summary/chatSummary.css';
 
 /**
  * Keyed by status so a status added to the backend fails the build here rather
  * than falling through a ternary chain and rendering as "Pending".
+ *
+ * Status is told apart by SHAPE (an open circle, a dashed circle, an alert, a
+ * check), never by colour alone; the word itself is read to assistive
+ * technology only, ahead of the task text.
  */
-const TODO_STATUS_LABELS: Record<TodoStatus, string> = {
-  pending: 'Pending',
-  in_progress: 'In progress',
-  blocked: 'Blocked',
-  completed: 'Complete',
-};
-
 const TODO_STATUS_ICONS: Record<TodoStatus, typeof CircleIcon> = {
   pending: CircleIcon,
   in_progress: CircleDotDashed,
@@ -29,27 +30,62 @@ const TODO_STATUS_ICONS: Record<TodoStatus, typeof CircleIcon> = {
   completed: Check,
 };
 
-function Metric({ label, children }: { label: string; children: ReactNode }) {
+/** At most this many new rows animate in one update; the rest appear at rest. */
+const MAX_ANIMATED_ROWS = 5;
+const ROW_STAGGER_MS = 30;
+
+function Stat({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-      <dt className="text-xs text-text-muted">{label}</dt>
-      <dd className="text-sm font-medium tabular-nums text-text-default">{children}</dd>
+    <div className="br-summary__stat">
+      <dt className="br-summary__stat-label">{label}</dt>
+      <dd className="br-summary__stat-value">{children}</dd>
     </div>
   );
 }
 
-export function ChatSummary({
-  name,
-  toolCalls,
-  billedTokens,
-  artifacts,
-  codeDelta,
-  todos,
-  hasWorkflow,
-  onWorkflow,
-  onDiagnostics,
+/**
+ * One to-do row. The glyph crossfades when the status changes after the row
+ * first rendered; a row that arrives with the list stays at rest.
+ */
+function TodoRow({
+  item,
+  entering,
+  enterIndex,
 }: {
-  name: string;
+  item: TodoItem;
+  entering: boolean;
+  enterIndex: number;
+}) {
+  const [initialStatus] = useState(item.status);
+  const Icon = TODO_STATUS_ICONS[item.status];
+  const style: CSSProperties | undefined = entering
+    ? { animationDelay: `${enterIndex * ROW_STAGGER_MS}ms` }
+    : undefined;
+  return (
+    <li
+      className={entering ? 'br-summary__todo br-enter' : 'br-summary__todo'}
+      data-status={item.status}
+      data-nested={item.parent !== undefined ? '' : undefined}
+      data-todo-id={item.id}
+      style={style}
+    >
+      <span
+        key={item.status}
+        className="br-summary__glyph"
+        data-changed={item.status !== initialStatus ? '' : undefined}
+        aria-hidden="true"
+      >
+        <Icon />
+      </span>
+      <span className="br-summary__todo-text">
+        <span className="sr-only">{summaryCopy.todoStatus[item.status]}, </span>
+        {item.text}
+      </span>
+    </li>
+  );
+}
+
+export interface ChatSummaryProps {
   toolCalls: string;
   billedTokens: string;
   artifacts: string;
@@ -58,149 +94,181 @@ export function ChatSummary({
   hasWorkflow: boolean;
   onWorkflow: () => void;
   onDiagnostics: () => void;
-}) {
+}
+
+/**
+ * The Chat summary's content: the live to-do list, the chat's statistics and
+ * two actions. The docked rail (`summary/ChatSummaryRail.tsx`) and the header
+ * popover draw exactly this, so the two read as one component.
+ *
+ * A scrolling body over a pinned footer, in two type sizes (13 for rows and
+ * actions, 12 for labels and counts). There is no "no tasks" sentence: with no
+ * list, the statistics simply come first.
+ */
+export function ChatSummary({
+  toolCalls,
+  billedTokens,
+  artifacts,
+  codeDelta,
+  todos,
+  hasWorkflow,
+  onWorkflow,
+  onDiagnostics,
+}: ChatSummaryProps) {
+  const total = todos.items.length;
   const completed = todos.items.filter((item) => item.status === 'completed').length;
+
+  // Rows that arrive with the first snapshot (an open, a reload, a tab switch)
+  // are at rest; only rows added later enter. The baseline is taken once the
+  // list has answered: either it has rows, or its first refresh has finished.
+  const baselineRef = useRef<Set<string> | null>(null);
+  if (baselineRef.current === null && (total > 0 || !todos.loading)) {
+    baselineRef.current = new Set(todos.items.map((item) => item.id));
+  }
+  const baseline = baselineRef.current;
+  const entering = new Set<string>();
+  if (baseline) {
+    for (const item of todos.items) {
+      if (!baseline.has(item.id) && entering.size < MAX_ANIMATED_ROWS) entering.add(item.id);
+    }
+  }
+  useEffect(() => {
+    if (!baselineRef.current) return;
+    for (const item of todos.items) baselineRef.current.add(item.id);
+  }, [todos.items]);
+
+  // Keep the running step in view, smoothly unless motion is reduced or the
+  // pointer is over the summary (a list must not scroll under a reading cursor).
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const pointerInsideRef = useRef(false);
+  const runningId = todos.items.find((item) => item.status === 'in_progress')?.id;
+  const firstScrollRef = useRef(true);
+  useEffect(() => {
+    if (!runningId) return;
+    const row = Array.from(
+      bodyRef.current?.querySelectorAll<HTMLElement>('[data-todo-id]') ?? []
+    ).find((element) => element.dataset.todoId === runningId);
+    if (!row || typeof row.scrollIntoView !== 'function') return;
+    const smooth = !firstScrollRef.current && !prefersReducedMotion() && !pointerInsideRef.current;
+    firstScrollRef.current = false;
+    row.scrollIntoView({ block: 'nearest', behavior: smooth ? 'smooth' : 'auto' });
+  }, [runningId]);
+
+  let enterIndex = 0;
   return (
-    <div className="space-y-3">
-      <header className="min-w-0">
-        <h2 className="text-sm font-medium text-text-default">Chat summary</h2>
-        <p className="truncate text-xs text-text-muted" title={name}>
-          {name}
-        </p>
-      </header>
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-2" aria-label="Chat statistics">
-        <Metric label="Tool calls">{toolCalls}</Metric>
-        <Metric label="Billed tokens">{billedTokens}</Metric>
-        <Metric label="Artifacts">{artifacts}</Metric>
-        <Metric label="Code">
-          <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
-          <span className="text-text-danger">−{codeDelta.removed.toLocaleString()}</span>
-        </Metric>
-      </dl>
-      {todos.items.length > 0 && (
-        <section aria-label="To Do progress" className="border-t border-border-subtle pt-3">
-          <div className="mb-2 flex items-baseline justify-between gap-2 text-xs">
-            <h3 className="font-medium text-text-default">To Do</h3>
-            <span className="text-text-muted" aria-live="polite">
-              {completed} of {todos.items.length} complete
-            </span>
-          </div>
-          <div
-            role="progressbar"
-            aria-label="Completed tasks"
-            aria-valuemin={0}
-            aria-valuemax={todos.items.length}
-            aria-valuenow={completed}
-            className="mb-3 h-1 overflow-hidden rounded-full bg-background-medium"
+    <div
+      className="br-summary"
+      onPointerEnter={() => {
+        pointerInsideRef.current = true;
+      }}
+      onPointerLeave={() => {
+        pointerInsideRef.current = false;
+      }}
+    >
+      {/* A scroll container with a tab stop so a keyboard user can scroll it:
+          a region, not a control, so it opts out of D-15's focus fill with
+          `.biorouter-focus-region` (authored in main.css), which also draws
+          the inset accent edge that is its only focus indicator. */}
+      <div
+        ref={bodyRef}
+        className="br-summary__body biorouter-focus-region"
+        tabIndex={0}
+        data-summary-body=""
+      >
+        {total > 0 && (
+          <section
+            aria-label={summaryCopy.todo}
+            aria-busy={todos.loading || undefined}
+            className="br-summary__section"
           >
-            <div
-              className="h-full bg-text-success"
-              style={{ width: `${(completed / todos.items.length) * 100}%` }}
+            <div className="br-summary__heading">
+              <h3 className="br-summary__label">{summaryCopy.todo}</h3>
+              {/* Visible "2 of 5"; announced "2 of 5 complete". */}
+              <span className="br-summary__count" aria-hidden="true">
+                {summaryCopy.todoCount(completed, total)}
+              </span>
+              <span className="sr-only" aria-live="polite">
+                {summaryCopy.todoCount(completed, total)}
+                {summaryCopy.todoCountSuffix}
+              </span>
+            </div>
+            <Progress
+              className="br-summary__progress"
+              value={completed}
+              max={total}
+              label={summaryCopy.todoProgressLabel}
             />
-          </div>
-          {/* A scroll container with a tab stop so a keyboard user can scroll
-              it — a region, not a control, so it opts out of D-15's focus fill
-              with `.biorouter-focus-region` (authored in main.css). It keeps
-              its implicit `list` role: `role="region"` would orphan the rows.
-              The class is not "no focus treatment": it also carries the 1px
-              inset `--border-accent` edge that is this list's only focus
-              indicator (D-15's fourth amendment) — it has no focusable child to
-              hand the signal to. */}
-          <ol
-            aria-label="To Do tasks"
-            tabIndex={0}
-            className="biorouter-focus-region max-h-60 overflow-y-auto overscroll-contain pr-1"
-          >
-            {todos.items.map((item, index) => {
-              const label = TODO_STATUS_LABELS[item.status];
-              const Icon = TODO_STATUS_ICONS[item.status];
-              // Expanded steps are indented under the item they came from, the
-              // one level of nesting the backend allows.
-              const nested = item.parent !== undefined;
-              return (
-                <li
-                  key={item.id}
-                  className={cn('relative flex gap-2 pb-3 last:pb-0', nested && 'pl-4')}
-                >
-                  {index < todos.items.length - 1 && (
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        'absolute bottom-0 top-4 border-l border-border-subtle',
-                        nested ? 'left-[23px]' : 'left-[7px]'
-                      )}
-                    />
-                  )}
-                  <Icon
-                    aria-hidden="true"
-                    className={cn(
-                      'relative mt-0.5 h-4 w-4 shrink-0',
-                      item.status === 'in_progress'
-                        ? 'text-text-accent'
-                        : item.status === 'blocked'
-                          ? 'text-text-warning'
-                          : 'text-text-muted'
-                    )}
+            <ol aria-label={summaryCopy.todoListLabel} className="br-summary__todos">
+              {todos.items.map((item) => {
+                const isEntering = entering.has(item.id);
+                return (
+                  <TodoRow
+                    key={item.id}
+                    item={item}
+                    entering={isEntering}
+                    enterIndex={isEntering ? enterIndex++ : 0}
                   />
-                  <div className="min-w-0 flex-1 text-xs leading-relaxed">
-                    <p
-                      className={cn(
-                        'whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
-                        item.status === 'completed' ? 'text-text-muted' : 'text-text-default'
-                      )}
-                    >
-                      {item.text}
-                    </p>
-                    <span className="text-text-muted">{label}</span>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </section>
-      )}
-      {todos.error ? (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-2 text-xs text-text-warning"
+                );
+              })}
+            </ol>
+          </section>
+        )}
+        {todos.error && (
+          <div role="alert" className="br-summary__error">
+            <span>{summaryCopy.todoRefreshFailed}</span>
+            <Button type="button" variant="ghost" size="xs" onClick={todos.refresh}>
+              {summaryCopy.retry}
+            </Button>
+          </div>
+        )}
+        <dl
+          aria-label={summaryCopy.statsLabel}
+          className="br-summary__stats"
+          data-after-todos={total > 0 ? '' : undefined}
         >
-          <span>
-            {todos.items.length
-              ? 'To Do could not refresh. Displayed progress may be out of date.'
-              : 'Summary could not refresh.'}
-          </span>
-          <Button type="button" variant="ghost" size="xs" onClick={todos.refresh}>
-            Retry
-          </Button>
-        </div>
-      ) : (
-        todos.loading &&
-        todos.items.length > 0 && (
-          <p role="status" className="text-xs text-text-muted">
-            Refreshing To Do…
-          </p>
-        )
-      )}
-      <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
+          <Stat label={summaryCopy.toolCalls}>{toolCalls}</Stat>
+          <Stat
+            label={
+              <>
+                <span>{summaryCopy.tokens}</span>
+                <InfoTip label={summaryCopy.tokens} help={summaryCopy.tokensHelp} />
+              </>
+            }
+          >
+            {billedTokens}
+          </Stat>
+          <Stat label={summaryCopy.artifacts}>{artifacts}</Stat>
+          <Stat label={summaryCopy.code}>
+            <span className="sr-only">
+              {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
+            </span>
+            <span aria-hidden="true">
+              <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
+              <span className="text-text-danger">−{codeDelta.removed.toLocaleString()}</span>
+            </span>
+          </Stat>
+        </dl>
+      </div>
+      <div className="br-summary__footer">
         <Button
           type="button"
-          variant="secondary"
+          variant="ghost"
           size="sm"
-          className="min-w-0 flex-1 basis-36 gap-1.5"
+          className="br-summary__action"
           onClick={onWorkflow}
         >
-          <Pipeline />
-          <span>{hasWorkflow ? 'Workflow' : 'Make workflow'}</span>
+          <Pipeline aria-hidden="true" />
+          <span>{hasWorkflow ? summaryCopy.workflow : summaryCopy.makeWorkflow}</span>
         </Button>
         <Button
           type="button"
-          variant="secondary"
+          variant="ghost"
           size="sm"
-          className="min-w-0 flex-1 basis-36 gap-1.5"
+          className="br-summary__action"
           onClick={onDiagnostics}
         >
-          <CodeAnalysis />
-          <span>Diagnostics</span>
+          <CodeAnalysis aria-hidden="true" />
+          <span>{summaryCopy.diagnostics}</span>
         </Button>
       </div>
     </div>

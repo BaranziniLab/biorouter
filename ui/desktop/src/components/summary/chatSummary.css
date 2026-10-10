@@ -1,0 +1,214 @@
+/* @ws WS-SUMMARY begin: chat summary content */
+/*
+ * THE CHAT SUMMARY'S CONTENT (components/ChatSummary.tsx), shared by the docked
+ * rail and the header popover so the two read as one component.
+ *
+ * Authored CSS, not new Tailwind strings: under BIOROUTER_NO_HMR a newly written
+ * utility can silently fail to generate (CLAUDE.md, "Desktop shell geometry"),
+ * and these rules are the whole of this surface's geometry.
+ *
+ * Two sizes only: 13/18 for rows and actions (`--text-secondary`), 12/16 for
+ * labels and counts (`--text-supporting`). Rows are 28px.
+ */
+.br-summary {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.br-summary__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 12px;
+}
+
+.br-summary__heading {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.br-summary__label,
+.br-summary__count {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.br-summary__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.br-summary .br-summary__progress {
+  height: 4px;
+  margin-bottom: 4px;
+}
+
+.br-summary__todos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-summary__todo {
+  display: flex;
+  min-height: 28px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-default);
+}
+
+.br-summary__todo[data-nested] {
+  padding-left: 16px;
+}
+
+.br-summary__todo[data-status='completed'] {
+  color: var(--text-muted);
+}
+
+.br-summary__todo-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+/* The 14px glyph, centred on the 18px first line. */
+.br-summary__glyph {
+  display: inline-flex;
+  width: 14px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.br-summary__glyph > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.br-summary__todo[data-status='in_progress'] > .br-summary__glyph {
+  color: var(--text-accent);
+}
+
+.br-summary__todo[data-status='blocked'] > .br-summary__glyph {
+  color: var(--text-warning);
+}
+
+/* A status that changed after the row first rendered crossfades its glyph in;
+   a row that arrived with the list never animates. */
+.br-summary__glyph[data-changed] {
+  animation: br-summary-glyph-in var(--dur-fast) var(--ease-out);
+}
+
+@keyframes br-summary-glyph-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.br-summary__error {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-warning);
+}
+
+.br-summary__stats {
+  margin: 0;
+}
+
+.br-summary__stats[data-after-todos] {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.br-summary__stat {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-summary__stat-label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.br-summary__stat-value {
+  margin: 0;
+  color: var(--text-default);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The footer never scrolls: two full-width ghost rows over a hairline. */
+.br-summary__footer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0;
+  border-top: 1px solid var(--border-subtle);
+  padding: 4px;
+}
+
+.br-summary .br-summary__action {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 0 8px;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  color: var(--text-default);
+}
+
+.br-summary .br-summary__action > svg {
+  color: var(--text-muted);
+}
+
+/* The popover fallback (where the rail does not fit): the same content at the
+   rail's width, on the shared popover surface. Unlayered, so it wins over the
+   primitive's default width and padding utilities. */
+.br-summary-popover {
+  display: flex;
+  width: 280px;
+  max-width: calc(100vw - 2rem);
+  max-height: var(--radix-popover-content-available-height);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-summary__glyph[data-changed] {
+    animation: none;
+  }
+
+  .br-summary__todo-text {
+    transition: none;
+  }
+}
+/* @ws WS-SUMMARY end: chat summary content */

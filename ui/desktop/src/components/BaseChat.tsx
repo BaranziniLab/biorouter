@@ -51,10 +51,19 @@ import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { AlignLeft, Terminal } from './icons/app-icons';
+import { Popover, PopoverAnchor, PopoverContent } from './ui/popover';
+import { AlertCircle, PanelRight, Terminal } from './icons/app-icons';
 import { ChatSummary } from './ChatSummary';
+import { ChatSummaryRail } from './summary/ChatSummaryRail';
+import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
+import { useSummaryRail } from '../hooks/useSummaryRail';
+import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
+import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
+import { Note } from './ui/note';
+import { InfoTip } from './ui/info-tip';
+import { EmptyState } from './ui/empty-state';
+import type { ArtifactPanelPresentedChange } from './artifacts/useArtifactPanel';
 import { createArtifactRenderRepairMessage, getTextContent } from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
@@ -76,7 +85,7 @@ import { runInTerminal } from '../utils/terminalRunChannel';
 import { SessionNamePill } from './SessionNamePill';
 import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
-import { announceSessionName, renameSession } from '../utils/sessionNameSync';
+import { renameSessionOptimistically } from '../utils/sessionNameSync';
 import { toastError, toastWarning } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { startChatFailureNotice } from '../utils/startChatFailure';
@@ -128,8 +137,6 @@ import { useChatGroups } from '../contexts/ChatGroupsContext';
 // from a finished conversation — reopening an old figure, editing an app's code,
 // deleting it — and must not silently resume the chat.
 const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
-const HEADER_ACTION_BUTTON_CLASS =
-  'no-drag flex items-center justify-center text-text-muted transition-colors hover:bg-background-medium hover:text-text-default';
 // The image half of this alternation is generated from `utils/imageFormats`, so
 // adding a format cannot leave prose discovery behind. The non-image half stays
 // a literal: it is a deliberately closed list, not a mirror of another set.
@@ -1248,8 +1255,6 @@ interface BaseChatProps {
    * cannot be done by the owner on render.
    */
   onInitialMessageConsumed?: () => void;
-  /** Render messages + input as a single coherent surface (default true). */
-  coherent?: boolean;
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
@@ -1323,7 +1328,6 @@ function BaseChatContent({
   onInitialMessageConsumed,
   suppressEmptyState,
   suppressGreeting = false,
-  coherent = true,
   onRenameSession,
   onSessionUpdate,
   allowWindowResize = true,
@@ -1469,17 +1473,40 @@ function BaseChatContent({
   // views mount the same panel and must behave identically. What stays here is
   // the part that needs a LIVE conversation: auto-open on a fresh artifact, and
   // feeding a render failure back to the agent.
+  // The conversation glide needs the panel's "before" rects, so the panel tells
+  // it synchronously before an open or a close changes the grid. The handler is
+  // defined below, beside the glide; the panel reads this ref at call time.
+  const presentedChangeRef = useRef<((change: ArtifactPanelPresentedChange) => void) | null>(null);
   const artifactPanel = useArtifactPanel({
     isMobile,
     allowWindowResize,
     enabled: artifactPanelEnabled,
+    onPresentedChange: (change) => presentedChangeRef.current?.(change),
   });
   const {
     splitPaneRef,
     artifact: presentedArtifact,
     openArtifact: handleOpenArtifact,
     reset: resetArtifactPanel,
+    previewMode,
+    sideWidth: previewSideWidth,
   } = artifactPanel;
+  const previewMounted = Boolean(presentedArtifact && artifactPanelEnabled);
+
+  // THE CONVERSATION GLIDE (spec 3.5): when the summary rail or a side preview
+  // takes its column, the grid snaps and the transcript cell and composer bar
+  // FLIP from where they were (hooks/useColumnGlide.ts).
+  const columnGlide = useColumnGlide(splitPaneRef);
+  const scrollAnchorRestoreRef = useRef<(() => void) | null>(null);
+  presentedChangeRef.current = (change) => {
+    // A stacked sheet moves the conversation down, not sideways: nothing to glide.
+    if (change.layout !== 'side') return;
+    columnGlide.capture({ windowGrowing: change.windowGrowing });
+    // Keep the card the person clicked where it was while the column narrows.
+    scrollAnchorRestoreRef.current = change.presented
+      ? captureScrollAnchor(scrollRef.current?.viewportRef.current, document.activeElement)
+      : null;
+  };
   const [liveBrowserShare, setLiveBrowserShare] = useState<LiveBrowserShare | null>(null);
   const [filePreviewRevision, setFilePreviewRevision] = useState<string | null>(null);
   // Publishes this panel to the agent. Chat-only: reading a saved transcript's
@@ -1628,7 +1655,6 @@ function BaseChatContent({
     },
     [heldSubmit]
   );
-  const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
   // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
   // the wire) for an ordinary session.
@@ -2166,34 +2192,14 @@ function BaseChatContent({
       return;
     }
     if (!sessionId) return;
-    // Optimistic announce so the pill, the chat-context display, history, and
-    // any other open window snap to the new name immediately. `renameSession`
-    // will re-announce on API success (idempotent — no-op if name matches).
-    const previous = session;
-    announceSessionName({
+    // One rename path for the title pill, the sidebar row and History:
+    // optimistic announce, save with the user proof, roll back with the
+    // daemon's sentence on a refusal (utils/sessionNameSync.ts).
+    await renameSessionOptimistically(
       sessionId,
-      name: newName,
-      userSetName: true,
-      origin: 'user',
-    });
-    try {
-      await renameSession(sessionId, newName, 'user');
-    } catch (err) {
-      // Roll back to whatever the session held before the click. Using
-      // `sync` as the origin so listeners treat it as authoritative.
-      if (previous?.name) {
-        announceSessionName({
-          sessionId,
-          name: previous.name,
-          userSetName: previous.user_set_name ?? false,
-          origin: 'sync',
-        });
-      }
-      toastError({
-        title: 'Failed to rename chat',
-        msg: errorMessage(err),
-      });
-    }
+      newName,
+      session ? { name: session.name, userSetName: session.user_set_name ?? false } : null
+    );
   };
 
   const handleOpenTerminal = () => {
@@ -2232,6 +2238,113 @@ function BaseChatContent({
     chatState === ChatState.Idle &&
     !isCreatingSession;
 
+  // The composer's own FLIP: from the centred empty state to its place above
+  // the transcript, on the first turn. Translate only (a `scaleX` squeezed its
+  // text) and on the motion tokens. Declared BEFORE the summary rail on purpose:
+  // when both move on one commit, the rail's glide finds the composer already
+  // moving and leaves it to this animation, whose end rect includes the rail.
+  useLayoutEffect(() => {
+    if (isCleanConversation) return;
+
+    const from = pendingComposerRectRef.current;
+    const element = composerMotionRef.current;
+    pendingComposerRectRef.current = null;
+
+    if (!from || !element || typeof element.animate !== 'function') return;
+    if (prefersReducedMotion() || isWindowResizing()) return;
+
+    const to = element.getBoundingClientRect();
+    const deltaX = from.left - to.left;
+    const deltaY = from.top - to.top;
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+
+    const animation = element.animate(
+      [
+        { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      { duration: DUR.med, easing: EASE_OUT }
+    );
+
+    return () => animation.cancel();
+  }, [isCleanConversation]);
+
+  // RUNG 0: THE DOCKED CHAT SUMMARY (spec 3.5). Once a chat has had a turn its
+  // summary docks beside the conversation when the pane can seat both at the
+  // full 760px measure (Layout/yieldLadder.ts, summaryRailFit); otherwise the
+  // header button opens the same content as a popover. Never beside a stacked
+  // preview. The rail is a grid column, so the transcript and the composer move
+  // together, and its column glides rather than tweening its width.
+  //
+  // `isCleanConversation` alone would also count the loading screen and a
+  // workflow's parameter form, then drop the rail when the chat turns out empty.
+  const summaryActive = !isCleanConversation && (messages.length > 0 || isRunningState(chatState));
+  const summaryRail = useSummaryRail({
+    splitPaneRef,
+    active: summaryActive,
+    isMobile,
+    previewMode: previewMounted ? previewMode : null,
+    previewWidth: previewSideWidth,
+    onGlide: (dx, cause) =>
+      columnGlide.glideBy(dx, { duration: cause === 'open' ? DUR.med : DUR.fastMax }),
+  });
+  const summaryRailId = React.useId();
+  const summaryPopoverId = React.useId();
+  const summaryButtonRef = useRef<HTMLButtonElement>(null);
+
+  // The to-do list stays live while someone can see it (the popover or the
+  // rail) and while a turn runs, so the header button's progress dot is current
+  // even when the rail is folded away. Called here, below the rail, because
+  // `summaryActive` needs `isCleanConversation`; still above the early return.
+  const sessionTodos = useSessionTodos(
+    sessionId,
+    session,
+    messages,
+    reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState))
+  );
+
+  // The window widened under an open popover: the rail replaces it.
+  useEffect(() => {
+    if (summaryRail.shown) setReviewOpen(false);
+  }, [summaryRail.shown]);
+
+  // A preview open or close captured where the conversation was (the panel's
+  // `onPresentedChange`, above); play the glide against the layout that has
+  // just committed, then put the card the person clicked back in view.
+  useLayoutEffect(() => {
+    columnGlide.playCaptured({ duration: previewMounted ? DUR.med : DUR.fastMax });
+    const restore = scrollAnchorRestoreRef.current;
+    scrollAnchorRestoreRef.current = null;
+    restore?.();
+  }, [previewMounted, columnGlide]);
+
+  const summaryProps = {
+    toolCalls: sessionToolCallCount.toLocaleString(),
+    billedTokens: totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens),
+    artifacts: sessionArtifacts.length.toLocaleString(),
+    codeDelta,
+    todos: sessionTodos,
+    hasWorkflow: !!workflow,
+    onWorkflow: handleWorkflowReviewAction,
+    onDiagnostics: handleDiagnosticsReviewAction,
+  };
+
+  const todoTotal = sessionTodos.items.length;
+  const todoDone = sessionTodos.items.filter((item) => item.status === 'completed').length;
+  // A 6px accent dot on the button while the rail is folded away and a step is
+  // running, so the live list is never out of mind. Its count is in the name.
+  const showSummaryProgressDot =
+    !summaryRail.shown &&
+    isRunningState(chatState) &&
+    sessionTodos.items.some((item) => item.status === 'in_progress');
+  const railMode = summaryRail.mode === 'rail';
+  const summaryExpanded = railMode ? summaryRail.shown : reviewOpen;
+
+  const handleSummaryButton = () => {
+    if (railMode) summaryRail.toggle();
+    else setReviewOpen((open) => !open);
+  };
+
   const renderSessionHeaderActions = () => (
     <div
       className="ml-auto flex flex-shrink-0 items-center gap-1"
@@ -2243,107 +2356,94 @@ function BaseChatContent({
             type="button"
             onClick={handleOpenTerminal}
             variant="ghost"
-            size="sm"
             shape="round"
             className={cn(
-              HEADER_ACTION_BUTTON_CLASS,
+              'no-drag text-text-muted hover:text-text-default',
               isTerminalDockOpen && 'bg-background-medium text-text-default'
             )}
             aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
           >
-            <Terminal className="h-4 w-4" />
+            <Terminal />
           </Button>
         </TooltipTrigger>
         <TooltipContent>{isTerminalDockOpen ? 'Close terminal' : 'Open terminal'}</TooltipContent>
       </Tooltip>
 
+      {/* ONE button, two modes (spec 3.5). Where the rail fits it shows and
+          hides the docked rail; where it does not, it opens the same content
+          as a popover. The popover is ANCHORED to the button rather than
+          triggered by it, because a Radix trigger would stamp its own
+          `aria-expanded` and toggle the popover in rail mode too. */}
       <Popover open={reviewOpen} onOpenChange={setReviewOpen}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                shape="round"
-                className={cn(
-                  HEADER_ACTION_BUTTON_CLASS,
-                  reviewOpen && 'bg-background-medium text-text-default'
-                )}
-                aria-label="Chat summary"
-              >
-                <AlignLeft className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          {/* Not "Chat summary" again: the popover's own first heading already
-              says that, so a tooltip repeating it tells the user nothing they
-              are not about to read. It names the contents instead. */}
-          <TooltipContent>Progress, tool calls, tokens and artifacts</TooltipContent>
-        </Tooltip>
+        <PopoverAnchor asChild>
+          <span className="inline-flex">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  ref={summaryButtonRef}
+                  type="button"
+                  variant="ghost"
+                  shape="round"
+                  className={cn(
+                    'no-drag relative text-text-muted hover:text-text-default',
+                    summaryExpanded && 'bg-background-medium text-text-default'
+                  )}
+                  aria-label={
+                    showSummaryProgressDot
+                      ? summaryCopy.buttonWithProgress(todoDone, todoTotal)
+                      : summaryCopy.title
+                  }
+                  aria-expanded={summaryExpanded}
+                  aria-controls={
+                    railMode
+                      ? summaryRail.rendered
+                        ? summaryRailId
+                        : undefined
+                      : reviewOpen
+                        ? summaryPopoverId
+                        : undefined
+                  }
+                  aria-haspopup={railMode ? undefined : 'dialog'}
+                  data-summary-mode={summaryRail.mode}
+                  onClick={handleSummaryButton}
+                >
+                  <PanelRight />
+                  {showSummaryProgressDot && <span aria-hidden="true" className="br-summary-dot" />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {railMode
+                  ? summaryRail.shown
+                    ? summaryCopy.hideSummary
+                    : summaryCopy.showSummary
+                  : summaryCopy.title}
+              </TooltipContent>
+            </Tooltip>
+          </span>
+        </PopoverAnchor>
         <PopoverContent
+          id={summaryPopoverId}
+          role="dialog"
+          aria-label={summaryCopy.title}
           side="bottom"
           align="end"
-          className="w-[360px] max-w-[calc(100vw-2rem)] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-3"
+          className="br-summary-popover"
+          // The button is outside the content, so a press on it would first
+          // dismiss the popover and then reopen it with the click.
+          onPointerDownOutside={(event) => {
+            if (summaryButtonRef.current?.contains(event.target as Node)) event.preventDefault();
+          }}
+          // With no Radix trigger, focus is returned to the button by hand.
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            summaryButtonRef.current?.focus({ preventScroll: true });
+          }}
         >
-          <ChatSummary
-            name={session?.name || 'Current chat'}
-            toolCalls={sessionToolCallCount.toLocaleString()}
-            billedTokens={
-              totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
-            }
-            artifacts={sessionArtifacts.length.toLocaleString()}
-            codeDelta={codeDelta}
-            todos={sessionTodos}
-            hasWorkflow={!!workflow}
-            onWorkflow={handleWorkflowReviewAction}
-            onDiagnostics={handleDiagnosticsReviewAction}
-          />
+          <ChatSummary {...summaryProps} />
         </PopoverContent>
       </Popover>
     </div>
   );
-
-  useLayoutEffect(() => {
-    if (isCleanConversation) return;
-
-    const from = pendingComposerRectRef.current;
-    const element = composerMotionRef.current;
-    pendingComposerRectRef.current = null;
-
-    const isReducedMotion =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    if (!from || !element || isReducedMotion) {
-      return;
-    }
-
-    const to = element.getBoundingClientRect();
-    const deltaX = from.left - to.left;
-    const deltaY = from.top - to.top;
-    const scaleX = to.width > 0 ? from.width / to.width : 1;
-
-    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1 && Math.abs(scaleX - 1) < 0.01) {
-      return;
-    }
-
-    const animation = element.animate(
-      [
-        {
-          opacity: 0.96,
-          transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scaleX(${scaleX})`,
-        },
-        { opacity: 1, transform: 'translate3d(0, 0, 0) scaleX(1)' },
-      ],
-      {
-        duration: 420,
-        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-      }
-    );
-
-    return () => animation.cancel();
-  }, [isCleanConversation]);
 
   /**
    * Issue #56 / F2 — what THIS chat runs on, when the app-wide selection
@@ -2361,10 +2461,7 @@ function BaseChatContent({
     <div
       ref={composerMotionRef}
       data-composer-shell="true"
-      className={cn(
-        'w-full max-w-measure-chat mx-auto biorouter-chat-composer biorouter-composer-motion',
-        'biorouter-composer-view-transition'
-      )}
+      className="w-full max-w-measure-chat mx-auto biorouter-chat-composer biorouter-composer-motion"
     >
       {/*
         H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
@@ -2388,51 +2485,56 @@ function BaseChatContent({
       */}
       <SubagentComposerSlot kind={subagentChatKind}>
         {pendingContinuation && (
-          <div
+          // One line per state; today's full sentence is the help behind it.
+          <Note
+            tone="neutral"
             role="status"
-            className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
-          >
-            <span>
-              {pendingContinuation.ownership === 'owned'
-                ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
-                : pendingContinuation.ownership === 'settling'
-                  ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
-                  : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
-            </span>
-            <div className="flex shrink-0 gap-2">
-              {pendingContinuation.ownership !== 'owned' && (
+            className="mx-3 mb-2"
+            action={
+              <div className="flex gap-2">
+                {pendingContinuation.ownership !== 'owned' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      void recoverPendingContinuation('take_over').catch((error) => {
+                        toastError({
+                          title: 'Could not recover Stop & send',
+                          msg: errorMessage(error),
+                        });
+                      });
+                    }}
+                  >
+                    {summaryCopy.stopAndSend.takeOver}
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="sm"
+                  variant="ghost"
                   onClick={() => {
-                    void recoverPendingContinuation('take_over').catch((error) => {
+                    void recoverPendingContinuation('abandon').catch((error) => {
                       toastError({
-                        title: 'Could not recover Stop & send',
+                        title: 'Could not abandon Stop & send',
                         msg: errorMessage(error),
                       });
                     });
                   }}
                 >
-                  Take over
+                  {summaryCopy.stopAndSend.abandon}
                 </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  void recoverPendingContinuation('abandon').catch((error) => {
-                    toastError({
-                      title: 'Could not abandon Stop & send',
-                      msg: errorMessage(error),
-                    });
-                  });
-                }}
-              >
-                Abandon
-              </Button>
-            </div>
-          </div>
+              </div>
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <span>{summaryCopy.stopAndSend[pendingContinuation.ownership]}</span>
+              <InfoTip
+                label={summaryCopy.stopAndSend.helpLabel}
+                help={summaryCopy.stopAndSend.help[pendingContinuation.ownership]}
+              />
+            </span>
+          </Note>
         )}
         {/*
         Issue #56 Gate B. Above the composer, on the composer's own rails, in
@@ -2549,23 +2651,25 @@ function BaseChatContent({
           {...customMainLayoutProps}
         >
           {renderHeader && renderHeader()}
-          <div className="flex flex-col flex-1 mb-0.5 min-h-0 relative">
-            <div className="flex-1 bg-background-default rounded-b-2xl flex items-center justify-center">
-              <div className="flex flex-col items-center justify-center p-8">
-                <div className="text-text-danger bg-background-danger/10 border border-border-danger/40 p-4 rounded-lg mb-4 max-w-md">
-                  <h3 className="font-semibold mb-2">Could not load this chat</h3>
-                  <p className="text-sm">{sessionLoadError}</p>
-                </div>
-                <button
+          {/* The error stays visible: it is the one thing this screen says. */}
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <EmptyState
+              icon={AlertCircle}
+              title={summaryCopy.loadError.title}
+              description={sessionLoadError}
+              actions={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
                   onClick={() => {
                     setView('chat');
                   }}
-                  className="px-4 py-2 text-center cursor-pointer text-text-default border border-border-subtle hover:bg-background-medium rounded-lg transition-all duration-150"
                 >
-                  Go home
-                </button>
-              </div>
-            </div>
+                  {summaryCopy.loadError.action}
+                </Button>
+              }
+            />
           </div>
         </MainPanelLayout>
       </div>
@@ -2601,6 +2705,10 @@ function BaseChatContent({
         <div
           ref={splitPaneRef}
           {...artifactPanel.splitPaneProps}
+          {...summaryRail.splitPaneProps}
+          // Both spreads carry a `style`; the second would replace the first, so
+          // the two are merged explicitly after them.
+          style={{ ...artifactPanel.splitPaneProps.style, ...summaryRail.splitPaneProps.style }}
           className="relative flex flex-1 min-h-0 min-w-0"
         >
           <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
@@ -2625,11 +2733,7 @@ function BaseChatContent({
                 a second count.) */}
             <div
               data-preview-area="body"
-              className={
-                coherent
-                  ? 'flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas'
-                  : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
-              }
+              className="flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas"
             >
               <div
                 data-preview-area="header"
@@ -2773,11 +2877,10 @@ function BaseChatContent({
               ) : (
                 <ScrollArea
                   ref={scrollRef}
-                  className={
-                    coherent
-                      ? `flex-1 min-h-0 relative ${contentClassName}`
-                      : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
-                  }
+                  // `relative`: the transcript cell is the positioned box the
+                  // find-in-chat overlay pins itself to (top right), so the bar
+                  // floats over the conversation instead of pushing it.
+                  className={`flex-1 min-h-0 relative ${contentClassName}`}
                   autoScroll
                   // A stacked preview opening above the transcript shrinks its
                   // viewport from the TOP; this keeps the newest message against
@@ -2794,7 +2897,7 @@ function BaseChatContent({
                 >
                   <div className="biorouter-chat-column mx-auto w-full max-w-measure-chat">
                     {workflow?.title && (
-                      <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2">
+                      <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2 text-secondary">
                         <WorkflowHeader title={workflow.title} />
                       </div>
                     )}
@@ -2922,16 +3025,25 @@ function BaseChatContent({
               // real work.
               <div
                 data-preview-area="composer"
-                className={
-                  coherent
-                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas'
-                    : `px-4 sm:px-6 pb-6 pt-7 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
-                }
+                className="biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas"
               >
                 {renderChatInput()}
               </div>
             )}
           </div>
+
+          {/* Rung 0: the docked summary, its own grid column between the
+              conversation and the preview (summary/summaryRail.css). */}
+          {summaryRail.rendered && (
+            <ChatSummaryRail
+              data-preview-area="rail"
+              id={summaryRailId}
+              still={summaryRail.still}
+              state={summaryRail.state}
+              onExited={summaryRail.onExited}
+              {...summaryProps}
+            />
+          )}
 
           {presentedArtifact && artifactPanelEnabled && (
             <ArtifactViewer

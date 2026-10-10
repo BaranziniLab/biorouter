@@ -1,0 +1,170 @@
+/* @ws WS-SUMMARY begin: summary rail */
+/*
+ * RUNG 0: THE SUMMARY RAIL (components/Layout/yieldLadder.ts, summaryRailFit).
+ *
+ * The same flatten-and-place grid as rung 2's preview split: the split box
+ * becomes ONE grid, its column and body are flattened (`display: contents`)
+ * rather than re-parented, and every piece is placed by its `data-preview-area`.
+ * The rail is one more area, beside the transcript and the composer and under
+ * the chat header, so the header (tab strip and actions) still spans the pane.
+ *
+ * JS publishes `--summary-rail-width` (240 to 280px) and stamps
+ * `data-summary-rail` only while the rail is rendered. The grid snaps; the
+ * conversation's glide is a transform played afterwards (hooks/useColumnGlide).
+ *
+ * The rail-only selector carries `:not([data-preview-layout])`: rung 2's stack
+ * template has the same specificity, so without it a stray attribute could
+ * override the stack on source order. Beside a SIDE preview the rail takes its
+ * own column between the conversation and the preview (an ultrawide pane only).
+ *
+ * `styles/summaryRail.test.ts` pins these templates and keeps the geometry rules
+ * free of transitions, animations and container or media conditions: the seam
+ * is decided in JS, once, and a second seam here would drift from it.
+ */
+
+/* RAIL GEOMETRY BEGIN */
+[data-preview-split][data-summary-rail]:not([data-preview-layout]) {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: clip;
+  grid-template-columns: minmax(0, 1fr) var(--summary-rail-width);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'header header'
+    'subheader subheader'
+    'transcript rail'
+    'composer rail';
+}
+
+[data-preview-split][data-summary-rail]:not([data-preview-layout]) > [data-preview-area='column'],
+[data-preview-split][data-summary-rail]:not([data-preview-layout])
+  > [data-preview-area='column']
+  > [data-preview-area='body'] {
+  display: contents;
+}
+
+[data-preview-split][data-summary-rail]:not([data-preview-layout]) [data-preview-area='header'] {
+  grid-area: header;
+}
+
+[data-preview-split][data-summary-rail]:not([data-preview-layout]) [data-preview-area='subheader'] {
+  grid-area: subheader;
+}
+
+[data-preview-split][data-summary-rail]:not([data-preview-layout])
+  [data-preview-area='transcript'] {
+  grid-area: transcript;
+  min-width: 0;
+}
+
+[data-preview-split][data-summary-rail]:not([data-preview-layout]) [data-preview-area='composer'] {
+  grid-area: composer;
+  min-width: 0;
+}
+
+[data-preview-split][data-preview-layout='side'][data-summary-rail] {
+  grid-template-columns: minmax(440px, 1fr) var(--summary-rail-width) var(--preview-panel-width);
+  grid-template-areas:
+    'header header preview'
+    'subheader subheader preview'
+    'transcript rail preview'
+    'composer rail preview';
+}
+
+[data-preview-split][data-summary-rail] > [data-preview-area='rail'] {
+  grid-area: rail;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  padding: 12px 12px 12px 0;
+}
+/* RAIL GEOMETRY END */
+
+/*
+ * The card: a Codex-style summary card in the docked column. One radius (12),
+ * one hairline, the default ground (a step above the canvas in dark), and a
+ * scrolling body over a pinned footer (components/summary/chatSummary.css).
+ * Its own motion, never the grid's:
+ *
+ *   opened by the person, or the first turn  12px slide + fade, 175ms after 60ms
+ *   closed by the person                      8px slide + fade out, 125ms
+ *   anything geometric                        at rest (it mounts entered)
+ *   reduced motion                            a fade only
+ */
+.br-summary-card {
+  display: flex;
+  min-height: 0;
+  max-height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background: var(--background-default);
+  contain: layout paint;
+}
+
+.br-summary-card[data-state='open']:not([data-entered]) {
+  animation: br-summary-rail-in var(--dur-fast-max) var(--ease-out) 60ms both;
+}
+
+.br-summary-card[data-state='closed'] {
+  animation: br-summary-rail-out var(--dur-fast) var(--ease-out) forwards;
+  pointer-events: none;
+}
+
+@keyframes br-summary-rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+
+@keyframes br-summary-rail-out {
+  to {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes br-summary-rail-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes br-summary-rail-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+body.biorouter-window-resizing [data-preview-area='rail'] > .br-summary-card,
+body.biorouter-sidebar-resizing [data-preview-area='rail'] > .br-summary-card {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-summary-card[data-state='open']:not([data-entered]) {
+    animation: br-summary-rail-fade-in var(--dur-fast) var(--ease-out) both;
+  }
+
+  .br-summary-card[data-state='closed'] {
+    animation: br-summary-rail-fade-out var(--dur-fast) var(--ease-out) forwards;
+  }
+}
+/* The header button's progress dot: shown while the rail is folded away and a
+   to-do step is running. One of the accent's few deliberate moments. */
+.br-summary-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--background-accent);
+  box-shadow: 0 0 0 2px var(--sidebar);
+  pointer-events: none;
+}
+/* @ws WS-SUMMARY end: summary rail */
