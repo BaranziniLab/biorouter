@@ -126,6 +126,13 @@ describe('Settings > Models — Switch models', () => {
   });
 });
 
+/**
+ * The Danger zone button's name, matched in full. A pattern would also match the row's InfoTip
+ * ("About Reset provider and model"), which the row gains when it moves onto `SettingRow`, and
+ * `getByRole` then finds two buttons instead of one.
+ */
+const RESET_BUTTON = 'Reset provider and model';
+
 describe('Settings > Models — Reset provider and model', () => {
   /**
    * ⚠ Fails against today's code, which offers the button on every surface.
@@ -138,14 +145,14 @@ describe('Settings > Models — Reset provider and model', () => {
     browser();
     render(<ResetProviderSection setView={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: /Reset provider and model/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: RESET_BUTTON })).toBeDisabled();
     expect(await screen.findByTestId('host-managed-model-note')).toBeInTheDocument();
   });
 
   /** The control: passes before and after. */
   it('is untouched in the desktop application', () => {
     render(<ResetProviderSection setView={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /Reset provider and model/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: RESET_BUTTON })).toBeEnabled();
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
   });
 });
