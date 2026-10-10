@@ -83,8 +83,6 @@ describe('find in chat floats over the transcript', () => {
  */
 const ALLOWED = ['components/BaseChat.tsx', 'components/sessions/SessionHistoryView.tsx'];
 const PENDING: Record<string, string> = {
-  // WS-VIEWS-A: Workflows moves to the band FilterInput (spec 3.10).
-  'components/workflows/WorkflowsView.tsx': 'WS-VIEWS-A',
   // WS-EXTENSIONS: Extensions moves to the band FilterInput (spec 3.11).
   'components/extensions/ExtensionsView.tsx': 'WS-EXTENSIONS',
 };
