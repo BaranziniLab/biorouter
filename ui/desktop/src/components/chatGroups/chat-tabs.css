@@ -36,6 +36,16 @@
   display: none;
 }
 
+/* The "+" once the strip overflows (vision V1-M2): a fixed slot between the
+   scroll box and the ▾, so it can never be scrolled under the ▾. 4px from the
+   clipped tabs (2px here plus the button's own 2px) and 4px before the ▾. */
+.br-tabstrip__end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-inline: 2px 4px;
+}
+
 /* Rename in place (P3): the sidebar's editor, sized to the tab's label. The
    tab's own fill is the field's ground, so the field draws no box of its own;
    the focus edge is the tab's. */

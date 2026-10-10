@@ -903,9 +903,33 @@ export function ChatTabStrip({
           );
         })}
         {/* No app-region here either: this sits inside the scroll box, whose
-            no-drag already covers it, and its x moves with the tab list. */}
-        {endSlot ? <div className="flex-none">{endSlot}</div> : null}
+            no-drag already covers it, and its x moves with the tab list. Only
+            while the tabs fit: see the end slot below. */}
+        {endSlot && !showOverflowMenu ? <div className="flex-none">{endSlot}</div> : null}
       </div>
+
+      {/* Once the tabs overflow, the "+" leaves the scroll box for a fixed slot
+          between it and the ▾ (vision V1-M2). Inside, it was the LAST thing in
+          the scroll content, so with the active tab revealed at the end it sat
+          scrolled out under the ▾ (measured: 3px of it showing, and a press on
+          it landed on the ▾), and the strip's new-chat button was unreachable
+          until tabs were closed.
+
+          It cannot latch the overflow, for the ▾'s own reason
+          (shouldShowTabOverflowMenu): out here it takes more room (32px with
+          its margins) than it gave back to the scroll content (29px), so moving
+          it can only deepen an overflow, and moving it back only happens once
+          the tabs fit with room to spare. Like the ▾, it sits inside the wrap's
+          `drag` rect and needs its own `no-drag`. */}
+      {endSlot && showOverflowMenu ? (
+        <div
+          className="br-tabstrip__end"
+          data-testid="chat-tab-strip-end"
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+        >
+          {endSlot}
+        </div>
+      ) : null}
 
       {showOverflowMenu && (
         <TabOverflowMenu

@@ -378,6 +378,52 @@ describe('ChatTabStrip — rung 3: the ▾ overflow menu', () => {
     }
   });
 
+  // Vision V1-M2: as the last thing in the scroll content, the "+" was scrolled
+  // out under the ▾ once the active tab was revealed at the end of the strip.
+  it('while the tabs fit, "+" follows the last tab inside the strip', () => {
+    const restore = stubStripMetrics(300, 300);
+    try {
+      const { getByTestId, queryByTestId } = renderStrip({
+        tabs: manyTabs,
+        activeTabId: 'tab-1',
+        endSlot: <button data-testid="new-tab">+</button>,
+      });
+      const strip = getByTestId('chat-tab-strip');
+      expect(strip.contains(getByTestId('new-tab'))).toBe(true);
+      expect(queryByTestId('chat-tab-strip-end')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('once the tabs overflow, "+" sits outside the scroll box, before the ▾, with its own no-drag', () => {
+    const restore = stubStripMetrics(900, 300);
+    try {
+      const { getByTestId, getAllByTestId } = renderStrip({
+        tabs: manyTabs,
+        activeTabId: 'tab-6',
+        endSlot: <button data-testid="new-tab">+</button>,
+      });
+      // Exactly one "+", and the scroll box cannot carry it out of sight.
+      expect(getAllByTestId('new-tab')).toHaveLength(1);
+      const strip = getByTestId('chat-tab-strip');
+      const slot = getByTestId('chat-tab-strip-end');
+      expect(strip.contains(getByTestId('new-tab'))).toBe(false);
+      expect(slot.contains(getByTestId('new-tab'))).toBe(true);
+      // scroll box | + | ▾, all children of the wrap.
+      const wrap = getByTestId('chat-tab-strip-reserve');
+      const order = Array.from(wrap.children);
+      const trigger = getByTestId('chat-tab-overflow-trigger');
+      expect(order.indexOf(strip)).toBeLessThan(order.indexOf(slot));
+      expect(order.indexOf(slot)).toBeLessThan(order.indexOf(trigger));
+      expect(
+        (slot.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion
+      ).toBe('no-drag');
+    } finally {
+      restore();
+    }
+  });
+
   it('lists every tab, so the menu is the whole strip and not just its tail', () => {
     const restore = stubStripMetrics(900, 300);
     try {
