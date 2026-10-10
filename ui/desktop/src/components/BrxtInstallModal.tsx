@@ -1,6 +1,6 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload } from './icons/app-icons';
+import { Package } from './icons/app-icons';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
 import { Disclosure } from './ui/disclosure';
@@ -616,7 +616,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
                   aria-hidden="true"
                   className={`flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle ${isDragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
                 >
-                  <Upload className="h-4 w-4" />
+                  <Package className="h-4 w-4" />
                 </span>
                 <span className="text-label text-text-default">
                   {manifest ? COPY.dropZoneAnother : COPY.dropZone}
