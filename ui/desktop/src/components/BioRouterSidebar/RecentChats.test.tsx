@@ -446,3 +446,32 @@ describe('a full read that lands under the pointer', () => {
     ]);
   });
 });
+
+/**
+ * Vision V1-M9. Collapsing Chats (or closing the sidebar) hides a row without unmounting it, and
+ * no pointer event tells the hover card its anchor went: it stayed open and floated to the
+ * window's top-left over the titlebar controls until the pointer next moved.
+ */
+describe('the hover card goes with its row', () => {
+  it('closes when the Chats list collapses', async () => {
+    renderRecentChats();
+    focusWithTab(screen.getByTestId('recent-chat-session-0'));
+    await screen.findAllByTestId('recent-chat-summary-session-0');
+
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+
+    // Opening the list again does not bring back a card nobody asked for.
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+  });
+
+  it('closes when the sidebar closes', async () => {
+    renderRecentChats();
+    focusWithTab(screen.getByTestId('recent-chat-session-0'));
+    await screen.findAllByTestId('recent-chat-summary-session-0');
+
+    fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+  });
+});

@@ -141,6 +141,13 @@ interface RecentChatRowProps {
   isActive: boolean;
   isRunning: boolean;
   homeDir?: string | null;
+  /**
+   * False while the row cannot be seen: the Chats list is collapsed or the
+   * sidebar is closed. The row is still mounted then (a `hidden` list, a panel
+   * translated off screen), so its hover card would stay open with no anchor
+   * and float to the window's top-left over the titlebar (vision V1-M9).
+   */
+  listShown: boolean;
   tabIndex: 0 | -1;
   onRowFocus: (key: string) => void;
   /**
@@ -164,6 +171,7 @@ function RecentChatRow({
   isActive,
   isRunning,
   homeDir,
+  listShown,
   tabIndex,
   onRowFocus,
   onOpen,
@@ -183,6 +191,12 @@ function RecentChatRow({
   const labelRef = useRef<HTMLSpanElement>(null);
   const [titleIsCut, setTitleIsCut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The hover card is held here so it can be shut when the row stops being
+  // seen: no pointer event tells Radix the anchor went away.
+  const [cardOpen, setCardOpen] = useState(false);
+  useEffect(() => {
+    if (!listShown) setCardOpen(false);
+  }, [listShown]);
   // Rename was chosen in a menu: start editing once the menu has let go of
   // focus, or it would hand focus back to this row over the new input.
   const renameAfterMenu = useRef(false);
@@ -258,10 +272,12 @@ function RecentChatRow({
       <ContextMenu onOpenChange={setMenuOpen}>
         <Tooltip
           delayDuration={CHAT_HOVER_CARD_DELAY_MS}
+          open={cardOpen && listShown}
           onOpenChange={(open) => {
             if (open && labelRef.current) {
               setTitleIsCut(labelRef.current.scrollWidth > labelRef.current.clientWidth);
             }
+            setCardOpen(open);
           }}
         >
           {/* ⚠ Both triggers are `asChild` onto the SAME button, nested: the
@@ -310,11 +326,16 @@ function RecentChatRow({
               </button>
             </ContextMenuTrigger>
           </TooltipTrigger>
+          {/* Sized to its text, up to the tooltip's 320px, so `~/path · 3h ago ·
+              12 messages` stays one line (V1-M6); a long title clamps to two.
+              `hideWhenDetached`: a row scrolled out of the list takes its card
+              with it rather than leaving it pinned to the list's edge. */}
           <TooltipContent
             side="right"
             align="start"
             sideOffset={8}
-            className="w-56 max-w-[min(14rem,calc(100vw-16px))] px-2 py-1.5 font-normal"
+            hideWhenDetached
+            className="px-2 py-1.5 font-normal"
           >
             <div data-testid={`recent-chat-summary-${session.id}`}>
               {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
@@ -788,6 +809,7 @@ export default function RecentChats({
     isActive: activeSessionId === session.id,
     isRunning: runningSessionIds.has(session.id),
     homeDir,
+    listShown: isExpanded && sidebarOpen,
     tabIndex: roving.tabIndexFor(chatKey(session.id)),
     onRowFocus: roving.onRowFocus,
     onOpen,
