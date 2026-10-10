@@ -80,16 +80,49 @@ function endsWithToolRow(message: Message): boolean {
   return getToolRequests(message).length > 0 && !hasCard(message);
 }
 
+function isInlineNotification(message: Message): boolean {
+  return message.content.some(
+    (content) =>
+      content.type === 'systemNotification' && content.notificationType === 'inlineMessage'
+  );
+}
+
+/**
+ * An agent message that draws no block: no thought, no words, no tool row, no
+ * card and no inline notice. The stream leaves these behind between tool calls
+ * (an empty text part the model sent before its next call), and each one sat in
+ * the list as a zero-height row with a block's 8px margin, so two tool rows in
+ * separate messages stood 16px apart instead of 4px (vision V2-03). Such a row
+ * takes no gap and is invisible to its neighbours' rhythm.
+ *
+ * Mirrors what `BioRouterMessage` and the list's inline-notice branch render.
+ */
+export function drawsNoBlock(message: Message): boolean {
+  if (isInlineNotification(message)) return false;
+  if (getToolRequests(message).length > 0 || hasCard(message)) return false;
+  const { visibleText, cotText } = splitAssistantText(message);
+  return !visibleText && !cotText;
+}
+
+/** A message the transcript shows nothing for, on either side. */
+function isBlank(message: Message, user: boolean): boolean {
+  return user ? isToolResponseOnly(message) : drawsNoBlock(message);
+}
+
 /**
  * The gap above every message, index for index. `isUser` is the list's own
  * predicate, so a surface that decides roles differently is not second-guessed.
+ *
+ * A message that draws nothing takes `none` and is skipped as a neighbour: the
+ * gap of the next visible block is decided by the last VISIBLE block, so tool
+ * rows are 4px apart whether they share a message or not.
  */
 export function messageGaps(messages: Message[], isUser: (message: Message) => boolean): RowGap[] {
   let previous: { role: 'user' | 'assistant'; message: Message } | null = null;
   return messages.map((message) => {
     if (!message.metadata.userVisible) return 'none';
     const user = isUser(message);
-    if (user && isToolResponseOnly(message)) return 'none';
+    if (isBlank(message, user)) return 'none';
     const role = user ? 'user' : 'assistant';
     let gap: RowGap;
     if (!previous) gap = 'first';
@@ -116,7 +149,7 @@ export function trailingGap(messages: Message[], isUser: (message: Message) => b
     const message = messages[index];
     if (!message.metadata.userVisible) continue;
     const user = isUser(message);
-    if (user && isToolResponseOnly(message)) continue;
+    if (isBlank(message, user)) continue;
     if (user) return 'turn';
     return endsWithToolRow(message) ? 'tool' : 'block';
   }

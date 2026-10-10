@@ -312,6 +312,68 @@ describe('ProgressiveMessageList rhythm (spec 3.6)', () => {
     expect(gaps).toEqual(['mt-0', 'mt-6', 'mt-0', 'mt-1', 'mt-0', 'mt-2', 'mt-6']);
   });
 
+  // Vision V2-03: the stream stores an empty text message before each of the
+  // model's next calls (chats 20260621_46 and _47). Each sat in the list as a
+  // zero-height row with a block's 8px, so two tool rows in separate messages
+  // stood 16px apart. A message that draws nothing takes no gap, and the tool
+  // row after it measures from the tool row before it: 4px.
+  it('keeps tool rows 4px apart across the empty messages the stream leaves between calls', () => {
+    const { container } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[
+          text('u1', 'user', 'question'),
+          toolCall('a1', 't1'),
+          toolResult('r1', 't1'),
+          text('e1', 'assistant', ''),
+          toolCall('a2', 't2'),
+          toolResult('r2', 't2'),
+          text('e2', 'assistant', '<info-msg>model only</info-msg>'),
+          toolCall('a3', 't3'),
+          toolResult('r3', 't3'),
+          text('e3', 'assistant', '   '),
+          text('a4', 'assistant', 'answer'),
+        ]}
+        isUserMessage={(m: Message) => m.role === 'user'}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const gaps = rows(container).map((row) => row.className.match(/\bmt-\d\b/)?.[0]);
+    // question, tool, (result), (empty), tool, (result), (empty), tool, (result), (empty), answer
+    expect(gaps).toEqual([
+      'mt-0',
+      'mt-6',
+      'mt-0',
+      'mt-0',
+      'mt-1',
+      'mt-0',
+      'mt-0',
+      'mt-1',
+      'mt-0',
+      'mt-0',
+      'mt-2',
+    ]);
+  });
+
+  it('measures the trailing activity line from the last row that shows something', () => {
+    const { getByTestId } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[
+          text('u1', 'user', 'question'),
+          toolCall('a1', 't1'),
+          text('e1', 'assistant', ''),
+        ]}
+        isUserMessage={(m: Message) => m.role === 'user'}
+        isStreamingMessage
+        chatState={ChatState.Streaming}
+        turnStartedAt={Date.now()}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(getByTestId('trailing-activity-container').className).toMatch(/\bmt-1\b/);
+  });
+
   it('draws a saved chat at rest: no entrance on rows that were there at mount', () => {
     const { container } = render(
       <ProgressiveMessageList
