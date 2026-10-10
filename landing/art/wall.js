@@ -39,10 +39,8 @@
 
   var PATHS = {
     lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
-    wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
-    search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
-    chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-    brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>',
+    puzzle: '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>',
+    messages: '<path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/>',
     up: '<path d="m6 11 6-6 6 6"/><path d="M12 19V5"/>',
     left: '<path d="m15 18-6-6 6-6"/>',
     right: '<path d="m9 18 6-6-6-6"/>',
@@ -50,7 +48,7 @@
     bank: '<path d="M3 21h18"/><path d="M6 17v-6"/><path d="M10 17v-6"/><path d="M14 17v-6"/><path d="M18 17v-6"/><path d="M12 3 20 8H4z"/>'
   };
   function icon(name, cls) {
-    return '<svg class="wall-i ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + PATHS[name] + '</svg>';
+    return '<svg class="wall-i ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + PATHS[name] + '</svg>';
   }
   // One line in four spellings: desktop, short, large and tiny. The frame
   // picks among the first three (wall.css); a chat too narrow for its
@@ -63,10 +61,12 @@
     return '<span class="wall-title"><span class="wall-tl">' + long + '</span><span class="wall-ts">' + short + '</span></span>';
   }
 
+  // Each chat already has messages, so the composer asks for a follow-up
+  // (composer/copy.ts), with two shorter spellings for narrow frames.
   function composer(model, lock) {
     return '<div class="wall-comp">' +
-      '<div class="wall-card"><span class="wall-ph"><span class="wall-phl">Ask Biorouter anything…</span><span class="wall-phm">Ask anything…</span><span class="wall-phs">Ask…</span></span><span class="wall-send">' + icon('up') + '</span></div>' +
-      '<p class="wall-chip">' + icon('brain', 'wall-brain') + '<span class="wall-cn">' + model + '</span>' + (lock ? icon('lock', 'wall-chiplock') : '') + '</p>' +
+      '<div class="wall-card"><span class="wall-ph"><span class="wall-phl">Ask a follow-up</span><span class="wall-phm">Follow up…</span><span class="wall-phs">Ask…</span></span><span class="wall-send">' + icon('up') + '</span></div>' +
+      '<p class="wall-chip">' + '<span class="wall-cn">' + model + '</span>' + (lock ? icon('lock', 'wall-chiplock') : '') + '</p>' +
     '</div>';
   }
 
@@ -80,7 +80,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('How many patients with type 2 diabetes take a statin?', 'How many T2D patients take a statin?', 0, 'T2D patients on a statin?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('wrench') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
           '<p class="wall-bot wall-m-bot">412 patients match.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
@@ -106,12 +106,12 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.', 0, 'Statins and cognition?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('search') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + '</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + '</span></span></p>' +
           '<p class="wall-bot wall-m-bot">23 trials since 2020.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
           '<div class="wall-req">' +
-            '<p class="wall-reqrow">' + icon('chat') + '<span>Read another chat</span></p>' +
+            '<p class="wall-reqrow">' + icon('messages') + '<span>Read another chat</span></p>' +
             '<i class="wall-lane"><i class="wall-ray"><svg class="wall-tip" viewBox="0 0 6 10" aria-hidden="true"><path d="M5 1 1 5l4 4"/></svg></i></i>' +
           '</div>' +
           '<p class="wall-note">' + say('Public models cannot read private chats. Nothing was read.', 'Public models cannot read private chats.') + '</p>' +

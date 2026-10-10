@@ -27,13 +27,10 @@
   background: var(--muted-ground); border-radius: var(--r-container);
   padding: 14px 12px 16px;
 }
-.art-federate .fed-head { grid-row: 1; display: flex; align-items: center; gap: 7px; font-size: 13.5px; line-height: 18px; white-space: nowrap; }
-.art-federate .fed-mark { width: 16px; height: 16px; flex: none; overflow: visible; }
-.art-federate .fed-mark text { font-family: var(--brand-font); font-weight: 800; }
-.art-federate .fed-mark .b { fill: var(--navy); }
-.art-federate .fed-mark .r { fill: var(--coral); }
+.art-federate .fed-head { grid-row: 1; display: flex; align-items: center; gap: 7px; font-size: 14px; line-height: 18px; white-space: nowrap; }
+/* The file keeps the mark at 60% of a square canvas: 26px shows it 16px wide. */
+.art-federate .fed-mark { width: 26px; height: 26px; margin: -5px; flex: none; }
 .art-federate .fed-model { grid-row: 2; display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 7px; font-size: 12px; line-height: 16px; color: var(--ink-2); white-space: nowrap; }
-.art-federate .fed-brain { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .art-federate .fed-mname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .art-federate .fed-model .fed-lock { width: 12px; height: 12px; }
 
@@ -55,7 +52,7 @@
 .art-federate .fed-card.is-copying .fed-file,
 .art-federate .fed-card.is-copying .fed-key span { opacity: 0; transition: none; }
 .art-federate .fed-file { font-size: 12px; line-height: 16px; margin: 0 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.art-federate .fed-key { display: grid; grid-template-columns: 13ch minmax(0, 1fr); column-gap: 7px; align-items: center; font: 11px/15px var(--mono); color: var(--subtle); white-space: nowrap; }
+.art-federate .fed-key { display: grid; grid-template-columns: 13ch minmax(0, 1fr); column-gap: 7px; align-items: center; font: 12px/16px var(--mono); color: var(--subtle); white-space: nowrap; }
 .art-federate .fed-key i { display: block; height: 4px; border-radius: 2px; background: var(--strong); max-width: 100%; }
 
 /* The local run: its own private session, fed by its own records. The line
@@ -128,7 +125,6 @@
 /* Below 520px the three columns leave the value bars only a few pixels, so the
    file keeps its keys and drops the bars. */
 @container (max-width: 519px) {
-  .art-federate .fed-brain { display: none; }
   .art-federate .fed-key { grid-template-columns: auto; }
   .art-federate .fed-key i { display: none; }
 }
@@ -168,11 +164,10 @@
   .art-federate .fed-run { grid-row: 4; margin-top: 0; padding-bottom: 8px; }
   .art-federate .fed-link { grid-row: 5; }
   .art-federate .fed-rec { grid-row: 6; }
-  .art-federate .fed-brain { display: block; }
 }
 
 /* Narrow phones: the value bars would be stubs again, so the file keeps only
-   its keys and takes its own width, which leaves the chip room for its icon. */
+   its keys and takes its own width, which leaves the model name its room. */
 @container (max-width: 344px) {
   .art-federate .fed::before { min-height: 10px; }
   .art-federate .fed-end { min-height: 36px; }

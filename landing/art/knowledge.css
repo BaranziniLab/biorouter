@@ -21,12 +21,12 @@
   --kn-peer: #1c619f;
   --kn-edge: color-mix(in srgb, var(--ink) 18%, transparent);
   --kn-outline: color-mix(in srgb, var(--ink) 85%, transparent);
-  --kn-name: 12.5px;
+  --kn-name: 13px;
   --kn-name-lh: 15px;
   --kn-sub-lh: 15px;
 }
-[data-art="knowledge"] .kn.kn-sm { --kn-name: 11.5px; --kn-name-lh: 14px; --kn-sub-lh: 14px; }
-[data-art="knowledge"] .kn.kn-xs { --kn-name: 11px; }
+[data-art="knowledge"] .kn.kn-sm { --kn-name: 12px; --kn-name-lh: 14px; --kn-sub-lh: 14px; }
+[data-art="knowledge"] .kn.kn-xs { --kn-name: 12px; }
 [data-art="knowledge"] .kn.kn-still,
 [data-art="knowledge"] .kn.kn-still * { transition: none; }
 [data-art="knowledge"] .kn.kn-paused * { animation-play-state: paused; }
@@ -44,7 +44,7 @@
 [data-art="knowledge"] .kn-chip {
   display: inline-flex; align-items: center; height: 20px; padding: 0 6px;
   border-radius: var(--r-inner); background: var(--medium); color: var(--muted);
-  font-size: 11.5px; line-height: 1;
+  font-size: 12px; line-height: 1;
 }
 
 /* ── The dropped paper, as a card ─────────────────────── */
@@ -112,7 +112,7 @@
 [data-art="knowledge"] .kn-lab.kn-r { align-items: flex-start; }
 [data-art="knowledge"] .kn-lab.kn-l { align-items: flex-end; text-align: right; }
 [data-art="knowledge"] .kn-name { font-size: var(--kn-name); line-height: var(--kn-name-lh); color: var(--ink); }
-[data-art="knowledge"] .kn-sub { font-size: 11px; line-height: var(--kn-sub-lh); color: var(--muted); }
+[data-art="knowledge"] .kn-sub { font-size: 12px; line-height: var(--kn-sub-lh); color: var(--muted); }
 /* The source's label drops in with its card. */
 [data-art="knowledge"] .kn-lab.kn-plab {
   transform: translateY(-12px);
@@ -138,7 +138,7 @@
 
 [data-art="knowledge"] .kn-pred {
   position: absolute; transform: translateX(-50%);
-  font-family: var(--mono); font-size: 11px; font-weight: 500; line-height: 12px;
+  font-family: var(--mono); font-size: 12px; line-height: 12px;
   color: var(--coral); white-space: nowrap;
   opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
@@ -166,8 +166,8 @@
   transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
 }
 [data-art="knowledge"] .kn-note.on { opacity: 1; transform: none; }
-[data-art="knowledge"] .kn-k { font-size: 11.5px; line-height: 14px; color: var(--muted); }
-[data-art="knowledge"] .kn-v { font-family: var(--mono); font-size: 11px; line-height: 14px; color: var(--ink); }
+[data-art="knowledge"] .kn-k { font-size: 12px; line-height: 14px; color: var(--muted); }
+[data-art="knowledge"] .kn-v { font-family: var(--mono); font-size: 12px; line-height: 14px; color: var(--ink); }
 
 /* End of the loop: the graph fades, the base's title row stays. */
 [data-art="knowledge"] .kn.out .kn-svg,

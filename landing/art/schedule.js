@@ -3,7 +3,7 @@
    `0 0 7 * * 1` ("At 07:00 AM, only on Monday", as SchedulesView renders it) and
    its "Last run" line. The loop opens on Monday 07:00: Monday's dot fills, the
    status reads Running, and a new chat ("Scheduled job: <id>", the name
-   scheduler.rs gives every run) joins Recent chats. When the run finishes the
+   scheduler.rs gives every run) joins Recent runs. When the run finishes the
    status returns to Scheduled and Last run takes the new date (scheduler.rs sets
    last_run on a successful finish). Then the week passes a day at a time until
    Monday comes round again. One thing moves at a time. */
@@ -21,7 +21,6 @@
 
   // Lucide paths at the app's 1.5 stroke (components/icons/app-icons.tsx).
   var CLOCK = '<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/>';
-  var CAL_CLOCK = '<path d="M16 14v2.2l1.6 1"/><path d="M16 2v4"/><path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M3 10h5"/><path d="M8 2v4"/><circle cx="16" cy="16" r="6"/>';
   function icon(paths) {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   }
@@ -73,9 +72,10 @@
     });
     week.appendChild(days); week.appendChild(track);
 
-    // Recent chats: each run starts a new chat (ScheduleDetailView).
+    // Recent runs: each run starts a new chat (ScheduleDetailView). A scheduled chat
+    // wears the Clock, the glyph the Scheduler itself uses (chats/chatKind.ts).
     var chats = el('div', 'sch-chats');
-    chats.appendChild(el('div', 'sch-caps', 'Recent chats'));
+    chats.appendChild(el('div', 'sch-label', 'Recent runs'));
     var list = el('div', 'sch-list');
     chats.appendChild(list);
 
@@ -84,7 +84,7 @@
 
     function runRow(n) {
       var r = el('div', 'sch-run');
-      r.innerHTML = icon(CAL_CLOCK);
+      r.innerHTML = icon(CLOCK);
       r.appendChild(el('span', 'sch-run-name', 'Scheduled job: ' + ID));
       r.appendChild(el('span', 'sch-run-date', short(monday(n))));
       return r;
@@ -122,7 +122,7 @@
     }
 
     // Width: the run name is the one long string; step it down rather than cut it.
-    // Height: the free height (everything the job, the week and Recent chats do
+    // Height: the free height (everything the job, the week and Recent runs do
     // not fill) goes to the top and bottom padding and the two gaps between the
     // groups. The padding starts at the CSS value, P.
     // - A gap narrower than P: share the free height evenly between padding and
@@ -156,7 +156,7 @@
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(root);
 
     if (reduced) {
-      // One still: Monday's run is done and its chat heads Recent chats.
+      // One still: Monday's run is done and its chat heads Recent runs.
       settle(function () {
         seed(2, true);
         wrap.classList.add('fired');

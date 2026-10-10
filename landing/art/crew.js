@@ -55,7 +55,7 @@
                  the shared file the run read, and who shared it. */
               '<div class="crew-slot crew-slot-result"><div class="crew-slot-in"><div class="crew-result-pad">' +
                 '<p class="crew-body">All 24 samples pass QC.</p>' +
-                '<p class="crew-source">Source: counts.csv, shared by Gina Rossi.</p>' +
+                '<p class="crew-source"><span class="crew-src-l">Source: counts.csv, shared by Gina Rossi.</span><span class="crew-src-s">Source: counts.csv, Gina Rossi.</span></p>' +
               '</div></div></div>' +
             '</div>' +
           '</div>' +

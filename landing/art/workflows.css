@@ -26,9 +26,9 @@
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   padding: 8px;
-  --wf-code: 11px;
+  --wf-code: 12px;
   --wf-lh: 13.5px;
-  --wf-ui: 11px;
+  --wf-ui: 12px;
   --wf-head: 20px;
   --wf-ctl: 20px;
   --wf-padx: 8px;
@@ -53,7 +53,7 @@
 @container (min-width: 286px) {
   [data-art="workflows"] .wf-in {
     padding: 11px 11px 10px;
-    --wf-ui: 11.5px;
+    --wf-ui: 12px;
     --wf-nudge: 0.09em;
     --wf-head: 23px;
     --wf-ctl: 22px;
@@ -67,7 +67,7 @@
 @container (min-width: 316px) {
   [data-art="workflows"] .wf-in {
     padding: 12px 12px 11px;
-    --wf-code: 11.5px;
+    --wf-code: 12px;
     --wf-lh: 16px;
     --wf-ui: 12px;
     --wf-nudge: 0.05em;
@@ -83,7 +83,7 @@
     padding: 14px 14px 12px;
     --wf-code: 12px;
     --wf-lh: 17px;
-    --wf-ui: 12.5px;
+    --wf-ui: 13px;
     --wf-head: 30px;
     --wf-ctl: 26px;
     --wf-padx: 14px;
@@ -93,7 +93,7 @@
 @container (min-width: 370px) {
   [data-art="workflows"] .wf-in {
     padding: 15px 15px 13px;
-    --wf-code: 12.5px;
+    --wf-code: 13px;
     --wf-lh: 18px;
     --wf-head: 32px;
     --wf-ctl: 28px;
@@ -117,7 +117,7 @@
     padding: 20px 20px 18px;
     --wf-code: 14px;
     --wf-lh: 21px;
-    --wf-ui: 13.5px;
+    --wf-ui: 14px;
     --wf-head: 40px;
     --wf-ctl: 32px;
     --wf-padx: 18px;
@@ -126,7 +126,7 @@
 }
 @container (min-width: 520px) {
   [data-art="workflows"] .wf-in {
-    --wf-code: 14.5px;
+    --wf-code: 14px;
     --wf-lh: 22.5px;
     --wf-ui: 14px;
     --wf-head: 42px;

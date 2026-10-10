@@ -154,7 +154,7 @@
 }
 .art-skills.show-picker .sk-picker { opacity: 1; transform: none; }
 /* The count shares the rows' left edge. */
-.art-skills .sk-found { font-size: 11px; line-height: 12px; color: var(--muted); margin: 0 0 4px; padding: 0 4px 0 9px; white-space: nowrap; }
+.art-skills .sk-found { font-size: 12px; line-height: 12px; color: var(--muted); margin: 0 0 4px; padding: 0 4px 0 9px; white-space: nowrap; }
 .art-skills .sk-list { position: relative; }
 .art-skills .sk-row {
   position: relative; z-index: 1;
@@ -164,7 +164,7 @@
 .art-skills .sk-row-ic { width: 16px; height: 16px; color: var(--muted); }
 .art-skills .sk-row-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .art-skills .sk-row-name { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; overflow: hidden; }
-.art-skills .sk-row-desc { font-size: 11px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.art-skills .sk-row-desc { font-size: 12px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 /* The selected row, as the app marks it: an inset hairline ring on the strong
    ground at 70%, moving as the arrow keys would. */
 .art-skills .sk-sel {

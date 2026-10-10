@@ -104,9 +104,10 @@
     opentrons: '<g transform="rotate(40 12 12)"><path d="M8.75 1.5h6.5M12 1.5v2.5"/><rect x="8.25" y="4" width="7.5" height="8.75" rx="1.75"/><path d="M8.25 8.4h7.5"/><path d="M10.25 12.75l1.25 7.75h1l1.25-7.75"/></g>'
   };
 
-  // The app's tool row: lucide Wrench (the icon every extension tool gets) and
-  // ChevronRight at 60%, both at the app's 1.5 stroke. Lock is the one privacy mark.
-  var WRENCH = '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>';
+  // The app's tool row: lucide Puzzle (the one glyph every installed extension's tool
+  // draws, SPOKE included) and ChevronRight at 60%, both at the app's 1.5 stroke.
+  // Lock is the one privacy mark.
+  var PUZZLE = '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>';
   var CHEVRON = '<path d="m9 18 6-6-6-6"/>';
   var LOCK = '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>';
 
@@ -163,7 +164,7 @@
     // One tool call, as a line, and one line of result under it
     var call = el('div', 'bm-call');
     var row = el('div', 'bm-row');
-    row.insertAdjacentHTML('beforeend', svg(WRENCH, 'bm-tool-ico'));
+    row.insertAdjacentHTML('beforeend', svg(PUZZLE, 'bm-tool-ico'));
     var rowText = el('span', 'bm-row-text');
     row.appendChild(rowText);
     row.insertAdjacentHTML('beforeend', svg(CHEVRON, 'bm-chev'));

@@ -69,7 +69,7 @@
 }
 .art-hub .hub-input {
   position: relative; flex: 1; min-width: 0;
-  font-size: 13.5px; line-height: 20px; padding: 6px 0;
+  font-size: 14px; line-height: 20px; padding: 6px 0;
   color: var(--ink);
 }
 .art-hub .hub-ph { position: absolute; left: 0; top: 6px; right: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-menu) ease; }
@@ -92,13 +92,12 @@
 .art-hub .hub-controls { position: absolute; height: 28px; display: flex; align-items: center; }
 .art-hub .hub-chip {
   display: inline-flex; align-items: center; gap: 3px;
-  height: 28px; padding: 0 7px 0 4px; border-radius: var(--r-element);
+  height: 28px; padding: 0 8px; border-radius: var(--r-element);
   font-size: 12px; line-height: 16px; white-space: nowrap;
   color: color-mix(in srgb, var(--ink) 72%, transparent);
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .art-hub .hub-chip.tint { background: var(--medium); color: var(--ink); }
-.art-hub .hub-chip svg { width: 18px; height: 18px; flex: none; }
 /* The chip's model and padlock change by a plain crossfade: the padlock
    appears or goes, it never slides. */
 .art-hub .hub-chip .model { display: inline-flex; align-items: center; transition: opacity var(--dur-menu) ease; }
@@ -118,7 +117,7 @@
   position: relative; display: flex; align-items: center;
   height: 24px; padding: 0 10px 0 12px;
   border-radius: var(--r-element);
-  font-size: 12.5px; line-height: 16px; color: var(--ink); white-space: nowrap;
+  font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap;
   transition: background var(--dur-menu) ease;
 }
 .art-hub .hub-prow::before {
@@ -130,7 +129,7 @@
 .art-hub .hub-prow.on { background: var(--sidebar-active); }
 .art-hub .hub-prow.on::before { transform: scaleY(1); }
 .art-hub .hub-prow .hub-lock { margin-left: 6px; color: var(--muted); }
-.art-hub .hub-prow .note { display: none; margin-left: 10px; font-size: 11.5px; color: var(--faint); }
+.art-hub .hub-prow .note { display: none; margin-left: 10px; font-size: 12px; color: var(--faint); }
 .art-hub .hub-prow.off { color: var(--faint); }
 .art-hub .hub-prow.off .note { display: inline; }
 
@@ -150,10 +149,7 @@
   background: var(--paper);
   border: 1px solid var(--line); border-radius: var(--r-container);
 }
-.art-hub .hub-mark svg { width: 62%; height: 62%; overflow: visible; }
-.art-hub .hub-mark text { font-family: var(--brand-font); font-weight: 800; }
-.art-hub .hub-mark .navy { fill: var(--navy); }
-.art-hub .hub-mark .coral { fill: var(--coral); }
+.art-hub .hub-mark img { width: 100%; height: 100%; }
 
 /* ── The catalogue: Local, Institutional, Public ─────────────────── */
 .art-hub .hub-cat { position: absolute; display: flex; flex-direction: column; gap: var(--hub-gap); }
@@ -161,16 +157,16 @@
 .art-hub .hub-gh {
   position: relative; display: flex; align-items: center; gap: 8px;
   height: 20px; padding-left: 12px;
-  font-size: 12.5px; color: var(--muted); white-space: nowrap;
+  font-size: 13px; color: var(--muted); white-space: nowrap;
 }
 .art-hub .hub-gh .dot { position: absolute; left: -3px; top: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .art-hub .hub-gh .dot.local { color: var(--local); }
 .art-hub .hub-gh .dot.inst { color: var(--institutional); }
 .art-hub .hub-gh .dot.public { color: var(--public); }
-.art-hub .hub-gh .aside { display: none; font-size: 11.5px; color: var(--faint); }
+.art-hub .hub-gh .aside { display: none; font-size: 12px; color: var(--faint); }
 .art-hub .hub-cols { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 10px; }
 .art-hub .hub-group.two .hub-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.art-hub .hub-sl { height: 17px; padding-left: 12px; font-size: 11.5px; line-height: 17px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-hub .hub-sl { height: 17px; padding-left: 12px; font-size: 12px; line-height: 17px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Rows hug their label, with one common minimum, so every lit row is about
    the same width. */
 .art-hub .hub-items { display: flex; flex-direction: column; align-items: flex-start; }
@@ -204,7 +200,7 @@
 .art-hub .hub.narrow .hub-gh .aside { display: inline; }
 .art-hub .hub.narrow .hub-group.two .hub-cols { row-gap: 2px; }
 .art-hub .hub.narrow .hub-items { flex-direction: row; flex-wrap: wrap; gap: 2px 4px; }
-.art-hub .hub.narrow .hub-row { min-width: 0; padding: 0 9px 0 13px; font-size: 12.5px; }
+.art-hub .hub.narrow .hub-row { min-width: 0; padding: 0 9px 0 13px; font-size: 13px; }
 .art-hub .hub.narrow .hub-row .note { margin-left: 6px; }
 .art-hub .hub.narrow .hub-group.two .hub-cols { grid-template-columns: minmax(0, 1fr); }
 
@@ -215,4 +211,4 @@
 
 /* Measuring box: laid out for its size, never painted. */
 .art-hub .hub-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
-.art-hub .hub-measure .hub-probe { position: absolute; white-space: nowrap; font-size: 13.5px; }
+.art-hub .hub-measure .hub-probe { position: absolute; white-space: nowrap; font-size: 14px; }

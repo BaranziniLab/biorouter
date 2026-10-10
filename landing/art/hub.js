@@ -15,7 +15,6 @@
   if (!window.BR || !BR.art) return;
 
   var NS = 'http://www.w3.org/2000/svg';
-  var BRAIN = '<path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/>';
   var UP = '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>';
   function svgIcon(body) {
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
@@ -115,7 +114,10 @@
     log.appendChild(stack); log.appendChild(fresh);
     var card = el('div', 'hub-card');
     var input = el('div', 'hub-input');
-    var ph = el('span', 'hub-ph', 'Ask Biorouter anything…');
+    // The placeholder follows composer/copy.ts: the open question in an empty
+    // chat, "Ask a follow-up" once it has messages.
+    var PH_EMPTY = 'Ask Biorouter anything…', PH_FOLLOW = 'Ask a follow-up';
+    var ph = el('span', 'hub-ph', PH_EMPTY);
     var typed = el('span', 'hub-typed');
     var caret = el('span', 'hub-caret');
     input.appendChild(ph); input.appendChild(typed); input.appendChild(caret);
@@ -135,7 +137,7 @@
     });
 
     var controls = el('div', 'hub-controls');
-    var chip = el('div', 'hub-chip', svgIcon(BRAIN));
+    var chip = el('div', 'hub-chip');
     var chipModel = el('span', 'model');
     var chipName = el('span', 'name');
     var chipLock = el('span', 'hub-lock');
@@ -143,12 +145,8 @@
     chip.appendChild(chipModel);
     controls.appendChild(chip);
 
-    var mark = el('div', 'hub-mark',
-      '<svg viewBox="-24.5235 -110.806 165.672 165.672">' +
-      '<text class="navy" x="0" y="0" font-size="100">B</text>' +
-      '<text class="coral" x="68.140625" y="0" font-size="74">R</text>' +
-      '<rect class="navy" x="0" y="23.36" width="66.640625" height="17.7"/>' +
-      '<rect class="coral" x="66.640625" y="23.36" width="49.984375" height="17.7"/></svg>');
+    // The brand's own mark (icon-transparent.svg), not letters set in the page.
+    var mark = el('div', 'hub-mark', '<img src="icon-transparent.svg" alt="" width="512" height="512">');
 
     var cat = el('div', 'hub-cat');
     var rows = {}, groupEls = [], dotEls = [];
@@ -285,7 +283,7 @@
       var pb = pick.getBoundingClientRect();
       prows.claude.classList.toggle('off', wasOff);
       var pickW = Math.ceil(pb.width), pickH = Math.ceil(pb.height);
-      var phW = textW(ph.textContent, 13.5);
+      var phW = textW(PH_EMPTY, 14);
       function placePick() {
         var px = chatX + 6;
         var pw = Math.max(pickW, Math.ceil(chatX + 15 + phW + 10 - px));
@@ -350,9 +348,9 @@
         G = gapFor(cardH);
         tm = turnMetrics(chatW);
         // the catalogue shares the composer's left edge: its dots sit under
-        // the chip's icon, and the trunk runs in the gutter left of them
-        catX = chatX + 13;
-        catW = chatW - 13;
+        // the chip's name, and the trunk runs in the gutter left of them
+        catX = chatX + 8;
+        catW = chatW - 8;
         cat.style.width = catW + 'px';
         var catH2, g1, g2, padB, L;
         var fixed = function () { return pad + G + cardH + 4 + 28 + g1 + markS + g2 + catH2 + padB; };
@@ -499,6 +497,7 @@
       stack.innerHTML = ''; stack.style.transform = '';
       for (var i = 0; i <= ti; i++) stack.appendChild(makeTurn(TURNS[i], true));
       fresh.classList.remove('on');
+      ph.textContent = PH_FOLLOW;
       ph.classList.remove('off'); typed.textContent = ''; caret.classList.remove('on');
       send.classList.remove('armed');
       setActive(TURNS[ti].row);
@@ -611,6 +610,7 @@
       await swapping; if (my !== alive) return;
       stack.innerHTML = ''; stack.style.transform = '';
       typed.textContent = ''; typed.classList.remove('off');
+      ph.textContent = PH_EMPTY;
       ph.classList.remove('off');
       log.classList.remove('leave');
       fresh.classList.add('on');
@@ -674,6 +674,7 @@
       var added = addTurn(t);
       // The placeholder returns at once: the transcript ends above the card,
       // so the arriving message never crosses it.
+      ph.textContent = PH_FOLLOW;
       ph.classList.remove('off');
       await added.done; if (my !== alive) return;
 
