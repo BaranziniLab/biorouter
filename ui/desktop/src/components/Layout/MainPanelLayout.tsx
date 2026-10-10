@@ -18,9 +18,20 @@ export const MainPanelLayout: React.FC<{
   // at ~1050px and push the ChatInput off-screen. With `h-full`, the panel
   // fills its container, whether that's the viewport (standalone /pair, etc.)
   // or a chat pane's rect.
+  //
+  // `removeTopPadding` is what every band route passes (spec 3.10): the 44px
+  // band starts at y=0 and replaces the 32px drag strip there, so a reserve
+  // above it would be dead space. A route that keeps the strip keeps the
+  // reserve, `--titlebar-drag-height` rather than a 32px literal. The reserve
+  // is authored CSS (`.biorouter-main-panel[data-top-reserve]` in `main.css`)
+  // rather than a newly written arbitrary utility (the class-scanning trap,
+  // CLAUDE.md "Desktop shell geometry"), and that rule also drops it on its
+  // own when the panel holds a `PageHeader` band, so a view that has moved
+  // onto the band sits at y=0 even before it passes the prop.
   return (
     <div
-      className={`flex flex-col ${backgroundColor} h-full min-w-0 min-h-0 ${removeTopPadding ? '' : 'pt-[32px]'}`}
+      className={`biorouter-main-panel flex flex-col ${backgroundColor} h-full min-w-0 min-h-0`}
+      data-top-reserve={removeTopPadding ? undefined : ''}
     >
       {children}
     </div>

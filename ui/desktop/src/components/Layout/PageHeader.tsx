@@ -1,6 +1,9 @@
 import React from 'react';
-import { ArrowLeft, Info } from '../icons/app-icons';
+import { ArrowLeft, MoreHorizontal } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { InfoTip } from '../ui/info-tip';
+import { RowActionMenuItems, type RowActionItem } from '../ui/row-actions';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { ReadableContent } from './ReadableContent';
 
@@ -45,7 +48,7 @@ export type PageHeaderProps = {
  *
  * **It is a 44px band**, the Crew channel header's geometry (`crew/channel/ChannelHeader.tsx`):
  * `--chrome-height`, the `--sidebar` ground, a bottom hairline, a 14px title on the left with
- * its help in an InfoTip, and the actions on the right. The band's hairline meets the sidebar's
+ * its help in an `InfoTip` (WS-PRIMITIVES' `ui/info-tip.tsx`), and the actions on the right. The band's hairline meets the sidebar's
  * titlebar band and the chat header at y=44: one continuous top edge. Every rule that makes it
  * so is authored in `main.css` (`.biorouter-page-header[data-band]`), not written as Tailwind
  * strings, because a newly written utility can silently fail to generate under
@@ -88,7 +91,11 @@ export function PageHeader({
           {onBack && <PageHeaderAction icon={ArrowLeft} label={backLabel} onClick={onBack} />}
           <div className="biorouter-page-header-title">
             <h1 className="text-label min-w-0 truncate">{title}</h1>
-            {help ? <BandInfo label={title}>{help}</BandInfo> : null}
+            {help ? (
+              <InfoTip label={title} side="bottom" align="start">
+                {help}
+              </InfoTip>
+            ) : null}
           </div>
           {trailing ? (
             <div className="biorouter-page-header-adornment text-supporting text-text-muted tabular-nums">
@@ -142,35 +149,32 @@ export const PageHeaderAction = React.forwardRef<HTMLButtonElement, PageHeaderAc
 PageHeaderAction.displayName = 'PageHeaderAction';
 
 /**
- * The title's help. A focusable `About {title}` button holding a 14px Info glyph, opening the
- * help on hover and on Tab focus, with the same text always present in a visually hidden node
- * the button names through `aria-describedby`, so a screen reader hears it without a hover.
- *
- * Interim: replaced by WS-PRIMITIVES' `ui/info-tip.tsx` once that contract lands; the props
- * and the accessible shape (name, description) are the InfoTip's.
+ * The band's `⋯`: a `PageHeaderAction`-shaped trigger opening the same menu rows a list row's
+ * `⋯` opens (`RowActionItem`, WS-PRIMITIVES' `RowActions`). For a drill-in whose object has
+ * more verbs than fit in the band (the schedule detail's Edit and Delete).
  */
-function BandInfo({ label, children }: { label: string; children: React.ReactNode }) {
-  const id = React.useId();
+export function PageHeaderMenu({
+  items,
+  label = 'More actions',
+}: {
+  items: ReadonlyArray<RowActionItem>;
+  label?: string;
+}) {
   return (
-    <>
+    <DropdownMenu>
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="biorouter-page-header-info"
-            aria-label={`About ${label}`}
-            aria-describedby={id}
-          >
-            <Info aria-hidden="true" />
-          </button>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" shape="round" aria-label={label}>
+              <MoreHorizontal aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom" align="start" className="biorouter-page-header-info-text">
-          {children}
-        </TooltipContent>
+        <TooltipContent side="bottom">{label}</TooltipContent>
       </Tooltip>
-      <span id={id} className="sr-only">
-        {children}
-      </span>
-    </>
+      <DropdownMenuContent align="end">
+        <RowActionMenuItems items={items} />
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

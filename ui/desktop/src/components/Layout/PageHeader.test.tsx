@@ -1,7 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { PageHeader, PageHeaderAction } from './PageHeader';
+import { PageHeader, PageHeaderAction, PageHeaderMenu } from './PageHeader';
 import { Upload } from '../icons/app-icons';
 
 /**
@@ -170,5 +170,32 @@ describe('PageHeaderAction', () => {
 
     const button = screen.getByRole('button', { name: 'Import workflow' });
     expect(button).not.toHaveAttribute('title');
+  });
+});
+
+describe('PageHeaderMenu', () => {
+  it('opens the row-menu items from a More actions button', async () => {
+    const onEdit = vi.fn();
+    render(
+      <PageHeaderMenu
+        items={[
+          { label: 'Edit', onSelect: onEdit },
+          { kind: 'separator' },
+          { label: 'Delete', onSelect: () => {}, destructive: true },
+        ]}
+      />
+    );
+
+    // Radix opens a dropdown on pointerdown, not click.
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findByRole('menuitem', { name: 'Delete' })).toHaveAttribute(
+      'data-variant',
+      'destructive'
+    );
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit' }));
+    expect(onEdit).toHaveBeenCalledTimes(1);
   });
 });

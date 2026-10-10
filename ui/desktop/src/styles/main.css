@@ -4082,6 +4082,62 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   --tw-duration: var(--dur-fast-min);
 }
 
+/* Menus and popovers (`MENU_SURFACE_CLASS_NAME`, `PopoverContent`): open with opacity,
+   scale(.97) and 4px toward the trigger from Radix's transform origin over `--dur-fast-max`;
+   close with opacity alone over `--dur-fast`; `--ease-out`. The tw-animate utilities on the
+   element are the carriers; these values win because this rule is unlayered. */
+.br-menu-motion {
+  --tw-ease: var(--ease-out);
+  transform-origin: var(
+    --radix-dropdown-menu-content-transform-origin,
+    var(
+      --radix-context-menu-content-transform-origin,
+      var(--radix-popover-content-transform-origin, center)
+    )
+  );
+}
+
+.br-menu-motion[data-state='open'] {
+  --tw-duration: var(--dur-fast-max);
+  --tw-enter-scale: 0.97;
+}
+
+.br-menu-motion[data-state='open'][data-side='bottom'] {
+  --tw-enter-translate-y: -4px;
+}
+
+.br-menu-motion[data-state='open'][data-side='top'] {
+  --tw-enter-translate-y: 4px;
+}
+
+.br-menu-motion[data-state='open'][data-side='left'] {
+  --tw-enter-translate-x: 4px;
+}
+
+.br-menu-motion[data-state='open'][data-side='right'] {
+  --tw-enter-translate-x: -4px;
+}
+
+.br-menu-motion[data-state='closed'] {
+  --tw-duration: var(--dur-fast);
+  --tw-exit-scale: 1;
+  --tw-exit-translate-x: 0;
+  --tw-exit-translate-y: 0;
+}
+
+/* Defaults a caller's own width utility may override, hence the layer. */
+@layer components {
+  .br-menu-surface {
+    min-inline-size: 180px;
+    max-inline-size: 320px;
+  }
+}
+
+/* The one menu row (`MENU_ROW_CLASS_NAME`): its highlight eases over `--dur-fast-min`. */
+.br-menu-row {
+  transition-duration: var(--dur-fast-min);
+}
+
 /* InfoTip trigger: a 14px glyph in a 24×24 hit box drawn with a −5px margin, so it adds 14px
    to the line; the start margin is −1px so the glyph lands 4px after the label. */
 .br-info-tip {
@@ -4258,6 +4314,81 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 .br-segmented-thumb[data-motion-still] {
   transition: none;
+}
+
+/* Switch (`ui/switch.tsx`): a 32×20 track, a 16px knob inset 2px in both states, travel 12px,
+   no growth. The off knob is ringed by `--border-control` so it reads at 3:1 on the off track
+   in every family. A 2px invisible extension above and below makes the hit target 24px. */
+.br-switch {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  inline-size: 32px;
+  block-size: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background-color: var(--control-track-off);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.br-switch::after {
+  content: '';
+  position: absolute;
+  inset: -2px 0;
+}
+
+.br-switch[data-state='checked'] {
+  background-color: var(--background-accent);
+}
+
+.br-switch:disabled,
+.br-switch[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* D-15: the track's colour IS the state, so focus keeps it and draws the inset edge only. */
+.br-switch:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-switch-thumb {
+  display: block;
+  inline-size: 16px;
+  block-size: 16px;
+  border-radius: var(--radius-full);
+  background-color: var(--background-default);
+  box-shadow:
+    0 0 0 1px var(--border-control),
+    0 1px 2px rgb(0 0 0 / 0.12);
+  transform: translateX(2px);
+  pointer-events: none;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.dark .br-switch-thumb {
+  background-color: var(--text-muted);
+}
+
+.br-switch-thumb[data-state='checked'],
+.dark .br-switch-thumb[data-state='checked'] {
+  background-color: var(--text-on-accent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+  transform: translateX(14px);
+}
+
+/* A value that arrived without the person's toggle lands at rest (`ui/switch.tsx`). */
+.br-switch[data-motion-still],
+.br-switch[data-motion-still] > .br-switch-thumb {
+  transition-duration: 0ms;
 }
 
 /* SettingRow and SettingSection (`ui/setting-row.tsx`). The row box itself is
@@ -4470,6 +4601,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     animation: none;
   }
 
+  .br-menu-motion[data-state],
+  .br-menu-motion[data-state][data-side] {
+    --tw-enter-scale: 1;
+    --tw-enter-translate-x: 0;
+    --tw-enter-translate-y: 0;
+  }
+
+  .br-switch,
+  .br-switch-thumb,
   .br-segmented-thumb,
   .br-segmented-item,
   .br-row-actions,
