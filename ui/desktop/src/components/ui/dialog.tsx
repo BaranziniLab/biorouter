@@ -13,8 +13,8 @@ import { installDialogTabRepair } from './dialogTabRepair';
  * nothing else: it cancels the focus scope's usual return to whatever was focused before. A
  * dialog opened from state, with no Trigger (every one a button's `onClick` mounts), therefore
  * left focus on `<body>` after Escape, and a keyboard user began again at the top of the page.
- * Settings fixed it dialog by dialog (`settings/useReturnFocusToOpener.ts`, T3-SH-12); this is the
- * same rule for every dialog and sheet at once.
+ * Settings once fixed it dialog by dialog (T3-SH-12); this is the same rule for every dialog and
+ * sheet at once.
  *
  * The opener is read in `onOpenAutoFocus`: Radix fires it when the content mounts, before it moves
  * focus inside, so `document.activeElement` is still the control that was pressed. (It cannot be

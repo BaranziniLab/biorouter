@@ -109,7 +109,7 @@ describe('CustomRadio', () => {
   /**
    * Q3-58 (live QA round 3). The unchecked ring was `border-border-emphasized`, ink at 24%:
    * 1.6:1 on white, under the 3:1 a control's boundary owes. Its colour is now authored in
-   * main.css (`--text-muted` at rest, `--border-accent` checked), measured in all six scopes in
+   * main.css (`--border-control` at rest, `--border-accent` checked), measured in all six scopes in
    * `styles/focusFallback.test.ts`. A colour utility left on the span would be dead code at best,
    * and the faint token again the day the authored rule moved into a layer.
    */

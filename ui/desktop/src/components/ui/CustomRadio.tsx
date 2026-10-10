@@ -62,10 +62,10 @@ const CustomRadio = ({
               It used to be `border-border-emphasized` — ink at 24% — which measured
               1.6:1 on white: under the 3:1 a control's boundary owes, so an
               unchecked radio was a faint smudge. main.css now paints it
-              `--text-muted` at rest (≥ 4.5:1 on every ground, `check-contrast.mjs`)
+              `--border-control` at rest, the checkbox's own edge (3:1 on every
+              ground a dialog paints, in all six scopes, `focusFallback.test.ts`),
               and `--border-accent` when checked, unlayered so no utility can pull
-              it back to the faint token, and `focusFallback.test.ts` measures it
-              in all six scopes.
+              it back to the faint token.
 
               `data-radio-ring` / `data-radio-dot` are selector hooks for main.css
               (Q2-11): the input above is sr-only, so its focus was drawn on an
