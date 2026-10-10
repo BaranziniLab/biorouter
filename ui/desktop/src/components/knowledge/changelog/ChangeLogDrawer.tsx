@@ -170,12 +170,11 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             !error &&
             filtered.map((entry) => (
               <div key={entry.commit_sha} className="biorouter-list-row flex flex-col px-4 py-3">
+                {/* No commit id on the row (principle 10: ids stay off everyday
+                    rows). Previewing a commit names it in the graph's banner. */}
                 <div className="mb-1 flex items-center gap-2">
                   <ChangeKindChip kind={entry.kind} />
-                  <span className="text-supporting font-mono text-text-muted">
-                    {entry.commit_sha.slice(0, 7)}
-                  </span>
-                  <span className="ml-auto text-supporting text-text-muted">
+                  <span className="ml-auto text-supporting tabular-nums text-text-muted">
                     {relativeTime(entry.timestamp)}
                   </span>
                 </div>

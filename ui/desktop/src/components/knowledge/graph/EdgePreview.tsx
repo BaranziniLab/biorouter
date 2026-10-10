@@ -282,7 +282,9 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
               <h3 className="text-caps text-text-muted">Quantitative</h3>
               {quantitative.map(([key, value]) => (
                 <Row key={key} label={key}>
-                  <span className="font-mono text-code tabular-nums">{value}</span>
+                  {/* Figures in the sans face with tabular figures (principle 3):
+                      mono is for machine strings, and a p-value is not one. */}
+                  <span className="tabular-nums">{value}</span>
                 </Row>
               ))}
             </section>
@@ -293,7 +295,7 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
               <h3 className="text-caps text-text-muted">Context</h3>
               {qualifiers.map(([key, value]) => (
                 <Row key={key} label={key.replace(/_/g, ' ')}>
-                  <span className="font-mono text-code">{value}</span>
+                  <span>{value}</span>
                 </Row>
               ))}
             </section>
