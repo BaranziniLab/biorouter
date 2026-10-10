@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistoryView from './SessionHistoryView';
+import { MAKE_CHAT_PUBLIC } from './copy';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import type { Session } from '../../api';
 
@@ -78,7 +79,7 @@ afterEach(() => {
 
 describe('SessionHistoryView declassification on a browser-served surface', () => {
   /**
-   * ⚠ **Fails against `origin/main`**, which renders a live "Make public"
+   * ⚠ **Fails against `origin/main`**, which renders a live "Make this chat public"
    * button here and nothing that explains anything.
    *
    * The note carries the short line visibly and the full reason on `title` — a
@@ -90,7 +91,7 @@ describe('SessionHistoryView declassification on a browser-served surface', () =
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderPrivatePage();
 
-    expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
+    expect(screen.queryByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeNull();
     const note = screen.getByTestId('declassify-browser-note');
     expect(note).toHaveTextContent(/needs the host/i);
     expect(note.getAttribute('title')).toMatch(/biorouter serve/);
@@ -104,7 +105,7 @@ describe('SessionHistoryView declassification on a browser-served surface', () =
   it('leaves the desktop action bar fully usable', () => {
     renderPrivatePage();
 
-    expect(screen.getByRole('button', { name: 'Make public' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeInTheDocument();
     expect(screen.queryByTestId('declassify-browser-note')).toBeNull();
   });
 });

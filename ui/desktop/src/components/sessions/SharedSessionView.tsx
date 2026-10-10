@@ -1,20 +1,14 @@
 import React from 'react';
-import {
-  Calendar,
-  MessageSquareText,
-  Folder,
-  Target,
-  LoaderCircle,
-  Share2,
-} from '../icons/app-icons';
 import { type SharedSessionDetails } from '../../sharedSessions';
 import { SessionMessages } from './SessionViewComponents';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { PageHeader } from '../Layout/PageHeader';
 import ArtifactViewer from '../artifacts/ArtifactViewer';
 import { useArtifactPanel } from '../artifacts/useArtifactPanel';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { SHARED_CHAT, SHARED_CHAT_INFO, billedTokens, messageCount, ranIn } from './copy';
 
 interface SharedSessionViewProps {
   session: SharedSessionDetails | null;
@@ -23,23 +17,13 @@ interface SharedSessionViewProps {
   onRetry: () => void;
 }
 
-// Custom SessionHeader component matching SessionHistoryView style
-const SessionHeader: React.FC<{
-  children: React.ReactNode;
-  title: string;
-}> = ({ children, title }) => {
-  return (
-    /* `-mx-6 … px-6` cancels the reading column's inset so the hairline spans
-       the whole column, then puts the inset back on the content. The pair
-       tracks the `px-*` on the `ReadableContent` below — change one, change
-       both, or the rule stops at the text. */
-    <div className="biorouter-page-header -mx-6 flex flex-col px-6 pb-8">
-      <h1 className="text-title mb-4 pt-6">{title}</h1>
-      <div className="flex items-center">{children}</div>
-    </div>
-  );
-};
-
+/**
+ * A chat someone shared, read-only. It wears the same 44px band as every other
+ * page (spec 3.4): the chat's title, what this page is in an InfoTip, and the
+ * facts beside the title in muted tabular figures. The band replaced two
+ * stacked headers (a "Shared chat" strip and a 24px title over a two-line mono
+ * metadata block).
+ */
 const SharedSessionView: React.FC<SharedSessionViewProps> = ({
   session,
   isLoading,
@@ -48,94 +32,63 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
 }) => {
   // The same panel the live chat and the saved-session page mount. A shared
   // transcript is the one that leaves the machine, and it gets the identical
-  // figure surface — the alternative was an inline iframe here and a panel
-  // everywhere else, which is how the same figure came to look like two
-  // different things depending on where you opened it.
+  // figure surface.
   const artifactPanel = useArtifactPanel({ isMobile: useIsMobile(), allowWindowResize: false });
   const { splitPaneRef, artifact: presentedArtifact, openArtifact } = artifactPanel;
 
+  const loaded = !isLoading && session !== null;
+  const facts = loaded
+    ? [
+        SHARED_CHAT,
+        session.messages[0]?.created ? formatMessageTimestamp(session.messages[0].created) : null,
+        messageCount(session.message_count),
+        session.total_tokens !== null ? billedTokens(session.total_tokens.toLocaleString()) : null,
+      ].filter(Boolean)
+    : [SHARED_CHAT];
+  const info =
+    loaded && session.working_dir
+      ? `${SHARED_CHAT_INFO} ${ranIn(session.working_dir)}`
+      : SHARED_CHAT_INFO;
+
   return (
-    <MainPanelLayout>
+    <MainPanelLayout removeTopPadding>
+      {/* The live chat's split: a column holding the band and the transcript,
+          and the panel beside it. The column and body flatten in a preview
+          layout rather than re-parent, so the panel is never remounted; rung 2
+          measures this box and places the pieces by `data-preview-area`. */}
       <div
         ref={splitPaneRef}
         {...artifactPanel.splitPaneProps}
         className="relative flex flex-1 min-h-0 min-w-0"
       >
-        {/* A real reading column, not a bare `px-8` box. This surface had no
-            measure at all, so a shared transcript was drawn pane-wide while the
-            same conversation opened locally sat in a column — the one view that
-            leaves the machine was the one that did not look like the app. It
-            takes the CHAT measure, like its local twin `SessionHistoryView` and
-            like the live chat, so the three cannot drift.
-
-            It sits INSIDE `splitPaneRef` rather than around it, exactly as in
-            `SessionHistoryView`: the readable measure is a ceiling on prose,
-            and a panel inside it would eat the column it is meant to sit
-            beside. Rung 2 of the yield ladder measures the split box. */}
-        <ReadableContent
-          size="chat"
-          className="flex-1 flex flex-col min-h-0 px-6"
-          previewConversation
-        >
-          <div className="biorouter-page-header -mx-6 mb-6 flex items-center px-6 py-4">
-            <div className="flex items-center text-text-muted">
-              <Share2 className="w-5 h-5 mr-2" />
-              <span className="text-label">Shared chat</span>
+        <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
+          <div data-preview-area="header" className="flex-shrink-0">
+            <PageHeader
+              title={session?.description || SHARED_CHAT}
+              info={info}
+              adornment={facts.join(' · ')}
+            />
+          </div>
+          <div data-preview-area="body" className="flex min-h-0 flex-1 flex-col">
+            {/* A real reading column on the CHAT measure, like its local twin
+                `SessionHistoryView` and the live chat, so the three cannot
+                drift. It is part of the shell, not of the loaded chat, so the
+                content does not jump from pane-wide to columned as it loads. */}
+            <div data-preview-area="transcript" className="flex min-h-0 flex-1 flex-col">
+              <ReadableContent size="chat" className="flex min-h-0 flex-1 flex-col px-6">
+                <SessionMessages
+                  messages={session?.messages || []}
+                  sessionId={session ? `shared:${session.share_token}` : 'shared:loading'}
+                  isLoading={isLoading}
+                  error={error}
+                  onRetry={onRetry}
+                  onOpenArtifact={openArtifact}
+                  workingDir={session?.working_dir}
+                />
+              </ReadableContent>
             </div>
           </div>
-
-          <SessionHeader title={session ? session.description : 'Shared chat'}>
-            <div className="flex flex-col">
-              {!isLoading && session && session.messages.length > 0 ? (
-                <>
-                  <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
-                    <span className="flex items-center">
-                      <Calendar className="w-4 h-4 mr-1" />
-                      {formatMessageTimestamp(session.messages[0]?.created)}
-                    </span>
-                    <span className="flex items-center">
-                      <MessageSquareText className="w-4 h-4 mr-1" />
-                      {session.message_count}
-                    </span>
-                    {session.total_tokens !== null && (
-                      <span
-                        className="flex items-center"
-                        title="Billed tokens across every turn, not only the last message"
-                      >
-                        <Target className="w-4 h-4 mr-1" />
-                        Billed tokens: {session.total_tokens.toLocaleString()}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
-                    <span className="flex items-center">
-                      <Folder className="w-4 h-4 mr-1" />
-                      {session.working_dir}
-                    </span>
-                  </div>
-                </>
-              ) : (
-                // V6 — a status line takes `text-supporting`, matching the
-                // metadata row it stands in for and its twin in
-                // SessionHistoryView.
-                <div className="flex items-center text-supporting text-text-muted">
-                  <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                  <span>Loading chat details...</span>
-                </div>
-              )}
-            </div>
-          </SessionHeader>
-
-          <SessionMessages
-            messages={session?.messages || []}
-            sessionId={session ? `shared:${session.share_token}` : 'shared:loading'}
-            isLoading={isLoading}
-            error={error}
-            onRetry={onRetry}
-            onOpenArtifact={openArtifact}
-            workingDir={session?.working_dir}
-          />
-        </ReadableContent>
+        </div>
 
         {/* Read-only: no `onRenderError`, so no repair listener, and nothing
             auto-opens. */}

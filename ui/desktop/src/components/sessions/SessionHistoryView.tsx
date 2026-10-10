@@ -1,39 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Calendar,
   MessageSquareText,
-  Folder,
   Share2,
-  Sparkles,
   Copy,
   Check,
-  Target,
-  LoaderCircle,
   AlertCircle,
+  Globe,
+  Play,
 } from '../icons/app-icons';
 import { resumeSession } from '../../sessions';
 import { Button } from '../ui/button';
+import { Spinner } from '../ui/spinner';
 import { toastError } from '../../toasts';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { createSharedSession } from '../../sharedSessions';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
 import ProgressiveMessageList from '../ProgressiveMessageList';
 import ArtifactViewer from '../artifacts/ArtifactViewer';
 import { useArtifactPanel } from '../artifacts/useArtifactPanel';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { SearchView } from '../conversation/SearchView';
-import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { exportSession, Message, Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
@@ -43,9 +33,35 @@ import { DECLASSIFY_NEEDS_HOST_SHORT, declassifyBrowserReason } from './declassi
 import { subscribeSessionRowChanges } from '../../utils/sessionRowSync';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { MODAL_SIZE } from '../ModalShell';
+import { ModalShell } from '../ModalShell';
 import { EmptyState } from '../ui/empty-state';
 import { useTransientFlag } from '../../hooks/useTransientFlag';
+import {
+  BACK,
+  CHAT_LOAD_ERROR_TITLE,
+  COPY_LINK,
+  COPY_LINK_FAILED,
+  COPY_LINK_FAILED_MSG,
+  DONE,
+  LINK_COPIED,
+  LOADING_CHAT,
+  MAKE_CHAT_PUBLIC,
+  NO_MESSAGES,
+  NO_MESSAGES_TITLE,
+  RESUME,
+  RESUME_FAILED,
+  SHARE,
+  SHARE_DIALOG_SUBTITLE,
+  SHARE_DIALOG_TITLE,
+  SHARE_FAILED,
+  SHARE_NOT_SET_UP,
+  SHARE_READ_FAILED,
+  TRY_AGAIN,
+  billedTokens,
+  messageCount,
+  ranIn,
+} from './copy';
+import './history.css';
 
 const isUserMessage = (message: Message): boolean => {
   if (message.role === 'assistant') {
@@ -68,7 +84,7 @@ const filterMessagesForDisplay = (messages: Message[]): Message[] => {
 function shareRefusalMessage(refusal: unknown): string {
   if (typeof refusal === 'string' && refusal.trim()) return refusal.trim();
   if (refusal instanceof Error && refusal.message.trim()) return refusal.message.trim();
-  return 'The chat could not be read for sharing. Nothing was shared.';
+  return SHARE_READ_FAILED;
 }
 
 /**
@@ -108,43 +124,6 @@ interface SessionHistoryViewProps {
   showActionButtons?: boolean;
 }
 
-// Custom SessionHeader component similar to SessionListView style
-const SessionHeader: React.FC<{
-  onBack: () => void;
-  children: React.ReactNode;
-  title: string;
-  /**
-   * Sits beside the title, NOT in the metadata row below it.
-   *
-   * The metadata row renders only once the conversation has loaded; the title
-   * renders immediately. A privacy marker that appears a beat after the page
-   * does is a marker you can miss by reading fast, which is precisely the
-   * failure R10 exists to prevent.
-   */
-  titleAdornment?: React.ReactNode;
-  actionButtons?: React.ReactNode;
-}> = ({ onBack, children, title, titleAdornment, actionButtons }) => {
-  return (
-    /* `-mx-6 … px-6` cancels the reading column's own inset so the hairline
-       runs the full width of that column, then puts the inset back on the
-       content. The pair must always match the `px-*` on the `ReadableContent`
-       below — they were `8` while the column was on the page measure. */
-    <div className="biorouter-page-header -mx-6 flex flex-col px-6 pb-8">
-      <div className="flex items-center pt-0 mb-1">
-        <BackButton onClick={onBack} />
-      </div>
-      {/* §4.2 — `text-title` carries the 24/600/-0.01em the three utilities
-          beside it were spelling out by hand. */}
-      <div className="flex min-w-0 items-center gap-2 mb-4 pt-6">
-        <h1 className="text-title min-w-0 break-words">{title}</h1>
-        {titleAdornment}
-      </div>
-      <div className="flex items-center">{children}</div>
-      {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
-    </div>
-  );
-};
-
 const SessionMessages: React.FC<{
   messages: Message[];
   isLoading: boolean;
@@ -158,70 +137,67 @@ const SessionMessages: React.FC<{
 
   return (
     // `data-preview-transcript`: the box rung 2 measures as this replay's
-    // transcript, so the page header above it counts as the conversation's chrome.
+    // transcript, so the band above it counts as the conversation's chrome.
     <ScrollArea className="h-full w-full" data-preview-transcript="">
-      <div className="pb-24 pt-8">
-        <div className="flex flex-col space-y-6">
-          {isLoading ? (
-            <div className="flex justify-center items-center py-12">
-              <LoaderCircle className="animate-spin h-8 w-8 text-text-default" />
-            </div>
-          ) : error ? (
-            // §4.5 — the same shared surface the list view's error uses, so the
-            // two halves of one feature stop speaking different error dialects.
-            <EmptyState
-              icon={AlertCircle}
-              title="Couldn't load this chat"
-              description={error}
-              actions={
-                <Button onClick={onRetry} variant="outline">
-                  Try again
-                </Button>
-              }
+      <div className="pb-24 pt-6">
+        {isLoading ? (
+          <div className="flex justify-center items-center py-12">
+            <Spinner label={LOADING_CHAT} />
+          </div>
+        ) : error ? (
+          // §4.5: the same shared surface the list view's error uses.
+          <EmptyState
+            icon={AlertCircle}
+            title={CHAT_LOAD_ERROR_TITLE}
+            description={error}
+            actions={
+              <Button onClick={onRetry} variant="secondary">
+                {TRY_AGAIN}
+              </Button>
+            }
+          />
+        ) : filteredMessages?.length > 0 ? (
+          /* ⚠ NO measure of its own. This was `max-w-4xl mx-auto w-full` (the
+             896px replay column) nested inside the page's reading column, so the
+             transcript had two ceilings and neither was the live chat's. The
+             outer `ReadableContent size="chat"` is the measure (design of record
+             §4.4); a second `max-w-*` here would silently win again, and
+             `styles/measures.test.ts` fails on one. Find in this transcript is
+             SearchView, the same overlay the live chat uses. */
+          <SearchView>
+            <ProgressiveMessageList
+              messages={filteredMessages}
+              // The REAL session id: every consumer that scopes work by id (the
+              // scroll broadcast, Branch) must address this chat.
+              chat={{ sessionId }}
+              toolCallNotifications={new Map()}
+              isUserMessage={isUserMessage} // Use the same function as BaseChat
+              onOpenArtifact={onOpenArtifact}
+              // No terminal on this surface: a saved transcript is a record, and
+              // a shell code block in it is history, not an offer. Null rather
+              // than omitted, so the absence is a decision.
+              onRunInTerminal={null}
+              workingDir={workingDir}
+              batchSize={15} // Same as BaseChat default
+              batchDelay={30} // Same as BaseChat default
+              showLoadingThreshold={30} // Same as BaseChat default
             />
-          ) : filteredMessages?.length > 0 ? (
-            /* ⚠ NO measure of its own. This was `max-w-4xl mx-auto w-full` —
-               the 896px replay column — nested inside the page's own reading
-               column, so the transcript had two ceilings and neither was the
-               one the live chat uses. The outer `ReadableContent size="chat"`
-               is the measure now (design of record §4.4, done 2026-09-07); a
-               second `max-w-*` here would silently take precedence again and
-               `styles/measures.test.ts` fails on one. */
-            <SearchView placeholder="Search history...">
-              <ProgressiveMessageList
-                messages={filteredMessages}
-                // The REAL session id. This was the string 'session-preview',
-                // which is nobody's session: every consumer that scopes work
-                // by id — the scroll broadcast, Branch — silently addressed a
-                // chat that does not exist.
-                chat={{ sessionId }}
-                toolCallNotifications={new Map()}
-                isUserMessage={isUserMessage} // Use the same function as BaseChat
-                onOpenArtifact={onOpenArtifact}
-                // No terminal on this surface, and no chat to open one in: a
-                // saved transcript is a record, and a shell code block in it
-                // is history, not an offer. Explicitly null rather than
-                // omitted, so the absence is a decision and not an oversight.
-                onRunInTerminal={null}
-                workingDir={workingDir}
-                batchSize={15} // Same as BaseChat default
-                batchDelay={30} // Same as BaseChat default
-                showLoadingThreshold={30} // Same as BaseChat default
-              />
-            </SearchView>
-          ) : (
-            <EmptyState
-              icon={MessageSquareText}
-              title="No messages in this chat"
-              description="This chat was created but nothing was ever said in it."
-              compact
-            />
-          )}
-        </div>
+          </SearchView>
+        ) : (
+          <EmptyState
+            icon={MessageSquareText}
+            title={NO_MESSAGES_TITLE}
+            description={NO_MESSAGES}
+            compact
+          />
+        )}
       </div>
     </ScrollArea>
   );
 };
+
+/** A spinner in the 16px glyph slot of a band action, while that action runs. */
+const BusyGlyph = () => <Spinner size={16} />;
 
 const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   session,
@@ -315,8 +291,8 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     } catch (error) {
       console.error('Error sharing session:', error);
       toastError({
-        title: 'Failed to share chat',
-        msg: error instanceof Error ? error.message : 'Unknown error',
+        title: SHARE_FAILED,
+        msg: error instanceof Error ? error.message : SHARE_READ_FAILED,
       });
     } finally {
       setIsSharing(false);
@@ -331,10 +307,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       })
       .catch((err) => {
         console.error('Failed to copy link:', err);
-        toastError({
-          title: 'Failed to copy link',
-          msg: 'The chat link could not be copied to the clipboard.',
-        });
+        toastError({ title: COPY_LINK_FAILED, msg: COPY_LINK_FAILED_MSG });
       });
   };
 
@@ -343,226 +316,179 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       resumeSession(session, setView);
     } catch (error) {
       toastError({
-        title: 'Could not open this chat',
+        title: RESUME_FAILED,
         msg: error instanceof Error ? error.message : String(error),
       });
     }
   };
 
-  const actionButtons = showActionButtons ? (
+  /*
+   * The band's actions: ghost round 32px icons with tooltips, Resume the one
+   * `secondary` among them (spec 3.4). Share stays focusable while it is
+   * unavailable (`aria-disabled`, not `disabled`), because `buttonVariants`
+   * gives a disabled button `pointer-events: none` and the tooltip that says
+   * WHY sharing is off could then never open.
+   */
+  const actions = showActionButtons ? (
     <>
-      {/* V7 — the Share button carries no `className`. It hand-painted the
-          disabled look (`cursor-not-allowed opacity-50`) that
-          `buttonVariants`' base already supplies as
-          `disabled:pointer-events-none disabled:opacity-50`, keyed off the same
-          `disabled` prop. ⚠ That base rule also means the tooltip explaining
-          WHY sharing is unavailable has never fired — a pointer-events-none
-          trigger receives no hover — and deleting the override does not change
-          that either way. Restoring it needs a wrapper the trigger can sit on,
-          which is a behaviour change and not this PR's. */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            onClick={handleShare}
-            disabled={!canShare || isSharing}
-            size="sm"
-            variant="outline"
-          >
-            {isSharing ? (
-              <>
-                <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                Sharing...
-              </>
-            ) : (
-              <>
-                <Share2 className="w-4 h-4" />
-                Share
-              </>
-            )}
-          </Button>
-        </TooltipTrigger>
-        {!canShare ? (
-          <TooltipContent>
-            {/* Deliberately does NOT name a settings path: chat sharing has
-                no mounted settings section, so the old "Settings > Session >
-                Session Sharing" sent the user somewhere that does not exist. */}
-            <p>Chat sharing is not set up on this install.</p>
-          </TooltipContent>
-        ) : null}
-      </Tooltip>
-      <Button onClick={handleResumeSession} size="sm" variant="outline">
-        <Sparkles className="w-4 h-4" />
-        Resume
-      </Button>
+      <PageHeaderAction
+        icon={isSharing ? BusyGlyph : Share2}
+        label={SHARE}
+        tooltip={canShare ? SHARE : SHARE_NOT_SET_UP}
+        aria-disabled={!canShare || isSharing ? true : undefined}
+        aria-busy={isSharing || undefined}
+        className="br-transcript-action"
+        onClick={() => {
+          if (canShare && !isSharing) void handleShare();
+        }}
+      />
       {tier === 'private' &&
         (declassifyOnHost !== null ? (
-          /* SD-8's second entry point. A line of text rather than a disabled
-             Button with a tooltip, and the comment above the Share button is
-             why: `buttonVariants` sets `disabled:pointer-events-none`, so a
-             disabled trigger receives no hover and the tooltip explaining it
-             has never once fired on this very row. An explanation nobody can
-             reach is the defect SD-8 names, not a fix for it.
-
-             The SHORT line, with the full reason on `title`. This bar is a row
-             of small buttons; the three-sentence form belongs where there is
-             room for it, which is History's row menu. Same trade as
-             `SUBAGENT_STOP_NEEDS_DESKTOP`, which takes the header Stop's
-             place. */
+          /* SD-8's second entry point: a line of text, not a disabled control,
+             because this surface can never declassify (the browser has no proof
+             of a person). The short line stays visible; the full reason is on
+             `title`, where the global tooltip enhancer also makes it the span's
+             spoken name. A refusal is never hover-only. */
           <span
             data-testid="declassify-browser-note"
             title={declassifyOnHost}
-            className="text-supporting text-text-muted"
+            className="whitespace-nowrap px-1 text-supporting text-text-muted"
           >
             {DECLASSIFY_NEEDS_HOST_SHORT}
           </span>
         ) : (
-          <Button onClick={() => setDeclassifyOpen(true)} size="sm" variant="outline">
-            Make public
-          </Button>
+          <PageHeaderAction
+            icon={Globe}
+            label={MAKE_CHAT_PUBLIC}
+            onClick={() => setDeclassifyOpen(true)}
+          />
         ))}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="secondary"
+            shape="round"
+            aria-label={RESUME}
+            className="no-drag"
+            onClick={handleResumeSession}
+          >
+            <Play aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{RESUME}</TooltipContent>
+      </Tooltip>
     </>
   ) : null;
 
+  // The facts beside the title, once the chat has loaded: when it started, how
+  // long it is, what it cost. Sans and tabular, like every count in the app.
+  const facts = !isLoading
+    ? [
+        messages[0]?.created ? formatMessageTimestamp(messages[0].created) : null,
+        messageCount(session.message_count),
+        billedTokenEstimate ? billedTokens(formatBilledTokenEstimate(billedTokenEstimate)) : null,
+      ].filter(Boolean)
+    : [];
+
   return (
     <>
-      <MainPanelLayout>
-        {/* The horizontal split the artifact panel needs. It wraps
-            ReadableContent rather than sitting inside it: the readable measure
-            is a ceiling on PROSE, and a panel inside it would eat the column it
-            is meant to sit beside. `splitPaneRef` goes here because rung 2
-            measures this box — the one the transcript and the panel share. */}
+      <MainPanelLayout removeTopPadding>
+        {/* The horizontal split the artifact panel needs, built like the live
+            chat's: a column holding the band and the transcript, the panel
+            beside it. In the side layout the panel's own 44px strip continues
+            this band, and in the stacked one the sheet sits between the band
+            and the transcript. `splitPaneRef` goes here because rung 2 measures
+            this box; the `data-preview-area` marks are how the grid places the
+            pieces (`main.css`, RUNG 2), and the column and body flatten rather
+            than re-parent, so the panel is never remounted. */}
         <div
           ref={splitPaneRef}
           {...artifactPanel.splitPaneProps}
           className="relative flex flex-1 min-h-0 min-w-0"
         >
-          {/* ⚠ `size="chat"`, and it is the ONLY measure on this surface. The
-              transcript used to sit in a second, narrower box inside this one
-              (`max-w-4xl` — the 896px "replay fork"), so a saved conversation
-              was drawn at a width the live chat never uses. §4.4 of the design
-              of record retires it: one column, one number, and it is the same
-              `--measure-chat` the composer reads. */}
-          <ReadableContent
-            size="chat"
-            className="flex-1 flex flex-col min-h-0 px-6"
-            previewConversation
-          >
-            <SessionHeader
-              onBack={onBack}
-              title={session.name}
-              // The full pill, not the dense dot: this page has room, and it is
-              // the surface a user opens to answer "what is in this chat?". It
-              // reads the LOCAL tier, so a declassification made from the button
-              // beside it clears the badge without waiting for a refetch — an
-              // action whose only visible effect arrives on the next page load
-              // reads as an action that did nothing.
-              titleAdornment={tier ? <PrivacyBadge tier={tier} /> : null}
-              actionButtons={!isLoading ? actionButtons : null}
-            >
-              <div className="flex flex-col">
-                {!isLoading ? (
-                  <>
-                    <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
-                      <span className="flex items-center">
-                        <Calendar className="w-4 h-4 mr-1" />
-                        {formatMessageTimestamp(messages[0]?.created)}
-                      </span>
-                      <span className="flex items-center">
-                        <MessageSquareText className="w-4 h-4 mr-1" />
-                        {session.message_count}
-                      </span>
-                      {billedTokenEstimate && (
-                        <span
-                          className="flex items-center"
-                          title={
-                            billedTokenEstimate.lowerBound
-                              ? 'At least this many tokens; only last-turn usage is available for this older chat'
-                              : 'Billed tokens across every turn, including recorded cache usage'
-                          }
-                        >
-                          <Target className="w-4 h-4 mr-1" />
-                          <span className="sr-only">Billed tokens: </span>
-                          {formatBilledTokenEstimate(billedTokenEstimate)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
-                      <span className="flex items-center">
-                        <Folder className="w-4 h-4 mr-1" />
-                        {session.working_dir}
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  // V6 — a status line takes `text-supporting`, the role the
-                  // metadata it stands in for uses.
-                  <div className="flex items-center text-supporting text-text-muted">
-                    <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                    <span>Loading chat details...</span>
-                  </div>
-                )}
+          <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
+            {/* The privacy marker is in the band from the first frame, not in a
+                line that renders only once the chat has loaded: a marker that
+                arrives a beat late can be missed by someone reading fast, which
+                is the failure R10 exists to prevent. It reads the LOCAL tier, so
+                a declassification made from this band clears it at once. */}
+            <div data-preview-area="header" className="flex-shrink-0">
+              <PageHeader
+                title={session.name}
+                onBack={onBack}
+                backLabel={BACK}
+                info={session.working_dir ? ranIn(session.working_dir) : undefined}
+                adornment={
+                  tier || facts.length > 0 ? (
+                    <span className="flex min-w-0 items-center gap-2">
+                      {tier ? <PrivacyBadge tier={tier} /> : null}
+                      {facts.length > 0 ? (
+                        <span className="truncate">{facts.join(' · ')}</span>
+                      ) : null}
+                    </span>
+                  ) : undefined
+                }
+                actions={!isLoading ? actions : undefined}
+              />
+            </div>
+            <div data-preview-area="body" className="flex min-h-0 flex-1 flex-col">
+              {/* ⚠ `size="chat"`, and it is the ONLY measure on this surface:
+                  the same `--measure-chat` the live chat's composer reads. */}
+              <div data-preview-area="transcript" className="flex min-h-0 flex-1 flex-col">
+                <ReadableContent size="chat" className="flex min-h-0 flex-1 flex-col px-6">
+                  <SessionMessages
+                    messages={messages}
+                    isLoading={isLoading}
+                    error={error}
+                    onRetry={onRetry}
+                    sessionId={session.id}
+                    workingDir={session.working_dir}
+                    onOpenArtifact={openArtifact}
+                  />
+                </ReadableContent>
               </div>
-            </SessionHeader>
-
-            <SessionMessages
-              messages={messages}
-              isLoading={isLoading}
-              error={error}
-              onRetry={onRetry}
-              sessionId={session.id}
-              workingDir={session.working_dir}
-              onOpenArtifact={openArtifact}
-            />
-          </ReadableContent>
+            </div>
+          </div>
 
           {/* No `onRenderError`: a saved transcript has no live turn to hand a
               broken figure back to, so ArtifactViewer installs no repair
-              listener. And nothing auto-opens here — the panel appears when the
+              listener. And nothing auto-opens here; the panel appears when the
               reader clicks a card, never because the page loaded. */}
           {presentedArtifact && <ArtifactViewer {...artifactPanel.viewerProps} />}
         </div>
       </MainPanelLayout>
 
-      <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>
-        {/* V8 — the `MODAL_SIZE` ladder, not `sm:max-w-md`. That alias is 448px,
-            a fourth width beside the ladder's 400/480/640, and nothing chose
-            it: it is `DialogContent`'s own `sm:max-w-lg` typed one rung down. */}
-        <DialogContent className={MODAL_SIZE.md}>
-          <DialogHeader>
-            <DialogTitle className="flex justify-center items-center gap-2">
-              <Share2 className="w-6 h-6 text-text-default" />
-              Share chat (beta)
-            </DialogTitle>
-            <DialogDescription>
-              Share this link to give others a read-only view of this chat.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="py-4">
-            <div className="relative rounded-container border border-border-subtle px-3 py-2 flex items-center bg-background-medium">
-              <code className="text-code text-text-default overflow-x-hidden break-all pr-8 w-full">
-                {shareLink}
-              </code>
+      <ModalShell
+        open={isShareModalOpen}
+        onOpenChange={setIsShareModalOpen}
+        size="md"
+        title={SHARE_DIALOG_TITLE}
+        subtitle={SHARE_DIALOG_SUBTITLE}
+        footer={
+          <Button variant="secondary" onClick={() => setIsShareModalOpen(false)}>
+            {DONE}
+          </Button>
+        }
+      >
+        {/* The link is a machine string: mono, in a well, with one Copy action. */}
+        <div className="flex items-center gap-2 rounded-element bg-background-well py-1 pl-3 pr-1">
+          <code className="min-w-0 flex-1 truncate text-code text-text-default">{shareLink}</code>
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button
-                shape="pill"
                 variant="ghost"
-                className="absolute right-2 top-1/2 -translate-y-1/2"
+                shape="round"
+                aria-label={isCopied ? LINK_COPIED : COPY_LINK}
                 onClick={handleCopyLink}
                 disabled={isCopied}
               >
-                {isCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                <span className="sr-only">Copy</span>
+                {isCopied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
               </Button>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsShareModalOpen(false)}>
-              Cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </TooltipTrigger>
+            <TooltipContent side="top">{isCopied ? LINK_COPIED : COPY_LINK}</TooltipContent>
+          </Tooltip>
+        </div>
+      </ModalShell>
 
       {declassifyOpen && (
         <DeclassifySessionDialog

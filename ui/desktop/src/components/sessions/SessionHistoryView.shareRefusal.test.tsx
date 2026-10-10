@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistoryView from './SessionHistoryView';
+import { SHARE_FAILED } from './copy';
 import type { Message, Session } from '../../api';
 
 /**
@@ -105,7 +106,7 @@ describe('SessionHistoryView Share', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'Failed to share chat',
+        title: SHARE_FAILED,
         msg: CREW_EXPORT_REFUSAL,
       })
     );
@@ -138,7 +139,7 @@ describe('SessionHistoryView Share', () => {
 
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith({
-        title: 'Failed to share chat',
+        title: SHARE_FAILED,
         msg: 'The chat could not be read for sharing. Nothing was shared.',
       })
     );

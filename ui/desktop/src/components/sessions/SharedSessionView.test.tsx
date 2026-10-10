@@ -58,25 +58,21 @@ describe('SharedSessionView sits on the chat measure', () => {
   });
 
   /**
-   * The header hairlines are FULL-BLEED across the reading column: each one
-   * cancels the column's inset with a negative margin and puts it back as
-   * padding. The two halves must be the same number or the rule stops short of
-   * the column's edge (too small) or runs past it (too large) — a defect that
-   * is invisible in jsdom as a width and perfectly visible as a class string,
-   * which is why it is asserted this way round.
+   * One 44px band, not two stacked headers: the chat's title as the page's
+   * `<h1>`, and "Shared chat" with the facts beside it. The band is full width
+   * and outside the column; only the transcript is measured.
    */
-  it('insets the full-bleed page headers by exactly the column’s own padding', () => {
-    const { container } = renderView();
+  it('puts the title and the facts on one band, outside the column', () => {
+    const { container, getByRole } = renderView();
 
-    const column = container.querySelector('.biorouter-readable-content') as HTMLElement;
-    expect(column.className).toContain('px-6');
-
-    const headers = [...container.querySelectorAll('.biorouter-page-header')];
-    expect(headers.length).toBeGreaterThan(0);
-    for (const header of headers) {
-      expect(header.className).toContain('-mx-6');
-      expect(header.className).toContain('px-6');
-    }
+    const heading = getByRole('heading', { level: 1, name: 'Shared cohort walkthrough' });
+    const band = heading.closest('[data-band]') as HTMLElement;
+    expect(band).not.toBeNull();
+    expect(band.textContent).toMatch(/Shared chat/);
+    expect(band.textContent).toMatch(/2 messages/);
+    expect(band.textContent).toMatch(/4,096 tokens/);
+    expect(container.querySelectorAll('[data-band]')).toHaveLength(1);
+    expect(band.closest('.biorouter-readable-content')).toBeNull();
   });
 
   /** The 896px replay fork never existed here, and must not arrive. */

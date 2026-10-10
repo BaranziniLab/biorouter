@@ -90,7 +90,6 @@ export const LOADING_CHAT = 'Loading chat…';
 export const CHAT_LOAD_ERROR_TITLE = "Couldn't load this chat";
 export const NO_MESSAGES_TITLE = 'No messages in this chat';
 export const NO_MESSAGES = 'Nothing was said in this chat.';
-export const SEARCH_CHAT_PLACEHOLDER = 'Search this chat…';
 
 export const SHARE_FAILED = "Couldn't share chat";
 export const SHARE_READ_FAILED = 'The chat could not be read for sharing. Nothing was shared.';
@@ -105,8 +104,10 @@ export const RESUME_FAILED = "Couldn't open this chat";
 
 /** "12 messages", the count every transcript header shows. */
 export const messageCount = (count: number) => `${count} ${count === 1 ? 'message' : 'messages'}`;
-/** InfoTip on a saved transcript's title: where the chat ran, which only a tooltip should name. */
-export const savedChatInfo = (workingDir: string) => `This chat ran in ${workingDir}.`;
+/** "1,234 tokens" (or "≥1,234 tokens" for an older chat with last-turn usage only). */
+export const billedTokens = (formatted: string) => `${formatted} tokens`;
+/** InfoTip on a transcript's title: where the chat ran, which only a tooltip should name. */
+export const ranIn = (workingDir: string) => `This chat ran in ${workingDir}.`;
 
 /* ------------------------------------------------------------ Shared chat */
 
