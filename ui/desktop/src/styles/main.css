@@ -5559,16 +5559,17 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   contain: layout style paint;
 }
 
+/* @ws WS-SUMMARY begin: composer motion */
+/* The composer shell BaseChat FLIPs on the first turn: translate only, with
+   WAAPI on DUR.med and EASE_OUT (styles/motion.ts). No standing
+   `will-change`: WAAPI promotes the layer for the animation's length, and a
+   permanent hint kept a compositor layer alive for the life of every chat.
+   The FLIP and the conversation glide (hooks/useColumnGlide.ts) both skip
+   themselves under reduced motion and while the window is being resized. */
 .biorouter-composer-motion {
   transform-origin: top left;
-  will-change: transform, opacity;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .biorouter-composer-motion {
-    will-change: auto;
-  }
-}
+/* @ws WS-SUMMARY end: composer motion */
 
 /* Sidebar transition optimizations */
 [data-slot='sidebar-container'] {
