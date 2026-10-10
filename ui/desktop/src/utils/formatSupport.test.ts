@@ -95,7 +95,11 @@ describe('the fidelity ceiling is stated, not discovered', () => {
       'utf8'
     );
     expect(source).toContain('describeUnsupportedFormat');
-    // The old one-size-fits-all sentence must only survive as the fallback.
-    expect(source).toContain('unsupported\n            ? unsupported.reason');
+    // The old one-size-fits-all sentence must only survive as the fallback:
+    // the false arm of the ternary whose true arm is the format's own reason.
+    // Whitespace-free, so a Prettier line break does not decide the verdict.
+    expect(source).toMatch(
+      /unsupported\s*\?\s*unsupported\.reason\s*:\s*PREVIEW_COPY\.binaryFallbackReason\b/
+    );
   });
 });
