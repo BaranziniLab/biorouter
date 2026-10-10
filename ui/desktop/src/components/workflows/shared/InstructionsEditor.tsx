@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { Button } from '../../ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../../ui/dialog';
+import { Textarea } from '../../ui/textarea';
+import { ModalShell } from '../../ModalShell';
+import { workflowFormCopy } from '../copy';
+
+const copy = workflowFormCopy.instructionsEditor;
 
 interface InstructionsEditorProps {
   isOpen: boolean;
@@ -61,54 +65,49 @@ Use {{parameter_name}} syntax for any user-provided values.`;
 
   if (!isOpen) return null;
 
+  // The editor rung of the dialog ladder (`xl`, 800px), shared with the response-schema
+  // editor. What `{{parameter_name}}` does is said once, in the form's InfoTip beside the
+  // Instructions label; this view is the long text and nothing else.
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
-      <DialogContent className="flex max-h-[90vh] w-[900px] max-w-[90vw] flex-col overflow-hidden sm:max-w-[90vw] lg:max-w-[900px]">
-        <div className="mb-4 pr-8">
-          <DialogTitle>Instructions editor</DialogTitle>
-        </div>
-
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-label text-text-default">Instructions</label>
-              <Button
-                type="button"
-                onClick={insertExample}
-                variant="ghost"
-                size="sm"
-                className="text-supporting"
-              >
-                Insert example
-              </Button>
-            </div>
-            <DialogDescription className="text-supporting text-text-muted mb-3">
-              Use{' '}
-              <code className="bg-background-muted px-1 rounded-inner">{`{{parameter_name}}`}</code>{' '}
-              syntax to define parameters that users can fill in
-            </DialogDescription>
-          </div>
-
-          <div className="flex-1 min-h-0">
-            <textarea
-              value={localValue}
-              onChange={(e) => setLocalValue(e.target.value)}
-              className={`biorouter-modal-panel w-full h-full min-h-[500px] px-3 py-2 text-code rounded-element text-text-default placeholder:text-text-muted transition-colors resize-none font-mono ${error ? '!border-border-danger' : ''}`}
-              placeholder="Detailed instructions for the AI, hidden from the user"
-            />
-            {error && <p className="text-text-danger text-body mt-2">{error}</p>}
-          </div>
-        </div>
-
-        <div className="flex justify-end space-x-3 mt-6 pt-4 border-t border-border-subtle">
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => !open && handleCancel()}
+      size="xl"
+      purpose="form"
+      scrollBody
+      title={copy.title}
+      footer={
+        <>
           <Button type="button" onClick={handleCancel} variant="ghost">
-            Cancel
+            {copy.cancel}
           </Button>
-          <Button type="button" onClick={handleSave} variant="default">
-            Save instructions
+          <Button type="button" onClick={handleSave}>
+            {copy.save}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2 py-1">
+        <div className="flex justify-end">
+          <Button type="button" onClick={insertExample} variant="ghost" size="sm">
+            {copy.insertExample}
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+        <Textarea
+          aria-label={copy.title}
+          value={localValue}
+          onChange={(e) => setLocalValue(e.target.value)}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? 'instructions-editor-error' : undefined}
+          className="min-h-[400px] resize-none font-mono text-code"
+          placeholder={workflowFormCopy.instructionsPlaceholder}
+        />
+        {error && (
+          <p id="instructions-editor-error" className="text-supporting text-text-danger">
+            {error}
+          </p>
+        )}
+      </div>
+    </ModalShell>
   );
 }

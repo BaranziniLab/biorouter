@@ -12,6 +12,7 @@ import {
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
+import { workflowFormCopy } from '../copy';
 import { createWorkflow, getActive, listBases, skillCatalogHandler } from '../../../api/sdk.gen';
 import type { CreateWorkflowResponse, WorkflowKnowledgeBases } from '../../../api/types.gen';
 import { saveWorkflow } from '../../../workflow/workflow_management';
@@ -201,10 +202,13 @@ describe('CreateWorkflowFromSessionModal', () => {
       expect(screen.queryByTestId('create-workflow-modal')).not.toBeInTheDocument();
     });
 
-    it('renders modal header with close button', async () => {
+    it('renders a title only, and a close button', async () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
-      expect(screen.getByTestId('modal-header')).toBeInTheDocument();
+      // `ModalShell size="lg"`: the title names the dialog, and nothing sits under it.
+      const dialog = screen.getByRole('dialog', { name: workflowFormCopy.fromChatTitle });
+      expect(dialog).toHaveAttribute('data-size', 'lg');
+      expect(dialog).not.toHaveAttribute('aria-describedby');
       expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
       await screen.findByTestId('form-state');
     });
@@ -223,7 +227,8 @@ describe('CreateWorkflowFromSessionModal', () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('analyzing-state')).toBeInTheDocument();
-      expect(screen.getByTestId('analyzing-title')).toBeInTheDocument();
+      // One honest line while the chat is read, not a rotation of invented stages.
+      expect(screen.getByTestId('analysis-stage')).toHaveTextContent(workflowFormCopy.readingChat);
       await screen.findByTestId('form-state');
     });
 
@@ -714,7 +719,7 @@ describe('CreateWorkflowFromSessionModal', () => {
         render(<CreateWorkflowFromSessionModal {...defaultProps} sessionId={PRIVATE_CHAT} />);
 
         // Nothing was captured, so nothing opens the advanced options for us.
-        await user.click(await screen.findByText('Advanced options'));
+        await user.click(await screen.findByRole('button', { name: workflowFormCopy.advanced }));
 
         const notice = screen.getByText(SELECTION_UNREAD);
         expect(notice.closest('[role="status"]')).not.toBeNull();
@@ -944,7 +949,7 @@ describe('CreateWorkflowFromSessionModal', () => {
         render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
         await openThePicker(user);
-        await user.click(screen.getByRole('switch', { name: 'Toggle grant-drafts' }));
+        await user.click(screen.getByRole('checkbox', { name: 'grant-drafts' }));
 
         const saved = await saveTheWorkflow(user);
         expect(saved?.knowledge_bases).toEqual({
@@ -958,7 +963,7 @@ describe('CreateWorkflowFromSessionModal', () => {
         render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
         await openThePicker(user);
-        await user.click(screen.getByRole('switch', { name: 'Toggle lab-notes' }));
+        await user.click(screen.getByRole('checkbox', { name: 'lab-notes' }));
 
         const saved = await saveTheWorkflow(user);
         expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul'] });
@@ -973,7 +978,7 @@ describe('CreateWorkflowFromSessionModal', () => {
         render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
         await openThePicker(user);
-        await user.click(screen.getByRole('switch', { name: 'Toggle lab-notes' }));
+        await user.click(screen.getByRole('checkbox', { name: 'lab-notes' }));
 
         const saved = await saveTheWorkflow(user);
         expect(saved?.knowledge_bases).toEqual({ default: null, visible: ['soul'] });

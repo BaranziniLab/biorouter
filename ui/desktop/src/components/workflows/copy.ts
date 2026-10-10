@@ -94,3 +94,133 @@ export const workflowsCopy = {
     cancel: 'Cancel',
   },
 } as const;
+
+/**
+ * The workflow editors: `CreateEditWorkflowModal`, `CreateWorkflowFromSessionModal`, the form
+ * they share (`shared/WorkflowFormFields.tsx`) and its pickers and sub-editors.
+ */
+export const workflowFormCopy = {
+  newTitle: 'New workflow',
+  editTitle: 'Edit workflow',
+  fromChatTitle: 'New workflow from this chat',
+  cancel: 'Cancel',
+  save: 'Save',
+  saveAndRun: 'Save and run',
+  create: 'Create',
+  createAndRun: 'Create and run',
+  saving: 'Saving…',
+  creating: 'Creating…',
+  saved: (title: string) => `Saved ${title}`,
+  couldNotSave: 'Couldn’t save the workflow',
+  couldNotCreate: 'Couldn’t create the workflow',
+  invalid: 'Fill in the title, the description, and instructions or a prompt.',
+  invalidSchema: 'The response schema is not valid JSON.',
+  readingChat: 'Reading this chat…',
+  refusedTitle: 'A workflow can’t be made from this chat',
+
+  title: 'Title',
+  titlePlaceholder: 'Workflow title',
+  description: 'Description',
+  descriptionPlaceholder: 'What this workflow does',
+  instructions: 'Instructions',
+  instructionsInfo:
+    'Hidden from the user. Use {{parameter_name}} to add a parameter that is filled in at run time.',
+  instructionsPlaceholder: 'Detailed instructions for the model',
+  prompt: 'Initial prompt',
+  optional: '(optional)',
+  promptInfo:
+    'Sent as the first message when the workflow starts. Needed when there are no instructions.',
+  promptPlaceholder: 'The first message',
+  openEditor: 'Open editor',
+
+  advanced: 'Advanced',
+  /** The closed Advanced section states its defaults (Crew's disclosure rule). */
+  advancedSummary: (model: string | null, parameters: number, extensions: number) =>
+    [
+      model ?? 'Global model',
+      parameters === 0
+        ? 'no parameters'
+        : parameters === 1
+          ? '1 parameter'
+          : `${parameters} parameters`,
+      extensions === 0
+        ? 'global extensions'
+        : extensions === 1
+          ? '1 extension'
+          : `${extensions} extensions`,
+    ].join(' · '),
+
+  parameters: 'Parameters',
+  parametersInfo:
+    'Found from {{parameter_name}} in the instructions, the prompt and the starter buttons. You can also add one by name.',
+  parameterPlaceholder: 'Parameter name',
+  addParameter: 'Add parameter',
+
+  responseSchema: 'Response schema',
+  responseSchemaInfo: 'A JSON Schema the model’s answer must follow.',
+
+  model: 'Model',
+  modelInfo: 'Leave these blank to use your default model. Temperature runs from 0 to 2.',
+  provider: 'Provider',
+  modelName: 'Model name',
+  temperature: 'Temperature',
+  defaultPlaceholder: 'Default',
+  temperaturePlaceholder: '0 to 2',
+
+  knowledgeBases: 'Knowledge bases',
+  knowledgeBasesInfo:
+    'The knowledge bases this workflow can search, and the one it uses by default.',
+  noDefaultKnowledgeBase:
+    'Chats it starts search every base above, and a write that names no base asks which one to use.',
+  noKnowledgeBases: 'No knowledge bases found',
+  searchKnowledgeBases: 'Search knowledge bases…',
+  skills: 'Skills',
+  skillsInfo: 'Skills this workflow prefers when the skills extension is on.',
+  noSkills: 'No skills found',
+  searchSkills: 'Search skills…',
+  extensions: 'Extensions',
+  extensionsInfo: 'Extensions on for this workflow. Leave empty to use your global default.',
+  noExtensions: 'No extensions configured',
+  searchExtensions: 'Search extensions…',
+
+  picker: {
+    count: (count: number, noun: string) =>
+      count === 0
+        ? `No ${noun}s selected`
+        : count === 1
+          ? `1 ${noun} selected`
+          : `${count} ${noun}s selected`,
+    default: 'Default',
+    defaultNamed: (noun: string, label: string) => `Default ${noun}: ${label}`,
+    defaultIs: (label: string) => `Default: ${label}`,
+    noDefault: 'No default',
+  },
+
+  activities: {
+    title: 'Activities',
+    info: 'What the chat shows when the workflow starts: an intro message and starter buttons.',
+    message: 'Intro message',
+    messageInfo: 'Shown at the top of the chat. Markdown works.',
+    messagePlaceholder: 'Welcome message',
+    buttons: 'Starter buttons',
+    buttonsInfo: 'Buttons under the intro message. Each one sends its label as a message.',
+    buttonPlaceholder: 'Button label',
+    add: 'Add',
+    remove: (activity: string) => `Remove ${activity}`,
+  },
+
+  instructionsEditor: {
+    title: 'Instructions',
+    insertExample: 'Insert example',
+    save: 'Save',
+    cancel: 'Cancel',
+  },
+
+  schemaEditor: {
+    title: 'Response schema',
+    insertExample: 'Insert example',
+    invalidJson: 'This is not valid JSON.',
+    save: 'Save',
+    cancel: 'Cancel',
+  },
+} as const;

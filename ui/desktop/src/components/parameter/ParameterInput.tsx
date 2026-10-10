@@ -1,6 +1,12 @@
 import React from 'react';
-import { AlertTriangle, Trash2, ChevronDown, ChevronRight } from '../icons/app-icons';
+import { AlertTriangle, Trash2, ChevronRight } from '../icons/app-icons';
 import { Parameter } from '../../workflow';
+import { Button } from '../ui/button';
+import { Field } from '../ui/field';
+import { InfoTip } from '../ui/info-tip';
+import { Input } from '../ui/input';
+import { Textarea } from '../ui/textarea';
+import { cn } from '../../utils';
 
 interface ParameterInputProps {
   parameter: Parameter;
@@ -11,12 +17,40 @@ interface ParameterInputProps {
   onToggleExpanded?: (parameterKey: string) => void;
 }
 
-const labelCls = 'block text-xs font-medium text-text-muted uppercase tracking-wider mb-1';
-const inputCls =
-  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
-const selectCls =
-  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default  focus:border-border-strong transition-colors duration-150';
+export const parameterCopy = {
+  description: 'Description',
+  descriptionInfo: 'Shown to the person running the workflow.',
+  descriptionPlaceholder: (key: string) => `What to ask for ${key}`,
+  inputType: 'Input type',
+  requirement: 'Requirement',
+  defaultValue: 'Default value',
+  options: 'Options',
+  optionsInfo: 'One per line. Each line becomes a choice.',
+  unused: 'Unused',
+  unusedInfo: 'Not used in the instructions, the prompt or the starter buttons.',
+  showDetails: (key: string) => `Show details for ${key}`,
+  hideDetails: (key: string) => `Hide details for ${key}`,
+  delete: (key: string) => `Delete parameter ${key}`,
+  types: { string: 'String', select: 'Select', number: 'Number', boolean: 'Boolean' },
+  requirements: { required: 'Required', optional: 'Optional' },
+} as const;
 
+const copy = parameterCopy;
+
+/**
+ * A native select drawn on the Input skin (`.br-field`: 32px, radius 8, the control edge), so
+ * the parameter's two choices sit on the same field skin as every other control in the form.
+ * Native rather than the shared react-select, because two fixed four-item lists inside a
+ * scrolling dialog need no search and no portal.
+ */
+export const NATIVE_SELECT_CLASS =
+  'br-field h-control-md w-full rounded-element border bg-background-default px-2 text-label text-text-default';
+
+/**
+ * One workflow parameter: a hairline-framed group whose header names it (`{{key}}`, the machine
+ * string in mono), flags it when nothing uses it, and can delete it; the details below edit
+ * what the person running the workflow is asked.
+ */
 const ParameterInput: React.FC<ParameterInputProps> = ({
   parameter,
   onChange,
@@ -27,151 +61,143 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
 }) => {
   const { key, description, requirement } = parameter;
   const defaultValue = parameter.default || '';
-
-  const handleToggleExpanded = (e: React.MouseEvent) => {
-    if (onToggleExpanded && !(e.target as HTMLElement).closest('button')) {
-      onToggleExpanded(key);
-    }
-  };
+  const idBase = `parameter-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
   return (
-    <div className="parameter-input parameter-input-container my-2 overflow-hidden rounded-xl border border-border-subtle bg-background-default">
-      {/* Header row */}
+    <div className="parameter-input overflow-hidden rounded-element border border-border-subtle">
       <div
-        className={`flex items-center justify-between px-4 py-3 ${onToggleExpanded ? 'cursor-pointer hover:bg-background-muted' : ''} transition-colors duration-150`}
-        onClick={handleToggleExpanded}
+        className={cn(
+          'flex min-h-10 items-center justify-between gap-2 px-2',
+          onToggleExpanded && 'cursor-pointer hover:bg-overlay-hover'
+        )}
+        onClick={(e) => {
+          if (onToggleExpanded && !(e.target as HTMLElement).closest('button')) {
+            onToggleExpanded(key);
+          }
+        }}
       >
-        <div className="flex items-center gap-2 flex-1 min-w-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           {onToggleExpanded && (
-            <button
+            <Button
               type="button"
-              className="p-0.5 text-text-muted hover:text-text-default rounded transition-colors flex-shrink-0"
+              variant="ghost"
+              shape="round"
+              size="sm"
+              aria-expanded={isExpanded}
+              aria-label={isExpanded ? copy.hideDetails(key) : copy.showDetails(key)}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleExpanded(key);
               }}
             >
-              {isExpanded ? (
-                <ChevronDown className="w-3.5 h-3.5" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5" />
-              )}
-            </button>
+              <ChevronRight
+                aria-hidden
+                className={cn(
+                  'transition-transform duration-[var(--dur-fast-max)] ease-[var(--ease-out)] motion-reduce:transition-none',
+                  isExpanded && 'rotate-90'
+                )}
+              />
+            </Button>
           )}
 
-          <code className="text-xs font-mono bg-background-medium px-2 py-0.5 rounded text-text-default">
+          <code className="min-w-0 truncate rounded-inner bg-background-muted px-1.5 font-mono text-code text-text-default">
             {'{{'}
             <span>{key}</span>
             {'}}'}
           </code>
 
           {isUnused && (
-            <div
-              className="flex items-center gap-1"
-              title="This parameter is not referenced in instructions, prompt, or activities."
-            >
-              <AlertTriangle className="w-3.5 h-3.5 text-text-warning" />
-              <span className="text-xs text-text-warning">Unused</span>
-            </div>
+            <InfoTip label={copy.unused} help={copy.unusedInfo} asChild>
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-inner">
+                <AlertTriangle aria-hidden className="size-3.5 text-text-warning" />
+                <span className="text-supporting text-text-warning">{copy.unused}</span>
+              </span>
+            </InfoTip>
           )}
         </div>
 
         {onDelete && (
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            shape="round"
+            size="sm"
+            className="text-text-muted hover:text-text-danger"
+            aria-label={copy.delete(key)}
             onClick={(e) => {
               e.stopPropagation();
               onDelete(key);
             }}
-            className="p-1 text-text-muted hover:text-text-danger hover:bg-background-danger/10 rounded transition-colors flex-shrink-0"
-            title={`Delete parameter ${key}`}
           >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+            <Trash2 aria-hidden />
+          </Button>
         )}
       </div>
 
-      {/* Expanded detail */}
       {isExpanded && (
-        <div className="px-4 pb-4 pt-3 border-t border-border-subtle space-y-3">
-          {/* Description */}
-          <div>
-            <label className={labelCls}>Description</label>
-            <input
+        <div className="flex flex-col gap-3 border-t border-border-subtle p-3">
+          <Field id={`${idBase}-description`} label={copy.description} info={copy.descriptionInfo}>
+            <Input
               type="text"
               value={description || ''}
               onChange={(e) => onChange(key, { description: e.target.value })}
-              className={inputCls}
-              placeholder={`Enter the name or prompt shown to the user for "${key}"`}
+              placeholder={copy.descriptionPlaceholder(key)}
             />
-            <p className="text-xs text-text-muted mt-1">
-              Shown to the end-user when running the workflow.
-            </p>
-          </div>
+          </Field>
 
-          {/* Controls row */}
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Input type</label>
+            <Field id={`${idBase}-type`} label={copy.inputType}>
               <select
-                className={selectCls}
+                className={NATIVE_SELECT_CLASS}
                 value={parameter.input_type || 'string'}
                 onChange={(e) =>
                   onChange(key, { input_type: e.target.value as Parameter['input_type'] })
                 }
               >
-                <option value="string">String</option>
-                <option value="select">Select</option>
-                <option value="number">Number</option>
-                <option value="boolean">Boolean</option>
+                <option value="string">{copy.types.string}</option>
+                <option value="select">{copy.types.select}</option>
+                <option value="number">{copy.types.number}</option>
+                <option value="boolean">{copy.types.boolean}</option>
               </select>
-            </div>
+            </Field>
 
-            <div>
-              <label className={labelCls}>Requirement</label>
+            <Field id={`${idBase}-requirement`} label={copy.requirement}>
               <select
-                className={selectCls}
+                className={NATIVE_SELECT_CLASS}
                 value={requirement}
                 onChange={(e) =>
                   onChange(key, { requirement: e.target.value as Parameter['requirement'] })
                 }
               >
-                <option value="required">Required</option>
-                <option value="optional">Optional</option>
+                <option value="required">{copy.requirements.required}</option>
+                <option value="optional">{copy.requirements.optional}</option>
               </select>
-            </div>
+            </Field>
           </div>
 
-          {/* Default value — only for optional */}
           {requirement === 'optional' && (
-            <div>
-              <label className={labelCls}>Default value</label>
-              <input
+            <Field id={`${idBase}-default`} label={copy.defaultValue}>
+              <Input
                 type="text"
                 value={defaultValue}
                 onChange={(e) => onChange(key, { default: e.target.value })}
-                className={inputCls}
-                placeholder="Enter default value"
               />
-            </div>
+            </Field>
           )}
 
-          {/* Options — only for select type */}
           {parameter.input_type === 'select' && (
-            <div>
-              <label className={labelCls}>Options (one per line)</label>
-              <textarea
+            <Field id={`${idBase}-options`} label={copy.options} info={copy.optionsInfo}>
+              <Textarea
                 value={(parameter.options || []).join('\n')}
                 onChange={(e) => onChange(key, { options: e.target.value.split('\n') })}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.stopPropagation();
                 }}
-                className={`${inputCls} resize-none`}
+                className="resize-none"
                 placeholder={'Option 1\nOption 2\nOption 3'}
                 rows={3}
               />
-              <p className="text-xs text-text-muted mt-1">Each line becomes a dropdown choice.</p>
-            </div>
+            </Field>
           )}
         </div>
       )}

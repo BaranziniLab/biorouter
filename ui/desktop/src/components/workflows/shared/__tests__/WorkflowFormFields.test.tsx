@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useForm } from '@tanstack/react-form';
 
 import { WorkflowFormFields, extractTemplateVariables } from '../WorkflowFormFields';
 import { type WorkflowFormData } from '../workflowFormSchema';
+import { workflowFormCopy as copy } from '../../copy';
+import { parameterCopy } from '../../../parameter/ParameterInput';
 
 const expandAdvancedSection = async (user: ReturnType<typeof userEvent.setup>) => {
-  const advancedTrigger = screen.getByRole('button', { name: /advanced options/i });
+  const advancedTrigger = screen.getByRole('button', { name: copy.advanced });
   const activitiesField = screen.queryByText('Activities');
   if (!activitiesField) {
     await user.click(advancedTrigger);
@@ -60,18 +62,18 @@ describe('WorkflowFormFields', () => {
       const user = userEvent.setup();
       render(<TestWrapper />);
 
-      expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/description/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/instructions/i)).toBeInTheDocument();
-      expect(screen.getByLabelText(/prompt/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(copy.title)).toBeInTheDocument();
+      expect(screen.getByLabelText(copy.description)).toBeInTheDocument();
+      expect(screen.getByLabelText(copy.instructions)).toBeInTheDocument();
+      expect(screen.getByRole('textbox', { name: /initial prompt/i })).toBeInTheDocument();
 
-      expect(screen.getByRole('button', { name: /advanced options/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: copy.advanced })).toBeInTheDocument();
 
       await expandAdvancedSection(user);
 
       expect(screen.getAllByText(/activities/i)[0]).toBeInTheDocument();
       expect(screen.getAllByText(/parameters/i)[0]).toBeInTheDocument();
-      expect(screen.getByText(/response json schema/i)).toBeInTheDocument();
+      expect(screen.getByText(copy.responseSchema)).toBeInTheDocument();
     });
 
     it('shows form inputs with proper accessibility', () => {
@@ -81,6 +83,46 @@ describe('WorkflowFormFields', () => {
       expect(screen.getByRole('textbox', { name: /description/i })).toBeInTheDocument();
       expect(screen.getByRole('textbox', { name: /instructions/i })).toBeInTheDocument();
       expect(screen.getByRole('textbox', { name: /prompt/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('One field skin, help in InfoTips', () => {
+    it('draws every text field on the shared skin, with no required asterisks', () => {
+      const { container } = render(<TestWrapper />);
+      for (const name of [copy.title, copy.description, copy.instructions]) {
+        expect(screen.getByRole('textbox', { name })).toHaveClass('br-field');
+      }
+      expect(screen.getByRole('textbox', { name: /initial prompt/i })).toHaveClass('br-field');
+      // Optional is marked, required is not: no red asterisks anywhere.
+      expect(screen.getByText(copy.optional)).toBeInTheDocument();
+      expect(container.querySelector('.text-text-danger')).toBeNull();
+      expect(container.querySelector('.text-caps')).toBeNull();
+    });
+
+    it('explains Instructions in an InfoTip linked to the field', () => {
+      render(<TestWrapper />);
+      expect(screen.getByRole('textbox', { name: copy.instructions })).toHaveAccessibleDescription(
+        copy.instructionsInfo
+      );
+    });
+
+    it('states the defaults on the closed Advanced section', () => {
+      render(<TestWrapper />);
+      expect(screen.getByRole('button', { name: copy.advanced })).toHaveAccessibleDescription(
+        'Global model · no parameters · global extensions'
+      );
+    });
+
+    it('names an override and counts what is set, in the same summary', () => {
+      render(
+        <TestWrapper
+          initialValues={{ settings: { biorouter_model: 'gemma4' } }}
+          extensions={[{ name: 'developer', type: 'builtin' } as never]}
+          onExtensionsChange={vi.fn()}
+        />
+      );
+      // Pre-set extensions open the section, so close it to read the summary.
+      expect(copy.advancedSummary('gemma4', 0, 1)).toBe('gemma4 · no parameters · 1 extension');
     });
   });
 
@@ -119,7 +161,7 @@ describe('WorkflowFormFields', () => {
 
       await expandAdvancedSection(user);
 
-      expect(screen.getByPlaceholderText('Enter parameter name...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(copy.parameterPlaceholder)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /add parameter/i })).toBeInTheDocument();
     });
 
@@ -129,7 +171,7 @@ describe('WorkflowFormFields', () => {
 
       await expandAdvancedSection(user);
 
-      const parameterInput = screen.getByPlaceholderText('Enter parameter name...');
+      const parameterInput = screen.getByPlaceholderText(copy.parameterPlaceholder);
       const addButton = screen.getByRole('button', { name: /add parameter/i });
 
       expect(addButton).toBeDisabled();
@@ -178,9 +220,7 @@ describe('WorkflowFormFields', () => {
       const user = userEvent.setup();
       render(<TestWrapper />);
 
-      const instructionsInput = screen.getByPlaceholderText(
-        'Detailed instructions for the AI, hidden from the user'
-      );
+      const instructionsInput = screen.getByPlaceholderText(copy.instructionsPlaceholder);
 
       // Type instructions with template variables - use paste to avoid curly brace issues
       await user.click(instructionsInput);
@@ -196,11 +236,7 @@ describe('WorkflowFormFields', () => {
 
       // Check that the parameter section exists
       expect(screen.getByText('Parameters')).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          'Parameters will be automatically detected from {{parameter_name}} syntax in instructions/prompt/activities or you can manually add them below.'
-        )
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `About ${copy.parameters}` })).toBeInTheDocument();
     });
 
     it('allows manual parameter addition', async () => {
@@ -210,7 +246,7 @@ describe('WorkflowFormFields', () => {
       await expandAdvancedSection(user);
 
       // Add a manual parameter
-      const parameterInput = screen.getByPlaceholderText('Enter parameter name...');
+      const parameterInput = screen.getByPlaceholderText(copy.parameterPlaceholder);
       const addButton = screen.getByText('Add parameter');
 
       await user.type(parameterInput, 'test_param');
@@ -231,11 +267,13 @@ describe('WorkflowFormFields', () => {
 
       // Check parameter section exists
       expect(screen.getByText('Parameters')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText('Enter parameter name...')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(copy.parameterPlaceholder)).toBeInTheDocument();
       expect(screen.getByText('Add parameter')).toBeInTheDocument();
 
       // Check help text
-      expect(screen.getByText(/Parameters will be automatically detected/)).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `About ${copy.parameters}` })
+      ).toHaveAccessibleDescription(copy.parametersInfo);
     });
 
     it('handles activities field for parameter detection', async () => {
@@ -246,13 +284,11 @@ describe('WorkflowFormFields', () => {
 
       // Check that activities section exists
       expect(screen.getByText('Activities')).toBeInTheDocument();
-      expect(screen.getByText('Message')).toBeInTheDocument();
-      expect(screen.getByText('Activity Buttons')).toBeInTheDocument();
+      expect(screen.getByText(copy.activities.message)).toBeInTheDocument();
+      expect(screen.getByText(copy.activities.buttons)).toBeInTheDocument();
 
       // Check that activity input exists
-      const messageInput = screen.getByPlaceholderText(
-        'Enter a user facing introduction message for your workflow (supports **bold**, *italic*, `code`, etc.)'
-      );
+      const messageInput = screen.getByRole('textbox', { name: copy.activities.message });
       expect(messageInput).toBeInTheDocument();
 
       // Use paste to avoid curly brace issues
@@ -286,9 +322,7 @@ describe('WorkflowFormFields', () => {
 
       render(<TestComponent />);
 
-      const instructionsInput = screen.getByPlaceholderText(
-        'Detailed instructions for the AI, hidden from the user'
-      );
+      const instructionsInput = screen.getByPlaceholderText(copy.instructionsPlaceholder);
 
       // Add instructions with template variables
       await user.click(instructionsInput);
@@ -316,11 +350,7 @@ describe('WorkflowFormFields', () => {
       // At least verify that the parameter detection mechanism is in place
       // Even if the parameters don't show up immediately, the functionality should exist
       expect(instructionsInput).toHaveValue('Process {{name}} and {{type}} for {{user}}');
-      expect(
-        screen.getByText(
-          'Parameters will be automatically detected from {{parameter_name}} syntax in instructions/prompt/activities or you can manually add them below.'
-        )
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `About ${copy.parameters}` })).toBeInTheDocument();
 
       // If parameters are detected, they should be visible
       if (nameParam) {
@@ -392,46 +422,26 @@ describe('WorkflowFormFields', () => {
       const parameterContainers = document.querySelectorAll('.parameter-input');
       expect(parameterContainers).toHaveLength(3);
 
-      // Find the first parameter's expand button using more specific selector
-      const firstParameterContainer = parameterContainers[0];
-      const expandButton =
-        firstParameterContainer.querySelector('button[title*="chevron"]') ||
-        firstParameterContainer
-          .querySelector('button svg[data-lucide="chevron-right"]')
-          ?.closest('button') ||
-        firstParameterContainer
-          .querySelector('button svg[data-lucide="chevron-down"]')
-          ?.closest('button');
+      // A parameter opens with its details shown; its chevron hides and shows them.
+      const firstParameterContainer = parameterContainers[0] as HTMLElement;
+      const scoped = within(firstParameterContainer);
+      const descriptionInput = scoped.getByRole('textbox', { name: parameterCopy.description });
+      expect(descriptionInput).toHaveValue('User identifier');
+      // The help is the field's description, not a paragraph under it.
+      expect(descriptionInput).toHaveAccessibleDescription(parameterCopy.descriptionInfo);
+      expect(scoped.getByRole('combobox', { name: parameterCopy.inputType })).toHaveValue('string');
+      expect(scoped.getByRole('combobox', { name: parameterCopy.requirement })).toHaveValue(
+        'required'
+      );
 
-      if (expandButton) {
-        await user.click(expandButton as HTMLElement);
+      await user.clear(descriptionInput);
+      await user.type(descriptionInput, 'Updated user identifier');
+      expect(descriptionInput).toHaveValue('Updated user identifier');
 
-        // Now check for specific parameter form fields within this parameter container
-        const descriptionInput = firstParameterContainer.querySelector(
-          'input[placeholder*="Enter the name"]'
-        );
-        expect(descriptionInput).toBeInTheDocument();
-        expect(descriptionInput).toHaveValue('User identifier');
-
-        // Check for input type select
-        const inputTypeSelect = firstParameterContainer.querySelector('select');
-        expect(inputTypeSelect).toBeInTheDocument();
-        expect(inputTypeSelect).toHaveValue('string');
-
-        // Check for requirement select
-        const requirementSelects = firstParameterContainer.querySelectorAll('select');
-        expect(requirementSelects.length).toBeGreaterThanOrEqual(2);
-
-        // Test interaction with description field
-        if (descriptionInput) {
-          await user.clear(descriptionInput);
-          await user.type(descriptionInput, 'Updated user identifier');
-          expect(descriptionInput).toHaveValue('Updated user identifier');
-        }
-      } else {
-        // Fallback: just verify the parameter containers exist
-        expect(parameterContainers.length).toBeGreaterThan(0);
-      }
+      await user.click(scoped.getByRole('button', { name: parameterCopy.hideDetails('username') }));
+      expect(scoped.queryByRole('textbox', { name: parameterCopy.description })).toBeNull();
+      await user.click(scoped.getByRole('button', { name: parameterCopy.showDetails('username') }));
+      expect(scoped.getByRole('textbox', { name: parameterCopy.description })).toBeInTheDocument();
     });
 
     it('renders parameter form fields when manually adding parameters', async () => {
@@ -441,7 +451,7 @@ describe('WorkflowFormFields', () => {
       await expandAdvancedSection(user);
 
       // Add a manual parameter
-      const parameterInput = screen.getByPlaceholderText('Enter parameter name...');
+      const parameterInput = screen.getByPlaceholderText(copy.parameterPlaceholder);
       const addButton = screen.getByText('Add parameter');
 
       await user.type(parameterInput, 'test_param');
@@ -457,9 +467,9 @@ describe('WorkflowFormFields', () => {
 
       // The parameter should be expanded by default when first added, so we should see form fields
       // Check for parameter description input within the parameter container
-      const descriptionInput = parameterContainer?.querySelector(
-        'input[placeholder*="Enter the name"]'
-      );
+      const descriptionInput = within(parameterContainer as HTMLElement).getByRole('textbox', {
+        name: parameterCopy.description,
+      });
       expect(descriptionInput).toBeInTheDocument();
 
       // Check for parameter type select within the parameter container
@@ -497,9 +507,9 @@ describe('WorkflowFormFields', () => {
         expect(requirementSelect.value).toBe('optional');
 
         // After changing to optional, a default value field should appear
-        const defaultValueInput = parameterContainer?.querySelector(
-          'input[placeholder="Enter default value"]'
-        );
+        const defaultValueInput = within(parameterContainer as HTMLElement).getByRole('textbox', {
+          name: parameterCopy.defaultValue,
+        });
         expect(defaultValueInput).toBeInTheDocument();
 
         // Test the default value input
@@ -652,7 +662,7 @@ describe('WorkflowFormFields', () => {
       await expandAdvancedSection(user);
 
       // Add a manual parameter
-      const parameterInput = screen.getByPlaceholderText('Enter parameter name...');
+      const parameterInput = screen.getByPlaceholderText(copy.parameterPlaceholder);
       const addButton = screen.getByText('Add parameter');
 
       await user.type(parameterInput, 'deletable_param');
@@ -663,9 +673,9 @@ describe('WorkflowFormFields', () => {
       expect(parameterContainer).toBeInTheDocument();
 
       // Check for delete button (trash icon)
-      const deleteButton =
-        parameterContainer?.querySelector('button[title*="Delete parameter"]') ||
-        parameterContainer?.querySelector('button svg[data-lucide="trash-2"]')?.closest('button');
+      const deleteButton = within(parameterContainer as HTMLElement).getByRole('button', {
+        name: parameterCopy.delete('deletable_param'),
+      });
       expect(deleteButton).toBeInTheDocument();
 
       // Test deleting the parameter
@@ -685,7 +695,7 @@ describe('WorkflowFormFields', () => {
       await expandAdvancedSection(user);
 
       // Add a parameter and test changing its type
-      const parameterInput = screen.getByPlaceholderText('Enter parameter name...');
+      const parameterInput = screen.getByPlaceholderText(copy.parameterPlaceholder);
       const addButton = screen.getByText('Add parameter');
 
       await user.type(parameterInput, 'typed_param');
@@ -877,8 +887,11 @@ describe('WorkflowFormFields', () => {
       await expandAdvancedSection(user);
 
       const summary = screen.getByTestId('resource-picker-default-summary');
-      expect(summary).toHaveTextContent(/no default/i);
-      expect(summary).toHaveTextContent(/this workflow will not focus one/i);
+      expect(summary).toHaveTextContent(copy.picker.noDefault);
+      // What having no default costs is that line's InfoTip, not a sentence on the card.
+      expect(
+        within(summary).getByRole('button', { name: `About ${copy.picker.noDefault}` })
+      ).toHaveAccessibleDescription(copy.noDefaultKnowledgeBase);
     });
 
     it('names the default when one is named', async () => {

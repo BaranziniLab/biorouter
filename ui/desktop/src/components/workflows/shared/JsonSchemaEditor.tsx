@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { Button } from '../../ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../../ui/dialog';
+import { Textarea } from '../../ui/textarea';
+import { ModalShell } from '../../ModalShell';
+import { workflowFormCopy } from '../copy';
+
+const copy = workflowFormCopy.schemaEditor;
 
 interface JsonSchemaEditorProps {
   isOpen: boolean;
@@ -33,7 +37,7 @@ export default function JsonSchemaEditor({
         JSON.parse(localValue.trim());
         setLocalError('');
       } catch {
-        setLocalError('Invalid JSON format');
+        setLocalError(copy.invalidJson);
         return;
       }
     }
@@ -80,41 +84,46 @@ export default function JsonSchemaEditor({
 
   if (!isOpen) return null;
 
+  const shownError = localError || error;
+
+  // The editor rung (`xl`, 800px), shared with the instructions editor. What the schema is
+  // for is said once, in the form's InfoTip beside "Response schema".
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
-      <DialogContent className="flex max-h-[90vh] w-[800px] max-w-[90vw] flex-col overflow-hidden sm:max-w-[90vw] lg:max-w-[800px]">
-        <div className="mb-4 pr-8">
-          <DialogTitle>JSON Schema Editor</DialogTitle>
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => !open && handleCancel()}
+      size="xl"
+      purpose="form"
+      scrollBody
+      title={copy.title}
+      footer={
+        <>
+          <Button type="button" onClick={handleCancel} variant="ghost">
+            {copy.cancel}
+          </Button>
+          <Button type="button" onClick={handleSave}>
+            {copy.save}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2 py-1">
+        <div className="flex justify-end">
+          <Button type="button" onClick={insertExample} variant="ghost" size="sm">
+            {copy.insertExample}
+          </Button>
         </div>
-
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="mb-4">
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-label text-text-default">Response JSON Schema</label>
-              <Button
-                type="button"
-                onClick={insertExample}
-                variant="ghost"
-                size="sm"
-                className="text-supporting"
-              >
-                Insert example
-              </Button>
-            </div>
-            <DialogDescription className="text-supporting text-text-muted mb-3">
-              Define the expected structure of the AI's response using JSON Schema format
-            </DialogDescription>
-          </div>
-
-          <div className="flex-1 min-h-0">
-            <textarea
-              value={localValue}
-              onChange={(e) => {
-                setLocalValue(e.target.value);
-                setLocalError('');
-              }}
-              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-code rounded-element text-text-default placeholder:text-text-muted transition-colors resize-none font-mono ${localError || error ? '!border-border-danger' : ''}`}
-              placeholder={`{
+        <Textarea
+          aria-label={copy.title}
+          value={localValue}
+          onChange={(e) => {
+            setLocalValue(e.target.value);
+            setLocalError('');
+          }}
+          aria-invalid={shownError ? true : undefined}
+          aria-describedby={shownError ? 'schema-editor-error' : undefined}
+          className="min-h-[360px] resize-none font-mono text-code"
+          placeholder={`{
  "type": "object",
  "properties": {
  "result": {
@@ -124,22 +133,13 @@ export default function JsonSchemaEditor({
  },
  "required": ["result"]
 }`}
-            />
-            {(localError || error) && (
-              <p className="text-text-danger text-body mt-2">{localError || error}</p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex justify-end space-x-3 mt-6 pt-4 border-t border-border-subtle">
-          <Button type="button" onClick={handleCancel} variant="ghost">
-            Cancel
-          </Button>
-          <Button type="button" onClick={handleSave} variant="default">
-            Save schema
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        />
+        {shownError && (
+          <p id="schema-editor-error" role="alert" className="text-supporting text-text-danger">
+            {shownError}
+          </p>
+        )}
+      </div>
+    </ModalShell>
   );
 }
