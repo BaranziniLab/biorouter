@@ -11,7 +11,7 @@ export const memoryCopy = {
   refresh: 'Refresh memory',
   global: {
     heading: 'Global',
-    help: 'Shared by every chat on this computer, in any project.',
+    help: 'Shared by every chat on this computer.',
   },
   local: {
     heading: 'This project',

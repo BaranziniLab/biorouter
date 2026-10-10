@@ -297,78 +297,81 @@ export default function ConfigSettings() {
           </>
         }
       >
-        <PrivacyConfigSummary
-          config={typedConfig}
-          onOpen={() => {
-            setIsModalOpen(false);
-            document
-              .querySelector('[data-privacy-panel]')
-              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-        />
-        <div className="space-y-4 pb-3">
-          {configEntries.length === 0 ? (
-            <p className="text-body text-text-muted">{configCopy.empty}</p>
-          ) : (
-            configEntries.map(([key, _value]) => {
-              const topic = hostTopic(key);
-              const fixedByHost = topic !== null;
-              const fieldId = `config-field-${key}`;
-              const uiName = getUiNames(key);
-              // ⚠ Exactly one button per row, and the row is this `div.grid`: two browser-surface
-              // tests find a row with `closest('.grid')` and take its only button. No InfoTip here.
-              return (
-                <div
-                  key={key}
-                  className="grid grid-cols-[minmax(0,200px)_1fr_auto] items-center gap-3"
-                >
-                  {/* The key itself is the label's tooltip, in the mono face: it is the name a
+        {/* The shell's header and footer own the body's top and bottom gutters only when the body
+            is bare text; this body starts with a box and ends with a field, so it pads itself. */}
+        <div className="py-3">
+          <PrivacyConfigSummary
+            config={typedConfig}
+            onOpen={() => {
+              setIsModalOpen(false);
+              document
+                .querySelector('[data-privacy-panel]')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          />
+          <div className="space-y-4">
+            {configEntries.length === 0 ? (
+              <p className="text-body text-text-muted">{configCopy.empty}</p>
+            ) : (
+              configEntries.map(([key, _value]) => {
+                const topic = hostTopic(key);
+                const fixedByHost = topic !== null;
+                const fieldId = `config-field-${key}`;
+                const uiName = getUiNames(key);
+                // ⚠ Exactly one button per row, and the row is this `div.grid`: two browser-surface
+                // tests find a row with `closest('.grid')` and take its only button. No InfoTip here.
+                return (
+                  <div
+                    key={key}
+                    className="grid grid-cols-[minmax(0,200px)_1fr_auto] items-center gap-3"
+                  >
+                    {/* The key itself is the label's tooltip, in the mono face: it is the name a
                       person looks for in the file. It was a native `title`, which opens on no
                       keyboard and looks like the OS. */}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label
-                        htmlFor={fieldId}
-                        className="min-w-0 break-words text-label text-text-default"
-                      >
-                        {uiName}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <span className="font-mono">{key}</span>
-                    </TooltipContent>
-                  </Tooltip>
-                  <div className="min-w-0">
-                    {/* A structured value is a report, not a setting this
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <label
+                          htmlFor={fieldId}
+                          className="min-w-0 break-words text-label text-text-default"
+                        >
+                          {uiName}
+                        </label>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <span className="font-mono">{key}</span>
+                      </TooltipContent>
+                    </Tooltip>
+                    <div className="min-w-0">
+                      {/* A structured value is a report, not a setting this
                         field can round-trip: `String()` of it read
                         `[object Object]` (W2-PRV-8). */}
-                    {!isEditableValue(configValues[key]) ? (
-                      <code
-                        data-testid={`config-readonly-${key}`}
-                        className="block whitespace-pre-wrap break-all rounded-element bg-background-muted px-2 py-1.5 font-mono text-supporting text-text-muted"
-                      >
-                        {JSON.stringify(configValues[key], null, 2)}
-                      </code>
-                    ) : (
-                      <Input
-                        id={fieldId}
-                        value={String(configValues[key] || '')}
-                        onChange={(e) => handleChange(key, e.target.value)}
-                        disabled={fixedByHost}
-                        // ⚠ Only the modified-key marker survives. The three
-                        // deleted overrides each fought the primitive:
-                        // `border-border-subtle` replaced the input's own
-                        // `--border-emphasized` with the divider hairline,
-                        // `hover:border-border-subtle` pinned hover to the
-                        // resting colour while the primitive's inset ring
-                        // still fired, and `transition-colors` REPLACED the
-                        // input's transition list, dropping `box-shadow`
-                        // from it. The placeholder went too: the label names
-                        // the field.
-                        className={cn(modifiedKeys.has(key) && 'border-border-info')}
-                      />
-                    )}
-                    {/* The `topic &&` guard is load-bearing and stays: it
+                      {!isEditableValue(configValues[key]) ? (
+                        <code
+                          data-testid={`config-readonly-${key}`}
+                          className="block whitespace-pre-wrap break-all rounded-element bg-background-muted px-2 py-1.5 font-mono text-supporting text-text-muted"
+                        >
+                          {JSON.stringify(configValues[key], null, 2)}
+                        </code>
+                      ) : (
+                        <Input
+                          id={fieldId}
+                          value={String(configValues[key] || '')}
+                          onChange={(e) => handleChange(key, e.target.value)}
+                          disabled={fixedByHost}
+                          // ⚠ Only the modified-key marker survives. The three
+                          // deleted overrides each fought the primitive:
+                          // `border-border-subtle` replaced the input's own
+                          // `--border-emphasized` with the divider hairline,
+                          // `hover:border-border-subtle` pinned hover to the
+                          // resting colour while the primitive's inset ring
+                          // still fired, and `transition-colors` REPLACED the
+                          // input's transition list, dropping `box-shadow`
+                          // from it. The placeholder went too: the label names
+                          // the field.
+                          className={cn(modifiedKeys.has(key) && 'border-border-info')}
+                        />
+                      )}
+                      {/* The `topic &&` guard is load-bearing and stays: it
                         carries the per-key half (`isHostManagedConfigKey`
                         or `isDestinationConfigKey`), which the note itself
                         cannot know. What went is the hand-copied paragraph
@@ -376,36 +379,37 @@ export default function ConfigSettings() {
                         sentence `hostManagedModelCopy.ts` exists to keep
                         in one place. It is also why the Save button below
                         has no `title`: this note, visible, is the reason. */}
-                    {topic && (
-                      <HostManagedModelNote
-                        short
-                        topic={topic}
-                        testId={`host-managed-config-${key}`}
-                        className="mt-1"
-                      />
-                    )}
-                  </div>
-                  {/* Icon-only at both states, so it takes the 32×32 round
+                      {topic && (
+                        <HostManagedModelNote
+                          short
+                          topic={topic}
+                          testId={`host-managed-config-${key}`}
+                          className="mt-1"
+                        />
+                      )}
+                    </div>
+                    {/* Icon-only at both states, so it takes the 32×32 round
                       rung and an `aria-label` rather than a `min-w-[60px]`
                       box sized to hold a word it only sometimes shows. */}
-                  <Button
-                    onClick={() => handleSave(key)}
-                    disabled={
-                      fixedByHost ||
-                      !isEditableValue(configValues[key]) ||
-                      !modifiedKeys.has(key) ||
-                      saving === key
-                    }
-                    variant="ghost"
-                    shape="round"
-                    aria-label={configCopy.saveLabel(uiName)}
-                  >
-                    {saving === key ? <Spinner /> : <Save />}
-                  </Button>
-                </div>
-              );
-            })
-          )}
+                    <Button
+                      onClick={() => handleSave(key)}
+                      disabled={
+                        fixedByHost ||
+                        !isEditableValue(configValues[key]) ||
+                        !modifiedKeys.has(key) ||
+                        saving === key
+                      }
+                      variant="ghost"
+                      shape="round"
+                      aria-label={configCopy.saveLabel(uiName)}
+                    >
+                      {saving === key ? <Spinner /> : <Save />}
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </ModalShell>
     </SettingSection>

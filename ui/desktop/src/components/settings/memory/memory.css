@@ -68,7 +68,10 @@
 
 .br-memory-toggle > svg {
   flex: none;
-  /* centre the 16px chevron on the first 20px line of the name */
+  /* 16px, the row-glyph size: a bare lucide svg is 24px and would make the row 46px tall */
+  width: 16px;
+  height: 16px;
+  /* centre it on the first 20px line of the name */
   margin-top: 2px;
   color: var(--text-muted);
 }
