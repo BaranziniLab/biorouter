@@ -546,7 +546,7 @@ Dark-mode variants deepen opacity and swap the hairline ring to `rgba(255,255,25
 
 ### 3.6 · Motion
 
-> **Tiers superseded 2026-10 ([Part 9.6](#96--motion)).** The ladder is now 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for transforms of physical gestures; `--ease-in` is deleted; the `--motion-*` names below are aliases of the `--dur-*` tiers.
+> **Tiers superseded 2026-10 ([Part 9.6](#96--motion)).** The ladder is now 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for transforms of physical gestures; `--ease-in` is deleted; the `--motion-*` names below were aliases of the `--dur-*` tiers and are deleted too (fast is `--dur-fast`, base is `--dur-fast-max`, slow is `--dur-med`).
 
 **Today:** six durations (`150` ×43, `300` ×31, `200` ×28, `500` ×3, `75` ×1, `100` ×1) and eight keyframe animations. `prefers-reduced-motion` is honoured for exactly two of them (`.sidebar-item`, and one block at `main.css:1091`). `DR-13`.
 
@@ -560,7 +560,7 @@ Dark-mode variants deepen opacity and swap the hairline ring to `rgba(255,255,25
 | `--ease-out` | `cubic-bezier(0.24, 1, 0.4, 1)` | Everything entering |
 | `--ease-in` | `cubic-bezier(.4,0,1,1)` | **Deprecated**: defined, never used; deleted in the sweep |
 
-The three `--motion-*` tokens are now aliases onto the `--dur-*` ladder, re-pointed rather than retuned, so existing call sites shifted by at most 5ms. The exception is `--motion-slow`, which was 260ms and is now the 300ms medium tier it was always describing. Write `--dur-*` at new call sites.
+The three `--motion-*` tokens were aliases onto the `--dur-*` ladder, re-pointed rather than retuned, so call sites shifted by at most 5ms (the exception was `--motion-slow`, which was 260ms and became the 300ms medium tier it was always describing). Each owner then moved its call sites to `--dur-*` and the aliases were deleted in wave 2, with a source test that fails if a `var(--motion-*)` returns.
 
 No spring, no overshoot, no bounce. Exit is always shorter than enter.
 
@@ -1153,6 +1153,8 @@ Assistant prose is the page. Wrapping it in a bubble would halve the effective m
 Markdown responses and document previews share one typography recipe: bold headings with a small accent beside H1/H2, consistent paragraph/list spacing, softly tinted blockquotes, and distinct code headers. Chat titles use a 24px base; document titles use 28px. Use [the synthetic markdown template](docs/desktop-ui/markdown-showcase.md) to inspect headings, tables, quotes, code, math, Unicode, and nested lists together.
 
 An empty chat's welcome sentence belongs to its tab. Select and animate it once, preserve it through tab switching, split/move/merge layouts and Settings visits, and start a fresh lifetime in a new tab or renderer. Keep the selected tab's complete frame and close control visible; use subtle neutral tab boundaries and mark the active tab with a bold label and thin bottom accent, without an accent border or surrounding shadow.
+
+> **Superseded 2026-10 ([Part 9.7](#97--interaction-states-and-controls)).** Message actions float above the message and reserve no row; the footer described in the next paragraph is the pre-redesign canon.
 
 Message timestamps and actions sit in a reserved footer with an 8px baseline top gap that follows the size preference. Reveal the footer when its own message is hovered or contains keyboard focus; keep it hidden at rest without shifting the conversation. On touch devices without hover, keep actions reachable. Allow wrapping at narrow widths and larger sizes.
 
@@ -1907,7 +1909,7 @@ tracking are gone. When front matter supplies a title, the first `# H1` takes th
 
 Deleted from call sites: every `tracking-*` utility except those a role carries, `uppercase` beside
 `text-caps`, `font-bold` and CSS 700 (both become 600), and `leading-*` that only restates a role.
-`text-display` is deleted; `text-heading` is an alias of `text-subheading` until its last CSS use moves.
+`text-display` and `text-heading` are deleted; a title is `text-title` and a dialog or section heading is `text-subheading`.
 `styles/typeScale.test.ts` pins the roles and guards the call sites.
 
 ### 9.4 · Spacing, rows, bands, radii
@@ -1964,8 +1966,8 @@ Deleted from call sites: every `tracking-*` utility except those a role carries,
 Constants: pop-in scale 0.97 (dialogs 0.98); travel 4px (menus, row insert), 8px (crossfade rise, cover
 pane, toast), 32px in and 16px out (preview body); stagger 30ms with at most five items animated; the
 resize settles 180ms after the last event. Exits are one tier faster than entrances and travel half the
-distance. `--dur-med-max` and `--ease-in` are deleted; `--motion-fast`, `--motion-base` and `--motion-slow`
-are aliases of the `--dur-*` tiers until their last uses are swapped.
+distance. `--dur-med-max`, `--ease-in`, `--motion-fast`, `--motion-base` and `--motion-slow` are deleted
+(`styles/motion.test.ts` fails if any of them comes back).
 
 `styles/motion.ts` exports `DUR`, `EASE_OUT`, `EASE_SPRING`, `MOTION`, `TRAVEL`, `prefersReducedMotion()`,
 `isWindowResizing()` and `motionDuration()`; `styles/motion.test.ts` pins every number to `main.css`. In
@@ -2026,6 +2028,13 @@ opens on focus only after a Tab.
   `--accent-bar` underline and a 20px gap; the underline is one indicator that travels (175ms).
 - **Filter field.** One 28px list filter for every view band, with a leading 16px `Search` glyph, the
   placeholder "Filter", and ⌘F to focus it.
+- **Message actions.** They float: a compact cluster (24px icon buttons and the time in 12px muted tabular
+  figures) sits 12px above the message's top right on the popover ground with the popover shadow, so no row
+  is reserved for it. It shows when its own message is hovered, holds keyboard focus or has its menu open,
+  and it only fades, so it stays in the tab order. On touch devices without hover it sits in the flow under
+  the message, always shown. The user message has Edit and Copy; the answer has Copy and a ⋯ menu with
+  "Diverge from here". Copy confirms in its tooltip, so nothing changes width. The rules live in
+  `components/message-meta.css`.
 
 ### 9.8 · Icons
 
@@ -2050,7 +2059,7 @@ opens on focus only after a Tab.
 |---|---|
 | §3.1 heatmap ramp | Level 0 is the shared neutral `#eeeeea` light and `#32312e` dark; Parchment's dark level 1 is `#573e2a` |
 | §3.2 type scale | Replaced by 9.3 |
-| §3.6 motion | The tiers are 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for physical gestures; the `--motion-*` names are aliases |
+| §3.6 motion | The tiers are 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for physical gestures; the `--motion-*` aliases are deleted |
 | §3.9 iconography | Hand-drawn glyphs sit beside Lucide, default 16px; see 9.8 |
 | §4.9 switch, checkbox, radio | Replaced by the specs in 9.7 |
 | §4.11 sidebar | Rows are 28px at 13px with a 2px gap; section labels are sentence case |
@@ -2058,12 +2067,13 @@ opens on focus only after a Tab.
 | §4.17 markdown tables | Crew's table recipe, top rules only, one look for chat, documents, CSV and notebooks |
 | §4.18 chat headings | No accent bar; chat h1 and h2 are 17px, document h1 is 24px at 400 |
 | D-12 | The sidebar row is 28px; content rows are unchanged at `--row-height` |
+| §4 message timestamps and actions | A floating cluster above the message instead of a reserved footer; see 9.7 |
 
 ### 9.10 · Open at the time of writing (2026-10-10)
 
-Moves that were still waiting on other owners: `body` still defaults to 16px and moves to
-`var(--text-body)` last, behind a visual sweep (KaTeX and any element without a size inherit it); the
-`--motion-*` aliases and `text-heading` are deleted once their last uses are swapped;
-`styles/typeScale.test.ts` lists the files that still carry legacy type classes and becomes strict when the
-list is empty; and `.claude/commands/frontend-design.md` is regenerated from Parts 1 to 3 only with the
-coordinator's approval.
+Moves that were still waiting on other owners, and where each stands at the end of wave 2: the
+`--motion-*` aliases and `text-heading` are deleted, and `styles/typeScale.test.ts` is strict (no guarded
+file may carry a legacy type class or a px font size; `ModelAndProviderContext.tsx` and the other frozen
+files are out of scope). Still open: `body` defaults to 16px and moves to `var(--text-body)` last, behind a
+visual sweep (KaTeX and any element without a size inherit it), and `.claude/commands/frontend-design.md` is
+regenerated from Parts 1 to 3 and Part 9 once the vision loop has run, which the coordinator has approved.
