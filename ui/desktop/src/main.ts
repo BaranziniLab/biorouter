@@ -2800,6 +2800,22 @@ ipcMain.handle('copy-selected-text', (event, id: unknown) => {
   );
 });
 
+/**
+ * Whether an app-initiated window grow may animate (spec 3.16, Windows). The OS
+ * animates it, except when the person turned on Reduce Motion: then the grow is
+ * instant and the preview's own entrance (which already honours the setting in
+ * the renderer) is the only motion. The main process has no CSS media query to
+ * lean on, so it asks the system directly. A failure to ask answers "animate",
+ * the behaviour this replaced.
+ */
+function windowResizeMayAnimate(): boolean {
+  try {
+    return !systemPreferences.getAnimationSettings().prefersReducedMotion;
+  } catch {
+    return true;
+  }
+}
+
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || !Number.isFinite(minWidth)) {
@@ -2820,7 +2836,10 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const maxContentWidth = Math.max(720, display.workArea.width);
   const targetContentWidth = Math.min(Math.ceil(minWidth), maxContentWidth);
 
-  win.setContentSize(targetContentWidth, currentContentBounds.height, true);
+  // Grow only, never shrink: the early return above leaves a wide enough
+  // window alone.
+  const animate = windowResizeMayAnimate();
+  win.setContentSize(targetContentWidth, currentContentBounds.height, animate);
 
   const nextWindowBounds = win.getBounds();
   const maxX = display.workArea.x + display.workArea.width - nextWindowBounds.width;
@@ -2835,7 +2854,7 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
       : Math.min(Math.max(nextWindowBounds.y, display.workArea.y), maxY);
 
   if (adjustedX !== nextWindowBounds.x || adjustedY !== nextWindowBounds.y) {
-    win.setBounds({ ...nextWindowBounds, x: adjustedX, y: adjustedY }, true);
+    win.setBounds({ ...nextWindowBounds, x: adjustedX, y: adjustedY }, animate);
   }
 
   const nextContentBounds = win.getContentBounds();

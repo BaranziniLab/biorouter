@@ -614,7 +614,10 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       className={cn(
         'no-drag flex min-h-[100px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
         open
-          ? 'animate-in slide-in-from-bottom-2 fade-in duration-[var(--motion-base)] ease-out'
+          ? // Opening rises 8px and fades in on the motion tokens (spec 3.16): the
+            // tab-enter tier and the one curve, never a literal or the browser's
+            // ease-out. The height itself snaps.
+            'animate-in slide-in-from-bottom-2 fade-in duration-[var(--dur-fast-max)] ease-[var(--ease-out)]'
           : 'hidden'
       )}
       style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
@@ -650,7 +653,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setActivePaneId(pane.id)}
-                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
                 >
                   <TerminalIcon className="h-4 w-4 flex-shrink-0" />
                   <span className="br-tab__label">{pane.title}</span>
@@ -679,7 +682,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             type="button"
             onClick={addPane}
             disabled={panes.length >= MAX_TERMINAL_PANES}
-            className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
+            className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-element text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
             aria-label="New terminal"
             title={
               panes.length >= MAX_TERMINAL_PANES
@@ -690,7 +693,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             <Plus className="h-4 w-4" />
           </button>
         </div>
-        <span className="hidden min-w-0 max-w-[38%] truncate text-xs text-text-muted sm:block">
+        <span className="hidden min-w-0 max-w-[38%] truncate text-supporting text-text-muted sm:block">
           {formatCwd(workingDir)}
         </span>
         <Button
