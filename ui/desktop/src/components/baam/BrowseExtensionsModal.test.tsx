@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseExtensionsModal from './BrowseExtensionsModal';
+import { BRXT_INSTALL_COPY } from '../brxtInstallCopy';
 import { BROWSE_EXTENSIONS_COPY } from './copy';
 import { MARKETPLACE_EXTENSIONS } from './marketplace.fixture';
 import type { BrxtEnvVar, BrxtManifest } from '../../types/brxt';
@@ -123,17 +124,21 @@ async function addAndWait(user: ReturnType<typeof userEvent.setup>) {
   );
 }
 
+// The local-file route is one line that is the control (`BRXT_INSTALL_COPY.dropZone` and
+// `.dropZoneAnother`), a button whose accessible name adds the way in the drop does not show.
+// Built from the copy, so a rewording cannot turn this absence check vacuous (WS-EXTENSIONS-1).
 const LOCAL_FILE_CONTROLS = [
-  /Drop your \.brxt file here/i,
-  /Drop a different \.brxt file here/i,
-  /or click to browse/i,
+  BRXT_INSTALL_COPY.dropZone,
+  BRXT_INSTALL_COPY.dropZoneAnother,
+  BRXT_INSTALL_COPY.dropZoneName,
+  BRXT_INSTALL_COPY.dropZoneAnotherName,
 ];
 
 function expectNoLocalFileControls() {
-  for (const pattern of LOCAL_FILE_CONTROLS) {
-    expect(screen.queryByText(pattern)).toBeNull();
+  for (const line of LOCAL_FILE_CONTROLS) {
+    expect(screen.queryByText(line)).toBeNull();
+    expect(screen.queryByRole('button', { name: line })).toBeNull();
   }
-  expect(screen.queryByRole('button', { name: /Browse file/i })).toBeNull();
 }
 
 afterEach(() => {
