@@ -25,8 +25,6 @@ import {
   previewStackDrag,
   previewStackHeight,
   shouldShowTabOverflowMenu,
-  shouldCollapseComposerToolbar,
-  COMPOSER_TOOLBAR_MIN_WIDTH,
   splitSnapshotIsStale,
   splitYieldAction,
   splitYieldFits,
@@ -263,38 +261,6 @@ describe('previewStackDrag (rung 2 — the edge drags, clamps, and folds)', () =
     expect(previewStackDrag({ bodyHeight: H, chatFloor: F, wantedHeight: 150 }).height).toBe(200);
     expect(previewStackDrag({ bodyHeight: H, chatFloor: F, wantedHeight: 300 }).height).toBe(300);
     expect(previewStackDrag({ bodyHeight: H, chatFloor: F, wantedHeight: 900 }).height).toBe(528);
-  });
-});
-
-describe('shouldCollapseComposerToolbar (rung 3b — the composer collapses to a +)', () => {
-  it('collapses once the row is narrower than the pickers need', () => {
-    expect(shouldCollapseComposerToolbar({ availableWidth: COMPOSER_TOOLBAR_MIN_WIDTH - 1 })).toBe(
-      true
-    );
-  });
-
-  it('stays expanded at and above the threshold', () => {
-    expect(shouldCollapseComposerToolbar({ availableWidth: COMPOSER_TOOLBAR_MIN_WIDTH })).toBe(
-      false
-    );
-    expect(shouldCollapseComposerToolbar({ availableWidth: 1200 })).toBe(false);
-  });
-
-  it('does not flash collapsed on an unmeasured (0/NaN) box at first paint', () => {
-    expect(shouldCollapseComposerToolbar({ availableWidth: 0 })).toBe(false);
-    expect(shouldCollapseComposerToolbar({ availableWidth: NaN })).toBe(false);
-  });
-
-  it('is monotone: measuring the row’s OWN box, not its content, so it cannot oscillate', () => {
-    // The collapsed state removes controls, changing content width — but this
-    // rule reads the container width, which the pane fixes regardless. So for a
-    // given width the decision is the same whether currently collapsed or not.
-    for (let w = 200; w <= 900; w += 13) {
-      const decision = shouldCollapseComposerToolbar({ availableWidth: w });
-      // Re-measuring the same box yields the same decision — no dependence on
-      // the current collapsed/expanded content.
-      expect(shouldCollapseComposerToolbar({ availableWidth: w })).toBe(decision);
-    }
   });
 });
 

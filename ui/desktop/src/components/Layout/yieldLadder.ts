@@ -480,43 +480,6 @@ export function shouldShowTabOverflowMenu(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Rung 3b — the composer toolbar (RETIRED)
-// ---------------------------------------------------------------------------
-
-/**
- * RETIRED with the one-card composer (WS-COMPOSER, c863487c3): its controls row
- * is `[+] [Tools N] … [model · effort] [Send]` and nothing collapses behind the
- * "+" any more; the model chip truncates instead. No component reads this rung.
- * It stays only while `bottom_menu/useComposerToolbarCollapsed.ts` (no
- * importers, WS-PICKERS) still imports it; delete both together.
- *
- * What it decided:
- * The width the composer's bottom control row needs with every picker expanded:
- * working directory, extensions/skills/knowledge, reasoning effort, model,
- * context gauge, cost, and the send button, with their gaps and dividers. Below
- * this the row can no longer lay them out without overlap, so they collapse
- * behind a single "+" at the lower-left and the row becomes just `[+] … [Send]`.
- *
- * A fixed threshold against the row's OWN width, not `scrollWidth > clientWidth`,
- * and for the same reason rung 3's menu button lives outside the scroll box:
- * collapsing REMOVES the controls, which changes the content width, so a
- * content-overflow rule would collapse (content now fits) → expand (overflows) →
- * collapse forever. The row's own box is fixed by the pane regardless of what it
- * holds, so measuring it against a constant is monotone and cannot oscillate.
- *
- * A pane can be as narrow as CHAT_MIN_WIDTH (360); the collapsed row is far
- * narrower than that, so at or above the pane floor the composer never overlaps.
- */
-export const COMPOSER_TOOLBAR_MIN_WIDTH = 480;
-
-export function shouldCollapseComposerToolbar(opts: { availableWidth: number }): boolean {
-  // An unmeasured box is not a narrow one: 0/NaN on first paint must not flash
-  // the collapsed state before the real width is known.
-  if (!Number.isFinite(opts.availableWidth) || opts.availableWidth <= 0) return false;
-  return opts.availableWidth < COMPOSER_TOOLBAR_MIN_WIDTH;
-}
-
-// ---------------------------------------------------------------------------
 // Rung 4 — the split
 // ---------------------------------------------------------------------------
 
