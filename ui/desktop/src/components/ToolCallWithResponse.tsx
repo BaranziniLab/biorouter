@@ -371,6 +371,56 @@ export default function ToolCallWithResponse(props: ToolCallWithResponseProps) {
   );
 }
 
+/**
+ * The call a request carries. The server serializes `ToolResult<T>` as
+ * `{ status: "success", value: T }` or `{ status: "error", error }`, and older
+ * producers send the call unwrapped, so both shapes are read.
+ */
+function toolCallOf(
+  toolRequest: ToolRequestMessageContent
+): { name: string; arguments: Record<string, unknown> } | null {
+  const toolCallData = toolRequest.toolCall as Record<string, unknown>;
+  const toolCall =
+    toolCallData?.status === 'success'
+      ? (toolCallData.value as { name: string; arguments: Record<string, unknown> })
+      : (toolCallData as { name: string; arguments: Record<string, unknown> });
+  return toolCall && toolCall.name ? toolCall : null;
+}
+
+/** A call that only looked around: read a file, listed a folder, searched. */
+export type ExploreKind = 'read' | 'list' | 'search';
+
+/**
+ * Whether this call may fold into an "Explored" row with its neighbours (D18),
+ * and as what. `null` keeps the call on its own line, and these always do:
+ *
+ * - anything that is not a built-in read, list or search (the WS-ICONS ladder
+ *   decides, so an external `acme__read_file` draws the Puzzle and stays out);
+ * - a failed call, and one the turn stopped before it answered: a failure is
+ *   a state the person must see without opening anything (principle 2);
+ * - a call a coding agent ran in its own sandbox: its "not gated by Biorouter"
+ *   marker is a security fact and stays on the row;
+ * - a call whose result is an artifact, whose card must stay in view.
+ */
+export function exploreStepOf(
+  toolRequest: ToolRequestMessageContent,
+  toolResponse: ToolResponseMessageContent | undefined,
+  turnActive: boolean
+): { kind: ExploreKind; running: boolean } | null {
+  const toolCall = toolCallOf(toolRequest);
+  if (!toolCall) return null;
+  const kind = toolGlyphFor(toolCall.name, toolCall.arguments).kind;
+  if (kind !== 'read' && kind !== 'list' && kind !== 'search') return null;
+  if (providerExecutionOf(toolRequest, toolResponse) === 'child') return null;
+  if (!toolResponse) return turnActive ? { kind, running: true } : null;
+  if (getToolResultError(toolResponse.toolResult)) return null;
+  const carriesArtifact = getToolResultContent(toolResponse.toolResult).some(
+    (content) =>
+      isEmbeddedResource(content) && isUIResource({ ...content, type: 'resource' as const })
+  );
+  return carriesArtifact ? null : { kind, running: false };
+}
+
 function ToolCallWithResponseContent({
   sessionId,
   isCancelledMessage,
@@ -382,15 +432,8 @@ function ToolCallWithResponseContent({
   onOpenArtifact,
   workingDir,
 }: ToolCallWithResponseProps) {
-  // Handle both the wrapped ToolResult format and the unwrapped format
-  // The server serializes ToolResult<T> as { status: "success", value: T } or { status: "error", error: string }
-  const toolCallData = toolRequest.toolCall as Record<string, unknown>;
-  const toolCall =
-    toolCallData?.status === 'success'
-      ? (toolCallData.value as { name: string; arguments: Record<string, unknown> })
-      : (toolCallData as { name: string; arguments: Record<string, unknown> });
-
-  if (!toolCall || !toolCall.name) {
+  const toolCall = toolCallOf(toolRequest);
+  if (!toolCall) {
     return null;
   }
 

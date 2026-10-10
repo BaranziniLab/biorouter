@@ -145,6 +145,21 @@ export const TOOL_ROW_COPY = {
   showLess: 'Show less',
 } as const;
 
+/** One row for a run of reads, lists and searches (D18, Codex's "Explored"). */
+export const EXPLORED_COPY = {
+  running: 'Exploring',
+  done: 'Explored',
+  /** "3 files, 1 folder, 2 searches": only the kinds the run holds, in that order. */
+  counts: ({ read, list, search }: { read: number; list: number; search: number }) =>
+    [
+      read > 0 ? `${read} ${read === 1 ? 'file' : 'files'}` : null,
+      list > 0 ? `${list} ${list === 1 ? 'folder' : 'folders'}` : null,
+      search > 0 ? `${search} ${search === 1 ? 'search' : 'searches'}` : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(', '),
+} as const;
+
 export const APPROVAL_COPY = {
   question: 'Run',
   allowOnce: 'Allow once',
