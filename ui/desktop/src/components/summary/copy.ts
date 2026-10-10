@@ -65,6 +65,7 @@ export const summaryCopy = {
   /** The chat load error. */
   loadError: {
     title: 'Could not load this chat',
+    retry: 'Retry',
     action: 'Go home',
   },
 } as const;

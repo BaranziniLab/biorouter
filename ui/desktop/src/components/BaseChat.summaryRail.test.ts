@@ -78,6 +78,16 @@ describe('BaseChat: the edits it applies for other areas', () => {
     expect(code).not.toMatch(/\bcoherent\b/);
   });
 
+  it('retries a failed load by mounting the chat again, and still offers the way home', () => {
+    // The stream's loadSession runs on mount and clears the error first.
+    expect(code).toMatch(/<BaseChatContent\s+key=\{loadAttempt\}/);
+    expect(code).toMatch(/onRetryLoad=\{\(\) => setLoadAttempt\(/);
+    const card = code.slice(code.indexOf('<EmptyState'), code.indexOf('</MainPanelLayout>'));
+    expect(card).toMatch(/variant="secondary"\s+size="sm"\s+onClick=\{onRetryLoad\}/);
+    expect(card).toContain('summaryCopy.loadError.retry');
+    expect(card).toContain('summaryCopy.loadError.action');
+  });
+
   it('renames through the one shared helper', () => {
     expect(code).toMatch(/await renameSessionOptimistically\(/);
   });

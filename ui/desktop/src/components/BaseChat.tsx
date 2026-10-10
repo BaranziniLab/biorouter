@@ -1334,7 +1334,11 @@ function BaseChatContent({
   artifactPanelEnabled = true,
   renderSessionTitle,
   terminalKey,
-}: BaseChatProps) {
+  onRetryLoad,
+}: BaseChatProps & {
+  /** Mount the chat again so the stream reloads a session that failed to load. */
+  onRetryLoad: () => void;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -2589,18 +2593,24 @@ function BaseChatContent({
             <EmptyState
               icon={AlertCircle}
               title={summaryCopy.loadError.title}
-              description={sessionLoadError}
+              // The loader's message often starts with the title itself.
+              description={sessionLoadError.replace(/^Could not load this chat:\s*/, '')}
               actions={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    setView('chat');
-                  }}
-                >
-                  {summaryCopy.loadError.action}
-                </Button>
+                <>
+                  <Button type="button" variant="secondary" size="sm" onClick={onRetryLoad}>
+                    {summaryCopy.loadError.retry}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setView('chat');
+                    }}
+                  >
+                    {summaryCopy.loadError.action}
+                  </Button>
+                </>
               }
             />
           </div>
@@ -3073,5 +3083,15 @@ function BaseChatContent({
 }
 
 export default function BaseChat(props: BaseChatProps) {
-  return <BaseChatContent {...props} />;
+  // A session that failed to load is retried by mounting the chat again, the
+  // same remount a tab switch makes: the stream's `loadSession` runs on mount,
+  // clears the error and fetches the session afresh.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  return (
+    <BaseChatContent
+      key={loadAttempt}
+      {...props}
+      onRetryLoad={() => setLoadAttempt((attempt) => attempt + 1)}
+    />
+  );
 }
