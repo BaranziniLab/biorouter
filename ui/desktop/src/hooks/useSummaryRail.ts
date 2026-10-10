@@ -184,7 +184,9 @@ export function useSummaryRail({
   }, []);
 
   // Attach to whichever element is the split box now. Runs after every commit
-  // but only does work when the element changed (an error screen replaces it).
+  // but only does work when the element changed (an error screen replaces it),
+  // so the state it sets cannot chain: deliberately no dependency list.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const element = splitPaneRef.current;
     if (element === observedRef.current) return;
