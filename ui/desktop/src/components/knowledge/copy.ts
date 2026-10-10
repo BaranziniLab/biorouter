@@ -131,10 +131,12 @@ export const knowledgeCopy = {
     manual: 'Manual',
   },
 
-  /** The two drawers. */
+  /** The two drawers, and their closes' names (a dialog's close is named for what it closes). */
   drawers: {
     changeLog: 'Change log',
     lint: 'Check for problems',
+    closeChangeLog: 'Close change log',
+    closeLint: 'Close check',
   },
 
   /** The create dialog (format chooser). */

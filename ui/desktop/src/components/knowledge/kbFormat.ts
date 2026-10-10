@@ -38,7 +38,7 @@ export function kbFormatLabel(base: Pick<Manifest, 'format' | 'schema_version'>)
 }
 
 /**
- * The `title` a `Legacy` badge carries, and nothing else does.
+ * The help a `Legacy` badge carries (an `InfoTip asChild` in the band), and nothing else does.
  *
  * A legacy base is not broken and is not a warning — DR-26 makes "no path to
  * OKF in this release" a deliberate decision, so the badge has to say the base

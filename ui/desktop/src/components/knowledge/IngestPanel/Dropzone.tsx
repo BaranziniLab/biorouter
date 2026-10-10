@@ -84,10 +84,17 @@ export function Dropzone({ onFiles, onPathPickRequested, onPasteText }: Props) {
       {/* The drop target. A press anywhere on it opens the chooser, as it always
           has; the keyboard reaches the same thing through the label's own button,
           because a `role="button"` box cannot also hold the "Paste text" button
-          and the InfoTip (an interactive control inside another). */}
+          and the InfoTip (an interactive control inside another).
+
+          ⚠ **Only a press INSIDE the box counts.** React bubbles a synthetic
+          event up the React tree, not the DOM tree, so a click on the InfoTip's
+          floating text (portaled out of this box) would otherwise arrive here
+          and open the chooser over the tip being read. */}
       <div
         data-testid="knowledge-ingest-dropzone"
-        onClick={openChooser}
+        onClick={(e) => {
+          if (e.currentTarget.contains(e.target as Node)) openChooser();
+        }}
         onDragEnter={(e) => {
           e.preventDefault();
           dragCounterRef.current++;
@@ -132,7 +139,7 @@ export function Dropzone({ onFiles, onPathPickRequested, onPasteText }: Props) {
             this is a control in a 300px rail and not a page's empty state. */}
         <button
           type="button"
-          className="br-knowledge-drop-target flex flex-col items-center gap-2 rounded-element px-2 py-1"
+          className="flex flex-col items-center gap-2 rounded-element px-2 py-1"
           onClick={(e) => {
             e.stopPropagation();
             openChooser();

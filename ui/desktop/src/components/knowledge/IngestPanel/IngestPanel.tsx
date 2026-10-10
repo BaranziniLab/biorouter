@@ -541,12 +541,8 @@ export function IngestPanel() {
         />
 
         {showPasteBox && (
-          // (the `br-ingest-summoned` scroll-margin hook is retired with the
-          // sticky footer that made it necessary — see the effect above)
-          // legacy note: `br-ingest-summoned` carried the scroll margin
-          // fills in. AUTHORED CSS, never an arbitrary utility: a freshly
-          // written class can silently fail to generate under
-          // `BIOROUTER_NO_HMR`, and this one is the whole fix.
+          // (no scroll-margin hook: it was retired with the sticky footer that
+          // made it necessary, see the effect above)
           <div ref={pasteBoxRef}>
             <PasteTextBox
               onCancel={() => setShowPasteBox(false)}

@@ -206,7 +206,10 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
           <section aria-label="Claim" className="flex flex-col">
             <Endpoint id={edge.from} />
             <div className="flex items-center gap-2 py-1">
-              <ArrowDown aria-hidden="true" className="h-3 w-3 flex-none text-text-muted" />
+              <ArrowDown
+                aria-hidden="true"
+                className="h-icon-chip w-icon-chip flex-none text-text-muted"
+              />
               <Badge
                 variant="chip"
                 tone={negated ? 'danger' : 'neutral'}

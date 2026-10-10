@@ -44,8 +44,9 @@ function relativeTime(iso: string): string {
  * - **Width is `--knowledge-rail-detail`**, so the drawer and the workspace's
  *   detail rail are the same object at the same width instead of two arbitrary
  *   numbers (420 here, 340 there).
- * - **`SheetTitle` keeps `text-subheading`.** The `text-label` override made
- *   this the app's second overlay title size, on a screen that can open both.
+ * - **The header is Crew's pane header** (spec 3.12): 44px, `bg-sidebar`, a
+ *   `text-label` title and a ghost round close with a Tooltip, the same one the
+ *   node and edge previews draw.
  * - **Kind filters are real toggle buttons**, through `Badge asChild` so the
  *   chip IS the button and takes the global focus fill. They used to be ~20px
  *   lowercase words with no background at all in the unselected state, so the
@@ -101,7 +102,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        // This drawer's header is a bare title on an `h-row` bar — there is no
+        // This drawer's header is a bare title on the pane band — there is no
         // explanatory line on screen to link, so it takes Radix's own explicit
         // opt-out. Without it Radix leaves `aria-describedby` pointing at an id
         // nothing claims and warns on every open. See `ui/sheet.tsx` for why the
@@ -110,8 +111,10 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
         className="br-knowledge-drawer flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
       >
         {/* Crew's pane header (spec 3.12): 44px, `bg-sidebar`, a `text-label`
-            title; the Sheet's own close is centred in it. */}
+            title and a ghost round close. */}
         <KnowledgePaneHeader
+          sheet
+          closeLabel={knowledgeCopy.drawers.closeChangeLog}
           title={
             <SheetTitle className="min-w-0 truncate text-label">
               {knowledgeCopy.drawers.changeLog}

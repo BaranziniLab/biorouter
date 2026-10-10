@@ -236,10 +236,7 @@ function KnowledgeViewInner() {
                       kb={{ id: primaryKb.id, name: primaryKb.name, tier: primaryKb.tier }}
                     />
                     {graph && (
-                      <span
-                        data-testid="knowledge-graph-summary"
-                        className="br-knowledge-summary shrink-0"
-                      >
+                      <span data-testid="knowledge-graph-summary" className="shrink-0">
                         {knowledgeCopy.summary(graph.nodes.length, graph.edges.length)}
                       </span>
                     )}

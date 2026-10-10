@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { Textarea } from '../../ui/textarea';
 import { knowledgeCopy } from '../copy';
 
 interface Props {
@@ -66,17 +67,20 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         placeholder={knowledgeCopy.ingest.pasteTitlePlaceholder}
         aria-label="Title for the pasted source"
       />
-      <textarea
+      {/* The `Textarea` primitive, the one multi-line field: Input's edge, radius
+          and focus, resizing vertically only. Five rows because this is a paste
+          target. */}
+      <Textarea
         ref={textRef}
+        rows={5}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={knowledgeCopy.ingest.pastePlaceholder}
         aria-label="Text to stage"
-        className="biorouter-focus-surface min-h-[100px] w-full resize-y rounded-element border border-border-control bg-background-default px-2 py-1.5 text-body text-text-default placeholder:text-text-muted"
       />
 
       {detectedUrls.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-element bg-background-muted px-2 py-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-supporting text-text-muted">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;

@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { LintResult } from '../../../api/types.gen';
+import { knowledgeCopy } from '../copy';
 import { LintDrawer } from './LintDrawer';
 
 const mocks = vi.hoisted(() => ({
@@ -92,6 +93,20 @@ beforeEach(() => {
 });
 
 describe('LintDrawer', () => {
+  it('closes through a named close in the pane header, beside the Check button', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<LintDrawer open onOpenChange={onOpenChange} />);
+
+    const close = screen.getByRole('button', { name: knowledgeCopy.drawers.closeLint });
+    const header = close.closest('.br-knowledge-pane-header');
+    expect(header).not.toBeNull();
+    expect(within(header as HTMLElement).getByTestId('knowledge-lint-run')).toBeInTheDocument();
+
+    await user.click(close);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it('runs the check on open, against the base and the resolved model', () => {
     mocks.knowledge.primaryKbId = 'stale-pointer';
     render(<LintDrawer open onOpenChange={() => undefined} />);

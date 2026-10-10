@@ -206,6 +206,8 @@ export function LintDrawer({ open, onOpenChange }: Props) {
             button sharing that row is pushed off a 340px drawer by the third
             severity — which is exactly the base that most needs re-checking. */}
         <KnowledgePaneHeader
+          sheet
+          closeLabel={knowledgeCopy.drawers.closeLint}
           title={
             <SheetTitle className="min-w-0 truncate text-label">
               {knowledgeCopy.drawers.lint}

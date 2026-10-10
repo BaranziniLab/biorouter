@@ -9,6 +9,9 @@
  * in Chromium with the band and Knowledge CSS cut from `main.css` at their owners' markers, at the
  * token values. The subject switcher is a stand-in with the real trigger's box rules, because the
  * real one reads the Knowledge context.
+ *
+ * The second half measures the drawers' pane header: the same 44px band as a preview's, its close
+ * 8px from the edge and centred in the band, and the Sheet primitive's own corner close hidden.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -19,8 +22,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ClipboardList, MoreHorizontal, RefreshCw } from '../icons/app-icons';
 import { Badge } from '../ui/badge';
+import { Sheet } from '../ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 import { KbTierControl } from './KbTierControl';
+import { KnowledgePaneHeader } from './KnowledgePaneHeader';
 import { knowledgeCopy } from './copy';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,6 +55,9 @@ svg { width: 16px; height: 16px; flex-shrink: 0; }
 .gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-5 { gap: 20px; }
 .px-1\\.5 { padding-inline: 6px; } .px-2 { padding-inline: 8px; } .p-0 { padding: 0; }
 .h-5 { height: 20px; } .h-3 { height: 12px; } .w-3 { width: 12px; }
+.h-chrome { height: var(--chrome-height); } .flex-none { flex: none; }
+.border-b { border-bottom: 1px solid; } .border-border-subtle { border-color: var(--border-subtle); }
+.bg-sidebar { background: var(--sidebar); } .rounded-element { border-radius: 8px; }
 .h-control-md { height: 32px; } .w-control-md { width: 32px; } .h-control-lg { height: 36px; }
 .max-w-\\[22rem\\] { max-width: 22rem; }
 .whitespace-nowrap { white-space: nowrap; }
@@ -80,6 +88,16 @@ function bandCss(): string {
     // The Knowledge pane: the container, the step defaults, the band block, the ladder.
     cut(main, '.br-knowledge-pane {', '/* ── the filter control (R-02)'),
   ].join('\n');
+}
+
+/** The pane header's rules, cut at their owner's markers. */
+function paneHeaderCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  return cut(
+    main,
+    '/* @ws WS-KNOWLEDGE begin: pane header */',
+    '/* @ws WS-KNOWLEDGE end: pane header */'
+  );
 }
 
 const LONG_NAME = 'A knowledge base whose name runs on far past the width a band could give it';
@@ -153,6 +171,29 @@ const launchChromium = async (): Promise<Browser | null> => {
   }
   return null;
 };
+
+/**
+ * A drawer as `ChangeLogDrawer` builds it: the pane header with its own close, then the Sheet
+ * primitive's corner close as the content's last child (`ui/sheet.tsx`: absolute, top and right
+ * 16px, 32px square). The primitive's is the one `.br-knowledge-drawer` must hide.
+ */
+function drawerPage(css: string): string {
+  const header = renderToStaticMarkup(
+    <Sheet open>
+      <KnowledgePaneHeader
+        sheet
+        closeLabel={knowledgeCopy.drawers.closeChangeLog}
+        title={<h2 className="min-w-0 truncate text-label">{knowledgeCopy.drawers.changeLog}</h2>}
+      />
+    </Sheet>
+  );
+  return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
+    <div class="br-knowledge-drawer" id="drawer" style="position:relative;display:flex;flex-direction:column;width:340px;height:300px">
+      ${header}
+      <button id="primitive-close" type="button" style="position:absolute;top:16px;right:16px;width:32px;height:32px">x</button>
+    </div>
+  </body></html>`;
+}
 
 type Box = { left: number; right: number; top: number; bottom: number; width: number };
 
@@ -248,6 +289,43 @@ describe('the Knowledge band in a real layout engine', () => {
       } finally {
         await tab.close();
       }
+    }
+  });
+
+  it('draws a drawer’s header as the preview’s band: the close centred and 8px from the edge, the title 16px in', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    try {
+      await tab.setContent(drawerPage(paneHeaderCss()));
+      const header = (await box(tab, '.br-knowledge-pane-header'))!;
+      const close = (await box(
+        tab,
+        `button[aria-label="${knowledgeCopy.drawers.closeChangeLog}"]`
+      ))!;
+      const title = (await box(tab, '.br-knowledge-pane-header h2'))!;
+      expect(header.bottom - header.top).toBe(44);
+      // Centred in the band (the band's own hairline takes its last pixel), and 8px from the edge.
+      const centre = (close.top + close.bottom) / 2;
+      expect(Math.abs(centre - (header.top + 22))).toBeLessThanOrEqual(1);
+      expect(header.right - close.right).toBe(8);
+      // Text starts 16px in: 8px of band padding plus the title's own 8px.
+      expect(title.left - header.left).toBe(16);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('hides the Sheet primitive’s corner close, so a drawer has exactly one', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    try {
+      await tab.setContent(drawerPage(paneHeaderCss()));
+      expect(await visible(tab, '#primitive-close')).toBe(false);
+      expect(
+        await visible(tab, `button[aria-label="${knowledgeCopy.drawers.closeChangeLog}"]`)
+      ).toBe(true);
+    } finally {
+      await tab.close();
     }
   });
 

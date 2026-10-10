@@ -302,7 +302,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
                 ) : (
                   <div className="overflow-hidden rounded-element bg-background-muted">
                     <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
-                      <FileCode2 className="h-3 w-3" />
+                      <FileCode2 className="h-icon-chip w-icon-chip" aria-hidden="true" />
                       Unparsed frontmatter
                     </div>
                     <pre className="overflow-x-auto px-3 py-2.5 font-mono text-code whitespace-pre-wrap text-text-muted">

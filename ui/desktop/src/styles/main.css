@@ -3985,9 +3985,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    ═══════════════════════════════════════════════════════════════════════════ */
 .br-knowledge-pane {
   container-name: br-knowledge-pane;
-  /* `size`, not `inline-size`: the height step below is load-bearing at the
-     app's 600px minimum window, where the pane is 568px tall. Size containment
-     needs a definite height, which the workspace grid gives it. */
+  /* `size`, not `inline-size`. It was `size` for the height step, which went
+     with the subtitle it hid (spec 3.12), so the ladder reads width only now.
+     It stays, because switching containment changes how the pane takes its
+     height from the shell: that is a layout change, not a tidy-up, and wants a
+     browser sweep of pane widths and heights first. */
   container-type: size;
 }
 
@@ -4012,9 +4014,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    narrow step says nothing about these two, and the container steps below
    FORCE both visible once there is room for both. */
 .br-knowledge-detail {
-  display: none;
-}
-.br-knowledge-legend-card {
   display: none;
 }
 .br-knowledge-tabs {
@@ -4134,18 +4133,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   padding-inline: 8px;
 }
 
-/* In a drawer the Sheet primitive draws the close, absolutely, at the
-   trailing edge: the band leaves it 32px plus its 8px inset plus a 4px gap. */
-.br-knowledge-pane-header[data-sheet] {
-  padding-inline-end: 44px;
-}
-
-/* ...and the close is centred in the 44px band, 8px from the edge, instead of
-   the primitive's 16px offsets, which sat it across the band's hairline. The
-   close is the content's last child (`ui/sheet.tsx`). */
+/* A drawer draws its own close in that header (`SheetClose` over the same ghost
+   round button a preview has). The Sheet primitive still renders its corner
+   close, always, as the content's last child; it would sit a second, rounded
+   square close over the band, so it is hidden. Only a `button` that is a direct
+   last child matches, and the drawer's own children are all `div`s. */
 .br-knowledge-drawer > button:last-child {
-  top: 6px;
-  right: 8px;
+  display: none;
 }
 /* @ws WS-KNOWLEDGE end: pane header */
 
@@ -7344,21 +7338,22 @@ code [class~='token'] {
 /* @ws WS-USAGE end: heatmap */
 
 /* @ws WS-HISTORY begin: history loading */
+/* Opacity only (principle 9: nothing else animates), like the heatmap's loading
+   grid beside it in the app. The cells keep one ground (`--background-medium`);
+   an earlier version also cross-faded `background-color`, which repaints. */
 @keyframes biorouter-history-loading {
-  0%,
-  100% {
-    background-color: var(--background-medium);
-    opacity: 0.72;
+  from {
+    opacity: 0.55;
   }
-  50% {
-    background-color: var(--background-strong);
+  to {
     opacity: 1;
   }
 }
 
 /* An ambient loop, so its period is a multiple of `--dur-slow` (spec 2.4). */
 .biorouter-history-loading-cell {
-  animation: biorouter-history-loading calc(var(--dur-slow) * 3) linear infinite;
+  animation: biorouter-history-loading calc(var(--dur-slow) * 4) var(--ease-out) infinite
+    alternate;
 }
 
 @media (prefers-reduced-motion: reduce) {
