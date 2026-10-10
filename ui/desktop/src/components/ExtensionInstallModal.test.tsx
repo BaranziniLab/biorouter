@@ -188,4 +188,37 @@ describe('ExtensionInstallModal', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
   });
+
+  describe('Chrome (spec 3.11)', () => {
+    const open = async (link: string) => {
+      render(<ExtensionInstallModal addExtension={mockAddExtension} setView={mockSetView} />);
+      await act(async () => {
+        await getAddExtensionEventHandler()({}, link);
+      });
+    };
+
+    it('is a confirmation: width S, Cancel quiet, the verb on the primary button', async () => {
+      mockElectron.getAllowedExtensions.mockResolvedValue([]);
+      await open('biorouter://extension?cmd=npx&arg=test&name=Test');
+
+      expect(screen.getByRole('dialog')).toHaveAttribute('data-size', 'sm');
+      // `secondary`, not the `outline` the rest of the app has retired for a dismissal.
+      expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(
+        /bg-background-medium/
+      );
+      expect(screen.getByRole('button', { name: 'Cancel' }).className).not.toMatch(
+        /border-border-emphasized/
+      );
+      expect(screen.getByRole('button', { name: 'Install' })).toBeInTheDocument();
+    });
+
+    it('answers a blocked install with one quiet acknowledgement', async () => {
+      mockElectron.getAllowedExtensions.mockResolvedValue(['uvx allowed-package']);
+      await open('biorouter://extension?cmd=npx&arg=blocked&name=Blocked');
+
+      const gotIt = screen.getByRole('button', { name: 'Got it' });
+      expect(gotIt.className).toMatch(/bg-background-medium/);
+      expect(gotIt.className).not.toMatch(/border-border-emphasized/);
+    });
+  });
 });

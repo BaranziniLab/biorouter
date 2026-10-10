@@ -1,9 +1,14 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Package } from './icons/app-icons';
+import { Upload } from './icons/app-icons';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { Disclosure } from './ui/disclosure';
+import { Field } from './ui/field';
+import { InfoTip } from './ui/info-tip';
+import { Input } from './ui/input';
 import { PrivacyBadge } from './ui/PrivacyBadge';
+import { Spinner } from './ui/spinner';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
@@ -18,6 +23,8 @@ import {
   resultingPrivacyTier,
   type BrxtInstallOrigin,
 } from './brxtInstallFlow';
+import { BRXT_INSTALL_COPY as COPY } from './brxtInstallCopy';
+import './brxt-install.css';
 
 interface EnvEntry {
   key: string;
@@ -58,8 +65,7 @@ interface Props {
   origin?: BrxtInstallOrigin;
 }
 
-const NO_LOCAL_PATH_MESSAGE =
-  'Biorouter is running on another machine, so it cannot read a file you drop here. Copy the file onto that machine and install it with `biorouter extension install <path>`.';
+const NO_LOCAL_PATH_MESSAGE = COPY.noLocalPath;
 
 export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, origin }: Props) {
   const installOrigin: BrxtInstallOrigin = origin ?? { kind: 'local-file' };
@@ -117,7 +123,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
         );
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not read the extension bundle');
+      setError(error instanceof Error ? error.message : COPY.readFailed);
     } finally {
       setIsValidating(false);
     }
@@ -136,7 +142,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       const file = e.dataTransfer.files[0];
       if (!file) return;
       if (!file.name.endsWith('.brxt')) {
-        setError('Drop a .brxt file');
+        setError(COPY.dropBrxt);
         return;
       }
       processFile(window.electron.getPathForFile(file));
@@ -230,19 +236,17 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       try {
         await activateExtensionDefault({ addToConfig: addExtension, extensionConfig });
       } catch {
-        setError(
-          'Extension installed but failed to register. Try adding it manually from the Extensions tab.'
-        );
+        setError(COPY.registerFailed);
         return;
       }
       toastService.success({
         title: manifest.display_name,
-        msg: 'Extension installed and enabled',
+        msg: COPY.installedToast,
       });
       onInstalled();
       onClose();
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not install the extension bundle');
+      setError(error instanceof Error ? error.message : COPY.installFailed);
     } finally {
       setIsInstalling(false);
     }
@@ -290,13 +294,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     manifest ? classifyExtension(manifest.name) : null,
     installOrigin.kind === 'marketplace' ? installOrigin.entry.privacyTier : undefined
   );
-  const publicNotice = isMarketplace
-    ? 'The Biorouter marketplace publishes this name as public. Any model, including commercial models hosted outside your institution, will be able to call this extension.'
-    : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
-  const badgeNotice =
-    resultingTier === 'private'
-      ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
-      : publicNotice;
+  const publicNotice = isMarketplace ? COPY.tierPublicMarketplace : COPY.tierPublicFile;
+  const badgeNotice = resultingTier === 'private' ? COPY.tierPrivate : publicNotice;
 
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
@@ -333,44 +332,40 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
           .join(' · ')
       : '';
 
-  const privacyPanel = (
-    <div className="biorouter-modal-panel rounded-lg p-3">
+  // §13.5: the badge this install will produce and the one sentence that says what it means,
+  // as text and not as help. No panel around them.
+  const privacyLine = (
+    <div className="br-brxt-tier">
       <PrivacyBadge tier={resultingTier} />
-      <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
+      <p className="text-supporting text-text-muted">{badgeNotice}</p>
     </div>
   );
 
   const manifestSummary = manifest && !error && (
-    <div className="biorouter-modal-panel rounded-xl p-4">
-      <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
-        {isMarketplace ? 'From the Biorouter marketplace' : 'Detected from bundle'}
+    <section className="br-brxt-summary">
+      <p className="text-supporting text-text-muted">
+        {isMarketplace ? COPY.fromMarketplace : COPY.detectedFromBundle}
       </p>
-      <p className="text-sm font-semibold">{manifest.display_name}</p>
-      <p className="text-xs text-text-muted mt-0.5">
+      <p className="text-label text-text-default">{manifest.display_name}</p>
+      <p className="text-supporting text-text-muted">
         v{manifest.version}
-        {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
-        {skillsPreview.length > 0
-          ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
-          : ''}
+        {manifest.tools_count ? ` · ${COPY.tools(manifest.tools_count)}` : ''}
+        {skillsPreview.length > 0 ? ` · ${COPY.skills(skillsPreview.length)}` : ''}
         {' · '}
-        {requiredVars.length} required env var
-        {requiredVars.length !== 1 ? 's' : ''}
-        {optionalVars.length > 0 ? `, ${optionalVars.length} optional` : ''}
+        {COPY.requiredVars(requiredVars.length, optionalVars.length)}
       </p>
-      <p className="text-sm text-text-default mt-2">{manifest.description}</p>
+      <p className="br-brxt-summary-desc text-body text-text-default">{manifest.description}</p>
       {skillsPreview.length > 0 && (
-        <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
-          <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
-            Skills included
-          </p>
+        <div className="br-brxt-skills">
+          <p className="text-supporting text-text-muted">{COPY.skillsIncluded}</p>
           {skillsPreview.map((skill) => (
-            <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
-              · <span className="font-medium">{skill.name}</span>: {skill.description}
+            <p key={skill.slug} className="text-supporting text-text-muted">
+              · <span className="text-text-default">{skill.name}</span>: {skill.description}
             </p>
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 
   const dependencyBanner = error && (
@@ -385,19 +380,20 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     />
   );
 
+  // The titles say what the dialog is doing; the second line, where there is one, is a fact (where
+  // it came from), never an instruction. "Install a Biorouter extension bundle (.brxt file)" and
+  // "Fill in required credentials…" repeated what the drop zone and the asterisks already say.
   let title: React.ReactNode;
   let subtitle: React.ReactNode;
   if (step === 'configure') {
-    title = `Configure ${manifest?.display_name ?? ''}`;
-    subtitle = 'Fill in required credentials. Optional fields are pre-filled with defaults.';
+    title = COPY.configureTitle(manifest?.display_name ?? '');
   } else if (isMarketplace) {
-    title = `Install ${marketplaceName}`;
+    title = COPY.installTitle(marketplaceName);
     subtitle = marketplaceMeta
-      ? `From the Biorouter marketplace · ${marketplaceMeta}`
-      : 'From the Biorouter marketplace.';
+      ? COPY.fromMarketplaceMeta(marketplaceMeta)
+      : COPY.fromMarketplaceSentence;
   } else {
-    title = 'Add extension';
-    subtitle = 'Install a Biorouter extension bundle (.brxt file).';
+    title = COPY.addTitle;
   }
 
   /**
@@ -407,8 +403,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
    * differ.
    */
   const backToMarketplace = (
-    <Button variant="outline" onClick={onClose} disabled={isInstalling}>
-      Back to marketplace
+    <Button variant="secondary" onClick={onClose} disabled={isInstalling}>
+      {COPY.backToMarketplace}
     </Button>
   );
 
@@ -429,11 +425,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               }
             }}
           >
-            Retry
+            {COPY.retry}
           </Button>
         ) : (
           <Button disabled={!manifest || isBusy} onClick={handleNext}>
-            {isInstalling ? 'Installing…' : primaryAction.label}
+            {isInstalling ? COPY.installing : primaryAction.label}
           </Button>
         )}
       </>
@@ -441,11 +437,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
   } else if (step === 'select') {
     footer = (
       <>
-        <Button variant="outline" onClick={onClose} disabled={isBusy}>
-          Cancel
+        <Button variant="secondary" onClick={onClose} disabled={isBusy}>
+          {COPY.cancel}
         </Button>
         <Button disabled={!manifest || !!error || isBusy} onClick={handleNext}>
-          {isInstalling ? 'Installing…' : primaryAction.label}
+          {isInstalling ? COPY.installing : primaryAction.label}
         </Button>
       </>
     );
@@ -453,28 +449,59 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     footer = (
       <>
         <Button
-          variant="outline"
+          variant="secondary"
           disabled={isBusy}
           onClick={() => {
             setStep('select');
             setError(null);
           }}
         >
-          Back
+          {COPY.back}
         </Button>
         {isMarketplace ? (
           backToMarketplace
         ) : (
-          <Button variant="outline" onClick={onClose} disabled={isBusy}>
-            Cancel
+          <Button variant="secondary" onClick={onClose} disabled={isBusy}>
+            {COPY.cancel}
           </Button>
         )}
         <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
-          {isInstalling ? 'Installing…' : 'Install extension'}
+          {isInstalling ? COPY.installing : COPY.installExtension}
         </Button>
       </>
     );
   }
+
+  /** One credential field: a real label, a masked input for a secret, the manifest's own words as the hint. */
+  const envField = (entry: EnvEntry) => (
+    <Field
+      key={entry.key}
+      id={envFieldId(entry.key)}
+      label={
+        entry.required ? (
+          <>
+            {entry.key}{' '}
+            <span className="br-brxt-required-mark" aria-hidden="true">
+              {COPY.requiredMark}
+            </span>
+          </>
+        ) : (
+          entry.key
+        )
+      }
+      required={entry.required}
+    >
+      <Input
+        type={entry.secret ? 'password' : 'text'}
+        // The manifest's description of the variable is the hint inside the empty field: third-party
+        // text of any length, so not a line under every field and not a second labelled control.
+        placeholder={entry.description}
+        value={entry.value}
+        onChange={(e) => setEnvValue(entry.key, e.target.value)}
+        autoComplete="off"
+      />
+    </Field>
+  );
 
   return (
     <ModalShell
@@ -485,33 +512,35 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       // installed it is `required` — nothing may interrupt it.
       size="md"
       purpose={isBusy ? 'required' : 'form'}
+      // The body changes shape as the person goes (a drop zone, a summary, a form, an error
+      // banner); anchored at the top it grows downward, so the controls stay under the pointer.
+      anchor="top"
       scrollBody
       title={title}
       subtitle={subtitle}
       footer={footer}
+      bodyClassName="flex flex-col gap-4 py-4"
     >
       {step === 'select' && isMarketplace && (
         /* Issue #116. The marketplace route renders NO local-file controls: no
-           drop zone, no file input, no "Browse file…". The user chose this
+           drop zone, no file input, no way to pick a file. The user chose this
            extension on the previous screen and Biorouter is fetching it — there
            is nothing for them to supply. */
-        <div className="py-3 space-y-4">
-          {privacyPanel}
+        <>
+          {privacyLine}
 
           {phase === 'downloading' && (
-            <div className="biorouter-modal-panel rounded-xl p-8 text-center">
-              <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
-              <p className="text-sm text-text-muted animate-pulse">
-                Downloading {marketplaceName}…
-              </p>
-            </div>
+            <p role="status" className="br-brxt-status text-body text-text-muted">
+              <Spinner />
+              {COPY.downloading(marketplaceName)}
+            </p>
           )}
 
           {phase === 'validating' && (
-            <div className="biorouter-modal-panel rounded-xl p-8 text-center">
-              <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
-              <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
-            </div>
+            <p role="status" className="br-brxt-status text-body text-text-muted">
+              <Spinner />
+              {COPY.reading}
+            </p>
           )}
 
           {phase === 'error' &&
@@ -531,185 +560,129 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
             ))}
 
           {phase === 'ready' && manifestSummary}
-        </div>
+        </>
       )}
 
       {step === 'select' && !isMarketplace && (
-        <div className="py-3 space-y-4">
+        <>
           {/* §13.5: the tier this install will actually produce, stated before
               a bundle has even been chosen — someone who has not yet picked one
               should already know what dropping it in here means. */}
-          {privacyPanel}
+          {privacyLine}
 
-          {/* Drop zone */}
-          <div
-            className={[
-              'biorouter-modal-panel rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
-              isDragging
-                ? '!border-block-teal bg-block-teal/5'
-                : error
-                  ? '!border-border-danger bg-background-danger/10'
-                  : 'hover:bg-background-medium',
-            ].join(' ')}
+          {/* Knowledge's drop zone recipe (`knowledge/IngestPanel/Dropzone.tsx`), as Add skill
+              draws it: a glyph plate over one label line on the muted ground, and a real button,
+              so the keyboard reaches the file chooser it opens. Hover is `tint-interactive`,
+              never `hover:bg-overlay-hover`, which would REPLACE an opaque ground rather than
+              composite over it. Not `biorouter-modal-panel`: that class is unlayered, so its
+              background and border beat any utility and the zone never changed on drag or error. */}
+          <button
+            type="button"
+            aria-label={COPY.dropZoneName}
+            disabled={isValidating}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
             }}
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={async () => {
+              // The native picker returns a real path (and the Playwright hook can answer it
+              // without a dialog); a surface without it falls back to the file input.
+              if (typeof window.electron?.openBrxtFilePicker !== 'function') {
+                fileInputRef.current?.click();
+                return;
+              }
+              const fp = await window.electron.openBrxtFilePicker();
+              if (fp) processFile(fp);
+            }}
+            className={[
+              'biorouter-focus-surface flex w-full cursor-pointer select-none flex-col items-center gap-2 rounded-container border px-4 py-6 text-center transition-colors',
+              isDragging
+                ? 'border-border-strong bg-background-medium'
+                : error
+                  ? 'border-border-danger bg-background-muted tint-interactive'
+                  : 'border-border-subtle bg-background-muted tint-interactive',
+            ].join(' ')}
           >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".brxt"
-              className="hidden"
-              onChange={handleFileInput}
-            />
             {isValidating ? (
-              <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
+              <span className="flex items-center gap-2 text-body text-text-muted">
+                <Spinner />
+                {COPY.reading}
+              </span>
             ) : (
               <>
-                <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
-                <p className="text-sm font-medium mb-1">
-                  {manifest ? 'Drop a different .brxt file here' : 'Drop your .brxt file here'}
-                </p>
-                <p className="text-xs text-text-muted mb-3">or click to browse</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const fp = await window.electron.openBrxtFilePicker();
-                    if (fp) processFile(fp);
-                  }}
+                <span
+                  aria-hidden="true"
+                  className={`flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle ${isDragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
                 >
-                  Browse file…
-                </Button>
+                  <Upload className="h-4 w-4" />
+                </span>
+                <span className="text-label text-text-default">
+                  {manifest ? COPY.dropZoneAnother : COPY.dropZone}
+                </span>
               </>
             )}
-          </div>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".brxt"
+            className="hidden"
+            onChange={handleFileInput}
+          />
 
           {/* Error banner. A `.brxt` install fails most often on `uv sync` —
               a Python dependency that will not build on this machine — which is
               precisely the kind of thing a session with a shell can work out. */}
           {dependencyBanner}
 
-          {/* Manifest preview card */}
+          {/* What the bundle says it is */}
           {manifestSummary}
-        </div>
+        </>
       )}
 
       {step === 'configure' && manifest && (
-        <div className="py-3 space-y-4">
-          {requiredVars.length > 0 && (
-            <div className="space-y-3">
-              <p className="text-xs font-semibold text-text-default uppercase tracking-wide">
-                Required
-              </p>
-              {requiredVars.map((entry) => (
-                <div key={entry.key}>
-                  <label
-                    htmlFor={envFieldId(entry.key)}
-                    className="block text-xs font-semibold mb-1"
-                  >
-                    {entry.key} <span className="text-text-danger">*</span>
-                  </label>
-                  <input
-                    id={envFieldId(entry.key)}
-                    type={entry.secret ? 'password' : 'text'}
-                    className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
-                    placeholder={entry.description}
-                    value={entry.value}
-                    onChange={(e) => setEnvValue(entry.key, e.target.value)}
-                    autoComplete="off"
+        <>
+          <div className="br-brxt-fields">
+            {requiredVars.map(envField)}
+
+            {/* Issue #116. When an extension declares only optional variables the
+                first step's button says so, and this step must not then hide them
+                behind a disclosure the user has to find. They are open, under a
+                title whose help says they can be left as they are. */}
+            {optionalVars.length > 0 && requiredVars.length === 0 && (
+              <>
+                <div className="br-brxt-group-title">
+                  <h3 className="text-label text-text-default">{COPY.optionalSettings}</h3>
+                  <InfoTip
+                    label={COPY.optionalSettings}
+                    help={COPY.optionalHelp(manifest.display_name, optionalVars.length)}
                   />
                 </div>
-              ))}
-            </div>
-          )}
+                {optionalVars.map(envField)}
+              </>
+            )}
 
-          {/* Issue #116. When an extension declares only optional variables the
-              first step's button says so, and this step must not then hide them
-              behind a disclosure the user has to find. They are open. */}
-          {optionalVars.length > 0 && requiredVars.length === 0 && (
-            <div className="space-y-3">
-              <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
-                Optional
-              </p>
-              <p className="text-xs text-text-muted">
-                {manifest.display_name} needs no credentials to run. These {optionalVars.length}{' '}
-                optional setting{optionalVars.length !== 1 ? 's are' : ' is'} pre-filled with
-                defaults — install without changing anything if you are not sure.
-              </p>
-              {optionalVars.map((entry) => (
-                <div key={entry.key}>
-                  <label
-                    htmlFor={envFieldId(entry.key)}
-                    className="block text-xs font-medium text-text-muted mb-1"
-                  >
-                    {entry.key}
-                  </label>
-                  <input
-                    id={envFieldId(entry.key)}
-                    type={entry.secret ? 'password' : 'text'}
-                    className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
-                    placeholder={entry.description}
-                    value={entry.value}
-                    onChange={(e) => setEnvValue(entry.key, e.target.value)}
-                    autoComplete="off"
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {optionalVars.length > 0 && requiredVars.length > 0 && (
-            <div>
-              <button
-                type="button"
-                className="text-xs text-text-muted underline"
-                onClick={() => setShowOptional((v) => !v)}
+            {optionalVars.length > 0 && requiredVars.length > 0 && (
+              <Disclosure
+                label={COPY.optionalVariables(optionalVars.length)}
+                summary={COPY.prefilled}
+                open={showOptional}
+                onOpenChange={setShowOptional}
               >
-                {showOptional ? 'Hide' : 'Show'} {optionalVars.length} optional variable
-                {optionalVars.length !== 1 ? 's' : ''} (pre-filled with defaults)
-              </button>
-              {showOptional && (
-                <div className="space-y-3 mt-3">
-                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
-                    Optional
-                  </p>
-                  {optionalVars.map((entry) => (
-                    <div key={entry.key}>
-                      <label
-                        htmlFor={envFieldId(entry.key)}
-                        className="block text-xs font-medium text-text-muted mb-1"
-                      >
-                        {entry.key}
-                      </label>
-                      <input
-                        id={envFieldId(entry.key)}
-                        type={entry.secret ? 'password' : 'text'}
-                        className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
-                        placeholder={entry.description}
-                        value={entry.value}
-                        onChange={(e) => setEnvValue(entry.key, e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                <div className="br-brxt-fields">{optionalVars.map(envField)}</div>
+              </Disclosure>
+            )}
+          </div>
 
           {dependencyBanner}
 
           {/* §13.5: the resulting badge, above the Install button — the footer
               sits directly below this body, so it is the last thing read before
               the button that commits the install. */}
-          {privacyPanel}
-        </div>
+          {privacyLine}
+        </>
       )}
     </ModalShell>
   );

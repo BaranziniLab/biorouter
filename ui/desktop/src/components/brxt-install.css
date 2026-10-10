@@ -1,0 +1,69 @@
+/*
+ * The .brxt install modal (`BrxtInstallModal.tsx`).
+ *
+ * Authored rather than Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail
+ * to generate (CLAUDE.md, "Desktop shell geometry"). The modal is flat: the dialog is the only
+ * box, and its sections are separated by space and a hairline, never a card inside the card.
+ */
+
+/* Section 13.5's line above the Install button: a badge and ONE sentence, no panel around them. */
+.br-brxt-tier {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.br-brxt-tier > p {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+/* A one-line status (downloading, reading): the glyph and the words, centred in the body. */
+.br-brxt-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-block: 20px;
+}
+
+/* What the bundle says it is: a name, one fact line, a sentence, then the skills it carries. */
+.br-brxt-summary {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.br-brxt-summary-desc {
+  margin-top: 6px;
+}
+
+.br-brxt-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* The configure step's fields, one rhythm. */
+.br-brxt-fields {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.br-brxt-group-title {
+  display: flex;
+  align-items: center;
+}
+
+.br-brxt-required-mark {
+  margin-inline-start: 2px;
+  color: var(--text-danger);
+}

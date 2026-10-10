@@ -281,7 +281,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
   const getConfirmButtonVariant = () => {
     switch (modalState.modalType) {
       case 'blocked':
-        return 'outline';
+        return 'secondary';
       case 'untrusted':
         return 'destructive';
       case 'trusted':
@@ -323,7 +323,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
           </Button>
         ) : (
           <>
-            <Button variant="outline" onClick={dismissModal} disabled={modalState.isPending}>
+            <Button variant="secondary" onClick={dismissModal} disabled={modalState.isPending}>
               {config.cancelLabel}
             </Button>
             <Button

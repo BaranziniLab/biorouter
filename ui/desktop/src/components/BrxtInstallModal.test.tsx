@@ -16,6 +16,7 @@ vi.mock('./ConfigContext', () => ({
 }));
 
 import { BrxtInstallModal } from './BrxtInstallModal';
+import { BRXT_INSTALL_COPY as COPY } from './brxtInstallCopy';
 
 const MANIFEST: BrxtManifest = {
   name: 'playwrightagent',
@@ -127,10 +128,13 @@ describe('BrxtInstallModal — the local-file route (issue #116)', () => {
   it('keeps drag/drop and the file picker when no origin is given', () => {
     render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
 
-    expect(screen.getByText('Add extension')).toBeInTheDocument();
-    expect(screen.getByText('Drop your .brxt file here')).toBeInTheDocument();
-    expect(screen.getByText('or click to browse')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Browse file…' })).toBeInTheDocument();
+    expect(screen.getByText(COPY.addTitle)).toBeInTheDocument();
+    // One line, and the zone IS the control: no second "or click to browse" line, no extra
+    // "Browse file…" button beside it (Add skill's zone, Knowledge's recipe).
+    expect(screen.getByText(COPY.dropZone)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: COPY.dropZoneName })).toBeInTheDocument();
+    expect(screen.queryByText('or click to browse')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Browse file/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to marketplace' })).toBeNull();
   });
@@ -155,10 +159,10 @@ describe('BrxtInstallModal — the local-file route (issue #116)', () => {
       />
     );
 
-    expect(await screen.findByText('Detected from bundle')).toBeInTheDocument();
-    expect(screen.getByText('Add extension')).toBeInTheDocument();
-    expect(screen.getByText('Drop a different .brxt file here')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Browse file…' })).toBeInTheDocument();
+    expect(await screen.findByText(COPY.detectedFromBundle)).toBeInTheDocument();
+    expect(screen.getByText(COPY.addTitle)).toBeInTheDocument();
+    expect(screen.getByText(COPY.dropZoneAnother)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: COPY.dropZoneName })).toBeInTheDocument();
   });
 
   it('labels the local primary action by what it will actually do', async () => {
@@ -184,5 +188,166 @@ describe('BrxtInstallModal — the local-file route (issue #116)', () => {
     await waitFor(() => expect(install).toHaveBeenCalled());
     // The local route records no registry provenance (DR-23): there is none.
     expect(install).toHaveBeenCalledWith('/tmp/playwright.brxt', 'playwrightagent', undefined);
+  });
+});
+
+/**
+ * The dialog's chrome and its flat sections (spec 3.11): the dialog is the only box, the drop
+ * zone is one line and a button, the type roles are the app's, and the tier line (section 13.5)
+ * stays on screen as text.
+ */
+describe('BrxtInstallModal — the dialog', () => {
+  const ENV = (overrides: Record<string, unknown>) => ({
+    key: 'TOKEN',
+    required: true,
+    auto_propagate: false,
+    description: 'Your API token',
+    secret: true,
+    ...overrides,
+  });
+
+  const withManifest = (env: unknown[]) => {
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => ({
+        manifest: { ...MANIFEST, env_vars: env },
+        skillsPreview: [
+          { slug: 'pw-skill', name: 'pw-skill', description: 'Drives the browser' },
+          { slug: 'pw-two', name: 'pw-two', description: 'Another' },
+        ],
+      })),
+    };
+  };
+
+  const open = (props: Partial<React.ComponentProps<typeof BrxtInstallModal>> = {}) =>
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/playwright.brxt"
+        {...props}
+      />
+    );
+
+  it('is a 480px dialog anchored at the top, with Cancel quiet and the tier line in the page', async () => {
+    withManifest([]);
+    open();
+    const dialog = await screen.findByRole('dialog', { name: COPY.addTitle });
+
+    expect(dialog).toHaveAttribute('data-size', 'md');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(
+      /bg-background-medium/
+    );
+    // §13.5, as text above the Install button, not in a panel and not in help.
+    expect(screen.getByText(COPY.tierPublicFile)).toBeVisible();
+    expect(dialog.querySelector('.biorouter-modal-panel')).toBeNull();
+  });
+
+  it('summarises the bundle flat: facts, the description, and the skills it carries', async () => {
+    withManifest([ENV({})]);
+    open();
+
+    expect(await screen.findByText(COPY.detectedFromBundle)).toBeVisible();
+    const facts = screen.getByText(/^v0\.1\.0/);
+    expect(facts).toHaveTextContent('v0.1.0 · 23 tools · 2 skills · 1 required env var');
+    expect(screen.getByText('Browser automation via Playwright.')).toBeVisible();
+    expect(screen.getByText(COPY.skillsIncluded)).toBeVisible();
+    expect(screen.getByText('pw-skill')).toBeVisible();
+  });
+
+  it('opens the native picker from the drop zone and reads the file it returns', async () => {
+    const user = userEvent.setup({ delay: null });
+    const validate = vi.fn(async () => ({ manifest: MANIFEST, skillsPreview: [] }));
+    const picker = vi.fn(async () => '/tmp/picked.brxt');
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: validate,
+      openBrxtFilePicker: picker,
+    };
+    render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: COPY.dropZoneName }));
+
+    expect(picker).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(validate).toHaveBeenCalledWith('/tmp/picked.brxt'));
+    expect(await screen.findByText(COPY.detectedFromBundle)).toBeInTheDocument();
+  });
+
+  it('labels a required variable with a mark that is not spoken, and masks a secret', async () => {
+    const user = userEvent.setup({ delay: null });
+    withManifest([ENV({ key: 'TEST_KEY' })]);
+    open();
+
+    await user.click(await screen.findByRole('button', { name: 'Next: configure' }));
+
+    const field = await screen.findByLabelText(/TEST_KEY/);
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveAttribute('aria-required', 'true');
+    // The hint is the manifest's own words, in the empty field.
+    expect(field).toHaveAttribute('placeholder', 'Your API token');
+    const label = document.querySelector('label[for="brxt-env-TEST_KEY"]') as HTMLElement;
+    expect(label).toHaveTextContent('TEST_KEY *');
+    expect(label.querySelector('[aria-hidden="true"]')).toHaveTextContent('*');
+    expect(screen.getByRole('button', { name: COPY.installExtension })).toBeDisabled();
+  });
+
+  it('keeps optional variables behind a disclosure when some are required', async () => {
+    const user = userEvent.setup({ delay: null });
+    withManifest([ENV({}), ENV({ key: 'OPTIONAL_KEY', required: false, secret: false })]);
+    open();
+    await user.click(await screen.findByRole('button', { name: 'Next: configure' }));
+
+    expect(screen.queryByLabelText('OPTIONAL_KEY')).toBeNull();
+    const toggle = screen.getByRole('button', { name: COPY.optionalVariables(1) });
+    expect(toggle).toHaveAccessibleDescription(COPY.prefilled);
+    await user.click(toggle);
+    expect(await screen.findByLabelText('OPTIONAL_KEY')).toBeInTheDocument();
+  });
+
+  it('shows optional-only settings open, with the reassurance as help on their title', async () => {
+    const user = userEvent.setup({ delay: null });
+    withManifest([ENV({ key: 'HEADLESS', required: false, secret: false, default: 'true' })]);
+    open();
+    await user.click(await screen.findByRole('button', { name: 'Next: optional settings' }));
+
+    expect(await screen.findByLabelText('HEADLESS')).toBeVisible();
+    expect(screen.getByRole('heading', { name: COPY.optionalSettings })).toBeVisible();
+    const help = screen.getByRole('button', { name: `About ${COPY.optionalSettings}` });
+    expect(help).toHaveAccessibleDescription(COPY.optionalHelp('Playwright Agent', 1));
+    // Nothing is required, so Install is reachable at once, and no paragraph carries the help.
+    expect(screen.getByRole('button', { name: COPY.installExtension })).toBeEnabled();
+    expect(screen.queryByText(/pre-filled with defaults — install/)).toBeNull();
+  });
+
+  it('says what it is waiting for in one status line with the shared spinner', () => {
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        origin={{
+          kind: 'marketplace',
+          registrySource: { registryId: 'playwright-agent' },
+          entry: { name: 'Playwright Agent' },
+          downloading: true,
+          onRetry: () => {},
+        }}
+      />
+    );
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(COPY.downloading('Playwright Agent'));
+    expect(status.querySelector('.br-spinner')).not.toBeNull();
+    expect(document.querySelector('.animate-pulse')).toBeNull();
+  });
+
+  it('has no dash in a sentence it says', () => {
+    const sentences = [
+      COPY.tierPrivate,
+      COPY.tierPublicMarketplace,
+      COPY.tierPublicFile,
+      COPY.noLocalPath,
+      COPY.registerFailed,
+      COPY.optionalHelp('X', 3),
+    ];
+    for (const text of sentences) expect(text).not.toMatch(/[\u2013\u2014]/);
   });
 });
