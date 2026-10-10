@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Monitor, X } from '../icons/app-icons';
+import { ChevronDown, ChevronUp, Copilot, X } from '../icons/app-icons';
 import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
@@ -246,7 +246,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   return (
     <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-default`}>
       <div className="flex min-w-0 items-center gap-2">
-        <Monitor className="size-4 shrink-0" aria-hidden="true" />
+        <Copilot className="size-4 shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 break-words" role="status">
           {active
             ? 'Biorouter Copilot active'
