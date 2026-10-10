@@ -216,7 +216,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               type="button"
               variant="secondary"
               size="sm"
-              className="flex-none"
+              className="shrink-0"
               data-testid="knowledge-lint-run"
               disabled={running || !dispatchKbId || !model}
               onClick={run}
