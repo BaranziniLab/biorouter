@@ -3803,7 +3803,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 .biorouter-list-row:hover,
-.biorouter-list-row:focus-visible,
 .biorouter-list-row:has(:focus-visible) {
   background-color: var(--overlay-hover);
 }
@@ -4478,11 +4477,27 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    DARKENING rather than by dropping a step. */
 /* @ws WS-PRIMITIVES begin: settings row hover */
 .biorouter-settings-row:not(.tint-selected):hover,
-.biorouter-settings-row:not(.tint-selected):focus-visible,
 .biorouter-settings-row:not(.tint-selected):has(:focus-visible) {
   background-color: var(--overlay-hover);
 }
 /* @ws WS-PRIMITIVES end: settings row hover */
+
+/* @ws WS-PRIMITIVES begin: row focus */
+/* A row that is ITSELF the focus target (a full-width button: a provider, a permission rule)
+   takes D-15's row treatment, `--background-focus` and an inset 2px `--border-focus` edge (spec
+   2.5). The row recipe's `box-shadow: none` and its hover wash are unlayered, so they beat the
+   base layer's `:focus-visible` rule and left such a row with a 5% wash, the same as a hover, and
+   a 1px firmed line: measured in Chromium with Tab, 2026-10-10. A row that merely CONTAINS the
+   focused control (the usual case: a switch, a name button) keeps the wash and the line above.
+   The third selector outranks the settings row's `:not(.tint-selected):hover` (0,3,0), so a
+   focused row under the pointer still reads as focused. */
+.biorouter-list-row:focus-visible,
+.biorouter-settings-row:focus-visible,
+.biorouter-settings-row:not(.tint-selected):focus-visible {
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+/* @ws WS-PRIMITIVES end: row focus */
 
 /* No dark-mode override needed: the block is flat and token-driven in both themes. */
 

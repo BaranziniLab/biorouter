@@ -50,11 +50,11 @@ function readTokens(): string {
 }
 
 /** Every `@ws WS-PRIMITIVES` block of main.css, in file order. */
-function primitiveBlocks(): string {
+function primitiveBlocks(without?: string): string {
   const out: string[] = [];
   const re =
     /\/\* @ws WS-PRIMITIVES begin: ([^*]+?) \*\/([\s\S]*?)\/\* @ws WS-PRIMITIVES end: \1 \*\//g;
-  for (const match of MAIN_CSS.matchAll(re)) out.push(match[2]);
+  for (const match of MAIN_CSS.matchAll(re)) if (match[1] !== without) out.push(match[2]);
   if (out.length === 0) throw new Error('main.css has no @ws WS-PRIMITIVES block');
   return out.join('\n');
 }
@@ -141,6 +141,14 @@ function App() {
             <Switch id="row-switch-last" checked={false} onCheckedChange={() => {}} />
           </SettingRow>
         </SettingSection>
+      </div>
+      <div className="biorouter-settings-list" style={{ width: 560, padding: 16 }}>
+        <button id="row-button" type="button" className="biorouter-settings-row br-setting-row" style={{ width: '100%', textAlign: 'left' }}>
+          <span>Provider</span>
+        </button>
+        <button type="button" className="biorouter-settings-row br-setting-row" style={{ width: '100%', textAlign: 'left' }}>
+          <span>Another provider</span>
+        </button>
       </div>
       <div style={{ padding: 16 }}>
         <Tabs defaultValue="general">
@@ -541,11 +549,21 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       const row = document.getElementById('row-switch')!.closest('.biorouter-settings-row')!;
       return {
         wash: getComputedStyle(row).backgroundColor,
+        shadow: getComputedStyle(row).boxShadow,
         line: getComputedStyle(row, '::after').borderTopColor,
         within: row.matches(':focus-within'),
         visible: row.matches(':has(:focus-visible)'),
       };
     });
+  }
+
+  /** Press Tab from the top of a fresh page until the keyboard reaches the element with this id. */
+  async function tabTo(tab: Page, id: string) {
+    for (let step = 0; step < 60; step += 1) {
+      await tab.keyboard.press('Tab');
+      if (await tab.evaluate((wanted) => document.activeElement?.id === wanted, id)) return;
+    }
+    throw new Error(`Tab never reached #${id}`);
   }
 
   it('leaves a clicked switch row at rest, and washes and firms it for a Tab (WS-SETTINGS-B-2)', async (ctx) => {
@@ -572,17 +590,15 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
     const keys = await open();
     try {
       const rest = await rowLook(keys);
-      for (let step = 0; step < 60; step += 1) {
-        await keys.keyboard.press('Tab');
-        if (await keys.evaluate(() => document.activeElement?.id === 'row-switch')) break;
-      }
-      expect(await keys.evaluate(() => document.activeElement?.id)).toBe('row-switch');
+      await tabTo(keys, 'row-switch');
       await keys.mouse.move(790, 5);
       await keys.waitForTimeout(300);
       const keyboard = await rowLook(keys);
       expect(keyboard.visible).toBe(true);
       expect(keyboard.wash, 'Tab washes the row').not.toBe(rest.wash);
       expect(keyboard.line, 'Tab firms the line').toBe('rgb(85, 85, 85)');
+      // The row only CONTAINS the focus: D-15's inset edge is the control's, not the row's.
+      expect(keyboard.shadow, 'a row that merely contains the focus').toBe('none');
     } finally {
       await keys.close();
     }
@@ -600,6 +616,45 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       );
     } finally {
       await old.close();
+    }
+  });
+
+  it('draws D-15 on a row that is itself the focus target, and keeps it under the pointer', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const look = (tab: Page) =>
+      tab.evaluate(() => {
+        const row = document.getElementById('row-button')!;
+        const cs = getComputedStyle(row);
+        return { wash: cs.backgroundColor, shadow: cs.boxShadow };
+      });
+    const own = await open();
+    try {
+      await tabTo(own, 'row-button');
+      await own.mouse.move(790, 5);
+      await own.waitForTimeout(300);
+      const focused = await look(own);
+      expect(focused.wash, 'D-15 fill (--background-focus)').toBe('rgb(221, 221, 221)');
+      expect(focused.shadow, 'D-15 inset 2px edge').toBe('rgb(85, 85, 85) 0px 0px 0px 2px inset');
+      // Pointing at the focused row does not take the fill back.
+      await own.hover('#row-button');
+      await own.waitForTimeout(300);
+      expect((await look(own)).wash).toBe('rgb(221, 221, 221)');
+    } finally {
+      await own.close();
+    }
+
+    // The instrument: without the block, a focused full-width row had a 5% wash and no edge,
+    // the same as a hover, which is what a keyboard user got.
+    const bare = await open(
+      PREFLIGHT + readTokens() + baseFocusRule() + primitiveBlocks('row focus')
+    );
+    try {
+      await tabTo(bare, 'row-button');
+      const lost = await look(bare);
+      expect(lost.shadow, 'the bug this guards').toBe('none');
+      expect(lost.wash, 'the bug this guards').not.toBe('rgb(221, 221, 221)');
+    } finally {
+      await bare.close();
     }
   });
 

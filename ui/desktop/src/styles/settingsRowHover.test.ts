@@ -30,7 +30,7 @@ const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 
 function hoverRule(): string {
   const match = CSS.match(
-    /\.biorouter-settings-row:not\(\.tint-selected\):hover,\s*\.biorouter-settings-row:not\(\.tint-selected\):focus-visible,\s*\.biorouter-settings-row:not\(\.tint-selected\):has\(:focus-visible\)\s*\{([^}]*)\}/
+    /\.biorouter-settings-row:not\(\.tint-selected\):hover,\s*\.biorouter-settings-row:not\(\.tint-selected\):has\(:focus-visible\)\s*\{([^}]*)\}/
   );
   expect(match, 'expected the settings-row hover rule to exclude a tinted row').toBeTruthy();
   return match![1];
@@ -59,9 +59,7 @@ describe('the settings row hover wash', () => {
   it('paints the one row hover, --overlay-hover, the same as a list row (no 42% / 38% fork)', () => {
     expect(hoverRule()).toMatch(/background-color:\s*var\(--overlay-hover\);/);
     expect(
-      ruleFor(
-        /\.biorouter-list-row:hover,\s*\.biorouter-list-row:focus-visible,\s*\.biorouter-list-row:has\(:focus-visible\)/
-      )
+      ruleFor(/\.biorouter-list-row:hover,\s*\.biorouter-list-row:has\(:focus-visible\)/)
     ).toMatch(/background-color:\s*var\(--overlay-hover\);/);
     expect(CSS).not.toMatch(/var\(--background-medium\) (42|38)%/);
   });
