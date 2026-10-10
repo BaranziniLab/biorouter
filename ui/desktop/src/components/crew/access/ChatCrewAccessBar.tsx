@@ -7,7 +7,7 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { cn } from '../../../utils';
-import { navigateWithViewTransition } from '../../../utils/navigationUtils';
+import { navigateToRoute } from '../../../utils/navigationUtils';
 import { isMachineIdShaped, sanitizeDisplayText } from '../identity';
 import type { ChatCrewAccess } from './chatCrewAccess';
 import { chatAccessRoute, chatAccessRouteState, chatConnectRouteState } from './ChatConnectNote';
@@ -221,7 +221,7 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
   };
   const startNewChat = () => {
     leaveChat();
-    navigateWithViewTransition(navigate, '/pair', { newChat: true });
+    navigateToRoute(navigate, '/pair', { newChat: true });
   };
 
   const revoke = async () => {
