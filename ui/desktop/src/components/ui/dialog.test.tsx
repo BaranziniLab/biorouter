@@ -91,6 +91,33 @@ describe('DialogContent focus return', () => {
     expect(opener).not.toHaveFocus();
   });
 
+  it('leaves focus where the person put it when a non-modal dialog closes on a press elsewhere', async () => {
+    const user = userEvent.setup();
+    function NonModal() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open non-modal
+          </button>
+          <input aria-label="Elsewhere field" />
+          <Dialog open={open} onOpenChange={setOpen} modal={false}>
+            <DialogContent aria-describedby={undefined}>
+              <DialogTitle>Non-modal</DialogTitle>
+            </DialogContent>
+          </Dialog>
+        </>
+      );
+    }
+    render(<NonModal />);
+    await user.click(screen.getByRole('button', { name: 'Open non-modal' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const field = screen.getByRole('textbox', { name: 'Elsewhere field' });
+    await user.click(field);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(field).toHaveFocus();
+  });
+
   it('leaves an opener that is gone alone, and does not throw', async () => {
     const user = userEvent.setup();
     render(<StateDialog removeOpenerOnOpen />);

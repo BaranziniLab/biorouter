@@ -49,6 +49,12 @@ export function useReturnFocusToOpener(handlers: {
       const target = opener.current;
       opener.current = null;
       if (event.defaultPrevented || !target || !target.isConnected) return;
+      // Focus already sitting on something outside the content (a non-modal dialog closed by a
+      // press on another field) is where the person went: leave it. Inside the content, or on
+      // `<body>` once the focused control unmounted, is the case this exists for.
+      const active = document.activeElement;
+      const content = event.target instanceof Node ? event.target : null;
+      if (active && active !== document.body && content && !content.contains(active)) return;
       event.preventDefault();
       target.focus();
     },
