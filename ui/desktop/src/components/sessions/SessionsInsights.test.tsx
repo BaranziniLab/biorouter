@@ -13,14 +13,14 @@ vi.mock('../../api', () => ({
 }));
 
 vi.mock('../common/Greeting', () => ({
-  Greeting: () => <h1>Greeting</h1>,
+  Greeting: ({ className }: { className?: string }) => <h1 className={className}>Greeting</h1>,
 }));
 
-vi.mock('./UsageHeatmap', () => ({
-  UsageHeatmap: ({ window }: { window: { currentStreak: number } }) => (
+vi.mock('./HomeUsageCard', () => ({
+  HomeUsageCard: ({ window }: { window: { currentStreak: number } }) => (
     <div>Usage heatmap {window.currentStreak}</div>
   ),
-  UsageHeatmapLoading: () => <div>Loading usage</div>,
+  HomeUsageCardLoading: () => <div>Loading usage</div>,
 }));
 
 const activity = {
@@ -52,7 +52,20 @@ describe('SessionInsights', () => {
     expect(screen.queryByText('See all')).not.toBeInTheDocument();
   });
 
-  it('shows the heatmap loading state until activity arrives', () => {
+  it('has no eyebrow above the greeting, and the greeting takes the title role', () => {
+    render(
+      <MemoryRouter>
+        <SessionInsights />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByText(/UCSF Biorouter/i)).not.toBeInTheDocument();
+    const greeting = screen.getByRole('heading', { name: 'Greeting' });
+    expect(greeting).toHaveClass('text-title');
+    expect(greeting).not.toHaveClass('text-2xl', 'font-semibold');
+  });
+
+  it('shows the card loading state until activity arrives', () => {
     render(
       <MemoryRouter>
         <SessionInsights />
@@ -88,7 +101,7 @@ describe('SessionInsights', () => {
     await waitFor(() => expect(screen.getByText('Usage heatmap 7')).toBeInTheDocument());
   });
 
-  it('collapses the heatmap section on a definitive failure instead of a void', async () => {
+  it('collapses the usage card on a definitive failure instead of a void', async () => {
     mocks.getSessionActivity.mockRejectedValue(new Error('404'));
 
     render(

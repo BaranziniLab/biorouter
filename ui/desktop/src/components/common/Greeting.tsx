@@ -38,11 +38,12 @@ const MESSAGES = [
   'Which medical mystery might the knowledge graph help solve today?',
 ] as const;
 
-export function Greeting({
-  className = 'mt-1 text-2xl font-semibold tracking-tight',
-  animate = true,
-  tabId,
-}: GreetingProps) {
+/**
+ * The arrival sentence, in the `title` role (24/32/400). Home and an empty chat
+ * each pass their own class (Home adds `text-wrap: balance`, the empty chat
+ * centres it); the default is the role alone.
+ */
+export function Greeting({ className = 'text-title', animate = true, tabId }: GreetingProps) {
   const [lifetime] = useState(() => {
     const existing = tabId ? tabGreetings.get(tabId) : undefined;
     if (existing) return existing;

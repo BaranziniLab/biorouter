@@ -1,7 +1,18 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActivityWindow } from '../../api';
-import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
+import {
+  HeatmapLegend,
+  LOADING_WEEKS,
+  StreakGlyph,
+  UsageHeatmap,
+  UsageHeatmapLoading,
+  resetHeatmapRevealForTests,
+} from './UsageHeatmap';
+
+beforeEach(() => {
+  resetHeatmapRevealForTests();
+});
 
 function windowOf(overrides: Partial<ActivityWindow> = {}): ActivityWindow {
   return {
@@ -102,10 +113,11 @@ describe('UsageHeatmap', () => {
       />
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('conservative estimates');
-    expect(screen.getByText(/Highest recorded estimate/)).toHaveTextContent(
-      'Highest recorded estimate · 128.4K tokens'
-    );
+    // The window-level explanation is the usage card's Tokens InfoTip now; the
+    // grid carries no paragraph and no live region of its own.
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/conservative estimates/)).toBeNull();
+    expect(screen.queryByText(/Highest recorded estimate/)).toBeNull();
     const cell = screen.getByLabelText(/2026-03-02: 3 chats, 128402 estimated tokens/);
     fireEvent.mouseEnter(cell);
     expect(screen.getByRole('tooltip')).toHaveTextContent('128,402');
@@ -124,7 +136,7 @@ describe('UsageHeatmap', () => {
       />
     );
 
-    expect(screen.getByText('Token totals unavailable for older activity')).toBeInTheDocument();
+    expect(screen.queryByText('Token totals unavailable for older activity')).toBeNull();
     const cell = screen.getByLabelText(/2026-03-02: 3 chats, token total unavailable/);
     fireEvent.mouseEnter(cell);
     expect(screen.getByRole('tooltip')).toHaveTextContent('Tokens processedUnavailable');
@@ -173,14 +185,14 @@ describe('UsageHeatmap', () => {
     );
     const outlined = screen
       .getAllByRole('gridcell')
-      .filter((b) => b.className.includes('shadow-[inset_0_0_0_2px_var(--text-default)]'));
+      .filter((cell) => cell.getAttribute('data-streak') === 'true');
     expect(outlined).toHaveLength(3);
     for (const cell of outlined) {
       expect(cell).toHaveAccessibleName(/part of current streak/);
     }
-    expect(screen.getByText('Current streak')).toBeInTheDocument();
-    expect(screen.getByText('3 day streak')).toBeInTheDocument();
-    expect(screen.getByText(/Longest streak · 5 days/)).toBeInTheDocument();
+    // The streak's words are the usage card's footnote (`streakFootnote`).
+    expect(screen.queryByText('3 day streak')).toBeNull();
+    expect(screen.queryByText(/Longest streak/)).toBeNull();
 
     fireEvent.mouseEnter(outlined[0]);
     expect(screen.getByRole('tooltip')).toHaveTextContent('Part of your current streak');
@@ -196,17 +208,112 @@ describe('UsageHeatmap', () => {
     );
     const outlined = screen
       .getAllByRole('gridcell')
-      .filter((b) => b.className.includes('inset_0_0_0_2px'));
+      .filter((cell) => cell.getAttribute('data-streak') === 'true');
     expect(outlined.map((b) => b.getAttribute('aria-label'))).toEqual([
       expect.stringContaining('2026-03-12'),
       expect.stringContaining('2026-03-13'),
     ]);
   });
+});
 
-  it('singularises the streak header', () => {
-    render(<UsageHeatmap window={windowOf({ currentStreak: 1, longestStreak: 1 })} />);
-    expect(screen.getByText('1 day streak')).toBeInTheDocument();
-    expect(screen.getByText(/Longest streak · 1 day$/)).toBeInTheDocument();
+describe('UsageHeatmap layout', () => {
+  const YEAR = { start: '2025-10-04', end: '2026-10-09' }; // 371 days
+
+  it('draws one column per week of the window, never a fixed count', () => {
+    const { container } = render(<UsageHeatmap window={windowOf(YEAR)} />);
+    const root = container.querySelector<HTMLElement>('.biorouter-heatmap')!;
+    // 2025-10-04 is a Saturday, padded back to Sunday Sep 28: 377 days, so the
+    // ragged last week makes 54 columns.
+    expect(root.style.getPropertyValue('--heat-weeks')).toBe('54');
+    expect(screen.getAllByRole('gridcell')).toHaveLength(377);
+
+    const { container: short } = render(<UsageHeatmap window={windowOf()} />);
+    expect(
+      short.querySelector<HTMLElement>('.biorouter-heatmap')!.style.getPropertyValue('--heat-weeks')
+    ).toBe('2');
+  });
+
+  it('labels months over their first full week and draws no weekday labels', () => {
+    const { container } = render(<UsageHeatmap window={windowOf(YEAR)} />);
+    const months = container.querySelector('.biorouter-heatmap-months')!;
+    expect(months).toHaveAttribute('aria-hidden', 'true');
+    const labels = [...months.querySelectorAll('span')].map((label) => label.textContent);
+    expect(labels).toEqual([
+      'Oct',
+      'Nov',
+      'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+    ]);
+    for (const weekday of ['Sun', 'Mon', 'Tue', 'Thu', 'Sat']) {
+      expect(screen.queryByText(weekday)).toBeNull();
+    }
+  });
+
+  it('reveals the first heatmap of a session once, and later mounts at rest', () => {
+    const first = render(<UsageHeatmap window={windowOf()} />);
+    const root = first.container.querySelector('.biorouter-heatmap')!;
+    expect(root).toHaveAttribute('data-reveal', 'true');
+    // Codex's stagger: col * 8 + row * 12 ms. Mar 10 is week 1, a Tuesday (row 2).
+    expect(
+      screen.getByLabelText('2026-03-10: no activity').style.getPropertyValue('--heat-delay')
+    ).toBe('32ms');
+    first.unmount();
+
+    const again = render(<UsageHeatmap window={windowOf()} />);
+    expect(again.container.querySelector('.biorouter-heatmap')).not.toHaveAttribute('data-reveal');
+    expect(
+      screen.getByLabelText('2026-03-10: no activity').style.getPropertyValue('--heat-delay')
+    ).toBe('');
+  });
+
+  describe('under reduced motion', () => {
+    const original = window.matchMedia;
+    beforeEach(() => {
+      window.matchMedia = vi.fn((query: string) => ({
+        matches: query.includes('reduce'),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof window.matchMedia;
+    });
+    afterEach(() => {
+      window.matchMedia = original;
+    });
+
+    it('never reveals', () => {
+      const { container } = render(<UsageHeatmap window={windowOf()} />);
+      expect(container.querySelector('.biorouter-heatmap')).not.toHaveAttribute('data-reveal');
+    });
+  });
+});
+
+describe('legend and streak glyph', () => {
+  it('draws the five steps of the ramp between Less and More', () => {
+    const { container } = render(<HeatmapLegend />);
+    expect(container).toHaveTextContent('LessMore');
+    const swatches = container.querySelectorAll('.biorouter-heatmap-swatch');
+    expect([...swatches].map((swatch) => swatch.className)).toEqual([
+      expect.stringContaining('bg-heat-0'),
+      expect.stringContaining('bg-heat-1'),
+      expect.stringContaining('bg-heat-2'),
+      expect.stringContaining('bg-heat-3'),
+      expect.stringContaining('bg-heat-4'),
+    ]);
+  });
+
+  it('rings the streak glyph the way it rings a streak cell', () => {
+    const { container } = render(<StreakGlyph />);
+    expect(container.firstElementChild).toHaveAttribute('data-streak', 'true');
+    expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
   });
 });
 
@@ -355,11 +462,13 @@ describe('UsageHeatmap keyboard model', () => {
 });
 
 describe('UsageHeatmapLoading', () => {
-  it('fills the loading state with an animated heatmap-shaped placeholder', () => {
-    render(<UsageHeatmapLoading />);
+  it('draws the full window as a breathing placeholder with nothing to read', () => {
+    const { container } = render(<UsageHeatmapLoading />);
 
-    expect(screen.getByRole('status', { name: 'Loading usage activity' })).toBeInTheDocument();
-    expect(screen.getAllByTestId('heatmap-loading-cell')).toHaveLength(154);
-    expect(screen.getByText('Loading activity')).toBeInTheDocument();
+    expect(screen.getAllByTestId('heatmap-loading-cell')).toHaveLength(LOADING_WEEKS * 7);
+    // The card around it carries the status; the grid itself is decoration.
+    expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.queryByText('Loading activity')).toBeNull();
+    expect(container).toHaveTextContent('');
   });
 });

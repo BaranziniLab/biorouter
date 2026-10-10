@@ -1,5 +1,16 @@
 import SplitType from 'split-type';
 import { useLayoutEffect, useRef } from 'react';
+import { DUR, EASE_OUT, TRAVEL, prefersReducedMotion } from '../styles/motion';
+
+/**
+ * The unroll's timing, on the motion tokens (spec 2.4): each character slides
+ * into place from the left over `--dur-med` on the one curve, 12ms after the one before it
+ * (the same row step as the heatmap's reveal). Only `transform` and `opacity`
+ * move (principle 9), so the old blur is gone.
+ */
+const CHAR_DURATION_MS = DUR.med;
+const CHAR_STAGGER_MS = 12;
+const CHAR_TRAVEL_PX = TRAVEL.small;
 
 interface TextSplitterOptions {
   resizeCallback?: () => void;
@@ -90,31 +101,17 @@ export class TextAnimator {
       char.style.opacity = '0';
       char.style.display = 'inline-block';
       char.style.position = 'relative';
-      char.style.transform = 'translateX(-0.18em)';
-      char.style.filter = 'blur(2px)';
+      char.style.transform = `translateX(-${CHAR_TRAVEL_PX}px)`;
 
       const animation = char.animate(
         [
-          {
-            opacity: 0,
-            transform: 'translateX(-0.18em)',
-            filter: 'blur(2px)',
-          },
-          {
-            opacity: 0.7,
-            transform: 'translateX(-0.04em)',
-            filter: 'blur(0.6px)',
-          },
-          {
-            opacity: 1,
-            transform: 'translateX(0)',
-            filter: 'blur(0)',
-          },
+          { opacity: 0, transform: `translateX(-${CHAR_TRAVEL_PX}px)` },
+          { opacity: 1, transform: 'none' },
         ],
         {
-          duration: 420,
-          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-          delay: position * 12,
+          duration: CHAR_DURATION_MS,
+          easing: EASE_OUT,
+          delay: position * CHAR_STAGGER_MS,
           iterations: 1,
           fill: 'forwards',
         }
@@ -125,7 +122,6 @@ export class TextAnimator {
       animation.onfinish = () => {
         char.style.opacity = '1';
         char.style.transform = '';
-        char.style.filter = '';
       };
     });
   }
@@ -147,7 +143,6 @@ export class TextAnimator {
       }
       char.style.opacity = '';
       char.style.transform = '';
-      char.style.filter = '';
     });
   }
 }
@@ -196,7 +191,7 @@ export function useTextAnimator({ text, enabled = true }: UseTextAnimatorProps) 
     // chat this is.
     if (!enabled) return;
 
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    if (prefersReducedMotion()) {
       return;
     }
 

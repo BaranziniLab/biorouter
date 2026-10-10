@@ -1,0 +1,221 @@
+/* The usage surfaces (spec 3.9): the shared StatGrid, and Home's usage card.
+   Authored here, next to the components, rather than as utilities at the call
+   site: a newly written Tailwind class can silently fail to generate under
+   `BIOROUTER_NO_HMR`, and the grid needs a container query anyway. Tokens
+   only. The heatmap's own rules live in `main.css` (`.biorouter-heatmap-*`). */
+
+/* ── StatGrid ──────────────────────────────────────────────────────────────
+   Flat tiles: a 12px muted label over a 24px regular figure. Three columns,
+   two under a 480px container, so the grid answers to its own width. */
+.br-stat-grid-frame {
+  container-type: inline-size;
+  min-inline-size: 0;
+}
+
+.br-stat-grid {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+
+@container (max-width: 479px) {
+  .br-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.br-stat {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+}
+
+.br-stat-label {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+}
+
+.br-stat-label-text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-stat-value {
+  display: flex;
+  min-inline-size: 0;
+  margin: 0;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-stat-figure {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-stat-suffix {
+  flex: none;
+  white-space: nowrap;
+}
+
+.br-stat-note {
+  margin: 0;
+}
+
+/* A range switch: the figure remounts and fades in. No count-up. */
+.br-stat-value[data-animate] {
+  animation: br-fade-in var(--dur-fast) var(--ease-out);
+}
+
+/* ── Home usage card ───────────────────────────────────────────────────────
+   One bordered card on the chat measure, flat (no shadow): a 36px head with
+   the Overview and Models tabs and the range control over a hairline, then the
+   figures, the heatmap and one footnote line. */
+.br-usage-card {
+  min-inline-size: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-card);
+}
+
+/* The tab underline (`-bottom-px` on the trigger) lands on this hairline. */
+.br-usage-card-head {
+  display: flex;
+  min-block-size: var(--dock-height);
+  min-inline-size: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding-inline: 16px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.br-usage-card-tabs {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 4px;
+  align-self: stretch;
+}
+
+.br-usage-card-tabs [role='tablist'] {
+  align-self: flex-end;
+}
+
+.br-usage-card-range {
+  align-self: center;
+  flex: none;
+}
+
+.br-usage-card-body {
+  padding: 16px;
+}
+
+/* Both tabs keep one height (two tile rows), so the heatmap never jumps. */
+.br-usage-panels {
+  min-block-size: 112px;
+}
+
+.br-usage-panel:focus-visible {
+  outline: none;
+}
+
+/* A tab switch fades the incoming panel in; the first panel mounts at rest. */
+.br-usage-panel[data-animate] {
+  animation: br-fade-in var(--dur-fast-max) var(--ease-out);
+}
+
+.br-usage-card-heatmap {
+  margin-block-start: 24px;
+}
+
+.br-usage-card-foot {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-block-start: 12px;
+}
+
+.br-usage-streak {
+  display: inline-flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Models tab: up to four 28px rows ──────────────────────────────────── */
+.br-usage-models {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-usage-model {
+  display: grid;
+  min-block-size: 28px;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(64px, 160px) 64px 40px;
+  gap: 12px;
+}
+
+.br-usage-model-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-usage-model-bar {
+  position: relative;
+  block-size: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-full, 9999px);
+  background-color: var(--heat-0);
+}
+
+.br-usage-model-bar > span {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-radius: inherit;
+  background-color: var(--heat-3);
+}
+
+.br-usage-model-tokens,
+.br-usage-model-share {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.br-usage-empty {
+  display: flex;
+  min-block-size: 112px;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Loading: label and figure skeletons in place of the six tiles. */
+.br-usage-skeleton {
+  display: block;
+  border-radius: var(--radius-inner);
+  background-color: var(--heat-0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-stat-value[data-animate],
+  .br-usage-panel[data-animate] {
+    animation: none;
+  }
+}
