@@ -13,7 +13,13 @@ use biorouter::agents::resource_refs::{reference_marker, RefKind};
 use biorouter::config::paths::Paths;
 
 /// Available in-session slash commands, in the order they should be offered.
-/// Keep in sync with `input::handle_slash_command`.
+/// Keep in sync with `input::handle_slash_command` and with the agent-side
+/// commands in `biorouter::agents::execute_commands::list_commands()`, which
+/// the classic CLI forwards to the agent unparsed (a test pins the latter).
+///
+/// ⚠ Order is behaviour: the ghost autofill (here and in the TUI's
+/// `App::ghost`) offers the FIRST entry the typed prefix matches, so `/bug`
+/// sits before `/builtin` to make `/b` ghost to the command people mean.
 pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/help",
     "/clear",
@@ -24,6 +30,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/loop",
     "/schedule",
     "/effort",
+    "/bug",
     "/mode",
     "/plan",
     "/endplan",
@@ -501,14 +508,23 @@ impl Hinter for BioRouterCompleter {
         // Inline "ghost" autofill for slash commands: as the user types `/co`,
         // show the dim remainder (`mpact`) of the first matching command. Tab
         // still opens the full candidate list.
-        if pos != line.len() || !line.starts_with('/') || line.contains(' ') || line.len() < 2 {
+        if pos != line.len() {
             return None;
         }
-        SLASH_COMMANDS
-            .iter()
-            .find(|cmd| cmd.starts_with(line) && **cmd != line)
-            .and_then(|cmd| cmd.get(line.len()..).map(str::to_string))
+        slash_ghost(line).map(str::to_string)
     }
+}
+
+/// The dim remainder the ghost autofill shows for `line`: the rest of the
+/// first slash command it is a strict prefix of.
+fn slash_ghost(line: &str) -> Option<&'static str> {
+    if !line.starts_with('/') || line.contains(' ') || line.len() < 2 {
+        return None;
+    }
+    SLASH_COMMANDS
+        .iter()
+        .find(|cmd| cmd.starts_with(line) && **cmd != line)
+        .and_then(|cmd| cmd.get(line.len()..))
 }
 
 impl Highlighter for BioRouterCompleter {
@@ -581,6 +597,26 @@ mod tests {
         // Test no match
         let (_pos, candidates) = completer.complete_slash_commands("/nonexistent").unwrap();
         assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
+    fn every_agent_command_is_offered_by_the_classic_cli() {
+        for def in biorouter::agents::execute_commands::list_commands() {
+            let command = format!("/{}", def.name);
+            assert!(
+                SLASH_COMMANDS.contains(&command.as_str()),
+                "{command} is handled by the agent but missing from SLASH_COMMANDS"
+            );
+        }
+    }
+
+    #[test]
+    fn b_ghosts_to_bug_and_bui_still_ghosts_to_builtin() {
+        assert_eq!(slash_ghost("/b"), Some("ug"));
+        assert_eq!(slash_ghost("/bu"), Some("g"));
+        assert_eq!(slash_ghost("/bug"), None);
+        assert_eq!(slash_ghost("/bui"), Some("ltin"));
+        assert_eq!(slash_ghost("/bug "), None);
     }
 
     #[test]

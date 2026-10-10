@@ -1094,6 +1094,7 @@ The desktop composer, terminal UI (TUI), and classic CLI share these agent comma
 | `/goal <condition>` or `/goal clear` | Work toward a condition, or clear the goal. |
 | `/loop <interval> <prompt>` | Run a prompt repeatedly; use `/loop` for status and stop syntax. |
 | `/schedule <schedule> <prompt>` | Schedule a recurring prompt; use `/schedule list` to inspect jobs. |
+| `/bug [description]` | Report a Biorouter bug. The agent investigates the chat, the documentation and the source, then drafts an issue you approve before anything is filed. See [Diagnostics and bug reports](../troubleshooting/diagnostics-and-bug-reports.md#asking-biorouter-to-report-the-bug). |
 | `/<workflow-command> [arguments]` | Run a configured workflow shortcut. A missing or invalid workflow reports an error. |
 
 Type `/` to browse commands in the desktop or TUI; the classic CLI uses Tab completion.
@@ -1120,6 +1121,10 @@ normal runtime, OS permissions, and per-task approval.
 The desktop also offers `/knowledge` as a Knowledge reference shortcut and `/diverge`
 to continue an existing conversation in a new chat. The message action is also labelled
 **Diverge**. Start a chat before using it.
+
+In the desktop composer, `/bug` followed by a space becomes a **Report a bug** chip at the
+start of the message. The chip is only how the composer draws it: the message is still
+sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
 `/rename <name>`, and `/diverge [name]`. The following commands are **classic CLI only**;

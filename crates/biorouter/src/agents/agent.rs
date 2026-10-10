@@ -1741,12 +1741,14 @@ impl ChatBridgeDispatch {
     /// answers `Tool not found` — after the child has already written a whole
     /// report.
     ///
-    /// It takes no `CallCapability`. The handler's own privacy gate reads the
-    /// SESSION's classification rather than the caller's, which is the stronger
-    /// of the two and the right one for a question about publishing a chat's
-    /// contents. On this path the distinction is moot anyway: both coding-agent
-    /// providers are `ProviderTier::Public`, so Gate A has already refused to
-    /// bind one to a private chat.
+    /// It takes no `CallCapability`. The handler reads the SESSION's stored
+    /// classification rather than the caller's, which is the stronger of the
+    /// two and the right one for a question about publishing a chat's contents:
+    /// a private chat may still file, but its card leads with a warning and it
+    /// never gets `gh`, so the user's own Submit on GitHub is the disclosure.
+    /// On this path the distinction is moot anyway: both coding-agent providers
+    /// are `ProviderTier::Public`, so Gate A has already refused to bind one to
+    /// a private chat.
     async fn dispatch_report_bug(
         &self,
         session_id: &str,
@@ -8393,13 +8395,7 @@ impl Agent {
                     request_id,
                     Err(ErrorData::new(
                         ErrorCode::INVALID_REQUEST,
-                        "Filing a bug report needs a person to approve the exact text \
-                         before it is published, and this Biorouter cannot ask one — it \
-                         is running without a way to prove a human acted (a `biorouter \
-                         serve` daemon, for instance). Nothing was filed and nothing was \
-                         analysed. Tell the user to report it from the desktop app, or \
-                         at https://github.com/BaranziniLab/biorouter/issues/new."
-                            .to_string(),
+                        crate::agents::bug_report::NO_APPROVER_REFUSAL.to_string(),
                         None,
                     )),
                 );

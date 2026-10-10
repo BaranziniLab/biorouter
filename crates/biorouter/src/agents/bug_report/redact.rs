@@ -50,6 +50,16 @@ pub const MAX_ISSUE_BODY_CHARS: usize = 60_000;
 /// raw budget below is the conservative pre-image of it.
 pub const MAX_COMPOSE_URL_CHARS: usize = 8_000;
 
+/// The ceiling on the **Suspected cause** section, in characters.
+///
+/// Well inside [`MAX_COMPOSE_URL_CHARS`]: prose and links grow about 1.4× when
+/// percent-encoded, and a typical report without the section already encodes to
+/// about 2,000 characters. A cause past this would push an ordinary report off
+/// the prefilled page — which, from a private chat, is the only path that does
+/// not hand the text back to be pasted — so it is refused for the model to
+/// shorten rather than silently costing the user the link.
+pub const MAX_SUSPECTED_CAUSE_CHARS: usize = 4_000;
+
 /// One thing the scrubber changed, for the receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
@@ -150,10 +160,21 @@ static PATTERNS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
         // YAML line. The needle set matches `diagnostics::is_secret_key` on
         // purpose: two redactors disagreeing about what a credential is means
         // one of them is wrong.
+        //
+        // ⚠ A Rust path is not an assignment. `crate::oauth::oauth_flow` and
+        // `secret_guard::resolve` are what a suspected cause names, and a bare
+        // `[=:]` read the first `:` of `::` as the separator and the rest of the
+        // path as the value — `crate::oauth=[redacted]`, closing backtick gone.
+        // So a `:` separator may not be followed by another `:` (`oauth::x`
+        // matches nothing at the key, and a `password=…` later in the same text
+        // still matches from its own `\b`). There is no lookahead in `regex`,
+        // hence the three arms: `=` and `:` + whitespace may still be followed
+        // by a value that starts with `:` (consumed, so `password=:hunter2`
+        // loses `hunter2`); a bare `:` may not.
         (
             "credential assignment",
             compile(
-                r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|secret|password|passwd|passcode|token|credential|private[_-]?key|access[_-]?key|auth)[A-Za-z0-9_.-]*)\s*[=:]\s*["']?([^\s"'&,;)}\]]{6,})"#,
+                r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|secret|password|passwd|passcode|token|credential|private[_-]?key|access[_-]?key|auth)[A-Za-z0-9_.-]*)\s*(?:=\s*["']?:?|:\s+["']?:?|:["']?)([^\s"'&,;)}\]:][^\s"'&,;)}\]]{5,})"#,
             ),
         ),
         // `https://user:password@host` — the password is the whole point.
@@ -167,6 +188,73 @@ static PATTERNS: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
         ),
     ]
 });
+
+/// A `credential assignment` value that is a TYPE, not a secret: the
+/// `api_key: String` and `token: Option<String>` a report quotes when its
+/// suspected cause points at code.
+///
+/// ⚠ Anchored and closed on purpose. The value class stops at `)`, `}`, `]`,
+/// `,`, quotes and whitespace, so `HashMap<String, String>` reaches here as
+/// `HashMap<String` and `Option<Box<dyn Error>>` as `Option<Box<dyn` — hence a
+/// generic is matched from its head and `<` alone. What is NOT here is "any
+/// identifier": a capitalised alphanumeric value can be a real secret, and a
+/// false negative in this list publishes it.
+///
+/// ⚠ That holds INSIDE the angle brackets too. A generic's arguments are
+/// [`TYPE_NAME`]s — a known primitive, or a capitalised name with no digits,
+/// behind optional lowercase `seg::` path segments — and nothing may follow
+/// the closing `>`s. Any alphanumeric argument let `password=Vec<hunter2xyz>`
+/// through whole, and a single `:` let `auth:Vec<u8>:secret:S3cr3t…` swallow
+/// the next assignment into an exempt match.
+static TYPE_EXPRESSION: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"^(?:String|string|boolean|number|undefined|SecretString|(?:Option|Vec|Result|Box|Arc|Rc|Cow|HashMap|BTreeMap|SecretBox|Promise|Array|Record)<(?:{TYPE_NAME}<|\[)*(?:{TYPE_NAME})?>*)$"
+    ))
+    .expect("type expression pattern is valid")
+});
+
+/// One type argument inside a [`TYPE_EXPRESSION`] generic: `String`,
+/// `std::path::PathBuf`, `u8`, `string`, `dyn`. A capitalised name carries no
+/// digits, because a digit is what most generated secrets carry.
+const TYPE_NAME: &str = r"(?:[a-z][a-z_]*::)*(?:[A-Z][A-Za-z]*|str|u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64|bool|char|string|number|boolean|unknown|any|dyn)";
+
+/// A `credential assignment` that is a source location, not a secret:
+/// `token_counter.rs:100-200`, `auth.ts:12:5`. The "key" is a file name a
+/// suspected cause cites, and the "value" a line, a line range or a
+/// line:column — digits only, so nothing a secret could hide in.
+static SOURCE_LOCATION_KEY: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\.(?:rs|ts|tsx|js|jsx|mjs|py|md|toml|ya?ml|json|sh)$")
+        .expect("source file pattern is valid")
+});
+static LINE_REFERENCE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\d+(?:[-:]\d+)*$").expect("line reference pattern is valid"));
+
+/// Is this `credential assignment` value one the scrub must leave alone?
+///
+/// Two shapes, each of which used to make a report UNFILEABLE rather than
+/// merely ugly:
+///
+/// * The scrub's own placeholder. `KEY=[redacted]` re-matched with the value
+///   `[redacted` (the class stops at `]`), so `validate_issue`'s second scrub
+///   "found" a credential in text it had just cleaned and refused the report.
+///   When the match sat in the auto-added failure list the model could not
+///   rewrite it, so no retry could ever succeed.
+/// * A type annotation (see [`TYPE_EXPRESSION`]), which the first pass
+///   rewrote to `api_key=[redacted]` — garbling the code a suspected cause
+///   quotes, and then tripping the placeholder case above.
+///
+/// And one that only garbled: a source location (`token_counter.rs:100-200`,
+/// see [`SOURCE_LOCATION_KEY`]), which a suspected cause cites constantly.
+///
+/// A closing backtick is not part of the value: the class does not stop at
+/// one, so a code span (`` `token: Option<String>` ``) reaches here with it.
+fn assignment_value_is_not_a_secret(key: &str, value: &str) -> bool {
+    let placeholder_stem = SECRET_PLACEHOLDER.trim_end_matches(']');
+    let value = value.trim_end_matches('`');
+    value.starts_with(placeholder_stem)
+        || TYPE_EXPRESSION.is_match(value)
+        || (SOURCE_LOCATION_KEY.is_match(key) && LINE_REFERENCE.is_match(value))
+}
 
 /// `/Users/<name>/…`, `/home/<name>/…`, `C:\Users\<name>\…`.
 ///
@@ -222,6 +310,14 @@ pub fn scrub(text: &str, home: Option<&Path>) -> Scrubbed {
         let mut count = 0usize;
         out = pattern
             .replace_all(&out, |caps: &regex::Captures<'_>| {
+                // Left exactly as found, and NOT counted: a finding here would
+                // be a `disclosure` violation in `validate_issue`, which
+                // refuses the report.
+                if *kind == "credential assignment"
+                    && assignment_value_is_not_a_secret(&caps[1], &caps[2])
+                {
+                    return caps[0].to_string();
+                }
                 count += 1;
                 match *kind {
                     // Keep the KEY, drop the value: "GITHUB_TOKEN was empty" is
@@ -266,8 +362,13 @@ impl std::fmt::Display for Violation {
     }
 }
 
-/// The sections a body must carry, matched case-insensitively on the bolded
-/// heading the repository's own `bug_report.md` uses.
+/// The sections a body must carry, matched exactly (case-sensitively, as a
+/// plain substring) on the heading text the repository's own `bug_report.md`
+/// uses. `render_body` writes each one verbatim, so an exact match is all a
+/// rendered body ever needs.
+///
+/// An optional section such as **Suspected cause** is deliberately absent: a
+/// report without one is complete.
 ///
 /// Derived from that file at build time would be better and is not possible:
 /// the template is markdown prose with no machine-readable section list. It is
@@ -528,6 +629,154 @@ mod tests {
             twice.findings.is_empty(),
             "the second pass found something, so validate_issue would refuse: {twice:?}"
         );
+    }
+
+    /// ⚠ EVERY placeholder shape, not only the two above: the credential
+    /// assignment rule used to re-match its own `KEY=[redacted]` (the value
+    /// class stops at `]`, leaving `[redacted`, which is long enough), so the
+    /// rescrub refused the report it had just cleaned. When the match was in
+    /// the auto-added failure list the model could not rewrite it, and the
+    /// report could never be filed.
+    #[test]
+    fn every_replacement_is_a_fixed_point_of_the_scrub() {
+        let home = Some(Path::new("/Users/jsmith"));
+        for input in [
+            "config had GITHUB_TOKEN=ghs_supersecretvalue123456 set",
+            "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+            "password: hunter2xyz was rejected",
+            "api_key = \"sk-live-abcdefghij\"",
+            "Authorization: Bearer abcdefghijklmnopqrstuv",
+            "Authorization: Bearer abc123",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+            "Authorization: Basic dXNlcjpodW50ZXIy",
+            "curl -u alice:hunter2 https://x.example",
+            "in `oauth::password=hunter2xyz` the value leaked",
+            "password=:hunter2xyz",
+            "cloned https://wgu:hunter2@git.example.org/x",
+            "mailed a@b.example.com",
+            "failed to read /Users/jsmith/Desktop/cohort.csv and /home/klee/x",
+        ] {
+            let once = scrub(input, home);
+            assert!(once.changed(), "`{input}` should have been rewritten: {once:?}");
+            let twice = scrub(&once.text, home);
+            assert_eq!(
+                twice.text, once.text,
+                "the scrub is not idempotent on `{input}`"
+            );
+            assert!(
+                twice.findings.is_empty(),
+                "the second pass found something in `{}`, so validate_issue would refuse \
+                 it: {twice:?}",
+                once.text
+            );
+        }
+    }
+
+    /// A report that already carries the placeholder — quoted from a failure
+    /// the scrub cleaned on its way into the evidence — is fileable.
+    #[test]
+    fn a_body_quoting_the_placeholder_passes_the_validator() {
+        let violations = validate_issue(
+            "Shell tool loses the GitHub token on restart",
+            &full_body("The log line was `GITHUB_TOKEN=[redacted]` and then 401."),
+            None,
+        );
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    /// Type annotations are not secrets. A suspected cause quotes code, and
+    /// `fn f(api_key: String)` used to be rewritten to `api_key=[redacted])`.
+    #[test]
+    fn a_type_annotation_is_left_alone_and_does_not_block_filing() {
+        for line in [
+            "fn f(api_key: String)",
+            "pub token: Option<String>,",
+            "let auth_token: Vec<u8> = read();",
+            "struct C { secret: SecretString }",
+            "fn g(password: SecretBox<str>) -> Result<(), Error>",
+            "credentials: HashMap<String, String>",
+            "access_key: Option<Box<dyn Error>>",
+            "interface P { apiKey: string; token: undefined }",
+            "const auth: Promise<string> = load();",
+            "type T = { passcode: number, flag: boolean }",
+            "token: Arc<Mutex<String>>",
+            "secret: Option<std::path::PathBuf>",
+            "let token: Option<Vec<[u8; 32]>> = None;",
+            "the field is `pub token: Option<String>` today",
+        ] {
+            let scrubbed = scrub(line, None);
+            assert_eq!(scrubbed.text, line, "code was rewritten: {scrubbed:?}");
+            assert!(!scrubbed.changed(), "{scrubbed:?}");
+        }
+        let violations = validate_issue(
+            "Provider loses its key when the config is reloaded",
+            &full_body(
+                "`fn connect(api_key: String)` in `providers/base.rs` drops it, and the log \
+                 shows `GITHUB_TOKEN=[redacted]`.",
+            ),
+            None,
+        );
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    /// The exemption is a closed list, not "anything that looks like a type":
+    /// a capitalised alphanumeric value can be a real secret.
+    #[test]
+    fn real_secrets_are_still_redacted_beside_the_exemptions() {
+        for (line, secret) in [
+            ("password=hunter2xyz", "hunter2xyz"),
+            ("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", "ABCDEFGH"),
+            ("api_key: Strings3cr3tValue9", "Strings3cr3tValue9"),
+            ("secret: SecretStringX7f9a2", "SecretStringX7f9a2"),
+            ("auth_token: K8sV3ctorT0ken", "K8sV3ctorT0ken"),
+            // A generic head is not a licence for its arguments: anything
+            // inside the brackets used to be exempt, and a single `:` let the
+            // exempt match swallow the NEXT assignment.
+            ("password=Vec<hunter2xyz>", "hunter2xyz"),
+            ("DB_PASSWORD=Box<Tr0ub4dor3>", "Tr0ub4dor3"),
+            ("auth:Vec<u8>:secret:S3cr3tV4lue99", "S3cr3tV4lue99"),
+            ("token=Option<String>Tr0ub4dor3", "Tr0ub4dor3"),
+            // A source-file key is exempt only for a line reference.
+            ("auth.rs:hunter2xyz", "hunter2xyz"),
+            ("token.json:12ab34cd56", "12ab34cd56"),
+        ] {
+            let scrubbed = scrub(line, None);
+            assert!(
+                !scrubbed.text.contains(secret),
+                "`{line}` survived: {scrubbed:?}"
+            );
+            assert!(scrubbed.changed(), "{scrubbed:?}");
+        }
+    }
+
+    /// A Rust path or a source location is what a suspected cause names, and
+    /// the assignment rule used to read `oauth::oauth_flow` as `oauth` =
+    /// `:oauth_flow`: `crate::oauth=[redacted]`, closing backtick gone, and a
+    /// "credential assignment" counted in the receipt.
+    #[test]
+    fn a_rust_path_or_a_source_location_is_not_an_assignment() {
+        for line in [
+            "crate::oauth::open",
+            "The bug is in `crate::oauth::oauth_flow`.",
+            "secret_guard::resolve::expand",
+            "routes::auth::check_token(req)",
+            "token_counter::count",
+            "token_counter.rs:100-200",
+            "see `crates/biorouter/src/token_counter.rs:100-200` and auth.ts:12:5",
+        ] {
+            let scrubbed = scrub(line, None);
+            assert_eq!(scrubbed.text, line, "code was rewritten: {scrubbed:?}");
+            assert!(!scrubbed.changed(), "{scrubbed:?}");
+            let twice = scrub(&scrubbed.text, None);
+            assert_eq!(twice.text, line);
+            assert!(twice.findings.is_empty(), "{twice:?}");
+        }
+
+        // ⚠ And a path in front of a real assignment does not hide it: the
+        // path matches nothing, and `password` matches from its own `\b`.
+        let scrubbed = scrub("oauth::password=hunter2xyz", None);
+        assert!(!scrubbed.text.contains("hunter2xyz"), "{scrubbed:?}");
+        assert_eq!(scrubbed.text, "oauth::password=[redacted]");
     }
 
     /// Ordering: the vendor pattern must win, so the receipt names the right

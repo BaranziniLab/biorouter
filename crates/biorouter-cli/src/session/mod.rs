@@ -1416,7 +1416,10 @@ impl CliSession {
                                         .await;
                                     continue;
                                 }
-                                let permission = prompt_tool_confirmation(&security_prompt)?;
+                                let permission = prompt_tool_confirmation(
+                                    &security_prompt,
+                                    confirmation_artefact(&message).as_deref(),
+                                )?;
 
                                 if permission == Permission::Cancel {
                                     // #40: prompt-adjacent status stays off a structured stdout
@@ -2140,8 +2143,15 @@ fn headless_auto_decision(
     }
 }
 
-/// Prompt user for tool call confirmation, returns the Permission selected
-fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permission> {
+/// Prompt user for tool call confirmation, returns the Permission selected.
+///
+/// `artefact` is what the call will file, when the card carries it (see
+/// [`confirmation_artefact`]); it is printed between the card's prompt and the
+/// question, so the person reads the exact text before choosing.
+fn prompt_tool_confirmation(
+    security_prompt: &Option<String>,
+    artefact: Option<&str>,
+) -> Result<Permission> {
     output::hide_thinking();
 
     // #40 defensive guard: even if a caller reaches this prompt without a
@@ -2164,6 +2174,10 @@ fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permissi
     } else {
         "Biorouter would like to call the above tool, do you allow?".to_string()
     };
+    if let Some(artefact) = artefact {
+        // stderr for the same reason as the prompt above.
+        eprintln!("\n{artefact}\n");
+    }
 
     let permission_result = if security_prompt.is_none() {
         cliclack::select(prompt)
@@ -2211,6 +2225,42 @@ fn computer_use_needs_prompt(
     status.requested
         && status.state == "approval_required"
         && last_challenge != Some(status.challenge_id.as_str())
+}
+
+/// What a confirmation asks the person to approve, when the card carries it
+/// and nothing else in a terminal would show it.
+///
+/// `platform__report_bug` is that case. Its card holds the scrubbed issue that
+/// approval files, while the tool-request line above the card shows only
+/// the model's raw arguments, and `find_tool_confirmation` hands the surfaces
+/// only the prompt. The desktop draws the card's `body`; without this the
+/// classic CLI and the TUI approved a public issue unseen. Other tools are left
+/// alone: their arguments ARE what the tool-request line already shows.
+fn confirmation_artefact(message: &Message) -> Option<String> {
+    message.content.iter().find_map(|content| {
+        let MessageContent::ActionRequired(action) = content else {
+            return None;
+        };
+        let ActionRequiredData::ToolConfirmation {
+            tool_name,
+            arguments,
+            ..
+        } = &action.data
+        else {
+            return None;
+        };
+        if tool_name != biorouter::agents::bug_report::REPORT_BUG_TOOL_NAME {
+            return None;
+        }
+        let body = arguments.get("body")?.as_str()?;
+        let field = |key: &str| arguments.get(key).and_then(Value::as_str);
+        Some(format!(
+            "──── Bug report for {} ────\nTitle: {}\n\n{}\n──── End of the report ────",
+            field("repository").unwrap_or("the issue tracker"),
+            field("title").unwrap_or_default(),
+            body.trim_end()
+        ))
+    })
 }
 
 /// Extract tool confirmation request from a message
@@ -2694,6 +2744,62 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn confirmation_card(tool_name: &str, arguments: serde_json::Value) -> super::Message {
+        super::Message::assistant().with_content(
+            super::MessageContent::action_required_with_context(
+                "req-1",
+                tool_name.to_string(),
+                arguments.as_object().unwrap().clone(),
+                Some("Publish this bug report to the public issue tracker?".to_string()),
+                None,
+                None,
+            ),
+        )
+    }
+
+    #[test]
+    fn a_bug_report_card_shows_the_exact_issue_before_approval() {
+        let card = confirmation_card(
+            biorouter::agents::bug_report::REPORT_BUG_TOOL_NAME,
+            serde_json::json!({
+                "repository": "github.com/BaranziniLab/biorouter",
+                "title": "Chart panel is blank for one row",
+                "body": "**Describe the bug**\n\nThe panel is blank.\n",
+                "labels": ["bug"],
+                "chatPrivacyTier": "public",
+            }),
+        );
+        let artefact = super::confirmation_artefact(&card).expect("the report is shown");
+        assert!(
+            artefact.contains("github.com/BaranziniLab/biorouter"),
+            "{artefact}"
+        );
+        assert!(artefact.contains("Title: Chart panel is blank for one row"));
+        assert!(artefact.contains("**Describe the bug**\n\nThe panel is blank.\n"));
+        // The card's id and prompt still come from the same message.
+        let (id, prompt) = super::find_tool_confirmation(&card).unwrap();
+        assert_eq!(id, "req-1");
+        assert!(prompt.is_some());
+    }
+
+    #[test]
+    fn other_cards_add_nothing_to_the_prompt() {
+        let shell = confirmation_card(
+            "developer__shell",
+            serde_json::json!({"command": "ls", "body": "not an issue"}),
+        );
+        assert_eq!(super::confirmation_artefact(&shell), None);
+        let bodiless = confirmation_card(
+            biorouter::agents::bug_report::REPORT_BUG_TOOL_NAME,
+            serde_json::json!({"title": "t"}),
+        );
+        assert_eq!(super::confirmation_artefact(&bodiless), None);
+        assert_eq!(
+            super::confirmation_artefact(&super::Message::assistant().with_text("hello")),
+            None
+        );
+    }
 
     #[test]
     fn computer_use_prompt_requires_host_request_and_new_challenge() {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DisplayItem, getMentionInsertText, mentionReference } from './MentionPopover';
 import { findRefTags } from '../utils/resourceRefs';
+import { splitLeadingCommand } from '../utils/composerCommand';
 
 const item = (overrides: Partial<DisplayItem>): DisplayItem => ({
   name: 'example',
@@ -139,6 +140,30 @@ describe('getMentionInsertText', () => {
     expect(
       getMentionInsertText(item({ name: 'compact', itemType: 'Builtin', relativePath: 'compact' }))
     ).toBe('/compact');
+  });
+
+  // `/bug` is drawn as a chip in the composer, which claims `/bug ` WITH its
+  // space and leaves a bare `/bug` as text (utils/composerCommand.ts). The row
+  // must insert the form the composer turns into the chip.
+  it('inserts the chip form of a chip command, and only for the built-in', () => {
+    const inserted = getMentionInsertText(
+      item({ name: 'bug', itemType: 'Builtin', relativePath: 'bug', builtIn: true })
+    );
+    expect(inserted).toBe('/bug ');
+    expect(splitLeadingCommand(inserted)).toEqual({ command: 'bug', prose: '' });
+    expect(
+      mentionReference(item({ name: 'bug', itemType: 'Builtin', relativePath: 'bug' }))
+    ).toBeNull();
+
+    // A user's own workflow or skill named "bug" is not the command.
+    expect(
+      getMentionInsertText(item({ name: 'bug', itemType: 'Workflow', relativePath: 'bug' }))
+    ).toBe('/bug');
+    expect(
+      readBack(
+        getMentionInsertText(item({ name: 'skill:bug', itemType: 'Skill', relativePath: 'bug' }))
+      )
+    ).toEqual([['skill', 'bug']]);
   });
 
   it('uses a routed reference for UI-only resource commands', () => {

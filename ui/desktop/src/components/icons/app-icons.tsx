@@ -21,6 +21,7 @@ import {
   BookmarkPlus as _BookmarkPlus,
   Bot as _Bot,
   Brain as _Brain,
+  Bug as _Bug,
   Calendar as _Calendar,
   CalendarClock as _CalendarClock,
   Camera as _Camera,
@@ -181,6 +182,7 @@ export const Bookmark = light(_Bookmark);
 export const BookmarkPlus = light(_BookmarkPlus);
 export const Bot = light(_Bot);
 export const Brain = light(_Brain);
+export const Bug = light(_Bug);
 export const Calendar = light(_Calendar);
 export const CalendarClock = light(_CalendarClock);
 export const Camera = light(_Camera);

@@ -8,7 +8,7 @@ biorouter provides several built-in features to help you get support, report iss
 
 | Feature | Purpose | Location | Output |
 |---------|---------|----------|---------|
-| **Ask the agent** | Have biorouter work out what went wrong and file it for you | Say "report a bug" in any chat | A GitHub issue, after you approve the exact text |
+| **Ask the agent** | Have biorouter work out what went wrong and file it for you | Type `/bug` in any chat, or say "report a bug" | A GitHub issue, after you approve the exact text |
 | **Diagnostics** | Generate troubleshooting data | Chat summary (upper right) → `Diagnostics` | ZIP file with system info, logs, and session data |
 | **File Bug on GitHub** | Open a pre-filled issue template | Same `Diagnostics` dialog | Opens GitHub in your browser |
 | **Report a Bug** | Open a blank issue template | Settings → Help & feedback | Opens GitHub issue template |
@@ -100,30 +100,48 @@ Broken out by kind:
 
 ## Asking biorouter to report the bug
 
-The shortest path is to say so in the chat where it happened:
+The shortest path is to type `/bug` in the chat where it happened:
 
-> report a bug
+> /bug
 
-or, if you already know what is wrong:
+or, if you already know what is wrong, add it after the command:
 
-> report a bug — the chart panel is blank when the dataset has one row
+> /bug the chart panel is blank when the dataset has one row
+
+Saying it in your own words works too: "report a bug", or "report a bug: the chart panel is blank when the dataset has one row".
+
+In the desktop app, `/bug` becomes a **Report a bug** chip at the start of the composer once you type the space after it, or when you pick it from the `/` menu. Type what went wrong after the chip, or send the chip on its own. The chip's **×**, or Backspace at the start of the text, removes it and keeps your text. Your sent message shows the same chip. In the terminal `/bug` stays plain text: the full-screen chat lists it when you type `/`, and the classic prompt completes it with Tab.
 
 biorouter then:
 
 1. **Reads the session's own record of failed tool calls**, grades each one, and works out whether there is a clear defect. It does this from the conversation, not from a bundle — the conversation is where a failed call is actually recorded.
 2. **Pushes back if it cannot tell.** If nothing conclusive happened and you have not said what to report, it asks you rather than guessing. It will name what it can see and ask whether that is the problem. It does not file on a hunch.
-3. **Writes the report**, adds the version, OS, provider, model, enabled extensions and the failure list, and removes home paths, usernames, e-mail addresses and anything credential-shaped. If identifying material survives that pass, it refuses to file rather than posting anyway.
-4. **Asks you to approve the exact text.** The approval card shows the whole issue body, names the repository, and says whether pressing the button publishes immediately or opens a page you still have to submit. Nothing is posted until you approve, and a refusal files nothing.
-5. **Files it** — with your own signed-in [GitHub CLI](https://cli.github.com) if you have one, otherwise by opening a pre-filled new-issue page for you to submit.
+3. **Checks the documentation and the source code.** It compares what you expected with what happened, looks up whether the behaviour is documented at [biorouter.ucsf.edu/docs](https://biorouter.ucsf.edu/docs), and reads the code involved, at the version you run, in the [project repository](https://github.com/BaranziniLab/biorouter). If the documentation and the code show biorouter worked as designed, it explains how the feature is meant to be used instead of filing, and files only if you still want it to. If the chat has no tool that can read web pages or files, the report's **Suspected cause** says the documentation and the source were not checked.
+4. **Writes the report.** What was observed goes in the description. Its diagnosis goes in a separate **Suspected cause** section: the files and functions it suspects, its reasoning, the evidence, and how confident it is, so a maintainer or a debugging agent can take over from there. When nothing supports a diagnosis, that section says so, along with what it checked and what it could not check, instead of guessing. It adds the version, OS, provider, model, enabled extensions and the failure list, and removes home paths, usernames, e-mail addresses and anything credential-shaped. If identifying material survives that pass, it refuses to file rather than posting anyway.
+5. **Asks you to approve the exact text.** The approval card shows the whole issue body, names the repository, and says whether pressing the button publishes immediately or opens a page you still have to submit. Nothing is posted until you approve, and a refusal files nothing. In the terminal, the report's title and body are printed with the approval question; in the full-screen chat, scroll the approval box with PageUp and PageDown to read them.
+6. **Files it**, with your own signed-in [GitHub CLI](https://cli.github.com) if you have one. Otherwise it opens a prefilled new-issue page in your browser for you to submit. If the browser cannot be opened, the reply gives you the link to open yourself.
 
-Two things it will not do:
+It will not treat a deliberate refusal as a bug. If biorouter refused something on purpose (a privacy boundary, a permission decision), it says so instead of filing "the security boundary worked" as a defect. Tell it if you think the *wrong* thing was refused.
 
-- **It will not file from a chat classified private.** A GitHub issue is public and permanent, and a private chat has touched a private model or a private data source. It writes the report, hands it to you, and stops. File it yourself once you have read it — and for genuinely private material, prefer a private channel over the public tracker.
-- **It will not treat a deliberate refusal as a bug.** If biorouter refused something on purpose — a privacy boundary, a permission decision — it says so instead of filing "the security boundary worked" as a defect. Tell it if you think the *wrong* thing was refused.
+This works in a Claude Code or Codex chat too. The reporter is bridged to those, so `/bug` and the same words work there.
 
-This works in a Claude Code or Codex chat too — the reporter is bridged to those, so you can ask for it there in the same words.
+### Reporting from a private chat
 
-If the reporter is not offered in your chat, biorouter is running somewhere it cannot ask you to approve a publication — `biorouter serve` in a browser, for one. Use the manual flow below.
+A chat classified private can report a bug. Three things are different:
+
+- **The approval card warns you first.** It says the chat is private and why (for example, it reached a private data source), and that the report becomes public if you submit it. Read the whole text for patient or participant data, credentials, unpublished results or institutional information before you go on. The list of failed tool calls quotes raw tool output.
+- **Nothing is posted automatically.** Even with a signed-in GitHub CLI, approving only opens a prefilled GitHub page, or hands you the text when it is too long for a link. You decide on GitHub whether to press **Submit**.
+- **The agent is told to stay on public pages.** In a private chat its instructions say to fetch only fixed pages on GitHub and the documentation site, never to put text from your chat into a search or a web address, and to write about biorouter's behaviour rather than about your data. Biorouter does not enforce this, and the fetches happen before the approval card appears. A model that ignores the instruction could send chat text to those sites. If that matters, switch to the **Manual Approval** [permission mode](../security/permission-modes.md), which asks before every tool call you have not already allowed, or watch the tool calls the agent makes and stop the turn if it searches or fetches anything built from your conversation.
+
+The prefilled page carries the report in its web address. Opening it sends the text to github.com and leaves it in your browser history, even before you press Submit.
+
+If biorouter cannot confirm the chat's classification, it treats the chat as private. If you turned private and public protection off in **Settings → App → Privacy**, every chat files the same way. From a private chat the report leaves out its usual line inviting you to attach a diagnostics bundle, and after you approve, biorouter tells you not to attach one: a private chat's bundle holds the conversation unredacted and does not belong on a public issue.
+
+If a private chat has no private model to run on, biorouter refuses the whole turn before any command runs, `/bug` included. Use **File Bug on GitHub** in the Diagnostics dialog instead; it needs no model.
+
+### Where it cannot file
+
+If biorouter is running somewhere it cannot ask you to approve a publication (`biorouter serve` in a browser, for one), the reporter is not offered, and `/bug` answers that it cannot file there and points you to the issue tracker. A chat connected to Crew allows only Crew and checklist tools, so `/bug` asks you to report from a regular chat. In both cases, use the manual flow below.
 
 ## Reporting bugs and requesting features yourself
 

@@ -78,6 +78,13 @@ Run `biorouter session`, then work through the four groups below.
 - [manual] `/compact` → condenses the conversation via a normal turn.
 - [audited] `/exit`, `/quit` → leave; `Ctrl+C` on empty input quits.
 - [audited] Other slash commands show a "use BIOROUTER_CLI_CLASSIC=1" note.
+- [audited] `/bug` is listed in the `/` palette and `/help`, and is forwarded to the agent like
+  the other shared commands (`shared_backend_commands_are_forwarded_including_effort` loops
+  over `list_commands()`), so it never gets the classic-only note.
+- [manual] `/bug <what went wrong>` with a live provider → the agent calls
+  `platform__report_bug` with `action: "analyze"` first, then raises the **permission modal**
+  for the report. The modal opens on the card's prompt; PageDown reaches the report's
+  repository, title and body. **Deny** files nothing and says so.
 - [audited] **Panic safety**: a render panic restores raw mode / alt screen / cursor
   (panic hook) — terminal is never left corrupted; `Tui::Drop` covers the error path.
 
@@ -87,6 +94,13 @@ Run `BIOROUTER_CLI_CLASSIC=1 biorouter session`.
 
 - [manual] `/help`, `/t [light|dark|ansi]`, `/r`, `/mode <m>`, `/plan` … `/endplan`,
   `/compact`, `/clear`, `/workflow`, `/extension`, `/builtin`.
+- [audited] `/bug` is in the completion list ahead of `/builtin`, so `/b` ghosts and
+  Tab-completes to `/bug` and `/bui` still reaches `/builtin`; `/help` lists
+  `/bug [description]`. `handle_slash_command("/bug x")` returns `None`, so the text goes to
+  the agent rather than being parsed locally.
+- [manual] `/bug <what went wrong>` with a live provider → the report's repository, title
+  and body print between the card's prompt and the approval question. Answering no files
+  nothing.
 - [audited] Interrupt handling no longer panics on an empty last message.
 
 ## Models and provider config

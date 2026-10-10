@@ -22,6 +22,7 @@ extensible tool for exploratory analysis, prototyping, and automation.
 - Extension & skill marketplace (BAAM): <https://biorouter.ucsf.edu/baam>
 - Documentation: <https://biorouter.ucsf.edu/docs>
 - Downloads: <https://biorouter.ucsf.edu/download>
+- Source code: <https://github.com/BaranziniLab/biorouter>
 
 ## Architecture
 
@@ -270,6 +271,14 @@ prerequisites; `--fix <dep>` hands the failure to the agent), `biorouter info`,
 `biorouter project`/`projects`, `biorouter term` (terminal-integrated session),
 `biorouter completion`, `biorouter acp`, `biorouter mcp <server>`,
 `biorouter bench …`, and `biorouter setup-path` (alias `install-cli`).
+
+## Reporting a bug
+
+Type `/bug` in a chat, optionally followed by what went wrong, or ask Biorouter to
+report a bug. It investigates the chat, the documentation and the source code,
+drafts a GitHub issue with a suspected cause, and shows you the exact text to
+approve before anything is published. From a private chat nothing is posted
+automatically: you submit the issue on GitHub yourself.
 
 ## Configuration file map
 
