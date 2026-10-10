@@ -84,14 +84,6 @@ const sources: { label: string; path: string }[] = [
 ];
 
 /**
- * ⚠ A ratchet, not an exemption: the count may fall and must not rise, and the
- * entry goes when it reaches 0. `MarkdownContent.tsx` re-pins `font-sans` on the
- * `.biorouter-markdown` wrapper (WS-TRANSCRIPT's file; request WS-PICKERS-1 in
- * its inbox asks for it to go).
- */
-const FONT_SANS_PENDING: Record<string, number> = { 'MarkdownContent.tsx': 1 };
-
-/**
  * The source with every comment form removed.
  *
  * ⚠ This used to strip only lines beginning with `//` or `*`, and that is a
@@ -141,7 +133,7 @@ describe('composer popup typography', () => {
     ({ label, path }) => {
       const code = codeOnly(readFileSync(path, 'utf8'));
       const uses = code.match(/font-sans/g)?.length ?? 0;
-      expect(uses, `${label} re-pins font-sans`).toBeLessThanOrEqual(FONT_SANS_PENDING[label] ?? 0);
+      expect(uses, `${label} re-pins font-sans`).toBe(0);
     }
   );
 

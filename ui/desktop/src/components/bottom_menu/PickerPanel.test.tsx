@@ -169,9 +169,11 @@ describe('the picker shell', () => {
   });
 
   /**
-   * `Command` answers Enter at its root for whichever row is highlighted, and the
-   * scope line is inside that root. Enter on the bulk button used to toggle the
-   * highlighted row and cancel the button's own activation.
+   * The scope line sits inside `Command`'s root, which used to answer Enter for
+   * whichever row was highlighted wherever the key came from: Enter on the bulk
+   * button toggled a row and cancelled the button's own activation. `Command` now
+   * acts only on keys from its field (`ui/command.test.tsx`); this pins the
+   * composer's two controls so a regression in either place shows here.
    */
   it('gives Enter on the bulk action to the action, not to the highlighted row', async () => {
     const user = userEvent.setup();

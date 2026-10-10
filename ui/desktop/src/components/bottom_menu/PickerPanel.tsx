@@ -42,23 +42,6 @@ export interface PickerPanelProps {
   'data-testid'?: string;
 }
 
-/**
- * The keys `Command` answers at its root for the listbox: the arrows, Home, End and
- * Enter.
- *
- * ⚠ **`Command` handles them wherever the key came from**, and the scope line sits
- * inside its root. So Enter on the scope word's InfoTip, or on the bulk button,
- * bubbled to the root, which toggled whichever row was highlighted and cancelled
- * the Enter: the person asked for "Disable all" or for the explanation and an
- * extension went off instead. (Space was unaffected, which is why a click test
- * missed it.) The scope line's own controls keep these keys.
- */
-const LIST_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter']);
-
-function keepListKeysInTheList(event: React.KeyboardEvent<HTMLElement>) {
-  if (LIST_KEYS.has(event.key)) event.stopPropagation();
-}
-
 export function PickerPanel({
   listLabel,
   searchPlaceholder,
@@ -86,7 +69,7 @@ export function PickerPanel({
         placeholder={searchPlaceholder}
         aria-label={searchPlaceholder.replace(/…$/, '')}
       />
-      <div className="br-picker-panel__bar" onKeyDown={keepListKeysInTheList}>
+      <div className="br-picker-panel__bar">
         <span className="br-picker-panel__scope">
           <span>{scopeLabel}</span>
           <InfoTip label={TOOLS_COPY.scope.about} help={scopeHelp} />
