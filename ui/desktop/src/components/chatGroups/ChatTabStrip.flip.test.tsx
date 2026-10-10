@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { fireEvent } from '@testing-library/dom';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
+import { createTabStripMemory, type TabStripMemory } from './tabStripMemory';
 import { ChatTab } from './chatGroupsTypes';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -378,6 +379,79 @@ describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
     } finally {
       document.body.classList.remove('biorouter-window-resizing');
     }
+  });
+
+  /**
+   * Vision V1-H1: the shell keys each chat on its active tab, and the strip
+   * renders inside that chat's header, so "+" and "Open in new tab" build a NEW
+   * strip. These mount a second strip on the same memory, as the shell does.
+   */
+  describe('across a remount (a tab switch rebuilds the strip with its chat)', () => {
+    function mountOn(memory: TabStripMemory, tabs: ChatTab[], activeTabId: string) {
+      return render(
+        <ChatTabStrip
+          tabs={tabs}
+          activeTabId={activeTabId}
+          runningSessionIds={[]}
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onReorder={vi.fn()}
+          reserveTitlebar={false}
+          isCompactSidebarOverlayOpen={false}
+          memory={memory}
+        />
+      );
+    }
+
+    it('a tab opened with "+" grows in although the strip that shows it is a new one', () => {
+      const memory = createTabStripMemory();
+      const first = mountOn(memory, [tab('a'), tab('b')], 'a');
+      expect(tabNode(first.container, 'a').dataset.tabEntering).toBeUndefined();
+      first.unmount();
+
+      const second = mountOn(memory, [tab('a'), tab('b'), tab('c')], 'c');
+      expect(tabNode(second.container, 'c').dataset.tabEntering).toBe('true');
+      expect(tabNode(second.container, 'a').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(second.container, 'b').dataset.tabEntering).toBeUndefined();
+    });
+
+    it('a plain tab switch (same tabs, same order) enters nothing and slides nothing', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [tab('a'), tab('b'), tab('c')], 'a').unmount();
+
+      const { container } = mountOn(memory, [tab('a'), tab('b'), tab('c')], 'b');
+      for (const id of ['a', 'b', 'c']) {
+        expect(tabNode(container, id).dataset.tabEntering).toBeUndefined();
+        expect(tabNode(container, id).style.translate).toBe('');
+      }
+      expect(frames.size).toBe(0);
+    });
+
+    it('closing the ACTIVE tab slides the survivors from where the old strip showed them', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [tab('a'), tab('b'), tab('c')], 'a').unmount();
+
+      // 'a' closes and 'b' takes over: b and c each move one 100px slot left.
+      const { container } = mountOn(memory, [tab('b'), tab('c')], 'b');
+      expect(tabNode(container, 'b').style.translate).toBe(`${TAB_SLOT_PX}px`);
+      expect(tabNode(container, 'c').style.translate).toBe(`${TAB_SLOT_PX}px`);
+      flushFrames();
+      expect(tabNode(container, 'c').style.translate).toBe('');
+    });
+
+    it('a new window: the first tab that replaces the empty placeholder appears at rest', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [], 'none').unmount();
+
+      const { container } = mountOn(memory, [tab('a')], 'a');
+      expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
+    });
+
+    it('a fresh memory (a reload, a new window, a return to the chats route) restores at rest', () => {
+      const { container } = mountOn(createTabStripMemory(), [tab('a'), tab('b')], 'b');
+      expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(container, 'b').dataset.tabEntering).toBeUndefined();
+    });
   });
 
   it('the keyframe grows the tab from its left edge on the individual scale, and enter wins over select', () => {

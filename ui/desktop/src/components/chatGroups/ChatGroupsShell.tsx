@@ -15,6 +15,7 @@ import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
 import { useTerminalDock } from '../../contexts/TerminalDockContext';
 import { ChatTabStrip } from './ChatTabStrip';
+import { forgetTabStripMemories, tabStripMemoryFor, type TabStripMemories } from './tabStripMemory';
 import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
@@ -889,6 +890,18 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     (groupId: ChatGroupId) => dispatch?.({ type: 'openTab', payload: { sessionId: '', groupId } }),
     [dispatch]
   );
+  // One TabStripMemory per group (vision V1-H1). A strip remounts with its chat
+  // on every tab switch (the pane keys BaseChat on the active tab), so what it
+  // compares a new tab list against has to live here, for as long as the shell
+  // is mounted. A group that leaves the layout takes its record with it.
+  const [tabStripMemories] = useState<TabStripMemories>(() => new Map());
+  const layoutForStripMemories = groups?.state.layout;
+  useEffect(() => {
+    if (layoutForStripMemories) {
+      forgetTabStripMemories(tabStripMemories, leafGroupIds(layoutForStripMemories));
+    }
+  }, [layoutForStripMemories, tabStripMemories]);
+
   const handleDropToGroup = useCallback(
     (tabId: string, target: DropTarget) =>
       dispatch?.({
@@ -1336,6 +1349,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // no pointer events at all, so its own drag state is empty and the caret
         // is driven entirely by IPC from main (design D3, Phase 0).
         remoteDropBeforeTabId={remoteDrop?.groupId === groupId ? remoteDrop.beforeTabId : null}
+        memory={tabStripMemoryFor(tabStripMemories, groupId)}
         onSelect={handleSelect}
         onClose={handleClose}
         onReorder={handleReorder}

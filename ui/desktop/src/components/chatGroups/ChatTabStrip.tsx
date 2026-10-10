@@ -36,6 +36,7 @@ import { useTabBandWindowGesture } from './useTabBandWindowGesture';
 import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
 import { chatTabStripCopy, TAB_MENU_FILTER_MIN } from './copy';
+import { createTabStripMemory, type TabStripMemory } from './tabStripMemory';
 
 /**
  * A tab is not a session row — it persists `{tabId, sessionId, title}` and
@@ -138,6 +139,15 @@ function releaseSettledEntrances(strip: HTMLElement): void {
     delete el.dataset.tabEntering;
     delete el.dataset.tabEntered;
   }
+}
+
+/** Each tab's `offsetLeft`, keyed by tab id (the FLIP snapshot). */
+function measureTabOffsets(strip: HTMLElement): Map<string, number> {
+  const offsets = new Map<string, number>();
+  for (const el of strip.querySelectorAll<HTMLElement>('[data-tab-id]')) {
+    if (el.dataset.tabId) offsets.set(el.dataset.tabId, el.offsetLeft);
+  }
+  return offsets;
 }
 
 /** True when a tab title matches the overflow menu's filter (case-insensitive substring). */
@@ -251,6 +261,12 @@ export interface ChatTabStripProps {
    * strip already answers.
    */
   remoteDropBeforeTabId?: ChatTabId | null;
+  /**
+   * This group's {@link TabStripMemory}, owned by the shell so it outlives the
+   * strip's remount on every tab switch. Optional: bare (as in this component's
+   * own tests) the strip keeps a private record, which lasts as long as it does.
+   */
+  memory?: TabStripMemory;
 }
 
 export function ChatTabStrip({
@@ -270,6 +286,7 @@ export function ChatTabStrip({
   isCompactSidebarOverlayOpen,
   endSlot,
   remoteDropBeforeTabId = null,
+  memory,
 }: ChatTabStripProps) {
   // The shell provides ONE gesture for every strip, because a cross-group drag
   // must tint a group this strip does not render. Bare (as in this component's
@@ -299,27 +316,36 @@ export function ChatTabStrip({
   // strip or a moved window cannot poison the deltas between snapshots. In
   // jsdom every offset is 0, so the pass is a structural no-op there — the
   // spring itself is browser-verified (the repo's Prism/Tailwind lesson).
-  const tabOffsetsRef = useRef<Map<string, number>>(new Map());
+  //
+  // The snapshot, the order it was taken in and the "has painted" flag live in
+  // a TabStripMemory, not in refs, because a tab switch remounts this strip
+  // (see TabStripMemory): the pass has to compare against what the PREVIOUS
+  // mount showed.
+  const [ownMemory] = useState(createTabStripMemory);
+  const stripMemory = memory ?? ownMemory;
   const orderKey = tabs.map((t) => t.tabId).join('␟');
-  // Mounting is not opening (spec principle 9): the tabs a strip MOUNTS with —
-  // a reload restoring them, a window opening with them, a tab torn off into a
-  // new window — appear at rest. Only a tab that arrives after the first pass
-  // grows in.
-  const hasPaintedRef = useRef(false);
 
   useLayoutEffect(() => {
     const strip = stripRef.current;
     if (!strip) return;
-    const previous = tabOffsetsRef.current;
-    const next = new Map<string, number>();
+    const previous = stripMemory.offsets;
+    // A mount that finds the order the last one left (a plain tab switch,
+    // which remounts the strip with its chat) changed nothing: nothing enters
+    // and nothing slides, exactly as when the same strip re-renders.
+    const orderChanged = stripMemory.orderKey !== orderKey;
     const els = Array.from(strip.querySelectorAll<HTMLElement>('[data-tab-id]'));
-    for (const el of els) {
-      if (el.dataset.tabId) next.set(el.dataset.tabId, el.offsetLeft);
-    }
-    tabOffsetsRef.current = next;
+    const next = measureTabOffsets(strip);
+    stripMemory.offsets = next;
+    stripMemory.orderKey = orderKey;
 
-    const animateEntrances = hasPaintedRef.current;
-    hasPaintedRef.current = true;
+    // Mounting is not opening (spec principle 9): the tabs the strip first
+    // paints with (a reload restoring them, a window opening with them, a tab
+    // torn off into a new window) appear at rest, and so does the first tab
+    // that replaces a new window's empty placeholder. Only a tab that arrives
+    // after that grows in, whichever mount of the strip it arrives in.
+    const animateEntrances = stripMemory.painted;
+    if (els.length > 0) stripMemory.painted = true;
+    if (!orderChanged) return;
 
     // Layout snaps while the window or the sidebar is being dragged: nothing
     // slides or fades against a resize (spec principle 9).
@@ -404,7 +430,18 @@ export function ChatTabStrip({
       for (const restore of restores) restore();
     };
     // Keyed on the rendered order string — the DOM is the dependency here.
-  }, [orderKey]);
+  }, [orderKey, stripMemory]);
+
+  // The last look before this mount goes: the next one slides the survivors
+  // from where they are NOW, not from where they were at the last change of
+  // order (a resize or a rename may have moved them since). A layout cleanup
+  // runs while the old tabs are still in the document.
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    return () => {
+      if (strip?.isConnected) stripMemory.offsets = measureTabOffsets(strip);
+    };
+  }, [stripMemory]);
 
   // The active tab keeps `data-tab-entered` until it stops being active (see
   // markTabEntering); this is where it lets go.
