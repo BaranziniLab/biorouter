@@ -6,68 +6,66 @@
  * This renders them. Before BR-63 the card showed the tool's *name* and nothing
  * else, so "Allow?" was asked with no way to tell `ls` from `rm -rf`.
  *
- * Long previews collapse to a fixed window with a "Show all" toggle so a 200-line
+ * Long previews collapse to a fixed window with a "Show more" toggle so a 200-line
  * diff cannot push the buttons off screen — the decision must always stay in reach.
  */
 import { useId, useState } from 'react';
-import { ChevronDown, ChevronUp, Code, FileText, Info, Terminal } from './icons/app-icons';
+import './tool-call.css';
+import { Code, FileText, Terminal } from './icons/app-icons';
 import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../api';
-import { Button } from './ui/button';
+import { Badge, type BadgeTone } from './ui/badge';
+import { InfoTip } from './ui/info-tip';
+import { PREVIEW_COPY, TOOL_ROW_COPY } from './toolCallCopy';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
 
-/** Lines shown before the preview collapses behind a "Show all" toggle. */
+/** Lines shown before the preview collapses behind a "Show more" toggle. */
 const COLLAPSED_LINES = 12;
 
-const RISK_STYLES: Record<ToolRisk, { label: string; className: string }> = {
-  low: {
-    label: 'Read-only',
-    className: 'bg-background-success/10 text-text-success',
-  },
-  medium: {
-    label: 'Modifies data',
-    className: 'bg-background-warning/10 text-text-warning',
-  },
-  high: {
-    label: 'Destructive',
-    className: 'bg-background-danger/10 text-text-danger',
-  },
-  unknown: {
-    label: 'Unverified',
-    className: 'bg-background-muted text-text-muted',
-  },
+const RISK_TONES: Record<ToolRisk, BadgeTone> = {
+  low: 'success',
+  medium: 'warning',
+  high: 'danger',
+  unknown: 'neutral',
 };
 
 /**
  * The BR-18 risk grade, in words. "Destructive" is a far more useful thing to put
- * in front of someone about to click "Always Allow" than the tool's name.
+ * in front of someone about to click "Always allow" than the tool's name.
  */
 export function ToolRiskBadge({ risk }: { risk: ToolRisk }) {
-  const style = RISK_STYLES[risk] ?? RISK_STYLES.unknown;
+  const known = risk in RISK_TONES;
+  const grade: ToolRisk = known ? risk : 'unknown';
   return (
-    <span
-      data-testid="tool-risk-badge"
-      className={`rounded-full px-2 py-0.5 text-xs font-medium ${style.className}`}
-    >
-      {style.label}
-    </span>
+    <Badge data-testid="tool-risk-badge" tone={RISK_TONES[grade]}>
+      {PREVIEW_COPY.risk[grade]}
+    </Badge>
   );
 }
 
+/**
+ * A clipped preview says so in one word; the explanation is an InfoTip. It is
+ * never hidden altogether: a clipped diff must not pass for the whole edit.
+ */
 function TruncationNote() {
   return (
-    <div className="flex items-center gap-1.5 border-t border-border-subtle px-3 py-1.5 text-xs text-text-muted">
-      <Info className="h-3.5 w-3.5 shrink-0" />
-      <span>Preview truncated. The full call is larger than shown.</span>
+    <div className="flex items-center gap-1 border-t border-border-subtle px-3 py-1.5 text-supporting text-text-muted">
+      <span>{PREVIEW_COPY.truncated}</span>
+      <InfoTip label={PREVIEW_COPY.truncated} help={PREVIEW_COPY.truncatedHelp} />
     </div>
   );
 }
 
-/** Shared chrome: a titled, bordered box that can collapse its body. */
+/**
+ * Shared chrome: a well (the ground fenced code sits on) with a head row over
+ * a hairline, after Crew's code block. No border of its own, so inside the
+ * approval card it is a step of ground, not a box in a box.
+ */
 function PreviewFrame({
   icon,
   title,
+  machineTitle = false,
   meta,
   truncated,
   collapsible,
@@ -75,6 +73,8 @@ function PreviewFrame({
 }: {
   icon: React.ReactNode;
   title: string;
+  /** A path: set in the code face. A label ("Command") stays in the UI face. */
+  machineTitle?: boolean;
   meta?: React.ReactNode;
   truncated: boolean;
   collapsible: boolean;
@@ -82,16 +82,17 @@ function PreviewFrame({
 }) {
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
-  const showToggle = collapsible && !expanded;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border-subtle bg-background-muted">
-      <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-xs text-text-muted">
-        <span className="shrink-0">{icon}</span>
-        <span className="truncate font-mono" title={title}>
+    <div className="overflow-hidden rounded-element bg-background-well">
+      <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-supporting text-text-muted">
+        <span aria-hidden="true" className="shrink-0">
+          {icon}
+        </span>
+        <span className={machineTitle ? 'truncate font-mono' : 'truncate'} title={title}>
           {title}
         </span>
-        {meta && <span className="ml-auto shrink-0">{meta}</span>}
+        {meta && <span className="ml-auto shrink-0 tabular-nums">{meta}</span>}
       </div>
 
       <div
@@ -105,26 +106,17 @@ function PreviewFrame({
       </div>
 
       {collapsible && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          shape="pill"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          className="flex w-full items-center justify-center gap-1 border-t border-border-subtle py-1.5 text-xs text-text-muted transition-colors hover:text-text-default"
-        >
-          {showToggle ? (
-            <>
-              Show all <ChevronDown className="h-3.5 w-3.5" />
-            </>
-          ) : (
-            <>
-              Show less <ChevronUp className="h-3.5 w-3.5" />
-            </>
-          )}
-        </Button>
+        <div className="px-3 pb-2">
+          <button
+            type="button"
+            className="br-tool-more"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+          >
+            {expanded ? TOOL_ROW_COPY.showLess : TOOL_ROW_COPY.showMore}
+          </button>
+        </div>
       )}
 
       {truncated && <TruncationNote />}
@@ -140,7 +132,7 @@ const LINE_STYLES: Record<ToolPreviewLine['kind'], { marker: string; className: 
 
 function DiffLines({ lines }: { lines: ToolPreviewLine[] }) {
   return (
-    <pre className="py-1 font-mono text-xs leading-relaxed">
+    <pre className="py-2 font-mono text-code">
       {lines.map((line, i) => {
         const style = LINE_STYLES[line.kind] ?? LINE_STYLES.context;
         return (
@@ -158,9 +150,7 @@ function DiffLines({ lines }: { lines: ToolPreviewLine[] }) {
 
 function CodeBlock({ text }: { text: string }) {
   return (
-    <pre className="whitespace-pre px-3 py-2 font-mono text-xs leading-relaxed text-text-default">
-      {text}
-    </pre>
+    <pre className="whitespace-pre px-3 py-2 font-mono text-code text-text-default">{text}</pre>
   );
 }
 
@@ -170,8 +160,8 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
     case 'shell':
       return (
         <PreviewFrame
-          icon={<Terminal className="h-3.5 w-3.5" />}
-          title="Command"
+          icon={<Terminal className="size-3.5" />}
+          title={PREVIEW_COPY.command}
           truncated={preview.truncated}
           collapsible={countLines(preview.command) > COLLAPSED_LINES}
         >
@@ -182,10 +172,11 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
     case 'fileEdit':
       return (
         <PreviewFrame
-          icon={<FileText className="h-3.5 w-3.5" />}
+          icon={<FileText className="size-3.5" />}
           title={preview.path}
+          machineTitle
           meta={
-            <span className="font-mono">
+            <span>
               <span className="text-text-success">+{preview.added}</span>{' '}
               <span className="text-text-danger">-{preview.removed}</span>
             </span>
@@ -200,12 +191,11 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
     case 'fileWrite':
       return (
         <PreviewFrame
-          icon={<FileText className="h-3.5 w-3.5" />}
+          icon={<FileText className="size-3.5" />}
           title={preview.path}
+          machineTitle
           meta={
-            <span className="font-mono text-text-success">
-              new file · {preview.lineCount} {preview.lineCount === 1 ? 'line' : 'lines'}
-            </span>
+            <span className="text-text-success">{PREVIEW_COPY.newFile(preview.lineCount)}</span>
           }
           truncated={preview.truncated}
           collapsible={preview.lineCount > COLLAPSED_LINES}
@@ -217,8 +207,8 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
     case 'arguments':
       return (
         <PreviewFrame
-          icon={<Code className="h-3.5 w-3.5" />}
-          title="Arguments"
+          icon={<Code className="size-3.5" />}
+          title={PREVIEW_COPY.arguments}
           truncated={preview.truncated}
           collapsible={countLines(preview.json) > COLLAPSED_LINES}
         >
