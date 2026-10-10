@@ -457,7 +457,6 @@ ones.
 ## Related documentation
 
 - [Codex simplicity redesign](../design/codex-simplicity-redesign/README.md) — the 2026-10-09 pass that removed row paragraphs, added rules 12 and 13 and moved the Settings tabs into the band (implementation spec §3.13).
-
 - [`design.md`](../../design.md) — the Parchment design system: tokens, the type ramp, the radius ladder, rows-not-cards, and the calm register these rules serve.
 - [Astryx UI adoption design](../design/astryx-adoption/astryx-ui-adoption-design.md) — the design of record for the token and primitive layer, including the density ladder and the status-wash formula.
 - [Where a generated artifact is displayed](artifact-display-surfaces.md) — the sibling one-rule document for the artifact side panel, enforced the same way.

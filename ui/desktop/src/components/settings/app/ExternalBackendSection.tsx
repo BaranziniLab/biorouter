@@ -144,7 +144,6 @@ export default function ExternalBackendSection() {
             checked={config.enabled}
             onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
             disabled={isSaving}
-            variant="mono"
             aria-label="Use external server"
           />
         </div>

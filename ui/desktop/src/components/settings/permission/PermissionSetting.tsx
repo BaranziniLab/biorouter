@@ -23,10 +23,10 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
         size="lg"
       >
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold text-text-default break-words [overflow-wrap:anywhere]">
+          <h3 className="text-label text-text-default break-words [overflow-wrap:anywhere]">
             {title}
           </h3>
-          <p className="mt-1 text-xs text-text-muted break-words [overflow-wrap:anywhere]">
+          <p className="mt-1 text-supporting text-text-muted break-words [overflow-wrap:anywhere]">
             {description}
           </p>
         </div>
@@ -46,7 +46,7 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
 function RulesSection({ title, rules }: { title: string; rules: React.ReactNode }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-base font-semibold text-text-default">{title}</h2>
+      <h2 className="text-subheading text-text-default">{title}</h2>
       {rules}
     </div>
   );
