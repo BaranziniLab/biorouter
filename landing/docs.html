@@ -9,7 +9,7 @@
 <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@600;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@600&text=Biorouter&display=swap">
 <link rel="stylesheet" href="site.css">
 <link rel="stylesheet" href="docs.css">
 </head>
@@ -1047,10 +1047,10 @@ biorouter extension configure cdwagent</code></pre>
 <p>The agent can install one for you. When a task needs a tool you do not have, the Extension Manager finds it on BAAM and asks you to approve that exact package before anything downloads. A chat on a public model cannot install a private extension this way.</p>
 
 <h3>A custom extension</h3>
-<p>Choose <strong>Extensions → Add → Custom extension…</strong> and pick a type.</p>
+<p>Choose <strong>Extensions → Add → Custom extension…</strong> and pick a type, <strong>Command</strong> or <strong>HTTP</strong>.</p>
 <ul>
-  <li><strong>Standard IO (STDIO)</strong> is a program Biorouter starts on this computer, usually an MCP server run with <code>npx</code> or <code>uvx</code>. Enter the command with its arguments, and any environment variables it needs.</li>
-  <li><strong>Streamable HTTP</strong> is a server that already runs somewhere else. Enter its endpoint URL, and any request headers.</li>
+  <li><strong>Command</strong>, which is standard IO (STDIO), is a program Biorouter starts on this computer, usually an MCP server run with <code>npx</code> or <code>uvx</code>. Enter the command with its arguments, and any environment variables it needs.</li>
+  <li><strong>HTTP</strong>, which is streamable HTTP, is a server that already runs somewhere else. Enter its endpoint URL, and any request headers.</li>
 </ul>
 <p>An extension you add by hand, and any extension that is not on BAAM, is Public: any model can call it, including one hosted outside your institution.</p>
 <p>For a STDIO extension, the app stores the value of each environment variable with your other credentials and writes only its name to <code>config.yaml</code>. In a terminal, <code>biorouter configure</code> and then <strong>Add Extension</strong> does the same. To try a server for one terminal session only:</p>
