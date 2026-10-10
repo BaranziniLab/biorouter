@@ -1,66 +1,25 @@
 import { Session } from '../api';
+import { groupByChatDate } from './chatDateBuckets';
 
 export interface DateGroup {
+  /** Stable bucket key (`today`, `yesterday`, `week`, `month30`, `2026-08`, `unknown`). */
+  key: string;
+  /** Sentence-case label: Today, Yesterday, Previous 7 days, Previous 30 days, a month. */
   label: string;
   sessions: Session[];
-  date: Date;
 }
 
-export function groupSessionsByDate(sessions: Session[]): DateGroup[] {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const groups: { [key: string]: DateGroup } = {};
-
-  sessions.forEach((session) => {
-    const sessionDate = new Date(session.updated_at);
-    const sessionDateStart = new Date(sessionDate);
-    sessionDateStart.setHours(0, 0, 0, 0);
-
-    let label: string;
-    let groupKey: string;
-
-    if (sessionDateStart.getTime() === today.getTime()) {
-      label = 'Today';
-      groupKey = 'today';
-    } else if (sessionDateStart.getTime() === yesterday.getTime()) {
-      label = 'Yesterday';
-      groupKey = 'yesterday';
-    } else {
-      // Format as "Monday, January 1" or "January 1" if it's not this year
-      const currentYear = today.getFullYear();
-      const sessionYear = sessionDateStart.getFullYear();
-
-      if (sessionYear === currentYear) {
-        label = sessionDateStart.toLocaleDateString('en-US', {
-          weekday: 'long',
-          month: 'long',
-          day: 'numeric',
-        });
-      } else {
-        label = sessionDateStart.toLocaleDateString('en-US', {
-          month: 'long',
-          day: 'numeric',
-          year: 'numeric',
-        });
-      }
-      groupKey = sessionDateStart.toISOString().split('T')[0];
-    }
-
-    if (!groups[groupKey]) {
-      groups[groupKey] = {
-        label,
-        sessions: [],
-        date: sessionDateStart,
-      };
-    }
-
-    groups[groupKey].sessions.push(session);
-  });
-
-  // Convert to array and sort by date (newest first)
-  return Object.values(groups).sort((a, b) => b.date.getTime() - a.date.getTime());
+/**
+ * Chat history's date groups: the same coarse buckets the sidebar uses
+ * (`chatDateBuckets.ts`), so a chat sits under the same heading in both places.
+ *
+ * This replaced one heading per day in a third format ("Tuesday, October 7"),
+ * which made a long history a column of near-identical headings. Buckets come
+ * newest first; inside one, sessions keep the order they arrive in (the list
+ * route's `updated_at` descending).
+ */
+export function groupSessionsByDate(sessions: Session[], now: number = Date.now()): DateGroup[] {
+  return groupByChatDate(sessions, (session) => session.updated_at, now).map(
+    ({ key, label, items }) => ({ key, label, sessions: items })
+  );
 }
