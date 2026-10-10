@@ -1,13 +1,22 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import ApplicationsView, { ApplicationItem } from './ApplicationsView';
+import { appsCopy } from './copy';
 
-vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({ children }: { children: ReactNode }) => <>{children}</>,
+vi.mock('../ui/scroll-area', () => ({
+  ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
+
+/** Radix opens a dropdown on pointerdown, not click. */
+function openRowMenu(title = 'Cohort Explorer') {
+  fireEvent.pointerDown(screen.getByRole('button', { name: appsCopy.moreActionsNamed(title) }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
 
 vi.mock('../../toasts', () => ({
   toastError: vi.fn(),
@@ -23,31 +32,32 @@ const app = {
 };
 
 describe('ApplicationItem', () => {
-  it('keeps every action keyboard-accessible when hover controls are visually collapsed', async () => {
-    const user = userEvent.setup();
-    const onLaunch = vi.fn();
-
+  const renderItem = (overrides: Partial<Parameters<typeof ApplicationItem>[0]> = {}) =>
     render(
       <ApplicationItem
         app={app}
-        onLaunch={onLaunch}
+        onLaunch={vi.fn()}
         onOpenConversation={vi.fn()}
         onExport={vi.fn()}
         onDelete={vi.fn()}
+        {...overrides}
       />
     );
 
-    const launch = screen.getByRole('button', { name: 'Launch Cohort Explorer in browser' });
+  /**
+   * Spec 3.10: Launch and `⋯` are the row's only visible actions, revealed on
+   * hover or focus by opacity alone, so they stay in the tab order.
+   */
+  it('keeps Launch and the menu keyboard-reachable while they are visually hidden', async () => {
+    const user = userEvent.setup();
+    const onLaunch = vi.fn();
+    renderItem({ onLaunch });
+
+    const launch = screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') });
+    expect(launch.closest('.br-row-actions')).not.toBeNull();
     expect(
-      screen.getByRole('button', {
-        name: 'Open the chat where Cohort Explorer was built',
-      })
+      screen.getByRole('button', { name: appsCopy.moreActionsNamed('Cohort Explorer') })
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Export Cohort Explorer to a folder' })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete Cohort Explorer' })).toBeInTheDocument();
-    expect(launch.parentElement).toHaveClass('sm:group-focus-within:opacity-100');
 
     await user.tab();
     expect(launch).toHaveFocus();
@@ -55,60 +65,85 @@ describe('ApplicationItem', () => {
     expect(onLaunch).toHaveBeenCalledTimes(1);
   });
 
-  it('disables duplicate launch and export actions while they are in flight', () => {
-    const { container } = render(
-      <ApplicationItem
-        app={app}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-        isLaunching
-        isExporting
-      />
-    );
+  it('holds the other verbs in the row menu, Delete last and destructive', async () => {
+    const user = userEvent.setup();
+    const onOpenConversation = vi.fn();
+    renderItem({ onOpenConversation });
 
-    expect(
-      screen.getByRole('button', { name: 'Launch Cohort Explorer in browser' })
-    ).toBeDisabled();
-    expect(
-      screen.getByRole('button', { name: 'Export Cohort Explorer to a folder' })
-    ).toBeDisabled();
-    expect(container.firstElementChild).toHaveAttribute('aria-busy', 'true');
+    openRowMenu();
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      appsCopy.openChat,
+      appsCopy.exportItem,
+      appsCopy.delete,
+    ]);
+    expect(items[2]).toHaveAttribute('data-variant', 'destructive');
+    await user.click(items[0]);
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
   });
 
-  it('shows surface badges without exposing internal theme metadata', () => {
-    render(
-      <ApplicationItem
-        app={{
-          ...app,
-          theme: { pack: 'midnight' },
-          surface: {
-            actions: [{ name: 'focus_node' }, { name: 'reset_view' }],
-            signals: [{ name: 'node_selected' }],
-          },
-        }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
+  it('opens the same menu on a right-click of the row', async () => {
+    renderItem();
+
+    fireEvent.contextMenu(screen.getByText('Cohort Explorer'));
+    expect(await screen.findByRole('menuitem', { name: appsCopy.delete })).toBeInTheDocument();
+  });
+
+  it('disables duplicate launch and export actions while they are in flight', async () => {
+    renderItem({ isLaunching: true, isExporting: true });
+
+    expect(
+      screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') })
+    ).toBeDisabled();
+    expect(screen.getByTestId('app-row')).toHaveAttribute('aria-busy', 'true');
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: appsCopy.exportItem })).toHaveAttribute(
+      'aria-disabled',
+      'true'
     );
+  });
+
+  /** Two lines: the title, then "{model} · {kb}" in the sans face, no icons. */
+  it('says the model and the knowledge base on one sans line', () => {
+    renderItem({
+      app: {
+        ...app,
+        updated_at: 1750000000,
+        agent: {
+          model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+          knowledge_base: 'ms-cohort',
+        },
+      },
+    });
+
+    const meta = screen.getByText('claude-sonnet-4-5 · ms-cohort');
+    expect(meta.tagName).toBe('P');
+    expect(meta.closest('.font-mono')).toBeNull();
+    // The description gives way to the facts; the row has two lines.
+    expect(screen.queryByText('Explore a paired cohort.')).toBeNull();
+    // At rest the row shows its relative time in the meta slot, not a date line.
+    expect(screen.getByTestId('app-row').querySelector('.br-row-actions-meta time')).not.toBeNull();
+  });
+
+  it('puts the declared surface in the kind badge’s help, not in a second badge', () => {
+    renderItem({
+      app: {
+        ...app,
+        theme: { pack: 'midnight' },
+        surface: {
+          actions: [{ name: 'focus_node' }, { name: 'reset_view' }],
+          signals: [{ name: 'node_selected' }],
+        },
+      },
+    });
 
     expect(screen.queryByText('midnight')).not.toBeInTheDocument();
-    expect(screen.getByText('2 actions · 1 signal')).toBeInTheDocument();
+    const kind = screen.getByText('agentic');
+    expect(kind).toHaveAccessibleDescription('2 actions · 1 signal');
   });
 
-  it('renders no surface badge for a plain v1 manifest', () => {
-    render(
-      <ApplicationItem
-        app={{ ...app, theme: { pack: 'biorouter' } }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
+  it('renders no surface help for a plain v1 manifest', () => {
+    renderItem({ app: { ...app, theme: { pack: 'biorouter' } } });
 
     expect(screen.queryByText('biorouter')).toBeNull();
     expect(screen.queryByText(/\d+ actions?/)).toBeNull();
@@ -165,26 +200,35 @@ describe('ApplicationsView', () => {
   });
 
   /**
-   * The header comes from `Layout/PageHeader`, so this asserts the two things
-   * that were the view's own before it did: that the action lands in the
-   * control strip under the description rather than beside the title, and that
-   * the `page-transition` class — which matches no CSS rule in this repo — did
-   * not survive the move.
+   * The band (spec 3.10): the title with its help in an InfoTip, the filter and
+   * Refresh at the trailing edge, and no primary (an app is built from a chat).
    */
-  it('renders the shared page header with Refresh in its control strip', async () => {
+  it('renders the band with the filter and Refresh, and no primary', async () => {
     const { container } = renderView();
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Built apps' })
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'About Built apps' })).toHaveAccessibleDescription(
-      /Apps you built with Agent Drafter/
+      appsCopy.info
     );
 
     const strip = container.querySelector('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: appsCopy.refresh }));
+    expect(strip).toContainElement(screen.getByRole('searchbox', { name: appsCopy.filterLabel }));
+    expect(strip?.querySelector('.bg-background-accent')).toBeNull();
     expect(container.querySelector('.page-transition')).toBeNull();
+  });
+
+  it('filters the rows from the band', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+    expect(screen.queryByText('Cohort Explorer')).toBeNull();
+    expect(screen.getByRole('heading', { name: appsCopy.noMatchTitle })).toBeInTheDocument();
   });
 
   it('shows skeleton rows while the first load is in flight, not a line of prose', async () => {
@@ -228,7 +272,7 @@ describe('ApplicationsView', () => {
     renderView();
 
     await user.click(
-      await screen.findByRole('button', { name: 'Launch Cohort Explorer in browser' })
+      await screen.findByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') })
     );
 
     await waitFor(() => expect(openAppInBrowser).toHaveBeenCalledWith('cohort-explorer'));
@@ -266,10 +310,9 @@ describe('ApplicationsView', () => {
 
     renderView();
 
-    expect(
-      await screen.findByRole('heading', { level: 2, name: 'No apps built yet' })
-    ).toBeInTheDocument();
-    expect(screen.getByText(/use Agent Drafter to build a dashboard app/)).toBeInTheDocument();
+    const title = await screen.findByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+    expect(title.closest('section')).toHaveAccessibleDescription(appsCopy.emptyDescription);
+    expect(within(title.closest('section') as HTMLElement).queryByRole('button')).toBeNull();
   });
 
   /**
@@ -288,10 +331,10 @@ describe('ApplicationsView', () => {
       status: 500,
       text: async () => 'boom',
     } as Response);
-    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.refresh }));
 
     const note = await screen.findByRole('alert');
-    expect(note).toHaveTextContent('Could not load apps: HTTP 500: boom');
+    expect(note).toHaveTextContent(appsCopy.loadFailed('HTTP 500: boom'));
     expect(within(note).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.getByText('Cohort Explorer')).toBeInTheDocument();
 
@@ -339,9 +382,9 @@ describe('ApplicationsView export dialog', () => {
         <ApplicationsView />
       </MemoryRouter>
     );
-    await user.click(
-      await screen.findByRole('button', { name: 'Export Cohort Explorer to a folder' })
-    );
+    await screen.findByText('Cohort Explorer');
+    openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: appsCopy.exportItem }));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     return user;
   }
@@ -349,11 +392,13 @@ describe('ApplicationsView export dialog', () => {
   it('opens a dialog on Export with launcher mode selected and the credentials note', async () => {
     await openExportDialog();
 
-    expect(screen.getByRole('radio', { name: /Launcher \(app \+ scripts\)/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^Launcher/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /^Full/ })).not.toBeChecked();
+    // The safety fact stays visible, not behind help.
+    expect(screen.getByText(appsCopy.exportDialog.credentials)).toBeVisible();
     expect(
-      screen.getByRole('radio', { name: /Full \(bundle server-side content\)/ })
-    ).not.toBeChecked();
-    expect(screen.getByText(/Credentials never travel/)).toBeInTheDocument();
+      screen.getByRole('heading', { name: appsCopy.exportDialog.title('Cohort Explorer') })
+    ).toBeInTheDocument();
     // No request happens just from opening the dialog.
     expect(exportCalls()).toHaveLength(0);
   });
@@ -361,7 +406,7 @@ describe('ApplicationsView export dialog', () => {
   it('launcher mode requests mode=launcher with no include and keeps the download behavior', async () => {
     const user = await openExportDialog();
 
-    await user.click(screen.getByRole('button', { name: 'Export' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.exportDialog.export }));
 
     await waitFor(() => expect(exportCalls()).toHaveLength(1));
     const url = new URL(exportCalls()[0]);
@@ -379,18 +424,30 @@ describe('ApplicationsView export dialog', () => {
   it('full mode pre-checks manifest grants and carries mode=full plus the include JSON', async () => {
     const user = await openExportDialog();
 
-    await user.click(screen.getByRole('radio', { name: /Full \(bundle server-side content\)/ }));
+    await user.click(screen.getByRole('radio', { name: /^Full/ }));
 
-    // Pre-checked from the app's agent config.
-    expect(screen.getByRole('checkbox', { name: /Knowledge base: ms-cohort/ })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /Skill: ggplot-visualization/ })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /Extension: spokeagent/ })).toBeChecked();
-    const daemon = screen.getByRole('checkbox', { name: /Bundle daemon binary/ });
+    // Pre-checked from the app's agent config: checkbox plus name, grouped.
+    const groups = {
+      kb: screen.getByRole('group', { name: appsCopy.exportDialog.knowledgeBase }),
+      skills: screen.getByRole('group', { name: appsCopy.exportDialog.skills }),
+      extensions: screen.getByRole('group', { name: appsCopy.exportDialog.extensions }),
+    };
+    expect(within(groups.kb).getByRole('checkbox', { name: 'ms-cohort' })).toBeChecked();
+    expect(
+      within(groups.skills).getByRole('checkbox', { name: 'ggplot-visualization' })
+    ).toBeChecked();
+    expect(within(groups.extensions).getByRole('checkbox', { name: 'spokeagent' })).toBeChecked();
+    // One help per group, not one sentence per item.
+    expect(
+      within(groups.kb).getByRole('button', {
+        name: `About ${appsCopy.exportDialog.knowledgeBase}`,
+      })
+    ).toHaveAccessibleDescription(appsCopy.exportDialog.knowledgeBaseInfo);
+    const daemon = screen.getByRole('checkbox', { name: appsCopy.exportDialog.includeBiorouter });
     expect(daemon).not.toBeChecked();
-    expect(screen.getByText(/knowledge base carries its sources/)).toBeInTheDocument();
 
     await user.click(daemon);
-    await user.click(screen.getByRole('button', { name: 'Export' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.exportDialog.export }));
 
     await waitFor(() => expect(exportCalls()).toHaveLength(1));
     const url = new URL(exportCalls()[0]);
@@ -406,9 +463,9 @@ describe('ApplicationsView export dialog', () => {
   it('unchecking an include item drops it from the include JSON', async () => {
     const user = await openExportDialog();
 
-    await user.click(screen.getByRole('radio', { name: /Full \(bundle server-side content\)/ }));
-    await user.click(screen.getByRole('checkbox', { name: /Knowledge base: ms-cohort/ }));
-    await user.click(screen.getByRole('button', { name: 'Export' }));
+    await user.click(screen.getByRole('radio', { name: /^Full/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'ms-cohort' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.exportDialog.export }));
 
     await waitFor(() => expect(exportCalls()).toHaveLength(1));
     const url = new URL(exportCalls()[0]);

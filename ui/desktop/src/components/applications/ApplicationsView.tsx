@@ -2,26 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
-import {
-  Play,
-  Trash2,
-  RefreshCw,
-  Download,
-  MessageSquare,
-  Calendar,
-  Clock,
-} from '../icons/app-icons';
+import { Play, RefreshCw } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Badge } from '../ui/badge';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
+import { FilterInput } from '../ui/filter-input';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
+import { ScrollArea } from '../ui/scroll-area';
 import { Skeleton } from '../ui/skeleton';
-import { SearchView } from '../conversation/SearchView';
-import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { IconAction, RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
 import { toastSuccess, toastError } from '../../toasts';
-import { PageHeader } from '../Layout/PageHeader';
+import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { fromUnixSeconds, rowTime, rowTimeTitle } from '../workflows/shared/rowTime';
 import {
   buildExportUrl,
   configuredBaseUrl,
@@ -31,28 +26,18 @@ import {
 } from './appManagement';
 import type { AppManifest, ExportOptions } from './appManagement';
 import ExportAppDialog from './ExportAppDialog';
+import { appsCopy as copy } from './copy';
 
 /** Loading is rows that are the shape of rows, not a line of prose in dead space. */
 function ApplicationItemSkeleton() {
   return (
-    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3">
+    <div className="biorouter-list-row flex items-center gap-3">
       <div className="min-w-0 flex-1">
         <Skeleton className="h-4 w-48" />
-        <Skeleton className="mt-2 h-3 w-64" />
-        <Skeleton className="mt-2 h-3 w-40" />
+        <Skeleton className="mt-1 h-3 w-64" />
       </div>
     </div>
   );
-}
-
-/** Format a Unix-seconds timestamp as a short, readable date (e.g. "Jun 24, 2026"). */
-function formatDate(secs?: number | null): string {
-  if (!secs) return 'unknown';
-  return new Date(secs * 1000).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
 }
 
 export default function ApplicationsView() {
@@ -107,10 +92,7 @@ export default function ApplicationsView() {
         err instanceof Error
           ? err.message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
           : '';
-      toastError({
-        title: app.title,
-        msg: reason || 'Could not open the app in your browser.',
-      });
+      toastError({ title: app.title, msg: reason || copy.couldNotOpen });
     } finally {
       setLaunchingAppId((current) => (current === app.id ? null : current));
     }
@@ -148,13 +130,13 @@ export default function ApplicationsView() {
         if (ok) written += 1;
       }
       if (written > 0) {
-        toastSuccess({ title: app.title, msg: `Exported ${written} files to ${targetDir}` });
+        toastSuccess({ title: copy.savedTo(targetDir) });
       } else {
-        toastError({ title: app.title, msg: 'Nothing was exported.' });
+        toastError({ title: app.title, msg: copy.nothingExported });
       }
     } catch (err) {
       console.error('Failed to export app:', err);
-      toastError({ title: app.title, msg: 'Could not export the app.' });
+      toastError({ title: app.title, msg: copy.couldNotExport });
     } finally {
       setExportingAppId((current) => (current === app.id ? null : current));
     }
@@ -167,15 +149,12 @@ export default function ApplicationsView() {
     try {
       await deleteAgentDrafterApp(app.id);
       setApps((prev) => prev.filter((a) => a.id !== app.id));
-      toastSuccess({ title: app.title, msg: 'App deleted' });
+      toastSuccess({ title: copy.deleted(app.title) });
     } catch (err) {
       console.error('Failed to delete app:', err);
       toastError({
         title: app.title,
-        msg:
-          err instanceof Error
-            ? `Could not delete the app: ${err.message}`
-            : 'Could not delete the app.',
+        msg: copy.couldNotDelete(err instanceof Error ? err.message : undefined),
       });
     } finally {
       setIsDeleting(false);
@@ -190,109 +169,89 @@ export default function ApplicationsView() {
   });
 
   return (
-    <MainPanelLayout>
-      <div
-        className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
-        data-search-scroll-area
-      >
-        {/* The one page header (`Layout/PageHeader`), which owns the full-bleed
-            hairline, the chat measure and the button strip under the
-            description. Refresh keeps its LABEL where the Scheduler's is a bare
-            glyph: the Scheduler's sits beside "New schedule", which anchors the
-            cluster, and this strip has no labelled sibling for a lone circular
-            glyph to borrow meaning from. `variant="outline"` is the family
-            spelling for a non-committing header action (Extensions' Browse,
-            Skills' two) — a re-fetch is not the view's committing action, so it
-            does not take the solid `default` fill. */}
+    <MainPanelLayout removeTopPadding>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The band (spec 3.10) is fixed; only the body scrolls. Its actions
+            are the filter (⌘F focuses it) and Refresh as a ghost round icon,
+            the same glyph as the Scheduler's. There is no primary: an app is
+            built from a chat, so this view has nothing to create. */}
         <PageHeader
-          title="Built apps"
-          description={
-            <>
-              Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
-              model, extensions, skills, and knowledge, and opens in your browser.{' '}
-              {getSearchShortcutText()} to search.
-            </>
-          }
+          title={copy.title}
+          info={copy.info}
           actions={
-            <Button variant="outline" onClick={load}>
-              <RefreshCw />
-              Refresh
-            </Button>
+            <>
+              <FilterInput
+                value={searchTerm}
+                onValueChange={setSearchTerm}
+                label={copy.filterLabel}
+              />
+              <PageHeaderAction icon={RefreshCw} label={copy.refresh} onClick={load} />
+            </>
           }
         />
 
-        {/* List */}
-        <SearchView
-          onSearch={(term, _caseSensitive) => setSearchTerm(term)}
-          placeholder="Search built apps..."
-        >
-          <ReadableContent size="chat" className="px-6 py-4">
-            {/* ⚠ The error is rendered whether or not there are apps to show.
-                It used to be an `apps.length === 0` branch, so a refresh that
-                failed while rows were already on screen said nothing at all and
-                the list silently went stale. Retry rides the note (`Note`'s
-                `action` slot names exactly this control) rather than sitting in
-                a hand-rolled centred block of its own. */}
-            {error && (
-              <Note
-                tone="danger"
-                role="alert"
-                className="mb-4"
-                action={
-                  <Button variant="outline" size="sm" onClick={load}>
-                    Retry
-                  </Button>
-                }
-              >
-                Could not load apps: {error}
-              </Note>
-            )}
+        <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6 pt-2">
+          <ScrollArea className="h-full">
+            <div className="relative pb-6">
+              {/* ⚠ The error is rendered whether or not there are apps to show.
+                  It used to be an `apps.length === 0` branch, so a refresh that
+                  failed while rows were already on screen said nothing at all and
+                  the list silently went stale. Retry rides the note. */}
+              {error && (
+                <Note
+                  tone="danger"
+                  role="alert"
+                  className="mb-4"
+                  action={
+                    <Button variant="secondary" size="sm" onClick={load}>
+                      {copy.retry}
+                    </Button>
+                  }
+                >
+                  {copy.loadFailed(error)}
+                </Note>
+              )}
 
-            {loading && apps.length === 0 && (
-              <div className="biorouter-list-shell" aria-hidden>
-                <ApplicationItemSkeleton />
-                <ApplicationItemSkeleton />
-                <ApplicationItemSkeleton />
-              </div>
-            )}
+              {loading && apps.length === 0 && (
+                <div className="biorouter-list-shell" aria-hidden>
+                  <ApplicationItemSkeleton />
+                  <ApplicationItemSkeleton />
+                  <ApplicationItemSkeleton />
+                </div>
+              )}
 
-            {!loading && !error && filtered.length === 0 && (
-              <EmptyState
-                icon={ENTITY_ICONS.application}
-                title={searchTerm ? 'No matching apps' : 'No apps built yet'}
-                description={
-                  searchTerm
-                    ? 'No apps match your search.'
-                    : 'Ask Biorouter to build one, for example "use Agent Drafter to build a dashboard app". It will appear here.'
-                }
-              />
-            )}
+              {!loading && !error && filtered.length === 0 && (
+                <EmptyState
+                  icon={ENTITY_ICONS.application}
+                  title={searchTerm ? copy.noMatchTitle : copy.emptyTitle}
+                  description={searchTerm ? copy.noMatchDescription : copy.emptyDescription}
+                />
+              )}
 
-            {/* ⚠ Deliberately NOT `!loading && filtered.length > 0`. `load()`
-                sets `loading` on every Refresh as well as on first mount, so
-                gating the list on it would UNMOUNT the rows for the length of
-                every request — the defect `SchedulesView` records for its own
-                fifteen-second poll. The three branches stay mutually exclusive
-                without it: the skeletons require an empty list, and the empty
-                state requires the load to have finished and to have succeeded. */}
-            {filtered.length > 0 && (
-              <div className="biorouter-list-shell">
-                {filtered.map((app) => (
-                  <ApplicationItem
-                    key={app.id}
-                    app={app}
-                    onLaunch={() => launch(app)}
-                    onOpenConversation={() => openConversation(app)}
-                    onExport={() => setAppToExport(app)}
-                    onDelete={() => setAppToDelete(app)}
-                    isLaunching={launchingAppId === app.id}
-                    isExporting={exportingAppId === app.id}
-                  />
-                ))}
-              </div>
-            )}
-          </ReadableContent>
-        </SearchView>
+              {/* ⚠ Deliberately NOT `!loading && filtered.length > 0`. `load()`
+                  sets `loading` on every Refresh as well as on first mount, so
+                  gating the list on it would UNMOUNT the rows for the length of
+                  every request. The three branches stay mutually exclusive
+                  without it. */}
+              {filtered.length > 0 && (
+                <div className="biorouter-list-shell">
+                  {filtered.map((app) => (
+                    <ApplicationItem
+                      key={app.id}
+                      app={app}
+                      onLaunch={() => launch(app)}
+                      onOpenConversation={() => openConversation(app)}
+                      onExport={() => setAppToExport(app)}
+                      onDelete={() => setAppToDelete(app)}
+                      isLaunching={launchingAppId === app.id}
+                      isExporting={exportingAppId === app.id}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </ReadableContent>
       </div>
 
       {appToExport && (
@@ -310,10 +269,10 @@ export default function ApplicationsView() {
 
       <ConfirmationModal
         isOpen={appToDelete !== null}
-        title={`Delete "${appToDelete?.title}"?`}
-        message="This permanently removes the app and its files from disk. This action cannot be undone."
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        title={copy.deleteTitle(appToDelete?.title ?? '')}
+        message={copy.deleteMessage}
+        confirmLabel={copy.deleteConfirm}
+        cancelLabel={copy.cancel}
         confirmVariant="destructive"
         isSubmitting={isDeleting}
         onConfirm={confirmDelete}
@@ -324,7 +283,7 @@ export default function ApplicationsView() {
 }
 
 // ---------------------------------------------------------------------------
-// Inline app row component
+// One built app, as a two-line row
 // ---------------------------------------------------------------------------
 interface ApplicationItemProps {
   app: AppManifest;
@@ -336,6 +295,22 @@ interface ApplicationItemProps {
   isExporting?: boolean;
 }
 
+/**
+ * One app (spec 3.10): the title and its kind badge, then ONE meta line, "{model} · {kb}", in
+ * the sans face (the description when the app names neither). At rest the row shows only its
+ * relative "Updated" time; on hover or focus that gives way to Launch and `⋯` (Open the chat it
+ * was built in, Export…, Delete). Right-click and Shift+F10 open the same menu.
+ *
+ * Delete lives HERE and nowhere else: deleting an Agent Drafter app removes its files from disk,
+ * and the in-chat artifact card deliberately has no delete control (CLAUDE.md).
+ *
+ * The kind badge carries the app's declared surface ("2 actions · 1 signal") as its help, in
+ * Crew's ClassificationBadge pattern: the badge itself is the focusable trigger.
+ *
+ * ⚠ Every box down the text column carries `min-w-0`: a flex item's `min-width` is `auto`,
+ * which resolves to its content's minimum, so an unbroken model or KB name would push the
+ * column past the reading measure.
+ */
 export function ApplicationItem({
   app,
   onLaunch,
@@ -347,114 +322,76 @@ export function ApplicationItem({
 }: ApplicationItemProps) {
   const model = app.agent?.model?.model;
   const kb = app.agent?.knowledge_base;
-  const actionCount = app.surface?.actions?.length ?? 0;
-  const signalCount = app.surface?.signals?.length ?? 0;
-  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-  const surfaceSummary = [
-    ...(actionCount > 0 ? [plural(actionCount, 'action')] : []),
-    ...(signalCount > 0 ? [plural(signalCount, 'signal')] : []),
-  ].join(' · ');
+  const surface = copy.surface(
+    app.surface?.actions?.length ?? 0,
+    app.surface?.signals?.length ?? 0
+  );
+  const meta = [model, kb].filter(Boolean).join(' · ');
+  const updated = fromUnixSeconds(app.updated_at);
+  const created = fromUnixSeconds(app.created_at);
+  const updatedText = rowTime(updated);
+  const timeTitle = [
+    updated ? copy.updated(rowTimeTitle(updated) ?? '') : null,
+    created ? copy.created(rowTimeTitle(created) ?? '') : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const menu: RowActionItem[] = [
+    ...(app.session_id ? [{ label: copy.openChat, onSelect: onOpenConversation }] : []),
+    { label: copy.exportItem, onSelect: onExport, disabled: isExporting },
+    { kind: 'separator' },
+    { label: copy.delete, onSelect: onDelete, destructive: true },
+  ];
+
   return (
-    <div
-      className="biorouter-list-row flex items-start py-3 px-3 group gap-3"
-      aria-busy={isLaunching || isExporting}
-    >
-      {/* ⚠ Every box down this column carries `min-w-0`. A flex item's
-          `min-width` is `auto`, which resolves to its CONTENT's minimum — so an
-          app id, a model name or a KB name with no break opportunity pushes the
-          column wider than the row and bleeds past the reading measure.
-          `break-words` does not help: it changes where a line MAY break, not
-          the min-content width the flex algorithm reads. The title, the model
-          and the KB additionally `truncate` (which also zeroes that automatic
-          minimum, because the overflow is no longer `visible`) and carry a
-          `title` so the whole value is still reachable. */}
-      <div className="flex-1 min-w-0">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <p className="min-w-0 truncate text-label text-text-default" title={app.title}>
-            {app.title}
-          </p>
-          <Badge>{app.kind}</Badge>
-          {surfaceSummary && (
-            <Badge title="Declared app surface: verbs the agent can call and signals it can subscribe to">
-              {surfaceSummary}
-            </Badge>
+    <RowContextMenu items={menu}>
+      <div
+        className="biorouter-list-row flex items-center gap-3"
+        aria-busy={isLaunching || isExporting}
+        data-testid="app-row"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-label text-text-default">{app.title}</h3>
+            {surface ? (
+              <InfoTip label={app.kind} help={surface} asChild>
+                <Badge>{app.kind}</Badge>
+              </InfoTip>
+            ) : (
+              <Badge>{app.kind}</Badge>
+            )}
+          </div>
+          {(meta || app.description) && (
+            <p className="min-w-0 truncate text-supporting text-text-muted">
+              {meta || app.description}
+            </p>
           )}
         </div>
-        {app.description && (
-          <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted">{app.description}</p>
-        )}
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-3 text-supporting text-text-subtle">
-          <span className="flex shrink-0 items-center whitespace-nowrap">
-            <Calendar className="w-3 h-3 mr-1" />
-            Created {formatDate(app.created_at)}
-          </span>
-          <span className="flex shrink-0 items-center whitespace-nowrap">
-            <Clock className="w-3 h-3 mr-1" />
-            Updated {formatDate(app.updated_at)}
-          </span>
-          {model && (
-            <span className="min-w-0 truncate font-mono" title={model}>
-              {model}
-            </span>
-          )}
-          {kb && (
-            <span className="min-w-0 truncate font-mono" title={kb}>
-              KB: {kb}
-            </span>
-          )}
-        </div>
+        <RowActions
+          primary={
+            <IconAction
+              icon={Play}
+              label={copy.launchNamed(app.title)}
+              onSelect={onLaunch}
+              disabled={isLaunching}
+            />
+          }
+          menu={menu}
+          menuLabel={copy.moreActionsNamed(app.title)}
+          meta={
+            updatedText ? (
+              <time
+                className="tabular-nums"
+                dateTime={updated?.toISOString()}
+                title={timeTitle || undefined}
+              >
+                {updatedText}
+              </time>
+            ) : undefined
+          }
+        />
       </div>
-      {/* V7 — glyph-only row actions are `ghost` + `round` (the 32px rung the
-          shape carries itself), never a `size="sm"` button re-geometried to
-          28px with `h-7 w-7 p-0`, and never a `hover:bg-*`: `tint-interactive`
-          inside the variant owns hover and press. Delete is the quiet
-          destructive spelling — ghost with `text-text-danger` — because this is
-          the ONE place an Agent Drafter app can be deleted at all (the in-chat
-          artifact card deliberately has no delete control), so it must read as
-          consequential without becoming the loudest thing in the row. */}
-      <div className="flex items-center gap-1 flex-shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-        <Button
-          onClick={onLaunch}
-          variant="ghost"
-          shape="round"
-          title="Launch in browser"
-          aria-label={`Launch ${app.title} in browser`}
-          disabled={isLaunching}
-        >
-          <Play />
-        </Button>
-        {app.session_id && (
-          <Button
-            onClick={onOpenConversation}
-            variant="ghost"
-            shape="round"
-            title="Open the chat where this app was built"
-            aria-label={`Open the chat where ${app.title} was built`}
-          >
-            <MessageSquare />
-          </Button>
-        )}
-        <Button
-          onClick={onExport}
-          variant="ghost"
-          shape="round"
-          title="Export to a folder"
-          aria-label={`Export ${app.title} to a folder`}
-          disabled={isExporting}
-        >
-          <Download />
-        </Button>
-        <Button
-          onClick={onDelete}
-          variant="ghost"
-          shape="round"
-          className="text-text-danger"
-          title="Delete this app"
-          aria-label={`Delete ${app.title}`}
-        >
-          <Trash2 />
-        </Button>
-      </div>
-    </div>
+    </RowContextMenu>
   );
 }

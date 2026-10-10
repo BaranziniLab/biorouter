@@ -1,23 +1,13 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
-// V8 — the app's OWN checkbox, not `@radix-ui/themes`'. It is built exactly
-// like the `CustomRadio` it sits under (a `peer sr-only` input driving styled
-// siblings, 22px inside a 24px target), so the two controls in this dialog share
-// an optical axis and one theme. The Radix Themes control is a different design
-// system's box: it reads its own accent, not the family's, and nothing around it
-// can reach inside.
 import { Checkbox } from '../ui/Checkbox';
 import CustomRadio from '../ui/CustomRadio';
-import { MODAL_SIZE } from '../ModalShell';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
+import { InfoTip } from '../ui/info-tip';
+import { ModalShell } from '../ModalShell';
 import type { AppManifest, ExportMode, ExportOptions } from './appManagement';
+import { appsCopy } from './copy';
+
+const copy = appsCopy.exportDialog;
 
 interface ExportAppDialogProps {
   app: AppManifest;
@@ -26,51 +16,60 @@ interface ExportAppDialogProps {
 }
 
 /**
- * A compact labelled checkbox with a one-line explanation underneath.
- *
- * V2 — **no `min-h-*`**: `.biorouter-list-row` already carries
- * `min-height: var(--row-height)`, and the `min-h-10` this replaced was a
- * second spelling of the same 40px that could drift from the token.
- *
- * The 4px horizontal inset is deliberately NOT the settings row's `px-3`.
- * These rows sit directly under the `CustomRadio`s above them, which carry no
- * horizontal padding at all, so `px-3` would indent every checkbox past the
- * radio ring it is meant to line up with.
+ * One included item: the checkbox and its name, nothing else (spec 3.10: "the item rows are
+ * checkbox plus name"). What a group of items does on the other machine is said once, in the
+ * group's InfoTip, not repeated under every skill and every extension. The whole row is the
+ * label, so a click anywhere on it toggles the box (the app's `Checkbox` is an sr-only input
+ * whose square only toggles inside a `<label>`).
  */
-function IncludeCheckbox({
+function IncludeRow({
   id,
   checked,
   onChange,
-  label,
-  hint,
+  name,
 }: {
   id: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
-  label: string;
-  hint: string;
+  name: string;
 }) {
   return (
-    <div className="biorouter-list-row flex items-start gap-2 rounded-none px-1 py-2">
-      <Checkbox
-        id={id}
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5"
-      />
-      <label htmlFor={id} className="min-w-0 cursor-pointer">
-        <span className="block text-label text-text-default">{label}</span>
-        <span className="block text-supporting text-text-muted">{hint}</span>
-      </label>
+    <label htmlFor={id} className="flex min-h-8 min-w-0 cursor-pointer items-center gap-2">
+      <Checkbox id={id} checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span className="min-w-0 truncate text-body text-text-default">{name}</span>
+    </label>
+  );
+}
+
+/** A group of included items under a caps section label with one InfoTip. */
+function IncludeGroup({
+  title,
+  info,
+  children,
+}: {
+  title: string;
+  info: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div role="group" aria-label={title} className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <span className="text-caps text-text-muted">{title}</span>
+        <InfoTip label={title} help={info} />
+      </div>
+      {children}
     </div>
   );
 }
 
 /**
- * The Applications-panel export dialog (Apps SDK v2, design §3.9): launcher vs
- * full export, with per-item payload toggles pre-checked from what the app's
- * agent config actually references. Confirm hands the chosen options back to
- * the caller, which performs the request; Cancel sends nothing.
+ * The Built apps export dialog (Apps SDK v2, design §3.9): launcher or full export, with the
+ * items the app's agent references pre-checked. Confirm hands the chosen options back to the
+ * caller, which performs the request; Cancel sends nothing.
+ *
+ * `ModalShell size="md"` (the forms rung). Radio rows appear here because a dialog is the one
+ * place principle 5 allows them, each with one consequence line. "Credentials are never
+ * included." stays visible: a safety fact is never hidden behind help.
  */
 export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppDialogProps) {
   const kb = app.agent?.knowledge_base || undefined;
@@ -107,34 +106,34 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
   };
 
   return (
-    <Dialog
+    <ModalShell
       open
       onOpenChange={(open) => {
         if (!open) onCancel();
       }}
+      size="md"
+      purpose="form"
+      title={copy.title(app.title)}
+      subtitle={copy.credentials}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onCancel}>
+            {copy.cancel}
+          </Button>
+          <Button onClick={confirm}>{copy.export}</Button>
+        </>
+      }
     >
-      {/* V8 — a dialog's width comes off the `MODAL_SIZE` ladder, never from a
-          Tailwind `max-w-*` fork. `md` is the forms rung, and this dialog is a
-          form: a mode choice plus a column of include toggles. The `sm:max-w-md`
-          it replaces was 448px, a fifteenth width nobody chose. */}
-      <DialogContent className={MODAL_SIZE.md}>
-        <DialogHeader>
-          <DialogTitle>Export “{app.title}”</DialogTitle>
-          <DialogDescription>
-            Choose what travels with the exported folder. Credentials never travel. The recipient is
-            prompted on first run.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div role="radiogroup" aria-label="Export mode" className="flex flex-col">
+      <div className="flex flex-col gap-4 py-1">
+        <div role="radiogroup" aria-label={copy.mode} className="flex flex-col">
           <CustomRadio
             id="export-mode-launcher"
             name="export-mode"
             value="launcher"
             checked={mode === 'launcher'}
             onChange={() => setMode('launcher')}
-            label="Launcher (app + scripts)"
-            secondaryLabel="Smallest folder. Uses the knowledge bases, skills, and extensions already on the target machine."
+            label={copy.launcher}
+            secondaryLabel={copy.launcherHint}
           />
           <CustomRadio
             id="export-mode-full"
@@ -142,62 +141,65 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
             value="full"
             checked={mode === 'full'}
             onChange={() => setMode('full')}
-            label="Full (bundle server-side content)"
-            secondaryLabel="Carries the items below so a fresh machine can run the app."
+            label={copy.full}
+            secondaryLabel={copy.fullHint}
           />
         </div>
 
         {mode === 'full' && (
-          <div className="flex flex-col border-y border-border-subtle">
+          <div className="flex flex-col gap-3">
             {kb && (
-              <IncludeCheckbox
-                id="export-include-kb"
-                checked={includeKb}
-                onChange={setIncludeKb}
-                label={`Knowledge base: ${kb}`}
-                hint="Bundled as a .brkb and imported into the recipient's store on first run."
-              />
+              <IncludeGroup title={copy.knowledgeBase} info={copy.knowledgeBaseInfo}>
+                <IncludeRow
+                  id="export-include-kb"
+                  checked={includeKb}
+                  onChange={setIncludeKb}
+                  name={kb}
+                />
+              </IncludeGroup>
             )}
-            {skills.map((skill) => (
-              <IncludeCheckbox
-                key={skill}
-                id={`export-include-skill-${skill}`}
-                checked={selectedSkills.has(skill)}
-                onChange={(checked) => setSelectedSkills((prev) => toggle(prev, skill, checked))}
-                label={`Skill: ${skill}`}
-                hint="Staged in the export and installed into the recipient's skills on first run."
+            {skills.length > 0 && (
+              <IncludeGroup title={copy.skills} info={copy.skillsInfo}>
+                {skills.map((skill) => (
+                  <IncludeRow
+                    key={skill}
+                    id={`export-include-skill-${skill}`}
+                    checked={selectedSkills.has(skill)}
+                    onChange={(checked) =>
+                      setSelectedSkills((prev) => toggle(prev, skill, checked))
+                    }
+                    name={skill}
+                  />
+                ))}
+              </IncludeGroup>
+            )}
+            {extensions.length > 0 && (
+              <IncludeGroup title={copy.extensions} info={copy.extensionsInfo}>
+                {extensions.map((ext) => (
+                  <IncludeRow
+                    key={ext}
+                    id={`export-include-extension-${ext}`}
+                    checked={selectedExtensions.has(ext)}
+                    onChange={(checked) =>
+                      setSelectedExtensions((prev) => toggle(prev, ext, checked))
+                    }
+                    name={ext}
+                  />
+                ))}
+              </IncludeGroup>
+            )}
+            <div className="flex items-center gap-1">
+              <IncludeRow
+                id="export-bundle-daemon"
+                checked={bundleDaemon}
+                onChange={setBundleDaemon}
+                name={copy.includeBiorouter}
               />
-            ))}
-            {extensions.map((ext) => (
-              <IncludeCheckbox
-                key={ext}
-                id={`export-include-extension-${ext}`}
-                checked={selectedExtensions.has(ext)}
-                onChange={(checked) => setSelectedExtensions((prev) => toggle(prev, ext, checked))}
-                label={`Extension: ${ext}`}
-                hint="Bundled or pinned for first-run install; built-ins already travel with the daemon."
-              />
-            ))}
-            <IncludeCheckbox
-              id="export-bundle-daemon"
-              checked={bundleDaemon}
-              onChange={setBundleDaemon}
-              label="Bundle daemon binary (~110 MB)"
-              hint="Skips the biorouterd download on the recipient's machine."
-            />
-            <p className="text-supporting text-text-muted mt-1">
-              Full exports can be large. A bundled knowledge base carries its sources.
-            </p>
+              <InfoTip label={copy.includeBiorouter} help={copy.includeBiorouterInfo} />
+            </div>
           </div>
         )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button onClick={confirm}>Export</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ModalShell>
   );
 }
