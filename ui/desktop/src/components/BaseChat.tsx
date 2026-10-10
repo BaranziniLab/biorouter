@@ -1233,10 +1233,10 @@ interface BaseChatProps {
    * id, so that landing unmounts the placeholder and mounts a fresh
    * `<Greeting>`, which draws a NEW random sentence by design.
    *
-   * The greeting unrolls over about a second, and the awaited `createSession`
-   * on those paths takes about as long. So the placeholder had time to finish
-   * its unroll before being thrown away, and the user saw a heading arrive,
-   * vanish, and a different one arrive after it. That is the same complaint
+   * The awaited `createSession` on those paths takes about a second, so the
+   * placeholder's greeting was on screen long enough to be read before being
+   * thrown away, and the user saw a heading arrive, vanish, and a different one
+   * arrive after it. That is the same complaint
    * the first-frame fix in `use-text-animator` addressed, arriving by a second
    * route: one is a flash INSIDE a mount, this is a whole extra mount.
    *
@@ -1546,25 +1546,28 @@ function BaseChatContent({
     return () => window.removeEventListener('resize', updateSidebarCompact);
   }, []);
 
-  const contentClassName = cn(
-    // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
-    // scrollbar, but as a right-only inset it made the scroll viewport 4px
-    // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
-    // true centre. Padding the gutter symmetrically costs 4px of width and buys
-    // an actually centred column. Measured in Electron: 198/202 -> 200/200.
-    //
-    // ⚠ NOTHING VERTICAL BELONGS HERE, and `pb-10` is why the rule is written
-    // down. `className` lands on the ScrollArea *Root*, and the Viewport inside
-    // it is `h-full` — so a bottom padding here does not put space after the
-    // last message, it makes the SCROLL VIEWPORT 40px shorter. Measured: root
-    // 646 / viewport 606. That 40px band is empty at every scroll position,
-    // cannot be scrolled into, and is invisible to anyone reading the composer's
-    // own layout. It was the largest of the three separate boxes that were each
-    // declaring part of the distance to the composer (see the composer bar's
-    // `pt-7`, which is now the only one).
-    'px-1',
-    (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
-  );
+  // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
+  // scrollbar, but as a right-only inset it made the scroll viewport 4px
+  // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
+  // true centre. Padding the gutter symmetrically costs 4px of width and buys
+  // an actually centred column. Measured in Electron: 198/202 -> 200/200.
+  //
+  // ⚠ NOTHING VERTICAL BELONGS HERE, and `pb-10` is why the rule is written
+  // down. `className` lands on the ScrollArea *Root*, and the Viewport inside
+  // it is `h-full` — so a bottom padding here does not put space after the
+  // last message, it makes the SCROLL VIEWPORT 40px shorter. Measured: root
+  // 646 / viewport 606. That 40px band is empty at every scroll position,
+  // cannot be scrolled into, and is invisible to anyone reading the composer's
+  // own layout. It was the largest of the three separate boxes that were each
+  // declaring part of the distance to the composer (see the composer bar's
+  // `pt-7`, which is now the only one).
+  //
+  // And no top padding for the titlebar either (V2-13). The 44px header band
+  // above this root always renders, and it is what clears the titlebar
+  // controls (they sit inside it, `top-2`). A `pt-11` here for a compact,
+  // collapsed or phone-width sidebar was a second 44px under the band: a dead
+  // strip that put the transcript at y=88 beside a rail card at y=56.
+  const contentClassName = 'px-1';
 
   // Use shared file drop
   const { droppedFiles, setDroppedFiles, handleDrop, handleDragOver } = useFileDrop();

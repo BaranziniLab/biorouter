@@ -135,6 +135,13 @@ describe('BaseChat: the edits it applies for other areas', () => {
     expect(code).not.toContain('location.state?.disableAnimation');
   });
 
+  it('puts no titlebar padding on the scroll root: the header band already clears it (V2-13)', () => {
+    expect(code).toContain("const contentClassName = 'px-1';");
+    expect(code).not.toMatch(/'pt-11'/);
+    // The band it relies on renders on every path through the chat.
+    expect(code.match(/data-preview-area="header"/g) ?? []).toHaveLength(1);
+  });
+
   it('renames through the one shared helper', () => {
     expect(code).toMatch(/await renameSessionOptimistically\(/);
   });

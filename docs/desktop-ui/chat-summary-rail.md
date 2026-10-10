@@ -170,8 +170,8 @@ or the pointer is over the summary.
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
-| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, and the `paddingX={6}` and `'px-1',` literals the 56px comes from |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail |
+| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, and the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the first turn counted from the commit that creates a new chat, and no titlebar padding under the header band |
 | `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's left edge on the column's, and the column moving by half the rail |
 
 ## Related documentation

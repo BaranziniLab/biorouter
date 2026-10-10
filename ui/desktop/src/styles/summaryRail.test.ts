@@ -95,7 +95,7 @@ describe('rung 0: the summary rail’s grid agrees with the ladder', () => {
     expect(CHAT_COLUMN_CHROME).toBe(2 * 4 + 2 * 6 * 4);
     const code = codeWithoutComments(BASE_CHAT);
     expect(code).toContain('paddingX={6}');
-    expect(code).toContain("'px-1',");
+    expect(code).toContain("const contentClassName = 'px-1';");
   });
 
   it('places the rail beside the transcript and the composer, under the header', () => {
