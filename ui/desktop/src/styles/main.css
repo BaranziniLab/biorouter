@@ -4923,7 +4923,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   padding: 10px 12px 9px;
 }
 
-.br-setting-row[data-disabled='true'] {
+/* A disabled row dims what it SAYS, not its control. The control carries its own disabled look (a
+   switch is already at 50%), and dimming both compounded to 25%: a locked row's switch fell under
+   the 3:1 a control owes (seen in the real stylesheet, light, 2026-10-10). */
+.br-setting-row[data-disabled='true'] > .br-setting-row-text,
+.br-setting-row[data-disabled='true'] > .br-setting-row-value {
   opacity: 0.5;
 }
 

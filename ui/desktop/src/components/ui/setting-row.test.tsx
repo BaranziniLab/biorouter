@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,6 +8,42 @@ import { SettingRow, SettingSection } from './setting-row';
 import { Switch } from './switch';
 
 describe('SettingRow', () => {
+  it('disables its control when the row is disabled, and does not enable one the caller disabled', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { container } = render(
+      <div>
+        <SettingRow label="Managed by your organization" controlId="managed" disabled>
+          <Switch checked onCheckedChange={onChange} />
+        </SettingRow>
+        <SettingRow label="Own state" controlId="own">
+          <Switch checked disabled onCheckedChange={onChange} />
+        </SettingRow>
+      </div>
+    );
+    expect(screen.getByRole('switch', { name: 'Managed by your organization' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Own state' })).toBeDisabled();
+    await user.click(screen.getByText('Managed by your organization'));
+    await user.click(container.querySelector('[data-disabled="true"]')!);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  /**
+   * jsdom paints nothing, so the dimming is read from the stylesheet. The row dims its words; the
+   * control keeps its own 50% (`.br-switch:disabled`). Dimming the row as a whole put a locked
+   * switch at 25%, under the 3:1 a control owes.
+   */
+  it('dims a disabled row’s words and leaves its control to dim itself', () => {
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    expect(css).not.toMatch(/\.br-setting-row\[data-disabled='true'\]\s*\{/);
+    expect(css).toMatch(
+      /\.br-setting-row\[data-disabled='true'\] > \.br-setting-row-text,\s*\.br-setting-row\[data-disabled='true'\] > \.br-setting-row-value\s*\{\s*opacity: 0\.5;/
+    );
+    expect(css).toMatch(
+      /\.br-switch:disabled,\s*\.br-switch\[data-disabled\]\s*\{[^}]*opacity: 0\.5;/
+    );
+  });
+
   it('names the control by its visible label and describes it with the help', () => {
     render(
       <SettingRow label="Prevent sleep while running" help="The screen can still lock.">

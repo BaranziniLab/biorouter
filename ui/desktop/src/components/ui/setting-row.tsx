@@ -97,6 +97,9 @@ export function SettingRow({
           controlProps['aria-labelledby'] ??
           (controlProps['aria-label'] === undefined ? labelId : undefined),
         'aria-describedby': describedBy,
+        // A disabled row disables its control, so the control draws its own disabled look and the
+        // row only dims what it says (main.css `.br-setting-row[data-disabled]`).
+        ...(disabled ? { disabled: controlProps.disabled ?? true } : {}),
       })
     : (children ?? null);
 
