@@ -232,7 +232,13 @@ export function ChatSummary({
         {todos.error && (
           <div role="alert" className="br-summary__error">
             <span>{summaryCopy.todoRefreshFailed}</span>
-            <Button type="button" variant="ghost" size="xs" onClick={todos.refresh}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className="br-summary__retry"
+              onClick={todos.refresh}
+            >
               {summaryCopy.retry}
             </Button>
           </div>

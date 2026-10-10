@@ -130,6 +130,14 @@
   color: var(--text-warning);
 }
 
+/* A Button is 14/500 at every rung; the rail has two sizes, so the retry joins
+   the error line's 12. */
+.br-summary .br-summary__retry {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+}
+
 .br-summary__stats {
   margin: 0;
 }

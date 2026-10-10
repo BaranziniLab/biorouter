@@ -241,3 +241,35 @@ describe('rung 0: BaseChat mounts one rail, statically', () => {
     expect(codeWithoutComments(RAIL_TSX)).toMatch(/^import '\.\/summaryRail\.css';$/m);
   });
 });
+
+describe('the summary’s type: two sizes only, 13 and 12', () => {
+  const CONTENT_CSS = readFileSync(
+    join(__dirname, '../components/summary/chatSummary.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const SUMMARY_TSX = codeWithoutComments(
+    readFileSync(join(__dirname, '../components/ChatSummary.tsx'), 'utf8')
+  );
+
+  it('declares only the secondary (13) and supporting (12) roles', () => {
+    const sizes = [...CONTENT_CSS.matchAll(/font-size:\s*([^;]+);/g)].map((match) =>
+      match[1].trim()
+    );
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const size of sizes) {
+      expect(['var(--text-secondary)', 'var(--text-supporting)'], size).toContain(size);
+    }
+  });
+
+  it('sets a size on every Button it draws, because a Button is 14/500 at every rung', () => {
+    // The footer rows and the retry each carry a class that overrides it; a new
+    // Button without one would put a third size in the card.
+    const buttons = SUMMARY_TSX.match(/<Button\b[\s\S]*?>/g) ?? [];
+    expect(buttons.length).toBe(3);
+    for (const button of buttons) {
+      expect(button).toMatch(/className="br-summary__(action|retry)"/);
+    }
+    expect(CONTENT_CSS).toMatch(/\.br-summary \.br-summary__retry \{[^}]*font-size/);
+    expect(CONTENT_CSS).toMatch(/\.br-summary \.br-summary__action \{[^}]*font-size/);
+  });
+});
