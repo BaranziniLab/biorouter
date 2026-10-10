@@ -3368,6 +3368,121 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   box-shadow: none;
 }
 
+/* @ws WS-VIEWS-A begin: page band */
+/* THE PAGE BAND (`Layout/PageHeader.tsx`, spec 3.10). Crew's channel header
+   geometry for every view: 44px (`--chrome-height`, one of the bands that meet
+   at y=44 with the sidebar's titlebar band and the chat header), the sidebar
+   ground, the hairline above, a 14px title, actions at the trailing edge.
+
+   ⚠ THE HEADER DECLARES NO APP-REGION; ITS BAR DOES. The band replaces the
+   32px drag strip on its route (`routeOwnsTopBand`), so the bar is the window
+   drag rect. Electron folds drag rects in TREE order and ignores z-index, and
+   the floating titlebar controls are mounted EARLIER than the route, so a
+   drag rect that reached x<reserve with the sidebar collapsed would re-cover
+   them and kill both buttons at the OS level (issue #74). The reserve is a
+   MARGIN on the bar (outside its border box), the same geometry the chat
+   header's drag rect uses; padding would sit inside the drag rect. Keyed on
+   the sidebar's own `data-state`, Crew's band rule, so it follows a collapse on
+   the same frame with no React read. A compact window with the sidebar opened
+   by hand needs none: the sidebar then overlays the band.
+
+   Every interactive descendant is `no-drag`, and is later in tree order than
+   the bar, so the subtraction wins. Authored here rather than as `no-drag` on
+   each call site's buttons, so a view cannot forget one. */
+.biorouter-page-header[data-band] {
+  display: flex;
+  flex-shrink: 0;
+  align-items: stretch;
+  height: var(--chrome-height);
+  background: var(--sidebar);
+}
+
+.biorouter-page-header-bar {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 16px;
+  -webkit-app-region: drag;
+}
+
+[data-slot='sidebar'][data-state='collapsed']
+  ~ [data-slot='sidebar-inset']
+  .biorouter-page-header[data-band]
+  .biorouter-page-header-bar {
+  margin-left: var(--biorouter-titlebar-control-reserve, 172px);
+  padding-left: 0;
+}
+
+.biorouter-page-header-bar
+  :is(
+    button,
+    a[href],
+    input,
+    select,
+    textarea,
+    [role='button'],
+    [role='tab'],
+    [role='switch'],
+    [role='combobox'],
+    [tabindex]:not([tabindex='-1'])
+  ) {
+  -webkit-app-region: no-drag;
+}
+
+/* The title and its help: the InfoTip sits 4px after the label. The title
+   gives way first (`min-width: 0` here and `truncate` on the h1). */
+.biorouter-page-header-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.biorouter-page-header-adornment {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Tabs fill the band's height so their underline lands on the hairline. */
+.biorouter-page-header-tabs {
+  display: flex;
+  align-self: stretch;
+  min-width: 0;
+  align-items: flex-end;
+}
+
+.biorouter-page-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* The deprecated `children` row under the band (Chat history's filter, until
+   its owner moves it into the band). */
+.biorouter-page-subband {
+  flex-shrink: 0;
+}
+
+/* The main panel's top reserve (`Layout/MainPanelLayout.tsx`). A route that
+   keeps the 32px drag strip keeps a reserve the strip's height; a panel that
+   holds a page band does not, because the band starts at y=0 and IS the drag
+   rect there (`routeOwnsTopBand`). `:has()` lets a view that has moved onto the
+   band drop the reserve before its owner passes `removeTopPadding`. */
+.biorouter-main-panel[data-top-reserve] {
+  padding-top: var(--titlebar-drag-height);
+}
+
+.biorouter-main-panel[data-top-reserve]:has(.biorouter-page-header[data-band]) {
+  padding-top: 0;
+}
+/* @ws WS-VIEWS-A end: page band */
+
 .biorouter-page-block {
   background: var(--background-default);
   border: 1px solid var(--border-subtle);
@@ -3483,147 +3598,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 /* The Knowledge canvas's first-load cross-fade (ui-spec §4.12).
    Two absolutely-stacked opacity layers, never a swap: the loading block fades
-/* @ws WS-VIEWS-A begin: page band */
-/* THE PAGE BAND (`Layout/PageHeader.tsx`, spec 3.10). Crew's channel header
-   geometry for every view: 44px (`--chrome-height`, one of the bands that meet
-   at y=44 with the sidebar's titlebar band and the chat header), the sidebar
-   ground, the hairline above, a 14px title, actions at the trailing edge.
-
-   ⚠ THE HEADER DECLARES NO APP-REGION; ITS BAR DOES. The band replaces the
-   32px drag strip on its route (`routeOwnsTopBand`), so the bar is the window
-   drag rect. Electron folds drag rects in TREE order and ignores z-index, and
-   the floating titlebar controls are mounted EARLIER than the route, so a
-   drag rect that reached x<reserve with the sidebar collapsed would re-cover
-   them and kill both buttons at the OS level (issue #74). The reserve is a
-   MARGIN on the bar (outside its border box), the same geometry the chat
-   header's drag rect uses; padding would sit inside the drag rect. Keyed on
-   the sidebar's own `data-state`, Crew's band rule, so it follows a collapse on
-   the same frame with no React read. A compact window with the sidebar opened
-   by hand needs none: the sidebar then overlays the band.
-
-   Every interactive descendant is `no-drag`, and is later in tree order than
-   the bar, so the subtraction wins. Authored here rather than as `no-drag` on
-   each call site's buttons, so a view cannot forget one. */
-.biorouter-page-header[data-band] {
-  display: flex;
-  flex-shrink: 0;
-  align-items: stretch;
-  height: var(--chrome-height);
-  background: var(--sidebar);
-}
-
-.biorouter-page-header-bar {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px 0 16px;
-  -webkit-app-region: drag;
-}
-
-[data-slot='sidebar'][data-state='collapsed']
-  ~ [data-slot='sidebar-inset']
-  .biorouter-page-header[data-band]
-  .biorouter-page-header-bar {
-  margin-left: var(--biorouter-titlebar-control-reserve, 172px);
-  padding-left: 0;
-}
-
-.biorouter-page-header-bar
-  :is(
-    button,
-    a[href],
-    input,
-    select,
-    textarea,
-    [role='button'],
-    [role='tab'],
-    [role='switch'],
-    [role='combobox'],
-    [tabindex]:not([tabindex='-1'])
-  ) {
-  -webkit-app-region: no-drag;
-}
-
-/* The title and its help: the InfoTip sits 4px after the label. The title
-   gives way first (`min-width: 0` here and `truncate` on the h1). */
-.biorouter-page-header-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 4px;
-}
-
-.biorouter-page-header-adornment {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 6px;
-}
-
-/* Tabs fill the band's height so their underline lands on the hairline. */
-.biorouter-page-header-tabs {
-  display: flex;
-  align-self: stretch;
-  min-width: 0;
-  align-items: flex-end;
-}
-
-.biorouter-page-header-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-
-/* The help trigger (interim, until `ui/info-tip.tsx` replaces it): a 14px glyph
-   in a 24px hit box drawn with a -5px margin, so it adds 14px to the line;
-   subtle ink at rest, default ink on hover, focus and open. */
-.biorouter-page-header-info {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  margin: -5px;
-  border-radius: var(--radius-inner);
-  color: var(--text-subtle);
-  transition: color var(--dur-fast) var(--ease-out);
-}
-
-.biorouter-page-header-info svg {
-  width: var(--icon-chip);
-  height: var(--icon-chip);
-}
-
-.biorouter-page-header-info:hover,
-.biorouter-page-header-info:focus-visible,
-.biorouter-page-header-info[data-state='delayed-open'],
-.biorouter-page-header-info[data-state='instant-open'] {
-  color: var(--text-default);
-}
-
-.biorouter-page-header-info:focus-visible {
-  outline: none;
-  background: var(--background-focus);
-  box-shadow: inset 0 0 0 2px var(--border-focus);
-}
-
-.biorouter-page-header-info-text {
-  max-width: 280px;
-  font-weight: 400;
-}
-
-/* The deprecated `children` row under the band (Chat history's filter, until
-   its owner moves it into the band). */
-.biorouter-page-subband {
-  flex-shrink: 0;
-}
-/* @ws WS-VIEWS-A end: page band */
-
    OUT at `--dur-fast` while the content fades IN at `--dur-med`. AUTHORED
    rather than `transition-opacity duration-[var(--dur-fast)]`, because a
    *newly written* arbitrary utility can silently fail to reach the stylesheet
