@@ -302,9 +302,7 @@ export const STRUCTURAL_TOKENS = [
   'z-modal',
   'z-modal-dropdown',
   'z-toast',
-  'heat-cell',
   'heat-gap',
-  'heat-labels',
   // The knowledge workspace's geometry (ui-spec §6.2). Structural for the same
   // reason `--row-height` is: it is the same measurement under every family, and
   // nothing else stops a fourth family declaring a rail width of its own.

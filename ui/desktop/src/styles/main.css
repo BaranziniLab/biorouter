@@ -865,10 +865,9 @@
   --heat-2: #dda27a;
   --heat-3: #c6774c;
   --heat-4: #a04a27;
-  /* Grid metrics: 22 weeks x (24 + 6) - 6 = 654px, inside the 760px chat column. */
-  --heat-cell: 24px;
-  --heat-gap: 6px;
-  --heat-labels: 34px;
+  /* The heatmap's gap. Its columns are fluid (one per week of the window, sharing
+     the usage card's width), so there is no cell size or label gutter to declare. */
+  --heat-gap: 3px;
 
   /* Two-tone canvas: the sidebar is a distinct, slightly deeper neutral surface
      sitting against the white main canvas (Codex-style layering, kept
