@@ -37,6 +37,8 @@ export function ApprovalModeSelect({
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
       aria-label={approvalsCopy.mode}
+      // A fixed width, so the trigger does not resize as the value changes.
+      triggerClassName="w-36"
       contentClassName="w-72"
       data-testid="approval-mode-trigger"
     />
