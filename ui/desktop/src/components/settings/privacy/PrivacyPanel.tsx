@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Switch } from '../../ui/switch';
+import { SettingRow } from '../../ui/setting-row';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
@@ -19,6 +20,8 @@ import {
   privacyTiersRecordFromConfig,
   type PrivacyTiersRecord,
 } from './privacyTiers';
+import { privacyRowCopy } from './copy';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
 // Re-exported so the panel stays the name every existing importer already
 // reaches for; the definitions live in `privacyTiers.ts` because
@@ -136,7 +139,11 @@ export default function PrivacyPanel() {
     // suite reads that attribute to assert where this panel sits among its
     // siblings, and a branch that drops it makes the panel look unmounted.
     return (
-      <section className="biorouter-settings-section" data-privacy-panel>
+      <section
+        id={SETTINGS_SECTION_IDS.privacy}
+        className="biorouter-settings-section"
+        data-privacy-panel
+      >
         <Skeleton className="h-16 w-full" />
       </section>
     );
@@ -147,7 +154,11 @@ export default function PrivacyPanel() {
   return (
     // `data-privacy-panel` marks this section's root so SettingsView's suite
     // can assert WHERE it sits among its siblings, not merely that it mounted.
-    <section className="biorouter-settings-section" data-privacy-panel>
+    <section
+      id={SETTINGS_SECTION_IDS.privacy}
+      className="biorouter-settings-section"
+      data-privacy-panel
+    >
       {/* No description paragraph under the heading. Its two visible siblings on
           this tab (Workspace, Appearance) are heading-only, and inventing
           privacy prose here is exactly the drift the one-definition rule exists
@@ -245,28 +256,17 @@ export default function PrivacyPanel() {
       </div>
 
       <div className="biorouter-settings-list">
-        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
-          <div className="min-w-0">
-            <p className="text-label text-text-default">Privacy tiers</p>
-            {/* ⚠ Two clauses, not three, and the third is the reason. It used to
-              end "and can't reach your knowledge bases through the shell",
-              which is false: the general filesystem read-deny did not ship, and
-              the served disclosure four elements above this one says so. A
-              panel contradicting the disclosure it renders is worse than either
-              statement alone. The triad also read as rhythm rather than fact —
-              the limb that was doing the least work was the one that was wrong.
-              Private is defined by the rule, not by naming a provider. */}
-            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-              Chats on private models stay private: a public model can&rsquo;t read them and
-              can&rsquo;t call a private extension. A private model is one your institution hosts,
-              or one that runs on this machine.
-            </p>
-          </div>
+        {/* ⚠ The help is two clauses, not three, and the third is the reason. It used to end
+            "and can't reach your knowledge bases through the shell", which is false: the general
+            filesystem read-deny did not ship, and the served disclosure above says so. A panel
+            contradicting the disclosure it renders is worse than either statement alone.
+            Private is defined by the rule, not by naming a provider. The words are kept; only
+            their place moved, from a paragraph under the label into the row's InfoTip (spec
+            §3.13), which the switch also hears through `aria-describedby`. */}
+        <SettingRow label={privacyRowCopy.label} help={privacyRowCopy.help}>
           <Switch
             checked={enabled}
             disabled={busy}
-            variant="mono"
-            aria-label="Privacy tiers"
             onCheckedChange={(next) => {
               if (next) {
                 void write(true);
@@ -279,7 +279,7 @@ export default function PrivacyPanel() {
               }
             }}
           />
-        </div>
+        </SettingRow>
       </div>
 
       {/*
@@ -327,34 +327,36 @@ export default function PrivacyPanel() {
       {confirming && (
         <div
           data-testid="privacy-disable-confirm"
-          className="mt-3 space-y-3 rounded-element border border-border-subtle px-3 py-3"
+          className="mt-3 space-y-2 rounded-element border border-border-subtle px-3 py-2.5"
         >
           <p className="text-label text-text-default">
             This turns off <strong>every</strong> privacy guardrail on this machine, for every chat.
           </p>
-          {/* ⚠ The shell clause moved OUT of this list, and that is the point.
-              Everything here is a consequence of turning the switch off, so
-              listing shell reads among them told the user they were prevented
-              while it was on. They are not: §9.5's filesystem read-deny did not
-              ship. Naming it separately keeps the warning honest in both
-              directions — the list stays true, and the thing that is never
-              blocked is still disclosed rather than quietly dropped. */}
-          <p className="text-supporting text-text-default">
-            Public models will be able to call your private extensions, read private chat history,
-            and read and write your knowledge bases.
-          </p>
+          {/* The three consequences, word for word, as a list so they scan (spec §3.13; the
+              words are locked, vocabulary rule 9). ⚠ The shell clause stays OUT of this list,
+              and that is the point. Everything here is a consequence of turning the switch
+              off, so listing shell reads among them told the user they were prevented while
+              it was on. They are not: §9.5's filesystem read-deny did not ship. Naming it
+              separately keeps the warning honest in both directions: the list stays true, and
+              the thing that is never blocked is still disclosed rather than quietly dropped. */}
+          <ul className="list-disc space-y-1 pl-5 text-supporting text-text-default">
+            <li>
+              Public models will be able to call your private extensions, read private chat history,
+              and read and write your knowledge bases.
+            </li>
+            <li>
+              <strong>
+                While it is off, Biorouter stops recording which chats touched private material.
+              </strong>
+            </li>
+            <li>
+              Turning it back on will protect what is already marked private, but it cannot go back
+              and mark anything that happened while it was off.
+            </li>
+          </ul>
           <p className="text-supporting text-text-default">
             Reading your saved chats, memories and Biorouter apps off the disk through the shell is
             not blocked either way.
-          </p>
-          <p className="text-supporting text-text-default">
-            <strong>
-              While it is off, Biorouter stops recording which chats touched private material.
-            </strong>
-          </p>
-          <p className="text-supporting text-text-default">
-            Turning it back on will protect what is already marked private, but it cannot go back
-            and mark anything that happened while it was off.
           </p>
           <label className="block text-supporting text-text-muted" htmlFor="privacy-disable-phrase">
             Type <code>{DISABLE_PHRASE}</code> to continue.
