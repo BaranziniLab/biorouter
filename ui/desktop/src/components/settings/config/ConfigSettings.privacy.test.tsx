@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigData } from '../../../types/config';
 import { getUiNames } from '../../../utils/configUtils';
@@ -172,5 +173,35 @@ describe('ConfigSettings editor', () => {
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(edit).toHaveFocus();
+  });
+
+  it('leaves with Escape, discarding unsaved edits, and focus returns to Edit', async () => {
+    const user = userEvent.setup();
+    render(<ConfigSettings />);
+    const edit = screen.getByRole('button', { name: configCopy.editName });
+    fireEvent.click(edit);
+    const field = within(screen.getByRole('dialog')).getByLabelText(getUiNames('BIOROUTER_MODE'));
+    fireEvent.change(field, { target: { value: 'approve' } });
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(edit).toHaveFocus();
+
+    // Reopened, the field shows what is saved, not what was typed.
+    fireEvent.click(edit);
+    expect(
+      within(screen.getByRole('dialog')).getByLabelText(getUiNames('BIOROUTER_MODE'))
+    ).toHaveValue('auto');
+  });
+
+  it('shows the key itself as the label’s tooltip, in the mono face', async () => {
+    const user = userEvent.setup();
+    const dialog = openEditor();
+    const label = within(dialog).getByText(getUiNames('BIOROUTER_MODE'));
+
+    await user.hover(label);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('BIOROUTER_MODE');
+    expect(tip.querySelector('.font-mono')).not.toBeNull();
   });
 });

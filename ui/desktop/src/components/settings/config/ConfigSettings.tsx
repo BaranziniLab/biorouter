@@ -276,6 +276,9 @@ export default function ConfigSettings() {
         onOpenChange={handleModalClose}
         size="lg"
         scrollBody
+        // A form: Escape and the × leave, a stray click on the backdrop does not (it would throw
+        // away edits that are typed but not yet saved).
+        purpose="form"
         title={configCopy.dialogTitle}
         onCloseAutoFocus={(event) => {
           event.preventDefault();

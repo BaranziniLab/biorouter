@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import MemorySection from './MemorySection';
 import { memoryCopy } from './copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
@@ -417,5 +418,17 @@ describe('MemorySection layout', () => {
     ).toHaveAccessibleDescription(memoryCopy.noProjectHelp);
     // The store still has its heading, so the page does not lose a section.
     expect(screen.getByRole('heading', { name: memoryCopy.local.heading })).toBeInTheDocument();
+  });
+
+  it('puts a category’s date and size in the tooltip on its name, not in a native title', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<MemorySection />);
+    const name = await screen.findByText('clinical');
+    expect(container.querySelector('[title]')).toBeNull();
+
+    await user.hover(name);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent(/Updated .*2026/);
+    expect(tip).toHaveTextContent('412 B');
   });
 });
