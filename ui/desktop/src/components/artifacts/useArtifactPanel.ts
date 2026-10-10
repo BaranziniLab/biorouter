@@ -59,9 +59,12 @@ const ARTIFACT_PANEL_MIN_CHAT_WIDTH = PREVIEW_PREFERRED_CHAT_WIDTH;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
   ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
-// Matches the panel's close transition (--motion-fast); exit is a tier faster
-// than the --motion-base entrance so the panel unmounts as the slide completes.
-const ARTIFACT_PANEL_EXIT_MS = 125;
+/**
+ * How long a closing panel keeps its place in the grid: the body's exit
+ * (`--dur-fast`, 125ms; `usePreviewMotion`). The panel leaves the grid, and
+ * `onPresentedChange` fires with `presented: false`, when it has run.
+ */
+export const ARTIFACT_PANEL_EXIT_MS = 125;
 /**
  * How long a freshly opened sheet waits, invisible and taking no room, for its
  * content to say how tall it is. Text answers in the same frame it renders; a
@@ -184,6 +187,33 @@ export interface UseArtifactPanelOptions {
    * the ordinary layout. Defaults to true.
    */
   enabled?: boolean;
+  /**
+   * Told when a panel is about to take its place in the grid, or to leave it,
+   * because the person opened or closed one. It is called synchronously,
+   * immediately BEFORE the state update that changes the grid, so the DOM still
+   * shows the previous layout: a FLIP can read its "first" rects here and play
+   * after the commit, which React makes in the same task.
+   *
+   * Only an action reports. A reset (a new session), switching artifacts inside
+   * a panel that is already presented, a window or split resize and a side ↔
+   * stack crossing do not call it: those changes snap.
+   */
+  onPresentedChange?: (change: ArtifactPanelPresentedChange) => void;
+}
+
+/** What `onPresentedChange` reports. */
+export interface ArtifactPanelPresentedChange {
+  /** True when a panel is about to enter the grid, false when it is about to leave it. */
+  presented: boolean;
+  /** The layout the panel enters (or leaves) in. */
+  layout: PreviewPanelMode;
+  /** The side column's width the change adds or removes; 0 for a stacked sheet. */
+  sideWidth: number;
+  /**
+   * The open asked the OS window to grow so the panel fits. The conversation
+   * barely moves when the window grows under it, so a glide should skip.
+   */
+  windowGrowing: boolean;
 }
 
 /** Everything a host spreads onto `<ArtifactViewer>` so the three mounts cannot drift. */
@@ -223,6 +253,12 @@ export interface ArtifactPanelController {
   artifact: ArtifactSource | null;
   previewMode: PreviewPanelMode;
   /**
+   * The side panel's resolved width (it follows a drag), or 0 when no panel is
+   * rendered or it is stacked. What a neighbour in the same row (the summary
+   * rail) subtracts from the pane to learn the room it has.
+   */
+  sideWidth: number;
+  /**
    * Whether a stacked sheet is on screen right now. Read at the moment a
    * transcript's viewport resizes (`ScrollArea`'s `anchorBottomOnResize`), so it
    * is a function over a ref rather than a value captured at render.
@@ -238,7 +274,11 @@ export interface ArtifactPanelController {
 type StackDrag = { folded: boolean; height: number };
 
 export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPanelController {
-  const { isMobile, allowWindowResize = false, enabled = true } = options;
+  const { isMobile, allowWindowResize = false, enabled = true, onPresentedChange } = options;
+  // Read at call time, so a host may pass an inline function without re-creating
+  // `openArtifact` and `closePanel` every render.
+  const onPresentedChangeRef = useRef(onPresentedChange);
+  onPresentedChangeRef.current = onPresentedChange;
 
   const [presentedArtifact, setPresentedArtifact] = useState<ArtifactSource | null>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -258,6 +298,8 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   const [measuring, setMeasuring] = useState(false);
   const [stackDrag, setStackDrag] = useState<StackDrag | null>(null);
 
+  const presentedArtifactRef = useRef<ArtifactSource | null>(null);
+  presentedArtifactRef.current = presentedArtifact;
   const splitPaneRef = useRef<HTMLDivElement>(null);
   const openRequestRef = useRef(0);
   const closeTimerRef = useRef<number | null>(null);
@@ -271,6 +313,13 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   const mounted = Boolean(presentedArtifact && enabled);
   const stackedRef = useRef(false);
   stackedRef.current = mounted && previewMode === 'stack';
+  // What the grid holds right now, for `onPresentedChange` to report on close.
+  const presentedLayoutRef = useRef<{ layout: PreviewPanelMode; sideWidth: number }>({
+    layout: 'side',
+    sideWidth: 0,
+  });
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   useEffect(() => {
     return () => {
@@ -283,23 +332,33 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
     };
   }, []);
 
-  const ensureFits = useCallback(async () => {
+  /** Grow the OS window if the panel needs it. Resolves true when it asked to. */
+  const ensureFits = useCallback(async (): Promise<boolean> => {
     const targetWidth = artifactPanelTargetContentWidth({
       isMobile,
       allowWindowResize,
       windowWidth: window.innerWidth,
       splitPaneWidth: splitPaneRef.current?.clientWidth ?? window.innerWidth,
     });
-    if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
+    if (!targetWidth || !window.electron.ensureWindowContentWidth) return false;
 
     await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
+    return true;
   }, [isMobile, allowWindowResize]);
 
+  // The mode the last measurement settled on, so an action can name the layout
+  // it is about to produce before React has committed it.
+  const previewModeRef = useRef<PreviewPanelMode>('side');
+
   /** Re-read the split box. Same values → React bails out, so it is free at rest. */
-  const measureGeometry = useCallback(() => {
+  const measureGeometry = useCallback((): PreviewPaneGeometry | null => {
     const split = splitPaneRef.current;
-    if (!split) return;
+    if (!split) return null;
     const next = measurePreviewPaneGeometry(split);
+    previewModeRef.current = previewPanelMode({
+      paneWidth: next.paneWidth,
+      previous: previewModeRef.current,
+    });
     setPreviewMode((previous) => previewPanelMode({ paneWidth: next.paneWidth, previous }));
     setGeometry((previous) =>
       previous.paneWidth === next.paneWidth &&
@@ -308,6 +367,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
         ? previous
         : next
     );
+    return next;
   }, []);
 
   const stopMeasuring = useCallback(() => {
@@ -330,12 +390,13 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
         openFrameRef.current = null;
       }
 
+      let windowGrowing = false;
       if (!presentedArtifact) {
         setUserWidth(null);
         setStackRatio(null);
         setFolded(false);
         setContentHeight(null);
-        await ensureFits();
+        windowGrowing = await ensureFits();
       }
       if (request !== openRequestRef.current) return;
 
@@ -343,7 +404,13 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
       // an artifact is presented, so without this the first frame would paint the
       // panel in whichever shape the last artifact left behind. Measured after
       // ensureFits, which may have grown the OS window.
-      measureGeometry();
+      const measuredPane = measureGeometry();
+      if (!presentedArtifact && enabledRef.current) {
+        const layout = previewModeRef.current;
+        const sideWidth =
+          layout === 'side' ? previewSideWidth({ paneWidth: measuredPane?.paneWidth ?? 0 }) : 0;
+        onPresentedChangeRef.current?.({ presented: true, layout, sideWidth, windowGrowing });
+      }
       setPresentedArtifact(artifact);
 
       if (presentedArtifact) {
@@ -386,6 +453,13 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
 
     closeTimerRef.current = window.setTimeout(() => {
       closeTimerRef.current = null;
+      if (presentedArtifactRef.current && enabledRef.current) {
+        onPresentedChangeRef.current?.({
+          presented: false,
+          ...presentedLayoutRef.current,
+          windowGrowing: false,
+        });
+      }
       setPresentedArtifact(null);
       setIsResizing(false);
       setStackDrag(null);
@@ -601,6 +675,8 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   );
 
   const isStacked = useCallback(() => stackedRef.current, []);
+  const sideWidth = mounted && previewMode === 'side' ? resolvedWidth : 0;
+  presentedLayoutRef.current = { layout: previewMode, sideWidth };
 
   const splitPaneProps: PreviewSplitPaneProps = mounted
     ? {
@@ -622,6 +698,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
     splitPaneProps,
     artifact: presentedArtifact,
     previewMode,
+    sideWidth,
     isStacked,
     openArtifact,
     closePanel,
