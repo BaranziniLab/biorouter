@@ -2803,10 +2803,8 @@ function BaseChatContent({
                   data-drop-zone="true"
                 >
                   <div className="biorouter-clean-conversation-content w-full max-w-measure-chat flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
-                    {/* The greeting takes the `title` role (24/600) rather than
-                        spelling it out as `text-2xl font-semibold tracking-tight`
-                        — the same three utilities every page title in the app was
-                        writing by hand before there was a token for it. */}
+                    {/* The greeting takes the `title` role (24/32, regular)
+                        rather than spelling out a size, weight and tracking. */}
                     {!suppressGreeting && (
                       <Greeting
                         key={terminalKey ?? sessionId}
