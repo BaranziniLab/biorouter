@@ -1,5 +1,13 @@
 import React from 'react';
 import ReactSelect from 'react-select';
+import { MENU_GROUP_LABEL_CLASS_NAME, MENU_ROW_CLASS_NAME } from './dropdown-menu';
+
+/**
+ * A select option row: the one menu row (spec 2.6) plus a pointer cursor. A 32px FLOOR, never
+ * a fixed height (see Select.optionGeometry.test.ts for the two-line spill that rule prevents),
+ * with vertical padding so a wrapped row keeps its breathing room.
+ */
+export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
 
 /**
  * The shared select (design.md §4.8).
@@ -77,7 +85,8 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         menuList: () => 'max-h-60 overflow-y-auto p-1',
         // `text-caps` carries the uppercase transform itself — a second
         // `uppercase` beside it is the redundancy the type roles exist to end.
-        groupHeading: () => 'px-2 pt-2 pb-1.5 text-caps text-text-muted',
+        // A menu group label: 12/16 at 500, muted, sentence case (spec 2.6).
+        groupHeading: () => MENU_GROUP_LABEL_CLASS_NAME,
         noOptionsMessage: () => 'px-2 py-2 text-body text-text-muted',
         option: ({ isFocused, isSelected, isDisabled }) => {
           // 32px rows at 8px inset — the shared menu-row geometry (§3.8), which
@@ -92,8 +101,9 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
           // silently selects the model above the one they clicked. `min-h` keeps
           // the 32px rung for single-line rows and lets a two-line row own its
           // real height. Guarded by Select.optionGeometry.test.ts.
-          const base =
-            'flex min-h-control-md items-center rounded-element px-2 py-1 text-body cursor-pointer';
+          //
+          // Spec 2.6: this is the one menu row every menu shares (`MENU_ROW_CLASS_NAME`).
+          const base = SELECT_OPTION_CLASS_NAME;
           if (isDisabled) return `${base} opacity-50 cursor-not-allowed pointer-events-none`;
           if (isSelected) {
             // A selected row is emphasised, not inverted. It used to fill with

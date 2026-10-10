@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { CheckIcon, ChevronRightIcon, CircleIcon } from '../icons/app-icons';
+import { CheckIcon, ChevronRightIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
 
@@ -253,7 +253,22 @@ function useTabLeavesMenu(
  * what every menu shipped with; `ease-[var(--ease-out)]` sets `--tw-ease`. It is the class the
  * sidebar already carries, so it is known to be generated.
  */
-const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
+export const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
+
+/**
+ * THE floating menu surface (spec 2.6, "Menus"), shared by DropdownMenu, its submenus,
+ * ContextMenu and the Popover: `--background-default` on the popover hairline and shadow, radius
+ * 12, 4px padding and NO gap between rows, z 500 (the reason is under DropdownMenuContent).
+ *
+ * Motion (`.br-menu-motion`, authored in `main.css`): it opens with opacity, `scale(.97)` and a
+ * 4px move toward its trigger, from Radix's transform origin, over `--dur-fast-max`; it closes
+ * with opacity alone over `--dur-fast`; always `--ease-out`. The `animate-*`/`zoom-*`/`slide-*`
+ * utilities below are the generated carriers; the authored rule sets their values, so a newly
+ * written utility never has to generate. Min width 180px and max width 320px are defaults in
+ * `@layer components` (`.br-menu-surface`), so a caller's own width utility still wins.
+ */
+export const MENU_SURFACE_CLASS_NAME =
+  'br-menu-surface br-menu-motion biorouter-popover-surface bg-background-default text-text-default z-[var(--z-modal-dropdown)] rounded-container p-1 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2';
 
 function DropdownMenuContent({
   className,
@@ -278,7 +293,8 @@ function DropdownMenuContent({
         // PermissionModal.tsx renders a DropdownMenuContent inside a DialogContent;
         // at 200 that menu would paint under the dialog that owns it.
         className={cn(
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
+          MENU_SURFACE_CLASS_NAME,
+          'max-h-(--radix-dropdown-menu-content-available-height) overflow-x-hidden overflow-y-auto',
           MENU_EASE_CLASS_NAME,
           className
         )}
@@ -306,8 +322,23 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
  * sites should add only what is theirs (a toggle's `justify-between`, a cursor); a
  * call site that re-states padding or type size is reintroducing the drift.
  */
-export const DROPDOWN_ROW_CLASS_NAME =
-  "relative flex min-h-control-md cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+export const MENU_ROW_CLASS_NAME =
+  "br-menu-row relative flex min-h-control-md cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+
+/** The same string under its older name; new code imports `MENU_ROW_CLASS_NAME`. */
+export const DROPDOWN_ROW_CLASS_NAME = MENU_ROW_CLASS_NAME;
+
+/**
+ * A row's trailing slot (spec 2.6): a muted value ("Group by  Date ›"), then the 16px check of a
+ * selected checkbox or radio item, or a submenu's chevron. The check sits on the RIGHT; there is
+ * no 32px left gutter.
+ */
+export const MENU_ROW_TRAILING_CLASS_NAME =
+  'br-menu-row-trailing ml-auto flex shrink-0 items-center gap-2 text-text-muted';
+
+/** A menu's group label: 12/16 at 500, muted, sentence case, padding 6px 12px 2px. */
+export const MENU_GROUP_LABEL_CLASS_NAME =
+  'px-3 pt-1.5 pb-0.5 text-supporting font-medium text-text-muted';
 
 function DropdownMenuItem({
   className,
@@ -324,7 +355,7 @@ function DropdownMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
+        MENU_ROW_CLASS_NAME,
         "data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted data-[inset]:pl-8",
         className
       )}
@@ -333,36 +364,46 @@ function DropdownMenuItem({
   );
 }
 
+/**
+ * A checkbox row: the label, then an optional muted `value`, then a 16px check at the trailing
+ * edge while it is on (spec 2.6). `showIndicator={false}` is for a row that draws its own state
+ * (a decorative Switch).
+ */
 function DropdownMenuCheckboxItem({
   className,
   children,
   checked,
   showIndicator = true,
+  value,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem> & {
   showIndicator?: boolean;
+  /** A muted value before the check. */
+  value?: React.ReactNode;
 }) {
   return (
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
-      className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
-        // The left gutter exists only to hold the check; without an indicator the
-        // row keeps the plain §4.5 padding instead of a phantom 32px indent.
-        showIndicator && 'pl-8',
-        className
-      )}
+      className={cn(MENU_ROW_CLASS_NAME, className)}
       checked={checked}
       {...props}
     >
-      {showIndicator && (
-        <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-          <DropdownMenuPrimitive.ItemIndicator>
-            <CheckIcon className="size-4" />
-          </DropdownMenuPrimitive.ItemIndicator>
-        </span>
-      )}
       {children}
+      {showIndicator || value !== undefined ? (
+        <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+          {value !== undefined ? <span className="truncate">{value}</span> : null}
+          {showIndicator ? (
+            <span
+              className="pointer-events-none flex size-4 items-center justify-center text-text-default"
+              data-slot="menu-item-indicator"
+            >
+              <DropdownMenuPrimitive.ItemIndicator>
+                <CheckIcon className="size-4" />
+              </DropdownMenuPrimitive.ItemIndicator>
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </DropdownMenuPrimitive.CheckboxItem>
   );
 }
@@ -373,23 +414,39 @@ function DropdownMenuRadioGroup({
   return <DropdownMenuPrimitive.RadioGroup data-slot="dropdown-menu-radio-group" {...props} />;
 }
 
+/**
+ * A radio row: the label, then a 16px check at the trailing edge on the chosen one (spec 2.6:
+ * one indicator for checkbox and radio items, on the right, like Codex's "Sort by" menu).
+ */
 function DropdownMenuRadioItem({
   className,
   children,
+  value,
+  hint,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem> & {
+  /** A muted value before the check. */
+  hint?: React.ReactNode;
+}) {
   return (
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
-      className={cn(DROPDOWN_ROW_CLASS_NAME, 'pl-8', className)}
+      className={cn(MENU_ROW_CLASS_NAME, className)}
+      value={value}
       {...props}
     >
-      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-        <DropdownMenuPrimitive.ItemIndicator>
-          <CircleIcon className="size-2 fill-current" />
-        </DropdownMenuPrimitive.ItemIndicator>
-      </span>
       {children}
+      <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+        {hint !== undefined ? <span className="truncate">{hint}</span> : null}
+        <span
+          className="pointer-events-none flex size-4 items-center justify-center text-text-default"
+          data-slot="menu-item-indicator"
+        >
+          <DropdownMenuPrimitive.ItemIndicator>
+            <CheckIcon className="size-4" />
+          </DropdownMenuPrimitive.ItemIndicator>
+        </span>
+      </span>
     </DropdownMenuPrimitive.RadioItem>
   );
 }
@@ -405,10 +462,10 @@ function DropdownMenuLabel({
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
       data-inset={inset}
-      // design.md §4.5 section label: `text-caps` (11px, 500, +0.08em), --text-muted, 8px×12px.
-      // It names a group; it is not a row, so it never takes the row height or hover.
-      // No `uppercase` beside `text-caps` — the role carries the transform itself.
-      className={cn('px-3 py-1.5 text-caps text-text-muted data-[inset]:pl-8', className)}
+      // Spec 2.6 group label: `text-supporting` at 500, muted, SENTENCE case, 6px 12px 2px.
+      // It names a group; it is not a row, so it never takes the row height or hover. (Caps
+      // survive only as page section labels, section 0.)
+      className={cn(MENU_GROUP_LABEL_CLASS_NAME, 'data-[inset]:pl-8', className)}
       {...props}
     />
   );
@@ -432,7 +489,7 @@ function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'spa
   return (
     <span
       data-slot="dropdown-menu-shortcut"
-      className={cn('text-text-muted ml-auto text-supporting tracking-widest', className)}
+      className={cn('text-text-muted ml-auto text-supporting', className)}
       {...props}
     />
   );
@@ -455,14 +512,14 @@ function DropdownMenuSubTrigger({
       data-slot="dropdown-menu-sub-trigger"
       data-inset={inset}
       className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
+        MENU_ROW_CLASS_NAME,
         'data-[state=open]:bg-overlay-hover data-[state=open]:text-text-default data-[inset]:pl-8',
         className
       )}
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ml-auto size-4" />
+      <ChevronRightIcon className="ml-auto size-4 text-text-muted" />
     </DropdownMenuPrimitive.SubTrigger>
   );
 }
@@ -474,11 +531,7 @@ function DropdownMenuSubContent({
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
-      className={cn(
-        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-container p-1 space-y-0.5',
-        MENU_EASE_CLASS_NAME,
-        className
-      )}
+      className={cn(MENU_SURFACE_CLASS_NAME, 'overflow-hidden', MENU_EASE_CLASS_NAME, className)}
       {...props}
     />
   );

@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cn } from '../../utils';
+import { MENU_GROUP_LABEL_CLASS_NAME, MENU_ROW_CLASS_NAME } from './dropdown-menu';
 import { Search } from '../icons/app-icons';
 
 /**
@@ -265,7 +266,7 @@ export function CommandGroup({
   return (
     <div role="group" aria-labelledby={heading ? headingId : undefined} {...props}>
       {heading ? (
-        <div id={headingId} className="px-2 pb-1 pt-2 text-caps text-text-muted">
+        <div id={headingId} className={MENU_GROUP_LABEL_CLASS_NAME}>
           {heading}
         </div>
       ) : null}
@@ -316,11 +317,13 @@ export function CommandItem({
         if (!disabled) onSelect();
       }}
       className={cn(
-        // A row inside a 12px popover takes the next step down: `rounded-inner`
-        // is the nested-in-a-control rung.
-        'flex h-row-rail cursor-pointer select-none items-center gap-2 rounded-inner px-2 text-label',
+        // The one menu row (spec 2.6): 32px minimum, 12px inset, radius 8 (12 − 4 of the
+        // popover's padding), 13/18, the `--overlay-hover` highlight. A minimum, not a fixed
+        // height, so a row with a second muted line owns its height instead of spilling.
+        MENU_ROW_CLASS_NAME,
+        'cursor-pointer',
         disabled && 'cursor-not-allowed opacity-50',
-        active && !disabled && 'tint-selected tint-interactive',
+        active && !disabled && 'bg-overlay-hover text-text-default',
         className
       )}
       {...props}
