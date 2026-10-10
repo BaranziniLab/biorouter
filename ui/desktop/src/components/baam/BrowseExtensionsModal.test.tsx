@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowseExtensionsModal from './BrowseExtensionsModal';
+import { BROWSE_EXTENSIONS_COPY } from './copy';
 import { MARKETPLACE_EXTENSIONS } from './marketplace.fixture';
 import type { BrxtEnvVar, BrxtManifest } from '../../types/brxt';
 
@@ -358,7 +359,7 @@ describe('BrowseExtensionsModal — installed rows (issue #116)', () => {
       onConfigureInstalled,
     });
 
-    const row = (await screen.findByText('Playwright Agent')).closest('div.biorouter-modal-row');
+    const row = (await screen.findByText('Playwright Agent')).closest('[data-marketplace-row]');
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText('Installed')).toBeInTheDocument();
 
@@ -378,8 +379,8 @@ describe('BrowseExtensionsModal — installed rows (issue #116)', () => {
 
 /** The extension names the list shows, top to bottom. */
 function shownExtensionNames(): string[] {
-  return Array.from(document.querySelectorAll('div.biorouter-modal-row')).map(
-    (row) => row.querySelector('span')?.textContent ?? ''
+  return Array.from(document.querySelectorAll('[data-marketplace-row]')).map(
+    (row) => row.querySelector('[data-marketplace-title]')?.textContent ?? ''
   );
 }
 
@@ -404,7 +405,10 @@ describe('BrowseExtensionsModal — a multi-word search (finding F5)', () => {
       'PrimeKGAgent',
     ]);
 
-    await user.type(screen.getByPlaceholderText(/Search extensions/), 'SPOKE knowledge graph');
+    await user.type(
+      screen.getByRole('textbox', { name: BROWSE_EXTENSIONS_COPY.searchLabel }),
+      'SPOKE knowledge graph'
+    );
 
     expect(shownExtensionNames()).toEqual(['SPOKEAgent', 'PrimeKGAgent', 'CodeGraph Agent']);
   });

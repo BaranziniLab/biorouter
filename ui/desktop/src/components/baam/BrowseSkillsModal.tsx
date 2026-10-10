@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../ui/button';
+import { Badge } from '../ui/badge';
+import { Checkbox } from '../ui/Checkbox';
 import { toastSuccess } from '../../toasts';
 import {
   loadRegistry,
   rankSkills,
-  catalogFreshnessLine,
   type BaamRegistry,
   type RegistrySkill,
   type SkillCategory,
@@ -19,7 +20,8 @@ import {
   type LandedInstall,
 } from './installCopy';
 import { reportInstallRun, type FailedRow } from './installReport';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
+import { MarketplaceDialog, MarketplaceRow, MarketplaceSection } from './MarketplaceDialog';
+import { BROWSE_SKILLS_COPY, MARKETPLACE_COPY } from './copy';
 
 interface Props {
   onClose: () => void;
@@ -103,7 +105,9 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
    */
   const sections = useMemo(() => {
     if (!isBrowseQuery(search)) {
-      return filtered.length > 0 ? [{ key: 'matches', label: 'Matches', items: filtered }] : [];
+      return filtered.length > 0
+        ? [{ key: 'matches', label: BROWSE_SKILLS_COPY.matches, items: filtered }]
+        : [];
     }
     return CATEGORY_ORDER.map((cat) => ({
       key: cat,
@@ -204,180 +208,111 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const selectedCount = targets.length;
 
   return (
-    <Dialog open onOpenChange={(open) => !open && !installing && onClose()}>
-      <DialogContent
-        dismissible={!installing}
-        className="flex max-h-[86vh] w-[720px] max-w-[92vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[92vw] lg:max-w-[720px]"
-      >
-        {/* Header */}
-        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <div>
-            <DialogTitle>Browse skills</DialogTitle>
-            <DialogDescription className="text-xs text-text-muted mt-0.5">
-              Install skills from the Biorouter marketplace. Select as many as you like. Skills need
-              no setup.
-              {catalogFreshnessLine({ live, fetchedAt }) && (
-                <span className="text-text-subtle">
-                  {' '}
-                  · {catalogFreshnessLine({ live, fetchedAt })}
-                </span>
-              )}
-            </DialogDescription>
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="px-6 pt-4 pb-3 flex flex-col gap-3 border-b border-border-subtle">
-          <input
-            type="text"
-            autoFocus
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search skills by name, description, or tag…"
-            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm"
-          />
-          <div className="flex items-center gap-2 flex-wrap">
-            {(['All', ...CATEGORY_ORDER] as Filter[]).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={[
-                  'text-xs px-2.5 py-1 rounded-full transition-colors',
-                  filter === f
-                    ? 'bg-background-info/15 text-text-default'
-                    : 'bg-background-muted/60 text-text-muted hover:bg-background-medium',
-                ].join(' ')}
-              >
-                {f === 'All' ? 'All' : CATEGORY_LABELS[f]}
-              </button>
-            ))}
-            <div className="flex-1" />
-            {/* Counts ROWS, on purpose: it checks boxes, and a package is one box.
-                The install button is what translates a selection into skills. */}
-            {selectableFiltered.length > 0 && (
-              <button
-                onClick={toggleAllFiltered}
-                className="text-xs text-text-muted underline hover:text-text-default"
-              >
-                {allFilteredSelected
-                  ? 'Clear selection'
-                  : `Select all (${selectableFiltered.length})`}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* List */}
-        <div className="flex-1 overflow-y-auto px-6 py-3">
-          {loadError && (
-            <p className="text-sm text-text-danger text-center mt-10">
-              Could not load the marketplace catalog.
-            </p>
-          )}
-          {!registry && !loadError && (
-            <p className="text-sm text-text-muted text-center mt-10 animate-pulse">
-              Loading catalog…
-            </p>
-          )}
-          {registry && filtered.length === 0 && (
-            <p className="text-sm text-text-muted text-center mt-10">
-              No skills match your search.
-            </p>
-          )}
-          {registry &&
-            sections.map(({ key, label, items }) => {
+    <MarketplaceDialog
+      title={BROWSE_SKILLS_COPY.title}
+      help={BROWSE_SKILLS_COPY.help}
+      live={live}
+      fetchedAt={fetchedAt}
+      search={search}
+      onSearchChange={setSearch}
+      searchLabel={BROWSE_SKILLS_COPY.searchLabel}
+      status={loadError ? 'error' : registry ? 'ready' : 'loading'}
+      empty={filtered.length === 0}
+      emptyText={BROWSE_SKILLS_COPY.empty}
+      busy={installing}
+      onClose={onClose}
+      toolbar={
+        <div className="flex items-center gap-2">
+          <div
+            role="group"
+            aria-label={BROWSE_SKILLS_COPY.filterLabel}
+            className="flex min-w-0 flex-1 flex-wrap items-center gap-2"
+          >
+            {(['All', ...CATEGORY_ORDER] as Filter[]).map((f) => {
+              const on = filter === f;
               return (
-                <div key={key} className="mb-4">
-                  <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
-                    {label} ({items.length})
-                  </h3>
-                  <div className="flex flex-col gap-1.5">
-                    {items.map((skill) => {
-                      const installed = isInstalled(skill);
-                      // Never true for an installed row: see the withdrawal above.
-                      const checked = selected.has(skill.id);
-                      return (
-                        <label
-                          key={skill.id}
-                          className={[
-                            'flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors',
-                            installed
-                              ? 'biorouter-modal-row opacity-70 cursor-default'
-                              : checked
-                                ? 'bg-background-info/10 ring-1 ring-background-info/30 cursor-pointer'
-                                : 'biorouter-modal-row hover:bg-background-default cursor-pointer',
-                          ].join(' ')}
-                        >
-                          <input
-                            type="checkbox"
-                            className="mt-1 accent-[var(--background-info)]"
-                            checked={checked}
-                            disabled={installed || installing}
-                            onChange={() => toggle(skill.id)}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-medium text-text-default">
-                                {skill.name}
-                              </span>
-                              {skill.type && (
-                                // NOT `font-mono`. Registry `type` values are
-                                // English phrases — "5 skills · auto-applied",
-                                // "User-invocable · /scientific-research" — not
-                                // machine tokens, and this sits inline beside
-                                // `skill.name` in the body font on the same row.
-                                // D-31 in styles/main.css: mono for data, sans
-                                // for chrome.
-                                <span className="text-[11px] text-text-subtle">{skill.type}</span>
-                              )}
-                              {installed && (
-                                <span className="text-[10px] uppercase tracking-wide text-background-info bg-background-info/10 rounded px-1.5 py-0.5">
-                                  Installed
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
-                              {skill.description}
-                            </p>
-                            {skill.tags.length > 0 && (
-                              <div className="flex gap-1 flex-wrap mt-1.5">
-                                {skill.tags.map((t) => (
-                                  <span
-                                    key={t}
-                                    className="text-[10px] text-text-subtle bg-background-medium rounded px-1.5 py-0.5"
-                                  >
-                                    {t}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
+                <Badge
+                  key={f}
+                  variant="chip"
+                  asChild
+                  className={
+                    on
+                      ? 'tint-selected tint-interactive text-text-default'
+                      : 'tint-interactive text-text-muted'
+                  }
+                >
+                  <button type="button" aria-pressed={on} onClick={() => setFilter(f)}>
+                    {f === 'All' ? BROWSE_SKILLS_COPY.all : CATEGORY_LABELS[f]}
+                  </button>
+                </Badge>
               );
             })}
+          </div>
+          {/* Counts ROWS, on purpose: it checks boxes, and a package is one box.
+              The install button is what translates a selection into skills. */}
+          {selectableFiltered.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="shrink-0"
+              onClick={toggleAllFiltered}
+              disabled={installing}
+            >
+              {allFilteredSelected
+                ? BROWSE_SKILLS_COPY.clearSelection
+                : BROWSE_SKILLS_COPY.selectAll(selectableFiltered.length)}
+            </Button>
+          )}
         </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between gap-3">
-          <span className="text-xs text-text-muted">
+      }
+      footer={
+        <>
+          <span className="mr-auto text-supporting text-text-muted tabular-nums" aria-live="polite">
             {progress
               ? installProgressLabel(progress.name, progress.position, progress.total)
-              : `${selectedCount} selected`}
+              : BROWSE_SKILLS_COPY.selected(selectedCount)}
           </span>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={onClose} disabled={installing}>
-              Cancel
-            </Button>
-            <Button onClick={handleInstall} disabled={targets.length === 0 || installing}>
-              {installing ? 'Installing…' : installButtonLabel(selectedSkillCount)}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+          <Button variant="secondary" onClick={onClose} disabled={installing}>
+            {BROWSE_SKILLS_COPY.cancel}
+          </Button>
+          <Button onClick={handleInstall} disabled={targets.length === 0 || installing}>
+            {installing ? BROWSE_SKILLS_COPY.installing : installButtonLabel(selectedSkillCount)}
+          </Button>
+        </>
+      }
+    >
+      {sections.map(({ key, label, items }) => (
+        <MarketplaceSection key={key} label={label} count={items.length}>
+          {items.map((skill) => {
+            const installed = isInstalled(skill);
+            // Never true for an installed row: see the withdrawal above.
+            const checked = selected.has(skill.id);
+            return (
+              <MarketplaceRow
+                key={skill.id}
+                as="label"
+                disabled={installed || installing}
+                leading={
+                  <Checkbox
+                    checked={checked}
+                    disabled={installed || installing}
+                    onChange={() => toggle(skill.id)}
+                  />
+                }
+                title={skill.name}
+                badges={installed && <Badge tone="neutral">{MARKETPLACE_COPY.installed}</Badge>}
+                // NOT `font-mono`. Registry `type` values are English phrases —
+                // "5 skills · auto-applied", "User-invocable · /scientific-research"
+                // — not machine tokens, and this sits inline beside `skill.name`
+                // in the body font on the same row. D-31 in styles/main.css: mono
+                // for data, sans for chrome.
+                meta={skill.type}
+                description={skill.description}
+              />
+            );
+          })}
+        </MarketplaceSection>
+      ))}
+    </MarketplaceDialog>
   );
 }

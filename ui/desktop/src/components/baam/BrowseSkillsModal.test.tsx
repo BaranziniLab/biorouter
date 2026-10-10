@@ -33,6 +33,7 @@ vi.mock('react-toastify', () => ({
 }));
 
 import BrowseSkillsModal from './BrowseSkillsModal';
+import { BROWSE_SKILLS_COPY } from './copy';
 import { installButtonLabel } from './installCopy';
 import { resetInstallReport } from './installReport';
 import { installRegistrySkill, type InstallResult } from './installSkill';
@@ -127,7 +128,9 @@ describe('BrowseSkillsModal — the install label has one space between words', 
 function shownSkillNames(): string[] {
   return screen
     .queryAllByRole('checkbox')
-    .map((box) => box.closest('label')?.querySelector('span')?.textContent ?? '');
+    .map(
+      (box) => box.closest('label')?.querySelector('[data-marketplace-title]')?.textContent ?? ''
+    );
 }
 
 async function openWithMarketplaceSkills() {
@@ -139,7 +142,7 @@ async function openWithMarketplaceSkills() {
   const user = userEvent.setup();
   render(<BrowseSkillsModal onClose={vi.fn()} onInstalled={vi.fn()} installedIds={new Set()} />);
   await screen.findByText('R Scripting');
-  return { user, searchBox: screen.getByPlaceholderText(/Search skills/) };
+  return { user, searchBox: screen.getByRole('textbox', { name: BROWSE_SKILLS_COPY.searchLabel }) };
 }
 
 /// Finding F5, in the desktop modal. The model-facing search (#242) and this one
@@ -188,7 +191,7 @@ describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => 
   it('groups the catalog under its category headings, in registry order', async () => {
     await openWithMarketplaceSkills();
 
-    expect(shownHeadings()).toEqual(['Core skills (4)', 'Biomedical analysis (3)']);
+    expect(shownHeadings()).toEqual(['Core skills 4', 'Biomedical analysis 3']);
     expect(shownSkillNames()).toEqual([
       'Scientific Visual Communication',
       'ggplot2 Visualization',
@@ -208,7 +211,7 @@ describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => 
 
     await user.type(searchBox, 'R scripting ggplot visualization');
 
-    expect(shownHeadings()).toEqual(['Matches (5)']);
+    expect(shownHeadings()).toEqual(['Matches 5']);
   });
 
   it('treats a query of only spaces as browsing', async () => {
@@ -216,7 +219,7 @@ describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => 
 
     await user.type(searchBox, '   ');
 
-    expect(shownHeadings()).toEqual(['Core skills (4)', 'Biomedical analysis (3)']);
+    expect(shownHeadings()).toEqual(['Core skills 4', 'Biomedical analysis 3']);
   });
 
   it('keeps the category filter under a search', async () => {
