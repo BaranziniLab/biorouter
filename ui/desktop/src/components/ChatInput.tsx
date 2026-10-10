@@ -1496,7 +1496,7 @@ export default function ChatInput({
   //
   // What the *textarea* binds to is the body — the message with the tags taken
   // out — so the user never sees ~45 characters of XML where they typed a
-  // sentence. The tags come back as chips in the rail below. `composerRefs` is
+  // sentence. The tags come back as chips in the row above it. `composerRefs` is
   // the parse, so a chip on screen is always a reference the agent resolves.
   const { body: composerBody, refs: composerRefs } = useMemo(
     () => splitComposerText(displayValue),
@@ -2676,10 +2676,18 @@ export default function ChatInput({
    */
   const modelSlotRef = useRef<HTMLDivElement>(null);
   const openModelMenu = () => {
-    const trigger = modelSlotRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup]');
+    const slot = modelSlotRef.current;
+    const trigger =
+      slot?.querySelector<HTMLButtonElement>('[data-testid="model-chip"]') ??
+      slot?.querySelector<HTMLButtonElement>('button[aria-haspopup]');
     if (!trigger) return;
     trigger.focus();
+    // A menu trigger opens on Enter; a popover trigger opens on click. Ask the
+    // first way, and fall back to the second if nothing opened.
     trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    requestAnimationFrame(() => {
+      if (trigger.isConnected && trigger.getAttribute('aria-expanded') !== 'true') trigger.click();
+    });
   };
 
   // The one place Send and Stop swap. Stop shows only for a running turn; a
