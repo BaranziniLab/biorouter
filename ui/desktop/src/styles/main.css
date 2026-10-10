@@ -2795,10 +2795,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    pinned to the top of the menu while the rows under it scroll. Results replace
    at once; only the "No tabs match" line fades in, over `--dur-fast-max`. */
 .br-tabstrip__menu-filter {
-  /* Pulled into the menu's 4px padding by the negative margin, and stuck at the
-     top of its padding box (`top: 0`), so rows scroll under it, never above it. */
+  /* Pulled into the menu's 4px padding by the negative margin, and stuck flush
+     under the menu's top edge while rows scroll beneath it. Chromium measures a
+     sticky offset from the scroll box's CONTENT edge (inside its padding), so
+     the offset that keeps it flush is minus the padding, not 0 (measured: `0`
+     left it 4px low with rows showing above it). */
   position: sticky;
-  top: 0;
+  top: -4px;
   z-index: 1;
   display: flex;
   align-items: center;
