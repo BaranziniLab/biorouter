@@ -12,12 +12,11 @@ import { describe, expect, it } from 'vitest';
  * token is allowed to be, and then holds the CALL SITES to them (no `text-sm`, no
  * `text-[11px]`, no stray `tracking-*`, no bare `uppercase`, no `font-bold`).
  *
- * The call-site guard is a RATCHET until the redesign's wave 2. A strict guard
- * added while eight owners were still sweeping their files would have failed on
- * arrival and been switched off, so each file that still carries legacy classes
- * is listed with the count it carried when the guard landed. A listed file may
- * only go down; a file that is not listed must be clean. Wave 2 deletes the
- * list, and the guard is then strict.
+ * The call-site guard is STRICT: no guarded file may carry a legacy form. It began
+ * as a ratchet (a list of the files that still had classes to sweep, each with the
+ * count it carried, so the guard could land while eight owners were mid-sweep
+ * without failing on arrival and being switched off). The sweep finished in wave 2,
+ * the list was deleted, and a file that regresses now fails with its own name.
  */
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const UTILS = readFileSync(join(__dirname, '../utils.ts'), 'utf8');
@@ -69,7 +68,6 @@ describe('the type roles', () => {
         'caps',
         'chip',
         'code',
-        'heading',
         'label',
         'prose',
         'secondary',
@@ -116,9 +114,9 @@ describe('the type roles', () => {
     expect(resolve('title', 'letter-spacing')).toBe('-0.01em');
   });
 
-  /** The retired role is an alias, not a size of its own, and `display` is gone. */
-  it('keeps text-heading as an alias until its last use moves, and has no text-display', () => {
-    expect(ROLES.get('heading')?.size).toBe('var(--text-subheading)');
+  /** The two retired roles stay gone: `heading` (20/28) and `display` (30/36). */
+  it('declares neither text-heading nor text-display', () => {
+    expect(ROLES.has('heading')).toBe(false);
     expect(ROLES.has('display')).toBe(false);
   });
 
@@ -158,9 +156,10 @@ describe('tailwind-merge knows every role', () => {
  * `crewCss.sourceGuard.test.ts`), the frozen files no workstream may restyle
  * (`components/privacy/**`, `context_management/**` except
  * `SystemNotificationInline.tsx`, `LauncherView`, `Pair`, the unmounted
- * `settings/{dictation,tunnel,sessions}/**`), `onboarding/**` and `ProviderGuard`
- * until their P2 sweep lands, the generated `api/`, the gitignored build output
- * under `bin/` and `web/`, and tests.
+ * `settings/{dictation,tunnel,sessions}/**`, `ModelAndProviderContext.tsx`), the
+ * generated `api/`, the gitignored build output under `bin/` and `web/`, and tests.
+ * `onboarding/**` and `ProviderGuard` were out of scope until their P2 sweep landed
+ * (df9186abf); they are guarded now.
  */
 const SRC = join(__dirname, '..');
 
@@ -171,8 +170,7 @@ const OUT_OF_SCOPE = [
   /^components\/LauncherView\./,
   /^components\/Pair\./,
   /^components\/settings\/(dictation|tunnel|sessions)\//,
-  /^components\/onboarding\//,
-  /^components\/ProviderGuard\./,
+  /^components\/ModelAndProviderContext\./,
   /^api\//,
   // Build output that is gitignored but sits under src/: the staged binaries and the
   // root-base browser bundle (`npm run build:web`). Compiled CSS is full of px sizes.
@@ -184,7 +182,10 @@ const CLASS_RULES: Record<string, RegExp> = {
   'legacy size class':
     /(?<![\w-])text-(?:xs|sm|base|lg|[2-9]?xl|heading|display|\[\d+(?:\.\d+)?px\])(?![\w-])/g,
   'tracking class': /(?<![\w-])tracking-[\w[]/g,
-  'bare uppercase': /(?<![\w-])uppercase(?![\w-])/g,
+  // `uppercase` the CLASS. The lookahead skips the identifier: a prop declaration
+  // (`uppercase?: boolean`), its default (`uppercase = false`) and its use
+  // (`uppercase && 'text-caps'`), which `ui/badge.tsx` has and which set no style.
+  'bare uppercase': /(?<![\w-])uppercase(?![\w-])(?!\s*(?:\??:|=(?!=)|&&))/g,
   'font-bold': /(?<![\w-])font-bold(?![\w-])/g,
 };
 
@@ -227,57 +228,6 @@ function guardedFiles(): string[] {
     .filter((file) => !OUT_OF_SCOPE.some((pattern) => pattern.test(file)));
 }
 
-/**
- * The files that still carry legacy forms, with the count each carried when the
- * ratchet landed (2026-10-10, tightened as owners swept). A count may fall and must not rise; a file that
- * is not listed must be clean. Do NOT add a file or raise a count: move the file
- * onto the roles (spec 2.1 has the mapping table). Wave 2 deletes this object.
- */
-const SWEEP_PENDING: Record<string, number> = {
-  'components/BrxtInstallModal.tsx': 32,
-  'components/DependencyErrorBanner.tsx': 2,
-  'components/DependencySetupModal.tsx': 18,
-  'components/ErrorBoundary.tsx': 5,
-  'components/InAppTerminalDock.tsx': 1,
-  'components/ModelAndProviderContext.tsx': 5,
-  'components/ParameterInputModal.tsx': 2,
-  'components/UpdateAvailableModal.tsx': 10,
-  'components/bottom_menu/ModelBreakdownTable.tsx': 1,
-  'components/knowledge/KBSelector/KBManagerDialog.tsx': 2,
-  'components/knowledge/KBSelector/KBSelectorMenu.tsx': 1,
-  'components/knowledge/KBSelector/KbFormatChooser.tsx': 1,
-  'components/knowledge/KnowledgeView.tsx': 1,
-  'components/knowledge/changelog/ChangeKindChip.tsx': 1,
-  'components/knowledge/changelog/ChangeLogDrawer.tsx': 1,
-  'components/knowledge/graph/EdgePreview.tsx': 2,
-  'components/parameter/ParameterInput.tsx': 9,
-  'components/settings/config/ConfigSettings.tsx': 2,
-  'components/settings/extensions/ExtensionsSection.tsx': 1,
-  'components/settings/extensions/modal/EnvVarsSection.tsx': 4,
-  'components/settings/extensions/modal/ExtensionConfigFields.tsx': 4,
-  'components/settings/extensions/modal/ExtensionCredentialsDialog.tsx': 1,
-  'components/settings/extensions/modal/ExtensionInfoFields.tsx': 4,
-  'components/settings/extensions/modal/ExtensionModal.tsx': 8,
-  'components/settings/extensions/modal/ExtensionTimeoutField.tsx': 2,
-  'components/settings/extensions/modal/HeadersSection.tsx': 4,
-  'components/settings/extensions/subcomponents/ExtensionItem.tsx': 5,
-  'components/settings/models/subcomponents/LeadWorkerSettings.tsx': 20,
-  'components/settings/models/subcomponents/SwitchModelModal.tsx': 15,
-  'components/settings/providers/ProviderSettingsPage.tsx': 2,
-  'components/settings/providers/modal/CodingAgentSetupRecovery.tsx': 2,
-  'components/settings/providers/modal/ProviderConfiguationModal.tsx': 3,
-  'components/settings/providers/modal/subcomponents/ProviderSetupActions.tsx': 2,
-  'components/settings/providers/modal/subcomponents/SecureStorageNotice.tsx': 1,
-  'components/settings/providers/modal/subcomponents/forms/CustomProviderForm.tsx': 14,
-  'components/settings/providers/modal/subcomponents/forms/DefaultProviderSetupForm.tsx': 7,
-  'components/settings/providers/subcomponents/CardHeader.tsx': 1,
-  'components/settings/providers/subcomponents/ProviderCard.tsx': 4,
-  'components/settings/providers/subcomponents/utils/StringUtils.tsx': 1,
-  'components/ui/DangerousConfirmDialog.tsx': 2,
-  'components/ui/badge.tsx': 3,
-  'styles/main.css': 13,
-};
-
 describe('the call sites use the type roles', () => {
   const files = guardedFiles();
 
@@ -288,16 +238,19 @@ describe('the call sites use the type roles', () => {
     expect(files.some((file) => file.startsWith('components/crew/'))).toBe(false);
   });
 
-  it('lets no file carry more legacy forms than its baseline, and no clean file gain one', () => {
+  it('lets no guarded file carry a legacy type form', () => {
     const over: string[] = [];
     for (const file of files) {
       const hits = legacyTypeHits(file, readFileSync(join(SRC, file), 'utf8'));
-      const allowed = SWEEP_PENDING[file] ?? 0;
-      if (hits.length > allowed) {
-        over.push(`${file}: ${hits.length} (allowed ${allowed}): ${hits.slice(0, 3).join('; ')}`);
-      }
+      if (hits.length > 0) over.push(`${file}: ${hits.length}: ${hits.slice(0, 3).join('; ')}`);
     }
     expect(over, 'use a text-<role> from main.css; see implementation-spec 2.1').toEqual([]);
+  });
+
+  it('guards the sweep that finished: onboarding and the provider guard are in scope', () => {
+    expect(files.some((file) => file.startsWith('components/onboarding/'))).toBe(true);
+    expect(files).toContain('components/ProviderGuard.tsx');
+    expect(files).toContain('components/ui/badge.tsx');
   });
 
   /** Guards the guard: each form must be seen, and prose about it must not be. */
@@ -323,6 +276,16 @@ describe('the call sites use the type roles', () => {
       '<p className="context-lg normal-case">f</p>',
     ].join('\n');
     expect(legacyTypeHits('b.tsx', prose)).toEqual([]);
+    // An identifier named `uppercase` is not the class: a prop, its default, its use.
+    const identifier = [
+      '  uppercase?: boolean;',
+      '  uppercase = false,',
+      "  uppercase && 'text-caps',",
+    ].join('\n');
+    expect(legacyTypeHits('d.tsx', identifier)).toEqual([]);
+    expect(legacyTypeHits('e.tsx', "<p className='uppercase'>x</p>")).toEqual([
+      'bare uppercase @ line 1',
+    ]);
     const css =
       '.a { font-size: 13px; }\n.b { font-weight: 700; }\n.c { font-size: var(--text-body); }';
     expect(legacyTypeHits('c.css', css)).toEqual([

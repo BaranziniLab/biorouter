@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -78,9 +78,36 @@ describe('the TS mirror equals the CSS tokens', () => {
    * The tokens the redesign retired. `--dur-med-max` had no use and `--ease-in`
    * one stray one, so a third tier and a second general-purpose curve are
    * gone; a new `duration-[var(--dur-med-max)]` would silently animate for 0s.
+   * `--motion-fast|base|slow` were the three-token scale's aliases onto the
+   * `--dur-*` ladder, deleted once the last reader moved (fast to `--dur-fast`,
+   * base to `--dur-fast-max`, slow to `--dur-med`).
    */
-  it.each(['--dur-med-max', '--ease-in'])('no longer declares %s', (token) => {
-    expect(CODE).not.toMatch(new RegExp(`(?:^|[\\s;{])${token}:`));
+  it.each(['--dur-med-max', '--ease-in', '--motion-fast', '--motion-base', '--motion-slow'])(
+    'no longer declares %s',
+    (token) => {
+      expect(CODE).not.toMatch(new RegExp(`(?:^|[\\s;{])${token}:`));
+    }
+  );
+
+  /** An undefined `var()` in `transition-duration` computes to 0s: nothing animates and nothing errors. */
+  it('has no reader of a retired token anywhere in the renderer source', () => {
+    const src = join(__dirname, '..');
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap((name) => {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) {
+          return ['node_modules', 'bin', 'web'].includes(name) ? [] : walk(path);
+        }
+        return /\.(?:tsx?|css)$/.test(name) && !/\.test\.|\.d\.ts$/.test(name) ? [path] : [];
+      });
+    const readers = walk(src).filter((file) =>
+      /var\(--(?:motion-(?:fast|base|slow)|dur-med-max|ease-in)\)/.test(
+        readFileSync(file, 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1')
+      )
+    );
+    expect(readers.map((file) => file.slice(src.length + 1))).toEqual([]);
   });
 
   /** Exits are a tier faster than entrances; the ladder must stay ordered. */
