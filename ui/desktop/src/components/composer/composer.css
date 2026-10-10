@@ -253,13 +253,16 @@
   object-fit: cover;
 }
 
-/* The spinner's own round ground, so it reads over a light image and a dark one. */
+/* The spinner's own round ground, so it reads over a light image and a dark one:
+   the glyph against its ground is always a legible ink pair, and the hairline
+   keeps the ground's edge visible when the image is the same shade as it. */
 .br-composer-thumb__spinner {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-full);
   background: var(--background-default);
   color: var(--text-muted);
