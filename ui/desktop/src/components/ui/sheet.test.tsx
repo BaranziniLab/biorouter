@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './sheet';
 
@@ -81,5 +81,22 @@ describe('SheetContent — settling the description', () => {
     expect(id).toBeTruthy();
     expect(document.getElementById(id!)).toBeNull();
     expect(warned()).toBe(true);
+  });
+});
+
+/** WS-KNOWLEDGE-1: the close is named, so a pane header can align it without counting children. */
+describe('SheetContent close', () => {
+  it('names its close button with data-slot="sheet-close"', () => {
+    render(
+      <Sheet open>
+        <SheetContent aria-describedby={undefined}>
+          <SheetTitle>Changes</SheetTitle>
+        </SheetContent>
+      </Sheet>
+    );
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveAttribute(
+      'data-slot',
+      'sheet-close'
+    );
   });
 });

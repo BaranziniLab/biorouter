@@ -91,7 +91,10 @@ function SheetContent({
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="data-[state=open]:bg-overlay-hover absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-element text-text-muted opacity-70 transition-[opacity,background-color] hover:bg-overlay-hover hover:opacity-100 disabled:pointer-events-none">
+        <SheetPrimitive.Close
+          data-slot="sheet-close"
+          className="data-[state=open]:bg-overlay-hover absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-element text-text-muted opacity-70 transition-[opacity,background-color] hover:bg-overlay-hover hover:opacity-100 disabled:pointer-events-none"
+        >
           <XIcon className="size-4" />
           <span className="sr-only">Close</span>
         </SheetPrimitive.Close>
