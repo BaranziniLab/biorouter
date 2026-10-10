@@ -167,7 +167,7 @@ describe('Command keys stay with the field', () => {
     const onPick = vi.fn();
     const onBulk = vi.fn();
     render(
-      <Command label="Bases">
+      <Command label="Bases" query="" onQueryChange={() => {}}>
         <CommandInput placeholder="Find a base" />
         <button type="button" onClick={onBulk}>
           Select all
@@ -193,7 +193,7 @@ describe('Command keys stay with the field', () => {
   it('still answers Enter from the field', async () => {
     const onPick = vi.fn();
     render(
-      <Command label="Bases">
+      <Command label="Bases" query="" onQueryChange={() => {}}>
         <CommandInput placeholder="Find a base" />
         <CommandList>
           <CommandGroup>
