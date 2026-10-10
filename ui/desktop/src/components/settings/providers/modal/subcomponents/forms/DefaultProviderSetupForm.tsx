@@ -3,7 +3,8 @@ import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
+import { Disclosure } from '../../../../../ui/disclosure';
+import { Field } from '../../../../../ui/field';
 import { configLabels } from '../../../../../../utils/configUtils';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
@@ -195,19 +196,12 @@ export default function DefaultProviderSetupForm({
   const getFieldName = (parameter: ConfigKey): string =>
     providerFieldName(provider.name, parameter.name);
 
-  // Every field names the config key it writes, the same way: some did and
-  // some did not (a Versa Azure key had no chip, its Bedrock sibling did).
-  const getFieldLabel = (parameter: ConfigKey) => {
-    return (
-      <span>
-        <span>{getFieldName(parameter)}</span>
-        <span className="text-xs text-text-muted font-normal ml-1.5">({parameter.name})</span>
-      </span>
-    );
-  };
-
   if (isLoading) {
-    return <div className="text-center py-4">Loading configuration values...</div>;
+    return (
+      <div className="py-4 text-center text-secondary text-text-muted">
+        Loading configuration values…
+      </div>
+    );
   }
 
   function getRenderValue(parameter: ConfigKey): string | undefined {
@@ -224,7 +218,6 @@ export default function DefaultProviderSetupForm({
       const fieldId = `provider-config-${parameter.name}`;
       const hostOwned = isHostOwnedProviderField(parameter);
       const fieldProps = {
-        id: fieldId,
         value: getRenderValue(parameter),
         onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
           setConfigValues((prev) => {
@@ -236,22 +229,21 @@ export default function DefaultProviderSetupForm({
           });
         },
         placeholder: getPlaceholder(parameter),
-        className: `w-full h-9 px-3 rounded-element shadow-none text-sm ${
-          validationErrors[parameter.name]
-            ? 'border-2 border-border-danger'
-            : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
-        } bg-background-default placeholder:text-text-muted text-text-default`,
         required: parameter.required,
         disabled: hostOwned,
         'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
       };
 
       return (
-        <div key={parameter.name}>
-          <label htmlFor={fieldId} className="block text-sm font-medium text-text-default mb-1">
-            {getFieldLabel(parameter)}
-            {parameter.required && <span className="text-text-danger ml-1">*</span>}
-          </label>
+        // The config key a field writes is machine text, so it sits behind the label's InfoTip
+        // rather than beside every label (principle 10); a field names itself in words.
+        <Field
+          key={parameter.name}
+          id={fieldId}
+          label={getFieldName(parameter)}
+          info={`Saved as ${parameter.name}.`}
+          error={validationErrors[parameter.name]}
+        >
           {/* F5: a secret is masked, exactly as the custom-provider form masks
               its key — the same primitive, so the two cannot diverge again. A
               non-secret parameter (an endpoint, a region) stays readable. */}
@@ -260,10 +252,7 @@ export default function DefaultProviderSetupForm({
           ) : (
             <Input {...fieldProps} type="text" />
           )}
-          {validationErrors[parameter.name] && (
-            <p className="text-text-danger text-sm mt-1">{validationErrors[parameter.name]}</p>
-          )}
-        </div>
+        </Field>
       );
     });
   };
@@ -279,38 +268,32 @@ export default function DefaultProviderSetupForm({
 
   const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} ${
     belowFoldParameters.length === 1 ? 'option' : 'options'
-  } `;
+  }`;
 
   return (
-    <div className="mt-4 space-y-4">
+    <div className="flex flex-col gap-4 py-1">
       {hasHostOwnedField && (
         <div id={HOST_OWNED_NOTE_ID}>
           <HostManagedModelNote topic="destination" testId="host-managed-destination-note" />
         </div>
       )}
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
-        <div className="text-center text-sm text-text-muted py-2">
+        <div className="py-2 text-center text-secondary text-text-muted">
           No configuration parameters for this provider.
         </div>
       ) : (
-        <div>
-          <div className="space-y-3">{renderParametersList(aboveFoldParameters)}</div>
+        <>
+          {renderParametersList(aboveFoldParameters)}
           {belowFoldParameters.length > 0 && (
-            <Collapsible
+            <Disclosure
+              label={expandCtaText}
               open={optionalExpanded}
               onOpenChange={setOptionalExpanded}
-              className="mt-4 border border-border-subtle rounded-container bg-background-muted"
             >
-              <CollapsibleTrigger className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-text-muted hover:text-text-default transition-colors duration-150">
-                <span>{expandCtaText}</span>
-                <span className="text-xs">{optionalExpanded ? '▲' : '▼'}</span>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="px-4 pb-4 space-y-3">
-                {renderParametersList(belowFoldParameters)}
-              </CollapsibleContent>
-            </Collapsible>
+              <div className="flex flex-col gap-4">{renderParametersList(belowFoldParameters)}</div>
+            </Disclosure>
           )}
-        </div>
+        </>
       )}
     </div>
   );

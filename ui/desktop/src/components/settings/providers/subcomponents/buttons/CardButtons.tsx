@@ -1,8 +1,7 @@
 import React from 'react';
 import { Button } from '../../../../ui/button';
 import clsx from 'clsx';
-import { TooltipWrapper } from './TooltipWrapper';
-import { Check, Rocket, Sliders } from '../../../../icons/app-icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../../ui/Tooltip';
 
 interface ActionButtonProps extends React.ComponentProps<typeof Button> {
   /** Icon component to render, e.g. `RefreshCw` from lucide-react */
@@ -20,7 +19,7 @@ interface ActionButtonProps extends React.ComponentProps<typeof Button> {
 export function ActionButton({
   icon: Icon,
   size = 'sm',
-  variant = 'outline',
+  variant = 'secondary',
   tooltip,
   className,
   text,
@@ -41,48 +40,38 @@ export function ActionButton({
   );
 
   if (tooltip) {
-    return <TooltipWrapper tooltipContent={tooltip}>{ButtonElement}</TooltipWrapper>;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{ButtonElement}</TooltipTrigger>
+        <TooltipContent side="top">{tooltip}</TooltipContent>
+      </Tooltip>
+    );
   }
 
   return ButtonElement;
 }
 
-export function GreenCheckButton({ tooltip, className = '', ...props }: ActionButtonProps) {
+/** A row's "Configure": a secondary `sm` text button. The row names it with `aria-label`. */
+export function ConfigureSettingsButton({ tooltip, className, text, ...props }: ActionButtonProps) {
   return (
     <ActionButton
-      icon={Check}
       tooltip={tooltip}
-      variant="ghost"
-      size="sm"
-      className={clsx('text-text-success hover:text-text-success cursor-default', className)}
-      onClick={() => {}}
-      {...props}
-    />
-  );
-}
-
-export function ConfigureSettingsButton({ tooltip, className, ...props }: ActionButtonProps) {
-  return (
-    <ActionButton
-      icon={Sliders}
-      tooltip={tooltip}
-      variant="outline"
-      text={'Configure'}
-      iconClassName="rotate-90"
+      variant="secondary"
+      text={text ?? 'Configure'}
       className={clsx('cursor-pointer', className)}
       {...props}
     />
   );
 }
 
-export function RocketButton({ tooltip, className, ...props }: ActionButtonProps) {
+/** First run's "Launch" on a configured provider. */
+export function RocketButton({ tooltip, className, text, ...props }: ActionButtonProps) {
   return (
     <ActionButton
       data-testid="provider-launch-button"
-      icon={Rocket}
       tooltip={tooltip}
-      variant="outline"
-      text={'Launch'}
+      variant="secondary"
+      text={text ?? 'Launch'}
       className={clsx('cursor-pointer', className)}
       {...props}
     />

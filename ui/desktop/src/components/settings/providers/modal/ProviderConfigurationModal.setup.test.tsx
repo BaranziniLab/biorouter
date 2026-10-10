@@ -34,7 +34,6 @@ vi.mock('../../../onboarding/codingAgentStatus', async () => ({
 vi.mock('../../../InAppTerminalDock', () => ({
   default: () => <div data-testid="setup-terminal" />,
 }));
-vi.mock('./subcomponents/ProviderLogo', () => ({ default: () => null }));
 
 function fixture(kind: CodingAgentKind, auth: CodingAgentAuth): CodingAgentAvailability {
   return {
@@ -372,7 +371,7 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={azure} onClose={vi.fn()} />);
 
-  fireEvent.change(await screen.findByLabelText(/\(AZURE_OPENAI_DEPLOYMENT_NAME\)/), {
+  fireEvent.change(await screen.findByLabelText('Azure OpenAI Deployment Name'), {
     target: { value: 'my-gpt-6-sol' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -381,7 +380,7 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   expect(await screen.findByText('Azure OpenAI Endpoint is required')).toBeInTheDocument();
   expect(mocks.submit).not.toHaveBeenCalled();
 
-  fireEvent.change(screen.getByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/), {
+  fireEvent.change(screen.getByLabelText('Azure OpenAI Endpoint'), {
     target: { value: 'https://contoso.openai.azure.com' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));

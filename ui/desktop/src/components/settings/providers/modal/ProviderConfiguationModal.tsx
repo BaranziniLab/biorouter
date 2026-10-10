@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../../ui/dialog';
+import { ModalShell } from '../../../ModalShell';
 import DefaultProviderSetupForm, {
   ConfigInput,
   isHostOwnedProviderField,
@@ -14,14 +7,13 @@ import DefaultProviderSetupForm, {
 } from './subcomponents/forms/DefaultProviderSetupForm';
 import { hostManagedDestinationRequired } from '../../../privacy/hostManagedModelCopy';
 import ProviderSetupActions from './subcomponents/ProviderSetupActions';
-import ProviderLogo from './subcomponents/ProviderLogo';
 import { SecureStorageNotice } from './subcomponents/SecureStorageNotice';
 import { providerConfigSubmitHandler } from './subcomponents/handlers/DefaultSubmitHandler';
 import { useConfig } from '../../../ConfigContext';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
-import { AlertTriangle } from '../../../icons/app-icons';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
-import { Button } from '../../../../components/ui/button';
+import { Button } from '../../../ui/button';
+import { providerSetupCopy } from '../copy';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
 import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
@@ -76,8 +68,8 @@ export default function ProviderConfigurationModal({
   // user's to do; keying "Remove" on `is_configured` alone would strand it.
   const hasSavedSetup = isConfigured || Boolean(provider.unavailable_reason);
   const headerText = showDeleteConfirmation
-    ? `Delete configuration for ${provider.metadata.display_name}`
-    : `Configure ${provider.metadata.display_name}`;
+    ? providerSetupCopy.deleteTitle(provider.metadata.display_name)
+    : providerSetupCopy.configure(provider.metadata.display_name);
 
   const descriptionText = showDeleteConfirmation
     ? isActiveProvider
@@ -88,7 +80,7 @@ export default function ProviderConfigurationModal({
       : // Only a provider that declares a secret has a key to add. Llama Server
         // and Ollama declare none, and were asked for "API key(s)" (W2-PRV-13).
         provider.metadata.config_keys.some((key) => key.secret)
-        ? `Add your API key(s) for this provider to integrate into Biorouter`
+        ? `Add your API keys for this provider to use it in Biorouter.`
         : `${provider.metadata.display_name} needs no API key. Adjust how Biorouter reaches it.`;
 
   const handleSubmitForm = async (e?: React.SyntheticEvent) => {
@@ -207,32 +199,37 @@ export default function ProviderConfigurationModal({
     onClose();
   };
 
-  const getModalIcon = () => {
-    if (showDeleteConfirmation) {
-      return (
-        <AlertTriangle
-          className={isActiveProvider ? 'text-text-warning' : 'text-text-danger'}
-          size={24}
-        />
-      );
-    }
-    return <ProviderLogo providerName={provider.name} />;
-  };
+  // The delete states say what they are in the title's ink (a status colour, never a glyph).
+  const titleInk = showDeleteConfirmation
+    ? isActiveProvider
+      ? 'text-text-warning'
+      : 'text-text-danger'
+    : undefined;
 
   return (
     <>
-      <Dialog open={!!error} onOpenChange={(open) => !open && setError(null)}>
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-          <DialogTitle className="flex items-center gap-2">
-            {codingAgentKind
-              ? `Set up ${provider.metadata.display_name}`
-              : 'Configuration needs attention'}
-          </DialogTitle>
-          <DialogDescription className="text-sm text-text-muted">
-            {codingAgentKind
-              ? 'The configuration check did not complete. Follow the setup steps below, then retry.'
-              : 'There was an error checking this provider configuration.'}
-          </DialogDescription>
+      <ModalShell
+        open={!!error}
+        onOpenChange={(open) => !open && setError(null)}
+        size="md"
+        scrollBody
+        title={
+          codingAgentKind
+            ? `Set up ${provider.metadata.display_name}`
+            : 'Configuration needs attention'
+        }
+        subtitle={
+          codingAgentKind
+            ? 'The configuration check did not complete. Follow the setup steps below, then retry.'
+            : 'There was an error checking this provider configuration.'
+        }
+        footer={
+          <Button variant="secondary" onClick={() => setError(null)}>
+            {codingAgentKind ? 'Edit command path' : 'Go back'}
+          </Button>
+        }
+      >
+        <div className="py-3">
           {codingAgentKind && error ? (
             <CodingAgentSetupRecovery
               key={checkAttempt}
@@ -243,69 +240,60 @@ export default function ProviderConfigurationModal({
             />
           ) : (
             <>
-              <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{error}</p>
-              <p className="text-sm text-text-muted">
+              <p className="whitespace-pre-wrap break-words text-body">{error}</p>
+              <p className="mt-3 text-secondary text-text-muted">
                 Check your configuration again to use this provider.
               </p>
             </>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setError(null)}>
-              {codingAgentKind ? 'Edit command path' : 'Go Back'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={!error} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent
-          className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto"
-          // T3-SH-12: back to the Configure button when this closes for good.
-          // Not when it gives way to the error dialog above, which takes the
-          // focus itself.
-          onCloseAutoFocus={error ? undefined : returnFocusToOpener}
-        >
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {getModalIcon()}
-              {headerText}
-            </DialogTitle>
-            <DialogDescription>{descriptionText}</DialogDescription>
-          </DialogHeader>
-
-          {!showDeleteConfirmation && (
-            <div className="py-2">
-              <DefaultProviderSetupForm
-                configValues={configValues}
-                setConfigValues={setConfigValues}
-                provider={provider}
-                validationErrors={validationErrors}
-              />
-              {provider.metadata.config_keys.some((parameter) => parameter.secret) && (
-                <SecureStorageNotice />
-              )}
-            </div>
-          )}
-
-          <DialogFooter className="border-t border-border-subtle pt-4 mt-2">
-            <ProviderSetupActions
-              requiredParameters={requiredParameters}
-              onCancel={handleCancel}
-              onSubmit={handleSubmitForm}
-              onDelete={handleDelete}
-              showDeleteConfirmation={showDeleteConfirmation}
-              onConfirmDelete={handleConfirmDelete}
-              onCancelDelete={() => {
-                setIsActiveProvider(false);
-                setShowDeleteConfirmation(false);
-              }}
-              canDelete={hasSavedSetup && !isActiveProvider}
-              providerName={provider.metadata.display_name}
-              isActiveProvider={isActiveProvider}
-              isSubmitting={isSubmitting}
+        </div>
+      </ModalShell>
+      <ModalShell
+        open={!error}
+        onOpenChange={(open) => !open && onClose()}
+        size="md"
+        purpose="form"
+        scrollBody
+        title={headerText}
+        titleClassName={titleInk}
+        subtitle={descriptionText}
+        // T3-SH-12: back to the Configure button when this closes for good.
+        // Not when it gives way to the error dialog above, which takes the
+        // focus itself.
+        onCloseAutoFocus={error ? undefined : returnFocusToOpener}
+        footer={
+          <ProviderSetupActions
+            requiredParameters={requiredParameters}
+            onCancel={handleCancel}
+            onSubmit={handleSubmitForm}
+            onDelete={handleDelete}
+            showDeleteConfirmation={showDeleteConfirmation}
+            onConfirmDelete={handleConfirmDelete}
+            onCancelDelete={() => {
+              setIsActiveProvider(false);
+              setShowDeleteConfirmation(false);
+            }}
+            canDelete={hasSavedSetup && !isActiveProvider}
+            providerName={provider.metadata.display_name}
+            isActiveProvider={isActiveProvider}
+            isSubmitting={isSubmitting}
+          />
+        }
+      >
+        {!showDeleteConfirmation && (
+          <div className="flex flex-col gap-3 py-3">
+            <DefaultProviderSetupForm
+              configValues={configValues}
+              setConfigValues={setConfigValues}
+              provider={provider}
+              validationErrors={validationErrors}
             />
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            {provider.metadata.config_keys.some((parameter) => parameter.secret) && (
+              <SecureStorageNotice />
+            )}
+          </div>
+        )}
+      </ModalShell>
     </>
   );
 }

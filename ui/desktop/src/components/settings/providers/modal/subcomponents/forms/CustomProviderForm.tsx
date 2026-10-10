@@ -3,11 +3,14 @@ import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { Select } from '../../../../../ui/Select';
 import { Button } from '../../../../../ui/button';
+import { Checkbox } from '../../../../../ui/Checkbox';
+import { Field } from '../../../../../ui/field';
+import { Note } from '../../../../../ui/note';
 import { SecureStorageNotice } from '../SecureStorageNotice';
-import { Checkbox } from '@radix-ui/themes';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
+import { customProviderCopy } from '../../../copy';
 
 /**
  * What to show when the save was refused. The daemon's refusal is a sentence
@@ -140,197 +143,134 @@ export default function CustomProviderForm({
     }
   };
 
+  const engineLabel = (value: string) =>
+    value === 'openai_compatible'
+      ? 'OpenAI compatible'
+      : value === 'anthropic_compatible'
+        ? 'Anthropic compatible'
+        : 'Ollama compatible';
+
   return (
-    <form onSubmit={handleSubmit} className="mt-4 space-y-4">
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4 py-3">
       {isEditable && (
         <>
-          <div>
-            <label
-              htmlFor="provider-select"
-              className="flex items-center text-sm font-medium text-text-default mb-2"
-            >
-              Provider Type
-              <span className="text-text-danger ml-1">*</span>
-            </label>
+          <Field
+            id="provider-select"
+            label={customProviderCopy.providerType}
+            error={validationErrors.providerType}
+          >
+            {/* react-select names its own input: the label points at `inputId`, and the
+                container keeps `id` so Field's helper id stays unique. */}
             <Select
-              id="provider-select"
-              aria-invalid={!!validationErrors.providerType}
-              aria-describedby={validationErrors.providerType ? 'provider-select-error' : undefined}
+              inputId="provider-select-input"
+              aria-label={customProviderCopy.providerType}
               options={[
-                { value: 'openai_compatible', label: 'OpenAI Compatible' },
-                { value: 'anthropic_compatible', label: 'Anthropic Compatible' },
-                { value: 'ollama_compatible', label: 'Ollama Compatible' },
+                { value: 'openai_compatible', label: engineLabel('openai_compatible') },
+                { value: 'anthropic_compatible', label: engineLabel('anthropic_compatible') },
+                { value: 'ollama_compatible', label: engineLabel('ollama_compatible') },
               ]}
-              value={{
-                value: engine,
-                label:
-                  engine === 'openai_compatible'
-                    ? 'OpenAI Compatible'
-                    : engine === 'anthropic_compatible'
-                      ? 'Anthropic Compatible'
-                      : 'Ollama Compatible',
-              }}
+              value={{ value: engine, label: engineLabel(engine) }}
               onChange={(option: unknown) => {
                 const selectedOption = option as { value: string; label: string } | null;
                 if (selectedOption) setEngine(selectedOption.value);
               }}
               isSearchable={false}
+              menuPlacement="auto"
+              menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
             />
-            {validationErrors.providerType && (
-              <p id="provider-select-error" className="text-text-danger text-sm mt-1">
-                {validationErrors.providerType}
-              </p>
-            )}
-          </div>
-          <div>
-            <label
-              htmlFor="display-name"
-              className="flex items-center text-sm font-medium text-text-default mb-2"
-            >
-              Display Name
-              <span className="text-text-danger ml-1">*</span>
-            </label>
+          </Field>
+          <Field
+            id="display-name"
+            label={customProviderCopy.displayName}
+            error={validationErrors.displayName}
+          >
             <Input
-              id="display-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your Provider Name"
-              aria-invalid={!!validationErrors.displayName}
-              aria-describedby={validationErrors.displayName ? 'display-name-error' : undefined}
-              className={validationErrors.displayName ? 'border-border-danger' : ''}
+              placeholder="Your provider name"
             />
-            {validationErrors.displayName && (
-              <p id="display-name-error" className="text-text-danger text-sm mt-1">
-                {validationErrors.displayName}
-              </p>
-            )}
-          </div>
-          <div>
-            <label
-              htmlFor="api-url"
-              className="flex items-center text-sm font-medium text-text-default mb-2"
-            >
-              API URL
-              <span className="text-text-danger ml-1">*</span>
-            </label>
+          </Field>
+          <Field
+            id="api-url"
+            label={customProviderCopy.apiUrl}
+            error={validationErrors.apiUrl}
+            helper={
+              urlNeedsTypedKey ? (
+                <span data-testid="host-managed-custom-url">{HOST_MANAGED_CUSTOM_URL}</span>
+              ) : undefined
+            }
+          >
             <Input
-              id="api-url"
               value={apiUrl}
               onChange={(e) => setApiUrl(e.target.value)}
               placeholder="https://api.example.com/v1"
-              aria-invalid={!!validationErrors.apiUrl}
-              aria-describedby={validationErrors.apiUrl ? 'api-url-error' : undefined}
-              className={validationErrors.apiUrl ? 'border-border-danger' : ''}
             />
-            {validationErrors.apiUrl && (
-              <p id="api-url-error" className="text-text-danger text-sm mt-1">
-                {validationErrors.apiUrl}
-              </p>
-            )}
-            {urlNeedsTypedKey && (
-              <p data-testid="host-managed-custom-url" className="text-text-muted text-sm mt-1">
-                {HOST_MANAGED_CUSTOM_URL}
-              </p>
-            )}
-          </div>
+          </Field>
         </>
       )}
 
-      <div>
-        <label
-          htmlFor="api-key"
-          className="flex items-center text-sm font-medium text-text-default mb-2"
-        >
-          API Key
-          {!isLocalModel && !keepsSavedKey && <span className="text-text-danger ml-1">*</span>}
-        </label>
-        {/* The same primitive the built-in providers' form uses for every secret
-            parameter, so the two forms mask — and reveal — a key the same way. */}
-        <SecretInput
-          id="api-key"
-          revealLabel="API Key"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
-          aria-invalid={!!validationErrors.apiKey}
-          aria-describedby={validationErrors.apiKey ? 'api-key-error' : undefined}
-          className={validationErrors.apiKey ? 'border-border-danger' : ''}
-          disabled={isLocalModel}
-        />
-        {validationErrors.apiKey && (
-          <p id="api-key-error" className="text-text-danger text-sm mt-1">
-            {validationErrors.apiKey}
-          </p>
-        )}
-
+      <div className="flex flex-col gap-2">
+        <Field id="api-key" label={customProviderCopy.apiKey} error={validationErrors.apiKey}>
+          {/* The same primitive the built-in providers' form uses for every secret
+              parameter, so the two forms mask — and reveal — a key the same way. */}
+          <SecretInput
+            revealLabel={customProviderCopy.apiKey}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
+            disabled={isLocalModel}
+          />
+        </Field>
         {!initialData && (
-          <div className="flex items-center space-x-2 mt-2">
-            <Checkbox id="local-model" checked={isLocalModel} onCheckedChange={handleLocalModels} />
-            <label
-              htmlFor="local-model"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-text-muted"
-            >
-              This is a local model (no auth required)
-            </label>
-          </div>
+          <label className="flex cursor-pointer items-center gap-2">
+            <Checkbox
+              id="local-model"
+              checked={isLocalModel}
+              onChange={(event) => handleLocalModels(event.target.checked)}
+            />
+            <span className="text-secondary text-text-muted">{customProviderCopy.localModel}</span>
+          </label>
         )}
       </div>
       {isEditable && (
         <>
-          <div>
-            <label
-              htmlFor="available-models"
-              className="flex items-center text-sm font-medium text-text-default mb-2"
-            >
-              Available Models (comma-separated)
-              <span className="text-text-danger ml-1">*</span>
-            </label>
+          <Field
+            id="available-models"
+            label={customProviderCopy.models}
+            error={validationErrors.models}
+          >
             <Input
-              id="available-models"
               value={models}
               onChange={(e) => setModels(e.target.value)}
               placeholder="model-a, model-b, model-c"
-              aria-invalid={!!validationErrors.models}
-              aria-describedby={validationErrors.models ? 'available-models-error' : undefined}
-              className={validationErrors.models ? 'border-border-danger' : ''}
             />
-            {validationErrors.models && (
-              <p id="available-models-error" className="text-text-danger text-sm mt-1">
-                {validationErrors.models}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center space-x-2 mb-10">
+          </Field>
+          <label className="flex cursor-pointer items-center gap-2">
             <Checkbox
               id="supports-streaming"
               checked={supportsStreaming}
-              onCheckedChange={(checked) => setSupportsStreaming(checked as boolean)}
+              onChange={(event) => setSupportsStreaming(event.target.checked)}
             />
-            <label
-              htmlFor="supports-streaming"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-text-muted"
-            >
-              Provider supports streaming responses
-            </label>
-          </div>
+            <span className="text-secondary text-text-muted">{customProviderCopy.streaming}</span>
+          </label>
         </>
       )}
-      <SecureStorageNotice />
+      <SecureStorageNotice className="mt-0" />
       {submitError && (
-        <p
-          role="alert"
-          data-testid="custom-provider-submit-error"
-          className="text-text-danger text-sm whitespace-pre-wrap break-words"
-        >
-          {submitError}
-        </p>
+        <Note tone="danger" role="alert" testId="custom-provider-submit-error">
+          <span className="whitespace-pre-wrap break-words">{submitError}</span>
+        </Note>
       )}
-      <div className="flex justify-end space-x-2 pt-4">
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
+      <div className="flex justify-end gap-2 pt-1">
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          {customProviderCopy.cancel}
         </Button>
         <Button type="submit" disabled={saving}>
-          {initialData ? (keepsSavedKey ? 'Update Provider' : 'Save') : 'Create Provider'}
+          {initialData
+            ? keepsSavedKey
+              ? customProviderCopy.update
+              : customProviderCopy.save
+            : customProviderCopy.create}
         </Button>
       </div>
     </form>

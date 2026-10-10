@@ -1,5 +1,6 @@
 import { ConfigureSettingsButton, RocketButton } from './CardButtons';
 import { ProviderDetails } from '../../../../../api';
+import { catalogCopy } from '../../copy';
 
 // can define other optional callbacks as needed
 interface CardButtonsProps {
@@ -9,57 +10,38 @@ interface CardButtonsProps {
   onLaunch: (provider: ProviderDetails) => void;
 }
 
-function getDefaultTooltipMessages(name: string, actionType: string) {
-  switch (actionType) {
-    case 'add':
-      return `Configure ${name} settings`;
-    case 'edit':
-      return `Edit ${name} settings`;
-    case 'delete':
-      return `Delete ${name} settings`;
-    default:
-      return null;
-  }
-}
-
+/**
+ * A provider row's one action. The visible word is short ("Configure", "Launch"); the accessible
+ * name carries the row, so a list of twenty rows is not twenty buttons called "Configure". A
+ * tooltip that only repeated that name was dropped: the row already says whose it is.
+ */
 export default function DefaultCardButtons({
   provider,
   isOnboardingPage,
   onLaunch,
   onConfigure,
 }: CardButtonsProps) {
+  const name = provider.metadata.display_name || provider.name;
+  // A configured provider on the onboarding page is launched; every other row is configured
+  // (set up, or edited when it already is).
+  if (provider.is_configured && isOnboardingPage) {
+    return (
+      <RocketButton
+        aria-label={catalogCopy.launchRow(name)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onLaunch(provider);
+        }}
+      />
+    );
+  }
   return (
-    <>
-      {/*Set up an unconfigured provider */}
-      {!provider.is_configured && (
-        <ConfigureSettingsButton
-          tooltip={getDefaultTooltipMessages(provider.metadata.display_name, 'add')}
-          onClick={(e) => {
-            e.stopPropagation();
-            onConfigure(provider);
-          }}
-        />
-      )}
-      {/*show edit tooltip instead when hovering over button for configured providers*/}
-      {provider.is_configured && !isOnboardingPage && (
-        <ConfigureSettingsButton
-          tooltip={getDefaultTooltipMessages(provider.metadata.display_name, 'edit')}
-          onClick={(e) => {
-            e.stopPropagation();
-            onConfigure(provider);
-          }}
-        />
-      )}
-      {/*show Launch button for configured providers on onboarding page*/}
-      {provider.is_configured && isOnboardingPage && (
-        <RocketButton
-          tooltip={'Get started with Biorouter!'}
-          onClick={(e) => {
-            e.stopPropagation();
-            onLaunch(provider);
-          }}
-        />
-      )}
-    </>
+    <ConfigureSettingsButton
+      aria-label={catalogCopy.configureRow(name)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onConfigure(provider);
+      }}
+    />
   );
 }

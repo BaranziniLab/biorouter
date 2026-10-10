@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ScrollArea } from '../../ui/scroll-area';
 import BackButton from '../../ui/BackButton';
+import { InfoTip } from '../../ui/info-tip';
+import { Skeleton } from '../../ui/skeleton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
 import { ProviderDetails, type SessionClassification } from '../../../api';
@@ -9,6 +11,7 @@ import { createNavigationHandler } from '../../../utils/navigationUtils';
 import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import { KEY_STORAGE_NOTICE } from './modal/subcomponents/SecureStorageNotice';
+import { providerPageCopy } from './copy';
 
 interface ProviderSettingsProps {
   onClose: () => void;
@@ -107,28 +110,44 @@ export default function ProviderSettings({
     [refreshProviders, upsert]
   );
 
+  const heading = isOnboarding ? providerPageCopy.onboardingTitle : providerPageCopy.title;
+
   return (
-    <div className="h-screen w-full flex flex-col bg-background-muted text-text-default">
+    // The same ground as every other view (`MainPanelLayout`'s canvas), not a muted one: this
+    // page used to be a shade darker than the Settings it was opened from.
+    <div className="flex h-screen w-full flex-col bg-background-canvas text-text-default">
       <ScrollArea className="flex-1 w-full">
         {/* Flat page header, on the chat measure — the same reading column the
-            rest of the app uses, rather than this page's own width. */}
-        <div className="w-full max-w-measure-chat mx-auto px-6 pt-10 pb-6 border-b border-border-subtle">
-          <div className="flex items-center mb-4 no-drag">
+            rest of the app uses, rather than this page's own width. Where a key is kept is the
+            heading's InfoTip: it is said once, and the key field says it again where a key is
+            typed. First run keeps its one lead-in line, the only text on the screen. */}
+        <div className="mx-auto w-full max-w-measure-chat border-b border-border-subtle px-6 pb-4 pt-10">
+          <div className="no-drag mb-4 flex items-center">
             <BackButton onClick={onClose} />
           </div>
-          <h1 className="text-title mb-1" data-testid="provider-selection-heading">
-            {isOnboarding ? 'Choose a provider' : 'Provider configuration'}
-          </h1>
-          <p className="text-sm text-text-muted">
-            {isOnboarding
-              ? `Pick where your models run, and switch providers any time in settings. ${KEY_STORAGE_NOTICE}`
-              : `Configure your AI model providers. ${KEY_STORAGE_NOTICE}`}
-          </p>
+          <div className="flex items-center">
+            <h1 className="text-title" data-testid="provider-selection-heading">
+              {heading}
+            </h1>
+            <InfoTip label={heading} help={KEY_STORAGE_NOTICE} />
+          </div>
+          {isOnboarding && (
+            <p className="mt-1 text-secondary text-text-muted">{providerPageCopy.onboardingLead}</p>
+          )}
         </div>
 
-        <div className="w-full max-w-measure-chat mx-auto px-6 py-6">
+        <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
           {loading ? (
-            <div className="text-sm text-text-muted">Loading providers…</div>
+            <div
+              role="status"
+              aria-label={providerPageCopy.loading}
+              className="flex flex-col gap-3"
+            >
+              <Skeleton className="h-5 w-48" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
           ) : (
             <ProviderCatalog
               providers={providers}

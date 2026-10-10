@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../api';
 import { TooltipProvider } from '../../../ui/Tooltip';
 import { ProviderCard } from './ProviderCard';
+import { catalogCopy } from '../copy';
 
 function provider(configured: boolean): ProviderDetails {
   return {
@@ -42,11 +43,51 @@ describe('ProviderCard keyboard access', () => {
   it('reveals the hover-only actions while anything in the row has focus', () => {
     renderRow(true);
     const actions = screen.getByTestId('provider-actions-versa_azure');
-    expect(actions).toHaveClass('opacity-0', 'group-hover:opacity-100');
-    // jsdom computes no Tailwind, so the reveal is asserted as the class the
-    // compiled stylesheet already carries elsewhere in the app.
-    expect(actions).toHaveClass('group-focus-within:opacity-100');
-    expect(screen.getByTestId('provider-card-versa_azure')).toHaveClass('group');
+    // `.br-row-actions` is the shared reveal (main.css): opacity only, on the settings row's
+    // hover AND focus-within, and always shown without a hover pointer. jsdom computes no CSS,
+    // so what is asserted is the pair of classes that carry it.
+    expect(actions).toHaveClass('br-row-actions');
+    expect(screen.getByTestId('provider-card-versa_azure')).toHaveClass('biorouter-settings-row');
+  });
+
+  it('shows the actions at all times during first run', () => {
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(true)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding
+        />
+      </TooltipProvider>
+    );
+    expect(screen.getByTestId('provider-actions-versa_azure')).not.toHaveClass('br-row-actions');
+  });
+
+  it('is text: no initial tile, and "Configured" is a success dot and a word', () => {
+    const { container } = render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(true)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding={false}
+        />
+      </TooltipProvider>
+    );
+    expect(screen.queryByText('V')).toBeNull();
+    const status = screen.getByText(catalogCopy.configured);
+    expect(status.querySelector('[data-slot="status-dot"][data-tone="success"]')).not.toBeNull();
+    // The dot is decoration; the word is the status.
+    expect(container.querySelector('[data-slot="status-dot"]')).toHaveAttribute('aria-hidden');
+  });
+
+  it('names its Configure button for the row, so twenty rows are not twenty "Configure"s', () => {
+    renderRow(false);
+    const button = screen.getByRole('button', {
+      name: catalogCopy.configureRow('Versa API Azure'),
+    });
+    expect(button).toHaveTextContent(catalogCopy.configure);
   });
 
   it('reaches the description and then Configure by Tab, and Enter opens the dialog', async () => {

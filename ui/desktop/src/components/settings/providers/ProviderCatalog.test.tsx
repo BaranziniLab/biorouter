@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
+import { catalogCopy, customProviderCopy } from './copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import type { CodingAgentAuth, CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
 
@@ -533,7 +534,7 @@ describe('ProviderCatalog — AI agents', () => {
     const row = await screen.findByTestId('provider-card-codex');
     await within(row).findByText('Not installed');
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Configure' }));
+    fireEvent.click(within(row).getByRole('button', { name: catalogCopy.configureRow('Codex') }));
     fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
 
     await within(row).findByText('Ready · signed in on your subscription');
@@ -789,21 +790,6 @@ describe('a declarative provider nobody has set up', () => {
  * made it, so the catalog's update carries that proof.
  */
 describe('updating a custom provider', () => {
-  // The editable form's streaming switch measures itself, which jsdom cannot.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('sends the proof that the user made the change', async () => {
     mocks.getCustomProvider.mockResolvedValue({
       data: {
@@ -832,11 +818,122 @@ describe('updating a custom provider', () => {
     );
     fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.update }));
     await waitFor(() => expect(mocks.updateCustomProvider).toHaveBeenCalledTimes(1));
     expect(mocks.updateCustomProvider.mock.calls[0][0]).toMatchObject({
       path: { id: 'custom_lab' },
       headers: { 'X-User-Action': 'test-key' },
     });
+  });
+});
+
+/**
+ * The catalog's anatomy (codex simplicity redesign, spec 3.13): rows on the settings row
+ * geometry, a section's reason behind an InfoTip beside its heading, the institution line as a
+ * quiet question with its answer one hover away, and no bordered card anywhere in a panel.
+ */
+describe('ProviderCatalog — anatomy', () => {
+  it('draws a provider as a settings row, with no tile and no card', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    const row = screen.getByTestId('provider-card-anthropic');
+    expect(row).toHaveClass('biorouter-settings-row');
+    expect(row.className).not.toMatch(/rounded-container|py-3|px-4/);
+    // The list is the shared settings list, so the rows share one hairline recipe.
+    expect(row.parentElement).toHaveClass('biorouter-settings-list');
+  });
+
+  it('puts "Add custom provider" in the API list as a row', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    const add = screen.getByTestId('add-custom-provider-card');
+    expect(add).toHaveClass('biorouter-settings-row');
+    expect(add).toHaveTextContent(catalogCopy.addCustom);
+    expect(add.querySelector('svg')).not.toBeNull();
+  });
+
+  it('gives the agents’ section its reason as an InfoTip beside the heading', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('claude_code', { state: 'signed_out' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('claude_code', {}, 'Claude Code'), provider('anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('commercial');
+    const section = await screen.findByTestId('catalog-section-agents');
+    expect(
+      within(section).getByRole('heading', { name: 'AI agents · your subscription' })
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole('button', { name: 'About AI agents · your subscription' })
+    ).toBeInTheDocument();
+    // No paragraph under the heading.
+    expect(section.querySelector('h2 + p')).toBeNull();
+  });
+
+  it('gives an institution’s section no tip: its note would only list the rows beneath it', () => {
+    render(
+      <ProviderCatalog
+        providers={[
+          provider('versa_azure', {
+            ...PRIVATE_REMOTE,
+            institutions: UCSF,
+            resolved_tier: 'private',
+            affiliation: { kind: 'institutions', institutions: UCSF },
+          }),
+        ]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('institutional');
+    const section = screen.getByTestId('catalog-section-ucsf');
+    expect(within(section).getByRole('heading', { name: 'UCSF' })).toBeInTheDocument();
+    expect(within(section).queryByRole('button', { name: /^About / })).toBeNull();
+  });
+
+  it('asks "Don’t see your institution?" in one quiet line, with the answer in its InfoTip', () => {
+    render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
+    clickTab('institutional');
+    const line = screen.getByTestId('other-institutions-note');
+    expect(line).toHaveTextContent(catalogCopy.otherInstitutions);
+    expect(line.className).not.toMatch(/border|rounded/);
+    const tip = within(line).getByRole('button', {
+      name: `About ${catalogCopy.otherInstitutions}`,
+    });
+    expect(tip).toBeInTheDocument();
+    // Words, not an arrow.
+    expect(catalogCopy.otherInstitutionsHelp).not.toMatch(/→/);
+  });
+
+  it('opens a panel with its tier line, not a heading that repeats the tab', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('llamacpp', PRIVATE_LOCAL, 'Llama Server')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('local');
+    expect(screen.queryByRole('heading', { name: /Private · Local/ })).toBeNull();
+    expect(document.querySelector('.br-provider-tier-note')).toHaveTextContent(
+      /^Private because inference runs on this machine/
+    );
   });
 });

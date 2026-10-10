@@ -1,8 +1,12 @@
 import { useMemo } from 'react';
-import { Check, ChevronDown } from '../../../icons/app-icons';
+import { ChevronDown } from '../../../icons/app-icons';
 import DefaultCardButtons from './buttons/DefaultCardButtons';
 import { ProviderDetails, ProviderMetadata } from '../../../../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
+import { StatusDot } from '../../../ui/status-dot';
+import { cn } from '../../../../utils';
+import { catalogCopy } from '../copy';
+import '../providers.css';
 
 type ProviderCardProps = {
   provider: ProviderDetails;
@@ -22,18 +26,23 @@ type ProviderCardProps = {
 };
 
 /**
- * One row of the provider catalog.
+ * One row of the provider catalog: the shared settings row, a name over a one-line description
+ * on the left, "Configured" as a success dot and a word, and one action on the right.
  *
  * ⚠ **One row definition, two behaviours.** An expandable row and a
- * click-to-configure row are the same header markup — the same avatar, the same
- * name and one-line description, the same "Configured" check, the same hover
- * actions — because they sit in the same list and any divergence reads as two
- * different kinds of thing. Only what the click *does* differs.
+ * click-to-configure row are the same header markup — the same name and one-line
+ * description, the same "Configured" status, the same hover actions — because they sit in the
+ * same list and any divergence reads as two different kinds of thing. Only what the click
+ * *does* differs. There is no initial tile: a Codex-style row is text.
  *
  * ⚠ **No state-dependent shading.** An unconfigured provider used to render at
  * `opacity-50` during onboarding, which made the rows a user is there to act on
  * the faintest thing on the screen. Configured state is said in words
- * ("Configured", with a check) rather than by dimming everything that is not.
+ * ("Configured", with a dot) rather than by dimming everything that is not.
+ *
+ * ⚠ **The rows stay siblings.** `.biorouter-settings-row:last-child` is what drops the last
+ * hairline, so an expandable row and its panel are two siblings in the list, not one wrapper
+ * (a wrapper made every row its parent's last child and erased every hairline).
  */
 export const ProviderCard = function ProviderCard({
   provider,
@@ -54,67 +63,58 @@ export const ProviderCard = function ProviderCard({
   }
 
   const displayName = metadata.display_name || provider?.name || 'Unknown Provider';
-  const initial = displayName[0].toUpperCase();
   const slug = provider.name.toLowerCase();
 
-  /** Avatar + name + description: everything that is pure identification. */
+  /** Name + description: everything that is pure identification. */
   const identity = (
-    <>
-      <div className="w-8 h-8 rounded-element bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none">
-        {initial}
+    <div className="min-w-0 flex-1 text-left">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <p className="truncate text-label text-text-default">{displayName}</p>
+        {statusSlot}
       </div>
-      <div className="flex-1 min-w-0 text-left">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-          <p className="text-sm font-medium text-text-default truncate">{displayName}</p>
-          {statusSlot}
-        </div>
-        {metadata.description && (
-          <Tooltip>
-            {/* Focusable, so a keyboard user can open the tooltip that holds the
-                rest of a truncated description: a Radix trigger opens on focus
-                as well as hover, but only if it can take focus. */}
-            <TooltipTrigger asChild>
-              <p
-                tabIndex={0}
-                data-testid={`provider-description-${slug}`}
-                className="text-xs text-text-muted mt-0.5 truncate cursor-default rounded-element biorouter-focus-surface"
-              >
-                {metadata.description}
-              </p>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-72 text-wrap">
+      {metadata.description && (
+        <Tooltip>
+          {/* Focusable, so a keyboard user can open the tooltip that holds the
+              rest of a truncated description: a Radix trigger opens on focus
+              as well as hover, but only if it can take focus. */}
+          <TooltipTrigger asChild>
+            <p
+              tabIndex={0}
+              data-testid={`provider-description-${slug}`}
+              className="cursor-default truncate rounded-element text-supporting text-text-muted biorouter-focus-surface"
+            >
               {metadata.description}
-            </TooltipContent>
-          </Tooltip>
-        )}
-      </div>
-    </>
+            </p>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-72 text-wrap">
+            {metadata.description}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
   );
 
-  /** The configured check and the action buttons. */
+  /** The configured status and the action button. */
   const actions = (
-    <div className="flex items-center gap-3 flex-shrink-0">
+    <div className="br-provider-row-end">
       {provider.is_configured && (
-        <span className="flex items-center gap-1 text-xs text-text-success font-medium">
-          <Check className="w-3 h-3" />
-          Configured
+        <span className="br-provider-configured text-supporting text-text-muted">
+          <StatusDot tone="success" />
+          {catalogCopy.configured}
         </span>
       )}
       {/* ⚠ Keyed on the MODE, not on whether the row expands. Exempting
           expandable rows left the two coding-agent rows wearing a permanent
           Configure button in a list where every other row reveals one on hover,
           which reads as two different kinds of row rather than as one list.
-          ⚠ Revealed on focus as well as hover. Hover alone left a keyboard
-          user tabbing onto a Configure button, and its focus ring, at opacity
-          0 (W2-PRV-4). This button is the row's keyboard path: the row's own
-          click is a mouse convenience that does the same thing. */}
+          ⚠ `.br-row-actions` is the shared reveal: opacity only, on the row's hover AND
+          focus-within, and always shown without a hover pointer. Hover alone left a keyboard
+          user tabbing onto a Configure button, and its focus ring, at opacity 0 (W2-PRV-4).
+          This button is the row's keyboard path: the row's own click is a mouse convenience
+          that does the same thing. */}
       <div
         data-testid={`provider-actions-${slug}`}
-        className={
-          !isOnboarding
-            ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150'
-            : ''
-        }
+        className={cn('flex items-center', !isOnboarding && 'br-row-actions')}
       >
         <DefaultCardButtons
           provider={provider}
@@ -128,8 +128,11 @@ export const ProviderCard = function ProviderCard({
 
   if (expandable) {
     return (
-      <div data-testid={`provider-card-${slug}`} className="min-w-0">
-        <div className="flex items-center gap-3 py-3 px-4 rounded-container transition-colors group tint-interactive">
+      <>
+        <div
+          data-testid={`provider-card-${slug}`}
+          className="biorouter-settings-row br-setting-row"
+        >
           {/*
             A real <button>, so the row is reachable by keyboard and announces
             its own state. The action buttons stay OUTSIDE it: a <button> nested
@@ -141,12 +144,11 @@ export const ProviderCard = function ProviderCard({
             aria-expanded={expanded}
             onClick={onToggle}
             data-testid={`provider-row-toggle-${slug}`}
-            className="flex flex-1 min-w-0 items-center gap-3 cursor-pointer text-left"
+            className="br-provider-row-toggle cursor-pointer"
           >
             <ChevronDown
-              className={`w-3.5 h-3.5 flex-shrink-0 text-text-muted transition-transform duration-[var(--motion-fast)] ${
-                expanded ? '' : '-rotate-90'
-              }`}
+              className="br-provider-chevron size-3.5"
+              data-expanded={expanded ? 'true' : 'false'}
               aria-hidden
             />
             {identity}
@@ -154,11 +156,11 @@ export const ProviderCard = function ProviderCard({
           {actions}
         </div>
         {expanded && (
-          <div className="px-4 pb-4" data-testid={`provider-row-panel-${slug}`}>
+          <div className="br-provider-panel" data-testid={`provider-row-panel-${slug}`}>
             {children}
           </div>
         )}
-      </div>
+      </>
     );
   }
 
@@ -170,11 +172,7 @@ export const ProviderCard = function ProviderCard({
     <div
       data-testid={`provider-card-${slug}`}
       onClick={!isOnboarding ? onConfigure : undefined}
-      className={[
-        'flex items-center gap-3 py-3 px-4 rounded-container',
-        'transition-colors group',
-        isOnboarding ? 'cursor-default' : 'cursor-pointer tint-interactive',
-      ].join(' ')}
+      className={cn('biorouter-settings-row br-setting-row', !isOnboarding && 'cursor-pointer')}
     >
       {identity}
       {actions}

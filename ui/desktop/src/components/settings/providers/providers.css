@@ -1,0 +1,64 @@
+/*
+ * The provider catalog's row geometry (codex simplicity redesign, spec 3.13).
+ *
+ * A provider row is the shared settings row (`.biorouter-settings-row .br-setting-row`: the
+ * 40px floor, the straight hairline, one hover wash) with a name over a one-line description on
+ * the left and a status plus one action on the right. Authored here, next to the component,
+ * rather than as new Tailwind strings: a newly written utility can silently fail to generate
+ * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+
+/* The row's text block and its right-hand cluster. */
+.br-provider-row-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+
+/* "Configured": a success dot and a word, as the Scheduler's status does. */
+.br-provider-configured {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* The accordion rows (coding agents, and the local providers during first run): the whole
+   identity is one button so the row opens by keyboard and announces its state. */
+.br-provider-row-toggle {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  text-align: start;
+}
+
+.br-provider-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast-max) var(--ease-out);
+}
+
+.br-provider-chevron[data-expanded='false'] {
+  transform: rotate(-90deg);
+}
+
+/* What an open row reveals, on the row's own inset. */
+.br-provider-panel {
+  padding: 4px 12px 16px;
+}
+
+/* A line of the catalog's tab panel: the tier note under the tabs, and the institutions line. */
+.br-provider-tier-note {
+  margin-block-end: 16px;
+  padding-inline: 12px;
+}
+
+.br-provider-other-institutions {
+  display: flex;
+  align-items: center;
+  padding-inline: 12px;
+  padding-block-start: 8px;
+}

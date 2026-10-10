@@ -119,17 +119,24 @@ describe('ProviderCatalog — the privacy taxonomy, on screen', () => {
     });
   });
 
-  it('each tab names the two taxonomies with the same words', () => {
+  // The panel no longer repeats its tab's name as a heading ("Private · Local" under "Local"):
+  // the one muted line under the tabs says the tier, and starts with the same word the dot means.
+  // It is read off the line itself: a section's InfoTip can carry a similar sentence.
+  it('each tab opens with the one line that says its tier and why, as visible text', () => {
     renderCatalog();
-
-    clickTab('local');
-    expect(screen.getByText(/Private · Local/)).toBeInTheDocument();
-
-    clickTab('institutional');
-    expect(screen.getByText(/Private · Institutional/)).toBeInTheDocument();
-
-    clickTab('commercial');
-    expect(screen.getByText(/Public · Commercial/)).toBeInTheDocument();
+    const expected = {
+      local: /^Private because inference runs on this machine/,
+      institutional: /^Private because Biorouter recognizes this institutional gateway endpoint/,
+      commercial: /^Public\. /,
+    } as const;
+    for (const tab of ['local', 'institutional', 'commercial'] as const) {
+      clickTab(tab);
+      const line = document.querySelector('.br-provider-tier-note');
+      expect(line, `${tab}: the tier line`).not.toBeNull();
+      expect(line).toHaveTextContent(expected[tab]);
+      // Privacy information is never behind a hover.
+      expect(line?.closest('.br-info-tip')).toBeNull();
+    }
   });
 
   it('the old headings are gone from every panel, not merely from the open one', () => {
@@ -195,7 +202,7 @@ describe('ProviderCatalog — the privacy taxonomy, on screen', () => {
     mocks.getPrivacyDisclosure.mockRejectedValue(new Error('offline'));
     renderCatalog();
     clickTab('commercial');
-    expect(await screen.findByText(/Public · Commercial/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Public\. /)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId('non-private-model-note')).toBeNull());
   });
 });

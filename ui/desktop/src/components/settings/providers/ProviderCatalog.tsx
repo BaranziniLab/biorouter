@@ -9,7 +9,9 @@ import {
   UpdateCustomProviderRequest,
 } from '../../../api';
 import { Plus } from '../../icons/app-icons';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
+import { ModalShell } from '../../ModalShell';
+import { InfoTip } from '../../ui/info-tip';
+import { SettingSection } from '../../ui/setting-row';
 import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { holdChatModel } from '../models/pendingChatModel';
@@ -21,6 +23,8 @@ import { useConfig } from '../../ConfigContext';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Note } from '../../ui/note';
 import { Button } from '../../ui/button';
+import { catalogCopy, customProviderCopy } from './copy';
+import './providers.css';
 import {
   RETIRED_AZURE_ENDPOINT_NOTICE,
   isRetiredAzureDefaultEndpoint,
@@ -215,16 +219,13 @@ const AddCustomProviderRow = React.memo(function AddCustomProviderRow({
 }) {
   return (
     <button
+      type="button"
       data-testid="add-custom-provider-card"
       onClick={onClick}
-      className="w-full flex items-center gap-3 py-3 px-4 rounded-container
-        cursor-pointer tint-interactive
-        transition-colors text-left"
+      className="biorouter-settings-row br-setting-row w-full cursor-pointer text-left"
     >
-      <div className="w-8 h-8 rounded-element flex items-center justify-center flex-shrink-0">
-        <Plus className="w-4 h-4 text-text-muted" />
-      </div>
-      <p className="text-label text-text-muted">Add custom provider</p>
+      <Plus className="size-4 shrink-0 text-text-muted" aria-hidden />
+      <span className="text-label text-text-muted">{catalogCopy.addCustom}</span>
     </button>
   );
 });
@@ -595,14 +596,8 @@ export default function ProviderCatalog({
         INSTITUTIONAL_SETUP_PROVIDER_IDS.includes(provider.name)
       );
 
-    return (
-      <div key={section.key} data-testid={`catalog-section-${section.key}`}>
-        {section.label && (
-          <>
-            <h3 className="text-caps text-text-muted mb-1">{section.label}</h3>
-            {section.note && <p className="text-supporting text-text-muted mb-3">{section.note}</p>}
-          </>
-        )}
+    const rows = (
+      <>
         {/*
           Issue #56, DR-17 requirement 3. The API-provider section — and only it —
           carries the standing one-line disclosure of what a model there can
@@ -611,7 +606,7 @@ export default function ProviderCatalog({
           two homes and stays wrong.
         */}
         {isApiSection && (
-          <NonPrivateModelDisclosureNote className="text-supporting text-text-muted mb-3" />
+          <NonPrivateModelDisclosureNote className="px-3 pb-2 text-supporting text-text-muted" />
         )}
         {/*
           The fastest path for someone who already holds a key, at the TOP of the
@@ -628,12 +623,20 @@ export default function ProviderCatalog({
             />
           </div>
         )}
-        <div className="divide-y divide-border-subtle">
-          {section.providers.map(renderRow)}
-          {isApiSection && (
-            <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />
-          )}
-        </div>
+        {section.providers.map(renderRow)}
+        {isApiSection && <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />}
+      </>
+    );
+
+    return (
+      <div key={section.key} data-testid={`catalog-section-${section.key}`}>
+        {section.label ? (
+          <SettingSection title={section.label} help={section.help}>
+            {rows}
+          </SettingSection>
+        ) : (
+          <div className="biorouter-settings-list">{rows}</div>
+        )}
         {hostsInstitutionalSetup && (
           <div className="mt-4 border-t border-border-subtle pt-4">
             <InstitutionalSetupCard
@@ -648,14 +651,11 @@ export default function ProviderCatalog({
   };
 
   const renderPanel = (group: OrderedProviderGroup) => (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-caps text-text-muted mb-1 flex items-center gap-2">
-          <span className={`w-1.5 h-1.5 ${group.accentClassName} rounded-full flex-shrink-0`} />
-          {group.label}
-        </h2>
-        <p className="text-supporting text-text-muted">{group.note}</p>
-      </div>
+    <div>
+      {/* §14.5: why this tab has the tier it has. PRIVACY information, so it is a visible line,
+          never an InfoTip, and it is the only line a panel opens with: the tab already names
+          the group, and this line starts with the same words ("Private because…", "Public."). */}
+      <p className="br-provider-tier-note text-supporting text-text-muted">{group.note}</p>
 
       {group.key === 'commercial' && agentControls.loadError && !agentControls.agents && (
         <CodingAgentLoadError message={agentControls.loadError} controls={agentControls} />
@@ -664,8 +664,11 @@ export default function ProviderCatalog({
       {group.sections.map((section) => renderSection(group, section))}
 
       {group.providers.length === 0 && group.key !== 'commercial' && (
-        <p className="text-supporting text-text-muted" data-testid={`catalog-empty-${group.key}`}>
-          Nothing here yet.
+        <p
+          className="px-3 text-supporting text-text-muted"
+          data-testid={`catalog-empty-${group.key}`}
+        >
+          {catalogCopy.emptyTab}
         </p>
       )}
 
@@ -674,20 +677,13 @@ export default function ProviderCatalog({
         than implied by an empty tab. It is the honest answer to "why is my
         university not listed?", and it names the only two outcomes available:
         Biorouter recognises the endpoint, or it does not and the account is
-        treated as public.
+        treated as public. A quiet line with the answer one hover away; the tab's own note
+        already says the public half in full.
       */}
       {group.key === 'institutional' && (
-        <div
-          className="rounded-container border border-border-subtle px-4 py-3"
-          data-testid="other-institutions-note"
-        >
-          <h3 className="text-caps text-text-muted mb-1">Other institutions</h3>
-          <p className="text-supporting text-text-muted">
-            An institution&apos;s gateway appears here once Biorouter recognizes its endpoint as
-            private. Anything else can still be added under Public → Add custom provider, and is
-            treated as public: Biorouter cannot verify where that endpoint points, so it gets none
-            of the private tier&apos;s protections.
-          </p>
+        <div className="br-provider-other-institutions" data-testid="other-institutions-note">
+          <span className="text-secondary text-text-muted">{catalogCopy.otherInstitutions}</span>
+          <InfoTip label={catalogCopy.otherInstitutions} help={catalogCopy.otherInstitutionsHelp} />
         </div>
       )}
     </div>
@@ -706,10 +702,12 @@ export default function ProviderCatalog({
   // "Configure  Provider" for every built-in declarative provider, set up or not.
   const editingName = editingProvider?.config.display_name || 'provider';
   const customModalTitle = !editingProvider
-    ? 'Add provider'
+    ? customProviderCopy.add
     : !editingProvider.isConfigured
-      ? `Set up ${editingName}`
-      : `${editable ? 'Edit' : 'Configure'} ${editingName}`;
+      ? customProviderCopy.setUp(editingName)
+      : editable
+        ? customProviderCopy.edit(editingName)
+        : customProviderCopy.configure(editingName);
 
   return (
     <>
@@ -727,18 +725,18 @@ export default function ProviderCatalog({
         onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
         className="flex flex-col"
       >
-        {/* The same list, triggers and class Settings uses — one tab vocabulary
-            across the app, not a second one that happens to look similar. */}
-        <TabsList className="biorouter-settings-tabs justify-start w-fit border-b-0 mb-5">
+        {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
+            colour that says private from public at a glance. */}
+        <TabsList className="mb-4">
           {groups.map((group) => (
             <TabsTrigger
               key={group.key}
               value={group.key}
-              className="flex gap-2 text-label"
+              className="gap-2"
               data-testid={`catalog-tab-${group.key}`}
             >
               <span
-                className={`w-1.5 h-1.5 ${group.accentClassName} rounded-full flex-shrink-0`}
+                className={`size-1.5 ${group.accentClassName} flex-shrink-0 rounded-full`}
                 aria-hidden
               />
               {group.tabLabel}
@@ -753,20 +751,24 @@ export default function ProviderCatalog({
         ))}
       </Tabs>
 
-      <Dialog open={showCustomProviderModal} onOpenChange={handleCloseCustomModal}>
-        <DialogContent aria-describedby={undefined} className="sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>{customModalTitle}</DialogTitle>
-          </DialogHeader>
-          <CustomProviderForm
-            initialData={initialData}
-            isEditable={editable}
-            hasSavedKey={editingProvider?.isConfigured ?? true}
-            onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
-            onCancel={handleCloseCustomModal}
-          />
-        </DialogContent>
-      </Dialog>
+      <ModalShell
+        open={showCustomProviderModal}
+        onOpenChange={(open) => {
+          if (!open) handleCloseCustomModal();
+        }}
+        size="md"
+        purpose="form"
+        scrollBody
+        title={customModalTitle}
+      >
+        <CustomProviderForm
+          initialData={initialData}
+          isEditable={editable}
+          hasSavedKey={editingProvider?.isConfigured ?? true}
+          onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
+          onCancel={handleCloseCustomModal}
+        />
+      </ModalShell>
       {configuringProvider && (
         <ProviderConfigurationModal
           provider={configuringProvider}

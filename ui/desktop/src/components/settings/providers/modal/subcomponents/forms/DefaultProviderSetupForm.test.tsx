@@ -1,9 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
 import DefaultProviderSetupForm, { type ConfigInput } from './DefaultProviderSetupForm';
 import CustomProviderForm from './CustomProviderForm';
+import { customProviderCopy } from '../../../copy';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn() }));
@@ -97,13 +98,22 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     );
   });
 
-  // ⚠ By the config key, never by the words: the reveal toggle's accessible
-  // name is "Show Secret Access Key", so a query for the words would match the
-  // button as well as the field.
+  // ⚠ An EXACT label: the reveal toggle's accessible name is "Show Secret Access Key" and the
+  // label's InfoTip is "About Secret Access Key", so a pattern would match all three.
   it('labels each field, so a screen reader names the masked one', async () => {
     render(<Harness />);
     const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
-    expect(screen.getByLabelText(/\(VERSA_BEDROCK_SECRET_ACCESS_KEY\)/)).toBe(input);
+    expect(screen.getByLabelText('Secret Access Key')).toBe(input);
+  });
+
+  // The config key a field writes is machine text: it is the label's InfoTip, and the field is
+  // described by it, so a screen reader hears it on reaching the field (principle 10).
+  it('keeps the config key behind the label, reachable from the field', async () => {
+    render(<Harness />);
+    const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
+    expect(input).toHaveAccessibleDescription('Saved as VERSA_BEDROCK_SECRET_ACCESS_KEY.');
+    expect(screen.queryByText('(VERSA_BEDROCK_SECRET_ACCESS_KEY)')).toBeNull();
+    expect(screen.getByRole('button', { name: 'About Secret Access Key' })).toBeInTheDocument();
   });
 
   it('stays masked while typing, and reveals only on an explicit toggle', async () => {
@@ -127,22 +137,6 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
 });
 
 describe('the two provider forms mask a key the same way', () => {
-  // The custom form's "local model" checkbox is Radix Themes', which measures
-  // itself with a ResizeObserver jsdom does not have.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('gives the custom-provider key the same masked field and the same toggle', () => {
     const { container } = render(
       <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} />
@@ -152,7 +146,7 @@ describe('the two provider forms mask a key the same way', () => {
     expect(input).toHaveAttribute('autocomplete', 'off');
     expect(input).toHaveAttribute('spellcheck', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show API Key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show API key' }));
     expect(input).toHaveAttribute('type', 'text');
   });
 });
@@ -194,14 +188,14 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('leaves the endpoint empty, with a placeholder that says whose it is', async () => {
     render(<Harness provider={azure} />);
 
-    const endpoint = await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+    const endpoint = await screen.findByLabelText('Azure OpenAI Endpoint');
     expect(endpoint).toHaveValue('');
     expect(endpoint).toHaveAttribute('placeholder', 'https://<your-resource>.openai.azure.com');
   });
 
   it('fills in no value that points at the UCSF gateway', async () => {
     render(<Harness provider={azure} />);
-    await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+    await screen.findByLabelText('Azure OpenAI Endpoint');
 
     expect(screen.queryByDisplayValue(/unified-api\.ucsf\.edu/)).toBeNull();
   });
@@ -211,7 +205,7 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('still fills in the API version, which is the same for everyone', async () => {
     render(<Harness provider={azure} />);
 
-    expect(await screen.findByLabelText(/\(AZURE_OPENAI_API_VERSION\)/)).toHaveValue(
+    expect(await screen.findByLabelText('Azure OpenAI API Version')).toHaveValue(
       '2025-01-01-preview'
     );
   });
@@ -239,13 +233,13 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
 
   it('names Llama Server\u2019s external host and suggests this machine for it', async () => {
     render(<Harness provider={llama} />);
-    const input = await screen.findByLabelText(/Llama Server External Host/);
+    const input = await screen.findByLabelText('Llama Server External Host');
     expect(input).toHaveAttribute('placeholder', 'http://127.0.0.1:8080');
-    expect(screen.getByText('(LLAMACPP_EXTERNAL_HOST)')).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription('Saved as LLAMACPP_EXTERNAL_HOST.');
     expect(screen.queryByPlaceholderText('https://api.example.com')).toBeNull();
   });
 
-  it('gives every field its env-var chip, the role-named ones too', async () => {
+  it('gives every field its config key in the label’s InfoTip, the role-named ones too', async () => {
     const azure = {
       ...bedrock,
       name: 'versa_azure',
@@ -256,7 +250,9 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
       },
     } as unknown as ProviderDetails;
     render(<Harness provider={azure} />);
-    expect(await screen.findByText('(VERSA_AZURE_API_KEY)')).toBeInTheDocument();
+    expect(await screen.findByLabelText('API Key')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_API_KEY.'
+    );
   });
 
   it('counts one option as one option', async () => {
@@ -322,7 +318,7 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     );
     const input = container.querySelector('#api-key') as HTMLInputElement;
     expect(input).toHaveAttribute('placeholder', 'Leave blank to keep existing key');
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 });
@@ -364,7 +360,8 @@ describe('DefaultProviderSetupForm in a browser', () => {
 
     const host = await screen.findByDisplayValue('https://api.openai.com');
     expect(host).toBeDisabled();
-    expect(host).toHaveAttribute('aria-describedby', 'provider-config-host-owned-note');
+    // The host-owned note first, then the label's own InfoTip (Field merges both).
+    expect(host.getAttribute('aria-describedby')).toContain('provider-config-host-owned-note');
     const note = screen.getByTestId('host-managed-destination-note');
     expect(note.textContent).toContain('biorouter configure');
     // The key and a setting that goes nowhere stay editable.
@@ -389,21 +386,6 @@ describe('CustomProviderForm in a browser', () => {
     supports_streaming: true,
   };
 
-  // The streaming checkbox is Radix Themes', which measures itself with a
-  // ResizeObserver jsdom does not have.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
   });
@@ -429,14 +411,14 @@ describe('CustomProviderForm in a browser', () => {
     fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
       target: { value: 'https://elsewhere.example/v1' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByText(/Type the key again/)).toBeInTheDocument();
 
     fireEvent.change(container.querySelector('#api-key') as HTMLInputElement, {
       target: { value: 'sk-typed' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 
@@ -444,7 +426,7 @@ describe('CustomProviderForm in a browser', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const onSubmit = vi.fn();
     edit(onSubmit);
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 
@@ -455,7 +437,7 @@ describe('CustomProviderForm in a browser', () => {
     fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
       target: { value: 'https://elsewhere.example/v1' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 });
