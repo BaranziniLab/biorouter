@@ -1,8 +1,19 @@
 import './chat-tabs.css';
 import { requestTabKeyboardFocus, consumeTabKeyboardFocus } from './chatTabKeyboardFocus';
-import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { ChevronDown, X } from '../icons/app-icons';
+import {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Check, ChevronDown, Search, X } from '../icons/app-icons';
 import { cn } from '../../utils';
+import { isWindowResizing, prefersReducedMotion } from '../../styles/motion';
+import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
 import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
@@ -12,7 +23,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
+import { ChatRowRenameInput } from '../chats/ChatRowRenameInput';
+import { renameSessionOptimistically } from '../../utils/sessionNameSync';
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import type { ChatKindSource } from '../chats/chatKind';
@@ -21,6 +35,7 @@ import { useTabDragReorder } from './useTabDragReorder';
 import { useTabBandWindowGesture } from './useTabBandWindowGesture';
 import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
+import { chatTabStripCopy, TAB_MENU_FILTER_MIN } from './copy';
 
 /**
  * A tab is not a session row — it persists `{tabId, sessionId, title}` and
@@ -80,11 +95,44 @@ function tabKindSource(
  */
 export const TAB_BAND_DRAG_GUTTER = 44;
 
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
+/**
+ * A tab's entrance (spec 3.16, "Opening tabs"): `data-tab-entering` puts the
+ * `br-tab-enter` keyframe on it (opacity 0 and `scale` 0.96 to 1 from its left
+ * edge, `--dur-fast-max`, `--ease-out`; an opacity fade under reduced motion),
+ * and the keyframe wins over the active tab's `br-tab-select` settle.
+ *
+ * ⚠ **The attribute leaves an ACTIVE tab only when it stops being active,**
+ * never at `animationend`. Dropping it the moment the entrance ends would swap
+ * the computed `animation` from `br-tab-enter` to `br-tab-select`, and a CSS
+ * animation whose name newly applies starts from its first keyframe: the new tab
+ * would grow in and then settle a second time. An inactive tab has no animation
+ * under it, so it lets go at `animationend`; the active one lets go in
+ * {@link releaseSettledEntrances}.
+ */
+function markTabEntering(el: HTMLElement): void {
+  el.dataset.tabEntering = 'true';
+  const onEnd = (event: Event) => {
+    if (event.target !== el) return;
+    el.removeEventListener('animationend', onEnd);
+    el.removeEventListener('animationcancel', onEnd);
+    if (el.dataset.active !== 'true') delete el.dataset.tabEntering;
+  };
+  el.addEventListener('animationend', onEnd);
+  el.addEventListener('animationcancel', onEnd);
+}
+
+/** Drop `data-tab-entering` from every tab that is no longer the active one. */
+function releaseSettledEntrances(strip: HTMLElement): void {
+  for (const el of strip.querySelectorAll<HTMLElement>('[data-tab-entering]')) {
+    if (el.dataset.active !== 'true') delete el.dataset.tabEntering;
+  }
+}
+
+/** True when a tab title matches the overflow menu's filter (case-insensitive substring). */
+export function tabMatchesFilter(title: string, filter: string): boolean {
+  const needle = filter.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return title.toLocaleLowerCase().includes(needle);
 }
 
 export interface ChatTabStripProps {
@@ -234,6 +282,11 @@ export function ChatTabStrip({
   // spring itself is browser-verified (the repo's Prism/Tailwind lesson).
   const tabOffsetsRef = useRef<Map<string, number>>(new Map());
   const orderKey = tabs.map((t) => t.tabId).join('␟');
+  // Mounting is not opening (spec principle 9): the tabs a strip MOUNTS with —
+  // a reload restoring them, a window opening with them, a tab torn off into a
+  // new window — appear at rest. Only a tab that arrives after the first pass
+  // grows in.
+  const hasPaintedRef = useRef(false);
 
   useLayoutEffect(() => {
     const strip = stripRef.current;
@@ -245,6 +298,22 @@ export function ChatTabStrip({
       if (el.dataset.tabId) next.set(el.dataset.tabId, el.offsetLeft);
     }
     tabOffsetsRef.current = next;
+
+    const animateEntrances = hasPaintedRef.current;
+    hasPaintedRef.current = true;
+
+    // Layout snaps while the window or the sidebar is being dragged: nothing
+    // slides or fades against a resize (spec principle 9).
+    if (isWindowResizing()) return;
+
+    // A new tab's entrance. Under reduced motion the CSS rests it to a fade, so
+    // it is marked either way; only the FLIP below is movement-only.
+    if (animateEntrances) {
+      for (const el of els) {
+        const tabId = el.dataset.tabId;
+        if (tabId && !previous.has(tabId)) markTabEntering(el);
+      }
+    }
 
     if (prefersReducedMotion()) return;
 
@@ -259,8 +328,8 @@ export function ChatTabStrip({
       const tabId = el.dataset.tabId;
       if (!tabId) continue;
       const before = previous.get(tabId);
-      // A tab with no previous slot is newly opened — it appears in place
-      // rather than sliding in from nowhere.
+      // A tab with no previous slot is newly opened: it grows in where it
+      // lands (above) rather than sliding in from nowhere.
       if (before === undefined) continue;
       const delta = before - (next.get(tabId) ?? before);
       if (delta === 0) continue;
@@ -303,7 +372,7 @@ export function ChatTabStrip({
       rafIds.push(
         window.requestAnimationFrame(() => {
           if (!el.isConnected) return;
-          el.style.transition = 'translate var(--motion-base) var(--ease-spring)';
+          el.style.transition = 'translate var(--dur-fast-max) var(--ease-spring)';
           el.style.translate = '';
           el.addEventListener('transitionend', onDone);
           el.addEventListener('transitioncancel', onDone);
@@ -317,6 +386,13 @@ export function ChatTabStrip({
     };
     // Keyed on the rendered order string — the DOM is the dependency here.
   }, [orderKey]);
+
+  // The active tab keeps its entrance attribute until it stops being active
+  // (see markTabEntering); this is where it lets go.
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (strip) releaseSettledEntrances(strip);
+  }, [activeTabId]);
 
   const revealActiveTab = useCallback(() => {
     const strip = stripRef.current;
@@ -383,7 +459,59 @@ export function ChatTabStrip({
   // that it sits outside this element's draggable border box (#74).
   const leftReserve = getSessionTitlePadding(isCompactSidebarOverlayOpen, reserveTitlebar);
 
-  const handleKeyDown = (event: React.KeyboardEvent, index: number) => {
+  // P3 (spec 3.16): Rename on a tab, in place, with the sidebar's editor and
+  // the same optimistic helper, so the tab, the sidebar row and History all take
+  // the new name from one announcement (`sessionNameSync`).
+  const [editing, setEditing] = useState<{ tabId: ChatTabId; draft: string } | null>(null);
+  const renameAfterMenuRef = useRef<ChatTabId | null>(null);
+  const focusAfterRenameRef = useRef<ChatTabId | null>(null);
+
+  const startRename = useCallback(
+    (tabId: ChatTabId) => {
+      const tab = tabs.find((candidate) => candidate.tabId === tabId);
+      if (!tab) return;
+      setEditing({ tabId, draft: tab.title });
+    },
+    [tabs]
+  );
+
+  const endRename = (tabId: ChatTabId) => {
+    focusAfterRenameRef.current = tabId;
+    setEditing(null);
+  };
+
+  const commitRename = (tab: ChatTab, value: string) => {
+    endRename(tab.tabId);
+    void renameSessionOptimistically(tab.sessionId, value, {
+      name: tab.title,
+      userSetName: tab.userSetName,
+    });
+  };
+
+  // Focus goes back to the tab once its editor closes.
+  useLayoutEffect(() => {
+    const tabId = focusAfterRenameRef.current;
+    if (!tabId || editing) return;
+    focusAfterRenameRef.current = null;
+    stripRef.current
+      ?.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(tabId)}"] [role="tab"]`)
+      ?.focus({ preventScroll: true });
+  }, [editing]);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    const tab = tabs[index];
+    if (tab && event.key === 'F2' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      startRename(tab.tabId);
+      return;
+    }
+    // Shift+F10 and the Menu key open the tab's menu, as a right-click does.
+    // Chromium on macOS dispatches no `contextmenu` for them, so the tab does.
+    if (isContextMenuKey(event)) {
+      event.preventDefault();
+      openContextMenuFromKeyboard(event.currentTarget);
+      return;
+    }
     // Roving tabindex: both tab surfaces have promised role="tablist" and never
     // delivered arrow-key navigation. This one does.
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
@@ -457,7 +585,7 @@ export function ChatTabStrip({
     >
       <div
         role="tablist"
-        aria-label="Open chats"
+        aria-label={chatTabStripCopy.tablistLabel}
         data-testid="chat-tab-strip"
         ref={stripRef}
         // The drag hit-tests THIS before it hit-tests the group's zones: a strip
@@ -571,64 +699,103 @@ export function ChatTabStrip({
                   window resumes `tab.sessionId`, whose record carries the real
                   directory — so an empty one is passed through rather than
                   guessed at. */}
-              <ContextMenu>
-                <ContextMenuTrigger asChild>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isActive}
-                    tabIndex={isActive ? 0 : -1}
+              {editing?.tabId === tab.tabId ? (
+                // The tab becomes its own editor (P3): the glyph stays, the
+                // label turns into the sidebar's rename field. Pointer presses
+                // inside it must not start a tab drag or a window gesture.
+                <div
+                  className="flex min-w-0 flex-1 items-center gap-2"
+                  onPointerDown={(event) => event.stopPropagation()}
+                >
+                  <ChatKindIcon
+                    session={tabKindSource(
+                      tab,
+                      tabAnnotations[tab.sessionId],
+                      sessionTypes[tab.sessionId]
+                    )}
+                    tier={privacyTiers[tab.sessionId]}
+                    className="h-4 w-4 br-tab__privacy-dot"
+                  />
+                  <ChatRowRenameInput
                     title={tab.title}
-                    // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
-                    // here was the last arbitrary one in the strip — a document tab
-                    // and a nav row now measure the same distance from glyph to
-                    // word. `gap-2` is the token, not a magic number.
-                    className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
-                    onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
-                    onFocus={isActive ? revealActiveTab : undefined}
-                    onKeyDown={(event) => handleKeyDown(event, index)}
-                    onClick={() => {
-                      // Swallow the synthetic click that ends a drag — otherwise
-                      // dropping a tab also activates whatever you dropped it on.
-                      if (guardClick()) return;
-                      handleSelect(tab.tabId);
+                    value={editing.draft}
+                    onChange={(draft) => setEditing({ tabId: tab.tabId, draft })}
+                    onCommit={(value) => commitRename(tab, value)}
+                    onCancel={() => endRename(tab.tabId)}
+                    className="br-tab__rename"
+                  />
+                </div>
+              ) : (
+                <ContextMenu>
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      tabIndex={isActive ? 0 : -1}
+                      title={tab.title}
+                      // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
+                      // here was the last arbitrary one in the strip — a document tab
+                      // and a nav row now measure the same distance from glyph to
+                      // word. `gap-2` is the token, not a magic number.
+                      className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+                      onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
+                      onFocus={isActive ? revealActiveTab : undefined}
+                      onKeyDown={(event) => handleKeyDown(event, index)}
+                      onClick={() => {
+                        // Swallow the synthetic click that ends a drag — otherwise
+                        // dropping a tab also activates whatever you dropped it on.
+                        if (guardClick()) return;
+                        handleSelect(tab.tabId);
+                      }}
+                    >
+                      {/* ⚠ The leading glyph now carries BOTH what the tab is and
+                      whether it is private, replacing an identical-for-every-tab
+                      bubble plus a separate dense privacy dot.
+
+                      It keeps the two properties the dot was given for: no
+                      animation, and no `group-hover:hidden` rule. The running dot
+                      hides on hover so the close control can take its slot; a
+                      privacy marker that disappears exactly when you point at the
+                      tab is not a privacy marker. Living at the OTHER END of the
+                      tab from the running dot is what lets a running private chat
+                      show both at once instead of the two fighting over one slot.
+
+                      The `sub` text chip is gone with it — a sub-agent now reads
+                      as a robot glyph in the same slot as every other kind,
+                      instead of a word competing with the title for width. */}
+                      <ChatKindIcon
+                        session={tabKindSource(
+                          tab,
+                          tabAnnotations[tab.sessionId],
+                          sessionTypes[tab.sessionId]
+                        )}
+                        tier={privacyTiers[tab.sessionId]}
+                        className="h-4 w-4 br-tab__privacy-dot"
+                      />
+                      <span className="br-tab__label">{tab.title}</span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <ChatRowContextMenuContent
+                    target={{
+                      sessionId: tab.sessionId,
+                      workingDir: tab.cwd,
+                      openInNewTab: () => onSelect(tab.tabId),
                     }}
-                  >
-                    {/* ⚠ The leading glyph now carries BOTH what the tab is and
-                    whether it is private, replacing an identical-for-every-tab
-                    bubble plus a separate dense privacy dot.
-
-                    It keeps the two properties the dot was given for: no
-                    animation, and no `group-hover:hidden` rule. The running dot
-                    hides on hover so the close control can take its slot; a
-                    privacy marker that disappears exactly when you point at the
-                    tab is not a privacy marker. Living at the OTHER END of the
-                    tab from the running dot is what lets a running private chat
-                    show both at once instead of the two fighting over one slot.
-
-                    The `sub` text chip is gone with it — a sub-agent now reads
-                    as a robot glyph in the same slot as every other kind,
-                    instead of a word competing with the title for width. */}
-                    <ChatKindIcon
-                      session={tabKindSource(
-                        tab,
-                        tabAnnotations[tab.sessionId],
-                        sessionTypes[tab.sessionId]
-                      )}
-                      tier={privacyTiers[tab.sessionId]}
-                      className="h-4 w-4 br-tab__privacy-dot"
-                    />
-                    <span className="br-tab__label">{tab.title}</span>
-                  </button>
-                </ContextMenuTrigger>
-                <ChatRowContextMenuContent
-                  target={{
-                    sessionId: tab.sessionId,
-                    workingDir: tab.cwd,
-                    openInNewTab: () => onSelect(tab.tabId),
-                  }}
-                />
-              </ContextMenu>
+                    // Rename starts once the menu has let go of focus, or the
+                    // menu would hand focus back to the tab over the new field.
+                    onRename={() => {
+                      renameAfterMenuRef.current = tab.tabId;
+                    }}
+                    onCloseAutoFocus={(event) => {
+                      if (renameAfterMenuRef.current !== tab.tabId) return;
+                      renameAfterMenuRef.current = null;
+                      event.preventDefault();
+                      startRename(tab.tabId);
+                    }}
+                  />
+                </ContextMenu>
+              )}
 
               {isRunning ? (
                 // Inactive tabs swap the pulse for Close on hover. The active
@@ -640,12 +807,12 @@ export function ChatTabStrip({
                   <span
                     className={cn('br-tab__dot', !isActive && 'group-hover:hidden')}
                     data-testid={`chat-tab-running-${tab.tabId}`}
-                    aria-label="Running"
+                    aria-label={chatTabStripCopy.running}
                     role="img"
                   />
                   <button
                     type="button"
-                    aria-label={`Close ${tab.title}`}
+                    aria-label={chatTabStripCopy.close(tab.title)}
                     data-testid={`chat-tab-close-${tab.tabId}`}
                     className={cn(
                       'flex-none rounded-sm p-0.5 text-text-muted opacity-0 hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100'
@@ -662,7 +829,7 @@ export function ChatTabStrip({
               ) : (
                 <button
                   type="button"
-                  aria-label={`Close ${tab.title}`}
+                  aria-label={chatTabStripCopy.close(tab.title)}
                   data-testid={`chat-tab-close-${tab.tabId}`}
                   className="flex-none rounded-sm p-0.5 text-text-muted opacity-0 transition-opacity hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100"
                   onPointerDown={(event) => event.stopPropagation()}
@@ -683,57 +850,246 @@ export function ChatTabStrip({
       </div>
 
       {showOverflowMenu && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              aria-label="Show all chats"
-              data-testid="chat-tab-overflow-trigger"
-              className="br-tabstrip__overflow"
-              // This one DOES need its own no-drag: it sits outside the scroll
-              // box, inside the wrap's drag rect. Its position is static (last
-              // flex item before the gutter, so it hangs off the wrap's content
-              // edge) but its EXISTENCE follows the tab count, so the frame in
-              // which it first appears is still routed by the previous region
-              // set and one click on it can be eaten. That is a single button
-              // arriving at an overflow threshold and it self-heals on the next
-              // paint — not the same animal as a tab press moving the window.
-              style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
-            {tabs.map((tab) => (
-              <DropdownMenuItem
-                key={tab.tabId}
-                data-testid={`chat-tab-overflow-item-${tab.tabId}`}
-                onSelect={() => handleSelect(tab.tabId)}
-                className={cn('gap-2', tab.tabId === activeTabId && 'font-medium')}
-              >
-                {/* The overflow menu draws the SAME glyph as the strip: a tab
-                    that scrolls out of view must not change what it is. */}
-                <ChatKindIcon
-                  session={tabKindSource(
-                    tab,
-                    tabAnnotations[tab.sessionId],
-                    sessionTypes[tab.sessionId]
-                  )}
-                  tier={privacyTiers[tab.sessionId]}
-                  className="h-4 w-4"
-                />
-                <span className="min-w-0 flex-1 truncate">{tab.title}</span>
-                {runningSessionIds.includes(tab.sessionId) ? (
-                  // The same glyph the tab carries. One glyph, one meaning — a
-                  // second vocabulary for "running" inside the menu would be a
-                  // third answer to a question the strip already answers.
-                  <span className="br-tab__dot flex-none" aria-label="Running" role="img" />
-                ) : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <TabOverflowMenu
+          tabs={tabs}
+          activeTabId={activeTabId}
+          runningSessionIds={runningSessionIds}
+          onSelectTab={handleSelect}
+          renderGlyph={(tab) => (
+            // The overflow menu draws the SAME glyph as the strip: a tab that
+            // scrolls out of view must not change what it is.
+            <ChatKindIcon
+              session={tabKindSource(
+                tab,
+                tabAnnotations[tab.sessionId],
+                sessionTypes[tab.sessionId]
+              )}
+              tier={privacyTiers[tab.sessionId]}
+              className="h-4 w-4"
+            />
+          )}
+        />
       )}
+    </div>
+  );
+}
+
+interface TabOverflowMenuProps {
+  tabs: ChatTab[];
+  activeTabId: ChatTabId | null;
+  runningSessionIds: readonly string[];
+  onSelectTab: (tabId: ChatTabId) => void;
+  renderGlyph: (tab: ChatTab) => React.ReactNode;
+}
+
+/**
+ * The ▾ menu that lists every tab once some are scrolled out of sight (rung 3
+ * of the yield ladder), on the shared dropdown recipe.
+ *
+ * "Searching tabs" (owner message 1, spec 3.16): from {@link TAB_MENU_FILTER_MIN}
+ * tabs the menu opens with a filter field focused. Typing replaces the list at
+ * once (no row animation, no stagger); the empty line "No tabs match" fades in
+ * over `--dur-fast-max`; Enter opens the first match and ArrowDown walks into
+ * the list. A letter typed while a row has focus (after ArrowDown, or a hover,
+ * which focuses a Radix row) goes back into the field instead of jumping to a
+ * row by its first letter, so the person never has to click back into it.
+ */
+function TabOverflowMenu({
+  tabs,
+  activeTabId,
+  runningSessionIds,
+  onSelectTab,
+  renderGlyph,
+}: TabOverflowMenuProps) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const filterRef = useRef<HTMLInputElement | null>(null);
+  const showFilter = tabs.length >= TAB_MENU_FILTER_MIN;
+  const visible = useMemo(
+    () => (showFilter ? tabs.filter((tab) => tabMatchesFilter(tab.title, filter)) : tabs),
+    [showFilter, tabs, filter]
+  );
+
+  const onOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (!next) setFilter('');
+  };
+
+  const choose = (tabId: ChatTabId) => {
+    onSelectTab(tabId);
+    onOpenChange(false);
+  };
+
+  const firstRow = (from: HTMLElement) =>
+    from
+      .closest('[data-radix-menu-content]')
+      ?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])') ?? null;
+
+  const onFilterKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      firstRow(event.currentTarget)?.focus();
+      return;
+    }
+    if (event.key === 'Enter') {
+      if (event.nativeEvent.isComposing) return;
+      event.preventDefault();
+      if (visible[0]) choose(visible[0].tabId);
+      return;
+    }
+    // A printable key is the field's. Stopping it here keeps the menu's
+    // typeahead from moving focus to a row that starts with that letter.
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.stopPropagation();
+    }
+  };
+
+  // Keys pressed while a ROW has focus. Composed before Radix's own handler,
+  // which a `preventDefault` here skips.
+  const onContentKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const field = filterRef.current;
+    if (!field || event.target === field) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key.length === 1) {
+      event.preventDefault();
+      field.focus();
+      setFilter((current) => current + event.key);
+      return;
+    }
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      field.focus();
+      setFilter((current) => current.slice(0, -1));
+      return;
+    }
+    if (event.key === 'ArrowUp' && event.target === firstRow(field)) {
+      event.preventDefault();
+      field.focus();
+    }
+  };
+
+  return (
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={chatTabStripCopy.overflowTrigger}
+          data-testid="chat-tab-overflow-trigger"
+          className="br-tabstrip__overflow"
+          // This one DOES need its own no-drag: it sits outside the scroll
+          // box, inside the wrap's drag rect. Its position is static (last
+          // flex item before the gutter, so it hangs off the wrap's content
+          // edge) but its EXISTENCE follows the tab count, so the frame in
+          // which it first appears is still routed by the previous region
+          // set and one click on it can be eaten. That is a single button
+          // arriving at an overflow threshold and it self-heals on the next
+          // paint — not the same animal as a tab press moving the window.
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        data-testid="chat-tab-overflow-menu"
+        className="br-tabstrip__menu max-h-[60vh] w-56 overflow-y-auto"
+        onKeyDown={showFilter ? onContentKeyDown : undefined}
+      >
+        {showFilter ? (
+          <TabMenuFilterField
+            inputRef={filterRef}
+            value={filter}
+            onValueChange={setFilter}
+            onKeyDown={onFilterKeyDown}
+          />
+        ) : null}
+        {visible.map((tab) => {
+          const isActive = tab.tabId === activeTabId;
+          const isRunning = runningSessionIds.includes(tab.sessionId);
+          return (
+            <DropdownMenuItem
+              key={tab.tabId}
+              data-testid={`chat-tab-overflow-item-${tab.tabId}`}
+              aria-current={isActive ? 'true' : undefined}
+              onSelect={() => onSelectTab(tab.tabId)}
+            >
+              {renderGlyph(tab)}
+              <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+              {isRunning || isActive ? (
+                <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+                  {isRunning ? (
+                    // The same glyph the tab carries. One glyph, one meaning: a
+                    // second vocabulary for "running" inside the menu would be a
+                    // third answer to a question the strip already answers.
+                    <span
+                      className="br-tab__dot flex-none"
+                      aria-label={chatTabStripCopy.running}
+                      role="img"
+                    />
+                  ) : null}
+                  {isActive ? (
+                    // The menus' one selection mark: a trailing check (spec 2.6).
+                    <Check
+                      className="size-4 text-text-default"
+                      aria-label={chatTabStripCopy.current}
+                    />
+                  ) : null}
+                </span>
+              ) : null}
+            </DropdownMenuItem>
+          );
+        })}
+        {showFilter && visible.length === 0 ? (
+          <p
+            role="status"
+            className="br-tabstrip__menu-empty"
+            data-testid="chat-tab-overflow-empty"
+          >
+            {chatTabStripCopy.noMatch}
+          </p>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The overflow menu's filter field. It takes focus as it mounts, in a LAYOUT
+ * effect: Radix's focus scope only moves focus into the menu when focus is not
+ * already inside it, and it decides that in a passive effect that runs after
+ * this one, so the field keeps the caret and the menu never steals it.
+ */
+function TabMenuFilterField({
+  inputRef,
+  value,
+  onValueChange,
+  onKeyDown,
+}: {
+  inputRef: React.MutableRefObject<HTMLInputElement | null>;
+  value: string;
+  onValueChange: (value: string) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+}) {
+  useLayoutEffect(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, [inputRef]);
+  return (
+    <div className="br-tabstrip__menu-filter">
+      <Search aria-hidden="true" focusable="false" className="br-tabstrip__menu-filter-icon" />
+      <input
+        ref={inputRef}
+        type="search"
+        role="searchbox"
+        aria-label={chatTabStripCopy.filterLabel}
+        placeholder={chatTabStripCopy.filterPlaceholder}
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+        onKeyDown={onKeyDown}
+        spellCheck={false}
+        autoComplete="off"
+        data-testid="chat-tab-overflow-filter"
+        className="br-tabstrip__menu-filter-field"
+      />
     </div>
   );
 }

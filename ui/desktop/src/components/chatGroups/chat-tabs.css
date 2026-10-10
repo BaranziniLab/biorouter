@@ -3,9 +3,12 @@
   position: relative;
 }
 
+/* A chat tab gets more room for its title than a preview tab (spec 3.16): at
+   the shared 190px cap the title was cut at about 110px in a 1150px band. The
+   cap still yields to the pane, so a narrow split shrinks it. */
 .br-tabstrip--inline > .br-tab {
-  min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 190px));
-  max-width: min(190px, var(--chat-tab-available-width, 190px));
+  min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 240px));
+  max-width: min(240px, var(--chat-tab-available-width, 240px));
   border: 1px solid var(--border-subtle);
   background-color: color-mix(in srgb, var(--background-default) 24%, transparent);
 }
@@ -15,20 +18,38 @@
   background-color: color-mix(in srgb, var(--background-default) 72%, transparent);
 }
 
+/* The weight comes from the shared `.br-tab[data-active]` rule (one active
+   weight, 600); only the inline strip's edge and ground are its own. */
 .br-tabstrip--inline > .br-tab[data-active='true'] {
   border-color: var(--border-subtle);
   background-color: var(--background-default);
-  font-weight: 600;
   box-shadow: none;
 }
 
 .br-tabstrip--inline[data-group-active='false'] > .br-tab[data-active='true'] {
   border-color: var(--border-strong);
   background: color-mix(in srgb, var(--background-default) 55%, transparent);
-  font-weight: 500;
   box-shadow: none;
 }
 
 .br-tabstrip--inline > .br-tab::before {
   display: none;
+}
+
+/* Rename in place (P3): the sidebar's editor, sized to the tab's label. The
+   tab's own fill is the field's ground, so the field draws no box of its own;
+   the focus edge is the tab's. */
+.br-tab__rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  outline: none;
+  background: var(--background-default);
+  box-shadow: inset 0 0 0 1px var(--border-focus);
+  color: var(--text-default);
+  font: inherit;
+  font-weight: 400;
 }

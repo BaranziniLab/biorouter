@@ -3419,6 +3419,19 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-icon-lock-badge {
   color: var(--text-accent);
 }
+
+/* The active document tab is the strip's "active row": its chat glyph takes
+   the tab's own ink, exactly as the active sidebar row's glyph takes default
+   ink, instead of staying muted beside a default-ink title. `inherit` rather
+   than `--text-default` because the tab already decides its ink: default when
+   active, muted again on an unfocused group's selected tab (`data-group-active`
+   in the tab family above), and the glyph must follow it in both. The badge
+   keeps the accent (its own rule above wins on the badge `<g>`). Authored and
+   unlayered, like the rules above, so it outranks the glyph's `text-text-muted`
+   utility without the tab strip passing `isActive`. */
+.br-tab[data-active='true'] .br-chat-kind-icon {
+  color: inherit;
+}
 /* @ws WS-ICONS end: chat kind glyph and lock badge */
 
 @keyframes br-tab-pulse {

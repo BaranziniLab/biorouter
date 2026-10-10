@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
+import { chatRowCopy } from '../chats/copy';
 
 const mocks = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
 
@@ -47,22 +48,23 @@ function renderStrip(over: Partial<ChatTabStripProps> = {}) {
 /** #114: parity with History and Recents — the tab strip is where a user is
  *  most likely to be looking at the conversation whose id they want. */
 describe('ChatTabStrip right-click menu', () => {
-  it('offers the three actions on a right-click', async () => {
+  it('offers Rename and the three shared actions on a right-click', async () => {
     renderStrip();
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Cohort query/ }));
 
     const items = await screen.findAllByRole('menuitem');
     expect(items.map((item) => item.textContent)).toEqual([
-      'Open in new tab',
-      'Open in new window',
-      'Copy conversation ID',
+      `${chatRowCopy.menu.rename}${chatRowCopy.menu.renameShortcut}`,
+      chatRowCopy.menu.openInNewTab,
+      chatRowCopy.menu.openInNewWindow,
+      chatRowCopy.menu.copyId,
     ]);
   });
 
   it('copies the tab’s session id, not its tab id', async () => {
     renderStrip();
     fireEvent.contextMenu(screen.getByRole('tab', { name: /Cohort query/ }));
-    fireEvent.click(await screen.findByText('Copy conversation ID'));
+    fireEvent.click(await screen.findByText(chatRowCopy.menu.copyId));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2'));
     expect(navigator.clipboard.writeText).not.toHaveBeenCalledWith('tab-1');

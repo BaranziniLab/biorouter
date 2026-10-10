@@ -3,6 +3,8 @@ import { act, render } from '@testing-library/react';
 import { fireEvent } from '@testing-library/dom';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
 import { ChatTab } from './chatGroupsTypes';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * #37 — the FLIP pass: on reorder/close, tabs get an INVERTED inline translate
@@ -124,8 +126,8 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
     flushFrames();
     expect(a.style.translate).toBe('');
     expect(b.style.translate).toBe('');
-    expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
-    expect(b.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+    expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
+    expect(b.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
 
     // Once the transition settles, the inline transition is handed back to the
     // stylesheet — no residue.
@@ -166,16 +168,19 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
     flushFrames();
     expect(c.style.translate).toBe('');
     expect(c.style.transform).toBe('');
-    expect(c.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+    expect(c.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
   });
 
-  it('a newly opened tab appears in place — it does not slide in from nowhere', () => {
+  it('a newly opened tab grows in where it lands; it does not slide in from nowhere', () => {
     const { container, rerender, props } = renderStrip([tab('a')]);
 
     rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} />);
 
     expect(tabNode(container, 'a').style.translate).toBe('');
     expect(tabNode(container, 'b').style.translate).toBe('');
+    // Its entrance is the CSS keyframe the attribute selects (spec 3.16).
+    expect(tabNode(container, 'b').dataset.tabEntering).toBe('true');
+    expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
   });
 
   it('respects prefers-reduced-motion: no translate is ever applied', () => {
@@ -241,7 +246,7 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       flushFrames();
 
       const a = tabNode(container, 'a');
-      expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+      expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
 
       fireEvent(a, new Event('transitioncancel', { bubbles: true }));
       expect(a.style.transition).toBe('');
@@ -256,7 +261,7 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       const a = tabNode(container, 'a');
       const child = a.querySelector('button') as HTMLElement; // e.g. the close control's opacity fade
       fireEvent.transitionEnd(child);
-      expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)'); // still sliding
+      expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)'); // still sliding
 
       fireEvent.transitionEnd(a);
       expect(a.style.transition).toBe(''); // its own end still cleans up
@@ -289,5 +294,103 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       expect(b.style.transition).toBe('');
       expect(b.style.translate).toBe('');
     });
+  });
+});
+
+/**
+ * Spec 3.16, "Opening tabs": a tab that OPENS grows in from its left edge
+ * (`data-tab-entering` selects the `br-tab-enter` keyframe in main.css), and a
+ * tab the strip MOUNTS with does not: a reload restoring its tabs, a window
+ * opening with them and a tear-off all appear at rest. jsdom runs no CSS, so
+ * these pin the attribute's life; the keyframe itself is pinned at the source
+ * below and seen in the vision pass.
+ */
+describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
+  it('a strip mounts with its tabs at rest: no entrance on a restore or a new window', () => {
+    const { container } = renderStrip([tab('a'), tab('b'), tab('c')]);
+    for (const id of ['a', 'b', 'c']) {
+      expect(tabNode(container, id).dataset.tabEntering).toBeUndefined();
+    }
+  });
+
+  it('an ACTIVE new tab keeps the attribute after its entrance, until it stops being active', () => {
+    const { container, rerender, props } = renderStrip([tab('a')], { activeTabId: 'a' });
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="b" />);
+
+    const b = tabNode(container, 'b');
+    expect(b.dataset.tabEntering).toBe('true');
+
+    // The entrance ends. Dropping the attribute now would swap the computed
+    // animation to `br-tab-select` and settle the tab a second time.
+    fireEvent.animationEnd(b);
+    expect(b.dataset.tabEntering).toBe('true');
+
+    // Another tab becomes active: now it lets go.
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="a" />);
+    expect(b.dataset.tabEntering).toBeUndefined();
+  });
+
+  it('an INACTIVE new tab lets go of the attribute when its entrance ends', () => {
+    const { container, rerender, props } = renderStrip([tab('a')], { activeTabId: 'a' });
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="a" />);
+
+    const b = tabNode(container, 'b');
+    expect(b.dataset.tabEntering).toBe('true');
+    // A bubbling animationend from a child (the running dot) is not its own.
+    fireEvent.animationEnd(b.querySelector('button') as HTMLElement);
+    expect(b.dataset.tabEntering).toBe('true');
+    fireEvent.animationEnd(b);
+    expect(b.dataset.tabEntering).toBeUndefined();
+  });
+
+  it('marks the entrance under reduced motion too (the CSS rests it to a fade)', () => {
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }) as unknown as MediaQueryList) as typeof window.matchMedia;
+
+    const { container, rerender, props } = renderStrip([tab('a')]);
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} />);
+
+    expect(tabNode(container, 'b').dataset.tabEntering).toBe('true');
+    expect(frames.size).toBe(0);
+  });
+
+  it('while the window is being resized nothing enters and nothing slides', () => {
+    document.body.classList.add('biorouter-window-resizing');
+    try {
+      const { container, rerender, props } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a'), tab('c')]} />);
+
+      expect(tabNode(container, 'c').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(container, 'a').style.translate).toBe('');
+      expect(tabNode(container, 'b').style.translate).toBe('');
+      expect(frames.size).toBe(0);
+    } finally {
+      document.body.classList.remove('biorouter-window-resizing');
+    }
+  });
+
+  it('the keyframe grows the tab from its left edge on the individual scale, and enter wins over select', () => {
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    const rule = css.match(/\.br-tab\[data-tab-entering='true'\]\s*\{([^}]*)\}/);
+    expect(rule, 'no .br-tab[data-tab-entering] rule').not.toBeNull();
+    expect(rule![1]).toMatch(/transform-origin:\s*left center/);
+    expect(rule![1]).toMatch(
+      /animation:\s*br-tab-enter var\(--dur-fast-max\) var\(--ease-out\) backwards/
+    );
+
+    const keyframes = css.match(/@keyframes br-tab-enter\s*\{([\s\S]*?)\n\}/);
+    expect(keyframes, 'no br-tab-enter keyframes').not.toBeNull();
+    expect(keyframes![1]).toMatch(/opacity:\s*0;\s*scale:\s*0\.96;/);
+    expect(keyframes![1]).not.toMatch(/transform:/);
+
+    // Same specificity as the active rule, so source order decides: enter is later.
+    expect(css.indexOf(".br-tab[data-tab-entering='true'] {")).toBeGreaterThan(
+      css.indexOf(".br-tab[data-active='true'] {")
+    );
   });
 });
