@@ -196,7 +196,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             if (p.provider_type !== 'Custom') {
               options.push({
                 value: `__custom__:${p.name}`,
-                label: 'Enter a model not listed...',
+                label: 'Enter a model not listed…',
                 provider: p.name,
                 unavailableReason,
               });

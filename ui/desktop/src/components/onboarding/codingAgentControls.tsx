@@ -494,9 +494,9 @@ export function CodingAgentBody({
       return (
         <div className="space-y-2">
           <p className="text-supporting text-text-muted">
-            The CLI works — it is just signed in with an API key, so a run would bill per token.
-            This provider exists specifically to use your own plan, and it removes API credentials
-            from the environment it starts, so it cannot run this way.
+            The CLI works, but it is signed in with an API key, so a run would bill per token. This
+            provider exists specifically to use your own plan, and it removes API credentials from
+            the environment it starts, so it cannot run this way.
           </p>
           <p className="text-supporting text-text-muted">Either sign in with your subscription:</p>
           <CommandBlock command={agent.loginCommand} />

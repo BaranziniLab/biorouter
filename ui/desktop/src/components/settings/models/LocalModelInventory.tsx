@@ -80,9 +80,7 @@ const progressLabel = (progress: PullProgress) => {
 };
 
 const operationFallbackLabel = (operation: LlamaServerOperation) =>
-  operation.kind === 'warmup'
-    ? `Warming up ${operation.model}...`
-    : `Preparing ${operation.model}...`;
+  operation.kind === 'warmup' ? `Warming up ${operation.model}…` : `Preparing ${operation.model}…`;
 
 const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
   kind === 'warmup'
@@ -212,7 +210,7 @@ export default function LocalModelInventory() {
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!(await confirmResources(model, 'Install anyway'))) return;
-      let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
+      let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install…', {
         poll: false,
       });
       try {
@@ -224,10 +222,7 @@ export default function LocalModelInventory() {
           // supersede the newer operation and its timers.
           if (llamaServerStore.getSnapshot().operation?.id !== opId) return;
           if (ollama.isRunning) {
-            llamaServerStore.setOperationMessage(
-              opId,
-              `Pulling ${model.ollama_name} from Ollama...`
-            );
+            llamaServerStore.setOperationMessage(opId, `Pulling ${model.ollama_name} from Ollama…`);
             const pulled = await pullOllamaModel(model.ollama_name, (progress) => {
               llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
@@ -251,7 +246,7 @@ export default function LocalModelInventory() {
         opId = llamaServerStore.beginOperation(
           'install',
           model.name,
-          'Starting Llama Server fallback download...'
+          'Starting Llama Server fallback download…'
         );
         const res = await llamacppEnsure({ body: { model: model.name }, throwOnError: true });
         llamaServerStore.applyStatus(res.data, opId);
@@ -289,7 +284,7 @@ export default function LocalModelInventory() {
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
       if (!(await confirmResources(model, 'Warm up anyway'))) return;
-      const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
+      const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model…');
 
       try {
         const res = await llamacppWarmup({ body: { model: model.name }, throwOnError: true });
@@ -329,7 +324,7 @@ export default function LocalModelInventory() {
 
   const runDelete = useCallback(
     async (model: LlamaCppModel) => {
-      setDeleteAction({ model: model.name, message: 'Deleting local model...' });
+      setDeleteAction({ model: model.name, message: 'Deleting local model…' });
       try {
         let deletedSomething = false;
         if (model.download_source === 'ollama' && model.ollama_name) {

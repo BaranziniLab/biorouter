@@ -65,7 +65,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
 
   const handleDownloadModel = async () => {
     setModelStatus('downloading');
-    setDownloadProgress({ status: 'Starting download...' });
+    setDownloadProgress({ status: 'Starting download…' });
     const success = await pullOllamaModel(getPreferredModel(), (progress) => {
       setDownloadProgress(progress);
     });

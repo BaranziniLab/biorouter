@@ -460,7 +460,7 @@ export default function LlamaServerInlineCard({
                   <Spinner size={14} />
                   <span>
                     {sidecar?.state === 'ready' && sidecar.model === operation.model
-                      ? `Running warm-up prompt for ${operation.model}...`
+                      ? `Running warm-up prompt for ${operation.model}…`
                       : sidecar?.state === 'starting'
                         ? `Preparing ${operation.model}. Loading or downloading on first use…`
                         : `Starting llama-server…`}
