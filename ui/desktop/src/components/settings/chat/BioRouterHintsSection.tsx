@@ -1,29 +1,30 @@
 import { useState } from 'react';
 import { Button } from '../../ui/button';
-import { FolderKey } from '../../icons/app-icons';
+import { SettingRow } from '../../ui/setting-row';
 import { BioRouterHintsModal } from './BioRouterHintsModal';
+import { projectCopy } from './copy';
 
-export const BioRouterHintsSection = () => {
+/**
+ * Settings > Chat > Project > Project hints. The filename lives in the InfoTip, not the label,
+ * and the action is a plain `Edit…` on the row's 28px rung (spec §3.13).
+ */
+export const ProjectHintsRow = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const directory = window.appConfig?.get('BIOROUTER_WORKING_DIR') as string;
 
   return (
     <>
-      <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default">
-        <div className="min-w-0 flex-1">
-          <p className="text-label text-text-default">Project hints (.biorouterhints)</p>
-          <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-            Configure your project's .biorouterhints file to provide additional context to Biorouter
-          </p>
-        </div>
-        {/* No `className`. `flex` was flipping the cva base's `inline-flex`
-            through tailwind-merge, and `items-center gap-2` restated what that
-            base already emits. */}
-        <Button onClick={() => setIsModalOpen(true)} variant="secondary">
-          <FolderKey size={16} />
-          Configure
+      <SettingRow label={projectCopy.hints} help={projectCopy.hintsHelp}>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-label={projectCopy.editHints}
+          onClick={() => setIsModalOpen(true)}
+        >
+          {projectCopy.edit}
         </Button>
-      </div>
+      </SettingRow>
       {isModalOpen && (
         <BioRouterHintsModal directory={directory} setIsBioRouterHintsModalOpen={setIsModalOpen} />
       )}

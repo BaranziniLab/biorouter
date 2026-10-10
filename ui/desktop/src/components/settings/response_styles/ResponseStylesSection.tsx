@@ -1,47 +1,56 @@
 import { useEffect, useState } from 'react';
-import { all_response_styles, ResponseStyleSelectionItem } from './ResponseStyleSelectionItem';
+import { SegmentedControl } from '../../ui/segmented-control';
+import { SettingRow } from '../../ui/setting-row';
+import { displayCopy } from '../chat/copy';
 
-export const ResponseStylesSection = () => {
-  const [currentStyle, setCurrentStyle] = useState('concise');
+type ResponseStyleKey = (typeof displayCopy.toolCallOptions)[number]['key'];
+
+/** Where the choice is stored; the transcript reads it. The keys never change. */
+export const RESPONSE_STYLE_STORAGE_KEY = 'response_style';
+const DEFAULT_STYLE: ResponseStyleKey = 'concise';
+
+function isResponseStyle(value: string | null): value is ResponseStyleKey {
+  return displayCopy.toolCallOptions.some((option) => option.key === value);
+}
+
+/**
+ * Settings > Chat > Display > Tool call details: Expanded or Collapsed (spec §3.13). It used to
+ * be "Response styles", two radio rows whose labels ("Detailed", "Concise") promised more than
+ * the setting does: it only decides whether tool calls start open. The stored keys stay
+ * `detailed` and `concise`.
+ */
+export function ToolCallDetailsRow() {
+  const [currentStyle, setCurrentStyle] = useState<ResponseStyleKey>(DEFAULT_STYLE);
 
   useEffect(() => {
-    const savedStyle = localStorage.getItem('response_style');
-    if (savedStyle) {
-      try {
-        setCurrentStyle(savedStyle);
-      } catch (error) {
-        console.error('Error parsing response style:', error);
-      }
+    const savedStyle = localStorage.getItem(RESPONSE_STYLE_STORAGE_KEY);
+    if (isResponseStyle(savedStyle)) {
+      setCurrentStyle(savedStyle);
     } else {
-      // Set default to concise for new users
-      localStorage.setItem('response_style', 'concise');
-      setCurrentStyle('concise');
+      // Collapsed is the default for new users.
+      localStorage.setItem(RESPONSE_STYLE_STORAGE_KEY, DEFAULT_STYLE);
+      setCurrentStyle(DEFAULT_STYLE);
     }
   }, []);
 
-  const handleStyleChange = async (newStyle: string) => {
+  const handleStyleChange = (newStyle: ResponseStyleKey) => {
     setCurrentStyle(newStyle);
-    localStorage.setItem('response_style', newStyle);
-
-    // Dispatch custom event to notify other components of the change
+    localStorage.setItem(RESPONSE_STYLE_STORAGE_KEY, newStyle);
+    // Tell the transcript, which listens for this event.
     window.dispatchEvent(new CustomEvent('responseStyleChanged'));
   };
 
-  // A fragment: the rows belong directly to the `.biorouter-settings-list` this
-  // section mounts into. `space-y-1` could only go once the per-item wrapper in
-  // `ResponseStyleSelectionItem` did — before that it was the two rows' only
-  // separation, because every row was suppressing its own hairline.
   return (
-    <>
-      {all_response_styles.map((style) => (
-        <ResponseStyleSelectionItem
-          key={style.key}
-          style={style}
-          currentStyle={currentStyle}
-          showDescription={true}
-          handleStyleChange={handleStyleChange}
-        />
-      ))}
-    </>
+    <SettingRow label={displayCopy.toolCallDetails} help={displayCopy.toolCallDetailsHelp}>
+      <SegmentedControl<ResponseStyleKey>
+        options={displayCopy.toolCallOptions.map((option) => ({
+          value: option.key,
+          label: option.label,
+          testId: `tool-call-details-${option.key}`,
+        }))}
+        value={currentStyle}
+        onValueChange={handleStyleChange}
+      />
+    </SettingRow>
   );
-};
+}

@@ -1,13 +1,30 @@
 import { useEffect, useState, useCallback } from 'react';
-import { all_biorouter_modes, ModeSelectionItem } from './ModeSelectionItem';
 import { useConfig } from '../../ConfigContext';
-import { ConversationLimitsDropdown } from './ConversationLimitsDropdown';
+import { Button } from '../../ui/button';
+import { SettingRow, SettingSection } from '../../ui/setting-row';
+import PermissionRulesModal from '../permission/PermissionRulesModal';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { approvalsCopy } from '../chat/copy';
+import { ApprovalModeSelect } from './ApprovalModeSelect';
+import { MaxTurnsRow } from './ConversationLimitsDropdown';
 
+/** The modes whose approvals the per-tool permissions shape. */
+const MODES_WITH_TOOL_PERMISSIONS = new Set(['approve', 'smart_approve']);
+
+/**
+ * Settings > Chat > Approvals (renamed from "Mode", which collided with the light and dark
+ * theme). Three rows, one control each (spec §3.13):
+ * - Approval mode: a select menu, each mode's one-line description inside its item;
+ * - Tool permissions: `Edit…`, enabled in Manual and Smart, the two modes it shapes;
+ * - Max turns: a number field, always shown (it used to hide behind a "Chat limits"
+ *   disclosure that held exactly one field).
+ */
 export const ModeSection = () => {
   const [currentMode, setCurrentMode] = useState('auto');
   // `null` until a value is known to be saved; the field then shows the
   // agent's default rather than a number it does not use.
   const [maxTurns, setMaxTurns] = useState<number | null>(null);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const { read, upsert } = useConfig();
 
   const handleModeChange = async (newMode: string) => {
@@ -16,7 +33,6 @@ export const ModeSection = () => {
       setCurrentMode(newMode);
     } catch (error) {
       console.error('Error updating biorouter mode:', error);
-      throw new Error(`Failed to store new biorouter mode: ${newMode}`);
     }
   };
 
@@ -60,25 +76,30 @@ export const ModeSection = () => {
     fetchMaxTurns();
   }, [fetchCurrentMode, fetchMaxTurns]);
 
-  // ⚠ This section owns its `.biorouter-settings-list` rather than being mounted
-  // inside one, and the reason is `role="radiogroup"`: the role has to sit on
-  // the element that actually contains the radios. Every other Chat section
-  // contributes a fragment of rows to the list its parent provides — they have
-  // no semantics of their own to declare. `space-y-1` is gone either way: rows
-  // abut inside the list and the hairline is the only separator.
-  return (
-    <div className="biorouter-settings-list" role="radiogroup" aria-label="Biorouter mode">
-      {all_biorouter_modes.map((mode) => (
-        <ModeSelectionItem
-          key={mode.key}
-          mode={mode}
-          currentMode={currentMode}
-          showDescription={true}
-          handleModeChange={handleModeChange}
-        />
-      ))}
+  const permissionsApply = MODES_WITH_TOOL_PERMISSIONS.has(currentMode);
 
-      <ConversationLimitsDropdown maxTurns={maxTurns} onMaxTurnsChange={handleMaxTurnsChange} />
-    </div>
+  return (
+    <SettingSection id={SETTINGS_SECTION_IDS.approvals} title={approvalsCopy.section}>
+      <SettingRow label={approvalsCopy.mode} help={approvalsCopy.modeHelp}>
+        <ApprovalModeSelect value={currentMode} onValueChange={handleModeChange} />
+      </SettingRow>
+
+      <SettingRow label={approvalsCopy.toolPermissions} help={approvalsCopy.toolPermissionsHelp}>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          disabled={!permissionsApply}
+          aria-label={approvalsCopy.editToolPermissions}
+          onClick={() => setPermissionsOpen(true)}
+        >
+          {approvalsCopy.edit}
+        </Button>
+      </SettingRow>
+
+      <MaxTurnsRow maxTurns={maxTurns} onMaxTurnsChange={handleMaxTurnsChange} />
+
+      <PermissionRulesModal isOpen={permissionsOpen} onClose={() => setPermissionsOpen(false)} />
+    </SettingSection>
   );
 };

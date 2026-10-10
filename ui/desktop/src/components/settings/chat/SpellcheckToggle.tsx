@@ -1,8 +1,16 @@
 import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
+import { SettingRow } from '../../ui/setting-row';
+import { displayCopy } from './copy';
 
-export const SpellcheckToggle = () => {
+/**
+ * Settings > Chat > Display > Spellcheck. Electron applies the setting at the next launch, so
+ * the row says "Restart to apply" as a status line, but only once the person has changed it:
+ * a line that is always there is a paragraph, and nobody needs it before they act.
+ */
+export const SpellcheckRow = () => {
   const [enabled, setEnabled] = useState(true);
+  const [changed, setChanged] = useState(false);
 
   useEffect(() => {
     const loadState = async () => {
@@ -14,23 +22,17 @@ export const SpellcheckToggle = () => {
 
   const handleToggle = async (checked: boolean) => {
     setEnabled(checked);
+    setChanged(true);
     await window.electron.setSpellcheck(checked);
   };
 
   return (
-    <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default">
-      <div className="min-w-0 flex-1">
-        <p className="text-label text-text-default">Enable spellcheck</p>
-        <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-          Check spelling in the chat input. Requires restart to take effect.
-        </p>
-      </div>
-      <Switch
-        checked={enabled}
-        onCheckedChange={handleToggle}
-        variant="mono"
-        aria-label="Enable spellcheck"
-      />
-    </div>
+    <SettingRow
+      label={displayCopy.spellcheck}
+      help={displayCopy.spellcheckHelp}
+      status={changed ? displayCopy.restartToApply : undefined}
+    >
+      <Switch checked={enabled} onCheckedChange={handleToggle} />
+    </SettingRow>
   );
 };

@@ -2,12 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  ConversationLimitsDropdown,
-  DEFAULT_MAX_TURNS,
-  parseMaxTurns,
-} from './ConversationLimitsDropdown';
+import { DEFAULT_MAX_TURNS, MaxTurnsRow, parseMaxTurns } from './ConversationLimitsDropdown';
 import { ModeSection } from './ModeSection';
+import { approvalsCopy } from '../chat/copy';
 
 const config = vi.hoisted(() => ({
   read: vi.fn(),
@@ -18,9 +15,10 @@ vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({ read: config.read, upsert: config.upsert }),
 }));
 
+// The field used to hide behind a "Chat limits" disclosure that held only it; it is always
+// shown now (spec §3.13), named by its row label.
 function openLimits() {
-  fireEvent.click(screen.getByRole('button', { name: /chat limits/i }));
-  return screen.getByRole('spinbutton', { name: 'Max turns' });
+  return screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
 }
 
 // W2-PRV-10: clearing the field saved 0 (`Number('')`), which stopped every new
@@ -42,7 +40,7 @@ describe('Max turns', () => {
     expect(match).not.toBeNull();
     expect(DEFAULT_MAX_TURNS).toBe(Number(match![1]));
 
-    render(<ConversationLimitsDropdown maxTurns={null} onMaxTurnsChange={vi.fn()} />);
+    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
     expect(openLimits()).toHaveValue(DEFAULT_MAX_TURNS);
   });
 
@@ -56,13 +54,17 @@ describe('Max turns', () => {
 
   it('never saves an empty or negative entry, and says why', async () => {
     const onChange = vi.fn();
-    render(<ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />);
+    render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
     const field = openLimits();
 
     fireEvent.change(field, { target: { value: '' } });
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
     expect(field).toHaveAttribute('aria-invalid', 'true');
+    // The problem is part of what the field announces, beside its help.
+    expect(field).toHaveAccessibleDescription(
+      `${approvalsCopy.maxTurnsHelp} Enter a whole number of at least 1.`
+    );
 
     fireEvent.change(field, { target: { value: '-5' } });
     expect(onChange).not.toHaveBeenCalled();
@@ -151,9 +153,7 @@ describe('Max turns', () => {
 
   it('a save of the value already shown does not hide a later change from elsewhere', async () => {
     const onChange = vi.fn();
-    const { rerender } = render(
-      <ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />
-    );
+    const { rerender } = render(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
     const field = openLimits();
     // Typed away and back inside one pause: one save, of the value shown.
     fireEvent.change(field, { target: { value: '4' } });
@@ -162,9 +162,9 @@ describe('Max turns', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
 
     // Another window moves it to 100 and back to 40: both are shown.
-    rerender(<ConversationLimitsDropdown maxTurns={100} onMaxTurnsChange={onChange} />);
+    rerender(<MaxTurnsRow maxTurns={100} onMaxTurnsChange={onChange} />);
     expect(field).toHaveValue(100);
-    rerender(<ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />);
+    rerender(<MaxTurnsRow maxTurns={40} onMaxTurnsChange={onChange} />);
     expect(field).toHaveValue(40);
   });
 
