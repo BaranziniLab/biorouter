@@ -40,6 +40,7 @@ describe('typography scaling in compiled CSS', () => {
   it('scales shared control tokens once without growing app chrome or panel measures', async () => {
     const css = await transform(`:root {
       --control-md: 32px; --row-height: 40px; --row-height-rail: 32px;
+      --row-height-nav: 28px;
       --md-code-pad: 14px 16px;
       --spacing: .25rem; --chrome-height: 44px; --dock-height: 36px;
       --tab-height: 32px; --measure-chat: 760px;
@@ -47,6 +48,9 @@ describe('typography scaling in compiled CSS', () => {
     .control { height: var(--control-md); padding: var(--md-code-pad); }`);
     expect(css).toContain('--control-md: calc(32px * var(--app-font-scale, 1))');
     expect(css).toContain('--row-height: calc(40px * var(--app-font-scale, 1))');
+    expect(css).toContain('--row-height-rail: calc(32px * var(--app-font-scale, 1))');
+    // The app sidebar's 28px row grows with Text size like every other row token.
+    expect(css).toContain('--row-height-nav: calc(28px * var(--app-font-scale, 1))');
     expect(css).toContain(
       '--md-code-pad: calc(14px * var(--app-font-scale, 1)) calc(16px * var(--app-font-scale, 1))'
     );
