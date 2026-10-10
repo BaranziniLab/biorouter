@@ -22,12 +22,13 @@ Scheduled jobs are stored in `schedule.json` in Biorouter's data directory, so t
 ### From the Desktop UI
 
 1. Open the sidebar.
-2. Navigate to the **Schedule** section.
-3. Click **New Schedule**.
-4. Select the workflow you want to run.
-5. Set the schedule using a cron expression or a simple time picker.
-6. Optionally fill in workflow parameters.
-7. Save the schedule.
+2. Open **Scheduler**.
+3. Click **New schedule**.
+4. Name the schedule and choose the workflow file you want to run.
+5. Choose how often it runs with the time picker ("Every day at 2:00 PM").
+6. Click **Create schedule**.
+
+To schedule a workflow from the Workflows page instead, open the workflow's `⋯` menu and choose **Schedule…**.
 
 ### From the CLI
 
@@ -94,11 +95,11 @@ Common examples:
 
 ### From the Desktop UI
 
-The Schedule panel shows all active and paused jobs with:
-- Workflow name and description
-- Next run time
-- Last run status
-- Controls to pause, resume, edit, or delete
+The Scheduler page shows all active and paused jobs. Each row has:
+- A status dot and the status in words: Running, Paused, Failed or Scheduled
+- The schedule in words (the cron expression is in its tooltip) and when it last ran
+- On a failed job, the reason it failed
+- Actions on hover: Pause or Resume (Stop while a run is in progress) and a `⋯` menu with Edit, Run now, Inspect run and Delete
 
 ### From the CLI
 
