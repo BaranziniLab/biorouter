@@ -200,7 +200,7 @@ const KEY_NOTICE =
 const CARD_BUTTONS =
   'ui/desktop/src/components/settings/providers/subcomponents/buttons/DefaultCardButtons.tsx';
 const PROVIDER_ORDERING = 'ui/desktop/src/components/settings/providers/providerOrdering.ts';
-const MODE_ITEM = 'ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx';
+const MODE_ITEM = 'ui/desktop/src/components/settings/chat/copy.ts';
 const SAGEMAKER = 'crates/biorouter/src/providers/sagemaker_tgi.rs';
 /** The product pages held to the provider and key storage code (W2-DOC-8). */
 const PRODUCT_DOCS = [
@@ -1479,7 +1479,12 @@ export function checkCrewManual(tree = repoTree()) {
   }
   const cardButtons = need(CARD_BUTTONS, 'product-docs');
   if (cardButtons !== null) {
-    if (!/provider\.is_configured && isOnboardingPage && \(\s*<RocketButton/.test(cardButtons)) {
+    // Either shape: the old JSX conditional, or the early return the redesign wrote.
+    if (
+      !/provider\.is_configured && isOnboardingPage(?: && \(|\)\s*\{\s*return \()\s*<RocketButton/.test(
+        cardButtons
+      )
+    ) {
       fail(
         'product-docs',
         `${CARD_BUTTONS} no longer shows Launch on the first run screen only; update this rule`
