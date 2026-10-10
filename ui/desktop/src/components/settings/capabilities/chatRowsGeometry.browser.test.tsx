@@ -229,6 +229,12 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
     await browser?.close();
   }, 120_000);
 
+  /** Let every entrance finish: `.br-enter` slides 4px, and a rect read mid-slide is 4px off. */
+  const settle = (tab: Page) =>
+    tab.evaluate(() =>
+      Promise.all(document.getAnimations().map((animation) => animation.finished))
+    );
+
   async function open(): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 800, height: 1400 } });
     await tab.setContent(
@@ -281,6 +287,7 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
 
       await tab.getByRole('button', { name: 'Check setup' }).click();
       await tab.waitForSelector('#copilot-setup-details');
+      await settle(tab);
       const after = await rowOf();
 
       near(after.row.height, 40, 'Copilot row with the result open');
@@ -323,6 +330,7 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
     try {
       await tab.getByRole('button', { name: /show the 2 memories in clinical/i }).click();
       await tab.waitForSelector('#memory .br-memory-entry');
+      await settle(tab);
       const m = await tab.evaluate(() => {
         const rect = (el: Element | null) => el!.getBoundingClientRect().toJSON();
         const category = document.querySelector('#memory .br-memory-toggle')!;

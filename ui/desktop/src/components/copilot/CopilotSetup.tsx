@@ -302,7 +302,8 @@ export function CopilotSetupTrigger({
 /**
  * The result, as a block after the row: a `Note` that never clamps, because it carries buttons a
  * "Show more" fold would hide. A failed check is its own danger note, so the error is read as
- * soon as it lands.
+ * soon as it lands. The block enters with the shared `.br-enter` (it appears because the person
+ * pressed the button, so it may glide; the rows below it snap down, they do not slide).
  */
 export function CopilotSetupPanel({ setup }: { setup: CopilotSetupState }) {
   const { runtime, error, loading, checked, expanded, check } = setup;
@@ -310,7 +311,7 @@ export function CopilotSetupPanel({ setup }: { setup: CopilotSetupState }) {
   return (
     <>
       {expanded && runtime && (
-        <Note id={COPILOT_SETUP_PANEL_ID} unclamped className="mx-3 mb-2 mt-1">
+        <Note id={COPILOT_SETUP_PANEL_ID} unclamped className="br-enter mx-3 mb-2 mt-1">
           <div className="space-y-2">
             <CopilotRuntimeDetails runtime={runtime} />
             <PermissionCheckButton
@@ -324,7 +325,7 @@ export function CopilotSetupPanel({ setup }: { setup: CopilotSetupState }) {
         </Note>
       )}
       {error && (
-        <Note tone="danger" role="alert" className="mx-3 mb-2 mt-1">
+        <Note tone="danger" role="alert" className="br-enter mx-3 mb-2 mt-1">
           {error}
         </Note>
       )}

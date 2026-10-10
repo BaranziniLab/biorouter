@@ -71,9 +71,9 @@ One shape is refused rather than put to you: reading the *whole* global store in
 
 ## Seeing and deleting what was remembered
 
-Open **Settings → Chat → Memory**. It lists both stores separately — the global one shared by every conversation on this computer, and the current project's local one — each with its directory path, its categories, and every memory inside them. Expand a category to read its contents.
+Open **Settings → Chat → Memory**. It lists both stores separately: **Global**, shared by every chat on this computer, and **This project**, which only chats opened in that project can read. Each store shows how many memories it holds, and the info icon beside its name shows who can read it and the folder it lives in. Expand a category to read its contents.
 
-This matters most for the global store. A conversation asking to read a global memory category has to be approved by you first, and that approval card names the category; this section is where you find out what is in it before deciding. The card names this path so you know where to look.
+This matters most for the global store. A conversation asking to read a global memory category has to be approved by you first, and that approval card names the category; this section is where you find out what is in it before deciding. The card names that folder, which is the one the info icon beside **Global** shows, so you know where to look.
 
 What each memory shows is what the store actually records, and no more:
 
@@ -82,11 +82,11 @@ What each memory shows is what the store actually records, and no more:
 | Category name | The category file's name |
 | Scope, and the store's absolute path | Which of the two directories the file is in |
 | Tags | The memory's own `#` tag line, when the model attached one |
-| Category size and "Updated" date | The category file's size and modification time on disk |
+| Category size and "Updated" date, in the tooltip on the category's name | The category file's size and modification time on disk |
 
-A memory is a line in a flat text file, so nothing records **when an individual memory was written, which conversation wrote it, or which model**. The date shown is per category — the last time anything was appended to that file — not per memory, and the section labels it that way rather than dating each row with a timestamp the file cannot support.
+A memory is a line in a flat text file, so nothing records **when an individual memory was written, which conversation wrote it, or which model**. The date shown is per category (the last time anything was appended to that file), not per memory, and the section words it that way rather than dating each row with a timestamp the file cannot support.
 
-Two delete controls sit alongside the listing: one on each memory, one on each category. Both ask first, and the confirmation says what is about to be lost — the number of memories going, who could read them, and that it cannot be undone. Deleting the last memory in a category deletes the category too, so its name stops being offered to future sessions. Nothing is recoverable afterwards; BioRouter keeps no copy.
+Two delete controls sit alongside the listing: one on each memory, one on each category. A trash icon appears at the end of a row when you point at it or move the keyboard onto it, and is always shown on a touch screen. Both ask first, and the confirmation says what is about to be lost — the number of memories going, who could read them, and that it cannot be undone. Deleting the last memory in a category deletes the category too, so its name stops being offered to future sessions. Nothing is recoverable afterwards; BioRouter keeps no copy.
 
 ## What a delete does, exactly
 

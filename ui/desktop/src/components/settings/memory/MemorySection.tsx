@@ -465,7 +465,10 @@ function CategoryRow({
 
       {isExpanded &&
         category.entries.map((entry) => (
-          <div key={entry.index} className="biorouter-settings-row br-setting-row br-memory-entry">
+          <div
+            key={entry.index}
+            className="biorouter-settings-row br-setting-row br-memory-entry br-enter"
+          >
             <div className="min-w-0 flex-1">
               {entry.tags.length > 0 && (
                 <div className="mb-1 flex flex-wrap gap-1">
