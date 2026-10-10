@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SkillsView from './SkillsView';
+import { SKILLS_COPY } from './copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
-import { DEFAULT_MIN_SEARCH_LENGTH } from '../conversation/SearchBar';
 
 const mocks = vi.hoisted(() => ({
   skillCatalogHandler: vi.fn(),
@@ -41,40 +42,6 @@ vi.mock('../Layout/MainPanelLayout', () => ({
 }));
 vi.mock('../Layout/ReadableContent', () => ({
   ReadableContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-// The real SearchView owns a cmd-F overlay and a scroll-area contract; all the
-// view reads from it is the term it reports, so the mock is that one wire —
-// without it the search-filtered branches below are unreachable from a test.
-//
-// ⚠ **The mock carries the MINIMUM-LENGTH floor, because the real bar does.**
-// It used to hand every keystroke straight through, so the `R` tests below were
-// green while measuring nothing: in the app a one-character query never reached
-// this view at all — `SearchBar` reported an empty term and the whole catalog
-// rendered under its provenance headings. The floor is imported rather than
-// retyped so the mock cannot drift from the component it stands in for, and the
-// bar's own half of the contract is asserted directly in `SearchBar.test.tsx`.
-const searchMocks = vi.hoisted(() => ({ defaultFloor: 2 }));
-
-vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({
-    children,
-    onSearch,
-    minSearchLength = searchMocks.defaultFloor,
-  }: {
-    children: React.ReactNode;
-    onSearch: (term: string, caseSensitive: boolean) => void;
-    minSearchLength?: number;
-  }) => (
-    <div>
-      <input
-        aria-label="Search skills"
-        onChange={(event) =>
-          onSearch(event.target.value.length >= minSearchLength ? event.target.value : '', false)
-        }
-      />
-      {children}
-    </div>
-  ),
 }));
 vi.mock('../baam/BrowseSkillsModal', () => ({ default: () => null }));
 vi.mock('./AddSkillModal', () => ({ default: () => null }));
@@ -128,6 +95,37 @@ function serve(view: Partial<CatalogView>) {
   mocks.refreshSkillCatalog.mockResolvedValue({ data: full });
 }
 
+/** A group's heading as it reads: the label, then its count (Crew's form, no parentheses). */
+function groupHeading(title: string, count: number) {
+  return screen.queryByRole('heading', { level: 2, name: `${title} ${count}` });
+}
+
+/** The row holding `name`. */
+async function rowOf(name: string): Promise<HTMLElement> {
+  return (await screen.findByText(name)).closest('.biorouter-list-row') as HTMLElement;
+}
+
+/** Open a row's `⋯` menu and return the names of its items. */
+async function openRowMenu(name: string) {
+  const user = userEvent.setup();
+  const row = await rowOf(name);
+  await user.click(within(row).getByRole('button', { name: 'More actions' }));
+  await screen.findByRole('menu');
+  const items = screen.getAllByRole('menuitem').map((item) => item.textContent ?? '');
+  return { user, items };
+}
+
+/** Choose Delete… from a row's menu. */
+async function deleteFromRow(name: string) {
+  const { user } = await openRowMenu(name);
+  await user.click(screen.getByRole('menuitem', { name: SKILLS_COPY.delete }));
+}
+
+/** The band's filter field. */
+function filterField() {
+  return screen.getByRole('searchbox', { name: 'Filter' });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.overrides.clear();
@@ -153,8 +151,9 @@ describe('SkillsView', () => {
       ],
     });
     render(<SkillsView />);
-    expect(await screen.findByText('From BiorOffice (1)')).toBeInTheDocument();
-    expect(screen.getByText('Biorouter Skills (1)')).toBeInTheDocument();
+    await screen.findByText('word');
+    expect(groupHeading(SKILLS_COPY.groups.extension('BiorOffice'), 1)).toBeInTheDocument();
+    expect(groupHeading(SKILLS_COPY.groups.biorouter, 1)).toBeInTheDocument();
   });
 
   /**
@@ -171,8 +170,54 @@ describe('SkillsView', () => {
       ],
     });
     render(<SkillsView />);
-    await screen.findByText('word');
-    expect(screen.queryByLabelText('Delete word')).not.toBeInTheDocument();
+    const { items } = await openRowMenu('word');
+    expect(items).toEqual([SKILLS_COPY.openFolder, SKILLS_COPY.copySkillMd]);
+  });
+
+  /** One `⋯` menu holds the row's actions; the text block opens nothing. */
+  it('puts a skill row’s actions in one menu, in a fixed order', async () => {
+    render(<SkillsView />);
+    const { items } = await openRowMenu('my-skill');
+    expect(items).toEqual([SKILLS_COPY.openFolder, SKILLS_COPY.copySkillMd, SKILLS_COPY.delete]);
+    // No duplicate open target: the name is text, not a button.
+    const row = await rowOf('my-skill');
+    expect(within(row).queryByRole('button', { name: /Open skill/ })).not.toBeInTheDocument();
+  });
+
+  it('opens a skill’s folder from its menu', async () => {
+    render(<SkillsView />);
+    const { user } = await openRowMenu('my-skill');
+    await user.click(screen.getByRole('menuitem', { name: SKILLS_COPY.openFolder }));
+    expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith('/skills/my-skill');
+  });
+
+  it('opens the same menu on right-click', async () => {
+    render(<SkillsView />);
+    fireEvent.contextMenu(await rowOf('my-skill'));
+    expect(
+      await screen.findByRole('menuitem', { name: SKILLS_COPY.copySkillMd })
+    ).toBeInTheDocument();
+  });
+
+  /** The switch is named by the row's title, the same in both states (spec 2.6). */
+  it('names each switch by its row, whatever its state', async () => {
+    render(<SkillsView />);
+    const toggle = await screen.findByRole('switch', { name: 'my-skill' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('keeps the source folder out of the row', async () => {
+    serve({
+      skills: [
+        skill('word', {
+          sourceRoot: '/extensions/BiorOffice/skills',
+          source: { kind: 'extension', extension: 'BiorOffice', label: 'BiorOffice' },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+    const row = await rowOf('word');
+    expect(row).not.toHaveTextContent('/extensions/BiorOffice/skills');
   });
 
   it('shows a package as one expandable row, and opens to its components', async () => {
@@ -202,32 +247,36 @@ describe('SkillsView', () => {
     render(<SkillsView />);
 
     expect(await screen.findByText('HyperFrames')).toBeInTheDocument();
-    expect(screen.getByText('Biorouter Skills (1)')).toBeInTheDocument();
-    expect(screen.getByText('entry point: hyperframes')).toBeInTheDocument();
+    expect(groupHeading(SKILLS_COPY.groups.biorouter, 1)).toBeInTheDocument();
 
-    // Collapsed, the row summarises; expanded, it details.
+    // Collapsed, the row is the name and one line: no entry point, no members.
+    expect(screen.getByText(SKILLS_COPY.bundleSummary(2, '0.8.12'))).toBeInTheDocument();
+    expect(screen.queryByText(SKILLS_COPY.entryPoint('hyperframes'))).not.toBeInTheDocument();
+    expect(screen.queryByRole('list')).not.toBeInTheDocument();
+
+    // Expanded, it details.
     fireEvent.click(screen.getByLabelText('Expand HyperFrames'));
+    expect(screen.getByText(SKILLS_COPY.entryPoint('hyperframes'))).toBeInTheDocument();
     const list = await screen.findByRole('list');
     const items = within(list).getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[1]).toHaveTextContent('media-use');
-    expect(items[1]).toHaveTextContent('[on-demand]');
-    expect(items[0]).toHaveTextContent('→');
+    expect(items[1]).toHaveTextContent('· on-demand');
+    expect(screen.getByLabelText('Collapse HyperFrames')).toHaveAttribute('aria-expanded', 'true');
   });
 
   /// Skill names are PROSE and must be set in the body font.
   ///
-  /// The collapsed member list was `font-mono` while "entry point: …" three
-  /// lines above it — printing one of those very same names — was body. One
-  /// string ("hyperframes"), two typefaces, in one card, both on screen at
-  /// once. Expanding the row then rendered the same names in the body font a
-  /// third way, so the face flipped on expand too.
+  /// The collapsed member list was once `font-mono` while "entry point: …"
+  /// three lines above it, printing one of those very same names, was body:
+  /// one string, two typefaces, in one card. Members now appear only when the
+  /// row is open, and they stay in the body font there.
   ///
   /// jsdom never runs Tailwind, so a computed-style assertion would pass
   /// whatever the class says. This asserts the CLASS, and walks the ancestors
   /// because `font-mono` on a parent is inherited — which is how this would
   /// regress without the element itself being touched.
-  it('sets collapsed package member names in the body font, not monospace', async () => {
+  it('sets package member names in the body font, not monospace', async () => {
     serve({
       skills: [
         skill('hyperframes', { bundle: 'hyperframes', slug: 'hyperframes/hyperframes' }),
@@ -253,9 +302,12 @@ describe('SkillsView', () => {
     });
     render(<SkillsView />);
 
-    const members = await screen.findByText('hyperframes · media-use');
-    // The same name, in the same card, is already body font here.
-    expect(screen.getByText('entry point: hyperframes').className).not.toMatch(/font-mono/);
+    fireEvent.click(await screen.findByLabelText('Expand HyperFrames'));
+    const members = within(await screen.findByRole('list')).getByText('media-use');
+    // The same name, in the same row, is body font here too.
+    expect(screen.getByText(SKILLS_COPY.entryPoint('hyperframes')).className).not.toMatch(
+      /font-mono/
+    );
 
     expect(members.className).not.toMatch(/font-mono/);
     for (let node = members.parentElement; node; node = node.parentElement) {
@@ -308,8 +360,8 @@ describe('SkillsView', () => {
     mocks.removeSkillPackage.mockResolvedValue({ data: { id: 'pack' } });
     render(<SkillsView />);
 
-    fireEvent.click(await screen.findByLabelText('Delete skill package pack'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete package' }));
+    await deleteFromRow('pack');
+    fireEvent.click(await screen.findByRole('button', { name: SKILLS_COPY.confirmDeletePackage }));
 
     await waitFor(() => expect(mocks.removeSkillPackage).toHaveBeenCalledTimes(1));
     expect(mocks.removeSkillPackage.mock.calls[0][0].body).toEqual({
@@ -330,8 +382,8 @@ describe('SkillsView', () => {
     mocks.removeSkillPackage.mockResolvedValue({ data: { id: 'run-gwas' } });
     render(<SkillsView />);
 
-    fireEvent.click(await screen.findByLabelText('Delete gwas-pipeline'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await deleteFromRow('gwas-pipeline');
+    fireEvent.click(await screen.findByRole('button', { name: SKILLS_COPY.confirmDelete }));
 
     await waitFor(() => expect(mocks.removeSkillPackage).toHaveBeenCalledTimes(1));
     expect(mocks.removeSkillPackage.mock.calls[0][0].body.id).toBe('run-gwas');
@@ -352,6 +404,30 @@ describe('SkillsView', () => {
     render(<SkillsView />);
     await screen.findByText('my-skill');
     expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBeInTheDocument();
+  });
+
+  /**
+   * The band (spec 3.11): the explanation is help on demand, the filter is
+   * visible, and the three ways in are one Add menu rather than three buttons.
+   */
+  it('puts the help, the filter and one Add menu in the band', async () => {
+    const user = userEvent.setup();
+    render(<SkillsView />);
+    await screen.findByText('my-skill');
+
+    expect(screen.queryByText(SKILLS_COPY.info, { selector: 'p' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Skills' })).toHaveAccessibleDescription(
+      SKILLS_COPY.info
+    );
+    expect(filterField()).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Browse skills|Add custom skill/ })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: SKILLS_COPY.add }));
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      SKILLS_COPY.browse,
+      SKILLS_COPY.fromSource,
+      SKILLS_COPY.write,
+    ]);
   });
 });
 
@@ -374,8 +450,8 @@ describe('SkillsView empty and loading states', () => {
     serve({});
     render(<SkillsView />);
 
-    const empty = await screen.findByRole('region', { name: 'No skills yet' });
-    expect(within(empty).getByRole('button', { name: 'Add skill' })).toBeInTheDocument();
+    const empty = await screen.findByRole('region', { name: SKILLS_COPY.emptyTitle });
+    expect(within(empty).getByRole('button', { name: SKILLS_COPY.browse })).toBeInTheDocument();
   });
 
   it('says a search matched nothing without claiming the catalog is empty', async () => {
@@ -383,7 +459,7 @@ describe('SkillsView empty and loading states', () => {
     render(<SkillsView />);
     await screen.findByText('alpha');
 
-    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'zzz' } });
+    fireEvent.change(filterField(), { target: { value: 'zzz' } });
 
     expect(await screen.findByRole('region', { name: 'No matching skills' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'No skills yet' })).not.toBeInTheDocument();
@@ -404,8 +480,8 @@ describe('SkillsView empty and loading states', () => {
     mocks.refreshSkillCatalog.mockReturnValue(new Promise(() => {}));
     render(<SkillsView />);
 
-    fireEvent.click(await screen.findByLabelText('Delete alpha'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await deleteFromRow('alpha');
+    fireEvent.click(await screen.findByRole('button', { name: SKILLS_COPY.confirmDelete }));
 
     await waitFor(() => expect(mocks.removeSkillPackage).toHaveBeenCalledTimes(1));
     expect(screen.getByText('alpha')).toBeInTheDocument();
@@ -433,11 +509,10 @@ describe('SkillsView built-in bundles', () => {
     });
     render(<SkillsView />);
 
-    const row = (await screen.findByText('shipped-bundle')).closest('.biorouter-list-row')!;
-    expect(
-      within(row as HTMLElement).queryByLabelText(/Delete skill package/)
-    ).not.toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('Built-in')).toBeInTheDocument();
+    const row = await rowOf('shipped-bundle');
+    expect(within(row).getByText('Built-in')).toBeInTheDocument();
+    const { items } = await openRowMenu('shipped-bundle');
+    expect(items).not.toContain(SKILLS_COPY.delete);
   });
 
   /**
@@ -451,8 +526,8 @@ describe('SkillsView built-in bundles', () => {
     });
     render(<SkillsView />);
 
-    const row = (await screen.findByText('hyperframes')).closest('.biorouter-list-row')!;
-    expect(within(row as HTMLElement).getByLabelText(/Delete skill package/)).toBeInTheDocument();
+    const { items } = await openRowMenu('hyperframes');
+    expect(items).toContain(SKILLS_COPY.delete);
   });
 });
 
@@ -467,16 +542,7 @@ describe('SkillsView built-in bundles', () => {
  * catalog's fields.
  */
 describe('SkillsView search', () => {
-  const search = (term: string) =>
-    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: term } });
-
-  it("stands in for the bar with the bar's own default floor", () => {
-    // The mock cannot import the constant — its factory is hoisted above the
-    // imports — so the two are pinned here instead. Without this the default
-    // could move and the one-letter tests below would go green again while
-    // measuring a floor the app does not have.
-    expect(DEFAULT_MIN_SEARCH_LENGTH).toBe(searchMocks.defaultFloor);
-  });
+  const search = (term: string) => fireEvent.change(filterField(), { target: { value: term } });
 
   it('finds the skills a multi-word phrase names, best match first', async () => {
     serve({ skills: [skill('ggplot'), skill('pdf'), skill('r-scripting')] });
@@ -494,10 +560,15 @@ describe('SkillsView search', () => {
     // One ranked list under a query, not the provenance groups: `r-scripting`
     // matches two of the query's terms and `ggplot` one, and a heading would
     // have ordered them alphabetically instead.
-    const matches = screen.getByRole('heading', { level: 2, name: /Matches \(2\)/ }).parentElement!;
+    const matches = groupHeading(SKILLS_COPY.groups.matches, 2)!.parentElement!;
     const text = matches.textContent ?? '';
     expect(text.indexOf('r-scripting')).toBeLessThan(text.indexOf('ggplot'));
-    expect(screen.queryByText(/Biorouter Skills/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        level: 2,
+        name: new RegExp(`^${SKILLS_COPY.groups.biorouter}`),
+      })
+    ).not.toBeInTheDocument();
   });
 
   it('holds a one-letter query to whole words', async () => {
@@ -507,9 +578,7 @@ describe('SkillsView search', () => {
 
     search('R');
 
-    expect(
-      await screen.findByRole('heading', { level: 2, name: /Matches \(1\)/ })
-    ).toBeInTheDocument();
+    await waitFor(() => expect(groupHeading(SKILLS_COPY.groups.matches, 1)).toBeInTheDocument());
     expect(screen.getByText('r-scripting')).toBeInTheDocument();
     // `markdown-render` holds the letter twice and means nothing by it.
     expect(screen.queryByText('markdown-render')).not.toBeInTheDocument();
@@ -532,7 +601,12 @@ describe('SkillsView search', () => {
 
     expect(await screen.findByText('No matching skills')).toBeInTheDocument();
     expect(screen.queryByText('r-scripting')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Biorouter Skills/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        level: 2,
+        name: new RegExp(`^${SKILLS_COPY.groups.biorouter}`),
+      })
+    ).not.toBeInTheDocument();
   });
 
   it('keeps the provenance groups when nothing is typed', async () => {
@@ -547,9 +621,15 @@ describe('SkillsView search', () => {
     });
     render(<SkillsView />);
 
-    expect(await screen.findByText('Biorouter Skills (1)')).toBeInTheDocument();
-    expect(screen.getByText('From BiorOffice (1)')).toBeInTheDocument();
-    expect(screen.queryByText(/Matches \(/)).not.toBeInTheDocument();
+    await screen.findByText('word');
+    expect(groupHeading(SKILLS_COPY.groups.biorouter, 1)).toBeInTheDocument();
+    expect(groupHeading(SKILLS_COPY.groups.extension('BiorOffice'), 1)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', {
+        level: 2,
+        name: new RegExp(`^${SKILLS_COPY.groups.matches}`),
+      })
+    ).not.toBeInTheDocument();
   });
 
   /**
@@ -573,7 +653,9 @@ describe('SkillsView search', () => {
     search('R');
 
     expect(await screen.findByText('r-plotting')).toBeInTheDocument();
-    expect(screen.getByLabelText('Delete r-scripting')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Delete r-plotting')).not.toBeInTheDocument();
+    expect((await openRowMenu('r-scripting')).items).toContain(SKILLS_COPY.delete);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument());
+    expect((await openRowMenu('r-plotting')).items).not.toContain(SKILLS_COPY.delete);
   });
 });

@@ -22,6 +22,8 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SkillsView from './SkillsView';
+import { SKILLS_COPY } from './copy';
+import { BROWSE_SKILLS_COPY } from '../baam/copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 
 const mocks = vi.hoisted(() => ({
@@ -144,12 +146,26 @@ function row(name: string) {
   return label;
 }
 
+/** Wait for the Biorouter group to list `count` entries. */
+async function biorouterGroup(count: number) {
+  await screen.findByRole('heading', {
+    level: 2,
+    name: `${SKILLS_COPY.groups.biorouter} ${count}`,
+  });
+}
+
+/** Open Browse skills the way a person does: the band's Add menu, then Browse marketplace. */
+async function chooseBrowse() {
+  await userEvent.click(screen.getByRole('button', { name: SKILLS_COPY.add }));
+  await userEvent.click(await screen.findByRole('menuitem', { name: SKILLS_COPY.browse }));
+  await screen.findByRole('dialog', { name: BROWSE_SKILLS_COPY.title });
+  await screen.findByText(SINGLE_CELL.description);
+}
+
 async function openBrowse() {
   render(<SkillsView />);
-  await screen.findByText('Biorouter Skills (2)');
-  await userEvent.click(screen.getByRole('button', { name: 'Browse skills' }));
-  await screen.findByText('Browse skills', { selector: 'h2, [role=heading]' });
-  await screen.findByText(SINGLE_CELL.description);
+  await biorouterGroup(2);
+  await chooseBrowse();
 }
 
 beforeEach(() => {
@@ -167,7 +183,7 @@ beforeEach(() => {
 describe('Browse skills and the installed catalog agree about a bundle', () => {
   /**
    * The blocker, stated as the user meets it: the bundle IS installed — it is
-   * the `Biorouter Skills (2)` row one click away — and the modal offered it
+   * the row under "Biorouter 2" one click away — and the modal offered it
    * again because the directory it landed in was `d92c1c985d54-single-cell`.
    */
   it('marks a bundle installed under a staging-nonce directory as installed', async () => {
@@ -221,9 +237,8 @@ describe('Browse skills and the installed catalog agree about a bundle', () => {
     });
 
     render(<SkillsView />);
-    await screen.findByText('Biorouter Skills (1)');
-    await userEvent.click(screen.getByRole('button', { name: 'Browse skills' }));
-    await screen.findByText(SINGLE_CELL.description);
+    await biorouterGroup(1);
+    await chooseBrowse();
 
     const entry = row('Single-cell');
     expect(within(entry).queryByText('Installed')).not.toBeInTheDocument();
@@ -243,9 +258,8 @@ describe('Browse skills and the installed catalog agree about a bundle', () => {
     });
 
     render(<SkillsView />);
-    await screen.findByText('Biorouter Skills (2)');
-    await userEvent.click(screen.getByRole('button', { name: 'Browse skills' }));
-    await screen.findByText(SINGLE_CELL.description);
+    await biorouterGroup(2);
+    await chooseBrowse();
 
     for (const name of ['Single-cell', 'Scientific Research']) {
       const entry = row(name);

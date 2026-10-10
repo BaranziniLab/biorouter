@@ -1,17 +1,19 @@
-import { Button } from '../ui/button';
+import { useId } from 'react';
 import { Switch } from '../ui/switch';
 import BuiltInBadge from '../ui/BuiltInBadge';
-import { Copy, Trash2, FolderDot } from '../icons/app-icons';
+import { RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
 import type { CatalogSkill } from '../../api';
+import { SKILLS_COPY } from './copy';
 
 interface SkillItemProps {
   skill: CatalogSkill;
   enabled: boolean;
-  onClick: () => void;
+  /** Open the skill's folder in the system file browser. */
+  onOpen: () => void;
   /**
    * Omitted where the skill is not the user's to delete: one Biorouter ships
    * and re-seeds on every start, or one an installed extension supplies. A
-   * delete that succeeds and silently reverts is worse than no button — the
+   * delete that succeeds and silently reverts is worse than no item — the
    * lesson `BUILTIN_SKILL_NAMES` was written for, applied to a second case.
    */
   onDelete?: () => void;
@@ -19,90 +21,67 @@ interface SkillItemProps {
   onToggle: (enabled: boolean) => void;
 }
 
+/**
+ * One skill: Crew's row (spec 3.11). The name and one muted line, then a `⋯`
+ * menu revealed on hover or focus, then the switch. The same menu opens on
+ * right-click, Shift+F10 and the ContextMenu key.
+ *
+ * The text block is not a button: it used to open the folder, which the
+ * folder button beside it also did, so one action had two targets. And no
+ * third line names the source folder: the group heading already says where the
+ * skill came from, and "Open folder" goes there.
+ */
 export default function SkillItem({
   skill,
   enabled,
-  onClick,
+  onOpen,
   onDelete,
   onShare,
   onToggle,
 }: SkillItemProps) {
+  const titleId = useId();
   // ⚠ From the daemon, not from the hand-synced `BUILTIN_SKILL_NAMES` copy.
   // Rust owns the seeder, so Rust owns the answer.
   const builtin = skill.builtin;
+  const menu: RowActionItem[] = [
+    { label: SKILLS_COPY.openFolder, onSelect: onOpen },
+    { label: SKILLS_COPY.copySkillMd, onSelect: onShare },
+    ...(onDelete && !builtin
+      ? ([
+          { kind: 'separator' },
+          {
+            label: SKILLS_COPY.delete,
+            onSelect: onDelete,
+            destructive: true,
+            testId: 'skill-row-delete',
+          },
+        ] satisfies RowActionItem[])
+      : []),
+  ];
   return (
-    <div className="biorouter-list-row group flex items-start gap-3 px-3 py-3">
-      <button
-        type="button"
-        className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        onClick={onClick}
-        aria-label={`Open skill ${skill.name}`}
+    <RowContextMenu items={menu}>
+      <div
+        className="biorouter-list-row flex items-center gap-3 px-3 py-2.5"
+        data-skill-row="single"
       >
-        {/* ⚠ `min-w-0` on the name, `flex-shrink-0` on the badge (the `Badge`
-            primitive carries its own). A flex item's `min-width: auto` is its
-            min-content width, so a long skill name would otherwise push the
-            "Built-in" badge out of the row rather than ellipsing — the reading
-            column leaves about 704px here, minus the three actions and the
-            switch on the trailing edge. */}
-        <div className="flex min-w-0 items-center gap-1.5">
-          <p className="min-w-0 truncate text-label text-text-default">{skill.name}</p>
-          {builtin && <BuiltInBadge />}
+        <div className="min-w-0 flex-1">
+          {/* ⚠ `min-w-0` on the name, `flex-shrink-0` on the badge (the `Badge`
+              primitive carries its own). A flex item's `min-width: auto` is its
+              min-content width, so a long skill name would otherwise push the
+              "Built-in" badge out of the row rather than ellipsing. */}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p id={titleId} className="min-w-0 truncate text-label text-text-default">
+              {skill.name}
+            </p>
+            {builtin && <BuiltInBadge />}
+          </div>
+          <p className="truncate text-supporting text-text-muted">{skill.description}</p>
         </div>
-        <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted">{skill.description}</p>
-        {skill.source.kind !== 'biorouter' && (
-          <p className="mt-0.5 truncate font-mono text-supporting text-text-subtle">
-            {skill.sourceRoot}
-          </p>
-        )}
-      </button>
-      <div className="mt-0.5 flex shrink-0 items-center gap-2">
-        <div
-          className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Button
-            variant="ghost"
-            shape="round"
-            onClick={() => onClick()}
-            title="Open in Finder"
-            aria-label={`Open ${skill.name} in Finder`}
-          >
-            <FolderDot className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            shape="round"
-            onClick={() => onShare()}
-            title="Copy SKILL.md to clipboard"
-            aria-label={`Copy ${skill.name} SKILL.md to clipboard`}
-          >
-            <Copy className="h-4 w-4" />
-          </Button>
-          {/* V7 — a quiet destructive row action is `ghost` plus danger ink, on
-              the same `round` rung as the two glyph actions beside it. It was
-              `size="sm"`, a 28px pill in a cluster of 32px squares. */}
-          {onDelete && !builtin && (
-            <Button
-              variant="ghost"
-              shape="round"
-              className="text-text-danger"
-              onClick={() => onDelete()}
-              title="Delete this skill"
-              aria-label={`Delete ${skill.name}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          )}
-        </div>
-        <div onClick={(e) => e.stopPropagation()}>
-          <Switch
-            checked={enabled}
-            onCheckedChange={onToggle}
-            variant="mono"
-            aria-label={`${enabled ? 'Disable' : 'Enable'} ${skill.name}`}
-          />
-        </div>
+        <RowActions menu={menu} />
+        {/* Named by the row's title, the same in both states: the state is the
+            switch's `aria-checked`, not part of its name (spec 2.6). */}
+        <Switch checked={enabled} onCheckedChange={onToggle} aria-labelledby={titleId} />
       </div>
-    </div>
+    </RowContextMenu>
   );
 }

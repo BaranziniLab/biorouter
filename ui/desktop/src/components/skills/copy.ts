@@ -10,7 +10,6 @@ export const SKILLS_COPY = {
   info: 'Reusable instructions Biorouter follows when a task calls for them.',
 
   add: 'Add',
-  addMenuLabel: 'Add a skill',
   browse: 'Browse marketplace',
   fromSource: 'From a repository or .zip…',
   write: 'Write a skill…',
@@ -24,13 +23,9 @@ export const SKILLS_COPY = {
     matches: 'Matches',
   },
 
-  moreActions: 'More actions',
-  moreActionsFor: (name: string) => `More actions for ${name}`,
   openFolder: 'Open folder',
   copySkillMd: 'Copy SKILL.md',
   delete: 'Delete…',
-  deleteSkill: (name: string) => `Delete ${name}`,
-  deletePackage: (name: string) => `Delete skill package ${name}`,
 
   expand: (name: string) => `Expand ${name}`,
   collapse: (name: string) => `Collapse ${name}`,
@@ -40,7 +35,6 @@ export const SKILLS_COPY = {
 
   emptyTitle: 'No skills yet',
   emptyDescription: 'Add one from the marketplace, a repository or a .zip file.',
-  emptyAction: 'Add skill',
   noMatchTitle: 'No matching skills',
   noMatchDescription: 'Try a different name, description or package.',
 
