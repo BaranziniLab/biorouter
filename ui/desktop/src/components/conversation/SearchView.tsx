@@ -34,9 +34,15 @@ interface SearchContainerElement extends HTMLDivElement {
 }
 
 /**
- * SearchView wraps content in a searchable container with a search bar that appears
- * when Cmd/Ctrl+F is pressed. Supports case-sensitive search and result navigation.
- * Features debounced search for better performance with large content.
+ * Find in chat (spec 3.16): wraps a transcript in a searchable container whose
+ * bar appears on Cmd/Ctrl+F as an overlay at the transcript's top right (see
+ * `SearchBar`), with case-sensitive search and match navigation, debounced for
+ * long chats.
+ *
+ * It is the transcript's find and nothing else: only the live chat
+ * (`BaseChat`) and a saved transcript (`SessionHistoryView`) mount it. A list
+ * of rows filters with the band's `FilterInput` instead
+ * (`styles/searchBarNote.test.ts` holds that line).
  */
 export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   className = '',

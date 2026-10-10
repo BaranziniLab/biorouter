@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SearchBar from './SearchBar';
+import { findInChatCopy } from './searchCopy';
 
 describe('SearchBar', () => {
   afterEach(() => {
@@ -9,43 +10,89 @@ describe('SearchBar', () => {
     Reflect.deleteProperty(window, 'matchMedia');
   });
 
-  it('renders as a centered floating search surface', () => {
+  it('renders as a floating overlay surface, not a row in the transcript', () => {
     render(<SearchBar onSearch={vi.fn()} onClose={vi.fn()} />);
 
     const surface = screen.getByTestId('conversation-search-bar');
 
-    // A floating search panel is a popover: 16px radius, --shadow-popover, and an
-    // opaque fill (no backdrop blur). See design.md §3.4, §3.5 and the anti-patterns.
-    expect(surface).toHaveClass('max-w-[720px]');
-    expect(surface).toHaveClass('rounded-2xl');
+    // A floating search surface: the container radius (12px; 16px is the
+    // preview sheet's alone), the chat measure as its ceiling, --shadow-popover,
+    // and an opaque fill (no backdrop blur).
+    expect(surface).toHaveClass('max-w-measure-chat');
+    expect(surface).toHaveClass('rounded-container');
+    expect(surface).not.toHaveClass('rounded-2xl');
     expect(surface).toHaveClass('shadow-popover');
     expect(surface).not.toHaveClass('backdrop-blur-md');
+    // The overlay class positions it (styles/search.css); nothing sticky.
+    const overlay = surface.parentElement as HTMLElement;
+    expect(overlay).toHaveClass('br-find-overlay');
+    expect(overlay.className).not.toMatch(/sticky|mb-4/);
+    expect(overlay).toHaveAttribute('data-state', 'open');
   });
 
   it('keeps search behavior while using the compact surface', () => {
     const onSearch = vi.fn();
     render(<SearchBar onSearch={onSearch} onClose={vi.fn()} />);
 
-    fireEvent.change(screen.getByPlaceholderText('Search chat...'), {
+    fireEvent.change(screen.getByPlaceholderText(findInChatCopy.placeholder), {
       target: { value: 'agent' },
     });
 
     expect(screen.getByDisplayValue('agent')).toBeInTheDocument();
   });
 
-  it('cancels an in-progress close when the user invokes find again', () => {
+  it('names its controls and puts the shortcuts in tooltips, never in title=', () => {
+    render(<SearchBar onSearch={vi.fn()} onClose={vi.fn()} />);
+
+    expect(screen.getByRole('textbox', { name: findInChatCopy.inputLabel })).toBeInTheDocument();
+    for (const name of [
+      findInChatCopy.matchCase,
+      findInChatCopy.previous,
+      findInChatCopy.next,
+      findInChatCopy.close,
+    ]) {
+      const button = screen.getByRole('button', { name });
+      expect(button).not.toHaveAttribute('title');
+    }
+    // The ⌘F load-all tip is the field's InfoTip, read as a description.
+    expect(
+      screen.getByRole('button', { name: `About ${findInChatCopy.helpLabel}` })
+    ).toHaveAccessibleDescription(findInChatCopy.help());
+  });
+
+  it('closes on the close keyframe ending, not on a timer', () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
     render(<SearchBar onSearch={vi.fn()} onClose={onClose} />);
 
-    fireEvent.click(screen.getByTitle('Close (Esc)'));
-    fireEvent.keyDown(window, { key: 'f', metaKey: true });
-    act(() => vi.advanceTimersByTime(150));
+    fireEvent.click(screen.getByRole('button', { name: findInChatCopy.close }));
+    const overlay = screen.getByTestId('conversation-search-bar').parentElement as HTMLElement;
+    expect(overlay).toHaveAttribute('data-state', 'closed');
 
+    // Time alone closes nothing.
+    act(() => vi.advanceTimersByTime(1000));
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByTestId('conversation-search-bar').parentElement).toHaveClass(
-      'search-bar-enter'
-    );
+
+    // A child's animation ending is not the bar's.
+    fireEvent.animationEnd(screen.getByTestId('conversation-search-bar'));
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.animationEnd(overlay);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an in-progress close when the user invokes find again', () => {
+    const onClose = vi.fn();
+    render(<SearchBar onSearch={vi.fn()} onClose={onClose} />);
+
+    fireEvent.click(screen.getByRole('button', { name: findInChatCopy.close }));
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    const overlay = screen.getByTestId('conversation-search-bar').parentElement as HTMLElement;
+    expect(overlay).toHaveAttribute('data-state', 'open');
+    // The opening keyframe ending closes nothing.
+    fireEvent.animationEnd(overlay);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('closes immediately when reduced motion is requested', () => {
@@ -56,21 +103,22 @@ describe('SearchBar', () => {
     });
     render(<SearchBar onSearch={vi.fn()} onClose={onClose} />);
 
-    fireEvent.click(screen.getByTitle('Close (Esc)'));
+    fireEvent.click(screen.getByRole('button', { name: findInChatCopy.close }));
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('clears the delayed close when it unmounts', () => {
-    vi.useFakeTimers();
+  it('Escape in the field starts the close', () => {
     const onClose = vi.fn();
-    const { unmount } = render(<SearchBar onSearch={vi.fn()} onClose={onClose} />);
+    render(<SearchBar onSearch={vi.fn()} onClose={onClose} />);
 
-    fireEvent.click(screen.getByTitle('Close (Esc)'));
-    unmount();
-    act(() => vi.advanceTimersByTime(150));
-
-    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole('textbox', { name: findInChatCopy.inputLabel }), {
+      key: 'Escape',
+    });
+    const overlay = screen.getByTestId('conversation-search-bar').parentElement as HTMLElement;
+    expect(overlay).toHaveAttribute('data-state', 'closed');
+    fireEvent.animationEnd(overlay);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -82,7 +130,9 @@ describe('SearchBar', () => {
    */
   describe('minimum search length', () => {
     const type = (value: string) =>
-      fireEvent.change(screen.getByPlaceholderText('Search chat...'), { target: { value } });
+      fireEvent.change(screen.getByPlaceholderText(findInChatCopy.placeholder), {
+        target: { value },
+      });
 
     it('searches a one-character term on a surface whose floor is one', () => {
       vi.useFakeTimers();
@@ -122,17 +172,20 @@ describe('SearchBar', () => {
       expect(screen.queryByTestId('conversation-search-bar-minimum')).not.toBeInTheDocument();
     });
 
-    it('asks the reveal animation for room for the second row', () => {
-      // The bar opens under a `max-height` transition with `overflow: hidden`,
-      // so the ceiling clips rather than scrolls: without this class the
-      // sentence above is cut through its middle. jsdom cannot see that — the
-      // stylesheet's half is asserted in `styles/searchBarNote.test.ts`.
+    it('marks the two-row state on the overlay, which grows to fit it', () => {
+      // The overlay has no ceiling to clip the second row (it used to be a
+      // `max-height` reveal); `styles/searchBarNote.test.ts` asserts the
+      // stylesheet's half, which jsdom cannot see.
       render(<SearchBar onSearch={vi.fn()} onClose={vi.fn()} />);
 
       type('r');
 
-      expect(screen.getByTestId('conversation-search-bar').parentElement).toHaveClass(
-        'search-bar-has-note'
+      expect(screen.getByTestId('conversation-search-bar').parentElement).toHaveAttribute(
+        'data-has-note',
+        'true'
+      );
+      expect(screen.getByTestId('conversation-search-bar-minimum')).toHaveTextContent(
+        findInChatCopy.belowMinimum(2)
       );
     });
 
@@ -142,7 +195,7 @@ describe('SearchBar', () => {
       render(<SearchBar onSearch={onSearch} onClose={vi.fn()} />);
 
       type('r');
-      fireEvent.click(screen.getByTitle('Case sensitive'));
+      fireEvent.click(screen.getByRole('button', { name: findInChatCopy.matchCase }));
       act(() => vi.advanceTimersByTime(200));
 
       expect(onSearch).not.toHaveBeenCalledWith('r', true);
