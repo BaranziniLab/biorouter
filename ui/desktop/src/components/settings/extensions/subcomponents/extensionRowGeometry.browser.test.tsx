@@ -172,7 +172,9 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-describe('Extension rows in a real layout engine', () => {
+// 90s a test: each one launches a page in a Chromium that other browser suites (and other
+// agents' runs) are loading at the same time; alone, a test takes about 400ms.
+describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
   let browser: Browser | null = null;
   let html = '';
 
