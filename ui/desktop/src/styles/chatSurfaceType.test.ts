@@ -120,7 +120,7 @@ describe('the transcript speaks only the type roles', () => {
     'workflows/WorkflowActivities.tsx',
     'context_management/SystemNotificationInline.tsx',
   ];
-  const OFF_ROLE = /\btext-(\[\d+px\]|xs|sm|base|lg|xl|2xl)\b/;
+  const OFF_ROLE = /\btext-(?:\[\d+px\]|(?:xs|sm|base|lg|xl|2xl)\b)/;
 
   it.each(FILES)('%s', (rel) => {
     const offenders = readFileSync(join(COMPONENTS, rel), 'utf8')
