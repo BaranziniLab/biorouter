@@ -13,6 +13,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Skeleton } from './skeleton';
 import { AppTooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 import { useIsMobile } from '../../hooks/use-mobile';
+import { MOTION, RESIZING_CLASSES } from '../../styles/motion';
 import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -38,6 +39,8 @@ const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
 /** Marks the drag on `<body>` so the width transitions stop lagging the pointer. */
 const SIDEBAR_RESIZING_CLASS = 'biorouter-sidebar-resizing';
+/** The window-resize half of `RESIZING_CLASSES` (`styles/motion.ts`), which `AppLayout` also sets. */
+const WINDOW_RESIZING_CLASS = RESIZING_CLASSES[0];
 /**
  * The class that makes an open sidebar an OVERLAY rather than a column.
  *
@@ -271,6 +274,38 @@ function SidebarProvider({
     return () => {
       if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
       resizeCleanupRef.current?.();
+    };
+  }, []);
+
+  // A window resize must reach the motion rule BEFORE anything the same resize
+  // changes in the sidebar (principle 9; vision V3-02). `AppLayout` answers a
+  // resize with two listeners, registered in this order: the first flips the
+  // compact class and calls `setOpen` across the 1120 rung, the second marks
+  // `<body>` resizing. React treats `resize` as a discrete event and commits that
+  // `setOpen` in the microtask after the FIRST listener, and a layout read in the
+  // commit then resolves styles with the sidebar collapsed and no resizing class,
+  // so the gap started its 175ms width transition and the content glided against
+  // the person's drag. A capturing listener on `window` runs before every
+  // bubbling one at the target, so the class is on `<body>` first. It lifts the
+  // class after the same settle as `AppLayout` (`MOTION.resizeSettleMs`), so it
+  // also holds where `AppLayout` is not mounted.
+  React.useEffect(() => {
+    let settle: number | undefined;
+    const markResizing = () => {
+      document.body.classList.add(WINDOW_RESIZING_CLASS);
+      if (settle !== undefined) window.clearTimeout(settle);
+      settle = window.setTimeout(() => {
+        settle = undefined;
+        document.body.classList.remove(WINDOW_RESIZING_CLASS);
+      }, MOTION.resizeSettleMs);
+    };
+    window.addEventListener('resize', markResizing, { capture: true });
+    return () => {
+      window.removeEventListener('resize', markResizing, { capture: true });
+      if (settle !== undefined) {
+        window.clearTimeout(settle);
+        document.body.classList.remove(WINDOW_RESIZING_CLASS);
+      }
     };
   }, []);
 

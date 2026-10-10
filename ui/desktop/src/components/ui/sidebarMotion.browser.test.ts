@@ -125,7 +125,8 @@ describe('the sidebar opens and closes in a real engine', () => {
           .querySelector(`[data-slot="${slot}"]`)!
           .getAnimations()
           .map((animation) => ({
-            property: (animation as CSSTransition).transitionProperty,
+            property:
+              (animation as Animation & { transitionProperty?: string }).transitionProperty ?? '',
             duration: Number(animation.effect?.getTiming().duration ?? 0),
           }));
       return { panel: running('sidebar-container'), gap: running('sidebar-gap') };

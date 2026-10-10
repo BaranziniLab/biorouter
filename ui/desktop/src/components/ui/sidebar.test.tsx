@@ -1263,3 +1263,68 @@ describe('tooltips inside the app shell wait for the app delay', () => {
     );
   });
 });
+
+/**
+ * Vision V3-02. `AppLayout` answers a resize with two bubbling listeners: the first flips the
+ * compact class and calls `setOpen` across the 1120 rung, the second marks `<body>` resizing.
+ * React commits a `setOpen` from a `resize` listener in the microtask after that listener, so a
+ * layout read in the commit resolved styles before the class landed and the gap eased its width
+ * against the drag. The provider marks `<body>` from a CAPTURING listener, which runs before every
+ * bubbling one at the window, so a listener registered earlier still finds the class.
+ */
+describe('a window resize marks <body> before anything the resize changes', () => {
+  afterEach(() => {
+    document.body.classList.remove('biorouter-window-resizing');
+  });
+
+  it('has the resizing class on <body> inside an earlier bubbling resize listener', () => {
+    const seen: boolean[] = [];
+    function EarlierListener() {
+      // A child's effect runs before its provider's, so this registers first, like AppLayout's.
+      useEffect(() => {
+        const onResize = () =>
+          seen.push(document.body.classList.contains('biorouter-window-resizing'));
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+      }, []);
+      return null;
+    }
+    render(
+      <SidebarProvider>
+        <EarlierListener />
+      </SidebarProvider>
+    );
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(seen).toEqual([true]);
+  });
+
+  it('lifts the class once the resize settles, and on unmount', () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<SidebarProvider>{null}</SidebarProvider>);
+      act(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      expect(document.body).toHaveClass('biorouter-window-resizing');
+      act(() => {
+        vi.advanceTimersByTime(179);
+      });
+      expect(document.body).toHaveClass('biorouter-window-resizing');
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(document.body).not.toHaveClass('biorouter-window-resizing');
+
+      act(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      unmount();
+      expect(document.body).not.toHaveClass('biorouter-window-resizing');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
