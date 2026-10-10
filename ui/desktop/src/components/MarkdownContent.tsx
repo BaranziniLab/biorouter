@@ -543,7 +543,7 @@ const MarkdownImage = memo(function MarkdownImage({
     return (
       <span
         aria-label={alt?.trim() || codeCopy.loadingImage}
-        className="inline-block h-4 w-24 animate-pulse rounded-inner bg-background-medium align-middle"
+        className="inline-block h-4 w-24 rounded-inner bg-background-medium align-middle"
       />
     );
   }

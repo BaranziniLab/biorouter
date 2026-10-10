@@ -25,6 +25,13 @@ function ruleBody(selector: string): string | null {
   return match ? match[1] : null;
 }
 
+/** A `:root` token's value, e.g. `--text-prose` is `14px`. */
+function token(name: string): string {
+  const match = new RegExp(`\\n\\s*${name}:\\s*([^;]+);`).exec(css);
+  expect(match, `token ${name}`).not.toBeNull();
+  return match![1].trim();
+}
+
 function block(name: string): string {
   const begin = css.indexOf(`/* @ws WS-TRANSCRIPT begin: ${name} */`);
   const end = css.indexOf(`/* @ws WS-TRANSCRIPT end: ${name} */`);
@@ -34,10 +41,12 @@ function block(name: string): string {
 }
 
 describe('markdown type', () => {
-  it('sets chat prose on the 14/21 reading line', () => {
+  it('sets chat prose on the 14/21 reading line, from the prose role', () => {
     const body = ruleBody('.biorouter-markdown.prose');
-    expect(body).toContain('font-size: 14px;');
-    expect(body).toContain('line-height: 21px;');
+    expect(body).toContain('font-size: var(--text-prose);');
+    expect(body).toContain('line-height: var(--text-prose--line-height);');
+    expect(token('--text-prose')).toBe('14px');
+    expect(token('--text-prose--line-height')).toBe('21px');
   });
 
   it('uses 17/24 for chat h1 and h2 and 14/21 below them, all at 600', () => {
@@ -45,26 +54,32 @@ describe('markdown type', () => {
       'font-weight: 600;'
     );
     const top = ruleBody('.biorouter-markdown.prose :where(h1, h2)');
-    expect(top).toContain('font-size: 17px;');
-    expect(top).toContain('line-height: 24px;');
+    expect(top).toContain('font-size: var(--text-subheading);');
+    expect(top).toContain('line-height: var(--text-subheading--line-height);');
+    expect(token('--text-subheading')).toBe('17px');
+    expect(token('--text-subheading--line-height')).toBe('24px');
     const rest = ruleBody('.biorouter-markdown.prose :where(h3, h4, h5, h6)');
-    expect(rest).toContain('font-size: 14px;');
-    expect(rest).toContain('line-height: 21px;');
+    expect(rest).toContain('font-size: var(--text-prose);');
+    expect(rest).toContain('line-height: var(--text-prose--line-height);');
   });
 
   it("makes a document's h1 the 24/32 title at regular weight", () => {
     const h1 = ruleBody(".biorouter-markdown.prose[data-variant='document'] h1");
-    expect(h1).toContain('font-size: 24px;');
-    expect(h1).toContain('line-height: 32px;');
-    expect(h1).toContain('font-weight: 400;');
+    expect(h1).toContain('font-size: var(--text-title);');
+    expect(h1).toContain('line-height: var(--text-title--line-height);');
+    expect(h1).toContain('font-weight: var(--text-title--font-weight);');
+    expect(token('--text-title')).toBe('24px');
+    expect(token('--text-title--line-height')).toBe('32px');
+    expect(token('--text-title--font-weight')).toBe('400');
   });
 
-  it('uses only the five sizes of the scale', () => {
-    const sizes = new Set(
-      [...block('markdown').matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim())
-    );
+  it('takes every size from a role token, never a literal', () => {
+    // A literal here is a sixth size waiting to happen; the tokens are the
+    // scale (spec 2.1), so changing it is one edit in `:root`.
+    const sizes = [...block('markdown').matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim());
+    expect(sizes.length).toBeGreaterThan(4);
     for (const size of sizes) {
-      expect(['12px', '13px', '14px', '17px', '24px', 'var(--text-code)']).toContain(size);
+      expect(size).toMatch(/^var\(--text-(?:prose|subheading|title|code)\)$/);
     }
   });
 
@@ -123,6 +138,16 @@ describe("Crew's code block and table, promoted", () => {
     expect(head).toContain('color: var(--text-muted);');
     expect(head).toContain('font-size: var(--text-supporting);');
     expect(head).toContain('font-weight: 600;');
+  });
+
+  it('drops the right-edge fade under forced colours, as Crew does', () => {
+    // A mask is alpha: where the system repaints the rest, the fade only hides ink.
+    const recipes = block('md recipes');
+    const forced = /@media \(forced-colors: active\) \{([\s\S]*?)\n\}/.exec(recipes);
+    expect(forced, 'a forced-colors block in the md recipes').not.toBeNull();
+    expect(forced![1]).toMatch(
+      /\.br-md-code-body\[data-overflow='true'\],\s*\.br-md-table-scroll\[data-overflow='true'\]\s*\{\s*mask-image: none;/
+    );
   });
 
   it('names no crew-* class outside Crew', () => {

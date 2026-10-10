@@ -102,9 +102,6 @@ export const transcriptCopy = {
   activity: {
     thinking: 'Thinking',
     thought: 'Thought',
-    /** The chain-of-thought row's accessible name, by state. */
-    showThinking: 'Show thinking',
-    hideThinking: 'Hide thinking',
     compacting: 'Compacting the chat',
     waitingForAnswer: 'Waiting for your answer',
     runningOne: 'Running the tool',
@@ -124,7 +121,6 @@ export const transcriptCopy = {
   turn: {
     retry: 'Retry',
     details: 'Details',
-    stopped: 'Stopped',
   },
 
   /** The subagent line at the top of a delegated subagent's chat. */

@@ -90,6 +90,33 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
     expect(container.querySelector('.br-transcript-row')).not.toHaveAttribute('data-running');
   });
 
+  it('says "Thought", at rest, once the model has moved on to a tool call', () => {
+    // The turn is still streaming (a tool is running), but the thought is
+    // over: the tool row is what is working, not the thinking row.
+    const message: Message = {
+      ...thinkingMessage(),
+      content: [
+        { type: 'text', text: '<think>weighing two options</think>' },
+        {
+          type: 'toolRequest',
+          id: 'tool-1',
+          toolCall: {
+            status: 'success',
+            value: { name: 'developer__shell', arguments: { command: 'ls' } },
+          },
+        },
+      ],
+    } as Message;
+    const { container } = renderMessage(message, true);
+
+    expect(
+      screen.getByRole('button', { name: transcriptCopy.activity.thought })
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-tool-glyph="thinking"]')?.closest('.br-transcript-row')
+    ).not.toHaveAttribute('data-running');
+  });
+
   it('times a thought it watched: "Thinking · 9s", then "Thought · 9s"', () => {
     vi.useFakeTimers();
     try {

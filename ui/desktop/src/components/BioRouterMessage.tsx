@@ -94,8 +94,21 @@ export default function BioRouterMessage({
   // reads, so the two can never disagree about whether a message starts with
   // prose.
   const { visibleText, cotText } = splitAssistantText(message);
-  // The thought is all there is so far: the answer has not started.
-  const thinkingNow = isStreaming && !visibleText;
+  const toolRequests = getToolRequests(message);
+  const toolConfirmationContent = getToolConfirmationContent(message);
+  const elicitationContent = getElicitationContent(message);
+  const secretRequestContent = getSecretRequestContent(message);
+  // The thought is all there is so far: the answer has not started, and the
+  // model has not moved on to a tool call or a question either. A thought that
+  // is followed by a running tool is over ("Thought"); the tool row beside it
+  // is what is working.
+  const thinkingNow =
+    isStreaming &&
+    !visibleText &&
+    toolRequests.length === 0 &&
+    toolConfirmationContent === undefined &&
+    elicitationContent === undefined &&
+    secretRequestContent === undefined;
   // "Thinking · 8s" while it lasts, "Thought · 8s" after, when this view
   // watched it happen; a thought read from history has no measured length.
   const thought = useThoughtDuration(!!cotText && thinkingNow);
@@ -116,7 +129,6 @@ export default function BioRouterMessage({
   );
 
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
-  const toolRequests = getToolRequests(message);
   // Use the index passed by the parent list when available (O(1)); only fall
   // back to the O(n) scan when rendered standalone.
   const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
@@ -136,9 +148,6 @@ export default function BioRouterMessage({
     () => filePathLookupFromPaths(knownFilePathsKey ? knownFilePathsKey.split('\0') : []),
     [knownFilePathsKey]
   );
-  const toolConfirmationContent = getToolConfirmationContent(message);
-  const elicitationContent = getElicitationContent(message);
-  const secretRequestContent = getSecretRequestContent(message);
   const hasToolConfirmation = toolConfirmationContent !== undefined;
   const hasElicitation = elicitationContent !== undefined;
 
@@ -235,7 +244,7 @@ export default function BioRouterMessage({
             </QuotedTextSelection>
 
             {imagePaths.length > 0 && (
-              <div className="mt-2">
+              <div className="mt-2 flex flex-col gap-2">
                 {imagePaths.map((imagePath, index) => (
                   <ImagePreview key={index} src={imagePath} />
                 ))}

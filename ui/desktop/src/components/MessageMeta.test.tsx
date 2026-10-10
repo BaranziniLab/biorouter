@@ -47,6 +47,14 @@ describe('MessageActions (the floating cluster)', () => {
     // Always shown, in the flow, without a hover pointer.
     expect(css).toMatch(/@media \(hover: none\) \{[\s\S]*?position: static;[\s\S]*?opacity: 1;/);
   });
+
+  it('keeps an edge under forced colours, where box shadows are dropped', () => {
+    // The cluster's whole edge is a shadow; without a border it would float
+    // edgeless over the words.
+    const forced = /@media \(forced-colors: active\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    expect(forced).toMatch(/\.br-message-actions \{[^}]*border: 1px solid CanvasText;/);
+    expect(forced).toMatch(/\.br-message-actions button \{[^}]*border: 1px solid ButtonText;/);
+  });
 });
 
 describe('MessageMetaAction (an action about the content, in the flow)', () => {

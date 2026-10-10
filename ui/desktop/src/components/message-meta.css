@@ -70,4 +70,19 @@
     transition: none;
   }
 }
+
+/* Forced colours drop box shadows, and the cluster's whole edge is one (the
+   popover shadow and the inset hairline), so it would float edgeless over the
+   words. It gets the system's edge, and its buttons the system button edge, as
+   Crew's row actions do (`.crew-row-action`, Q4-25). */
+@media (forced-colors: active) {
+  .br-message-actions {
+    border: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  .br-message-actions button {
+    border: 1px solid ButtonText;
+  }
+}
 /* @ws WS-TRANSCRIPT end: message actions */

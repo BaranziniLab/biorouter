@@ -2795,8 +2795,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    pinned to the top of the menu while the rows under it scroll. Results replace
    at once; only the "No tabs match" line fades in, over `--dur-fast-max`. */
 .br-tabstrip__menu-filter {
+  /* Pulled into the menu's 4px padding by the negative margin, and stuck at the
+     top of its padding box (`top: 0`), so rows scroll under it, never above it. */
   position: sticky;
-  top: -4px;
+  top: 0;
   z-index: 1;
   display: flex;
   align-items: center;
@@ -5782,15 +5784,17 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 /* @ws WS-TRANSCRIPT begin: markdown */
 /* Shared markdown typography: chat answers, documents in the preview, notes.
 
-   One prose line, 14px on 21px, the same reading line as Crew's messages
-   (`.crew-md`). Chat headings stop at 17px because an answer is a document,
-   not a page; a document's h1 is the 24px title. Nothing here carries the
+   One prose line, 14px on 21px (`--text-prose`), the same reading line as
+   Crew's messages (`.crew-md`). Chat headings stop at 17px (`--text-subheading`)
+   because an answer is a document, not a page; a document's h1 is the 24px
+   title (`--text-title`). Sizes are the roles' own tokens, so the scale is
+   changed in one place. Nothing here carries the
    accent: no bar beside a heading and no tinted quote. The accent marks state
    (spec principle 7). Spacing is on the 4px grid in px, so a heading's gap does
    not drift with its own size. */
 .biorouter-markdown.prose {
-  font-size: 14px;
-  line-height: 21px;
+  font-size: var(--text-prose);
+  line-height: var(--text-prose--line-height);
 }
 
 .biorouter-markdown.prose :where(h1, h2, h3, h4, h5, h6) {
@@ -5802,32 +5806,32 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 
 .biorouter-markdown.prose :where(h1, h2) {
   margin: 20px 0 8px;
-  font-size: 17px;
-  line-height: 24px;
+  font-size: var(--text-subheading);
+  line-height: var(--text-subheading--line-height);
 }
 
 .biorouter-markdown.prose :where(h3, h4, h5, h6) {
   margin: 16px 0 4px;
-  font-size: 14px;
-  line-height: 21px;
+  font-size: var(--text-prose);
+  line-height: var(--text-prose--line-height);
 }
 
 /* A document's first heading is its title: the 24px step, regular weight. */
 .biorouter-markdown.prose[data-variant='document'] h1 {
   margin: 24px 0 12px;
-  font-size: 24px;
-  line-height: 32px;
-  font-weight: 400;
-  letter-spacing: -0.01em;
+  font-size: var(--text-title);
+  line-height: var(--text-title--line-height);
+  font-weight: var(--text-title--font-weight);
+  letter-spacing: var(--text-title--letter-spacing);
 }
 
 /* A document whose front matter already names it: its first `# H1` would be a
    second title, so it takes the h2 step (`demoteFirstHeading`). */
 .biorouter-markdown.prose[data-variant='document'][data-demote-h1] h1:first-of-type {
   margin: 20px 0 8px;
-  font-size: 17px;
-  line-height: 24px;
-  font-weight: 600;
+  font-size: var(--text-subheading);
+  line-height: var(--text-subheading--line-height);
+  font-weight: var(--text-subheading--font-weight);
   letter-spacing: 0;
 }
 
@@ -6060,6 +6064,15 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 
 .br-md-table thead :where(strong, em, a) {
   color: inherit;
+}
+
+/* Forced colours: the right-edge fade would only hide ink there (a mask is
+   alpha, and the system repaints the rest), so it goes, as Crew's does. */
+@media (forced-colors: active) {
+  .br-md-code-body[data-overflow='true'],
+  .br-md-table-scroll[data-overflow='true'] {
+    mask-image: none;
+  }
 }
 /* @ws WS-TRANSCRIPT end: md recipes */
 

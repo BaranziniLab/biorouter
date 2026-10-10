@@ -77,18 +77,16 @@ export function InlineImage(props: InlineImageProps) {
 
   // For temp-path, validate it is a safe file path
   if (props.kind === 'temp-path' && !props.path.includes('biorouter-pasted-images')) {
-    return (
-      <div className="my-1 text-supporting text-text-danger">{copy.invalidPath(props.path)}</div>
-    );
+    return <div className="text-supporting text-text-danger">{copy.invalidPath(props.path)}</div>;
   }
 
   if (error) {
     const label = props.kind === 'temp-path' ? props.path : `${props.mimeType} image`;
-    return <div className="my-1 text-supporting text-text-danger">{copy.unavailable(label)}</div>;
+    return <div className="text-supporting text-text-danger">{copy.unavailable(label)}</div>;
   }
 
   return (
-    <div className={`image-preview my-2 ${className}`}>
+    <div className={`image-preview ${className}`}>
       {isLoading && (
         // A still placeholder the image's size: a load is not work in
         // progress the eye needs to watch, so nothing pulses.
