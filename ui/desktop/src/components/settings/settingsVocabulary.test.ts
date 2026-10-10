@@ -21,9 +21,10 @@ import { describe, expect, it } from 'vitest';
  * `docs/desktop-ui/settings-visual-vocabulary.md`; this file is its teeth.
  *
  * ⚠ **The exclusions are a stated scope, not an amnesty.** Extensions, the
- * provider-configuration page, the permission modals, dictation, the tunnel and
- * session sharing share these primitives and will inherit the rules; they were
- * left out because sweeping them triples the diff. Deleting a name from a
+ * provider-configuration page, dictation, the tunnel and session sharing share
+ * these primitives and will inherit the rules; they were left out because
+ * sweeping them triples the diff (the permission modals left the list on
+ * 2026-10-10, once they sat on ModalShell and SettingRow). Deleting a name from a
  * root's list is how that work gets finished — adding one is how the rules rot.
  */
 const SETTINGS_DIR = __dirname;
@@ -53,13 +54,13 @@ const HISTORY_DIR = join(__dirname, '..', 'sessions');
 const ROOTS: { dir: string; outOfScope: string[] }[] = [
   {
     dir: SETTINGS_DIR,
-    outOfScope: ['extensions/', 'providers/', 'permission/', 'dictation/', 'tunnel/', 'sessions/'],
+    outOfScope: ['extensions/', 'providers/', 'dictation/', 'tunnel/', 'sessions/'],
   },
-  // Home's two surfaces sit in this directory but are not chat history and were
-  // not part of that sweep: `SessionsInsights` is the Home view and
-  // `UsageHeatmap` is its grid, whose `leading-*` and per-mille alphas are
-  // fitted cell geometry rather than prose styling.
-  { dir: HISTORY_DIR, outOfScope: ['SessionsInsights.tsx', 'UsageHeatmap.tsx'] },
+  // Home's usage surfaces (SessionsInsights, HomeUsageCard, UsageHeatmap) sit in
+  // this directory too and follow the vocabulary since the 2026-10 redesign.
+  { dir: HISTORY_DIR, outOfScope: [] },
+  // BAAM, the marketplace dialogs, 2026-10-10 (spec wave 2).
+  { dir: join(SETTINGS_DIR, '../baam'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../schedule'), outOfScope: [] }, // the Scheduler, 2026-09-07
   // The five component views, 2026-09-07 — swept in the pass that also put them
   // on the chat measure and the shared page header.

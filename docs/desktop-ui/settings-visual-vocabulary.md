@@ -438,16 +438,19 @@ that is not Settings:
 
 Extensions, the provider-configuration page, dictation, the tunnel and session sharing share
 these primitives and will inherit the rules, but were not swept when the vocabulary landed.
-The permission dialogs were swept onto `ModalShell` and `SettingRow` on 2026-10-09; their
-folder leaves the exclusion list in the redesign's final sweep. They are named in the per-root `outOfScope` lists in
-`settingsVocabulary.test.ts`; deleting a name from one of those lists — or adding a root
-for a directory the walker has never reached — is how the work gets finished.
+They are named in the per-root `outOfScope` lists in `settingsVocabulary.test.ts`; deleting a
+name from one of those lists, or adding a root for a directory the walker has never reached, is
+how the work gets finished.
 
-Two files in the chat-history root are excluded for a different reason: `SessionsInsights`
-is the **Home** view and `UsageHeatmap` is its grid, whose `leading-*` values and per-mille
-alphas are fitted cell geometry rather than prose styling. `ui/ConfirmationModal.tsx`'s
-`sm:max-w-[425px]` is likewise left alone — it is a shared primitive, so moving it onto the
-`MODAL_SIZE` ladder changes every confirmation in the app rather than one feature's.
+The 2026-10 redesign's final sweep has started on those lists. The permission dialogs moved
+onto `ModalShell` and `SettingRow` on 2026-10-09 and their folder left the exclusions on
+2026-10-10. Home's usage surfaces (`SessionsInsights`, `HomeUsageCard`, `UsageHeatmap`) sit
+in the chat-history root and follow the vocabulary since the same date, and BAAM
+(`components/baam/`) is a root of its own. Knowledge joins once its owner's sweep lands.
+
+`ui/ConfirmationModal.tsx`'s `sm:max-w-[425px]` is left alone: it is a shared primitive, so
+moving it onto the `MODAL_SIZE` ladder changes every confirmation in the app rather than one
+feature's.
 
 Also deliberately outside it: the 40px → 36px row retune (astryx A-03, still a later
 phase), promoting a `ghost-danger` variant into `buttonVariants`, and adding `size` /
