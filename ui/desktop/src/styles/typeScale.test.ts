@@ -159,7 +159,8 @@ describe('tailwind-merge knows every role', () => {
  * (`components/privacy/**`, `context_management/**` except
  * `SystemNotificationInline.tsx`, `LauncherView`, `Pair`, the unmounted
  * `settings/{dictation,tunnel,sessions}/**`), `onboarding/**` and `ProviderGuard`
- * until their P2 sweep lands, the generated `api/`, and tests.
+ * until their P2 sweep lands, the generated `api/`, the gitignored build output
+ * under `bin/` and `web/`, and tests.
  */
 const SRC = join(__dirname, '..');
 
@@ -173,6 +174,10 @@ const OUT_OF_SCOPE = [
   /^components\/onboarding\//,
   /^components\/ProviderGuard\./,
   /^api\//,
+  // Build output that is gitignored but sits under src/: the staged binaries and the
+  // root-base browser bundle (`npm run build:web`). Compiled CSS is full of px sizes.
+  /^bin\//,
+  /^web\//,
 ];
 
 const CLASS_RULES: Record<string, RegExp> = {
@@ -224,7 +229,7 @@ function guardedFiles(): string[] {
 
 /**
  * The files that still carry legacy forms, with the count each carried when the
- * ratchet landed (2026-10-10). A count may fall and must not rise; a file that
+ * ratchet landed (2026-10-10, tightened as owners swept). A count may fall and must not rise; a file that
  * is not listed must be clean. Do NOT add a file or raise a count: move the file
  * onto the roles (spec 2.1 has the mapping table). Wave 2 deletes this object.
  */
@@ -233,15 +238,11 @@ const SWEEP_PENDING: Record<string, number> = {
   'components/DependencyErrorBanner.tsx': 2,
   'components/DependencySetupModal.tsx': 18,
   'components/ErrorBoundary.tsx': 5,
-  'components/GroupedExtensionLoadingToast.tsx': 1,
   'components/InAppTerminalDock.tsx': 1,
   'components/ModelAndProviderContext.tsx': 5,
   'components/ParameterInputModal.tsx': 2,
   'components/UpdateAvailableModal.tsx': 10,
-  'components/alerts/AlertBox.tsx': 8,
-  'components/alerts/NotificationSurface.tsx': 2,
   'components/bottom_menu/ModelBreakdownTable.tsx': 1,
-  'components/conversation/SearchBar.tsx': 3,
   'components/knowledge/KBSelector/KBManagerDialog.tsx': 2,
   'components/knowledge/KBSelector/KBSelectorMenu.tsx': 1,
   'components/knowledge/KBSelector/KbFormatChooser.tsx': 1,
@@ -272,7 +273,6 @@ const SWEEP_PENDING: Record<string, number> = {
   'components/settings/providers/subcomponents/CardHeader.tsx': 1,
   'components/settings/providers/subcomponents/ProviderCard.tsx': 4,
   'components/settings/providers/subcomponents/utils/StringUtils.tsx': 1,
-  'components/settings/usage/UsagePanel.tsx': 2,
   'components/ui/DangerousConfirmDialog.tsx': 2,
   'components/ui/badge.tsx': 3,
   'styles/main.css': 13,
