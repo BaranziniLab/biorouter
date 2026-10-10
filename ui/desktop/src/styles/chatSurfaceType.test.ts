@@ -7,9 +7,11 @@ import { describe, expect, it } from 'vitest';
  *
  * `biorouter-message-content` marks a block that renders INSIDE the transcript,
  * shoulder to shoulder with the assistant's prose. That prose is 14px. The
- * document default is 16px, so a card that names no size class does not render
- * "at the default" — it renders two pixels larger than everything around it,
- * which is what the user saw and described as a banner sitting among the text.
+ * document default was 16px until the 2026-10 body move, so a card that named
+ * no size rendered two pixels larger than everything around it, which is what
+ * the user saw and described as a banner sitting among the text. The default is
+ * 14px now, and the rule stays: a card that inherits its size changes size
+ * whenever the default does.
  *
  * The bug is invisible to every component test in this repo, and not by
  * accident: jsdom has no layout engine and never runs Tailwind, so a card
@@ -55,7 +57,7 @@ describe('chat-surface cards state their own type size', () => {
     expect(markerLines().length).toBeGreaterThan(5);
   });
 
-  it('never ships a card that inherits the 16px document default', () => {
+  it('never ships a card that inherits the document default', () => {
     const unsized = markerLines().filter((line) => !SIZE.test(line));
     expect(unsized).toEqual([]);
   });
