@@ -5326,6 +5326,101 @@ input[type='radio']:checked ~ .br-radio-dot {
   }
 }
 
+/* Forced colours (principle 12). They replace every background colour with Canvas and drop box
+   shadows, so anything whose shape or state was a fill disappears: the switch (a fill and a
+   shadow ring), the segmented thumb, the tab underline, the progress bar. Each is given back in
+   a system colour, which is kept as written. Measured with Playwright's `forcedColors: 'active'`
+   (`ui/controlsGeometry.browser.test.tsx`). The focus ring is the global OS-requested block's. */
+@media (forced-colors: active) {
+  /* A row keeps 1px of transparent border room for its straight hairline. Forced colours repaint
+     that border in the text colour, and on a rounded box it curled up at both ends. Canvas is a
+     system colour, so it stays as written and the border shows as nothing; the `::after` line
+     is the divider. */
+  .biorouter-list-row,
+  .biorouter-settings-row {
+    border-bottom-color: Canvas;
+  }
+
+  /* Switch: an outlined track, a filled one when on; the knob is the text colour, or the
+     on-ink. The 1px edge takes 1px of the inner box, so the knob travels 1px less each way and
+     sits 2px from the outer edge in both states. */
+  .br-switch {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  .br-switch[data-state='checked'] {
+    border-color: Highlight;
+    background-color: Highlight;
+  }
+
+  .br-switch:disabled,
+  .br-switch[data-disabled] {
+    border-color: GrayText;
+    background-color: Canvas;
+    opacity: 1;
+  }
+
+  .br-switch-thumb,
+  .dark .br-switch-thumb {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+    box-shadow: none;
+    transform: translateX(1px);
+  }
+
+  .br-switch-thumb[data-state='checked'],
+  .dark .br-switch-thumb[data-state='checked'] {
+    background-color: HighlightText;
+    transform: translateX(13px);
+  }
+
+  .br-switch:disabled .br-switch-thumb,
+  .br-switch[data-disabled] .br-switch-thumb {
+    background-color: GrayText;
+  }
+
+  /* Segmented control: the chosen segment is outlined inside the track, in Highlight. The thumb
+     is a fill and a shadow, so it stands down. */
+  .br-segmented {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .br-segmented-thumb {
+    display: none;
+  }
+
+  .br-segmented-item[data-state='checked'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  /* The tab underline is one accent fill that travels. */
+  .br-tabs-indicator {
+    forced-color-adjust: none;
+    background-color: Highlight;
+  }
+
+  /* Progress: an outlined track and a Highlight fill. */
+  .br-progress {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  .br-progress__fill {
+    forced-color-adjust: none;
+    background-color: Highlight;
+  }
+
+  /* A floating InfoTip is an inverse fill with no border, like the tooltip it is drawn on. */
+  [data-slot='info-tip-content'] {
+    border: 1px solid CanvasText;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .br-spinner {
     animation: none;

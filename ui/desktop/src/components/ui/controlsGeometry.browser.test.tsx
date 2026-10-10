@@ -736,4 +736,61 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       await tab.close();
     }
   });
+  it('keeps the switch, the segmented choice, the tab underline and the row divider visible in forced colours', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.emulateMedia({ forcedColors: 'active' });
+      // The track and knob ease their colour: read them once the transition has settled.
+      await tab.waitForTimeout(400);
+      const m = await tab.evaluate(() => {
+        const cs = (el: Element) => getComputedStyle(el);
+        const probe = document.createElement('div');
+        probe.style.backgroundColor = 'Canvas';
+        document.body.append(probe);
+        const canvas = cs(probe).backgroundColor;
+        const on = document.getElementById('on')!;
+        const off = document.getElementById('off')!;
+        const knob = (el: Element) => el.querySelector('.br-switch-thumb')!;
+        const seg = document.querySelector(
+          '[data-testid="fit"] .br-segmented-item[data-state="checked"]'
+        )!;
+        const indicator = document.querySelector('[data-testid="tabs"] .br-tabs-indicator')!;
+        const row = document.querySelector('.br-setting-row')!;
+        const box = (el: Element) => el.getBoundingClientRect();
+        return {
+          canvas,
+          onTrack: cs(on).backgroundColor,
+          offTrack: cs(off).backgroundColor,
+          onEdge: cs(on).borderTopColor,
+          offEdge: cs(off).borderTopColor,
+          onKnob: cs(knob(on)).backgroundColor,
+          offKnob: cs(knob(off)).backgroundColor,
+          offInset: box(knob(off)).left - box(off).left,
+          onInset: box(on).right - box(knob(on)).right,
+          thumbShown: cs(document.querySelector('.br-segmented-thumb')!).display,
+          segOutline: `${cs(seg).outlineStyle} ${cs(seg).outlineWidth}`,
+          segOutlineColor: cs(seg).outlineColor,
+          indicator: cs(indicator).backgroundColor,
+          rowBorder: cs(row).borderBottomColor,
+          switchSize: [box(on).width, box(on).height],
+        };
+      });
+      expect(m.onTrack, 'an on switch is filled').not.toBe(m.canvas);
+      expect(m.offTrack, 'an off switch is hollow').toBe(m.canvas);
+      expect(m.offEdge, 'an off switch has an edge').not.toBe(m.canvas);
+      expect(m.onKnob, 'the knob changes with the state').not.toBe(m.offKnob);
+      near(m.offInset, 2, 'off knob start inset');
+      near(m.onInset, 2, 'on knob end inset');
+      near(m.switchSize[0], 32, 'switch width');
+      near(m.switchSize[1], 20, 'switch height');
+      expect(m.thumbShown, 'the thumb stands down').toBe('none');
+      expect(m.segOutline).toBe('solid 2px');
+      expect(m.segOutlineColor, 'the chosen segment is outlined').not.toBe(m.canvas);
+      expect(m.indicator, 'the underline is a visible fill').not.toBe(m.canvas);
+      expect(m.rowBorder, 'the row’s border room is invisible, so it cannot curl').toBe(m.canvas);
+    } finally {
+      await tab.close();
+    }
+  });
 });
