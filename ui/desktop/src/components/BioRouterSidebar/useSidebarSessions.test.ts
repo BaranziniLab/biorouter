@@ -147,7 +147,7 @@ describe('useSidebarSessions', () => {
 
 /**
  * M11. A deleted chat left History, the tab strip and the database immediately
- * and stayed in the sidebar Recents until a renderer reload.
+ * and stayed in the sidebar until a renderer reload.
  *
  * Two independent breaks produced it, and BOTH have to be closed:
  *   (a) the delete handler never announced membership at all, and
@@ -160,7 +160,7 @@ describe('useSidebarSessions', () => {
  * because other chats were touched, not because it was deleted. So the removal
  * is announced explicitly, by id.
  */
-describe('a deleted chat leaves Recents without a reload', () => {
+describe('a deleted chat leaves the sidebar without a reload', () => {
   it('drops the announced id, in this window and from a sibling window', async () => {
     const firstPage = Array.from({ length: 10 }, (_, index) => makeSummary(index));
     mocks.listSidebarSessions.mockResolvedValue({
@@ -207,7 +207,7 @@ describe('a deleted chat leaves Recents without a reload', () => {
  * refresh re-reads only the HEAD of the keyset and never reaches a months-old
  * row, so the row is re-marked by id from ANOTHER window's announcement.
  */
-describe('a declassified chat is re-marked in Recents without a reload', () => {
+describe('a declassified chat is re-marked in the sidebar without a reload', () => {
   it('patches a scrolled-in row where it sits, from a sibling window', async () => {
     const firstPage = Array.from({ length: 10 }, (_, index) => ({
       ...makeSummary(index),

@@ -150,7 +150,7 @@ export default function useSidebarSessions(
     // Membership changes — a session created, DIVERGED, deleted or imported, in
     // THIS window or any sibling. Diverge creates a session purely over HTTP and
     // dispatches no `session-created` window event (and those are per-renderer
-    // anyway), so before this the branch never entered the Recents list until an
+    // anyway), so before this the branch never entered the sidebar list until an
     // unrelated turn happened to finish. Now every list change re-reads.
     const unsubscribeList = subscribeSessionListChanges(scheduleRefresh);
 

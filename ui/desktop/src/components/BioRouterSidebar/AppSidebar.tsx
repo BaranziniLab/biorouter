@@ -152,7 +152,7 @@ const COMPONENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-components-expanded';
  * Collapsed by DEFAULT — that is where the 192px comes from (nine 32px nav rows
  * become three). Remembered, so a user who wants the six open never reopens
  * them. Storage failures (private mode, a sandboxed frame) fall back to
- * collapsed rather than throwing, matching what Recents already does one file
+ * collapsed rather than throwing, matching what the Chats list already does one file
  * over.
  */
 function readStoredComponentsExpanded(): boolean {

@@ -77,7 +77,7 @@ function renderRecents(onOpen = vi.fn()) {
  * Chat Recall's exact load and every `workspace_*` id argument already take —
  * could not be got out of the sidebar at all.
  */
-describe('sidebar Recents right-click menu', () => {
+describe('the sidebar chat row menu', () => {
   /**
    * Owner message 4: right-click a chat to rename it, "along with all the other
    * actions possible there", in the spec's fixed order (3.4), text only.
@@ -220,7 +220,7 @@ describe('sidebar Recents right-click menu', () => {
   });
 });
 
-describe('permanent Recents deletion', () => {
+describe('deleting a chat from the sidebar', () => {
   it('requires confirmation and cancel leaves the session intact', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
