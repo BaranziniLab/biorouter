@@ -65,6 +65,39 @@ describe('SearchView', () => {
     expect(screen.getByTestId('min-search-length')).toHaveTextContent('1');
   });
 
+  // Vision V2-02: rendered inside the scrolled content, the bar scrolled away
+  // with it once the highlighter made the viewport its containing block.
+  it('mounts the bar in the transcript cell, outside the scrolling viewport', () => {
+    render(
+      <div data-testid="cell" data-preview-transcript="">
+        <div data-testid="viewport" data-radix-scroll-area-viewport="">
+          <SearchView>
+            <p>alpha beta</p>
+          </SearchView>
+        </div>
+      </div>
+    );
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    const bar = screen.getByTestId('min-search-length').parentElement as HTMLElement;
+    expect(screen.getByTestId('viewport').contains(bar)).toBe(false);
+    expect(bar.parentElement).toBe(screen.getByTestId('cell'));
+  });
+
+  it('renders the bar in place when no transcript cell holds it', () => {
+    const { container } = render(
+      <SearchView>
+        <p>alpha beta</p>
+      </SearchView>
+    );
+
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    const searchContainer = container.querySelector('.search-container') as HTMLElement;
+    expect(searchContainer.contains(screen.getByTestId('min-search-length'))).toBe(true);
+  });
+
   it('cancels a pending highlight when a newer term arrives', () => {
     render(
       <SearchView>

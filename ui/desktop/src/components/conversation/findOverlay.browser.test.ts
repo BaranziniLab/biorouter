@@ -11,8 +11,9 @@
  *
  * The real `styles/search.css` is loaded into Chromium over markup shaped like
  * BaseChat's transcript cell: a `relative` + `overflow: hidden` ScrollArea root,
- * a scrolling viewport, the 760px chat column, and the bar rendered INSIDE the
- * column (where `SearchView` puts it).
+ * a scrolling viewport and the 760px chat column. `SearchView` portals the bar
+ * into the cell, after the viewport; the first cases also hold it inside the
+ * column, where it used to render, to show what the portal is for.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -66,13 +67,33 @@ const bar = (note: boolean) =>
     : '') +
   `</div></div>`;
 
-const transcript = (withBar: 'none' | 'bar' | 'note') =>
-  `<div class="cell" id="cell"><div class="viewport" id="viewport"><div class="column">` +
-  (withBar === 'none' ? '' : bar(withBar === 'note')) +
-  Array.from({ length: 20 }, (_, i) => `<div class="message" id="m${i}">Message ${i}</div>`).join(
-    ''
-  ) +
-  `</div></div></div>`;
+/**
+ * `place`: `column` is where the bar used to render (inside the scrolled
+ * content), `cell` is where `SearchView` portals it (the cell's last child).
+ * `highlighting`: a search is running, so `SearchHighlighter` has set the
+ * viewport to `position: relative` (it positions its marks against it).
+ */
+const transcript = (
+  withBar: 'none' | 'bar' | 'note',
+  {
+    place = 'cell',
+    highlighting = false,
+  }: { place?: 'column' | 'cell'; highlighting?: boolean } = {}
+) => {
+  const theBar = withBar === 'none' ? '' : bar(withBar === 'note');
+  const viewportStyle = highlighting ? ' style="position: relative"' : '';
+  return (
+    `<div class="cell" id="cell"><div class="viewport" id="viewport"${viewportStyle}>` +
+    `<div class="column">` +
+    (place === 'column' ? theBar : '') +
+    Array.from({ length: 20 }, (_, i) => `<div class="message" id="m${i}">Message ${i}</div>`).join(
+      ''
+    ) +
+    `</div></div>` +
+    (place === 'cell' ? theBar : '') +
+    `</div>`
+  );
+};
 
 const launchChromium = async (): Promise<Browser | null> => {
   for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
@@ -116,10 +137,13 @@ describe('find in chat floats over the transcript', () => {
     await browser?.close();
   });
 
-  const load = async (variant: 'none' | 'bar' | 'note') => {
+  const load = async (
+    variant: 'none' | 'bar' | 'note',
+    options?: Parameters<typeof transcript>[1]
+  ) => {
     await page.setContent(
       `<!doctype html><html><head><style>${TOKENS}</style><style>${SEARCH_CSS}</style></head>` +
-        `<body>${transcript(variant)}</body></html>`
+        `<body>${transcript(variant, options)}</body></html>`
     );
     // Let the (reduced) entrance finish so the bar is measured at rest.
     await page.waitForTimeout(50);
@@ -155,6 +179,33 @@ describe('find in chat floats over the transcript', () => {
     const after = await rectOf(page, 'overlay');
     expect(after.top).toBe(before.top);
     // …while the conversation itself did move.
+    expect((await rectOf(page, 'm0')).top).toBeLessThan(0);
+  });
+
+  // Vision V2-02, the cause: once a search runs, the viewport is positioned,
+  // and a bar inside the scrolled content scrolls away with the text. This is
+  // the control that shows the instrument can see the bug.
+  it('inside the scrolled content, a running search carries the bar off the screen', async () => {
+    if (!browser) return;
+    await load('bar', { place: 'column', highlighting: true });
+    const before = await rectOf(page, 'overlay');
+    await page.evaluate(() => {
+      document.getElementById('viewport')!.scrollTop = 300;
+    });
+    expect((await rectOf(page, 'overlay')).top).toBe(before.top - 300);
+  });
+
+  it('portalled into the cell, it stays put while a running search scrolls the text', async () => {
+    if (!browser) return;
+    await load('bar', { place: 'cell', highlighting: true });
+    const cell = await rectOf(page, 'cell');
+    const before = await rectOf(page, 'overlay');
+    expect(before.top - cell.top).toBe(8);
+    expect(cell.right - before.right).toBe(16);
+    await page.evaluate(() => {
+      document.getElementById('viewport')!.scrollTop = 300;
+    });
+    expect((await rectOf(page, 'overlay')).top).toBe(before.top);
     expect((await rectOf(page, 'm0')).top).toBeLessThan(0);
   });
 

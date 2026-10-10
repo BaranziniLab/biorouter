@@ -30,12 +30,16 @@
    it pushed the whole conversation down by up to 88px while it animated, and
    the ceiling clipped the two-row "type at least…" state. It now floats.
 
-   `position: absolute` against the nearest positioned box. Inside the chat that
-   is the transcript cell (`BaseChat`'s `ScrollArea` root, `relative`, and the
-   same in `SessionHistoryView`), which sits OUTSIDE the scrolling viewport, so
-   the bar neither scrolls with the conversation nor is clipped by it. It sits
-   8px under the header band and 16px in from the right edge, where a toast also
-   lands; the toast is transient and above it (`--z-toast`), so the toast wins.
+   `position: absolute` against the transcript cell (`BaseChat`'s `ScrollArea`
+   root, `relative`, and the same in `SessionHistoryView`), which sits OUTSIDE
+   the scrolling viewport, so the bar neither scrolls with the conversation nor
+   is clipped by it. ⚠ `SearchView` PORTALS the bar into that cell; rendered in
+   place it would not stay there, because `SearchHighlighter` makes the
+   viewport `position: relative` as soon as a search starts, and from then on
+   the viewport is the containing block and the bar scrolls off with the text
+   (vision V2-02). It sits 8px under the header band and 16px in from the right
+   edge, where a toast also lands; the toast is transient and above it
+   (`--z-toast`), so the toast wins.
 
    Width: compact, like an editor's find widget, and never wider than the
    transcript's measure or the cell less its gutters. Nothing geometric

@@ -1,4 +1,12 @@
-import React, { useState, useEffect, PropsWithChildren, useCallback, useRef } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  PropsWithChildren,
+  useCallback,
+  useRef,
+} from 'react';
+import { createPortal } from 'react-dom';
 import SearchBar from './SearchBar';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import '../../styles/search.css';
@@ -34,6 +42,13 @@ interface SearchContainerElement extends HTMLDivElement {
 }
 
 /**
+ * The transcript cell the find bar floats in: the `ScrollArea` ROOT that both
+ * hosts (`BaseChat`, `SessionHistoryView`) mark `data-preview-transcript`. It is
+ * positioned, and it is OUTSIDE the scrolling viewport.
+ */
+export const FIND_OVERLAY_HOST = '[data-preview-transcript]';
+
+/**
  * Find in chat (spec 3.16): wraps a transcript in a searchable container whose
  * bar appears on Cmd/Ctrl+F as an overlay at the transcript's top right (see
  * `SearchBar`), with case-sensitive search and match navigation, debounced for
@@ -44,6 +59,10 @@ interface SearchContainerElement extends HTMLDivElement {
  * of rows filters with the band's `FilterInput` instead
  * (`styles/searchBarNote.test.ts` holds that line).
  */
+function mountFindBar(bar: React.ReactElement, host: HTMLElement | null): React.ReactNode {
+  return host ? createPortal(bar, host) : bar;
+}
+
 export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   className = '',
   children,
@@ -66,6 +85,19 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   const highlighterRef = React.useRef<SearchHighlighter | null>(null);
   const highlightTimerRef = React.useRef<number | null>(null);
   const containerRef = React.useRef<SearchContainerElement | null>(null);
+  // Where the bar is mounted (vision V2-02). Rendered in place, inside the
+  // scrolled content, it scrolled away with the conversation: the moment a
+  // search starts, `SearchHighlighter` sets the viewport to `position:
+  // relative` (its match marks are positioned against the scrolled content),
+  // and that made the VIEWPORT the bar's containing block. Typing jumped to the
+  // first match and the bar left the screen with the text. So the bar is
+  // portalled into the transcript cell, which is positioned and does not
+  // scroll. Without such a cell (a bare mount, as in the unit tests) it renders
+  // in place.
+  const [overlayHost, setOverlayHost] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    setOverlayHost(containerRef.current?.closest<HTMLElement>(FIND_OVERLAY_HOST) ?? null);
+  }, []);
   const lastSearchRef = React.useRef<{ term: string; caseSensitive: boolean }>({
     term: '',
     caseSensitive: false,
@@ -393,18 +425,20 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
       }}
       className={`search-container ${className}`}
     >
-      {isSearchVisible && (
-        <SearchBar
-          onSearch={handleSearch}
-          onClose={handleCloseSearch}
-          onNavigate={handleNavigate}
-          searchResults={searchResults || internalSearchResults || undefined}
-          inputRef={searchInputRef}
-          initialSearchTerm={initialSearchTerm}
-          placeholder={placeholder}
-          minSearchLength={minSearchLength}
-        />
-      )}
+      {isSearchVisible &&
+        mountFindBar(
+          <SearchBar
+            onSearch={handleSearch}
+            onClose={handleCloseSearch}
+            onNavigate={handleNavigate}
+            searchResults={searchResults || internalSearchResults || undefined}
+            inputRef={searchInputRef}
+            initialSearchTerm={initialSearchTerm}
+            placeholder={placeholder}
+            minSearchLength={minSearchLength}
+          />,
+          overlayHost
+        )}
       {children}
     </div>
   );
