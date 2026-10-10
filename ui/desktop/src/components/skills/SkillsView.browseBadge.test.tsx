@@ -18,7 +18,7 @@
  * here is mocked between the catalog the daemon serves and the badge, and the
  * only mock in that path is `loadRegistry`, which is a network fetch.
  */
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SkillsView from './SkillsView';
@@ -266,5 +266,26 @@ describe('Browse skills and the installed catalog agree about a bundle', () => {
       expect(within(entry).queryByText('Installed')).not.toBeInTheDocument();
       expect(entry.querySelector('input[type=checkbox]')).not.toBeDisabled();
     }
+  });
+});
+
+/**
+ * The dialog opens from a menu item, which is the one Radix pairing that can strand
+ * `pointer-events: none` on `<body>` when the menu's dismissal and the dialog's mount
+ * overlap. Closing the dialog must leave the page clickable.
+ */
+describe('Browse skills opened from the Add menu', () => {
+  it('leaves the page clickable after the dialog closes', async () => {
+    serve({ skills: [installedSkill('scientific-research')], bundles: [] });
+    render(<SkillsView />);
+    await biorouterGroup(1);
+    await chooseBrowse();
+
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: BROWSE_SKILLS_COPY.title })).toBeNull()
+    );
+    await waitFor(() => expect(document.body.style.pointerEvents).not.toBe('none'));
+    expect(screen.getByRole('button', { name: SKILLS_COPY.add })).toBeInTheDocument();
   });
 });
