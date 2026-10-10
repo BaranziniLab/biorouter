@@ -97,6 +97,7 @@ vi.mock('../toasts', () => ({
 }));
 
 import ChatInput from './ChatInput';
+import { COMPOSER_COPY } from './composer/copy';
 import { ChatState } from '../types/chatState';
 import { toastWarning } from '../toasts';
 import type { DroppedFile } from '../hooks/useFileDrop';
@@ -444,7 +445,7 @@ describe('stopping the current turn and sending a queued message', () => {
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(queued()).toEqual([QUEUED_TEXT]);
     expect(toastWarning).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Message still queued' })
+      expect.objectContaining({ title: COMPOSER_COPY.toasts.queued.title })
     );
   });
 

@@ -359,13 +359,15 @@
 
 /* ── The text ──────────────────────────────────────────────────────────── */
 
-/* The field sizes to what is typed, one line to ten (14px on a 20px line, plus
-   the 6px padding above and below), then scrolls. Native sizing, so there is
-   no measuring script and no late jump after a keystroke. */
+/* The field sizes to what is typed, from one 32px line (14px on a 20px line,
+   plus 6px of padding above and below) up to 40% of the window, then scrolls:
+   Crew's field, so a long paste leaves the transcript most of the screen.
+   Native sizing, so there is no measuring script and no late jump after a
+   keystroke. */
 .br-composer-input {
   field-sizing: content;
   min-height: var(--control-md);
-  max-height: calc(10 * 20px + 12px);
+  max-height: 40vh;
   overflow-y: auto;
 }
 
@@ -377,9 +379,9 @@
   gap: 4px;
   min-width: 0;
   min-height: 32px;
-  margin-top: 4px;
   /* Pull the `+` glyph back onto the card's text edge: a 28px ghost button
-     holds its 16px glyph 6px in. */
+     holds its 16px glyph 6px in. The row sits directly under the field, as in
+     Crew's card, so the two cards rest at the same height. */
   margin-left: -6px;
 }
 

@@ -83,6 +83,7 @@ vi.mock('../api', () => ({
 }));
 
 import ChatInput from './ChatInput';
+import { COMPOSER_COPY } from './composer/copy';
 import { ChatState } from '../types/chatState';
 import type { DroppedFile } from '../hooks/useFileDrop';
 import type { View, ViewOptions } from '../utils/navigationUtils';
@@ -230,8 +231,8 @@ describe('the /crew composer navigation command', () => {
  */
 describe('/crew in a chat that has no session yet', () => {
   const START_FIRST = expect.objectContaining({
-    title: 'Start the chat first',
-    msg: 'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+    title: COMPOSER_COPY.toasts.crewStartFirst.title,
+    msg: COMPOSER_COPY.toasts.crewStartFirst.message,
   });
 
   it('warns from Enter, keeps the draft and never navigates or submits', () => {
@@ -293,7 +294,9 @@ describe('/crew in a chat that has no session yet', () => {
     fireEvent.click(sendButton());
 
     expect(toastWarning).toHaveBeenCalledTimes(1);
-    expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
+    expect(toastWarning).toHaveBeenCalledWith(
+      expect.objectContaining({ title: COMPOSER_COPY.toasts.crewDraftKept.title })
+    );
     expect(setView).not.toHaveBeenCalled();
     expect(composer().value).toBe('/crew');
   });
@@ -308,7 +311,9 @@ describe('the /crew command refuses local attachment extras', () => {
     await waitFor(() => expect(screen.getByTestId('resource-ref-chip')).toBeInTheDocument());
     fireEvent.click(sendButton());
 
-    expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
+    expect(toastWarning).toHaveBeenCalledWith(
+      expect.objectContaining({ title: COMPOSER_COPY.toasts.crewDraftKept.title })
+    );
     expect(setView).not.toHaveBeenCalled();
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(composer().value).toBe('/crew');
@@ -325,7 +330,9 @@ describe('the /crew command refuses local attachment extras', () => {
     expect(screen.getByTestId('composer-file-chip')).toHaveTextContent('report.txt');
     fireEvent.click(sendButton());
 
-    expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
+    expect(toastWarning).toHaveBeenCalledWith(
+      expect.objectContaining({ title: COMPOSER_COPY.toasts.crewDraftKept.title })
+    );
     expect(setView).not.toHaveBeenCalled();
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(composer().value).toBe('/crew');
@@ -342,7 +349,9 @@ describe('the /crew command refuses local attachment extras', () => {
     await waitFor(() => expect(screen.getByAltText(/^Pasted image/)).toBeInTheDocument());
     fireEvent.click(sendButton());
 
-    expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
+    expect(toastWarning).toHaveBeenCalledWith(
+      expect.objectContaining({ title: COMPOSER_COPY.toasts.crewDraftKept.title })
+    );
     expect(setView).not.toHaveBeenCalled();
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(composer().value).toBe('/crew');

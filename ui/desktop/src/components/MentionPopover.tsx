@@ -860,7 +860,9 @@ const MentionPopover = forwardRef<
       <div
         ref={popoverRef}
         role="listbox"
-        aria-label={isSlashCommand ? 'Commands' : 'Mentions'}
+        aria-label={
+          isSlashCommand ? COMPOSER_COPY.mention.commandsLabel : COMPOSER_COPY.mention.mentionsLabel
+        }
         data-testid="mention-popover"
         className="biorouter-popover-surface br-mention-menu fixed flex max-h-72 flex-col overflow-hidden rounded-container bg-background-default p-1"
         style={{

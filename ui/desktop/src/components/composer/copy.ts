@@ -44,12 +44,9 @@ export const COMPOSER_COPY = {
   attachments: {
     removeImage: 'Remove image',
     removeFile: 'Remove file',
-    retry: 'Retry',
     retryLabel: 'Retry saving image',
     imageAlt: (name: string) => `Attached image ${name}`,
     pastedImageAlt: 'Pasted image',
-    failed: 'Not attached',
-    unknownType: 'File',
   },
 
   vision: {
@@ -64,10 +61,8 @@ export const COMPOSER_COPY = {
     expand: (count: number) => `${count} message${count === 1 ? '' : 's'} queued. Expand queue.`,
     collapse: 'Collapse queue',
     clear: 'Clear queue',
-    addNow: 'Add now',
     addNowLabel: 'Add this message to the current turn',
     addNowTooltip: 'Add to the running turn without stopping',
-    stopAndSend: 'Stop & send',
     stopAndSendLabel: 'Stop the current turn and send this message as a new turn',
     stopAndSendTooltip: 'Stop the running turn, then send this',
     remove: 'Remove from queue',
@@ -81,8 +76,46 @@ export const COMPOSER_COPY = {
   },
 
   mention: {
+    /** The menu's accessible names: `@` lists mentions, `/` lists commands. */
+    mentionsLabel: 'Mentions',
+    commandsLabel: 'Commands',
     searching: 'Searching…',
     noMatch: (query: string) => `Nothing matches "${query}"`,
-    builtIn: 'Built in. Ships with Biorouter.',
+  },
+
+  /** Why a pasted or dropped image did not attach; each sits behind the chip's help. */
+  imageErrors: {
+    undecodable: 'Image preview could not be decoded.',
+    unreadable: 'Failed to read image file.',
+    saveFailed: 'Failed to save image via Electron.',
+  },
+
+  /** Warnings the composer raises when something is kept or refused. */
+  toasts: {
+    queued: {
+      title: 'Message still queued',
+      busy: 'Biorouter could not send it while the chat was busy. It is still in the queue, ready to send.',
+      notStopped:
+        'Biorouter could not confirm that the current turn stopped. Your message is still in the queue.',
+    },
+    region: {
+      title: 'Region not attached',
+      tooMany: (max: number) => `A message can contain at most ${max} images.`,
+      unreadable: 'The selected region could not be read.',
+    },
+    crewDraftKept: {
+      title: 'Draft kept',
+      message:
+        'Remove the attached files, images, and reference chips before using /crew, or open Crew from the sidebar. Nothing was sent.',
+    },
+    crewStartFirst: {
+      title: 'Start the chat first',
+      message:
+        'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+    },
+    divergeStartFirst: {
+      title: 'Start the chat first',
+      message: '/diverge continues a chat in a new one. Send a message before using it.',
+    },
   },
 } as const;

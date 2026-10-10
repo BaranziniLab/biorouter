@@ -9,12 +9,14 @@
  * values, and measures what spec 3.7 promises:
  *
  *  - the text field is one line (32px) when empty, grows with what is typed,
- *    and stops at ten lines, then scrolls;
- *  - the controls row is 32px, the `+` glyph sits on the text's left edge, and
- *    Send ends the row at the card's inner right edge;
+ *    and stops at 40% of the window, then scrolls (Crew's field);
+ *  - the controls row is 32px and sits directly under the field (Crew's card),
+ *    the `+` glyph sits on the text's left edge, and Send ends the row at the
+ *    card's inner right edge;
  *  - a queue row is 28px, reads `↳ text` at rest, and its actions (and its
- *    grip, in place of the arrow) appear only on hover;
- *  - an image thumbnail is 48px and its loading scrim is translucent;
+ *    grip, in place of the arrow) appear on hover and on keyboard focus;
+ *  - an image thumbnail is 48px, its loading scrim is translucent, and its
+ *    remove control appears on hover and on keyboard focus;
  *  - a quotation is a 2px rule with no fill (never a box in the card), its
  *    words stop at four lines, and in a queue row it folds to the row's line;
  *  - the mention menu enters with the menus' one animation.
@@ -82,7 +84,7 @@ const MARKUP = `
           <span id="queue-arrow" class="br-queue-arrow">↳</span>
           <span id="queue-grip" class="br-queue-grip"><i style="${GLYPH}"></i></span>
         </span>
-        <button class="br-queue-text br-queue-edit">and rerun the fit</button>
+        <button id="queue-edit" class="br-queue-text br-queue-edit">and rerun the fit</button>
         <div id="queue-actions" class="br-queue-actions">
           <button style="${BUTTON(24)}">x</button>
         </div>
@@ -97,6 +99,9 @@ const MARKUP = `
     <li>
       <div id="thumb" class="br-composer-thumb">
         <div id="scrim" class="br-composer-thumb__scrim"></div>
+        <span id="thumb-remove" class="br-composer-thumb__remove">
+          <button id="thumb-remove-button" style="${BUTTON(20)}">x</button>
+        </span>
       </div>
     </li>
     <li>${QUOTE('quote', Array.from({ length: 6 }, (_, i) => `line ${i}`).join('\n'))}</li>
@@ -189,13 +194,14 @@ describe('the composer recipes in a real layout engine', () => {
     expect((await box('#text')).height).toBe(32);
   });
 
-  it('grows the field with what is typed, then stops at ten lines and scrolls', async (ctx) => {
+  it('grows the field with what is typed, then stops at 40% of the window and scrolls', async (ctx) => {
     if (!page) return ctx.skip();
     await page.fill('#text', 'one\ntwo\nthree');
     expect((await box('#text')).height).toBe(3 * 20 + 12);
 
-    await page.fill('#text', Array.from({ length: 16 }, (_, i) => `line ${i}`).join('\n'));
-    expect((await box('#text')).height).toBe(10 * 20 + 12);
+    // 40vh of the 900px viewport; thirty lines would be 612px.
+    await page.fill('#text', Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'));
+    expect((await box('#text')).height).toBe(0.4 * 900);
     const scrolls = await page.$eval('#text', (el) => el.scrollHeight > el.clientHeight);
     expect(scrolls).toBe(true);
     await page.fill('#text', '');
@@ -205,6 +211,9 @@ describe('the composer recipes in a real layout engine', () => {
     if (!page) return ctx.skip();
     const card = await box('#card');
     expect((await box('#controls')).height).toBe(32);
+    // Directly under the field, as in Crew's card: no gap between them.
+    const text = await box('#text');
+    expect((await box('#controls')).y).toBe(text.y + text.height);
     // The card's text edge: its 1px border plus 16px of padding.
     expect((await box('#plus-glyph')).x - card.x).toBe(17);
     expect((await box('#text')).x - card.x).toBe(17);
@@ -233,6 +242,34 @@ describe('the composer recipes in a real layout engine', () => {
     expect(await opacity('#queue-arrow')).toBe(0);
     expect(await opacity('#queue-grip')).toBe(1);
     await page.mouse.move(0, 0);
+  });
+
+  it("shows a queue row's actions and grip to the keyboard too, not only to the pointer", async (ctx) => {
+    if (!page) return ctx.skip();
+    const opacity = (selector: string) =>
+      page!.$eval(selector, (el) => Number(getComputedStyle(el).opacity));
+    await page.mouse.move(0, 0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(await opacity('#queue-actions')).toBe(0);
+    await page.focus('#queue-edit');
+    expect(await opacity('#queue-actions')).toBe(1);
+    expect(await opacity('#queue-grip')).toBe(1);
+    expect(await opacity('#queue-arrow')).toBe(0);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  });
+
+  it("shows a thumbnail's remove control on hover and on keyboard focus", async (ctx) => {
+    if (!page) return ctx.skip();
+    const opacity = () =>
+      page!.$eval('#thumb-remove', (el) => Number(getComputedStyle(el).opacity));
+    await page.mouse.move(0, 0);
+    expect(await opacity()).toBe(0);
+    await page.hover('#thumb');
+    expect(await opacity()).toBe(1);
+    await page.mouse.move(0, 0);
+    await page.focus('#thumb-remove-button');
+    expect(await opacity()).toBe(1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   });
 
   it('draws a 48px thumbnail under a translucent scrim', async (ctx) => {

@@ -878,8 +878,8 @@ export default function ChatInput({
             prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
           );
           toastWarning({
-            title: 'Message still queued',
-            msg: 'Biorouter could not send it while the chat was busy. It is still in the queue, ready to send.',
+            title: COMPOSER_COPY.toasts.queued.title,
+            msg: COMPOSER_COPY.toasts.queued.busy,
           });
         });
       };
@@ -1014,8 +1014,8 @@ export default function ChatInput({
       if (pastedImagesRef.current.length >= MAX_IMAGES_PER_MESSAGE) {
         window.electron.deleteTempFile(annotation.imagePath);
         toastWarning({
-          title: 'Region not attached',
-          msg: `A message can contain at most ${MAX_IMAGES_PER_MESSAGE} images.`,
+          title: COMPOSER_COPY.toasts.region.title,
+          msg: COMPOSER_COPY.toasts.region.tooMany(MAX_IMAGES_PER_MESSAGE),
         });
         return;
       }
@@ -1048,8 +1048,8 @@ export default function ChatInput({
           window.electron.deleteTempFile(annotation.imagePath);
           setPastedImages((current) => current.filter((image) => image.id !== id));
           toastWarning({
-            title: 'Region not attached',
-            msg: 'The selected region could not be read.',
+            title: COMPOSER_COPY.toasts.region.title,
+            msg: COMPOSER_COPY.toasts.region.unreadable,
           });
         });
       textAreaRef.current?.focus();
@@ -1315,7 +1315,7 @@ export default function ChatInput({
       setPastedImages((prev) =>
         prev.map((img) =>
           img.id === imageId
-            ? { ...img, error: 'Failed to save image via Electron.', isLoading: false }
+            ? { ...img, error: COMPOSER_COPY.imageErrors.saveFailed, isLoading: false }
             : img
         )
       );
@@ -1715,7 +1715,7 @@ export default function ChatInput({
                   ? {
                       ...img,
                       dataUrl: '',
-                      error: 'Image preview could not be decoded.',
+                      error: COMPOSER_COPY.imageErrors.undecodable,
                       isLoading: false,
                     }
                   : img
@@ -1742,7 +1742,7 @@ export default function ChatInput({
             setPastedImages((prev) =>
               prev.map((img) =>
                 img.id === imageId
-                  ? { ...img, error: 'Failed to save image via Electron.', isLoading: false }
+                  ? { ...img, error: COMPOSER_COPY.imageErrors.saveFailed, isLoading: false }
                   : img
               )
             );
@@ -1754,7 +1754,7 @@ export default function ChatInput({
         setPastedImages((prev) =>
           prev.map((img) =>
             img.id === imageId
-              ? { ...img, error: 'Failed to read image file.', isLoading: false }
+              ? { ...img, error: COMPOSER_COPY.imageErrors.unreadable, isLoading: false }
               : img
           )
         );
@@ -2123,8 +2123,8 @@ export default function ChatInput({
   const openCrew = useCallback(() => {
     if (hasCrewCommandExtras) {
       toastWarning({
-        title: 'Draft kept',
-        msg: 'Remove the attached files, images, and reference chips before using /crew, or open Crew from the sidebar. Nothing was sent.',
+        title: COMPOSER_COPY.toasts.crewDraftKept.title,
+        msg: COMPOSER_COPY.toasts.crewDraftKept.message,
       });
       return;
     }
@@ -2134,8 +2134,8 @@ export default function ChatInput({
     // keep the draft, as /diverge does.
     if (!sessionId) {
       toastWarning({
-        title: 'Start the chat first',
-        msg: 'Send this chat a message, then type /crew to connect it to a Crew channel. To just open Crew, use the sidebar.',
+        title: COMPOSER_COPY.toasts.crewStartFirst.title,
+        msg: COMPOSER_COPY.toasts.crewStartFirst.message,
       });
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
@@ -2196,8 +2196,8 @@ export default function ChatInput({
       if (trimmedCandidate === DIVERGE_TRIGGER) {
         if (!sessionId) {
           toastWarning({
-            title: 'Start a chat first',
-            msg: '/diverge continues a chat in a new one. Send a message before using it.',
+            title: COMPOSER_COPY.toasts.divergeStartFirst.title,
+            msg: COMPOSER_COPY.toasts.divergeStartFirst.message,
           });
           return;
         }
@@ -2593,8 +2593,8 @@ export default function ChatInput({
         }
         queuePausedRef.current = wasPaused;
         toastWarning({
-          title: 'Message still queued',
-          msg: 'Biorouter could not confirm that the current turn stopped. Your message is still in the queue.',
+          title: COMPOSER_COPY.toasts.queued.title,
+          msg: COMPOSER_COPY.toasts.queued.notStopped,
         });
         return;
       }
@@ -2851,7 +2851,7 @@ export default function ChatInput({
         {/* Images attached for a model that cannot read them. Blocks Send
             until resolved. */}
         {visionMismatch && (
-          <div data-testid="composer-vision-notice" className="br-composer-notice">
+          <div data-testid="composer-vision-notice" className="br-composer-notice" role="status">
             <EyeOff className="br-composer-notice__icon" aria-hidden />
             <span className="text-supporting">{COMPOSER_COPY.vision.banner}</span>
             <InfoTip label={COMPOSER_COPY.vision.banner} help={COMPOSER_COPY.vision.help} />
