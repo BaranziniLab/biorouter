@@ -82,8 +82,8 @@ describe('sidebar Recents right-click menu', () => {
     expect(items.map((item) => item.textContent)).toEqual([
       'Open in new tab',
       'Open in new window',
-      'Copy conversation ID',
-      'Delete conversation',
+      'Copy chat ID',
+      'Delete chat…',
     ]);
   });
 
@@ -105,7 +105,7 @@ describe('sidebar Recents right-click menu', () => {
   it('copies the raw conversation id', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByText('Copy conversation ID'));
+    fireEvent.click(await screen.findByText('Copy chat ID'));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2'));
   });
@@ -144,7 +144,7 @@ describe('permanent Recents deletion', () => {
   it('requires confirmation and cancel leaves the session intact', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
     expect(await screen.findByText(/This action cannot be undone/)).toBeInTheDocument();
     expect(mocks.deleteConversation).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -154,7 +154,7 @@ describe('permanent Recents deletion', () => {
     mocks.deleteConversation.mockResolvedValue(undefined);
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
     expect(mocks.deleteConversation).toHaveBeenCalledTimes(1);
@@ -164,7 +164,7 @@ describe('permanent Recents deletion', () => {
     mocks.deleteConversation.mockRejectedValue(new Error('Server unavailable'));
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith(

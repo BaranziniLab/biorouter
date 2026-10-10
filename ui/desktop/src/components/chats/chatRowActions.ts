@@ -2,6 +2,7 @@ import type { ComponentType } from 'react';
 
 import { Copy, MessageSquare, NewWindow } from '../icons/app-icons';
 import { toastError, toastSuccess } from '../../toasts';
+import { chatRowCopy } from './copy';
 
 /**
  * The three actions every chat row offers, in one place.
@@ -68,7 +69,7 @@ export async function copyConversationId(sessionId: string): Promise<boolean> {
       await navigator.clipboard.writeText(sessionId);
     }
     toastSuccess({
-      title: 'Conversation ID copied',
+      title: chatRowCopy.copyId.copied,
       msg: sessionId,
       toastOptions: { autoClose: 2000 },
     });
@@ -76,8 +77,8 @@ export async function copyConversationId(sessionId: string): Promise<boolean> {
   } catch (error) {
     console.error('Failed to copy conversation ID:', error);
     toastError({
-      title: 'Could not copy the conversation ID',
-      msg: `Copy it by hand: ${sessionId}`,
+      title: chatRowCopy.copyId.failed,
+      msg: chatRowCopy.copyId.failedDetail(sessionId),
     });
     return false;
   }
@@ -87,19 +88,19 @@ export function chatRowActions(target: ChatRowActionTarget): ChatRowAction[] {
   return [
     {
       key: 'open-tab',
-      label: 'Open in new tab',
+      label: chatRowCopy.menu.openInNewTab,
       icon: MessageSquare,
       run: target.openInNewTab,
     },
     {
       key: 'open-window',
-      label: 'Open in new window',
+      label: chatRowCopy.menu.openInNewWindow,
       icon: NewWindow,
       run: () => openChatInNewWindow(target.sessionId, target.workingDir),
     },
     {
       key: 'copy-id',
-      label: 'Copy conversation ID',
+      label: chatRowCopy.menu.copyId,
       icon: Copy,
       run: () => void copyConversationId(target.sessionId),
     },

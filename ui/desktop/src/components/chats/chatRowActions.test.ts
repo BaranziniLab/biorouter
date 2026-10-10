@@ -47,7 +47,7 @@ describe('chatRowActions', () => {
     expect(chatRowActions(target()).map((action) => [action.key, action.label])).toEqual([
       ['open-tab', 'Open in new tab'],
       ['open-window', 'Open in new window'],
-      ['copy-id', 'Copy conversation ID'],
+      ['copy-id', 'Copy chat ID'],
     ]);
   });
 
@@ -108,7 +108,7 @@ describe('copyConversationId', () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2');
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Conversation ID copied', msg: '20260823_2' })
+      expect.objectContaining({ title: 'Chat ID copied', msg: '20260823_2' })
     );
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
