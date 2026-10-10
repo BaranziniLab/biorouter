@@ -6,6 +6,7 @@ import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import MarkdownContent from './MarkdownContent';
 import ToolCallWithResponse from './ToolCallWithResponse';
+import { ToolCallRows } from './ToolCallRows';
 import {
   getToolRequests,
   getToolResponses,
@@ -274,8 +275,11 @@ export default function BioRouterMessage({
             no time row of its own: the answer that ends the turn carries it. */}
         {toolRequests.length > 0 && (
           <div className={cn('flex w-full flex-col gap-1', displayText && 'mt-2')}>
-            {toolRequests.map((toolRequest) => (
-              <div className="biorouter-message-tool" key={toolRequest.id}>
+            <ToolCallRows
+              toolRequests={toolRequests}
+              toolResponses={toolResponsesMap}
+              turnActive={turnActive}
+              renderCall={(toolRequest) => (
                 <ToolCallWithResponse
                   sessionId={sessionId}
                   isCancelledMessage={false}
@@ -287,8 +291,8 @@ export default function BioRouterMessage({
                   onOpenArtifact={onOpenArtifact}
                   workingDir={workingDir}
                 />
-              </div>
-            ))}
+              )}
+            />
           </div>
         )}
 
