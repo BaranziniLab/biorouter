@@ -51,10 +51,9 @@ import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { Popover, PopoverAnchor, PopoverContent } from './ui/popover';
-import { AlertCircle, PanelRight, Terminal } from './icons/app-icons';
-import { ChatSummary } from './ChatSummary';
+import { AlertCircle, Terminal } from './icons/app-icons';
 import { ChatSummaryRail } from './summary/ChatSummaryRail';
+import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { useSummaryRail } from '../hooks/useSummaryRail';
@@ -1559,7 +1558,7 @@ function BaseChatContent({
     // cannot be scrolled into, and is invisible to anyone reading the composer's
     // own layout. It was the largest of the three separate boxes that were each
     // declaring part of the distance to the composer (see the composer bar's
-    // `pt-4`, which is now the only one).
+    // `pt-7`, which is now the only one).
     'px-1',
     (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
   );
@@ -2289,8 +2288,6 @@ function BaseChatContent({
       columnGlide.glideBy(dx, { duration: cause === 'open' ? DUR.med : DUR.fastMax }),
   });
   const summaryRailId = React.useId();
-  const summaryPopoverId = React.useId();
-  const summaryButtonRef = useRef<HTMLButtonElement>(null);
 
   // The to-do list stays live while someone can see it (the popover or the
   // rail) and while a turn runs, so the header button's progress dot is current
@@ -2329,21 +2326,17 @@ function BaseChatContent({
     onDiagnostics: handleDiagnosticsReviewAction,
   };
 
-  const todoTotal = sessionTodos.items.length;
-  const todoDone = sessionTodos.items.filter((item) => item.status === 'completed').length;
   // A 6px accent dot on the button while the rail is folded away and a step is
   // running, so the live list is never out of mind. Its count is in the name.
-  const showSummaryProgressDot =
+  const summaryProgress =
     !summaryRail.shown &&
     isRunningState(chatState) &&
-    sessionTodos.items.some((item) => item.status === 'in_progress');
-  const railMode = summaryRail.mode === 'rail';
-  const summaryExpanded = railMode ? summaryRail.shown : reviewOpen;
-
-  const handleSummaryButton = () => {
-    if (railMode) summaryRail.toggle();
-    else setReviewOpen((open) => !open);
-  };
+    sessionTodos.items.some((item) => item.status === 'in_progress')
+      ? {
+          done: sessionTodos.items.filter((item) => item.status === 'completed').length,
+          total: sessionTodos.items.length,
+        }
+      : null;
 
   const renderSessionHeaderActions = () => (
     <div
@@ -2369,79 +2362,20 @@ function BaseChatContent({
         <TooltipContent>{isTerminalDockOpen ? 'Close terminal' : 'Open terminal'}</TooltipContent>
       </Tooltip>
 
-      {/* ONE button, two modes (spec 3.5). Where the rail fits it shows and
-          hides the docked rail; where it does not, it opens the same content
-          as a popover. The popover is ANCHORED to the button rather than
-          triggered by it, because a Radix trigger would stamp its own
-          `aria-expanded` and toggle the popover in rail mode too. */}
-      <Popover open={reviewOpen} onOpenChange={setReviewOpen}>
-        <PopoverAnchor asChild>
-          <span className="inline-flex">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  ref={summaryButtonRef}
-                  type="button"
-                  variant="ghost"
-                  shape="round"
-                  className={cn(
-                    'no-drag relative text-text-muted hover:text-text-default',
-                    summaryExpanded && 'bg-background-medium text-text-default'
-                  )}
-                  aria-label={
-                    showSummaryProgressDot
-                      ? summaryCopy.buttonWithProgress(todoDone, todoTotal)
-                      : summaryCopy.title
-                  }
-                  aria-expanded={summaryExpanded}
-                  aria-controls={
-                    railMode
-                      ? summaryRail.rendered
-                        ? summaryRailId
-                        : undefined
-                      : reviewOpen
-                        ? summaryPopoverId
-                        : undefined
-                  }
-                  aria-haspopup={railMode ? undefined : 'dialog'}
-                  data-summary-mode={summaryRail.mode}
-                  onClick={handleSummaryButton}
-                >
-                  <PanelRight />
-                  {showSummaryProgressDot && <span aria-hidden="true" className="br-summary-dot" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {railMode
-                  ? summaryRail.shown
-                    ? summaryCopy.hideSummary
-                    : summaryCopy.showSummary
-                  : summaryCopy.title}
-              </TooltipContent>
-            </Tooltip>
-          </span>
-        </PopoverAnchor>
-        <PopoverContent
-          id={summaryPopoverId}
-          role="dialog"
-          aria-label={summaryCopy.title}
-          side="bottom"
-          align="end"
-          className="br-summary-popover"
-          // The button is outside the content, so a press on it would first
-          // dismiss the popover and then reopen it with the click.
-          onPointerDownOutside={(event) => {
-            if (summaryButtonRef.current?.contains(event.target as Node)) event.preventDefault();
-          }}
-          // With no Radix trigger, focus is returned to the button by hand.
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            summaryButtonRef.current?.focus({ preventScroll: true });
-          }}
-        >
-          <ChatSummary {...summaryProps} />
-        </PopoverContent>
-      </Popover>
+      {/* ONE button, two modes (spec 3.5): it shows and hides the docked
+          rail where the rail fits, and opens the same content as a popover
+          where it does not. */}
+      <SummaryHeaderButton
+        mode={summaryRail.mode}
+        railShown={summaryRail.shown}
+        railRendered={summaryRail.rendered}
+        railId={summaryRailId}
+        onToggleRail={summaryRail.toggle}
+        popoverOpen={reviewOpen}
+        onPopoverOpenChange={setReviewOpen}
+        progress={summaryProgress}
+        summary={summaryProps}
+      />
     </div>
   );
 
@@ -2542,10 +2476,9 @@ function BaseChatContent({
         the control it is about rather than in the transcript, where it would
         scroll away from the chip and gauge it explains.
 
-        ⚠ NOT inside `ChatInput`: that component's three rows (context · card ·
-        controls) are one visually grouped object held together by a 6px gap,
-        and a fourth block inside it would join the group and read as more
-        chrome on the input. `mb-2` puts this outside that grouping.
+        ⚠ NOT inside `ChatInput`: that component is one card and a footer line
+        held together by a 4px gap, and a block inside it would join the group
+        and read as more chrome on the input. `mb-2` puts this outside it.
 
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
@@ -2970,14 +2903,9 @@ function BaseChatContent({
                             )}
                           </>
                         </SearchView>
-                        {/* No tail spacer. A `block h-8` used to sit here, and
-                            it was the second of three boxes each declaring part
-                            of the distance to the composer — 32px of scroll
-                            CONTENT, so it also moved with the transcript and
-                            vanished the moment the user scrolled up, which is
-                            exactly when a constant margin is wanted. The
-                            composer bar's `pt-4` owns that distance now, once,
-                            and owns it at every scroll position. */}
+                        {/* No tail spacer: the composer bar's `pt-7` owns
+                            the distance to the composer, at every scroll
+                            position. */}
                       </>
                     ) : null}
                   </div>
@@ -2986,43 +2914,15 @@ function BaseChatContent({
             </div>
 
             {!isCleanConversation && (
-              // `pt-7` IS THE WHOLE DISTANCE FROM THE TRANSCRIPT TO THE COMPOSER,
-              // and it is the only box that declares any of it.
-              //
-              // It used to be `pt-2`, and it was the smallest of three
-              // independent contributors: the ScrollArea Root's `pb-10` (40px,
-              // which silently shortened the scroll viewport — see
-              // `contentClassName`), a `block h-8` spacer at the tail of the
-              // transcript (32px of scroll content), and this. None of them knew
-              // about the others, which is how the band above the composer came
-              // to be 80px without anyone ever choosing 80. Measured, pinned to
-              // the bottom: 80px of layout chrome between the last message's ink
-              // and the composer's first row.
-              //
-              // 28px, and the number only makes sense PAIRED with the composer's
-              // own internal gap, which is 6px (`ChatInput`'s shell). Those two
-              // numbers are one decision:
-              //
-              //   6px inside   — the context rail, the input and the control
-              //                  rail bind into ONE object
-              //   28px outside — that object is separated from the conversation
-              //
-              // It went 80 -> 16 -> 28, and the 16 was wrong for an instructive
-              // reason. 16px is the transcript's own inter-turn rhythm (`mt-4`
-              // in `ProgressiveMessageList`), which sounded principled — the
-              // composer as "the next turn". But while the composer's internal
-              // gaps were ALSO ~10-16px, matching the transcript's rhythm meant
-              // the gap between the composer's own rows and the gap between
-              // unrelated blocks were the same distance, and the group read as
-              // three floating strips rather than one object. A group cannot be
-              // separated from its surroundings by the same measure that
-              // separates its own parts. Tighten inside, widen outside.
-              //
-              // It belongs on the BAR rather than in the scroll content because
-              // the bar's padding is constant. A spacer inside the transcript
-              // scrolls away, so mid-scroll the prose ran right up against the
-              // composer's context row — the one moment the separation is doing
-              // real work.
+              // `pt-7` is the whole distance from the transcript to the
+              // composer, and the only box that declares any of it (the scroll
+              // root's bottom padding and a tail spacer used to add to it, and
+              // nobody chose the 80px they summed to). It pairs with the
+              // composer's own 4px gap between its card and its footer line:
+              // tight inside, wide outside, so the composer reads as one object
+              // apart from the conversation. On the bar rather than in the
+              // scroll content, because the bar's padding holds at every scroll
+              // position and a spacer inside the transcript scrolls away.
               <div
                 data-preview-area="composer"
                 className="biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas"

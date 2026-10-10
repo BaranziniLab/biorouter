@@ -1,0 +1,84 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * Rung 0's wiring in BaseChat (spec 3.5).
+ *
+ * BaseChat cannot be mounted in jsdom (see `BaseChat.privacy.test.tsx`), so the
+ * pieces are exercised on their own (`summary/SummaryHeaderButton.test.tsx`,
+ * `hooks/useSummaryRail.test.tsx`, `hooks/useSessionTodos.test.tsx`) and what
+ * only BaseChat can get wrong, how they are joined, is pinned at its source.
+ */
+const source = readFileSync(path.join(process.cwd(), 'src', 'components', 'BaseChat.tsx'), 'utf8');
+
+/** The code without comments, so a sentence about a pattern is not the pattern. */
+const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+describe('BaseChat: the summary button and the rail', () => {
+  it('renders one header button, driven by rung 0 in both of its modes', () => {
+    expect(code.match(/<SummaryHeaderButton\b/g) ?? []).toHaveLength(1);
+    const start = code.indexOf('<SummaryHeaderButton');
+    const element = code.slice(start, code.indexOf('/>', start));
+    expect(element).toContain('mode={summaryRail.mode}');
+    expect(element).toContain('railShown={summaryRail.shown}');
+    expect(element).toContain('railRendered={summaryRail.rendered}');
+    expect(element).toContain('onToggleRail={summaryRail.toggle}');
+    expect(element).toContain('popoverOpen={reviewOpen}');
+    // The button's aria-controls and the rail's id are one value.
+    expect(element).toContain('railId={summaryRailId}');
+    expect(code).toMatch(/<ChatSummaryRail[\s\S]*?id=\{summaryRailId\}/);
+  });
+
+  it('keeps the to-do list live while the popover OR the rail is shown', () => {
+    const call = code.slice(
+      code.indexOf('useSessionTodos('),
+      code.indexOf(');', code.indexOf('useSessionTodos('))
+    );
+    expect(call).toMatch(/reviewOpen \|\| summaryRail\.shown/);
+  });
+
+  it('calls the to-do hook below the rail and above the early return', () => {
+    const rail = code.indexOf('useSummaryRail({');
+    const todos = code.indexOf('useSessionTodos(');
+    const earlyReturn = code.indexOf('if (sessionLoadError)');
+    expect(rail).toBeGreaterThan(-1);
+    expect(todos).toBeGreaterThan(rail);
+    expect(earlyReturn).toBeGreaterThan(todos);
+  });
+
+  it('closes the popover when the rail takes its place', () => {
+    expect(code).toMatch(/if \(summaryRail\.shown\) setReviewOpen\(false\)/);
+  });
+
+  it('merges the two split-box styles after both spreads', () => {
+    const spreads = code.indexOf('{...summaryRail.splitPaneProps}');
+    expect(code.indexOf('{...artifactPanel.splitPaneProps}')).toBeLessThan(spreads);
+    expect(code.indexOf('...summaryRail.splitPaneProps.style')).toBeGreaterThan(spreads);
+  });
+});
+
+describe('BaseChat: the edits it applies for other areas', () => {
+  it('moves the composer by translate only, on the motion tokens', () => {
+    expect(code).not.toMatch(/scaleX/);
+    expect(code).toMatch(/translate3d\(\$\{deltaX\}px, \$\{deltaY\}px, 0\)/);
+    expect(code).toMatch(/\{ duration: DUR\.med, easing: EASE_OUT \}/);
+  });
+
+  it('draws the Stop & send banner as a neutral Note, with its sentence in an InfoTip', () => {
+    expect(code).toMatch(/<Note\s+tone="neutral"/);
+    expect(code).toMatch(/summaryCopy\.stopAndSend\.help\[pendingContinuation\.ownership\]/);
+    // The classes it used named no token (`border-border`, `bg-muted`).
+    expect(code).not.toMatch(/\bborder-border(?![-\w])|\bbg-muted(?![-\w])/);
+  });
+
+  it('has no hand-synced header class and no dead composer hook', () => {
+    expect(code).not.toContain('HEADER_ACTION_BUTTON_CLASS');
+    expect(code).not.toContain('biorouter-composer-view-transition');
+    expect(code).not.toMatch(/\bcoherent\b/);
+  });
+
+  it('renames through the one shared helper', () => {
+    expect(code).toMatch(/await renameSessionOptimistically\(/);
+  });
+});
