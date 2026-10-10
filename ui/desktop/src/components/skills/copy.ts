@@ -9,6 +9,9 @@ export const SKILLS_COPY = {
   title: 'Skills',
   info: 'Reusable instructions Biorouter follows when a task calls for them.',
 
+  /** The band filter's name and the start of its tooltip ("Filter skills · ⌘F"). */
+  filterLabel: 'Filter skills',
+
   add: 'Add',
   browse: 'Browse marketplace',
   fromSource: 'From a repository or .zip…',

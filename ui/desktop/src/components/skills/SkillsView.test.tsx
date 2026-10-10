@@ -131,7 +131,7 @@ async function deleteFromRow(name: string) {
 
 /** The band's filter field. */
 function filterField() {
-  return screen.getByRole('searchbox', { name: 'Filter' });
+  return screen.getByRole('searchbox', { name: SKILLS_COPY.filterLabel });
 }
 
 beforeEach(() => {

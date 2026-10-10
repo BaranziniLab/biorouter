@@ -224,7 +224,11 @@ export default function SkillsView() {
                   skills and not every row holding the letter. The filter
                   reports every keystroke; the old find bar's two-character
                   floor once put that query out of reach. */}
-              <FilterInput value={searchTerm} onValueChange={setSearchTerm} />
+              <FilterInput
+                value={searchTerm}
+                onValueChange={setSearchTerm}
+                label={SKILLS_COPY.filterLabel}
+              />
               <AddSkillMenu
                 onBrowse={() => setIsBrowseModalOpen(true)}
                 onFromSource={() => setIsAddModalOpen(true)}
