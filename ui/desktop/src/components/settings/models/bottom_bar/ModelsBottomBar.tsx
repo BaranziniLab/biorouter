@@ -68,9 +68,11 @@ export const NEW_CHATS_MODEL_NOTE =
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
-  dropdownRef: React.RefObject<HTMLDivElement>;
+  /** Legacy: nothing reads it. Kept optional so older callers still compile. */
+  dropdownRef?: React.RefObject<HTMLDivElement>;
   setView: (view: View, options?: ViewOptions) => void;
-  alerts: Alert[];
+  /** Only read when the inline alert popover is shown (`hideAlertPopover` false). */
+  alerts?: Alert[];
   /** Hide the inline alert green-dot when the context window indicator is
    * surfaced separately (e.g. in the picker popover's dedicated row). */
   hideAlertPopover?: boolean;
@@ -118,7 +120,7 @@ export default function ModelsBottomBar({
   sessionId,
   dropdownRef,
   setView,
-  alerts,
+  alerts = [],
   hideAlertPopover = false,
   privacyTier,
   effectiveModel,
