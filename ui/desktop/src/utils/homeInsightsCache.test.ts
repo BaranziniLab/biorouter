@@ -37,15 +37,41 @@ describe('homeInsightsCache', () => {
     expect(restoredCache.getCachedHomeActivity()).toEqual(activity);
   });
 
-  it('ignores the retired recentSessions key in a persisted v1 blob', async () => {
-    // Blobs written before the Home recent-chats section was removed carry an
-    // extra key; reading them must neither crash nor resurrect it.
+  it('never reads a v1 blob, whose 155-day window would understate the year', async () => {
+    // v1 held a 155-day window (and, before that, a retired `recentSessions`
+    // list). Reading it would show `1y` figures for five months.
     localStorage.setItem(
       'biorouter-home-insights-v1',
       JSON.stringify({ activity, recentSessions: [{ id: 'stale' }] })
     );
     const cache = await import('./homeInsightsCache');
-    expect(cache.getCachedHomeActivity()).toEqual(activity);
+    expect(cache.getCachedHomeActivity()).toBeNull();
+
+    // The next persist drops it.
+    cache.cacheHomeActivity(activity);
+    expect(localStorage.getItem('biorouter-home-insights-v1')).toBeNull();
+    expect(localStorage.getItem('biorouter-home-insights-v2')).not.toBeNull();
+  });
+
+  it('survives a corrupt or foreign blob without crashing', async () => {
+    localStorage.setItem('biorouter-home-insights-v2', JSON.stringify({ activity: { days: 3 } }));
+    const cache = await import('./homeInsightsCache');
+    expect(cache.getCachedHomeActivity()).toBeNull();
+
+    vi.resetModules();
+    localStorage.setItem('biorouter-home-insights-v2', 'not json');
+    const again = await import('./homeInsightsCache');
+    expect(again.getCachedHomeActivity()).toBeNull();
+  });
+
+  it('asks the daemon for its full 371-day window', async () => {
+    mocks.getSessionActivity.mockResolvedValue({ data: activity });
+    const cache = await import('./homeInsightsCache');
+    expect(cache.HOME_ACTIVITY_DAYS).toBe(371);
+    await cache.refreshHomeActivity();
+    expect(mocks.getSessionActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ query: { days: 371 } })
+    );
   });
 
   it('deduplicates overlapping activity prefetch and view requests', async () => {

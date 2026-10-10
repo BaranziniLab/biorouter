@@ -12,7 +12,6 @@ import {
   toolGlyphKind,
   type ToolGlyphKind,
 } from './toolGlyph';
-import { getToolCallIcon } from './toolIconMapping';
 
 /**
  * Every tool a built-in, platform or in-process extension registers, as
@@ -311,15 +310,15 @@ describe('one glyph per concept', () => {
   });
 });
 
-/** The shim keeps the old callers on the new ladder. */
-describe('toolIconMapping shim', () => {
-  it('answers from toolGlyph', () => {
-    expect(getToolCallIcon('knowledge__kb_search')).toBe(ENTITY_ICONS.knowledge);
-    expect(getToolCallIcon('developer__text_editor', false, { command: 'view' })).toBe(
-      TOOL_GLYPHS.read
+/** What the retired `toolIconMapping.tsx` shim answered, now asked of the module itself. */
+describe('the answers the old shim gave', () => {
+  it('come from the one ladder', () => {
+    expect(toolGlyphFor('knowledge__kb_search').Icon).toBe(ENTITY_ICONS.knowledge);
+    expect(toolGlyphFor('developer__text_editor', { command: 'view' }).Icon).toBe(TOOL_GLYPHS.read);
+    expect(toolGlyphFor('spokeagent__query_graph').Icon).toBe(ENTITY_ICONS.extension);
+    expect(extensionGlyphFor(parseToolName('memory__remember_memory').extension).Icon).toBe(
+      TOOL_GLYPHS.memory
     );
-    expect(getToolCallIcon('spokeagent__query_graph')).toBe(ENTITY_ICONS.extension);
-    expect(getToolCallIcon('memory__remember_memory', true)).toBe(TOOL_GLYPHS.memory);
   });
 });
 

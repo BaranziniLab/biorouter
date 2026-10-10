@@ -1,12 +1,20 @@
 import { userActionHeaders } from './userAction';
 import { getSessionActivity, type ActivityWindow } from '../api';
 
-export const HOME_ACTIVITY_DAYS = 155;
+/**
+ * 53 weeks: the daemon's maximum (`get_activity` clamps to 371), so the usage
+ * card's `1y` range (365 days) is always inside the window and the heatmap
+ * draws one column per week of it. Owner decision 6.4: no backend change.
+ */
+export const HOME_ACTIVITY_DAYS = 371;
 
-// v1 blobs also carried a `recentSessions` list for the Home recent-chats
-// section; that section is gone (the sidebar's Recents owns the job), so the
-// stray key is simply ignored and dropped on the next persist.
-const HOME_INSIGHTS_STORAGE_KEY = 'biorouter-home-insights-v1';
+/**
+ * v2 since the window grew from 155 to 371 days. A v1 blob holds a 155-day
+ * window that would understate every `1y` figure, so it is never read: it is
+ * removed on the next persist, and Home shows its loading state once.
+ */
+const HOME_INSIGHTS_STORAGE_KEY = 'biorouter-home-insights-v2';
+const RETIRED_STORAGE_KEYS = ['biorouter-home-insights-v1'];
 
 type HomeInsightsCache = {
   activity: ActivityWindow | null;
@@ -14,6 +22,17 @@ type HomeInsightsCache = {
 
 let memoryCache: HomeInsightsCache | undefined;
 let inFlightActivity: Promise<ActivityWindow> | null = null;
+
+/** A blob from another build, or a corrupt one, must not crash Home. */
+function isActivityWindow(value: unknown): value is ActivityWindow {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<ActivityWindow>;
+  return (
+    typeof candidate.start === 'string' &&
+    typeof candidate.end === 'string' &&
+    Array.isArray(candidate.days)
+  );
+}
 
 function readCache(): HomeInsightsCache {
   if (memoryCache) return memoryCache;
@@ -31,8 +50,9 @@ function readCache(): HomeInsightsCache {
       return memoryCache;
     }
 
-    const parsed = JSON.parse(stored) as Partial<HomeInsightsCache>;
-    memoryCache = { activity: parsed.activity ?? null };
+    const parsed = JSON.parse(stored) as Partial<HomeInsightsCache> | null;
+    const activity = parsed?.activity;
+    memoryCache = { activity: isActivityWindow(activity) ? activity : null };
   } catch {
     memoryCache = emptyCache;
   }
@@ -44,6 +64,7 @@ function persistCache(): void {
   if (typeof localStorage === 'undefined') return;
 
   try {
+    for (const key of RETIRED_STORAGE_KEYS) localStorage.removeItem(key);
     localStorage.setItem(HOME_INSIGHTS_STORAGE_KEY, JSON.stringify(readCache()));
   } catch {
     // Rendering from the in-memory cache still provides the warm-navigation path.
@@ -90,6 +111,11 @@ export function clearHomeInsightsCache(): void {
   memoryCache = undefined;
   inFlightActivity = null;
   if (typeof localStorage !== 'undefined') {
-    localStorage.removeItem(HOME_INSIGHTS_STORAGE_KEY);
+    try {
+      localStorage.removeItem(HOME_INSIGHTS_STORAGE_KEY);
+      for (const key of RETIRED_STORAGE_KEYS) localStorage.removeItem(key);
+    } catch {
+      // Storage can be blocked; the in-memory cache is already cleared.
+    }
   }
 }

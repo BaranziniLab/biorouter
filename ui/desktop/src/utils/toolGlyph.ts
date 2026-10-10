@@ -4,8 +4,9 @@
  * script's inner calls (`ExecutedCallRow`), the parked approval card
  * (`PendingToolCallCard`), and an extension's own card in Extensions.
  *
- * WHY IT REPLACED `toolIconMapping.tsx` (now a shim over this module). That
- * module switched on the BARE tool name (everything after the last `__`), so:
+ * WHY IT REPLACED `toolIconMapping.tsx` (deleted once every caller had moved
+ * here). That module switched on the BARE tool name (everything after the last
+ * `__`), so:
  *   - every built-in family it did not list drew the wrench: knowledge, Crew,
  *     todo, workspace, skills, the extension manager, Auto Visualiser, DataSQL,
  *     workflows, schedules, code execution. In a normal transcript that is
@@ -296,7 +297,7 @@ const TOOLBOX: Record<string, { tools: Record<string, ToolGlyphKind>; fallback: 
 };
 
 /** 5. Tools a coding-agent child runs itself (Claude Code, Codex) and the
- * legacy bare names `toolIconMapping.tsx` knew. Matched only when the name
+ * legacy bare names the old `toolIconMapping.tsx` knew. Matched only when the name
  * carries NO extension prefix, so `acme__Read` stays the acme extension's. */
 const BARE: Record<string, ToolGlyphKind> = {
   Bash: 'shell',
