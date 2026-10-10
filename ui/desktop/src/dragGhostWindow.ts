@@ -54,7 +54,7 @@ export interface GhostStyle {
    * The raw `--accent-bar` token, which the dashed detach outline is mixed from.
    *
    * NOT the ghost's computed `outline-color`: `.br-tab-ghost` TRANSITIONS
-   * `outline-color` over `--motion-fast`, and the probe runs on the very frame
+   * `outline-color` over `--dur-fast`, and the probe runs on the very frame
    * `data-detach` flips, so the computed value at that instant is still mid-fade
    * — usually fully transparent. Reading the token instead reads the value the
    * transition is heading towards.
