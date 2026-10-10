@@ -275,6 +275,37 @@ describe('BrxtInstallModal — the dialog', () => {
     expect(await screen.findByText(COPY.detectedFromBundle)).toBeInTheDocument();
   });
 
+  it('keeps the drop zone focusable while it reads a file, so first focus never lands on the dialog box', async () => {
+    // Finder hands over a file and the dialog opens already reading it. A disabled drop zone
+    // cannot hold focus, which left first focus on the dialog's own box, drawn with the
+    // browser's default blue ring.
+    const user = userEvent.setup({ delay: null });
+    const validate = vi.fn(() => new Promise<never>(() => {}));
+    const picker = vi.fn(async () => '/tmp/other.brxt');
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: validate,
+      openBrxtFilePicker: picker,
+    };
+    render(
+      <BrxtInstallModal
+        onClose={() => {}}
+        onInstalled={() => {}}
+        preloadedFilePath="/tmp/playwright.brxt"
+      />
+    );
+
+    const zone = await screen.findByRole('button', { name: COPY.reading });
+    expect(zone).not.toBeDisabled();
+    expect(zone).toHaveAttribute('aria-disabled', 'true');
+    await waitFor(() => expect(zone).toHaveFocus());
+    expect(screen.getByRole('dialog')).not.toHaveFocus();
+
+    // It stays on screen without taking a second file while the first is being read.
+    await user.click(zone);
+    expect(picker).not.toHaveBeenCalled();
+    expect(validate).toHaveBeenCalledTimes(1);
+  });
+
   it('labels a required variable with a mark that is not spoken, and masks a secret', async () => {
     const user = userEvent.setup({ delay: null });
     withManifest([ENV({ key: 'TEST_KEY' })]);

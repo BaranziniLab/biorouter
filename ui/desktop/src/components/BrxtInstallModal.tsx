@@ -139,6 +139,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
+      // A bundle is already being read: the zone stays on screen (and keeps focus) but is not
+      // taking another one.
+      if (isValidating) return;
       const file = e.dataTransfer.files[0];
       if (!file) return;
       if (!file.name.endsWith('.brxt')) {
@@ -147,7 +150,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
       }
       processFile(window.electron.getPathForFile(file));
     },
-    [processFile]
+    [processFile, isValidating]
   );
 
   const handleFileInput = useCallback(
@@ -578,8 +581,14 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               background and border beat any utility and the zone never changed on drag or error. */}
           <button
             type="button"
-            aria-label={manifest ? COPY.dropZoneAnotherName : COPY.dropZoneName}
-            disabled={isValidating}
+            // Not `disabled` while a bundle is read: a disabled button cannot hold focus, and a
+            // dialog opened with a file already chosen (Finder hands one over) then had nowhere
+            // to put first focus but the dialog's own box, drawn with the browser's blue ring.
+            // The label says what the zone is doing, so it still contains the words on screen.
+            aria-label={
+              isValidating ? COPY.reading : manifest ? COPY.dropZoneAnotherName : COPY.dropZoneName
+            }
+            aria-disabled={isValidating || undefined}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
@@ -587,6 +596,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             onClick={async () => {
+              if (isValidating) return;
               // The native picker returns a real path (and the Playwright hook can answer it
               // without a dialog); a surface without it falls back to the file input.
               if (typeof window.electron?.openBrxtFilePicker !== 'function') {
@@ -597,7 +607,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               if (fp) processFile(fp);
             }}
             className={[
-              'biorouter-focus-surface flex w-full cursor-pointer select-none flex-col items-center gap-2 rounded-container border px-4 py-6 text-center transition-colors',
+              'biorouter-focus-surface flex w-full select-none flex-col items-center gap-2 rounded-container border px-4 py-6 text-center transition-colors',
+              isValidating ? 'cursor-progress' : 'cursor-pointer',
               isDragging
                 ? 'border-border-strong bg-background-medium'
                 : error
