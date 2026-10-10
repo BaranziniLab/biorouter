@@ -84,19 +84,15 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               shape="round"
               size="sm"
               aria-expanded={isExpanded}
+              // The Disclosure's chevron recipe: it turns 90° under `[data-state='open']`.
+              data-state={isExpanded ? 'open' : 'closed'}
               aria-label={isExpanded ? copy.hideDetails(key) : copy.showDetails(key)}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleExpanded(key);
               }}
             >
-              <ChevronRight
-                aria-hidden
-                className={cn(
-                  'transition-transform duration-[var(--dur-fast-max)] ease-[var(--ease-out)] motion-reduce:transition-none',
-                  isExpanded && 'rotate-90'
-                )}
-              />
+              <ChevronRight aria-hidden className="biorouter-disclosure-chevron" />
             </Button>
           )}
 
