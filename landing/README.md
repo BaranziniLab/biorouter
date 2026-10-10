@@ -32,7 +32,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 
 ## Look rules
 
-These keep the site on the desktop app's scale. No check enforces them, so a new rule goes in `site.css` rather than in a page.
+These keep the site on the desktop app's scale. `node --test landing/scripts/look-rules.test.mjs` reads the stylesheets and fails on a size, weight, tracking, control height, easing or `--faint` use that breaks them (the pre-redesign stylesheets show 307 violations). A new shared rule goes in `site.css` rather than in a page.
 
 - **Sizes** come from the `--fs-*` tokens in `site.css`: 12, 13, 14, 16, 17 and 24, plus two clamps for titles. A page stylesheet never writes a pixel size. Code is `--fs-sm`, and `--fs-xs` inside a table.
 - **Weights** are 400, and 700 only for `strong` in the docs. Arial draws nothing between, so never write 500 or 600. Inter 600 sets the wordmark and nothing else.
