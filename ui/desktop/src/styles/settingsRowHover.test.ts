@@ -36,9 +36,16 @@ function hoverRule(): string {
   return match![1];
 }
 
+/** The ONE rule the content row and the settings row share (spec 2.6). */
 function baseRule(): string {
-  const match = CSS.match(/\n\.biorouter-settings-row\s*\{([^}]*)\}/);
-  expect(match, 'expected a `.biorouter-settings-row` base rule').toBeTruthy();
+  const match = CSS.match(/\n\.biorouter-list-row,\s*\.biorouter-settings-row\s*\{([^}]*)\}/);
+  expect(match, 'expected one rule shared by the list row and the settings row').toBeTruthy();
+  return match![1];
+}
+
+function ruleFor(selector: RegExp): string {
+  const match = CSS.match(new RegExp(`\\n${selector.source}\\s*\\{([^}]*)\\}`));
+  expect(match, `expected a rule for ${selector.source}`).toBeTruthy();
   return match![1];
 }
 
@@ -49,8 +56,16 @@ describe('the settings row hover wash', () => {
     expect(rule).not.toMatch(/(^|[\s;])background\s*:/);
   });
 
-  it('still paints the same 38% neutral wash', () => {
-    expect(hoverRule()).toContain('color-mix(in srgb, var(--background-medium) 38%, transparent)');
+  it('paints the one row hover, --overlay-hover, the same as a list row (no 42% / 38% fork)', () => {
+    expect(hoverRule()).toMatch(/background-color:\s*var\(--overlay-hover\);/);
+    expect(ruleFor(/\.biorouter-list-row:hover,\s*\.biorouter-list-row:focus-within/)).toMatch(
+      /background-color:\s*var\(--overlay-hover\);/
+    );
+    expect(CSS).not.toMatch(/var\(--background-medium\) (42|38)%/);
+  });
+
+  it('eases the hover over --dur-fast-min', () => {
+    expect(baseRule()).toMatch(/background-color var\(--dur-fast-min\) var\(--ease-out\)/);
   });
 
   /**
@@ -77,7 +92,26 @@ describe('the settings row hover wash', () => {
    */
   it('suppresses the trailing hairline by `:last-child` alone', () => {
     expect(CSS).toMatch(
-      /\.biorouter-settings-row:last-child\s*\{\s*border-bottom-color:\s*transparent;\s*\}/
+      /\.biorouter-list-row:last-child::after,\s*\.biorouter-settings-row:last-child::after\s*\{\s*content:\s*none;\s*\}/
     );
+  });
+
+  /**
+   * A bottom BORDER on a rounded row curls up at both ends (plainly in forced colours, which
+   * paint every border in the text colour). The divider is a straight line under the row, inset
+   * by the corner radius, and the border stays only as 1px of transparent room so no row moves
+   * (Crew's `dialogs/dialogs.css` recipe, QA Q4-25).
+   */
+  it('draws a straight hairline inset by the row radius, not a curling border', () => {
+    expect(baseRule()).toMatch(/border-bottom:\s*1px solid transparent;/);
+    const line = ruleFor(/\.biorouter-list-row::after,\s*\.biorouter-settings-row::after/);
+    expect(line).toMatch(/inset-inline:\s*var\(--radius-md\);/);
+    expect(line).toMatch(/bottom:\s*-1px;/);
+    expect(line).toMatch(/border-top:\s*1px solid var\(--border-subtle\);/);
+    expect(
+      ruleFor(
+        /\.biorouter-list-row:focus-within::after,\s*\.biorouter-settings-row:focus-within::after/
+      )
+    ).toMatch(/border-top-color:\s*var\(--border-focus\);/);
   });
 });

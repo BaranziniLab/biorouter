@@ -3504,25 +3504,76 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   flex-direction: column;
 }
 
-.biorouter-list-row {
-  background: transparent;
-  border-bottom: 1px solid var(--border-subtle);
+/* @ws WS-PRIMITIVES begin: rows */
+/* The content row and the settings row share ONE recipe (spec 2.6, Crew's
+   `dialogs/dialogs.css` Q4-25): 40px minimum, radius 8, a hover of `--overlay-hover` over
+   `--dur-fast-min`, and a STRAIGHT hairline. A bottom border on a rounded box curls up at
+   both ends (plainly so in forced colours, which paint every border in the text colour), so the
+   border stays as 1px of transparent room (no row moves) and the divider is a line drawn under
+   the row, inset by the corner radius so it ends where the hover wash starts to curve. It is a
+   border, not a background, so forced colours still draw it. The last row of a list has none,
+   and a row holding focus firms its line.
+
+   Position and the list row's 8px 12px padding are defaults a caller's utility may override,
+   hence the layer; the rest is unlayered so it holds. */
+@layer components {
+  .biorouter-list-row,
+  .biorouter-settings-row {
+    position: relative;
+  }
+
+  .biorouter-list-row {
+    padding: 8px 12px;
+  }
+}
+
+.biorouter-list-row,
+.biorouter-settings-row {
+  border-bottom: 1px solid transparent;
   border-radius: var(--radius-md);
   min-height: var(--row-height); /* D-12·B — 40px, one rhythm, no compact mode */
   box-shadow: none;
+  /* `--tint-ink` is in the list for the reason the note above `tint-interactive` (end of this
+     file) records: Chrome does not interpolate `background-image`, so a selection wash composed
+     with `tint-selected` is carried by that registered custom property instead. A row whose own
+     transition list omits it REPLACES the utility's fallback and gets a selection that snaps
+     beside a hover that eases. */
   transition:
-    background-color var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out);
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out),
+    --tint-ink var(--dur-fast-min) var(--ease-out);
 }
 
-.biorouter-list-row:last-child {
-  border-bottom-color: transparent;
+.biorouter-list-row {
+  background: transparent;
+}
+
+.biorouter-list-row::after,
+.biorouter-settings-row::after {
+  content: '';
+  position: absolute;
+  inset-inline: var(--radius-md);
+  bottom: -1px;
+  height: 1px;
+  border-top: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.biorouter-list-row:focus-within::after,
+.biorouter-settings-row:focus-within::after {
+  border-top-color: var(--border-focus);
+}
+
+.biorouter-list-row:last-child::after,
+.biorouter-settings-row:last-child::after {
+  content: none;
 }
 
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
-  background: color-mix(in srgb, var(--background-medium) 42%, transparent);
+  background-color: var(--overlay-hover);
 }
+/* @ws WS-PRIMITIVES end: rows */
 
 /* The swatch ring (knowledge-base/okf-migration/ui-spec.md §6.3).
    Every DOM palette swatch — the knowledge-base dot, and later the node-type
@@ -4010,27 +4061,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   box-shadow: none;
 }
 
-.biorouter-settings-row {
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  min-height: var(--row-height); /* D-12·B */
-  /* `--tint-ink` is in the list for the reason the note above
-     `tint-interactive` (end of this file) records: Chrome does not interpolate
-     `background-image`, so a selection wash composed with `tint-selected` is
-     carried by that registered custom property instead. A row whose own
-     transition list omits it REPLACES the utility's fallback and gets a
-     selection that snaps beside a hover that eases — two behaviours in one
-     control. */
-  transition:
-    background-color var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out),
-    --tint-ink var(--motion-fast) var(--ease-out);
-}
-
-.biorouter-settings-row:last-child {
-  border-bottom-color: transparent;
-}
-
+/* @ws WS-PRIMITIVES begin: settings row */
+/* The settings row's box, divider and transition are the shared row recipe above
+   (`@ws WS-PRIMITIVES begin: rows`); only its hover, below, is its own. */
+/* @ws WS-PRIMITIVES end: settings row */
 /* ⚠ `background-color`, NOT the `background` shorthand, and it skips a tinted
    row. Both halves are load-bearing and both were bugs.
    This rule is UNLAYERED, so it beats anything inside `@layer utilities`
@@ -4041,10 +4075,12 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    the property leaves the tint alone, and `:not(.tint-selected)` then hands a
    selected row's hover to that composed pair, which answers the pointer by
    DARKENING rather than by dropping a step. */
+/* @ws WS-PRIMITIVES begin: settings row hover */
 .biorouter-settings-row:not(.tint-selected):hover,
 .biorouter-settings-row:not(.tint-selected):focus-within {
-  background-color: color-mix(in srgb, var(--background-medium) 38%, transparent);
+  background-color: var(--overlay-hover);
 }
+/* @ws WS-PRIMITIVES end: settings row hover */
 
 /* No dark-mode override needed: the block is flat and token-driven in both themes. */
 
