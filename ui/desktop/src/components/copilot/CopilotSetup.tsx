@@ -1,20 +1,14 @@
 import { useState } from 'react';
-import { Check, ChevronDown, Loader2 } from '../icons/app-icons';
+import { Check } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { Note } from '../ui/note';
+import { Spinner } from '../ui/spinner';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { copilotSetup, type CopilotRuntime } from './copilotApi';
+import { copilotSetupCopy } from './copy';
 
-const RUNTIME_STATES: Record<string, string> = {
-  ready: 'Runtime ready',
-  missing_runtime: 'Bundled runtime missing',
-  incompatible_runtime: 'Runtime incompatible',
-  desktop_unavailable: 'Desktop unavailable',
-  probe_pending: 'Runtime found — setup not checked',
-  os_permission_required: 'OS permission required',
-  unsupported_environment: 'Unsupported desktop environment',
-  missing_dependency: 'System dependency missing',
-  probe_failed: 'Could not check the native runtime',
-};
+/** The panel's DOM id: the row's button controls it. */
+export const COPILOT_SETUP_PANEL_ID = 'copilot-setup-details';
 
 export type RuntimeVerdict = 'ready' | 'blocked' | 'unverified' | 'unavailable';
 
@@ -73,7 +67,7 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
   const verdict = runtimeVerdict(runtime);
   return (
     <div className="space-y-1 text-supporting text-text-muted">
-      <p>{RUNTIME_STATES[runtime.status] ?? runtime.status}</p>
+      <p>{copilotSetupCopy.runtimeStates[runtime.status] ?? runtime.status}</p>
       {runtime.error && <p className="break-words">{runtime.error}</p>}
       {runtime.host && <p>Backend computer: {runtime.host}</p>}
       {runtime.runtime_version && (
@@ -164,14 +158,14 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   onClick={() => void openSettings('accessibility')}
                 >
                   Open Accessibility settings
                 </Button>
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   onClick={() => void openSettings('screen_recording')}
                 >
                   Open Screen Recording settings
@@ -196,7 +190,27 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
   );
 }
 
-export function CopilotSetup() {
+/**
+ * Everything the setup check remembers, shared by the row's button and the result panel that
+ * follows the row. The two are separate components because they sit in different places: the
+ * button is the row's trailing control, and the panel is a block after the row, so a long result
+ * never swells the row it belongs to.
+ */
+export interface CopilotSetupState {
+  runtime?: CopilotRuntime;
+  error: string;
+  loading: boolean;
+  /** A check has run and answered. */
+  checked: boolean;
+  /** The panel is showing a result. */
+  expanded: boolean;
+  /** The first press checks; later presses show or hide what is already known. */
+  toggle: () => void;
+  /** Ask the backend again. */
+  check: () => Promise<void>;
+}
+
+export function useCopilotSetup(): CopilotSetupState {
   const [runtime, setRuntime] = useState<CopilotRuntime>();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -215,11 +229,7 @@ export function CopilotSetup() {
       // to closed and the panel stays hidden a click out of phase.
       setOpen(true);
     } catch (failure) {
-      setError(
-        failure instanceof Error
-          ? failure.message
-          : 'Could not read Biorouter Copilot setup. Check the backend connection and try again.'
-      );
+      setError(failure instanceof Error ? failure.message : copilotSetupCopy.readFailed);
       setChecked(false);
     } finally {
       setLoading(false);
@@ -240,55 +250,84 @@ export function CopilotSetup() {
     }
     setOpen((current) => !current);
   };
-  const expanded = open && Boolean(runtime);
 
+  return {
+    runtime,
+    error,
+    loading,
+    checked,
+    expanded: open && Boolean(runtime),
+    toggle,
+    check,
+  };
+}
+
+/**
+ * The row's trailing button: "Check setup" until a result exists, then "Hide setup" and
+ * "Show setup". `describedBy` names the row it sits in, so the bare verb still says what it is for.
+ */
+export function CopilotSetupTrigger({
+  setup,
+  describedBy,
+}: {
+  setup: CopilotSetupState;
+  describedBy?: string;
+}) {
+  const { runtime, loading, expanded, toggle } = setup;
+  const label = loading
+    ? copilotSetupCopy.checking
+    : !runtime
+      ? copilotSetupCopy.check
+      : expanded
+        ? copilotSetupCopy.hide
+        : copilotSetupCopy.show;
   return (
-    <div className="mt-2 space-y-2">
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={loading}
-        aria-busy={loading}
-        aria-expanded={expanded}
-        aria-controls="copilot-setup-details"
-        onClick={toggle}
-      >
-        {loading && <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />}
-        {loading
-          ? 'Checking…'
-          : !runtime
-            ? 'Check Biorouter Copilot setup'
-            : open
-              ? 'Hide Biorouter Copilot setup'
-              : 'Show Biorouter Copilot setup'}
-        {runtime && !loading && (
-          <ChevronDown
-            className={`size-3.5 shrink-0 transition-transform ${open ? 'rotate-180' : 'rotate-0'}`}
-            aria-hidden="true"
-          />
-        )}
-      </Button>
+    <Button
+      type="button"
+      size="sm"
+      variant="secondary"
+      disabled={loading}
+      aria-busy={loading}
+      aria-expanded={runtime ? expanded : undefined}
+      aria-controls={runtime ? COPILOT_SETUP_PANEL_ID : undefined}
+      aria-describedby={describedBy}
+      onClick={toggle}
+    >
+      {loading && <Spinner />}
+      {label}
+    </Button>
+  );
+}
+
+/**
+ * The result, as a block after the row: a `Note` that never clamps, because it carries buttons a
+ * "Show more" fold would hide. A failed check is its own danger note, so the error is read as
+ * soon as it lands.
+ */
+export function CopilotSetupPanel({ setup }: { setup: CopilotSetupState }) {
+  const { runtime, error, loading, checked, expanded, check } = setup;
+  if (!(expanded && runtime) && !error) return null;
+  return (
+    <>
       {expanded && runtime && (
-        <div id="copilot-setup-details" className="space-y-2">
-          <CopilotRuntimeDetails runtime={runtime} />
-          <PermissionCheckButton
-            label="Check again"
-            checking={loading}
-            checked={checked}
-            verdict={runtimeVerdict(runtime)}
-            onCheck={() => void check()}
-          />
-        </div>
+        <Note id={COPILOT_SETUP_PANEL_ID} unclamped className="mx-3 mb-2 mt-1">
+          <div className="space-y-2">
+            <CopilotRuntimeDetails runtime={runtime} />
+            <PermissionCheckButton
+              label={copilotSetupCopy.checkAgain}
+              checking={loading}
+              checked={checked}
+              verdict={runtimeVerdict(runtime)}
+              onCheck={() => void check()}
+            />
+          </div>
+        </Note>
       )}
       {error && (
-        <p role="alert" className="text-supporting text-text-danger">
+        <Note tone="danger" role="alert" className="mx-3 mb-2 mt-1">
           {error}
-        </p>
+        </Note>
       )}
-      <p className="text-supporting text-text-muted">
-        Allow each task from its chat. The active indicator and Stop control stay above the
-        composer.
-      </p>
-    </div>
+    </>
   );
 }

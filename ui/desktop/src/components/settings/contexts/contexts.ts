@@ -41,6 +41,10 @@ export interface ContextMeta {
    */
   id: string;
   label: string;
+  /**
+   * The row's InfoTip text: two sentences at most. "Loaded only for … tasks" is said once, in the
+   * section header's tip (`chat/copy.ts`), not on each office row.
+   */
   description: string;
 }
 
@@ -57,22 +61,22 @@ export const CONTEXTS: readonly ContextMeta[] = [
   {
     id: 'office-word',
     label: 'Word documents',
-    description: 'Read, create and edit Word documents. Loaded only for relevant document tasks.',
+    description: 'Read, create and edit Word documents.',
   },
   {
     id: 'office-powerpoint',
     label: 'PowerPoint',
-    description: 'Create and edit slide decks. Loaded only for presentation tasks.',
+    description: 'Create and edit slide decks.',
   },
   {
     id: 'office-excel',
     label: 'Excel spreadsheets',
-    description: 'Work with spreadsheets, formulas and charts. Loaded only for spreadsheet tasks.',
+    description: 'Work with spreadsheets, formulas and charts.',
   },
   {
     id: 'office-pdf',
     label: 'PDF documents',
-    description: 'Read, create and process PDFs and forms. Loaded only for PDF tasks.',
+    description: 'Read, create and process PDFs and forms.',
   },
   {
     id: 'about-biorouter',

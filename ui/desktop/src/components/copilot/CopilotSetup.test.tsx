@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CopilotSetup } from './CopilotSetup';
+import { CopilotSetupPanel, CopilotSetupTrigger, useCopilotSetup } from './CopilotSetup';
+import { copilotSetupCopy } from './copy';
 
 const mocks = vi.hoisted(() => ({ setup: vi.fn() }));
 vi.mock('./copilotApi', () => ({ copilotSetup: mocks.setup }));
@@ -8,6 +9,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(window, { electron: { platform: 'darwin', getConfig: () => ({}) } });
 });
+
+/**
+ * The Settings row puts the trigger beside a switch and the panel after the row; here they sit
+ * together, which is all these tests need.
+ */
+function CopilotSetup() {
+  const setup = useCopilotSetup();
+  return (
+    <>
+      <CopilotSetupTrigger setup={setup} />
+      <CopilotSetupPanel setup={setup} />
+    </>
+  );
+}
+
+const checkButton = () => screen.getByRole('button', { name: copilotSetupCopy.check });
 
 describe('CopilotSetup', () => {
   it('distinguishes a present runtime from unverified OS permissions', async () => {
@@ -20,7 +37,7 @@ describe('CopilotSetup', () => {
     });
     render(<CopilotSetup />);
     expect(mocks.setup).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText('Runtime ready');
     expect(screen.getByText(/OS permissions: Not checked/)).toBeVisible();
     expect(screen.getByText(/server-host/)).toBeVisible();
@@ -42,7 +59,7 @@ describe('CopilotSetup', () => {
       permissions: { accessibility: true, screen_recording: false },
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText(/Screen Recording: not allowed/);
     expect(
       screen.getByText(
@@ -63,7 +80,7 @@ describe('CopilotSetup', () => {
       permissions: { accessibility: true, screen_recording: true },
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText(/Screen Recording: allowed/);
     expect(screen.queryByText(/Grant these to this exact copy/)).not.toBeInTheDocument();
   });
@@ -75,13 +92,13 @@ describe('CopilotSetup', () => {
       error: 'Payload not found on backend',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText('Bundled runtime missing');
     expect(screen.getByText('Payload not found on backend')).toBeVisible();
     expect(screen.getByText(/Install or repair the matching Biorouter package/)).toBeVisible();
   });
   it.each([
-    ['probe_pending', 'Runtime found — setup not checked'],
+    ['probe_pending', copilotSetupCopy.runtimeStates.probe_pending],
     ['os_permission_required', 'OS permission required'],
   ])('renders %s with an actionable permission result', async (status, label) => {
     mocks.setup.mockResolvedValue({
@@ -93,7 +110,7 @@ describe('CopilotSetup', () => {
       capture_available: false,
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText(label);
     expect(
       screen.getByText(/Accessibility: allowed · Screen Recording: not allowed/)
@@ -115,7 +132,7 @@ describe('CopilotSetup', () => {
         target: 'aarch64-apple-darwin',
       });
       render(<CopilotSetup />);
-      fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+      fireEvent.click(checkButton());
 
       expect(await screen.findByText(message)).toBeVisible();
       expect(screen.getAllByText(/Biorouter Computer Use/i)).toHaveLength(1);
@@ -132,7 +149,7 @@ describe('CopilotSetup', () => {
       target: 'win32-x64',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
 
     expect(await screen.findByText(/Use a signed-in interactive desktop/)).toHaveTextContent(
       'Secure desktops and elevation prompts cannot be controlled.'
@@ -151,9 +168,9 @@ describe('CopilotSetup', () => {
         permissions: { accessibility: true, screen_recording: true },
       });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText('OS permission required');
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(screen.getByRole('button', { name: copilotSetupCopy.checkAgain }));
     await screen.findByText('Runtime ready');
     expect(screen.getByText(/Accessibility: allowed · Screen Recording: allowed/)).toBeVisible();
     expect(mocks.setup).toHaveBeenCalledTimes(2);
@@ -164,14 +181,14 @@ describe('CopilotSetup', () => {
       permissions: { accessibility: true, screen_recording: true },
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByText('Runtime ready');
     // Hiding is the control the user could not find at all before this.
-    fireEvent.click(screen.getByRole('button', { name: /Hide Biorouter Copilot setup/ }));
+    fireEvent.click(screen.getByRole('button', { name: copilotSetupCopy.hide }));
     expect(screen.queryByText('Runtime ready')).toBeNull();
     // Re-showing a result already fetched must not re-ask the backend; that is
     // what "Check again" inside the panel is for.
-    fireEvent.click(screen.getByRole('button', { name: /Show Biorouter Copilot setup/ }));
+    fireEvent.click(screen.getByRole('button', { name: copilotSetupCopy.show }));
     expect(await screen.findByText('Runtime ready')).toBeVisible();
     expect(mocks.setup).toHaveBeenCalledTimes(1);
   });
@@ -182,11 +199,11 @@ describe('CopilotSetup', () => {
       permissions: { accessibility: true, screen_recording: true },
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
-    expect(await screen.findByText('All OS permissions are allowed.')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(checkButton());
+    expect(await screen.findByText(copilotSetupCopy.verdicts.ready)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: copilotSetupCopy.checkAgain }));
     await waitFor(() => expect(mocks.setup).toHaveBeenCalledTimes(2));
-    expect(screen.getByText('All OS permissions are allowed.')).toBeVisible();
+    expect(screen.getByText(copilotSetupCopy.verdicts.ready)).toBeVisible();
   });
   it('shows the checks after a failed first attempt without a third click', async () => {
     mocks.setup.mockRejectedValueOnce(new Error('backend down')).mockResolvedValueOnce({
@@ -194,12 +211,12 @@ describe('CopilotSetup', () => {
       permissions: { accessibility: true, screen_recording: true },
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     await screen.findByRole('alert');
     // Second press: the check succeeds, so its results must be VISIBLE. Flipping
     // `open` in the click handler left the toggle a click out of phase here, so
     // the panel stayed hidden and the button just silently changed its label.
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     expect(await screen.findByText('Runtime ready')).toBeVisible();
   });
 });
@@ -213,7 +230,7 @@ describe('permission repair controls', () => {
       message: 'native helper timed out',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     expect(await screen.findByText(/this does not mean access was denied/)).toBeVisible();
     expect(screen.getByText('native helper timed out')).toBeVisible();
     expect(screen.queryByText(/A required OS permission is missing/)).toBeNull();
@@ -235,7 +252,7 @@ describe('permission repair controls', () => {
       target: 'darwin-arm64',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     const button = await screen.findByRole('button', { name: 'Open Accessibility settings' });
     expect(openSettings).not.toHaveBeenCalled();
     fireEvent.click(button);
@@ -257,7 +274,7 @@ describe('permission repair controls', () => {
       target: 'darwin-arm64',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     expect(
       await screen.findByRole('button', { name: 'Open Screen Recording settings' })
     ).toBeVisible();
@@ -279,7 +296,7 @@ describe('permission repair controls', () => {
       target: 'darwin-arm64',
     });
     render(<CopilotSetup />);
-    fireEvent.click(screen.getByRole('button', { name: 'Check Biorouter Copilot setup' }));
+    fireEvent.click(checkButton());
     expect(await screen.findByText(/If it is remote, changing permissions/)).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
     expect(openSettings).not.toHaveBeenCalled();

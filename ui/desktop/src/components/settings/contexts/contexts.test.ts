@@ -122,11 +122,11 @@ describe('Settings -> Chat section order', () => {
     // sits directly under it; Contexts goes after that pair.
     expect(at('<CapabilitiesSection />')).toBeLessThan(at('<MemorySection />'));
     expect(at('<MemorySection />')).toBeLessThan(at('<ContextsSection />'));
-    // ⚠ `>App SDK<`, not `App SDK`. The bare string also matches the comment
-    // in ChatSettingsSection explaining this very ordering, which sits ABOVE
-    // the section — so the loose form failed on correct code. Third time this
-    // repo has produced a guard that matched its own prose.
-    expect(at('<ContextsSection />')).toBeLessThan(at('>App SDK<'));
+    // ⚠ The component tag, not the words "App SDK": the bare string also matches the comment in
+    // ChatSettingsSection explaining this very ordering, which sits ABOVE the section, and the
+    // header text now lives in `chat/copy.ts`. Third time this repo has produced a guard that
+    // matched its own prose.
+    expect(at('<ContextsSection />')).toBeLessThan(at('<BrsdkSection />'));
   });
 });
 

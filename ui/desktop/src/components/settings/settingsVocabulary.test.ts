@@ -327,10 +327,6 @@ describe('the settings vocabulary', () => {
     const NOT_YET_CONVERTED = new Set([
       // Unmounted (spec §3.13 leaves it); it renders for nobody.
       'settings/app/ExternalBackendSection.tsx',
-      // WS-SETTINGS-B: rows move onto SettingRow (spec §3.14).
-      'settings/capabilities/CapabilitiesSection.tsx',
-      'settings/contexts/ContextsSection.tsx',
-      'settings/brsdk/BrsdkSection.tsx',
     ]);
     const paragraphs: string[] = [];
     for (const { rel, text } of FILES) {
