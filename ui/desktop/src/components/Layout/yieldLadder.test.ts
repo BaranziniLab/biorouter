@@ -32,6 +32,21 @@ import {
   splitYieldFits,
   splitYieldSample,
 } from './yieldLadder';
+import {
+  CHAT_COLUMN_CHROME,
+  CHAT_FULL_MEASURE_WIDTH,
+  CHAT_MEASURE,
+  SUMMARY_RAIL_CHAT_FLOOR,
+  SUMMARY_RAIL_HIDDEN,
+  SUMMARY_RAIL_MAX_WIDTH,
+  SUMMARY_RAIL_MIN_WIDTH,
+  SUMMARY_RAIL_RETURN_BUFFER,
+  SUMMARY_RAIL_SHOW_WIDTH,
+  type SummaryRailFit,
+  summaryRailFit,
+  summaryRailVisible,
+  summaryToggleMode,
+} from './yieldLadder';
 
 const leaf = (groupId: string): GroupLayout => ({ kind: 'leaf', groupId });
 const row = (...children: GroupLayout[]): GroupLayout => ({
@@ -587,5 +602,132 @@ describe('preview orientation hysteresis', () => {
     }
     expect(previewPanelMode({ paneWidth: 812, previous: 'stack' })).toBe('side');
     expect(previewPanelMode({ paneWidth: 0, previous: 'stack' })).toBe('stack');
+  });
+});
+
+/**
+ * RUNG 0: the docked Chat summary rail. Every seam is asserted one pixel apart
+ * on both sides, because the bugs in this area are off-by-one bugs at a seam a
+ * person drags the window across.
+ */
+describe('summaryRailFit (rung 0: the summary rail yields first)', () => {
+  const shown = (width: number): SummaryRailFit => ({ fits: true, width, measured: true });
+  const measuredHidden: SummaryRailFit = { fits: false, width: 0, measured: true };
+  const fit = (
+    paneWidth: number,
+    previous: SummaryRailFit | null = null,
+    previewMode: 'side' | 'stack' | null = null,
+    previewWidth = 0
+  ) => summaryRailFit({ paneWidth, previewMode, previewWidth, previous });
+
+  it('pins the arithmetic: 760 + 56 = 816, 816 + 240 = 1056', () => {
+    expect(CHAT_MEASURE).toBe(760);
+    expect(CHAT_COLUMN_CHROME).toBe(56);
+    expect(CHAT_FULL_MEASURE_WIDTH).toBe(816);
+    expect(SUMMARY_RAIL_MIN_WIDTH).toBe(240);
+    expect(SUMMARY_RAIL_MAX_WIDTH).toBe(280);
+    expect(SUMMARY_RAIL_CHAT_FLOOR).toBe(816);
+    expect(SUMMARY_RAIL_SHOW_WIDTH).toBe(1056);
+    expect(SUMMARY_RAIL_RETURN_BUFFER).toBe(12);
+  });
+
+  it('shows at 1056 and not at 1055 while it is showing', () => {
+    expect(fit(1055, shown(240))).toEqual(measuredHidden);
+    expect(fit(1056, shown(240))).toEqual(shown(240));
+  });
+
+  it('comes back at 1068, not 1067, after a measured hide', () => {
+    expect(fit(1067, measuredHidden)).toEqual(measuredHidden);
+    expect(fit(1068, measuredHidden)).toEqual(shown(252));
+    for (let pane = 1056; pane < 1068; pane++) {
+      expect(fit(pane, measuredHidden).fits, String(pane)).toBe(false);
+    }
+  });
+
+  it('uses the base threshold on the first sample of a mount', () => {
+    // A tab switch at 1060px keeps the rail the previous tab showed.
+    expect(fit(1056, null)).toEqual(shown(240));
+    expect(fit(1055, null)).toEqual(measuredHidden);
+    // An answer that never saw a width is not a measured hide either.
+    expect(fit(1056, SUMMARY_RAIL_HIDDEN)).toEqual(shown(240));
+  });
+
+  it('steps its width with the room: 1056 → 240, 1076 → 260, 1096 → 280, then holds', () => {
+    expect(fit(1056).width).toBe(240);
+    expect(fit(1076).width).toBe(260);
+    expect(fit(1096).width).toBe(280);
+    expect(fit(4000).width).toBe(280);
+    expect(fit(1076.6).width).toBe(260);
+  });
+
+  it('never costs the conversation its full measure', () => {
+    for (let pane = 1000; pane <= 3000; pane++) {
+      for (const previous of [null, shown(280), measuredHidden]) {
+        const answer = fit(pane, previous);
+        if (answer.fits) {
+          expect(pane - answer.width, String(pane)).toBeGreaterThanOrEqual(SUMMARY_RAIL_CHAT_FLOOR);
+          expect(answer.width).toBeGreaterThanOrEqual(SUMMARY_RAIL_MIN_WIDTH);
+          expect(answer.width).toBeLessThanOrEqual(SUMMARY_RAIL_MAX_WIDTH);
+        }
+      }
+    }
+  });
+
+  it('subtracts a side preview and never docks beside a stacked one', () => {
+    expect(fit(2272, null, 'side', 920)).toEqual(shown(280));
+    expect(fit(1632, null, 'side', 783)).toEqual(measuredHidden);
+    expect(fit(1152, shown(280), 'side', 512)).toEqual(measuredHidden);
+    for (const pane of [800, 1200, 4000]) {
+      expect(fit(pane, shown(280), 'stack', 0)).toEqual(measuredHidden);
+    }
+    // A preview width that was never measured subtracts nothing.
+    expect(fit(1152, null, 'side', 0)).toEqual(shown(280));
+  });
+
+  it('answers the previous result for a pane it has not measured', () => {
+    for (const pane of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(fit(pane, shown(260))).toEqual(shown(260));
+      expect(fit(pane, measuredHidden)).toEqual(measuredHidden);
+      expect(fit(pane, null)).toEqual(SUMMARY_RAIL_HIDDEN);
+    }
+  });
+
+  it('matches the worked table at the default 288px sidebar', () => {
+    // window → pane (window − 288 with the sidebar open, the window itself under 1120)
+    const table: Array<[pane: number, width: number | null]> = [
+      [1048, null], // 1048 window, sidebar overlay
+      [1100, 280], // 1100 window, sidebar overlay
+      [832, null], // 1120 window
+      [992, null], // 1280 window
+      [1056, 240], // 1344 window
+      [1078, 262], // 1366 window
+      [1152, 280], // 1440 window
+      [1632, 280], // 1920 window
+    ];
+    for (const [pane, width] of table) {
+      const answer = fit(pane);
+      expect(answer.fits, String(pane)).toBe(width !== null);
+      if (width !== null) expect(answer.width, String(pane)).toBe(width);
+    }
+  });
+});
+
+describe('summaryRailVisible and summaryToggleMode', () => {
+  const fits: SummaryRailFit = { fits: true, width: 280, measured: true };
+  const hidden: SummaryRailFit = { fits: false, width: 0, measured: true };
+  const base = { fit: fits, preference: 'open' as const, active: true, isMobile: false };
+
+  it('shows the rail only when wanted, active, fitting and not on a phone', () => {
+    expect(summaryRailVisible(base)).toBe(true);
+    expect(summaryRailVisible({ ...base, preference: 'closed' })).toBe(false);
+    expect(summaryRailVisible({ ...base, active: false })).toBe(false);
+    expect(summaryRailVisible({ ...base, isMobile: true })).toBe(false);
+    expect(summaryRailVisible({ ...base, fit: hidden })).toBe(false);
+  });
+
+  it('toggles the rail when it fits and opens the popover when it does not', () => {
+    expect(summaryToggleMode(fits)).toBe('rail');
+    expect(summaryToggleMode(hidden)).toBe('popover');
+    expect(summaryToggleMode(SUMMARY_RAIL_HIDDEN)).toBe('popover');
   });
 });

@@ -6,6 +6,8 @@ import { GroupLayout } from '../chatGroups/chatGroupsTypes';
  * The active chat always wins. Everything else yields, in a fixed order, and the
  * order is the design. Widest-yields-first:
  *
+ *   0. the docked Chat summary rail folds back into its header button before
+ *      anything else gives up room — summaryRailFit
  *   1. the sidebar collapses to an overlay (< 1120px) — AppLayout.sidebarAutoCollapseAction
  *   2. the preview panel narrows to its 360px floor, the conversation beside it
  *      narrows to its 440px floor, and below 800px the preview moves ABOVE the
@@ -82,6 +84,112 @@ export const TAB_MIN_WIDTH = 136;
 
 /** `.br-group-splitter`'s flex-basis in main.css. */
 export const GROUP_SPLITTER_WIDTH = 1;
+
+// ---------------------------------------------------------------------------
+// Rung 0 — the summary rail
+// ---------------------------------------------------------------------------
+
+/**
+ * The transcript's chrome around the 760px measure: the ScrollArea root's
+ * `px-1` (2 × 4) plus its viewport's `paddingX={6}` (2 × 24), both in
+ * BaseChat.tsx. `styles/summaryRail.test.ts` pins both literals at the source,
+ * so moving either one fails a test instead of silently changing the seam.
+ */
+export const CHAT_COLUMN_CHROME = 56;
+
+/** Mirrors `--measure-chat` (pinned by `styles/measures.test.ts`). */
+export const CHAT_MEASURE = 760;
+
+/** The transcript cell width at which the column reaches its full measure. */
+export const CHAT_FULL_MEASURE_WIDTH = CHAT_MEASURE + CHAT_COLUMN_CHROME;
+
+/** Below this a 13px to-do line runs about 24 characters: a list of truncations. */
+export const SUMMARY_RAIL_MIN_WIDTH = 240;
+
+/** Narrower than the 360px popover it replaces, as the owner asked. */
+export const SUMMARY_RAIL_MAX_WIDTH = 280;
+
+/**
+ * Variant A (owner decision 6.3): the rail never costs the conversation its
+ * measure. It folds away before the column would drop under 760px.
+ */
+export const SUMMARY_RAIL_CHAT_FLOOR = CHAT_FULL_MEASURE_WIDTH;
+
+/** The available width at which the rail docks: 816 + 240 = 1056. */
+export const SUMMARY_RAIL_SHOW_WIDTH = SUMMARY_RAIL_CHAT_FLOOR + SUMMARY_RAIL_MIN_WIDTH;
+
+/** The same return buffer as rung 2: after a measured hide it comes back at 1068. */
+export const SUMMARY_RAIL_RETURN_BUFFER = 12;
+
+/**
+ * One answer of rung 0. `measured` is false only for an answer that never saw a
+ * real width, so the return buffer applies only after a hide that was measured.
+ */
+export type SummaryRailFit = { fits: boolean; width: number; measured: boolean };
+
+export const SUMMARY_RAIL_HIDDEN: SummaryRailFit = { fits: false, width: 0, measured: false };
+
+export type SummaryRailPreference = 'open' | 'closed';
+
+/**
+ * Whether the rail docks beside the conversation, and how wide.
+ *
+ *   available = pane − the side preview's width (a stacked sheet hides it)
+ *   fits      = available ≥ 1056 (1068 after a measured hide)
+ *   width     = clamp(available − 816, 240, 280)
+ *
+ * With the default 288px sidebar that is windows of 1344px and wider; below
+ * 1120px the sidebar turns into an overlay, so from 1056px windows. Beside a
+ * side preview it needs a pane of about 2272px.
+ *
+ * The pane is the split box, whose width does not depend on the rail, so the
+ * answer cannot feed back into its own input. An unmeasured pane (0, NaN, a
+ * negative) returns the previous answer unchanged, so a first paint never
+ * flashes the rail away and back.
+ */
+export function summaryRailFit(opts: {
+  paneWidth: number;
+  /** Null when no preview is mounted. */
+  previewMode: PreviewPanelMode | null;
+  /** The side panel's resolved width; ignored unless `previewMode` is 'side'. */
+  previewWidth: number;
+  /** Null on the first sample of a mount: a remount keeps what the last tab showed. */
+  previous: SummaryRailFit | null;
+}): SummaryRailFit {
+  if (!measured(opts.paneWidth)) return opts.previous ?? SUMMARY_RAIL_HIDDEN;
+  if (opts.previewMode === 'stack') return { fits: false, width: 0, measured: true };
+  const side = opts.previewMode === 'side' && measured(opts.previewWidth) ? opts.previewWidth : 0;
+  const available = opts.paneWidth - side;
+  const returning = opts.previous?.measured === true && !opts.previous.fits;
+  const threshold = SUMMARY_RAIL_SHOW_WIDTH + (returning ? SUMMARY_RAIL_RETURN_BUFFER : 0);
+  if (available < threshold) return { fits: false, width: 0, measured: true };
+  const width = Math.min(
+    SUMMARY_RAIL_MAX_WIDTH,
+    Math.max(SUMMARY_RAIL_MIN_WIDTH, Math.floor(available - CHAT_FULL_MEASURE_WIDTH))
+  );
+  return { fits: true, width, measured: true };
+}
+
+/**
+ * Whether the rail is on screen: the viewer wants it, the chat has had a turn,
+ * it fits, and this is not a phone-width browser.
+ */
+export function summaryRailVisible(opts: {
+  fit: SummaryRailFit;
+  preference: SummaryRailPreference;
+  active: boolean;
+  isMobile: boolean;
+}): boolean {
+  return opts.fit.fits && opts.preference === 'open' && opts.active && !opts.isMobile;
+}
+
+/**
+ * What the header's summary button does: toggle the docked rail when it fits,
+ * otherwise open the summary as a popover.
+ */
+export function summaryToggleMode(fit: SummaryRailFit): 'rail' | 'popover' {
+  return fit.fits ? 'rail' : 'popover';
+}
 
 // ---------------------------------------------------------------------------
 // Rung 2 — the preview panel
