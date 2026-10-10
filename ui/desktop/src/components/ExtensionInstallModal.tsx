@@ -172,9 +172,11 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       if (extensionsList?.find((ext) => ext.name === extName)) {
         console.log(`Extension Already Installed: ${extName}`);
 
+        // The name is the title, as every other extension toast has it; the message does not
+        // say it a second time.
         toastService.success({
-          title: `Extension '${extName}' already installed`,
-          msg: `'${extName}' is already installed. Start a new chat to use it.`,
+          title: extName,
+          msg: 'Already installed. Start a new chat to use it.',
         });
         return;
       }

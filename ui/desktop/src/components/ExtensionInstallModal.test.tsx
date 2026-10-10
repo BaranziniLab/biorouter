@@ -19,11 +19,21 @@ const mockElectron = {
 
 (window as any).electron = mockElectron;
 
+const mocks = vi.hoisted(() => ({
+  installed: [] as Array<{ name: string }>,
+  success: vi.fn(),
+}));
+
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: [],
-    getExtensions: vi.fn().mockResolvedValue([]),
+    getExtensions: vi.fn(async () => mocks.installed),
   }),
+}));
+
+vi.mock('../toasts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../toasts')>()),
+  toastService: { success: mocks.success, error: vi.fn() },
 }));
 
 describe('ExtensionInstallModal', () => {
@@ -38,6 +48,7 @@ describe('ExtensionInstallModal', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.installed = [];
     mockElectron.getConfig.mockReturnValue({
       BIOROUTER_ALLOWLIST_WARNING: false,
     });
@@ -139,6 +150,25 @@ describe('ExtensionInstallModal', () => {
       expect(screen.getByRole('button', { name: 'Got it' })).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(2);
       expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
+    });
+  });
+
+  describe('An extension that is already installed', () => {
+    it('is said once, in a toast titled with its name, and opens no dialog', async () => {
+      mocks.installed = [{ name: 'TestExt' }];
+      mockElectron.getAllowedExtensions.mockResolvedValue([]);
+
+      render(<ExtensionInstallModal addExtension={mockAddExtension} setView={mockSetView} />);
+      const eventHandler = getAddExtensionEventHandler();
+      await act(async () => {
+        await eventHandler({}, 'biorouter://extension?cmd=npx&arg=test-extension&name=TestExt');
+      });
+
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(mocks.success).toHaveBeenCalledWith({
+        title: 'TestExt',
+        msg: 'Already installed. Start a new chat to use it.',
+      });
     });
   });
 
