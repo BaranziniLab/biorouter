@@ -31,17 +31,17 @@ export function DependencyErrorBanner({
 }: DependencyErrorBannerProps) {
   return (
     <div
-      className={`rounded-lg border border-border-danger/40 bg-background-danger/10 p-3 ${className}`}
+      className={`rounded-element border border-border-danger/40 bg-background-danger/10 p-3 ${className}`}
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         {/* min-w-0 so a long single-token error (a path, a URL) wraps inside the
             banner instead of pushing the button out of the modal. */}
-        <p className="min-w-0 break-words text-sm text-text-danger">{error}</p>
+        <p className="min-w-0 break-words text-body text-text-danger">{error}</p>
         {!hideDebugAction && (
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
-            className="h-7 shrink-0 text-xs"
+            className="shrink-0"
             onClick={() => void launchDependencyDebugSession({ ...failure, error })}
             title="Open a new chat with this error and let Biorouter work it out"
           >

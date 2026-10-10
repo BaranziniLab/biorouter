@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
+import { Spinner } from './ui/spinner';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
 import { ModalShell } from './ModalShell';
 import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
@@ -442,7 +443,7 @@ export default function DependencySetupModal() {
                 Install all ({installableCount})
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
+            <Button variant="secondary" size="sm" onClick={handleDismiss} disabled={isBusy}>
               {allDone ? 'Done' : 'Dismiss'}
             </Button>
           </div>
@@ -454,7 +455,7 @@ export default function DependencySetupModal() {
         {/* Biorouter CLI install card */}
         {(showCli || cliState === 'done') && (
           <div
-            className={`rounded-xl border px-4 py-3 ${
+            className={`rounded-container border px-4 py-3 ${
               cliState === 'done'
                 ? 'border-border-success/40 bg-background-success/10'
                 : cliState === 'error'
@@ -464,15 +465,13 @@ export default function DependencySetupModal() {
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold flex items-center gap-1.5">
+                <p className="text-label font-semibold flex items-center gap-1.5">
                   {cliState === 'done' && <span className="text-text-success">✓</span>}
                   {cliState === 'error' && <span className="text-text-danger">✗</span>}
-                  {cliState === 'running' && (
-                    <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
-                  )}
+                  {cliState === 'running' && <Spinner size={14} className="text-text-muted" />}
                   Biorouter CLI
                 </p>
-                <p className="text-[11px] text-text-muted mt-0.5">
+                <p className="text-supporting text-text-muted mt-0.5">
                   {cliState === 'done'
                     ? 'Installed. Open a new terminal and run `biorouter`.'
                     : cli?.brokenOnPath
@@ -483,32 +482,26 @@ export default function DependencySetupModal() {
                 </p>
               </div>
               {cliState !== 'running' && cliState !== 'done' && (
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="h-7 text-xs"
-                  disabled={isBusy}
-                  onClick={handleInstallCli}
-                >
+                <Button variant="default" size="sm" disabled={isBusy} onClick={handleInstallCli}>
                   {cliButtonLabel}
                 </Button>
               )}
               {cliState === 'running' && (
-                <span className="text-xs text-text-muted">{cliProgressLabel}</span>
+                <span className="text-supporting text-text-muted">{cliProgressLabel}</span>
               )}
             </div>
             {cliOutput && (
-              <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+              <div className="mt-2 font-mono text-supporting text-text-muted bg-background-medium/40 rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                 {cliOutput}
               </div>
             )}
             {cliState === 'error' && cliError && (
               <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
-                <p className="min-w-0 text-xs text-text-danger">{cliError}</p>
+                <p className="min-w-0 text-supporting text-text-danger">{cliError}</p>
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
-                  className="h-7 shrink-0 text-xs"
+                  className="shrink-0"
                   onClick={handleDebugCli}
                   title="Open a new chat with this error and let Biorouter work it out"
                 >
@@ -524,7 +517,7 @@ export default function DependencySetupModal() {
           return (
             <div
               key={info.name}
-              className={`rounded-lg border px-4 py-3 ${
+              className={`rounded-container border px-4 py-3 ${
                 installed
                   ? 'border-border-success/40 bg-background-success/10'
                   : installState === 'error'
@@ -534,22 +527,24 @@ export default function DependencySetupModal() {
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold flex items-center gap-1.5">
+                  <p className="text-label font-semibold flex items-center gap-1.5">
                     {installed && <span className="text-text-success">✓</span>}
                     {installState === 'error' && <span className="text-text-danger">✗</span>}
                     {installState === 'running' && (
-                      <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                      <Spinner size={14} className="text-text-muted" />
                     )}
                     {info.displayName}
                     {info.required === false && (
-                      <span className="text-[11px] font-normal text-text-muted">(optional)</span>
+                      <span className="text-supporting font-normal text-text-muted">
+                        (optional)
+                      </span>
                     )}
                   </p>
                   {installed && info.version && (
-                    <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>
+                    <p className="text-supporting text-text-muted mt-0.5">{info.version}</p>
                   )}
                   {!installed && installState === 'idle' && (
-                    <p className="text-[11px] text-text-muted font-mono mt-0.5 break-all">
+                    <p className="text-supporting text-text-muted font-mono mt-0.5 break-all">
                       {info.installCmd}
                     </p>
                   )}
@@ -559,7 +554,7 @@ export default function DependencySetupModal() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 text-xs text-text-muted"
+                      className="text-text-muted"
                       onClick={() => handleOpenUrl(info.downloadUrl)}
                       title="Open download page"
                     >
@@ -570,7 +565,6 @@ export default function DependencySetupModal() {
                     <Button
                       variant="default"
                       size="sm"
-                      className="h-7 text-xs"
                       // Disabled while ANY install is running. A live row button
                       // during a batch let the user start a second installer for a
                       // dependency the batch had not reached yet, so two package
@@ -582,7 +576,7 @@ export default function DependencySetupModal() {
                     </Button>
                   )}
                   {installState === 'running' && (
-                    <span className="text-xs text-text-muted">Installing…</span>
+                    <span className="text-supporting text-text-muted">Installing…</span>
                   )}
                 </div>
               </div>
@@ -593,7 +587,7 @@ export default function DependencySetupModal() {
                   ref={(el) => {
                     outputRefs.current[info.name] = el;
                   }}
-                  className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
+                  className="mt-2 font-mono text-supporting text-text-muted bg-background-medium/40 rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
                 >
                   {output}
                 </div>
@@ -604,11 +598,11 @@ export default function DependencySetupModal() {
                   probe the machine and fix it. */}
               {installState === 'error' && errorMsg && (
                 <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
-                  <p className="min-w-0 text-xs text-text-danger">{errorMsg}</p>
+                  <p className="min-w-0 text-supporting text-text-danger">{errorMsg}</p>
                   <Button
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
-                    className="h-7 shrink-0 text-xs"
+                    className="shrink-0"
                     onClick={() => handleDebugDependency({ info, installState, output, errorMsg })}
                     title="Open a new chat with this error and let Biorouter work it out"
                   >
@@ -619,7 +613,7 @@ export default function DependencySetupModal() {
 
               {/* Linux sudo note */}
               {info.requiresSudo && !installed && installState !== 'running' && (
-                <p className="mt-1 text-[11px] text-text-warning">
+                <p className="mt-1 text-supporting text-text-warning">
                   Requires sudo. You may be prompted for your password in a terminal.
                 </p>
               )}
