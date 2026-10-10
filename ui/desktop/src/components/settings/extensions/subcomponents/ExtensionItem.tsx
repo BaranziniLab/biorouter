@@ -173,7 +173,7 @@ export default function ExtensionItem({
         data-extension-row=""
       >
         <Glyph className="br-ext-glyph" aria-hidden="true" />
-        <div className="min-w-0 flex-1">
+        <div className="br-ext-text">
           {/*
            * ⚠ `min-w-0` belongs on the TITLE, not only on the column above it. A
            * flex item's `min-width` is `auto`, so a title refuses to shrink below

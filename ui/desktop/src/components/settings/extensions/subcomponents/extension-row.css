@@ -15,6 +15,14 @@
   color: var(--text-muted);
 }
 
+/* The row's text column is a size container, so the muted line can ask how much room it really
+   has (below) instead of guessing from the window. */
+.br-ext-text {
+  min-width: 0;
+  flex: 1 1 0%;
+  container: br-ext-row / inline-size;
+}
+
 /* The title line: the name gives way before its badges do. */
 .br-ext-title-line {
   display: flex;
@@ -68,6 +76,32 @@
 .br-ext-description + .br-ext-provenance::before {
   content: '\00b7';
   margin-inline-end: 6px;
+}
+
+/*
+ * Too narrow for the sentence and a description side by side (a split pane, a squeezed window:
+ * the longest provenance sentence is about 430px): stack them, description first, and let the
+ * sentence wrap, rather than letting a line that cannot shrink run under the switch. A row is
+ * two lines at every width the page is laid out at; this is the fallback below that.
+ */
+@container br-ext-row (max-width: 500px) {
+  .br-ext-secondary {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  .br-ext-description {
+    max-width: 100%;
+  }
+
+  .br-ext-description + .br-ext-provenance::before {
+    content: none;
+  }
+
+  .br-ext-provenance {
+    white-space: normal;
+  }
 }
 
 /* A group label: caps, the count in tabular figures, inset to the rows' text. */

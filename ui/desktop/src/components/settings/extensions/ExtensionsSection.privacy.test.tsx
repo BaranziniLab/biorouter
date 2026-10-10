@@ -111,8 +111,14 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
       await screen.findByText('Private: published on the Biorouter marketplace')
     ).toBeInTheDocument();
     expect(screen.getByText('Public: published on the Biorouter marketplace')).toBeInTheDocument();
-    // The catalogue on screen is the bundled one, and the screen says so.
+    // The catalogue on screen is the bundled one, and the screen says so: once, in the help of
+    // the first heading (the sentence stays in the page for a screen reader).
     expect(screen.getByText(/showing bundled catalog \(offline\)/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'About Marketplace catalog' })
+    ).toHaveAccessibleDescription(
+      /^Showing bundled catalog \(offline\)\. The marketplace notes on each row come from it\.$/
+    );
   });
 
   /**

@@ -107,7 +107,7 @@ const external = (name: string, description?: string): FixedExtensionEntry =>
 
 const noop = () => {};
 
-function page(catalog: RegistryLoad): string {
+function page(catalog: RegistryLoad, columnWidth = 712): string {
   const row = (extension: FixedExtensionEntry, extra: { refuse?: boolean } = {}) =>
     renderToStaticMarkup(
       <ExtensionItem
@@ -152,7 +152,7 @@ function page(catalog: RegistryLoad): string {
     row(external('ucsfomopagent', 'OMOP'), { refuse: true }),
   ].join('');
   return `<!doctype html><html><head><style>${TOKENS}\n${sharedCss()}\n${rowCss}</style></head><body>
-    <div id="column" style="width:712px;padding:0">
+    <div id="column" style="width:${columnWidth}px;padding:0">
       <section>
         <div class="br-ext-group-label"><h2 id="label" class="truncate text-caps text-text-muted">Enabled <span class="tabular-nums">6</span></h2></div>
         <div class="biorouter-list-shell" id="list">${rows}</div>
@@ -177,6 +177,7 @@ const launchChromium = async (): Promise<Browser | null> => {
 describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
   let browser: Browser | null = null;
   let html = '';
+  let narrowHtml = '';
 
   beforeAll(async () => {
     browser = await launchChromium();
@@ -186,19 +187,22 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
           'tests. Run `npx playwright install chromium` to enable them.'
       );
     }
-    html = page(await loadRegistry());
+    const catalog = await loadRegistry();
+    html = page(catalog);
+    // A pane the page can end up in when the window is split or squeezed.
+    narrowHtml = page(catalog, 420);
   }, 120_000);
 
   afterAll(async () => {
     await browser?.close();
   }, 120_000);
 
-  async function open(): Promise<Page> {
+  async function open(narrow = false): Promise<Page> {
     const tab = await browser!.newPage({
       viewport: { width: 1000, height: 1000 },
       reducedMotion: 'reduce',
     });
-    await tab.setContent(html);
+    await tab.setContent(narrow ? narrowHtml : html);
     return tab;
   }
 
@@ -328,6 +332,39 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
       expect(glyph.left - row.left).toBe(12);
       // The group label shares the glyph's left edge, so the heading and the column read as one.
       expect(label.left).toBe(glyph.left);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('stacks the provenance sentence under the description in a pane too narrow for both, never under the switch', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(true);
+    try {
+      const rowCount = await tab.evaluate(
+        () => document.querySelectorAll('[data-extension-row]').length
+      );
+      for (let index = 0; index < rowCount; index += 1) {
+        const hasProvenance = await tab.evaluate(
+          (i) =>
+            document
+              .querySelectorAll('[data-extension-row]')
+              [i].querySelector('.br-ext-provenance') !== null,
+          index
+        );
+        if (!hasProvenance) continue;
+        const row = await box(tab, '[data-extension-row]', index);
+        const provenance = await box(tab, '.br-ext-provenance', index);
+        const toggle = await box(tab, '.br-switch', index);
+        // The sentence wraps inside the text column: it ends before the switch and inside the row.
+        expect(provenance.right).toBeLessThanOrEqual(toggle.left);
+        expect(provenance.right).toBeLessThanOrEqual(row.right);
+        expect(provenance.overflows).toBe(false);
+      }
+      // A row with a description puts the sentence BELOW it, not beside it.
+      const description = await box(tab, '.br-ext-description', 0);
+      const provenance = await box(tab, '.br-ext-provenance', 0);
+      expect(provenance.top).toBeGreaterThanOrEqual(description.top + 16);
     } finally {
       await tab.close();
     }

@@ -43,7 +43,9 @@ export const EXTENSION_ROW_COPY = {
 
   /** The marketplace catalogue's age, in the help of the first group's heading. */
   catalogName: 'Marketplace catalog',
-  catalogNote: (freshness: string) => `Marketplace catalog · ${freshness}`,
+  /** `freshness` is `catalogFreshnessLine`'s words ("showing bundled catalog (offline)"). */
+  catalogNote: (freshness: string) =>
+    `${freshness.charAt(0).toUpperCase()}${freshness.slice(1)}. The marketplace notes on each row come from it.`,
 
   emptyTitle: 'No extensions yet',
   emptyDescription: 'Browse the marketplace or add one you already have.',
