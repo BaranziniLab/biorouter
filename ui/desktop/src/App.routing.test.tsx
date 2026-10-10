@@ -123,7 +123,10 @@ vi.mock('./contexts/ChatContext', () => ({
 }));
 
 vi.mock('./components/ui/ConfirmationModal', () => ({ ConfirmationModal: () => null }));
-vi.mock('react-toastify', () => ({ ToastContainer: () => null }));
+vi.mock('react-toastify', () => ({
+  ToastContainer: () => null,
+  cssTransition: () => () => null,
+}));
 vi.mock('./components/AnnouncementModal', () => ({ default: () => null }));
 vi.mock('./components/UpdateAvailableModal', () => ({ default: () => null }));
 vi.mock('./components/ExtensionInstallModal', () => ({ ExtensionInstallModal: () => null }));

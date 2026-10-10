@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Loader2 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { Spinner } from './ui/spinner';
 import { ModalShell } from './ModalShell';
 import { NotificationContent, type NotificationStatus } from './alerts/NotificationSurface';
 import { startNewSession } from '../sessions';
@@ -44,7 +44,7 @@ interface ExtensionLoadingToastProps {
 // Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
 function StatusDot({ status }: { status: ExtensionLoadingStatus['status'] }) {
   if (status === 'loading') {
-    return <Loader2 className="w-3.5 h-3.5 animate-spin text-text-info" />;
+    return <Spinner size={14} className="text-text-info" />;
   }
   return (
     <span
@@ -93,14 +93,14 @@ function ExtensionLoadReport({
         extensions.length !== 1 ? 's' : ''
       } failed to load.`}
       footer={
-        <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+        <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
           Close
         </Button>
       }
     >
       <div className="space-y-3 py-3">
         {extensions.map((ext) => (
-          <div key={ext.name} className="flex items-start gap-2.5 text-[13px]">
+          <div key={ext.name} className="flex items-start gap-2.5 text-secondary">
             <span className="flex-none mt-1">
               <StatusDot status={ext.status} />
             </span>
@@ -129,7 +129,7 @@ function ExtensionLoadReport({
                         markCopied(ext.name);
                       }}
                     >
-                      {copiedExtension === ext.name ? 'Copied!' : 'Copy error'}
+                      {copiedExtension === ext.name ? 'Copied' : 'Copy error'}
                     </Button>
                   </div>
                 </>

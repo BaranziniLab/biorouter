@@ -174,8 +174,8 @@ describe('NotificationContent (shared layout primitive)', () => {
 
       // Deliberate deviation from §4.3's --radius-lg: 12px matches every other
       // floating surface (popover / dropdown / select menu).
-      expect(surface.className).toContain('rounded-xl');
-      expect(TOAST_SURFACE_CLASS_NAME.split(/\s+/)).toContain('rounded-xl');
+      expect(surface.className).toContain('rounded-container');
+      expect(TOAST_SURFACE_CLASS_NAME.split(/\s+/)).toContain('rounded-container');
 
       // §4.3's 3px left status bar is deliberately NOT adopted — the chip is the
       // status signal. Guard against anyone reintroducing the stripe.

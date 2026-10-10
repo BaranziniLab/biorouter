@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { cn } from '../../utils';
-import { CheckCircle, AlertCircle, AlertTriangle, Info, Loader2, X } from '../icons/app-icons';
+import { CheckCircle, AlertCircle, AlertTriangle, Info, X } from '../icons/app-icons';
+import { Spinner } from '../ui/spinner';
 
 /**
  * Shared notification / alert layout primitive (design.md §4.2–§4.3, Direction B).
@@ -27,7 +28,7 @@ import { CheckCircle, AlertCircle, AlertTriangle, Info, Loader2, X } from '../ic
  *                           first text line 12 + 5 + 18/2 = 26px
  *
  * DEVIATIONS FROM design.md, both deliberate and approved:
- *   · Radius is `rounded-xl` (12px), not §4.3's `--radius-lg` (8px). 12px is what
+ *   · Radius is `rounded-container` (12px), not §4.3's `--radius-lg` (8px). 12px is what
  *     every other floating surface uses (popover, dropdown, select menu), and a
  *     notification is a floating surface — matching them beats matching the table.
  *   · §4.3 asks for a 3px left status bar. We keep the tinted icon chip instead: it
@@ -40,17 +41,20 @@ export type NotificationStatus = 'success' | 'error' | 'warning' | 'info' | 'loa
 // `pr-12` reserves the close gutter ONCE (react-toastify always renders its ×, whose
 // 20px/right-2.5/top-14px geometry lives in main.css `.Toastify__close-button`), so no
 // caller adds padding and no content can slide under the ×. See §4.2's compact rule.
-export const TOAST_SURFACE_CLASS_NAME = `relative mb-3 pl-3 pr-12 py-2.5 rounded-xl w-full min-w-0
+export const TOAST_SURFACE_CLASS_NAME = `relative mb-3 pl-3 pr-12 py-2.5 rounded-container w-full min-w-0
   flex items-start overflow-hidden cursor-pointer
   text-text-default bg-background-default
   border border-border-subtle shadow-popover`;
 
-const STATUS_ICON: Record<NotificationStatus, React.FC<{ className?: string }>> = {
+// `loading` draws the one Spinner (spec 2.6) instead of a static glyph.
+const STATUS_ICON: Record<
+  Exclude<NotificationStatus, 'loading'>,
+  React.FC<{ className?: string }>
+> = {
   success: CheckCircle,
   error: AlertCircle,
   warning: AlertTriangle,
   info: Info,
-  loading: Loader2,
 };
 
 // Tailwind's JIT only sees class strings that appear literally in source, so the
@@ -101,22 +105,28 @@ export function NotificationContent({
   clampMessage = false,
   className,
 }: NotificationContentProps) {
-  const Icon = STATUS_ICON[status];
+  const glyph =
+    icon ??
+    (status === 'loading' ? (
+      <Spinner />
+    ) : (
+      React.createElement(STATUS_ICON[status], { className: 'w-4 h-4' })
+    ));
   return (
     <div className={cn('flex gap-3', className)}>
       <span
         data-status={status}
         aria-hidden="true"
         className={cn(
-          'flex-none self-start flex items-center justify-center w-7 h-7 rounded-md',
+          'flex-none self-start flex items-center justify-center w-7 h-7 rounded-element',
           CHIP_TINT[status]
         )}
       >
-        {icon ?? <Icon className={cn('w-4 h-4', status === 'loading' && 'animate-spin')} />}
+        {glyph}
       </span>
       <div data-notification-text className="flex-1 min-w-0 pt-[5px]">
         {hasText(title) && (
-          <div className="text-[13px] leading-[18px] font-semibold text-text-default [overflow-wrap:anywhere]">
+          <div className="text-secondary font-semibold text-text-default [overflow-wrap:anywhere]">
             {title}
           </div>
         )}
@@ -128,7 +138,7 @@ export function NotificationContent({
             // durable copy of an error is the detail dialog or "Copy error".
             title={clampMessage && typeof message === 'string' ? message : undefined}
             className={cn(
-              'text-[13px] leading-[18px] [overflow-wrap:anywhere]',
+              'text-secondary [overflow-wrap:anywhere]',
               hasText(title) ? 'mt-0.5 text-text-muted' : 'text-text-default',
               clampMessage && 'line-clamp-3'
             )}
@@ -170,7 +180,7 @@ export function NotificationSurface({
       data-testid="notification-surface"
       role={role}
       className={cn(
-        'relative rounded-xl border border-border-subtle bg-background-default p-3',
+        'relative rounded-container border border-border-subtle bg-background-default p-3',
         elevated && 'shadow-popover',
         onClose && 'pr-10',
         className

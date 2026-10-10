@@ -118,7 +118,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                 e.stopPropagation();
                 alert.action?.onClick();
               }}
-              className="cursor-pointer text-left text-[13px] text-text-default underline hover:opacity-80"
+              className="cursor-pointer text-left text-secondary text-text-default underline hover:opacity-80"
             >
               {alert.action.text}
             </a>
@@ -140,13 +140,13 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
       }}
     >
       <div className="flex flex-col gap-2">
-        <span className="text-[11px]">{alert.message}</span>
+        <span className="text-supporting">{alert.message}</span>
 
         {/* Auto-compact threshold indicator with edit */}
         <div className="flex items-center justify-center gap-1 min-h-[20px]">
           {isEditingThreshold ? (
             <>
-              <span className="text-[11px] opacity-70">Auto compact at</span>
+              <span className="text-supporting opacity-70">Auto compact at</span>
               <input
                 type="number"
                 min="1"
@@ -189,11 +189,11 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                   // Prevent issues with text selection
                   e.stopPropagation();
                 }}
-                className="w-12 px-1 text-[11px] bg-white/10 border border-current/30 rounded text-center focus:bg-white/20 focus:border-current/50 transition-colors"
+                className="w-12 px-1 text-supporting bg-white/10 border border-current/30 rounded text-center focus:bg-white/20 focus:border-current/50 transition-colors"
                 disabled={isSaving}
                 autoFocus
               />
-              <span className="text-[11px] opacity-70">%</span>
+              <span className="text-supporting opacity-70">%</span>
               <button
                 type="button"
                 onMouseDown={(e) => {
@@ -205,12 +205,12 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                 className="p-1 hover:opacity-60 transition-opacity cursor-pointer relative z-50"
                 style={{ minWidth: '20px', minHeight: '20px', pointerEvents: 'auto' }}
               >
-                <Save className="w-3 h-3" />
+                <Save className="w-3.5 h-3.5" />
               </button>
             </>
           ) : (
             <>
-              <span className="text-[11px] opacity-70">
+              <span className="text-supporting opacity-70">
                 Auto compact at {Math.round(currentThreshold * 100)}%
               </span>
               <button
@@ -223,7 +223,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                 className="p-1 hover:opacity-60 transition-opacity cursor-pointer relative z-10"
                 style={{ minWidth: '20px', minHeight: '20px' }}
               >
-                <Pencil className="w-3 h-3 opacity-70" />
+                <Pencil className="w-3.5 h-3.5 opacity-70" />
               </button>
             </>
           )}
@@ -270,7 +270,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                 <div
                   key={i}
                   className={cn(
-                    'rounded-full transition-all relative',
+                    'rounded-full transition-colors relative',
                     isThresholdDot
                       ? 'h-[6px] w-[6px] -mt-[2px]' // Make threshold dot twice as large
                       : 'h-[2px] w-[2px]',
@@ -281,7 +281,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
             });
           })()}
         </div>
-        <div className="flex justify-between items-baseline text-[11px]">
+        <div className="flex justify-between items-baseline text-supporting">
           <div className="flex gap-1 items-baseline">
             <span className={'dark:text-black/60 text-white/60'}>
               {formatTokenCount(alert.progress!.current)}
@@ -303,7 +303,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
             }}
             disabled={alert.compactButtonDisabled}
             className={cn(
-              'flex items-center gap-1.5 text-[11px]  mt-1',
+              'flex items-center gap-1.5 text-supporting mt-1',
               alert.compactButtonDisabled
                 ? 'opacity-50 cursor-not-allowed'
                 : 'hover:opacity-80 cursor-pointer'

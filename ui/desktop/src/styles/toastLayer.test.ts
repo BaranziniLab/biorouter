@@ -151,3 +151,61 @@ describe("a screen's toasts go when the person leaves it", () => {
     expect(APP).toMatch(/dismissScreenToasts\(\);\s*\}, \[screen\]\)/);
   });
 });
+
+/**
+ * Spec 3.16: the toast's motion. react-toastify's default Bounce flew in from
+ * 3000px with overshoots over 500ms and then collapsed over 300ms; the app
+ * passes its own `cssTransition` instead, with the two keyframes authored beside
+ * the Toastify block.
+ */
+describe('a toast slides 8px with no bounce and collapses over 125ms', () => {
+  /** The body of `@keyframes name`. */
+  function keyframes(name: string): string {
+    const match = CSS.match(new RegExp(`@keyframes ${name}\\s*\\{([\\s\\S]*?)\\n\\}`));
+    if (!match) throw new Error(`no @keyframes ${name} in main.css`);
+    return match[1];
+  }
+
+  it('hands the container the custom transition, never the default Bounce', () => {
+    expect(APP).toMatch(/transition=\{TOAST_TRANSITION\}/);
+    expect(APP).toMatch(
+      /cssTransition\(\{\s*enter: 'br-toast-in',\s*exit: 'br-toast-out',\s*collapseDuration: DUR\.fast,?\s*\}\)/
+    );
+    expect(APP).not.toMatch(/import \{[^}]*\bBounce\b[^}]*\} from 'react-toastify'/);
+    expect(APP).not.toMatch(/transition=\{Bounce\}/);
+  });
+
+  it('enters with an 8px drop and leaves with an 8px slide, on the motion tokens', () => {
+    expect(CSS).toMatch(
+      /\.br-toast-in\s*\{\s*animation:\s*br-toast-in var\(--dur-fast-max\) var\(--ease-out\)/
+    );
+    expect(CSS).toMatch(
+      /\.br-toast-out\s*\{\s*animation:\s*br-toast-out var\(--dur-fast\) var\(--ease-out\)/
+    );
+    expect(keyframes('br-toast-in')).toMatch(/translateY\(-8px\)/);
+    expect(keyframes('br-toast-out')).toMatch(/translateX\(8px\)/);
+  });
+
+  /**
+   * ⚠ The floor, again, for the frames in between. The entrance starts its
+   * travel ABOVE the resting inset, so the inset minus that travel must still
+   * clear the drag band, or the toast's × and "View details" are dead while it
+   * animates (issue #74).
+   */
+  it('never enters the titlebar drag band while it animates', () => {
+    const travel = Number(keyframes('br-toast-in').match(/translateY\(-(\d+)px\)/)?.[1]);
+    expect(travel).toBeGreaterThan(0);
+    expect(resolvePx('toast-inset-top') - travel).toBeGreaterThanOrEqual(
+      resolvePx('titlebar-drag-height')
+    );
+  });
+
+  it('keeps the exit an animation under reduced motion, or no toast would ever leave', () => {
+    const reduced = CSS.match(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.br-toast-in\s*\{[^}]*\}\s*\.br-toast-out\s*\{([^}]*)\}/
+    );
+    expect(reduced, 'no reduced-motion rest for the toast').not.toBeNull();
+    expect(reduced![1]).toMatch(/animation-name:\s*br-toast-fade-out/);
+    expect(reduced![1]).not.toMatch(/animation:\s*none/);
+  });
+});

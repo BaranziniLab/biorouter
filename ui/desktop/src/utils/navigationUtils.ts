@@ -1,4 +1,6 @@
+import { useLayoutEffect, useRef } from 'react';
 import { NavigateFunction } from 'react-router-dom';
+import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Workflow, type SessionClassification } from '../api/types.gen';
 import type { UserAttachment } from '../types/message';
 
@@ -54,7 +56,16 @@ export type ViewOptions = {
   heldChatTabId?: string;
 };
 
-export const navigateWithViewTransition = (
+/**
+ * Go to a route. It is a plain `navigate`: the change is synchronous, with no
+ * View Transition and no document snapshot (spec 3.16, "no exit, no slide and
+ * no View Transitions"), and the only motion is the main column's one fade in
+ * {@link useRouteFade}.
+ *
+ * It was called `navigateWithViewTransition`, a name that promised a motion the
+ * function never made.
+ */
+export const navigateToRoute = (
   navigate: NavigateFunction,
   to: string,
   state?: unknown,
@@ -63,11 +74,47 @@ export const navigateWithViewTransition = (
   navigate(to, { replace: options.replace, state });
 };
 
+/**
+ * @deprecated The old name of {@link navigateToRoute}, kept only until its last
+ * importer (`components/BaseChat.tsx`, WS-SUMMARY) moves; then it is deleted.
+ */
+export const navigateWithViewTransition = navigateToRoute;
+
+/** The app shell's route surface: the `<main>` that holds every routed view (`AppLayout`). */
+export const ROUTE_SURFACE_SELECTOR = 'main.biorouter-route-surface';
+
+/**
+ * Routes (spec 3.16): when the path changes, the main column fades in once,
+ * opacity only, over `--dur-fast` on `--ease-out`. No exit, no slide, no View
+ * Transition, and nothing on the first mount (a reload, a window opening), on a
+ * change of query string alone, under reduced motion or while the window is
+ * being resized.
+ *
+ * A layout effect, so the new route's first frame is already at opacity 0 and
+ * never flashes in at full ink first. WAAPI rather than a keyed wrapper: the
+ * surface is not remounted and gains no box, so no routed view's layout moves.
+ */
+export function useRouteFade(pathname: string): void {
+  const shown = useRef(pathname);
+  useLayoutEffect(() => {
+    if (shown.current === pathname) return;
+    shown.current = pathname;
+    if (prefersReducedMotion() || isWindowResizing()) return;
+    if (typeof document === 'undefined') return;
+    const surface = document.querySelector<HTMLElement>(ROUTE_SURFACE_SELECTOR);
+    if (!surface || typeof surface.animate !== 'function') return;
+    surface.animate([{ opacity: 0 }, { opacity: 1 }], {
+      duration: DUR.fast,
+      easing: EASE_OUT,
+    });
+  }, [pathname]);
+}
+
 export const createNavigationHandler = (navigate: NavigateFunction) => {
   return (view: View, options?: ViewOptions) => {
     switch (view) {
       case 'crew':
-        navigateWithViewTransition(
+        navigateToRoute(
           navigate,
           options?.resumeSessionId
             ? `/crew?sessionId=${encodeURIComponent(options.resumeSessionId)}`
@@ -76,7 +123,7 @@ export const createNavigationHandler = (navigate: NavigateFunction) => {
         );
         break;
       case 'chat':
-        navigateWithViewTransition(navigate, '/', options);
+        navigateToRoute(navigate, '/', options);
         break;
       case 'pair':
         // The session id MUST ride in the query string, not only in location.state.
@@ -96,7 +143,7 @@ export const createNavigationHandler = (navigate: NavigateFunction) => {
         // The options object still travels as location.state, which is where
         // initialMessage / initialAttachments / title are read from once the
         // param has opened the gate.
-        navigateWithViewTransition(
+        navigateToRoute(
           navigate,
           options?.resumeSessionId
             ? `/pair?resumeSessionId=${encodeURIComponent(options.resumeSessionId)}`
@@ -105,38 +152,38 @@ export const createNavigationHandler = (navigate: NavigateFunction) => {
         );
         break;
       case 'settings':
-        navigateWithViewTransition(navigate, '/settings', options);
+        navigateToRoute(navigate, '/settings', options);
         break;
       case 'sessions':
-        navigateWithViewTransition(navigate, '/sessions', options);
+        navigateToRoute(navigate, '/sessions', options);
         break;
       case 'schedules':
-        navigateWithViewTransition(navigate, '/schedules', options);
+        navigateToRoute(navigate, '/schedules', options);
         break;
       case 'workflows':
-        navigateWithViewTransition(navigate, '/workflows', options);
+        navigateToRoute(navigate, '/workflows', options);
         break;
       case 'skills':
-        navigateWithViewTransition(navigate, '/skills', options);
+        navigateToRoute(navigate, '/skills', options);
         break;
       case 'permission':
-        navigateWithViewTransition(navigate, '/permission', options);
+        navigateToRoute(navigate, '/permission', options);
         break;
       case 'ConfigureProviders':
-        navigateWithViewTransition(navigate, '/configure-providers', options);
+        navigateToRoute(navigate, '/configure-providers', options);
         break;
       case 'sharedSession':
-        navigateWithViewTransition(navigate, '/shared-session', options);
+        navigateToRoute(navigate, '/shared-session', options);
         break;
 
       case 'welcome':
-        navigateWithViewTransition(navigate, '/welcome', options);
+        navigateToRoute(navigate, '/welcome', options);
         break;
       case 'extensions':
-        navigateWithViewTransition(navigate, '/extensions', options);
+        navigateToRoute(navigate, '/extensions', options);
         break;
       default:
-        navigateWithViewTransition(navigate, '/', options);
+        navigateToRoute(navigate, '/', options);
     }
   };
 };
