@@ -1,13 +1,21 @@
 import type { FC } from 'react';
 import type { LucideProps } from 'lucide-react';
+// The entity glyphs are imported by name, not through ENTITY_ICONS: its
+// `EntityIcon` type is deliberately narrower than `FC<LucideProps>`. That they
+// ARE the entity glyphs is asserted in chatKind.test.ts.
 import {
+  Agent,
+  AgentPrivate,
   AppWindow,
-  Bot,
-  CalendarClock,
+  ChatBubble,
+  ChatBubblePrivate,
+  Clock,
+  CrewChat,
+  CrewChatPrivate,
   GitBranch,
-  MessageSquare,
-  MessageSquareLock,
+  Pipeline,
   Terminal,
+  withPrivateBadge,
 } from '../icons/app-icons';
 import type { SessionClassification } from '../../api/types.gen';
 
@@ -19,7 +27,15 @@ import type { SessionClassification } from '../../api/types.gen';
  * composed by {@link chatIconFor}. Collapsing them into one enum is how you end
  * up unable to say "private branch".
  */
-export type ChatKind = 'chat' | 'branch' | 'subagent' | 'app' | 'scheduled' | 'terminal';
+export type ChatKind =
+  | 'chat'
+  | 'crew'
+  | 'branch'
+  | 'subagent'
+  | 'app'
+  | 'scheduled'
+  | 'workflow'
+  | 'terminal';
 
 /**
  * The fields any chat-listing surface has. Deliberately structural rather than
@@ -36,6 +52,37 @@ export interface ChatKindSource {
   parent_session_id?: string | null;
   /** As stored: `user` / `scheduled` / `sub_agent` / `hidden` / `terminal`. */
   session_type?: string | null;
+  /**
+   * Where the chat came from, when the daemon says: `crew` for a Crew task
+   * (`routes/crew.rs` `create_run_session`), `workflow` for a chat a workflow
+   * started (`sessions.workflow_json` is set). `SessionSummary` does not carry
+   * it today (owner decision 6.10: no backend change), so `workflow` is
+   * dormant and Crew falls back to `working_dir`, then the title.
+   */
+  origin?: string | null;
+  /** The chat's working folder. Every Crew task runs in `<data>/crew/tasks`. */
+  working_dir?: string | null;
+}
+
+/** `create_run_session` gives every Crew task this folder. */
+const CREW_TASK_DIR = /[\\/]crew[\\/]tasks[\\/]?$/;
+/** `task_title` (`routes/crew.rs`): "Crew task" until admission names the
+ * channel, then "Crew · #channel" or "Crew · #channel · excerpt". */
+const CREW_TASK_NAME = /^Crew(?: task$| · )/;
+
+/**
+ * Is this a Crew task chat (the owned agent's run for a channel)?
+ *
+ * Strongest signal first: the daemon's `origin`, then the folder the daemon
+ * puts every task in (it survives a rename), then the title, the fallback for
+ * surfaces that only know a name (the tab strip). The title test is the
+ * weakest, exactly as the branch regex is: a person can rename a task away
+ * from it, and can name an ordinary chat into it.
+ */
+export function isCrewTask(session: ChatKindSource): boolean {
+  if (session.origin === 'crew') return true;
+  if (session.working_dir && CREW_TASK_DIR.test(session.working_dir)) return true;
+  return CREW_TASK_NAME.test((session.name ?? '').trim());
 }
 
 /**
@@ -43,7 +90,9 @@ export interface ChatKindSource {
  * diverged carries both `parent_session_id` and `diverged_from`; the delegation
  * is the more consequential fact about it (it is not a chat the user is holding),
  * so it wins. `app` is checked first because an app's chat is not a chat the
- * user opens at all.
+ * user opens at all. A fork of a Crew task reads as a branch: it is the
+ * person's own chat and no longer posts to the channel. A scheduled workflow
+ * run reads as scheduled.
  */
 export function chatKindOf(session: ChatKindSource): ChatKind {
   const name = (session.name ?? '').trim();
@@ -60,6 +109,8 @@ export function chatKindOf(session: ChatKindSource): ChatKind {
   // it is also defeated by anyone who renames a branch, which is precisely why
   // it stopped being the primary test.
   if (session.diverged_from) return 'branch';
+  if (isCrewTask(session)) return 'crew';
+  if (session.origin === 'workflow') return 'workflow';
   if (/\(branch \d+\)$/i.test(name)) return 'branch';
 
   return 'chat';
@@ -122,6 +173,46 @@ const PRIVACY_SUFFIX: Record<ChatPrivacyMark, string> = {
   off: '',
 };
 
+interface KindGlyph {
+  label: string;
+  Icon: FC<LucideProps>;
+  /** The same figure wearing the lock badge. Built once, at module scope. */
+  Private: FC<LucideProps>;
+}
+
+/**
+ * One row per kind, so a new kind is a compile error until it has a glyph, a
+ * private glyph and a name. A kind that is an entity draws that entity's glyph
+ * (a scheduled run is the Scheduler's Clock, an app chat is Built apps'
+ * AppWindow, a workflow run is the Workflows mark).
+ */
+const KIND_GLYPHS: Record<ChatKind, KindGlyph> = {
+  chat: { label: 'Chat', Icon: ChatBubble, Private: ChatBubblePrivate },
+  crew: { label: 'Crew task', Icon: CrewChat, Private: CrewChatPrivate },
+  branch: {
+    label: 'Diverged chat',
+    Icon: GitBranch,
+    Private: withPrivateBadge(GitBranch, 'branch'),
+  },
+  subagent: { label: 'Sub-agent', Icon: Agent, Private: AgentPrivate },
+  app: { label: 'App', Icon: AppWindow, Private: withPrivateBadge(AppWindow, 'app') },
+  scheduled: {
+    label: 'Scheduled run',
+    Icon: Clock,
+    Private: withPrivateBadge(Clock, 'scheduled'),
+  },
+  workflow: {
+    label: 'Workflow run',
+    Icon: Pipeline,
+    Private: withPrivateBadge(Pipeline, 'workflow'),
+  },
+  terminal: {
+    label: 'Terminal',
+    Icon: Terminal,
+    Private: withPrivateBadge(Terminal, 'terminal'),
+  },
+};
+
 interface ChatIcon {
   Icon: FC<LucideProps>;
   /** Screen-reader text. States the kind AND, when private or unknown, that. */
@@ -131,38 +222,24 @@ interface ChatIcon {
 /**
  * The glyph for one chat, from its kind and its privacy mark.
  *
- * ⚠ **Privacy is carried by the glyph itself for a plain chat, and by the
- * accessible name for every kind.** Replacing the dense dot with a hue alone
- * would have made a safety-relevant marking invisible to anyone who cannot
- * separate the two inks, so `private` swaps the bubble for a padlocked bubble —
- * a shape difference, not a colour one — and the label says the word regardless
- * of kind. The remaining kinds keep their own shape (a private branch is still
- * more usefully a branch than a padlock) and rely on the label plus the tier
- * ink the call site applies.
+ * ⚠ **Privacy is a SHAPE on every kind**: the lock badge, bottom right. It
+ * used to be a shape only on a plain chat (a padlocked bubble), and the other
+ * kinds relied on a coral ink plus the label, which made an all-private list a
+ * wall of coral glyphs and left a private branch distinguishable from a public
+ * one by hue alone. The label still says the word for every kind.
  *
- * `unknown` keeps the unmarked SHAPE — a padlock is a claim, and this state
- * makes none — and says so in the label. What sets it apart from Public on
+ * `unknown` keeps the unmarked SHAPE (a padlock is a claim, and this state
+ * makes none) and says so in the label. What sets it apart from Public on
  * screen is the dimming `main.css` authors against `data-privacy="unknown"`,
- * which `ChatKindIcon` stamps.
+ * which `ChatKindIcon` stamps. `off` makes no statement at all.
  */
 export function chatIconFor(kind: ChatKind, mark: ChatPrivacyMark): ChatIcon {
-  const suffix = PRIVACY_SUFFIX[mark];
-
-  switch (kind) {
-    case 'app':
-      return { Icon: AppWindow, label: `App${suffix}` };
-    case 'terminal':
-      return { Icon: Terminal, label: `Terminal${suffix}` };
-    case 'subagent':
-      return { Icon: Bot, label: `Sub-agent${suffix}` };
-    case 'scheduled':
-      return { Icon: CalendarClock, label: `Scheduled run${suffix}` };
-    case 'branch':
-      return { Icon: GitBranch, label: `Diverged chat${suffix}` };
-    case 'chat':
-    default:
-      return mark === 'private'
-        ? { Icon: MessageSquareLock, label: 'Private chat' }
-        : { Icon: MessageSquare, label: `Chat${suffix}` };
+  const glyph = KIND_GLYPHS[kind] ?? KIND_GLYPHS.chat;
+  if (mark === 'private') {
+    return {
+      Icon: glyph.Private,
+      label: kind === 'chat' ? 'Private chat' : `${glyph.label}${PRIVACY_SUFFIX.private}`,
+    };
   }
+  return { Icon: glyph.Icon, label: `${glyph.label}${PRIVACY_SUFFIX[mark]}` };
 }

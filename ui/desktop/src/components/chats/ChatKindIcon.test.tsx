@@ -68,7 +68,50 @@ describe('ChatKindIcon — a tier nobody has read is not Public', () => {
     const glyph = screen.getByTestId('chat-kind-icon');
     expect(glyph).toHaveAttribute('data-privacy', 'private');
     expect(glyph.getAttribute('aria-label')).toBe('Sub-agent, private');
-    expect(glyph.getAttribute('class') ?? '').toContain('text-text-accent');
+    // Private is a SHAPE (the lock badge), never a coral body: an all-private
+    // list used to be a wall of coral glyphs. Only the badge wears the accent,
+    // and that ink is authored CSS (asserted at the source below).
+    expect(glyph.querySelector('.br-icon-lock-badge')).not.toBeNull();
+    expect(glyph.getAttribute('class') ?? '').not.toContain('text-text-accent');
+  });
+
+  it('draws the lock badge on every kind when private, and on none otherwise', () => {
+    tiersEnabled = true;
+    const sessions = [
+      { name: 'Cohort query' },
+      { name: 'Crew · #methods · Plot the counts' },
+      { name: 'Worker', session_type: 'sub_agent' },
+      { name: 'Nightly', session_type: 'scheduled' },
+      { name: 'zsh', session_type: 'terminal' },
+      { name: 'app:spec-002' },
+      { name: 'Fork', diverged_from: 's0' },
+      { name: 'Weekly refresh', origin: 'workflow' },
+    ];
+    for (const session of sessions) {
+      for (const tier of ['private', 'public', undefined] as const) {
+        const { unmount } = render(<ChatKindIcon session={session} tier={tier} />);
+        const glyph = screen.getByTestId('chat-kind-icon');
+        const badge = glyph.querySelector('.br-icon-lock-badge');
+        expect(Boolean(badge), `${session.name} / ${tier}`).toBe(tier === 'private');
+        // The pinned stroke weight sits on the root of every glyph, badged or not.
+        expect(glyph.getAttribute('stroke-width'), session.name).toBe('1.5');
+        unmount();
+      }
+    }
+  });
+
+  /** Two private rows on one page must not share a mask id. */
+  it('gives every private glyph its own mask', () => {
+    tiersEnabled = true;
+    render(
+      <>
+        <ChatKindIcon session={PLAIN} tier="private" testId="a" />
+        <ChatKindIcon session={PLAIN} tier="private" testId="b" />
+      </>
+    );
+    const ids = ['a', 'b'].map((id) => screen.getByTestId(id).querySelector('mask')!.id);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[0]).not.toBe(ids[1]);
   });
 
   /**
@@ -82,10 +125,36 @@ describe('ChatKindIcon — a tier nobody has read is not Public', () => {
       const glyph = screen.getByTestId('chat-kind-icon');
       expect(glyph).toHaveAttribute('data-privacy', 'off');
       expect(glyph.getAttribute('aria-label')).toBe('Sub-agent');
+      expect(glyph.querySelector('.br-icon-lock-badge')).toBeNull();
       expect(glyph.getAttribute('class') ?? '').not.toContain('text-text-accent');
       unmount();
     }
     tiersEnabled = true;
+  });
+});
+
+/**
+ * The body ink is decided here, once: muted at rest, default on the active
+ * row, and a caller's class still wins because it comes last.
+ */
+describe('ChatKindIcon body ink', () => {
+  it('draws the body muted at rest and in default ink when active', () => {
+    tiersEnabled = true;
+    const { unmount } = render(<ChatKindIcon session={PLAIN} tier="private" />);
+    expect(screen.getByTestId('chat-kind-icon').getAttribute('class')).toContain('text-text-muted');
+    unmount();
+    render(<ChatKindIcon session={PLAIN} tier="private" isActive />);
+    const active = screen.getByTestId('chat-kind-icon').getAttribute('class') ?? '';
+    expect(active).toContain('text-text-default');
+    expect(active).not.toContain('text-text-muted');
+  });
+
+  it("lets the caller's ink win", () => {
+    tiersEnabled = true;
+    render(<ChatKindIcon session={PLAIN} tier="public" className="text-text-subtle" />);
+    const cls = screen.getByTestId('chat-kind-icon').getAttribute('class') ?? '';
+    expect(cls).toContain('text-text-subtle');
+    expect(cls).not.toContain('text-text-muted');
   });
 });
 
@@ -118,5 +187,25 @@ describe('the unknown glyph is visibly not the public one', () => {
 
   it('dims nothing that has a known tier', () => {
     expect(CSS).not.toMatch(/\.br-chat-kind-icon\[data-privacy=['"](public|private|off)['"]\]/);
+  });
+});
+
+/**
+ * The lock badge carries the family accent and the glyph always takes the
+ * 16px row slot. Both are authored CSS, so they are asserted at the source:
+ * jsdom never loads main.css.
+ */
+describe('the lock badge and the glyph slot are authored', () => {
+  const CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+
+  it('inks the lock badge in the family accent', () => {
+    const body = CSS.match(/\.br-icon-lock-badge\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(body).toMatch(/color:\s*var\(--text-accent\)/);
+  });
+
+  it('sizes every chat glyph to the row icon box', () => {
+    const body = CSS.match(/\.br-chat-kind-icon\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(body).toMatch(/width:\s*var\(--icon-row\)/);
+    expect(body).toMatch(/height:\s*var\(--icon-row\)/);
   });
 });

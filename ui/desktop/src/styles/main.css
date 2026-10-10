@@ -2989,6 +2989,7 @@ input[type='radio']:checked ~ [data-radio-ring] {
   animation: none;
 }
 
+/* @ws WS-ICONS begin: chat kind glyph and lock badge */
 /* A chat glyph whose privacy tier no source has read yet (`ChatKindIcon`,
    issue #56). It keeps the kind's unmarked shape — a padlock would be a claim —
    and is dimmed so it does not read as the settled Public glyph either: the
@@ -3004,12 +3005,29 @@ input[type='radio']:checked ~ [data-radio-ring] {
    `ChatKindIcon.test.tsx` asserts the rule at the source, because jsdom never
    loads this file. */
 .br-chat-kind-icon {
+  /* One slot for every chat glyph (spec 3.3): a row, a tab, a menu item and a
+     History line all draw it at --icon-row, whatever size class the caller
+     passes, so it never sits a size below the nav icons beside it. */
+  width: var(--icon-row);
+  height: var(--icon-row);
   transition: opacity var(--dur-fast) var(--ease-out);
 }
 
 .br-chat-kind-icon[data-privacy='unknown'] {
   opacity: 0.4;
 }
+
+/* The lock badge on a private chat glyph (`withPrivateBadge` in
+   icons/app-icons.tsx). Privacy is a SHAPE on every chat kind; the body takes
+   the row's ink (muted at rest, default on the active row) and only the badge
+   wears the family accent, on every row including the active one. That keeps
+   a spot of Biorouter's colour on private rows without turning an all-private
+   list into a wall of coral glyphs. Authored and unlayered for the same reason
+   as the rule above. `ChatKindIcon.test.tsx` asserts it at the source. */
+.br-icon-lock-badge {
+  color: var(--text-accent);
+}
+/* @ws WS-ICONS end: chat kind glyph and lock badge */
 
 @keyframes br-tab-pulse {
   0%,
