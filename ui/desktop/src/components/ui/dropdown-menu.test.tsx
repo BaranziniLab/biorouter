@@ -349,3 +349,68 @@ describe('menu motion', () => {
     }
   });
 });
+
+/**
+ * Spec 2.5, the focus ring after a mouse click (WS-PICKERS-3). After a POINTER pick closes the
+ * menu, Radix's focus return to the trigger reads as keyboard focus in Chromium (the picked item
+ * has unmounted, nothing holds focus), so the trigger wore the focus surface as if Tabbed to.
+ * Measured with real pointer input in Chromium; jsdom pins the decision: no focus return after a
+ * pointer pick, Radix's return after a key pick, Escape, or an item that keeps the menu open.
+ */
+describe('focus after a pick (spec 2.5)', () => {
+  function Menu({ onCopy }: { onCopy?: () => void }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger>More</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={() => {}}>Rename</DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault();
+              onCopy?.();
+              setOpen(false);
+            }}
+          >
+            Copy
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
+  it('leaves focus off the trigger after a pointer pick closes the menu', async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    const trigger = screen.getByRole('button', { name: 'More' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(trigger).not.toHaveFocus();
+  });
+
+  it('returns focus to the trigger after a key pick', async () => {
+    const user = userEvent.setup();
+    render(<Menu />);
+    const trigger = screen.getByRole('button', { name: 'More' });
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await screen.findByRole('menu');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('returns focus when the item kept the menu open and it closed afterwards', async () => {
+    const user = userEvent.setup();
+    const onCopy = vi.fn();
+    render(<Menu onCopy={onCopy} />);
+    const trigger = screen.getByRole('button', { name: 'More' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Copy' }));
+    expect(onCopy).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+});

@@ -275,16 +275,55 @@ function DropdownMenuContent({
   sideOffset = 6,
   onKeyDown,
   onCloseAutoFocus,
+  onKeyDownCapture,
+  onPointerDownCapture,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
+  // Spec 2.5, the focus ring after a mouse click (WS-PICKERS-3, measured in Chromium with real
+  // pointer input): when a POINTER pick closes the menu, the picked item unmounts, nothing holds
+  // focus, and Radix's focus return to the trigger then reads as keyboard focus, so the trigger
+  // wore the D-15 focus surface as if it had been Tabbed to. After such a pick focus stays where
+  // the click left it. A key pick (Enter, Space), Escape, a Tab out, and a menu that stays open
+  // after its item (a Copy that says "Copied", then closes by itself) keep Radix's focus return.
+  const pointerInput = React.useRef(false);
+  const pointerPickClosed = React.useRef(false);
+  const contentRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = node;
+      if (!node) return;
+      // Radix dispatches this bubbling event on the item; by the time it reaches the content
+      // the item's own `onSelect` has run, so `defaultPrevented` says whether the menu closes.
+      const onItemSelect = (event: Event) => {
+        pointerPickClosed.current = pointerInput.current && !event.defaultPrevented;
+      };
+      node.addEventListener('menu.itemSelect', onItemSelect);
+      return () => node.removeEventListener('menu.itemSelect', onItemSelect);
+    },
+    [ref]
+  );
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
+        ref={contentRef}
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        onKeyDownCapture={(event) => {
+          pointerInput.current = false;
+          onKeyDownCapture?.(event);
+        }}
+        onPointerDownCapture={(event) => {
+          pointerInput.current = true;
+          onPointerDownCapture?.(event);
+        }}
         onKeyDown={handleKeyDown}
-        onCloseAutoFocus={handleCloseAutoFocus}
+        onCloseAutoFocus={(event) => {
+          handleCloseAutoFocus(event);
+          if (pointerPickClosed.current && !event.defaultPrevented) event.preventDefault();
+          pointerPickClosed.current = false;
+        }}
         // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
         //
         // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
