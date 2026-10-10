@@ -137,6 +137,9 @@ function App() {
           <SettingRow label="Prevent sleep" controlId="row-switch">
             <Switch id="row-switch" checked={false} onCheckedChange={() => {}} />
           </SettingRow>
+          <SettingRow label="Show tips" controlId="row-switch-last">
+            <Switch id="row-switch-last" checked={false} onCheckedChange={() => {}} />
+          </SettingRow>
         </SettingSection>
       </div>
       <div style={{ padding: 16 }}>
@@ -529,6 +532,74 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       expect(hit.centre || hit.right, 'the bug this guards').toBe(false);
     } finally {
       await bare.close();
+    }
+  });
+
+  /** The row's wash and the firmed line under it, as the browser resolved them. */
+  async function rowLook(tab: Page) {
+    return tab.evaluate(() => {
+      const row = document.getElementById('row-switch')!.closest('.biorouter-settings-row')!;
+      return {
+        wash: getComputedStyle(row).backgroundColor,
+        line: getComputedStyle(row, '::after').borderTopColor,
+        within: row.matches(':focus-within'),
+        visible: row.matches(':has(:focus-visible)'),
+      };
+    });
+  }
+
+  it('leaves a clicked switch row at rest, and washes and firms it for a Tab (WS-SETTINGS-B-2)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const rest = await rowLook(tab);
+      expect(rest.within).toBe(false);
+
+      // A real mouse click, then the pointer leaves: nothing of the click may remain.
+      await tab.click('#row-switch');
+      await tab.mouse.move(790, 5);
+      await tab.waitForTimeout(300);
+      const clicked = await rowLook(tab);
+      expect(clicked.within, 'the click left focus inside the row').toBe(true);
+      expect(clicked.visible, 'a click is not visible focus').toBe(false);
+      expect(clicked.wash, 'the row washed after a click').toBe(rest.wash);
+      expect(clicked.line, 'the hairline firmed after a click').toBe(rest.line);
+    } finally {
+      await tab.close();
+    }
+
+    // Tab from the top of a fresh page until the keyboard reaches the same switch.
+    const keys = await open();
+    try {
+      const rest = await rowLook(keys);
+      for (let step = 0; step < 60; step += 1) {
+        await keys.keyboard.press('Tab');
+        if (await keys.evaluate(() => document.activeElement?.id === 'row-switch')) break;
+      }
+      expect(await keys.evaluate(() => document.activeElement?.id)).toBe('row-switch');
+      await keys.mouse.move(790, 5);
+      await keys.waitForTimeout(300);
+      const keyboard = await rowLook(keys);
+      expect(keyboard.visible).toBe(true);
+      expect(keyboard.wash, 'Tab washes the row').not.toBe(rest.wash);
+      expect(keyboard.line, 'Tab firms the line').toBe('rgb(85, 85, 85)');
+    } finally {
+      await keys.close();
+    }
+
+    // The instrument: keyed on `:focus-within`, as the rows were, the click does leave its mark.
+    const old = await open(css.replace(/:has\(:focus-visible\)/g, ':focus-within'));
+    try {
+      const rest = await rowLook(old);
+      await old.click('#row-switch');
+      await old.mouse.move(790, 5);
+      await old.waitForTimeout(300);
+      const clicked = await rowLook(old);
+      expect(clicked.wash !== rest.wash || clicked.line !== rest.line, 'the bug this guards').toBe(
+        true
+      );
+    } finally {
+      await old.close();
     }
   });
 

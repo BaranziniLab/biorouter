@@ -205,12 +205,15 @@ const PAIRS: Pair[] = [
     app: { file: MAIN, selector: '.biorouter-list-row::after' },
   },
   {
+    // The declaration is Crew's; the SELECTOR differs on purpose. Crew's row keeps
+    // `:focus-within` (Crew is never edited to match), the app's keys the focus half on
+    // `:has(:focus-visible)` so a mouse click on a switch leaves no firmed line (spec 2.5).
     name: 'the straight hairline under focus',
     crew: {
       file: CREW_DIALOGS,
       selector: '.crew-settings-panel .crew-settings-row:focus-within::after',
     },
-    app: { file: MAIN, selector: '.biorouter-settings-row:focus-within::after' },
+    app: { file: MAIN, selector: '.biorouter-settings-row:has(:focus-visible)::after' },
   },
   {
     name: 'the straight hairline on the last row',

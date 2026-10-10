@@ -3815,8 +3815,18 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   pointer-events: none;
 }
 
-.biorouter-list-row:focus-within::after,
-.biorouter-settings-row:focus-within::after {
+/* The focus half is keyed on `:focus-visible`, never `:focus-within` (spec 2.5; QA, 2026-10-10).
+   `:focus-within` is true for a control the person has just CLICKED, so a mouse click on a
+   switch or button inside a row left the row washed and its line firmed until focus moved away,
+   the same residue as the disclosure and summary-trigger defects one level up. Chromium withholds
+   `:focus-visible` from a clicked button but gives it to a text field and to any key press, so a
+   Tab into the row, an arrow key and a click into a field still show the treatment. The row
+   itself can hold focus (a `tabindex` row), hence the bare `:focus-visible` beside `:has()`.
+   Crew's own settings row keeps `:focus-within`; it is never edited to match. */
+.biorouter-list-row:focus-visible::after,
+.biorouter-list-row:has(:focus-visible)::after,
+.biorouter-settings-row:focus-visible::after,
+.biorouter-settings-row:has(:focus-visible)::after {
   border-top-color: var(--border-focus);
 }
 
@@ -3826,7 +3836,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 .biorouter-list-row:hover,
-.biorouter-list-row:focus-within {
+.biorouter-list-row:focus-visible,
+.biorouter-list-row:has(:focus-visible) {
   background-color: var(--overlay-hover);
 }
 /* @ws WS-PRIMITIVES end: rows */
@@ -4500,7 +4511,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    DARKENING rather than by dropping a step. */
 /* @ws WS-PRIMITIVES begin: settings row hover */
 .biorouter-settings-row:not(.tint-selected):hover,
-.biorouter-settings-row:not(.tint-selected):focus-within {
+.biorouter-settings-row:not(.tint-selected):focus-visible,
+.biorouter-settings-row:not(.tint-selected):has(:focus-visible) {
   background-color: var(--overlay-hover);
 }
 /* @ws WS-PRIMITIVES end: settings row hover */

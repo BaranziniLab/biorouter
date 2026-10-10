@@ -30,7 +30,7 @@ const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 
 function hoverRule(): string {
   const match = CSS.match(
-    /\.biorouter-settings-row:not\(\.tint-selected\):hover,\s*\.biorouter-settings-row:not\(\.tint-selected\):focus-within\s*\{([^}]*)\}/
+    /\.biorouter-settings-row:not\(\.tint-selected\):hover,\s*\.biorouter-settings-row:not\(\.tint-selected\):focus-visible,\s*\.biorouter-settings-row:not\(\.tint-selected\):has\(:focus-visible\)\s*\{([^}]*)\}/
   );
   expect(match, 'expected the settings-row hover rule to exclude a tinted row').toBeTruthy();
   return match![1];
@@ -58,9 +58,11 @@ describe('the settings row hover wash', () => {
 
   it('paints the one row hover, --overlay-hover, the same as a list row (no 42% / 38% fork)', () => {
     expect(hoverRule()).toMatch(/background-color:\s*var\(--overlay-hover\);/);
-    expect(ruleFor(/\.biorouter-list-row:hover,\s*\.biorouter-list-row:focus-within/)).toMatch(
-      /background-color:\s*var\(--overlay-hover\);/
-    );
+    expect(
+      ruleFor(
+        /\.biorouter-list-row:hover,\s*\.biorouter-list-row:focus-visible,\s*\.biorouter-list-row:has\(:focus-visible\)/
+      )
+    ).toMatch(/background-color:\s*var\(--overlay-hover\);/);
     expect(CSS).not.toMatch(/var\(--background-medium\) (42|38)%/);
   });
 
@@ -110,8 +112,32 @@ describe('the settings row hover wash', () => {
     expect(line).toMatch(/border-top:\s*1px solid var\(--border-subtle\);/);
     expect(
       ruleFor(
-        /\.biorouter-list-row:focus-within::after,\s*\.biorouter-settings-row:focus-within::after/
+        /\.biorouter-list-row:focus-visible::after,\s*\.biorouter-list-row:has\(:focus-visible\)::after,\s*\.biorouter-settings-row:focus-visible::after,\s*\.biorouter-settings-row:has\(:focus-visible\)::after/
       )
     ).toMatch(/border-top-color:\s*var\(--border-focus\);/);
+  });
+
+  /**
+   * A click is not focus the person asked to see (spec 2.5, QA 2026-10-10). Chromium: click the
+   * "Skills" switch, move away, wait; the row kept BOTH its hover wash and the firmed hairline
+   * because `:focus-within` is true for a clicked button while `:focus-visible` is not. So no
+   * row rule may key its wash or its line on `:focus-within`; the keyboard half is
+   * `:focus-visible` on the row or on something inside it (a Tab, an arrow key, a text field).
+   */
+  it('shows the focus treatment for keyboard focus only, never for `:focus-within` (a click)', () => {
+    const source = CSS.replace(/\/\*[\s\S]*?\*\//g, ' ');
+    // Every rule that washes or firms a row. RowActions' reveal also listens to `:focus-within`
+    // on purpose, but it only changes opacity, so it is not among them.
+    const rules = Array.from(source.matchAll(/([^{}]+)\{([^{}]*)\}/g)).filter(
+      (match) =>
+        /\.biorouter-(?:list|settings)-row/.test(match[1]) &&
+        /(?:^|[\s;])(?:background-color|border-top-color)\s*:/.test(match[2])
+    );
+    expect(rules.length).toBeGreaterThanOrEqual(3);
+    expect(
+      rules.filter((match) => /:focus-within/.test(match[1])).map((match) => match[1])
+    ).toEqual([]);
+    expect(CSS).toMatch(/\.biorouter-list-row:has\(:focus-visible\)::after/);
+    expect(CSS).toMatch(/\.biorouter-settings-row:has\(:focus-visible\)::after/);
   });
 });
