@@ -162,6 +162,16 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
   background: var(--background-well);
 }
 
+/* A tool's output is machine text. It reads in the code role (13/20, mono), the
+   same as the input above it and the clipped preview it grows from; without
+   this the full text turned into 14/21 prose the moment "Show more" opened it.
+   Markdown still renders (file paths stay links), only its voice is the well's. */
+.br-transcript-row-well .biorouter-markdown.prose {
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+}
+
 .br-transcript-row-section {
   display: flex;
   flex-direction: column;

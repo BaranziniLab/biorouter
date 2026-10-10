@@ -29,6 +29,11 @@ const TOKENS = `:root {
   --text-secondary--line-height: 18px;
   --text-supporting: 12px;
   --text-supporting--line-height: 16px;
+  --text-prose: 14px;
+  --text-prose--line-height: 21px;
+  --text-code: 13px;
+  --text-code--line-height: 20px;
+  --font-mono: ui-monospace, Menlo, monospace;
   --radius-element: 8px;
   --text-muted: #635c54;
   --text-default: #1c1b19;
@@ -44,6 +49,8 @@ const TOKENS = `:root {
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
 }
 body { margin: 0; font: 14px/20px var(--font-body); }
+/* main.css: the markdown prose line, which a well must be able to re-voice. */
+.biorouter-markdown.prose { font-size: var(--text-prose); line-height: var(--text-prose--line-height); }
 * { box-sizing: border-box; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }`;
@@ -272,6 +279,44 @@ describe('TranscriptRow in a real layout engine', () => {
     );
     expect(danger.heads[0]).toBe('rgb(165, 26, 20)');
     expect(danger.heads[1]).toBe('rgb(99, 92, 84)');
+  });
+
+  it("sets a tool's markdown output in the code role inside the well, and prose elsewhere", async () => {
+    if (!browser) return;
+    const html = renderToStaticMarkup(
+      <>
+        <TranscriptRow icon={Terminal} label="Ran ls" defaultOpen>
+          <div className="biorouter-markdown prose" id="in-well">
+            ok
+          </div>
+        </TranscriptRow>
+        <TranscriptRow icon={Terminal} label="Thought" body="plain" defaultOpen>
+          <div className="biorouter-markdown prose" id="in-plain">
+            thinking
+          </div>
+        </TranscriptRow>
+      </>
+    );
+    const tab = await browser!.newPage({ viewport: { width: 1000, height: 600 } });
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${TOKENS}${css}</style></head><body>` +
+          `<div id="column" style="width:${COLUMN}px;margin-left:100px">${html}</div></body></html>`
+      );
+      const voice = (id: string) =>
+        tab.evaluate((target) => {
+          const style = getComputedStyle(document.getElementById(target)!);
+          return {
+            size: style.fontSize,
+            line: style.lineHeight,
+            mono: /monospace/.test(style.fontFamily),
+          };
+        }, id);
+      expect(await voice('in-well')).toEqual({ size: '13px', line: '20px', mono: true });
+      expect(await voice('in-plain')).toEqual({ size: '14px', line: '21px', mono: false });
+    } finally {
+      await tab.close();
+    }
   });
 
   it("nests rows on a plain body with their glyphs on the outer label's edge", async () => {
