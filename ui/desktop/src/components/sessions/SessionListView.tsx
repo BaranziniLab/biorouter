@@ -864,7 +864,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     if (sessions.length === 0) {
       return (
         <EmptyState
-          icon={MessageSquareText}
+          icon={ENTITY_ICONS.chat}
           title={HISTORY_EMPTY_TITLE}
           description={HISTORY_EMPTY}
           actions={
@@ -879,7 +879,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     if (dateGroups.length === 0 && debouncedFilter) {
       return (
         <EmptyState
-          icon={MessageSquareText}
+          icon={ENTITY_ICONS.chat}
           title={HISTORY_NO_MATCH_TITLE}
           description={HISTORY_NO_MATCH}
           compact

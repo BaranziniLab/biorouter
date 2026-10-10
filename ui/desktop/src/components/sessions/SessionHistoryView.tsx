@@ -1,13 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import {
-  MessageSquareText,
-  Share2,
-  Copy,
-  Check,
-  AlertCircle,
-  Globe,
-  Play,
-} from '../icons/app-icons';
+import { Share2, Copy, Check, AlertCircle, Globe, ArrowRight } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { resumeSession } from '../../sessions';
 import { Button } from '../ui/button';
 import { Spinner } from '../ui/spinner';
@@ -185,7 +178,7 @@ const SessionMessages: React.FC<{
           </SearchView>
         ) : (
           <EmptyState
-            icon={MessageSquareText}
+            icon={ENTITY_ICONS.chat}
             title={NO_MESSAGES_TITLE}
             description={NO_MESSAGES}
             compact
@@ -372,7 +365,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             className="no-drag"
             onClick={handleResumeSession}
           >
-            <Play aria-hidden="true" />
+            <ArrowRight aria-hidden="true" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{RESUME}</TooltipContent>

@@ -1,5 +1,6 @@
 import React from 'react';
-import { MessageSquare, AlertCircle } from '../icons/app-icons';
+import { AlertCircle } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { Spinner } from '../ui/spinner';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
@@ -244,7 +245,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
             .filter(Boolean) // Filter out null entries
         ) : (
           <EmptyState
-            icon={MessageSquare}
+            icon={ENTITY_ICONS.chat}
             title={NO_MESSAGES_TITLE}
             description={NO_MESSAGES}
             compact
