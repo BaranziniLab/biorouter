@@ -25,6 +25,7 @@ import { DirSwitcher, workingDirLabel, deriveWorkingDirLocked } from './DirSwitc
 import { ChatState } from '../../types/chatState';
 import { updateWorkingDir } from '../../api';
 import { toastError } from '../../toasts';
+import { FOOTER_COPY } from './copy';
 
 const WORKING_DIR = '/Users/wgu/Desktop';
 const CHOSEN_DIR = '/Users/wgu/Desktop/data';
@@ -226,9 +227,23 @@ describe('DirSwitcher while the chat is empty', () => {
     expect(onWorkingDirChange).not.toHaveBeenCalled();
     expect(window.electron.addRecentDir).not.toHaveBeenCalled();
     expect(toastError).toHaveBeenCalledWith({
-      title: 'Working directory update failed',
+      title: FOOTER_COPY.folderUpdateFailedTitle,
       msg: 'the working directory is fixed once a chat has messages',
     });
+  });
+
+  it('says "folder", like the rest of the line, when the server gives no reason', async () => {
+    vi.mocked(updateWorkingDir).mockRejectedValueOnce({});
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />);
+    fireEvent.click(screen.getByRole('button'));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError).toHaveBeenCalledWith({
+      title: FOOTER_COPY.folderUpdateFailedTitle,
+      msg: FOOTER_COPY.folderUpdateFailed,
+    });
+    expect(`${FOOTER_COPY.folderUpdateFailedTitle} ${FOOTER_COPY.folderUpdateFailed}`).not.toMatch(
+      /director/i
+    );
   });
 
   it('keeps the #39 pre-session path: forwards the choice without persisting', async () => {

@@ -105,12 +105,18 @@ export const MODEL_COPY = {
 } as const;
 
 export const FOOTER_COPY = {
+  /** The folder item's name: the full path, which the line itself does not show. */
+  folderLabel: (dir: string) => `Working folder: ${dir}`,
+  folderUpdateFailedTitle: 'Working folder update failed',
+  folderUpdateFailed: 'The working folder could not be changed.',
   /** Shown only below half: a full window says nothing worth reading. */
   contextLeft: (pct: number) => `${pct}% left`,
   contextTooltip: (pct: number, used: string, total: string) =>
     `${pct}% context left · ${used} of ${total}`,
   contextLabel: 'Context',
   contextUsed: 'Context window used',
+  /** The gauge's reading. The footer ring says what is LEFT; the bar fills with what is USED. */
+  gaugeUsed: (pct: number) => `${pct}% used`,
   compact: 'Compact chat',
   nothingToCompact: 'Nothing to compact yet',
   thresholdLabel: 'Auto-compact threshold',

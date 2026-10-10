@@ -277,7 +277,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
           <span>
             {fmt(current)} / {fmt(total)}
           </span>
-          <span>{pct}%</span>
+          <span>{FOOTER_COPY.gaugeUsed(pct)}</span>
         </div>
       </div>
       <Tooltip>

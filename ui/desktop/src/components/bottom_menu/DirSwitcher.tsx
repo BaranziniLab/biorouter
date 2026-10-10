@@ -7,6 +7,7 @@ import { updateWorkingDir } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { toastError } from '../../toasts';
 import { ChatState } from '../../types/chatState';
+import { FOOTER_COPY } from './copy';
 
 interface DirSwitcherProps {
   /** Layout only. */
@@ -135,8 +136,8 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
             ? (error as { message: string }).message
             : undefined;
         toastError({
-          title: 'Working directory update failed',
-          msg: serverMessage ?? 'Failed to update the working directory.',
+          title: FOOTER_COPY.folderUpdateFailedTitle,
+          msg: serverMessage ?? FOOTER_COPY.folderUpdateFailed,
         });
       } finally {
         onRestartEnd?.();
@@ -183,7 +184,7 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       // A static label whose full path is otherwise a hover-only tooltip: a group
       // with a name hands a screen reader the path the sighted pointer gets.
       role="group"
-      aria-label={`Working folder: ${workingDir}`}
+      aria-label={FOOTER_COPY.folderLabel(workingDir)}
       className={cn('br-footline__item', className)}
     >
       <Folder aria-hidden="true" />
@@ -196,7 +197,7 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       className={cn('br-footline__item', className)}
       onClick={handleDirectoryClick}
       disabled={isDirectoryChooserOpen}
-      aria-label={`Working folder: ${workingDir}`}
+      aria-label={FOOTER_COPY.folderLabel(workingDir)}
     >
       <Folder aria-hidden="true" />
       {name}

@@ -76,6 +76,19 @@ describe('ContextWindowGauge compaction control', () => {
     expect(document.querySelector('[data-slot="tooltip-content"] svg')).toBeNull();
   });
 
+  it('reads the bar as what is used, since the ring beside it reads what is left', () => {
+    render(
+      <ContextWindowGauge
+        totalTokens={92_000}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    expect(screen.getByText(FOOTER_COPY.gaugeUsed(72))).toBeInTheDocument();
+    expect(screen.getByText('92k / 128k')).toBeInTheDocument();
+  });
+
   it('runs compaction from the enabled control', async () => {
     const user = userEvent.setup();
     const onCompact = vi.fn();
