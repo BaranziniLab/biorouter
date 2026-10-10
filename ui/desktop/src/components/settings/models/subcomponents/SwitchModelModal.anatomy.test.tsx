@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SwitchModelModal } from './SwitchModelModal';
 import { switchModelCopy } from '../copy';
@@ -94,6 +96,37 @@ describe('SwitchModelModal anatomy', () => {
       within(dialog).getByRole('heading', { name: switchModelCopy.title })
     ).toBeInTheDocument();
     expect(dialog.querySelector('[data-slot="dialog-title"] svg')).toBeNull();
+  });
+
+  it('gives the focus back to the control that opened it, as the shared dialog does for every one', async () => {
+    const user = userEvent.setup();
+    function Opener() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Change…
+          </button>
+          {open ? (
+            <SwitchModelModal
+              sessionId={null}
+              onClose={() => setOpen(false)}
+              setView={vi.fn()}
+              initialProvider="versa_azure"
+              initialModel="gpt-5.6-sol"
+            />
+          ) : null}
+        </>
+      );
+    }
+    render(<Opener />);
+    const opener = screen.getByRole('button', { name: 'Change…' });
+    await user.click(opener);
+    await screen.findByRole('dialog', { name: switchModelCopy.title });
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(opener).toHaveFocus();
   });
 
   it('names its two selects "Provider" and "Model"', async () => {

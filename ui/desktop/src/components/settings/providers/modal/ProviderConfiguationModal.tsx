@@ -15,7 +15,6 @@ import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../ui/button';
 import { providerSetupCopy } from '../copy';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
-import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   CODING_AGENT_ORDER,
   fetchCodingAgentStatus,
@@ -37,7 +36,6 @@ export default function ProviderConfigurationModal({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const { upsert, remove } = useConfig();
   const { getCurrentModelAndProvider } = useModelAndProvider();
-  const returnFocusToOpener = useReturnFocusToOpener();
   const [configValues, setConfigValues] = useState<Record<string, ConfigInput>>({});
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [isActiveProvider, setIsActiveProvider] = useState(false);
@@ -71,17 +69,19 @@ export default function ProviderConfigurationModal({
     ? providerSetupCopy.deleteTitle(provider.metadata.display_name)
     : providerSetupCopy.configure(provider.metadata.display_name);
 
+  // A line under the title only where it carries something the form cannot say. A provider with
+  // a key field needs none ("Add your API keys…" restated the field); the delete states are
+  // consequences, and the two providers with no key field say why there is none. Llama Server and
+  // Ollama declare no secret and were once asked for "API key(s)" (W2-PRV-13).
   const descriptionText = showDeleteConfirmation
     ? isActiveProvider
-      ? `This provider is in use. Switch to a different model first.`
-      : 'This will permanently delete the current provider configuration.'
+      ? providerSetupCopy.inUse
+      : providerSetupCopy.deleteConsequence
     : codingAgentKind
-      ? `Use your installed ${provider.metadata.display_name} command-line app and subscription sign-in. No API key is needed here.`
-      : // Only a provider that declares a secret has a key to add. Llama Server
-        // and Ollama declare none, and were asked for "API key(s)" (W2-PRV-13).
-        provider.metadata.config_keys.some((key) => key.secret)
-        ? `Add your API keys for this provider to use it in Biorouter.`
-        : `${provider.metadata.display_name} needs no API key. Adjust how Biorouter reaches it.`;
+      ? providerSetupCopy.agentIntro(provider.metadata.display_name)
+      : provider.metadata.config_keys.some((key) => key.secret)
+        ? undefined
+        : providerSetupCopy.noKey(provider.metadata.display_name);
 
   const handleSubmitForm = async (e?: React.SyntheticEvent) => {
     e?.preventDefault();
@@ -137,7 +137,7 @@ export default function ProviderConfigurationModal({
         const agent = status.agents.find((item) => item.kind === codingAgentKind);
         if (!agent?.path || agent.auth.state !== 'signed_in_subscription') {
           setCheckedAgents(status.agents);
-          setError('Complete CLI setup before choosing a model.');
+          setError(providerSetupCopy.completeCliSetup);
           setCheckAttempt((attempt) => attempt + 1);
           return;
         }
@@ -215,17 +215,15 @@ export default function ProviderConfigurationModal({
         scrollBody
         title={
           codingAgentKind
-            ? `Set up ${provider.metadata.display_name}`
-            : 'Configuration needs attention'
+            ? providerSetupCopy.setUp(provider.metadata.display_name)
+            : providerSetupCopy.needsAttention
         }
         subtitle={
-          codingAgentKind
-            ? 'The configuration check did not complete. Follow the setup steps below, then retry.'
-            : 'There was an error checking this provider configuration.'
+          codingAgentKind ? providerSetupCopy.agentCheckFailed : providerSetupCopy.checkFailed
         }
         footer={
           <Button variant="secondary" onClick={() => setError(null)}>
-            {codingAgentKind ? 'Edit command path' : 'Go back'}
+            {codingAgentKind ? providerSetupCopy.editCommandPath : providerSetupCopy.goBack}
           </Button>
         }
       >
@@ -241,9 +239,7 @@ export default function ProviderConfigurationModal({
           ) : (
             <>
               <p className="whitespace-pre-wrap break-words text-body">{error}</p>
-              <p className="mt-3 text-secondary text-text-muted">
-                Check your configuration again to use this provider.
-              </p>
+              <p className="mt-3 text-secondary text-text-muted">{providerSetupCopy.tryAgain}</p>
             </>
           )}
         </div>
@@ -257,10 +253,6 @@ export default function ProviderConfigurationModal({
         title={headerText}
         titleClassName={titleInk}
         subtitle={descriptionText}
-        // T3-SH-12: back to the Configure button when this closes for good.
-        // Not when it gives way to the error dialog above, which takes the
-        // focus itself.
-        onCloseAutoFocus={error ? undefined : returnFocusToOpener}
         footer={
           <ProviderSetupActions
             requiredParameters={requiredParameters}

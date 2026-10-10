@@ -19,6 +19,8 @@ export const providerPageCopy = {
 
 export const catalogCopy = {
   addCustom: 'Add custom provider',
+  /** The model dialog's title after a provider was just set up. */
+  chooseModel: 'Choose model',
   configured: 'Configured',
   configure: 'Configure',
   launch: 'Launch',
@@ -52,7 +54,27 @@ export const customProviderCopy = {
 
 export const providerSetupCopy = {
   configure: (name: string) => `Configure ${name}`,
+  /** A coding agent's dialog opens as its setup, since the form is a command path, not a key. */
+  setUp: (name: string) => `Set up ${name}`,
   deleteTitle: (name: string) => `Delete configuration for ${name}`,
+  /** What a coding agent's form is, said once, because it has no key field to say it. */
+  agentIntro: (name: string) =>
+    `Use your installed ${name} command-line app and subscription sign-in. No API key is needed here.`,
+  /** A provider that declares no secret: the one sentence that says why there is no key field. */
+  noKey: (name: string) => `${name} needs no API key. Adjust how Biorouter reaches it.`,
+  /** The delete states are consequences, so they stay visible at the moment of decision. */
+  inUse: 'This provider is in use. Switch to a different model first.',
+  deleteConsequence: 'This will permanently delete the current provider configuration.',
+  needsAttention: 'Configuration needs attention',
+  agentCheckFailed:
+    'The configuration check did not complete. Follow the setup steps below, then retry.',
+  checkFailed: 'There was an error checking this provider configuration.',
+  tryAgain: 'Check your configuration again to use this provider.',
+  completeCliSetup: 'Complete CLI setup before choosing a model.',
+  editCommandPath: 'Edit command path',
+  goBack: 'Go back',
+  loadingValues: 'Loading configuration values…',
+  noParameters: 'No configuration parameters for this provider.',
   cancel: 'Cancel',
   remove: 'Remove',
   delete: 'Delete',

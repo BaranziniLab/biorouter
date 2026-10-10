@@ -538,7 +538,7 @@ export default function ProviderCatalog({
               variant="secondary"
               onClick={() => void configureProviderViaModal(provider)}
             >
-              Configure
+              {catalogCopy.configure}
             </Button>
           }
         >
@@ -787,7 +787,7 @@ export default function ProviderCatalog({
           onModelSelected={onModelSelected}
           initialProvider={switchModelProvider}
           initialModel={switchModelInitial}
-          titleOverride="Choose model"
+          titleOverride={catalogCopy.chooseModel}
         />
       )}
     </>

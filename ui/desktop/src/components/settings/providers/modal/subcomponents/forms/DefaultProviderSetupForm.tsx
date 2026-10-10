@@ -9,6 +9,7 @@ import { configLabels } from '../../../../../../utils/configUtils';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
+import { providerSetupCopy } from '../../../copy';
 
 type ValidationErrors = Record<string, string>;
 
@@ -199,7 +200,7 @@ export default function DefaultProviderSetupForm({
   if (isLoading) {
     return (
       <div className="py-4 text-center text-secondary text-text-muted">
-        Loading configuration values…
+        {providerSetupCopy.loadingValues}
       </div>
     );
   }
@@ -279,7 +280,7 @@ export default function DefaultProviderSetupForm({
       )}
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
         <div className="py-2 text-center text-secondary text-text-muted">
-          No configuration parameters for this provider.
+          {providerSetupCopy.noParameters}
         </div>
       ) : (
         <>

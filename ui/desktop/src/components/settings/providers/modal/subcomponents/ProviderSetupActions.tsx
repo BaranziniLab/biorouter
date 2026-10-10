@@ -73,12 +73,7 @@ export default function ProviderSetupActions({
     <div className="flex w-full items-center">
       {/* Left: destructive delete */}
       {canDelete && onDelete && (
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onDelete}
-          className="mr-auto text-text-danger"
-        >
+        <Button type="button" variant="destructive" onClick={onDelete} className="mr-auto">
           {providerSetupCopy.remove}
         </Button>
       )}

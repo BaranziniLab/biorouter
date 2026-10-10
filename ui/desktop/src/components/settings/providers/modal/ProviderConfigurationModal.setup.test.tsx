@@ -221,7 +221,9 @@ it('keeps Anthropic API configuration separate from Claude Code setup', async ()
     },
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={apiProvider} onClose={vi.fn()} />);
-  expect(screen.getByText(/Add your API key/)).toBeInTheDocument();
+  // The key field is what asks for the key; a line under the title that restated it is gone.
+  expect(await screen.findByLabelText('Anthropic API Key')).toBeInTheDocument();
+  expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
   expect(screen.queryByText(/subscription sign-in/)).not.toBeInTheDocument();
   expect(mocks.status).not.toHaveBeenCalled();
 });

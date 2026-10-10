@@ -228,7 +228,7 @@ export default function CustomProviderForm({
               checked={isLocalModel}
               onChange={(event) => handleLocalModels(event.target.checked)}
             />
-            <span className="text-secondary text-text-muted">{customProviderCopy.localModel}</span>
+            <span className="text-label text-text-default">{customProviderCopy.localModel}</span>
           </label>
         )}
       </div>
@@ -251,7 +251,7 @@ export default function CustomProviderForm({
               checked={supportsStreaming}
               onChange={(event) => setSupportsStreaming(event.target.checked)}
             />
-            <span className="text-secondary text-text-muted">{customProviderCopy.streaming}</span>
+            <span className="text-label text-text-default">{customProviderCopy.streaming}</span>
           </label>
         </>
       )}
