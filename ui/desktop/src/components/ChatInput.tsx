@@ -2761,9 +2761,10 @@ export default function ChatInput({
       <TooltipContent>
         <p>{sendTooltip}</p>
         {/* The steer chord, named only while a turn is running and plain Enter
-            would queue this message instead. */}
+            would queue this message instead. The tooltip's own ink: muted ink
+            on the inverse ground is too faint to read. */}
         {canSteer && !isAnyImageLoading && !isAnyDroppedFileLoading && (
-          <p className="text-text-muted">{COMPOSER_COPY.send.steerHint(getSteerShortcutText())}</p>
+          <p>{COMPOSER_COPY.send.steerHint(getSteerShortcutText())}</p>
         )}
       </TooltipContent>
     </Tooltip>
