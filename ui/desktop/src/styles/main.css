@@ -7286,11 +7286,14 @@ code [class~='token'] {
   white-space: pre-wrap;
 }
 
-/* A device code someone reads aloud: 20/28 mono. */
+/* @ws WS-PRIMITIVES begin: copy-field code size */
+/* A device code someone reads aloud: 17/24 mono (the subheading role; `text-heading` was its
+   alias and is retired, spec 2.1). */
 .biorouter-copy-field[data-size='code'] .biorouter-copy-field-value {
-  font-size: var(--text-heading);
-  line-height: var(--text-heading--line-height);
+  font-size: var(--text-subheading);
+  line-height: var(--text-subheading--line-height);
 }
+/* @ws WS-PRIMITIVES end: copy-field code size */
 
 .biorouter-copy-field-value[data-truncate='end'] {
   overflow: hidden;
