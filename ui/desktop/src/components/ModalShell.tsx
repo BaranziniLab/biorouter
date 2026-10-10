@@ -26,7 +26,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dial
  */
 
 /**
- * Three widths, replacing the fifteen that were in use. `full` is deliberately
+ * Four widths, replacing the fifteen that were in use. `full` is deliberately
  * absent: nothing needs it, and it cannot be built correctly from here because
  * `.biorouter-modal-surface` sets the corner radius from an unlayered rule that
  * no `rounded-none` utility can beat.
@@ -38,6 +38,12 @@ export const MODAL_SIZE = {
   md: 'sm:max-w-[480px]',
   /** L — palettes, reports, anything with a list. */
   lg: 'sm:max-w-[640px]',
+  /**
+   * XL (800px) — editors and side-by-side content (spec 2.6). The width is ALSO authored on
+   * `[data-size='xl']` in main.css, because this arbitrary utility is new and a newly written
+   * class can fail to generate under `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop shell geometry").
+   */
+  xl: 'sm:max-w-[800px]',
 } as const;
 
 export type ModalSize = keyof typeof MODAL_SIZE;
@@ -178,6 +184,7 @@ export function ModalShell({
         {...(subtitle ? {} : { 'aria-describedby': bodyDescribes ? describedBy : undefined })}
         {...(closeAutoFocus ? { onCloseAutoFocus: closeAutoFocus } : {})}
         data-anchor={placement === 'top' ? 'top' : undefined}
+        data-size={size}
         style={placement === 'top' ? MODAL_ANCHOR_TOP_STYLE : undefined}
         className={cn(
           'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0',

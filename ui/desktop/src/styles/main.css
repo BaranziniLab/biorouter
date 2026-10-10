@@ -2494,6 +2494,50 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   z-index: var(--z-modal);
 }
 
+/* @ws WS-PRIMITIVES begin: dialog motion */
+/* Dialog, sheet and scrim motion (spec 2.6, principle 9). The tw-animate utilities on each
+   element are the carriers; these unlayered rules set their duration, ease and scale.
+   - Scrim: fades in over `--dur-med-min`, out over `--dur-fast`.
+   - Dialog: opacity and scale(.98) to 1 over `--dur-med-min`; out to .98 over `--dur-fast`.
+   - Sheet: slides in over `--dur-med`, out over `--dur-fast`.
+   All `--ease-out`. The global reduced-motion reset stills every one of them. */
+.biorouter-modal-overlay,
+.br-dialog-motion,
+.br-sheet-motion {
+  --tw-ease: var(--ease-out);
+}
+
+.biorouter-modal-overlay[data-state='open'] {
+  --tw-duration: var(--dur-med-min);
+}
+
+.br-dialog-motion[data-state='open'] {
+  --tw-duration: var(--dur-med-min);
+  --tw-enter-scale: 0.98;
+}
+
+.br-sheet-motion[data-state='open'] {
+  --tw-duration: var(--dur-med);
+}
+
+.biorouter-modal-overlay[data-state='closed'],
+.br-dialog-motion[data-state='closed'],
+.br-sheet-motion[data-state='closed'] {
+  --tw-duration: var(--dur-fast);
+}
+
+.br-dialog-motion[data-state='closed'] {
+  --tw-exit-scale: 0.98;
+}
+
+/* ModalShell `xl`: 800px from the `sm` breakpoint, authored because the utility is new. */
+@media (min-width: 640px) {
+  .biorouter-modal-surface[data-size='xl'] {
+    max-inline-size: min(800px, calc(100% - 2rem));
+  }
+}
+/* @ws WS-PRIMITIVES end: dialog motion */
+
 /* D-05 — modal header/footer separators are hairlines, not gradient washes. */
 .biorouter-modal-surface > .border-b {
   border-bottom: 1px solid var(--border-subtle);

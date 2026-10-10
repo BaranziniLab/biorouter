@@ -53,6 +53,16 @@ describe('ModalShell — the size scale', () => {
   });
 });
 
+describe('ModalShell — xl', () => {
+  // Spec 2.6: an 800px size for editors. Named on the surface so main.css can author the width,
+  // since a newly written arbitrary utility can fail to generate under BIOROUTER_NO_HMR.
+  it('names its size on the surface, and xl is 800px', () => {
+    open({ size: 'xl' });
+    expect(surface()).toHaveAttribute('data-size', 'xl');
+    expect(MODAL_SIZE.xl).toBe('sm:max-w-[800px]');
+  });
+});
+
 describe('ModalShell — the purpose axis', () => {
   it('info dismisses on Escape', async () => {
     const user = userEvent.setup();

@@ -75,7 +75,9 @@ function SheetContent({
       <SheetPrimitive.Content
         data-slot="sheet-content"
         className={cn(
-          'biorouter-modal-surface bg-background-default shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-[var(--z-modal)] flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-[var(--motion-fast)] data-[state=open]:duration-[var(--motion-slow)]',
+          // Motion (spec 2.6): `.br-sheet-motion` in main.css, in over `--dur-med`, out over
+          // `--dur-fast`, `--ease-out`; the slide utilities below only set the direction.
+          'biorouter-modal-surface br-sheet-motion bg-background-default shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-[var(--z-modal)] flex flex-col gap-4',
           side === 'right' &&
             'data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm',
           side === 'left' &&

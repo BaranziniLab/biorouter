@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -141,5 +143,52 @@ describe('DialogContent dismissal contract', () => {
 
     await waitFor(() => expect(screen.queryByText('Child dialog')).not.toBeInTheDocument());
     expect(screen.getByText('Parent dialog')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Spec 2.6 / principle 9: the dialog opens with opacity and scale(.98) over `--dur-med-min` and
+ * leaves over `--dur-fast`, the scrim fades over `--dur-med-min`, all `--ease-out`, and no
+ * literal or retired `--motion-*` duration rides on the element. jsdom runs no animation, so
+ * the recipe is pinned at the source.
+ */
+describe('dialog motion', () => {
+  const CSS = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+  const body = (selector: string) => {
+    const at = CSS.indexOf(`\n${selector} {`);
+    expect(at, `no rule for ${selector}`).toBeGreaterThanOrEqual(0);
+    return CSS.slice(CSS.indexOf('{', at) + 1, CSS.indexOf('}', at));
+  };
+
+  it('carries the motion class and no duration or zoom utilities', async () => {
+    const user = userEvent.setup();
+    render(<ControlledDialog />);
+    await user.click(screen.getByRole('button', { name: 'Open dialog' }));
+    const content = screen.getByRole('dialog');
+    expect(content).toHaveClass('br-dialog-motion', 'data-[state=open]:animate-in');
+    expect(content.className).not.toMatch(/duration-|zoom-(in|out)-|motion-(base|fast|slow)/);
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+    expect(overlay).toHaveClass('biorouter-modal-overlay');
+  });
+
+  it('authors the scale, durations and ease on the tokens', () => {
+    expect(body(".br-dialog-motion[data-state='open']")).toMatch(
+      /--tw-duration:\s*var\(--dur-med-min\);\s*--tw-enter-scale:\s*0\.98/
+    );
+    expect(body(".br-dialog-motion[data-state='closed']")).toMatch(/--tw-exit-scale:\s*0\.98/);
+    expect(body(".biorouter-modal-overlay[data-state='open']")).toMatch(
+      /--tw-duration:\s*var\(--dur-med-min\)/
+    );
+    expect(
+      body(
+        ".biorouter-modal-overlay[data-state='closed'],\n.br-dialog-motion[data-state='closed'],\n.br-sheet-motion[data-state='closed']"
+      )
+    ).toMatch(/--tw-duration:\s*var\(--dur-fast\)/);
+    expect(body(".br-sheet-motion[data-state='open']")).toMatch(
+      /--tw-duration:\s*var\(--dur-med\)/
+    );
+    expect(body('.biorouter-modal-overlay,\n.br-dialog-motion,\n.br-sheet-motion')).toMatch(
+      /--tw-ease:\s*var\(--ease-out\)/
+    );
   });
 });
