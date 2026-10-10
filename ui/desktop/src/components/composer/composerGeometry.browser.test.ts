@@ -50,6 +50,8 @@ const TOKENS = `:root {
   --scrim: rgba(31, 30, 28, 0.18);
   --text-default: #1f1e1c;
   --text-muted: #6b6862;
+  --background-default: #ffffff;
+  --radius-full: 9999px;
   --dur-fast-min: 0ms;
   --dur-fast-max: 0ms;
   --ease-out: linear;
@@ -98,7 +100,9 @@ const MARKUP = `
   <ul class="br-composer-chips">
     <li>
       <div id="thumb" class="br-composer-thumb">
-        <div id="scrim" class="br-composer-thumb__scrim"></div>
+        <div id="scrim" class="br-composer-thumb__scrim">
+          <span id="spinner-ground" class="br-composer-thumb__spinner"><i style="${GLYPH}"></i></span>
+        </div>
         <span id="thumb-remove" class="br-composer-thumb__remove">
           <button id="thumb-remove-button" style="${BUTTON(20)}">x</button>
         </span>
@@ -281,6 +285,12 @@ describe('the composer recipes in a real layout engine', () => {
     const alpha = Number(/rgba\([^)]*,\s*([\d.]+)\)/.exec(background)?.[1] ?? '1');
     expect(alpha).toBeGreaterThan(0);
     expect(alpha).toBeLessThan(1);
+    // The spinner sits on a 24px round ground at the thumbnail's centre.
+    const ground = await box('#spinner-ground');
+    expect(ground.width).toBe(24);
+    expect(ground.height).toBe(24);
+    expect(ground.x + 12).toBe(thumb.x + 24);
+    expect(ground.y + 12).toBe(thumb.y + 24);
   });
 
   it('draws a quotation as a 2px rule with no fill, its words capped at four lines', async (ctx) => {

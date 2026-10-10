@@ -42,6 +42,7 @@ export const COMPOSER_COPY = {
   },
 
   attachments: {
+    saving: 'Saving image…',
     removeImage: 'Remove image',
     removeFile: 'Remove file',
     retryLabel: 'Retry saving image',

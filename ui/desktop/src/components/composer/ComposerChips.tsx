@@ -69,7 +69,11 @@ function Thumbnail({
       {src && <img src={src} alt={alt} />}
       {loading ? (
         <div className="br-composer-thumb__scrim">
-          <Spinner size={16} />
+          {/* On a small round ground of its own, so the spinner reads over any
+              image, light or dark. */}
+          <span className="br-composer-thumb__spinner">
+            <Spinner size={16} label={COPY.saving} />
+          </span>
         </div>
       ) : (
         <span className="br-composer-thumb__remove">
