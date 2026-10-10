@@ -1084,7 +1084,7 @@ export const SwitchModelModal = ({
             <div
               role="radiogroup"
               aria-labelledby={predefinedLabelId}
-              className="-mx-1 flex max-h-72 flex-col overflow-y-auto px-1"
+              className="br-model-radio-list"
             >
               {predefinedModels.map((model) => {
                 // The predefined branch swaps both selects for this flat list, so it bypasses

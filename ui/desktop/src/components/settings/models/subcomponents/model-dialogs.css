@@ -63,3 +63,13 @@
   align-items: center;
   margin-inline-start: -4px;
 }
+
+/* The pinned-models radio group: scrolls past eight rows, and shifts back 4px so each 16px ring
+   lines up with the fields and the checkbox below (the radio sits in a 24px hit target). */
+.br-model-radio-list {
+  display: flex;
+  max-block-size: 288px;
+  flex-direction: column;
+  margin-inline-start: -4px;
+  overflow-y: auto;
+}
