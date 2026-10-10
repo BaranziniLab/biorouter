@@ -315,3 +315,91 @@ describe('a declassified chat is re-marked in Recents without a reload', () => {
     expect(result.current.sessions[0].privacy_tier).toBe('private');
   });
 });
+
+/**
+ * Spec 3.4 "Paging". Any view but the default sorts or groups the WHOLE list,
+ * so the hook reads every page, at the server's maximum, one after another,
+ * and every page carries the user's proof: without it the daemon silently
+ * drops private rows, which would read as chats vanishing on a view change.
+ */
+describe('loadAll pages through every chat', () => {
+  it('reads every page at limit 50 with the proof, then stops', async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, index) => makeSummary(from + index));
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: page(50, 50), has_more: true, next_cursor: 'c3' },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: page(100, 7), has_more: false, next_cursor: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(107));
+    await waitFor(() => expect(result.current.isLoadingAll).toBe(false));
+    expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3);
+    expect(mocks.listSidebarSessions.mock.calls.map(([request]) => request)).toEqual([
+      { query: { limit: 50 }, headers: { 'X-User-Action': 'test-proof' }, throwOnError: true },
+      {
+        query: { limit: 50, cursor: 'c2' },
+        headers: { 'X-User-Action': 'test-proof' },
+        throwOnError: true,
+      },
+      {
+        query: { limit: 50, cursor: 'c3' },
+        headers: { 'X-User-Action': 'test-proof' },
+        throwOnError: true,
+      },
+    ]);
+  });
+
+  it('keeps private rows a later page brings', async () => {
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: [makeSummary(0)], has_more: true, next_cursor: 'c2' },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          sessions: [{ ...makeSummary(1), privacy_tier: 'private' as const }],
+          has_more: false,
+          next_cursor: null,
+        },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+    expect(result.current.sessions[1].privacy_tier).toBe('private');
+  });
+
+  it('turns on when the view changes, continuing from the pages already held', async () => {
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: {
+          sessions: Array.from({ length: 10 }, (_, index) => makeSummary(index)),
+          has_more: true,
+          next_cursor: 'c2',
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: [makeSummary(10)], has_more: false, next_cursor: null },
+      });
+
+    const { result, rerender } = renderHook(({ loadAll }) => useSidebarSessions({ loadAll }), {
+      initialProps: { loadAll: false },
+    });
+    await waitFor(() => expect(result.current.sessions).toHaveLength(10));
+    expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(1);
+
+    rerender({ loadAll: true });
+    await waitFor(() => expect(result.current.sessions).toHaveLength(11));
+    expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(2, {
+      query: { limit: 50, cursor: 'c2' },
+      headers: { 'X-User-Action': 'test-proof' },
+      throwOnError: true,
+    });
+  });
+});

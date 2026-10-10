@@ -10,11 +10,28 @@ import {
 } from '../../utils/sessionRowSync';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
+/** The server's page maximum (`routes/session.rs` clamps `limit` to 1..=50). */
+export const SIDEBAR_SESSION_FULL_PAGE_SIZE = 50;
+/** How many chats a non-default view reads at most: 40 requests at the full page size. */
+export const SIDEBAR_SESSION_LOAD_ALL_CAP = 2_000;
+
+export interface SidebarSessionsOptions {
+  /**
+   * Read every chat, not just the pages scrolled into view. The server pages in
+   * `updated_at` order only, so any view that sorts by name or creation, or
+   * groups by folder, must hold the whole list before it arranges it: over the
+   * first 10 rows it would be wrong in a way nobody could see. Pages are read one
+   * after another at the server's maximum, up to {@link SIDEBAR_SESSION_LOAD_ALL_CAP}.
+   */
+  loadAll?: boolean;
+}
 
 export interface SidebarSessionsState {
   sessions: SessionSummary[];
   hasMore: boolean;
   isLoading: boolean;
+  /** True while a `loadAll` read is still paging through the list. */
+  isLoadingAll: boolean;
   loadMore: () => void;
 }
 
@@ -38,7 +55,10 @@ export function appendSessionPage(
   return merged;
 }
 
-export default function useSidebarSessions(): SidebarSessionsState {
+export default function useSidebarSessions(
+  options: SidebarSessionsOptions = {}
+): SidebarSessionsState {
+  const loadAll = options.loadAll ?? false;
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -52,6 +72,10 @@ export default function useSidebarSessions(): SidebarSessionsState {
   // refresh issued before a turn raised a chat and answered after the raise was
   // patched in would draw the chat public again.
   const rowsReadDuringLoadRef = useRef(new Map<string, SessionRowFacts>());
+  // Read by `loadPage` at request time, so a view change takes effect on the
+  // next page without re-creating the loader (and its subscriptions).
+  const pageSizeRef = useRef(loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE);
+  pageSizeRef.current = loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE;
 
   const loadPage = useCallback(async (reset: boolean) => {
     if (loadingRef.current || (!reset && !hasMoreRef.current)) return;
@@ -63,9 +87,11 @@ export default function useSidebarSessions(): SidebarSessionsState {
 
     try {
       // With the user's proof: without it the daemon pages a view with every
-      // private chat omitted (issue #56, QA 2026-09-10 M1).
+      // private chat omitted (issue #56, QA 2026-09-10 M1). Every page carries
+      // it, the `loadAll` pages included: a page without it would read as the
+      // person's private chats vanishing when they changed the view.
       const response = await listSidebarSessions<true>({
-        query: { limit: SIDEBAR_SESSION_PAGE_SIZE, ...(cursor ? { cursor } : {}) },
+        query: { limit: pageSizeRef.current, ...(cursor ? { cursor } : {}) },
         headers: await userActionHeaders(),
         throwOnError: true,
       });
@@ -189,10 +215,20 @@ export default function useSidebarSessions(): SidebarSessionsState {
     void loadPage(false);
   }, [loadPage]);
 
+  // `loadAll`: one page after another until the server has no more or the cap
+  // is reached. Sequential by construction: the next page is asked for only
+  // once the previous one has landed and `isLoading` has dropped.
+  const wantsMoreForAll = loadAll && hasMore && sessions.length < SIDEBAR_SESSION_LOAD_ALL_CAP;
+  useEffect(() => {
+    if (!wantsMoreForAll || isLoading) return;
+    void loadPage(false);
+  }, [wantsMoreForAll, isLoading, loadPage, sessions.length]);
+
   return {
     sessions,
     hasMore,
     isLoading,
+    isLoadingAll: wantsMoreForAll,
     loadMore,
   };
 }
