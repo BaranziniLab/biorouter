@@ -75,16 +75,14 @@ describe('Switch behaviour', () => {
     expect(control.querySelector('.br-switch-thumb')).not.toBeNull();
   });
 
-  it('ignores the retired variant prop', () => {
+  it('has no variant prop: there is one switch (the type refuses it, the DOM never sees it)', () => {
     render(
-      <>
-        <Switch aria-label="A" variant="mono" checked={false} onCheckedChange={() => {}} />
-        <Switch aria-label="B" checked={false} onCheckedChange={() => {}} />
-      </>
+      // @ts-expect-error `variant` was deleted from SwitchProps in wave 2.
+      <Switch aria-label="A" variant="mono" checked={false} onCheckedChange={() => {}} />
     );
-    expect(screen.getByRole('switch', { name: 'A' }).className).toBe(
-      screen.getByRole('switch', { name: 'B' }).className
-    );
+    // If a stray caller slips one through, it is a DOM attribute and no longer a style: the
+    // class list is the one recipe whatever is passed.
+    expect(screen.getByRole('switch', { name: 'A' }).className).toBe('br-switch peer');
   });
 
   it('lands a value that arrives without a toggle at rest, and animates a toggle', async () => {

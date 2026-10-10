@@ -72,7 +72,7 @@ export const VoiceDictationToggle = () => {
           </p>
         </div>
         <div className="flex items-center">
-          <Switch checked={settings.enabled} onCheckedChange={handleToggle} variant="mono" />
+          <Switch checked={settings.enabled} onCheckedChange={handleToggle} />
         </div>
       </div>
 

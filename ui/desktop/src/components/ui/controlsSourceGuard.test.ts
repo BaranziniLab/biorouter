@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest';
  *   - an import from `@radix-ui/themes` (the app's primitives are `components/ui/`);
  *   - `title=` on a menu item (help text never goes in `title=`: AppTooltipLayer turns a title
  *     into the item's name, primitives defect 6);
- *   - the retired Switch `variant` (wave 2 deletes the prop).
+ *   - the retired Switch `variant` (the prop is deleted, so tsc refuses it too; this keeps the
+ *     message in the right place).
  *
  * A file still waiting on its owner's sweep is listed in PENDING with the request that carries
  * the diff. The list only shrinks: an entry that no longer offends fails as stale, so it is
@@ -62,14 +63,7 @@ const ALLOWED: Partial<Record<Rule, Record<string, string>>> = {
 };
 
 /** Waiting on the owner's sweep, each with the request that carries the diff. Only shrinks. */
-const PENDING: Partial<Record<Rule, Record<string, string>>> = {
-  'switch-variant': {
-    'settings/dictation/VoiceDictationToggle.tsx':
-      'Frozen (unmounted Settings folder), requests/coordinator/WS-PRIMITIVES-2.md',
-    'settings/sessions/SessionSharingSection.tsx':
-      'Frozen (unmounted Settings folder), requests/coordinator/WS-PRIMITIVES-2.md',
-  },
-};
+const PENDING: Partial<Record<Rule, Record<string, string>>> = {};
 
 describe('controls come from components/ui (spec 2.6, the controls source guard)', () => {
   it('reads the component sources', () => {

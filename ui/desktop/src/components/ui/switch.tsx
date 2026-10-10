@@ -29,16 +29,11 @@ import { cn } from '../../utils';
 /** How long after a toggle a change of `checked` still counts as the person's (a slow save). */
 export const SWITCH_TOUCH_WINDOW_MS = 4000;
 
-export type SwitchProps = React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root> & {
-  /**
-   * @deprecated Ignored: there is one switch. Accepted until every owner has removed it from
-   * their call sites (wave 2), then deleted.
-   */
-  variant?: 'default' | 'mono';
-};
+/** There is one switch, so there is no `variant`: the prop was deleted in wave 2 (spec 2.6). */
+export type SwitchProps = React.ComponentPropsWithoutRef<typeof SwitchPrimitives.Root>;
 
 export const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitives.Root>, SwitchProps>(
-  ({ className, variant: _variant, checked, onCheckedChange, ...props }, ref) => {
+  ({ className, checked, onCheckedChange, ...props }, ref) => {
     // When the person last toggled it. A change that follows within the window is theirs, even
     // when the caller saves first and updates `checked` once the save answers.
     const touchedAt = React.useRef<number | null>(null);
