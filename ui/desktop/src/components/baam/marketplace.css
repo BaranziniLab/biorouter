@@ -1,0 +1,51 @@
+/* @ws WS-SKILLS begin: marketplace dialog */
+/*
+ * The BAAM browse dialogs (`MarketplaceDialog.tsx`). Authored rather than
+ * Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail to
+ * generate (CLAUDE.md, "Desktop shell geometry"), and these rules carry the
+ * dialog's geometry.
+ */
+
+/* The list scrolls; the title, the search and the footer stay. A floor height
+   keeps the dialog from shrinking while a search narrows the list, so with the
+   shell's top anchor nothing moves under the pointer as the person types. */
+.br-marketplace-list {
+  flex: 1 1 auto;
+  min-height: min(45vh, 420px);
+  overflow-y: auto;
+  /* Full bleed: the body carries 16px of inline padding, the hairline does not. */
+  margin-inline: -16px;
+  padding: 4px 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* No footer below: the list runs to the dialog's edge, with a little air. */
+.br-marketplace-list--to-edge {
+  padding-bottom: 8px;
+  border-bottom: 0;
+}
+
+/* Loading, error and empty: one line, centred in the list. */
+.br-marketplace-state {
+  padding: 32px 12px;
+  text-align: center;
+}
+
+.br-marketplace-section + .br-marketplace-section {
+  margin-top: 8px;
+}
+
+.br-marketplace-section-label {
+  padding: 8px 12px 4px;
+}
+
+/* A row's muted fact gives way before its name does. */
+.br-marketplace-row [data-marketplace-title] {
+  flex-shrink: 1;
+}
+
+.br-marketplace-row [data-marketplace-meta] {
+  flex-shrink: 4;
+}
+/* @ws WS-SKILLS end: marketplace dialog */
