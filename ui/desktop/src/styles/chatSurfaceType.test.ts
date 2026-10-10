@@ -92,3 +92,44 @@ describe('no 16px card radius outside the preview sheet', () => {
     expect(Object.keys(PENDING).filter((rel) => !found.has(rel))).toEqual([]);
   });
 });
+
+/**
+ * The transcript's own files take the type roles only (spec 2.1): five sizes,
+ * each a named role, never an arbitrary `text-[Npx]` or a raw Tailwind step,
+ * which is how the transcript drifted to eight sizes before the redesign.
+ */
+describe('the transcript speaks only the type roles', () => {
+  const FILES = [
+    'BioRouterMessage.tsx',
+    'UserMessage.tsx',
+    'MessageMeta.tsx',
+    'MessageCopyLink.tsx',
+    'MessageDivergeLink.tsx',
+    'MarkdownContent.tsx',
+    'ProgressiveMessageList.tsx',
+    'ProvenanceChip.tsx',
+    'SessionNamePill.tsx',
+    'InlineImage.tsx',
+    'WorkflowHeader.tsx',
+    'TurnActivityIndicator.tsx',
+    'LoadingBioRouter.tsx',
+    'conversation/ChatTurnError.tsx',
+    'conversation/ChatTurnStopped.tsx',
+    'subagent/SubagentTabHeader.tsx',
+    'subagent/SubagentComposerSlot.tsx',
+    'workflows/WorkflowActivities.tsx',
+    'context_management/SystemNotificationInline.tsx',
+  ];
+  const OFF_ROLE = /\btext-(\[\d+px\]|xs|sm|base|lg|xl|2xl)\b/;
+
+  it.each(FILES)('%s', (rel) => {
+    const offenders = readFileSync(join(COMPONENTS, rel), 'utf8')
+      .split('\n')
+      .map((text, index) => ({ text, line: index + 1 }))
+      // Comments may name the old classes to say why they went.
+      .filter(({ text }) => !/^\s*(\/\/|\*|\{\/\*)/.test(text))
+      .filter(({ text }) => OFF_ROLE.test(text))
+      .map(({ text, line }) => `${rel}:${line} — ${text.trim()}`);
+    expect(offenders).toEqual([]);
+  });
+});
