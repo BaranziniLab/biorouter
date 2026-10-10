@@ -8,7 +8,7 @@ import MessageCopyLink from './MessageCopyLink';
 import { MessageActions, MessageMetaAction } from './MessageMeta';
 import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
-import { ChevronDown, ChevronUp, Pencil, Send } from './icons/app-icons';
+import { ArrowUp, ChevronDown, ChevronUp, Pencil } from './icons/app-icons';
 import { Button } from './ui/button';
 import { InfoTip } from './ui/info-tip';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
@@ -542,7 +542,7 @@ export default function UserMessage({
                     {onSendAgain && (
                       <MessageMetaAction
                         onClick={() => onSendAgain(displayText)}
-                        icon={<Send />}
+                        icon={<ArrowUp />}
                         aria-label={transcriptCopy.message.sendAgainLabel}
                       >
                         {transcriptCopy.message.sendAgain}
