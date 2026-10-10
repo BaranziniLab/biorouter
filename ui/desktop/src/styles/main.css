@@ -3952,28 +3952,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   align-items: baseline;
 }
 
-/* The graph pane's two docked strips (ui-spec §4.5): the facet strip above the
-   canvas and the legend below it. `--dock-height` is reused deliberately —
-   this is the same object it already names, a horizontal control strip docked
-   to a pane edge, one step down from a chrome band.
-
-   AUTHORED for the same reason `.br-swatch-ring` is: `h-dock` appears nowhere
-   else in `src/`, so it is a *newly written* utility, and a newly written
-   utility can silently fail to reach the stylesheet under `BIOROUTER_NO_HMR`
-   (`watch: { ignored: ['**'] }` is the same signal Tailwind's class scanner
-   uses). A facet strip that collapses to zero height is not a degraded strip,
-   it is an absent one — and nothing in jsdom would ever report it. */
-.br-graph-dock {
-  height: var(--dock-height);
-}
-
-/* Expanded, the legend becomes the chip grid and takes up to 40% of the pane.
-   Same reasoning: an arbitrary `max-h-[40%]` is exactly the freshly-invented
-   class that can fail to generate, and without the cap the grid would push the
-   canvas out of the pane entirely. */
-.br-graph-legend-expanded {
-  max-height: 40%;
-}
+/* @ws WS-KNOWLEDGE begin: retired docks */
+/* `.br-graph-dock` and `.br-graph-legend-expanded` are gone: the legend dock
+   was retired for the rail and the popover (R-03), and the facet strip is a
+   44px band (`h-chrome`, spec 3.12), so neither rule had a reader. */
+/* @ws WS-KNOWLEDGE end: retired docks */
 
 /* ═══════════════════════════════════════════════════════════════════════════
    KNOWLEDGE PANE — the @container ladder (redesign R-08)
@@ -3994,7 +3977,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    Measured in the design studio, not theorised.
 
    ⚠ AUTHORED HERE rather than as Tailwind utilities, for the reason
-   `.br-swatch-ring` and `.br-graph-dock` already are: a newly written utility
+   `.br-swatch-ring` already is: a newly written utility
    can silently fail to reach the stylesheet under `BIOROUTER_NO_HMR`
    (`watch: { ignored: ['**'] }` is the same signal Tailwind's scanner uses),
    and a layout ladder that does not generate is an absent one, not a degraded
@@ -4134,6 +4117,30 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   color: var(--text-default);
 }
 /* @ws WS-KNOWLEDGE end: dropzone */
+
+/* @ws WS-KNOWLEDGE begin: pane header */
+/* The previews' and drawers' header (`KnowledgePaneHeader`), Crew's pane
+   header: 44px, 8px of band padding with the title's own 8px inside it, so
+   the title text starts 16px in and the close ends 8px from the edge. */
+.br-knowledge-pane-header {
+  gap: 4px;
+  padding-inline: 8px;
+}
+
+/* In a drawer the Sheet primitive draws the close, absolutely, at the
+   trailing edge: the band leaves it 32px plus its 8px inset plus a 4px gap. */
+.br-knowledge-pane-header[data-sheet] {
+  padding-inline-end: 44px;
+}
+
+/* ...and the close is centred in the 44px band, 8px from the edge, instead of
+   the primitive's 16px offsets, which sat it across the band's hairline. The
+   close is the content's last child (`ui/sheet.tsx`). */
+.br-knowledge-drawer > button:last-child {
+  top: 6px;
+  right: 8px;
+}
+/* @ws WS-KNOWLEDGE end: pane header */
 
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {

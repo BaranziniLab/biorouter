@@ -100,6 +100,43 @@ export const knowledgeCopy = {
     copyFailed: 'Could not copy the ID',
   },
 
+  /** The graph's inspectors and drawers. */
+  graph: {
+    edge: 'Edge',
+    negativeEdge: 'Negative edge',
+    closeEdge: 'Close link details',
+    synthesizedFrom: (source: string | null | undefined) =>
+      `Synthesized from ${source ?? 'an uncited source'}`,
+    directed: 'Directed',
+    derivedNote: 'Derived from the cited source',
+    derivedNoteLabel: 'Derived links',
+    derivedNoteInfo:
+      'Implicit link derived from the cited primary source so the provenance is visible. Author an explicit reported_in edge to make it first-class.',
+    ciRange: (lower: string | number, upper: string | number) => `${lower} to ${upper}`,
+    clearFilters: 'Clear filters',
+    clearFiltersHint: (passing: number, total: number) =>
+      `Clear filters (showing ${passing} of ${total})`,
+    showing: (passing: number, total: number) => `Showing ${passing} of ${total}`,
+    familyFilter: (family: string) => `Filter by every ${family} type`,
+  },
+
+  /** The change log's kinds, in sentence case (spec 3.12; they were caps). */
+  changeKind: {
+    ingest: 'Ingest',
+    link: 'Link',
+    flag: 'Flag',
+    query: 'Query',
+    lint: 'Lint',
+    restore: 'Restore',
+    manual: 'Manual',
+  },
+
+  /** The two drawers. */
+  drawers: {
+    changeLog: 'Change log',
+    lint: 'Check for problems',
+  },
+
   /** The create dialog (format chooser). */
   format: {
     title: 'Create knowledge base',

@@ -2,15 +2,16 @@ import type { ComponentType } from 'react';
 import type { LucideProps } from 'lucide-react';
 import type { ChangeKind } from '../../../api/types.gen';
 import {
+  ClipboardList,
   Flag,
   Link as LinkIcon,
   MessageSquare,
   Pencil,
   RefreshCw,
   Sparkles,
-  Wrench,
 } from '../../icons/app-icons';
 import { Badge, type BadgeTone } from '../../ui/badge';
+import { knowledgeCopy } from '../copy';
 
 /**
  * What KIND of change an entry is (ui-spec §4.10).
@@ -26,13 +27,17 @@ import { Badge, type BadgeTone } from '../../ui/badge';
  * All seven kinds are therefore `tone="neutral"` with a 14px leading glyph — the
  * glyph is what distinguishes them, and it survives monochrome. `flag` keeps
  * `danger`, and only `flag`, because a flag genuinely IS a problem marker.
+ *
+ * The words are sentence case (spec 3.12), and `lint` draws `ClipboardList`, the
+ * glyph of the band's "Check for problems" action that makes those commits: the
+ * wrench now means "a tool we cannot name" app-wide (spec 3.3).
  */
 const GLYPH: Record<ChangeKind, ComponentType<LucideProps>> = {
   ingest: Sparkles,
   link: LinkIcon,
   flag: Flag,
   query: MessageSquare,
-  lint: Wrench,
+  lint: ClipboardList,
   restore: RefreshCw,
   manual: Pencil,
 };
@@ -50,9 +55,9 @@ const TONE: Record<ChangeKind, BadgeTone> = {
 export function ChangeKindChip({ kind }: { kind: ChangeKind }) {
   const Glyph = GLYPH[kind];
   return (
-    <Badge data-testid="change-kind-chip" data-kind={kind} tone={TONE[kind]} uppercase>
+    <Badge data-testid="change-kind-chip" data-kind={kind} tone={TONE[kind]}>
       <Glyph className="h-icon-chip w-icon-chip" aria-hidden="true" />
-      {kind}
+      {knowledgeCopy.changeKind[kind]}
     </Badge>
   );
 }

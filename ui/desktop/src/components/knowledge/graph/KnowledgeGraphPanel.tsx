@@ -1,9 +1,10 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useMemo, useState } from 'react';
-import { AlertCircle, LoaderCircle, Sparkles } from '../../icons/app-icons';
+import { AlertCircle, Sparkles } from '../../icons/app-icons';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { Spinner } from '../../ui/spinner';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
 import { GraphFacetStrip } from './GraphFacetStrip';
@@ -49,6 +50,10 @@ interface Props {
  * Refresh button's icon spins and nothing else changes. Blanking a graph the
  * user is reading, in order to redraw the same graph, is a regression disguised
  * as feedback.
+ *
+ * ⚠ **A flush column, not a card** (spec 3.12). The pane used to be a bordered,
+ * rounded box beside the Sources card; the workspace now fills edge to edge
+ * under the band and the columns divide by Crew's inset hairline.
  */
 export function KnowledgeGraphPanel({
   kbId,
@@ -116,10 +121,7 @@ export function KnowledgeGraphPanel({
           >
             {firstLoad && (
               <>
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="h-icon-row w-icon-row animate-spin text-text-muted"
-                />
+                <Spinner className="text-text-muted" />
                 <span className="text-secondary text-text-muted">Loading graph</span>
               </>
             )}

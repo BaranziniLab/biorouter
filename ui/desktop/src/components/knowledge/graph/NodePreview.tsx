@@ -1,12 +1,12 @@
 // ui/desktop/src/components/knowledge/graph/NodePreview.tsx
 import { useEffect, useMemo, useRef } from 'react';
-import { FileCode2, X } from '../../icons/app-icons';
+import { FileCode2 } from '../../icons/app-icons';
 import type { GraphNode } from '../../../api/types.gen';
 import type { GraphMode } from '../../../styles/graphPalette';
 import MarkdownContent from '../../MarkdownContent';
 import { Badge } from '../../ui/badge';
 import type { BadgeTone } from '../../ui/badge';
-import { Button } from '../../ui/button';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { usePagePreview } from '../hooks/usePagePreview';
 import { CredibilityRing, TIER_LABEL } from './CredibilityRing';
 import { credibilityKey, fillFor, isHollow } from './nodeMark';
@@ -225,21 +225,30 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
       data-testid="knowledge-node-preview"
       className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
-      <div className="flex items-start justify-between gap-2 border-b border-border-subtle bg-background-muted px-4 py-3">
-        <div className="flex min-w-0 items-start gap-2">
-          {/* The SAME mark the canvas paints, from the same functions — fill by
-              `node_type` through `GRAPH_PALETTE`, solid or hollow by family. A
-              swatch that disagrees with the mark it describes is worse than
-              none. */}
+      {/* Crew's pane header (spec 3.12): one 44px line, the node's mark and its
+          name, and the close. The facts that shared the old two-line header
+          lead the body instead. */}
+      <KnowledgePaneHeader
+        leading={
+          // The SAME mark the canvas paints, from the same functions — fill by
+          // `node_type` through `GRAPH_PALETTE`, solid or hollow by family. A
+          // swatch that disagrees with the mark it describes is worse than none.
           <NodeSwatch
             fill={fillFor(node, mode)}
             hollow={isHollow(node, mode)}
             size={12}
-            className="br-swatch-ring mt-1 flex-shrink-0"
+            className="br-swatch-ring flex-shrink-0"
           />
-          <div className="flex min-w-0 flex-col gap-1">
-            <div className="truncate text-label">{nodeTitle(node)}</div>
-            <div className="flex flex-wrap items-center gap-1">
+        }
+        title={<h2 className="min-w-0 truncate text-label">{nodeTitle(node)}</h2>}
+        onClose={onClose}
+        closeLabel="Close preview"
+      />
+
+      <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
+        <div className="space-y-4">
+          {facts.length > 0 && (
+            <div data-testid="knowledge-node-facts" className="flex flex-wrap items-center gap-1">
               {facts.map((fact) =>
                 fact.tone ? (
                   <Badge
@@ -256,21 +265,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
                 )
               )}
             </div>
-          </div>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="flex-shrink-0"
-          aria-label="Close preview"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
-        <div className="space-y-4">
+          )}
           {/* §4.8 item 3. Identity and provenance come off the graph node, which
               is already in memory, so they paint immediately and do not wait on
               the page fetch below. */}

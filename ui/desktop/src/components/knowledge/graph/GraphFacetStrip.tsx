@@ -6,6 +6,7 @@ import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '../../ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -20,6 +21,7 @@ import { isHollowType } from './nodeMark';
 import { toggle, UNTYPED_KEY } from './graphFacets';
 import type { FacetState } from './graphFacets';
 import type { GraphModel } from './graphModel';
+import { knowledgeCopy } from '../copy';
 
 /**
  * The facet strip (ui-spec §4.6).
@@ -102,7 +104,6 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
   const predicateFacet = (extraClass: string, testId?: string) => (
     <FacetCombobox
       label="Predicate"
-      mono
       options={predicateOptions}
       selected={facets.predicates}
       onToggle={(v) => onChange({ ...facets, predicates: toggle(facets.predicates, v) })}
@@ -129,7 +130,9 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
   return (
     <div
       data-testid="knowledge-graph-facets"
-      className="flex h-knowledge-filter-height flex-none items-center gap-2 border-b border-border-subtle bg-background-default px-4 py-2"
+      // 44px, the band height every strip in the app shares (spec 3.12), not a
+      // fourth height of its own.
+      className="flex h-chrome flex-none items-center gap-2 border-b border-border-subtle bg-background-default px-4"
     >
       {/* ⚠ **NOTHING SCROLLS AND NOTHING WRAPS** (R-09). This row used to be an
           `overflow-x-auto` scroller, and the failure it produced is on record:
@@ -230,28 +233,34 @@ export function GraphFacetStrip({ model, mode, facets, onChange, passing, total,
           {/* The count yields before the control that undoes the filter does:
               knowing HOW MANY are hidden is useful, being able to get them back
               is essential. */}
-          <span className="br-knowledge-readout whitespace-nowrap font-mono text-supporting tabular-nums text-text-muted">
-            Showing {passing} of {total}
+          <span className="br-knowledge-readout whitespace-nowrap text-supporting tabular-nums text-text-muted">
+            {knowledgeCopy.graph.showing(passing, total)}
           </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label="Clear filters"
-            title={`Clear filters — showing ${passing} of ${total}`}
-            onClick={() =>
-              onChange({
-                search: '',
-                types: new Set(),
-                predicates: new Set(),
-                sources: new Set(),
-                statuses: new Set(),
-              })
-            }
-          >
-            <X aria-hidden="true" />
-            <span className="br-knowledge-readout">Clear filters</span>
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={knowledgeCopy.graph.clearFilters}
+                onClick={() =>
+                  onChange({
+                    search: '',
+                    types: new Set(),
+                    predicates: new Set(),
+                    sources: new Set(),
+                    statuses: new Set(),
+                  })
+                }
+              >
+                <X aria-hidden="true" />
+                <span className="br-knowledge-readout">{knowledgeCopy.graph.clearFilters}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {knowledgeCopy.graph.clearFiltersHint(passing, total)}
+            </TooltipContent>
+          </Tooltip>
         </div>
       )}
     </div>
@@ -329,7 +338,7 @@ function StatusFacet({
         >
           Status
           {facets.statuses.size > 0 && (
-            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 text-supporting tabular-nums">
               {facets.statuses.size}
             </span>
           )}
@@ -388,7 +397,7 @@ function CollapsedFacets({
         >
           {label}
           {count > 0 && (
-            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 text-supporting tabular-nums">
               {count}
             </span>
           )}
@@ -427,7 +436,6 @@ function FacetCombobox({
   options,
   selected,
   onToggle,
-  mono = false,
   mode,
   extraClass = '',
   testId,
@@ -436,7 +444,6 @@ function FacetCombobox({
   options: Option[];
   selected: Set<string>;
   onToggle: (value: string) => void;
-  mono?: boolean;
   mode: GraphMode;
   /** Which step of R-09's ladder this facet belongs to (`.br-facet-core` etc). */
   extraClass?: string;
@@ -501,20 +508,14 @@ function FacetCombobox({
         <span aria-hidden="true" className="h-3 w-3 flex-none" />
       )}
       <span
-        className={[
-          'min-w-0 flex-1 truncate',
-          mono ? 'font-mono' : '',
-          o.negated ? 'text-text-danger line-through' : '',
-        ]
+        className={['min-w-0 flex-1 truncate', o.negated ? 'text-text-danger line-through' : '']
           .filter(Boolean)
           .join(' ')}
       >
         {o.label}
       </span>
       {o.count > 0 && (
-        <span className="flex-none font-mono text-supporting tabular-nums text-text-muted">
-          {o.count}
-        </span>
+        <span className="flex-none text-supporting tabular-nums text-text-muted">{o.count}</span>
       )}
     </CommandItem>
   );
@@ -545,7 +546,7 @@ function FacetCombobox({
         >
           {label}
           {selected.size > 0 && (
-            <span className="rounded-inner bg-background-inverse/15 px-1.5 font-mono text-supporting tabular-nums">
+            <span className="rounded-inner bg-background-inverse/15 px-1.5 text-supporting tabular-nums">
               {selected.size}
             </span>
           )}

@@ -4,7 +4,9 @@ import { AlertCircle, History } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
+import { Sheet, SheetContent, SheetTitle } from '../../ui/sheet';
+import { knowledgeCopy } from '../copy';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { useKnowledge } from '../KnowledgeContext';
 import { useHistory } from '../hooks/useHistory';
 import { ChangeKindChip } from './ChangeKindChip';
@@ -105,11 +107,17 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
         // nothing claims and warns on every open. See `ui/sheet.tsx` for why the
         // choice cannot be defaulted in the primitive.
         aria-describedby={undefined}
-        className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
+        className="br-knowledge-drawer flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
       >
-        <SheetHeader className="h-row flex-none flex-row items-center justify-between border-b border-border-subtle px-4 py-0">
-          <SheetTitle>Change log</SheetTitle>
-        </SheetHeader>
+        {/* Crew's pane header (spec 3.12): 44px, `bg-sidebar`, a `text-label`
+            title; the Sheet's own close is centred in it. */}
+        <KnowledgePaneHeader
+          title={
+            <SheetTitle className="min-w-0 truncate text-label">
+              {knowledgeCopy.drawers.changeLog}
+            </SheetTitle>
+          }
+        />
 
         <div className="flex flex-none flex-wrap gap-2 border-b border-border-subtle px-4 py-2">
           {ALL_KINDS.map((k) => {
@@ -119,7 +127,6 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                 key={k}
                 variant="chip"
                 asChild
-                uppercase
                 className={
                   on
                     ? 'tint-selected tint-interactive text-text-default'
@@ -127,7 +134,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                 }
               >
                 <button type="button" aria-pressed={on} onClick={() => toggleKind(k)}>
-                  {k}
+                  {knowledgeCopy.changeKind[k]}
                 </button>
               </Badge>
             );

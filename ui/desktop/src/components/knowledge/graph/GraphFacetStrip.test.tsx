@@ -72,6 +72,19 @@ describe('GraphFacetStrip', () => {
   });
 
   /**
+   * Spec 3.12: the strip takes the band height every strip in the app shares
+   * (44px), its counts are sans tabular figures, and Clear explains itself in a
+   * Tooltip rather than a native `title` with an em dash in it.
+   */
+  it('is a 44px band with sans counts and no native titles', () => {
+    renderStrip(typed, true);
+    const strip = screen.getByTestId('knowledge-graph-facets');
+    expect(strip.className).toContain('h-chrome');
+    expect(strip.querySelectorAll('[title]')).toHaveLength(0);
+    expect(screen.getByText(/Showing 2 of 6/).className).not.toContain('font-mono');
+  });
+
+  /**
    * The collapsed controls exist at every width in the DOM — the container
    * queries decide which is VISIBLE — and each reports the count of what it
    * swallowed, so a filter the user cannot see is still reported.
