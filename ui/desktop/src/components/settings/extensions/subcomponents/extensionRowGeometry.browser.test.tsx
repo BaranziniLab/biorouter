@@ -345,13 +345,10 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
         () => document.querySelectorAll('[data-extension-row]').length
       );
       for (let index = 0; index < rowCount; index += 1) {
-        const hasProvenance = await tab.evaluate(
-          (i) =>
-            document
-              .querySelectorAll('[data-extension-row]')
-              [i].querySelector('.br-ext-provenance') !== null,
-          index
-        );
+        const hasProvenance = await tab.evaluate((i) => {
+          const rows = document.querySelectorAll('[data-extension-row]');
+          return rows[i].querySelector('.br-ext-provenance') !== null;
+        }, index);
         if (!hasProvenance) continue;
         const row = await box(tab, '[data-extension-row]', index);
         const provenance = await box(tab, '.br-ext-provenance', index);
