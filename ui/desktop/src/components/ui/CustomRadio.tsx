@@ -42,12 +42,11 @@ const CustomRadio = ({
       className={`flex min-h-8 justify-between items-center py-2 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
     >
       <div className="flex items-center">
-        {/* §3.3: a 22px visual ring inside a 24px hit target, with a 10px inner
-            dot and an 8px gap to the label. The outer box is the TARGET — it is
-            deliberately 1px larger than what you can see on each side, because a
-            selection control should be forgiving of a near miss without looking
-            heavier for it. Input, ring and dot share this box so both siblings
-            react to peer-checked. */}
+        {/* Spec 2.6: a 16px ring inside a 24px hit target, a 6px dot that scales from 0.6 to
+            1 over `--dur-fast`, and an 8px gap to the label; the same box as the Checkbox, so
+            the two share an optical axis. Size and motion are authored in main.css
+            (`.br-radio-ring`, `.br-radio-dot`). Input, ring and dot share this box so both
+            siblings react to the input's state. */}
         <span className="relative mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center">
           <input
             type="radio"
@@ -79,14 +78,12 @@ const CustomRadio = ({
           <span
             data-radio-ring=""
             aria-hidden="true"
-            className="pointer-events-none absolute inset-[1px] rounded-full border-[1.5px] transition-colors"
+            className="br-radio-ring pointer-events-none absolute rounded-full border-[1.5px]"
           />
           <span
             data-radio-dot=""
             aria-hidden="true"
-            className="pointer-events-none h-2.5 w-2.5 rounded-full bg-background-accent opacity-0
-                      transition-opacity
-                      peer-checked:opacity-100"
+            className="br-radio-dot pointer-events-none rounded-full"
           />
         </span>
 

@@ -60,7 +60,8 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         container: () => 'w-full cursor-pointer relative',
         indicatorSeparator: () => 'h-0',
         // The trigger IS the <Input> chrome, class for class (§3.2): the 32px md
-        // rung, 8px text inset, the derived `--border-emphasized` edge and the
+        // rung, 8px text inset, the `--border-control` edge (set in `styles.control`
+        // below, where Emotion writes it unlayered, as `.br-field` does for Input) and the
         // same inset-ring hover whisper. react-select gives us no `:focus` to
         // hang the global rule on — it moves focus to a hidden input — so the
         // focused branch reproduces main.css's surface shift by hand, and stands
@@ -70,7 +71,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
             'flex h-control-md w-full items-center rounded-element border bg-background-default px-2',
             'text-label text-text-default transition-[color,background-color,border-color,box-shadow]',
             isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-            isFocused ? 'border-border-focus bg-background-focus' : 'border-border-emphasized',
+            isFocused ? 'border-border-focus bg-background-focus' : '',
             !isDisabled && !isFocused
               ? 'hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
               : '',
@@ -141,7 +142,15 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // ⚠ jsdom cannot catch a regression here: it has no layout engine, so a test that
         // renders this and reads `height` sees nothing either way. `Select.test.ts`
         // asserts the override AT THE SOURCE instead of pretending to measure.
-        control: (base) => ({ ...base, minHeight: 0 }),
+        //
+        // The edge is set here too (spec 2.3): `--border-control` at rest, `--border-focus` while
+        // focused. An unlayered declaration, like `.br-field` on Input, so no utility can pull it
+        // back to the 1.6:1 `--border-emphasized`.
+        control: (base, state) => ({
+          ...base,
+          minHeight: 0,
+          borderColor: state.isFocused ? 'var(--border-focus)' : 'var(--border-control)',
+        }),
         menu: (base) => ({ ...base, pointerEvents: 'auto', zIndex: MENU_Z }),
         // The same tier, carried out to a portalled menu. react-select's own
         // `menuPortal` default is `zIndex: 1`, which at `document.body` sits

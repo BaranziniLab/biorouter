@@ -11,9 +11,10 @@ import { cn } from '../../utils';
  * for a field with no leading icon; the type role is `text-label` (14/20/500),
  * the one every control shares.
  *
- * The edge is `--border-emphasized` — ink at 24%, DERIVED from the family's own
- * ink rather than a per-family hex — which is the token the redesign introduced
- * precisely so an interactive border stops being hand-authored per theme.
+ * The resting edge is `--border-control` (spec 2.3): ink at 24% (`--border-emphasized`)
+ * measured 1.6:1 on white, under the 3:1 a control's boundary owes, so an empty field read
+ * as a smudge. It is authored in `main.css` (`.br-field`), which also restates the focus and
+ * invalid edges, because an unlayered edge would otherwise out-rank them.
  *
  * Hover is a whisper, not a colour jump. `inset-ring-2` at 30% of that same edge
  * thickens the boundary from the inside, so nothing shifts and the field does not
@@ -32,7 +33,7 @@ const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<'input'>>(
       <input
         type={type}
         className={cn(
-          'flex h-control-md w-full rounded-element border border-border-emphasized bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow]',
+          'br-field flex h-control-md w-full rounded-element border bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow]',
           'file:border-0 file:bg-transparent file:text-label file:text-text-default placeholder:text-text-muted',
           'hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0',
           'aria-invalid:border-border-danger disabled:cursor-not-allowed disabled:bg-background-muted disabled:opacity-50',

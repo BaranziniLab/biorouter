@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -136,5 +138,26 @@ describe('CustomRadio', () => {
     expect(radio).toBeDisabled();
     expect(hooks(radio).box.querySelector('input:disabled ~ [data-radio-ring]')).not.toBeNull();
     expect(hooks(radio).box.querySelector('input:disabled ~ [data-radio-dot]')).not.toBeNull();
+  });
+
+  /** Spec 2.6: a 16px ring in the checkbox's 24px box, a 6px dot scaling from 0.6 over 125ms. */
+  it('draws a 16px ring and a 6px dot that scales in, authored in main.css', () => {
+    const css = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+    const body = (selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      expect(at, `no rule for ${selector}`).toBeGreaterThanOrEqual(0);
+      return css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at));
+    };
+    expect(body('.br-radio-ring')).toMatch(/inset:\s*4px/);
+    const dot = body('.br-radio-dot');
+    expect(dot).toMatch(/inline-size:\s*6px/);
+    expect(dot).toMatch(/transform:\s*scale\(0\.6\)/);
+    expect(dot).toMatch(/transform var\(--dur-fast\) var\(--ease-out\)/);
+    expect(body("input[type='radio']:checked ~ .br-radio-dot")).toMatch(/opacity:\s*1/);
+
+    render(<Group />);
+    const { ring, dot: dotNode } = hooks(screen.getByRole('radio', { name: 'Private' }));
+    expect(ring).toHaveClass('br-radio-ring');
+    expect(dotNode).toHaveClass('br-radio-dot');
   });
 });

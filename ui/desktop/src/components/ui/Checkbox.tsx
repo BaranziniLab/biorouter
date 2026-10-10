@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Check } from '../icons/app-icons';
 import { cn } from '../../utils';
 
 /**
@@ -40,13 +39,13 @@ import { cn } from '../../utils';
  * and removes the outline, which on a transparent input is no indication at all,
  * so keyboard focus was invisible whichever way the input was hidden.
  *
- * Geometry is the radio's, so a checkbox and a radio stacked in one list agree
- * on their optical axis: a 22px visual box inside a 24px hit target. The outer
- * box is the TARGET and is deliberately 1px larger on each side than what you
- * can see, because a selection control should forgive a near miss without
- * looking heavier for it. The only difference from the radio is the corner —
- * `--radius-inner`, the role the ladder names for "checkbox", against the
- * radio's circle.
+ * Geometry (redesign spec 2.6): a 16px box, radius 4, a 1.5px `--border-control` edge, inside
+ * a 24px hit target, so a checkbox and a radio stacked in one list share their optical axis.
+ * Checked fills with the accent and draws a 10px check (stroke 2) in `--text-on-accent`;
+ * indeterminate draws an 8×2 bar. The fill eases over `--dur-fast-min`. Everything visual is
+ * authored in `main.css` (`.br-checkbox*`), keyed on the input's state, not on new Tailwind
+ * strings, because a newly written utility can fail to generate under `BIOROUTER_NO_HMR`.
+ * A label sits 8px to the right of the box; the call site places it.
  */
 export interface CheckboxProps extends Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
@@ -69,13 +68,7 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
     }, [indeterminate]);
 
     return (
-      <span
-        className={cn(
-          'relative inline-flex h-6 w-6 shrink-0 items-center justify-center',
-          disabled && 'opacity-50',
-          className
-        )}
-      >
+      <span className={cn('br-checkbox', className)} data-disabled={disabled ? '' : undefined}>
         <input
           type="checkbox"
           ref={(node) => {
@@ -85,38 +78,31 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           }}
           disabled={disabled}
           className={cn(
-            'peer absolute inset-0 m-0 h-full w-full appearance-none opacity-0',
+            'br-checkbox-input peer absolute inset-0 m-0 h-full w-full appearance-none opacity-0',
             !disabled && 'cursor-pointer'
           )}
           {...props}
         />
-        {/* `--border-emphasized` is the interactive-border token (§3.2) — ink at
-            24%, derived per family — so the unchecked box reads against every
-            surface without each family authoring a neutral for it. */}
-        <span
-          className="pointer-events-none absolute inset-[1px] rounded-inner border-[1.5px] border-border-emphasized
-                     transition-colors
-                     peer-checked:border-border-accent peer-checked:bg-background-accent
-                     peer-indeterminate:border-border-accent peer-indeterminate:bg-background-accent
-                     peer-focus-visible:ring-2 peer-focus-visible:ring-border-focus"
-        />
-        {/* The mark is `--text-on-accent`, not `white`: that is the one token
-            whose contract is "legible on the accent fill", which is exactly the
-            surface it sits on. A literal white tick is theme-blind — it happens
-            to work on Parchment and is a coin toss on any family added later.
-            Same reasoning as the switch's thumb. */}
-        <Check
+        {/* The box: `--border-control` at rest (3:1 on the page and card grounds), the accent
+            fill when checked or indeterminate, and the focus ring drawn on it, because the
+            input it answers to is transparent. */}
+        <span aria-hidden className="br-checkbox-box pointer-events-none" />
+        {/* The mark is `--text-on-accent`, the one token whose contract is "legible on the
+            accent fill". Drawn here rather than through the icon registry, which pins every
+            glyph to a 1.5 stroke: at 10px that is under a pixel. */}
+        <svg
           aria-hidden
-          className="pointer-events-none relative h-3.5 w-3.5 text-text-on-accent opacity-0
-                     transition-opacity
-                     peer-checked:opacity-100 peer-indeterminate:opacity-0"
-        />
-        <span
-          aria-hidden
-          className="pointer-events-none absolute h-0.5 w-2.5 rounded-full bg-text-on-accent opacity-0
-                     transition-opacity
-                     peer-indeterminate:opacity-100"
-        />
+          viewBox="0 0 10 10"
+          className="br-checkbox-check pointer-events-none"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M2 5.25 4.25 7.5 8 2.75" />
+        </svg>
+        <span aria-hidden className="br-checkbox-bar pointer-events-none" />
       </span>
     );
   }

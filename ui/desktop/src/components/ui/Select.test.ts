@@ -28,7 +28,22 @@ const SELECT = readFileSync(join(__dirname, 'Select.tsx'), 'utf8');
 describe('the shared Select', () => {
   it('stands react-selects 38px min-height floor down', () => {
     // Whitespace-tolerant: prettier may reflow the arrow body.
-    expect(SELECT).toMatch(/control:\s*\(base\)\s*=>\s*\(\{\s*\.\.\.base,\s*minHeight:\s*0\s*\}\)/);
+    expect(SELECT).toMatch(
+      /control:\s*\(base, state\)\s*=>\s*\(\{\s*\.\.\.base,\s*minHeight:\s*0,/
+    );
+  });
+
+  /**
+   * Spec 2.3: the trigger rests on `--border-control` (3:1), like Input's `.br-field`, and firms
+   * to `--border-focus` while focused. Emotion writes it unlayered, so no utility can pull it
+   * back to the 1.6:1 `--border-emphasized`.
+   */
+  it('rests on the control edge and firms on focus, in the styles API', () => {
+    const stylesBlock = SELECT.match(/styles=\{\{([\s\S]*?)\n {6}\}\}/)?.[1] ?? '';
+    expect(stylesBlock).toMatch(
+      /borderColor:\s*state\.isFocused\s*\?\s*'var\(--border-focus\)'\s*:\s*'var\(--border-control\)'/
+    );
+    expect(SELECT).not.toMatch(/'border-border-emphasized'/);
   });
 
   /**
