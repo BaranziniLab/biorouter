@@ -1234,3 +1234,32 @@ describe('the overlay class is shared, not re-spelled', () => {
     expect(panel().parentElement).toHaveAttribute('data-side', 'left');
   });
 });
+
+/**
+ * Spec 3.4 acceptance: "the sidebar's tooltips open after the app delay, not instantly". The shell
+ * used to wrap the whole app in `<TooltipProvider delayDuration={0}>`, which every tooltip would
+ * have inherited once tooltips stopped bringing their own provider (2.6). It is the app provider
+ * now: nothing at 150ms, the tip at 500ms.
+ */
+describe('tooltips inside the app shell wait for the app delay', () => {
+  it('does not open a tooltip on hover at once, and opens it after the delay', async () => {
+    const { Tooltip, TooltipContent, TooltipTrigger } = await import('./Tooltip');
+    const user = userEvent.setup();
+    render(
+      <SidebarProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button">All chats</button>
+          </TooltipTrigger>
+          <TooltipContent>All chats</TooltipContent>
+        </Tooltip>
+      </SidebarProvider>
+    );
+    await user.hover(screen.getByRole('button', { name: 'All chats' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(await screen.findByRole('tooltip', {}, { timeout: 1500 })).toHaveTextContent(
+      'All chats'
+    );
+  });
+});
