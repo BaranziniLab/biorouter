@@ -30,6 +30,17 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 - **Docs.** Edit the sources in [`docs/website/`](../docs/website/README.md), then run `node landing/scripts/assemble-docs.mjs` from the repository root. Do not hand edit `docs.html`. `scripts/check-docs-privacy.mjs` reads the "Extension agents in the marketplace" table, and `../scripts/check-crew-manual.mjs` reads the Crew page and the browser table. Both match markup byte for byte.
 - **Versions.** `scripts/release.sh` rewrites the version in `index.html`, `download.html` and `docs.html` only, and expects `about.html`'s `news-list` to start with the new release.
 
+## Look rules
+
+These keep the site on the desktop app's scale. No check enforces them, so a new rule goes in `site.css` rather than in a page.
+
+- **Sizes** come from the `--fs-*` tokens in `site.css`: 12, 13, 14, 16, 17 and 24, plus two clamps for titles. A page stylesheet never writes a pixel size. Code is `--fs-sm`, and `--fs-xs` inside a table.
+- **Weights** are 400, and 700 only for `strong` in the docs. Arial draws nothing between, so never write 500 or 600. Inter 600 sets the wordmark and nothing else.
+- **Controls** are `--h-control` (32px) for small actions and `--h-cta` (40px) for the one call to action of a view. The 44px menu button is a touch target.
+- **Ink**: small text uses `--subtle`. `--faint` is for the quiet second line of a large headline and for disabled rows.
+- **Motion** uses `--dur-*` with `--ease`. Reveals take 525ms and travel 8px.
+- **Headlines**: one two-tone headline per page, the first. Slack stays in the header of every page and in one community band.
+
 ## Writing for the site
 
 Spell the product Biorouter and the marketplace BAAM. Keep sentences short and plain, with no dashes as punctuation and no marketing words. Do not name model versions outside the docs.

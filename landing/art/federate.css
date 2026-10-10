@@ -40,7 +40,7 @@
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-element);
   padding: 9px 10px 10px;
   opacity: 0; transform: translateY(6px);
-  transition: opacity var(--dur-slow) var(--ease), transform 1150ms var(--ease), border-color var(--dur-med) ease;
+  transition: opacity var(--dur-slow) var(--ease), transform 1150ms var(--ease), border-color var(--dur-med) var(--ease);
 }
 .art-federate .fed-card.is-shown { opacity: 1; transform: none; }
 /* A copy slides out from under the original (which stays). Its value bars
@@ -48,7 +48,7 @@
 .art-federate .fed-card.is-moving { border-color: var(--coral); z-index: 2; }
 .art-federate .fed-card.is-launch { transition: none; }
 .art-federate .fed-card .fed-file,
-.art-federate .fed-card .fed-key span { transition: opacity var(--dur-menu) ease; }
+.art-federate .fed-card .fed-key span { transition: opacity var(--dur-menu) var(--ease); }
 .art-federate .fed-card.is-copying .fed-file,
 .art-federate .fed-card.is-copying .fed-key span { opacity: 0; transition: none; }
 .art-federate .fed-file { font-size: 12px; line-height: 16px; margin: 0 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -57,23 +57,23 @@
 
 /* The local run: its own private session, fed by its own records. The line
    ends in a check when the run is done; the result stays in the site. */
-.art-federate .fed-run { grid-row: 5; position: relative; margin-top: 10px; padding-bottom: 9px; opacity: 0; transition: opacity var(--dur-menu) ease; }
+.art-federate .fed-run { grid-row: 5; position: relative; margin-top: 10px; padding-bottom: 9px; opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
 .art-federate .fed-run.is-on { opacity: 1; }
 .art-federate .fed-run .privacy.is-private { background: var(--paper); }
 .art-federate .fed-bar { position: absolute; left: 8px; right: 18px; bottom: 0; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
 .art-federate .fed-bar i,
 .art-federate .fed-link i { position: absolute; inset: 0; background: var(--coral-bar); }
-.art-federate .fed-bar i { transform: scaleX(0); transform-origin: left center; transition: transform 1500ms var(--ease), background var(--dur-slow) ease; }
+.art-federate .fed-bar i { transform: scaleX(0); transform-origin: left center; transition: transform 1500ms var(--ease), background var(--dur-slow) var(--ease); }
 .art-federate .fed-run.is-running .fed-bar i { transform: none; }
 .art-federate .fed-site:first-child .fed-bar i { transition-duration: 900ms, var(--dur-slow); }
 .art-federate .fed-run.is-done .fed-bar i { background: var(--line-2); }
-.art-federate .fed-check { position: absolute; right: 0; bottom: -5px; width: 12px; height: 12px; fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-federate .fed-check { position: absolute; right: 0; bottom: -5px; width: 12px; height: 12px; fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) var(--ease); }
 .art-federate .fed-run.is-done .fed-check { opacity: 1; }
 
-.art-federate .fed-link { grid-row: 6; position: relative; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-federate .fed-link { grid-row: 6; position: relative; opacity: 0; transition: opacity var(--dur-med) var(--ease); }
 .art-federate .fed-run.is-on + .fed-link { opacity: 1; }
 .art-federate .fed-link::before { content: ''; position: absolute; left: 8px; width: 2px; top: 0; bottom: 0; background: var(--line-2); }
-.art-federate .fed-link i { left: 8px; width: 2px; right: auto; bottom: 0; transform: scaleY(0); transform-origin: center bottom; transition: transform 420ms var(--ease), background var(--dur-slow) ease; }
+.art-federate .fed-link i { left: 8px; width: 2px; right: auto; bottom: 0; transform: scaleY(0); transform-origin: center bottom; transition: transform 420ms var(--ease), background var(--dur-slow) var(--ease); }
 .art-federate .fed-link.is-feeding i { transform: none; }
 .art-federate .fed-link.is-done i { background: var(--line-2); }
 
@@ -87,9 +87,9 @@
 .art-federate .fed-routes path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 /* The shaft is dashed; the head is its own solid chevron, so the dashes never cut it. */
 .art-federate .fed-route-rest,
-.art-federate .fed-route-head { stroke: var(--ghost); stroke-width: 1; opacity: 0; transition: opacity var(--dur-slow) ease, stroke var(--dur-slow) ease, stroke-width var(--dur-slow) ease; }
+.art-federate .fed-route-head { stroke: var(--ghost); stroke-width: 1; opacity: 0; transition: opacity var(--dur-slow) var(--ease), stroke var(--dur-slow) var(--ease), stroke-width var(--dur-slow) var(--ease); }
 .art-federate .fed-route-rest { stroke-dasharray: 2 3; }
-.art-federate .fed-route-live { stroke: var(--coral); stroke-width: 1.5; stroke-dasharray: 1 1; stroke-dashoffset: 1; opacity: 0; transition: stroke-dashoffset 420ms var(--ease), opacity var(--dur-med) ease; }
+.art-federate .fed-route-live { stroke: var(--coral); stroke-width: 1.5; stroke-dasharray: 1 1; stroke-dashoffset: 1; opacity: 0; transition: stroke-dashoffset 420ms var(--ease), opacity var(--dur-med) var(--ease); }
 .art-federate .is-drawing .fed-route-live { stroke-dashoffset: 0; opacity: 1; }
 .art-federate .is-set .fed-route-rest,
 .art-federate .is-set .fed-route-head { opacity: 1; }
@@ -100,7 +100,7 @@
   flex: 1 1 0; min-height: 40px;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; line-height: 18px; color: var(--muted); text-align: center;
-  opacity: 0; transition: opacity var(--dur-slow) ease;
+  opacity: 0; transition: opacity var(--dur-slow) var(--ease);
 }
 .art-federate .fed-end.is-shown { opacity: 1; }
 

@@ -45,7 +45,7 @@
   border: 1px dashed var(--line-2); border-radius: var(--r-element);
   transition: opacity var(--dur-med) var(--ease);
 }
-[data-art="apps"] .apps-empty span { font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--faint); }
+[data-art="apps"] .apps-empty span { font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--subtle); }
 [data-art="apps"] .apps-chart {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
@@ -210,7 +210,7 @@
 [data-art="apps"] .apps-rowwrap.is-swap { opacity: 0; }
 [data-art="apps"] .apps-row { display: block; font-size: 13px; line-height: 1; white-space: nowrap; }
 [data-art="apps"] .apps-row code { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
-[data-art="apps"] .apps-row.is-running { animation: apps-breathe 2.4s ease-in-out infinite; }
+[data-art="apps"] .apps-row.is-running { animation: apps-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 [data-art="apps"] .apps-stage.is-paused .apps-row { animation-play-state: paused; }
 
 /* A fresh start: the tool row is hidden for a moment, then fades in. */

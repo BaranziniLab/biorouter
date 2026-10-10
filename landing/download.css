@@ -70,7 +70,7 @@
 .dl-link {
   display: inline-block; padding-bottom: 3px;
   border-bottom: 1px solid var(--line-2);
-  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .dl-link:hover { text-decoration: none; border-bottom-color: var(--coral-bar); }
 .dl-link:hover code { color: var(--coral); }

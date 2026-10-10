@@ -22,7 +22,7 @@
 .art-hub .hub-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .art-hub .hub-lines path { fill: none; stroke: var(--line-2); stroke-width: 1; }
 .art-hub .hub-lines .hub-pulse { stroke: var(--coral); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
-.art-hub .hub-lines .hub-route { stroke: var(--coral-bar); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-hub .hub-lines .hub-route { stroke: var(--coral-bar); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) var(--ease); }
 .art-hub .hub-lines .hub-route.on { opacity: 1; }
 
 /* ── The chat: a transcript that scrolls, composer card, model chip ── */
@@ -47,16 +47,16 @@
   padding: 7px 12px; font-size: 13px; line-height: 18px; color: var(--ink);
 }
 .art-hub .hub-reply { font-size: 13px; line-height: 19px; color: var(--ink); margin: 0; }
-.art-hub .hub-reply .w { opacity: 0; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-reply .w { opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
 .art-hub .hub-reply .w.on { opacity: 1; }
 /* A message that has passed the top edge leaves as one block. */
-.art-hub .hub.live .hub-user, .art-hub .hub.live .hub-reply { transition: opacity var(--dur-menu) ease; }
+.art-hub .hub.live .hub-user, .art-hub .hub.live .hub-reply { transition: opacity var(--dur-menu) var(--ease); }
 .art-hub .hub-stack .gone { opacity: 0; transition-duration: var(--dur-fast); }
 /* The empty chat, before its first message. */
 .art-hub .hub-new {
   position: absolute; left: 0; right: 0; top: calc((100% - var(--hub-tail)) / 2); margin-top: -9px;
   text-align: center; font-size: 12px; line-height: 18px; color: var(--muted);
-  opacity: 0; transition: opacity var(--dur-fast) ease;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease);
 }
 .art-hub .hub-new.on { opacity: 1; transition-duration: var(--dur-med); }
 
@@ -72,10 +72,10 @@
   font-size: 14px; line-height: 20px; padding: 6px 0;
   color: var(--ink);
 }
-.art-hub .hub-ph { position: absolute; left: 0; top: 6px; right: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-ph { position: absolute; left: 0; top: 6px; right: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-menu) var(--ease); }
 .art-hub .hub-ph.hide { opacity: 0; transition-duration: var(--dur-fast); }
 .art-hub .hub-ph.off { opacity: 0; transition: none; }
-.art-hub .hub-typed { transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-typed { transition: opacity var(--dur-menu) var(--ease); }
 .art-hub .hub-typed.off { opacity: 0; transition-duration: var(--dur-fast); }
 .art-hub .hub-caret { display: inline-block; width: 1.5px; height: 16px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
 .art-hub .hub-caret.on { opacity: 1; }
@@ -83,7 +83,7 @@
   flex: none; width: 32px; height: 32px; border-radius: var(--r-element);
   display: grid; place-items: center;
   background: var(--medium); color: var(--muted);
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-hub .hub-send svg { width: 16px; height: 16px; }
 .art-hub .hub-send.armed { background: var(--coral); color: #fff; }
@@ -95,12 +95,12 @@
   height: 28px; padding: 0 8px; border-radius: var(--r-element);
   font-size: 12px; line-height: 16px; white-space: nowrap;
   color: color-mix(in srgb, var(--ink) 72%, transparent);
-  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .art-hub .hub-chip.tint { background: var(--medium); color: var(--ink); }
 /* The chip's model and padlock change by a plain crossfade: the padlock
    appears or goes, it never slides. */
-.art-hub .hub-chip .model { display: inline-flex; align-items: center; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-chip .model { display: inline-flex; align-items: center; transition: opacity var(--dur-menu) var(--ease); }
 .art-hub .hub-chip .model.out { opacity: 0; transition-duration: var(--dur-fast); }
 .art-hub .hub-chip .model.in { opacity: 0; transition: none; }
 
@@ -110,7 +110,7 @@
   background: var(--paper);
   border: 1px solid var(--line-2); border-radius: var(--r-container);
   opacity: 0; transform: translateY(4px);
-  transition: opacity var(--dur-menu) ease, transform var(--dur-menu) var(--ease);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
 }
 .art-hub .hub-pick.open { opacity: 1; transform: none; }
 .art-hub .hub-prow {
@@ -118,7 +118,7 @@
   height: 24px; padding: 0 10px 0 12px;
   border-radius: var(--r-element);
   font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap;
-  transition: background var(--dur-menu) ease;
+  transition: background var(--dur-menu) var(--ease);
 }
 .art-hub .hub-prow::before {
   content: ''; position: absolute; left: 0; top: 50%;
@@ -176,7 +176,7 @@
   min-width: min(148px, 100%);
   border-radius: var(--r-element);
   font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap;
-  transition: background var(--dur-menu) ease;
+  transition: background var(--dur-menu) var(--ease);
 }
 .art-hub .hub-row::before {
   content: ''; position: absolute; left: 0; top: 50%;

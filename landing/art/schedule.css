@@ -49,7 +49,7 @@
 [data-art="schedule"] .sch-state.is-running { opacity: 0; }
 [data-art="schedule"] .sch.running .sch-state.is-scheduled { opacity: 0; }
 [data-art="schedule"] .sch.running .sch-state.is-running { opacity: 1; }
-[data-art="schedule"] .sch.running .sch-state.is-running i { animation: schedule-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+[data-art="schedule"] .sch.running .sch-state.is-running i { animation: schedule-pulse calc(var(--dur-slow) * 4) var(--ease) infinite; }
 @keyframes schedule-pulse { 50% { opacity: 0.5; } }
 
 /* ── The week ──────────────────────────────────────────── */

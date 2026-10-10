@@ -155,7 +155,7 @@
 [data-art="knowledge"] .kn-status.done .kn-run { opacity: 0; }
 [data-art="knowledge"] .kn-status.done .kn-done { opacity: 1; }
 /* While it runs the line breathes, as a running tool call does. */
-[data-art="knowledge"] .kn-status.on:not(.done) .kn-run { animation: knowledge-breathe 2.4s ease-in-out infinite; }
+[data-art="knowledge"] .kn-status.on:not(.done) .kn-run { animation: knowledge-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 @keyframes knowledge-breathe { 50% { opacity: 0.7; } }
 
 [data-art="knowledge"] .kn-note {

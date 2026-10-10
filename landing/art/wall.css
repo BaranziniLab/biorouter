@@ -131,7 +131,7 @@
   height: 24px; margin: 6px 0 0 -6px; padding: 0 7px;
   border-radius: var(--r-element);
   font-size: 12px; color: var(--ink-2); white-space: nowrap;
-  transition: background var(--dur-fast) ease;
+  transition: background var(--dur-fast) var(--ease);
 }
 .art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
 .art-wall .wall-chip.is-open { background: var(--medium); }
@@ -156,13 +156,13 @@
   padding: 4px; background: var(--paper);
   border: 1px solid var(--line-2); border-radius: var(--r-container);
   opacity: 0; transform: translateY(4px);
-  transition: opacity var(--dur-menu) ease, transform var(--dur-menu) var(--ease);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
 }
 .art-wall .wall-pop.is-on { opacity: 1; transform: none; }
 .art-wall .wall-hl {
   position: absolute; left: 4px; right: 4px; top: 4px; height: var(--wall-row);
   border-radius: var(--r-element); background: var(--sidebar-active);
-  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) ease;
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-hl::before {
   content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
@@ -188,7 +188,7 @@
 .art-wall .wall-pop.is-why .wall-barred { grid-template-rows: auto 1fr; }
 .art-wall .wall-why {
   min-height: 0; overflow: hidden;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-why > p {
   font-size: var(--wall-t-why); line-height: var(--wall-l-why); color: var(--muted);
@@ -199,7 +199,7 @@
 /* A public request travels to the wall and stops dead there. */
 .art-wall .wall-req {
   position: relative; padding-bottom: 13px;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-req.is-on { opacity: 1; }
 .art-wall .wall-reqrow {
@@ -207,7 +207,7 @@
   font-size: var(--wall-t-tool); line-height: var(--wall-l-tool); color: var(--muted);
 }
 .art-wall .wall-reqrow .wall-i { color: var(--subtle); margin-top: calc((var(--wall-l-tool) - 14px) / 2); }
-.art-wall .wall-req.is-run .wall-reqrow { animation: wall-breathe 2.4s ease-in-out infinite; }
+.art-wall .wall-req.is-run .wall-reqrow { animation: wall-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 /* The lane runs from the wall to the end of the request row. */
 .art-wall .wall-lane {
   position: absolute; left: calc(-1 * var(--wall-pw)); right: 0; bottom: 1px; height: 10px;
@@ -230,7 +230,7 @@
 .art-wall .wall-note {
   font-size: var(--wall-t-note); line-height: var(--wall-l-note); color: var(--muted); margin-top: 7px;
   text-wrap: balance;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-note.is-on { opacity: 1; }
 @keyframes wall-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }

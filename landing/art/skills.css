@@ -88,9 +88,9 @@
 .art-skills .sk-chev { width: 16px; height: 16px; margin-left: 6px; opacity: 0.6; }
 
 /* The running line breathes 1 → 0.7 → 1, the app's own running indicator
-   (br-tool-text-pulse, copied with its 2.4s ease-in-out). It runs only while
+   (br-tool-text-pulse: four periods of the slow unit, on the app's curve). It runs only while
    the tile is on screen. */
-.art-skills.is-live .sk-call[data-state="active"] .sk-run .sk-t { animation: skills-breathe 2.4s ease-in-out infinite; }
+.art-skills.is-live .sk-call[data-state="active"] .sk-run .sk-t { animation: skills-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 @keyframes skills-breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }

@@ -175,7 +175,7 @@
 [data-art="workflows"] .wf-line.is-in { opacity: 1; transform: none; }
 [data-art="workflows"] .wf-line .k { color: var(--ink); }
 [data-art="workflows"] .wf-line .p,
-[data-art="workflows"] .wf-line .c { color: var(--faint); }
+[data-art="workflows"] .wf-line .c { color: var(--subtle); }
 
 /* The name inside {{ cohort }} takes a coral underline while its value is
    typed into the field below: the one parameter, declared, used and filled.
