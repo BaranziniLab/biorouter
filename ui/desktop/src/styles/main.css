@@ -1825,9 +1825,12 @@
     box-shadow: none;
   }
 
-  /* A container that holds a focused field (the composer, a search shell) takes
-     the same quiet shift rather than letting the inner control draw a box. */
-  :where(.biorouter-chat-composer, .biorouter-list-row, .biorouter-settings-row):focus-within {
+  /* The composer, holding a focused field, takes the same quiet shift rather
+     than letting the inner control draw a box. The list and settings rows used
+     to be named here too and did nothing: their unlayered `border-bottom` beats
+     a layered `border-color`, and their focus is the `:has(:focus-visible)`
+     hairline in the row family. `:where()` keeps this at zero specificity. */
+  :where(.biorouter-chat-composer):focus-within {
     border-color: var(--border-focus);
   }
 
@@ -2041,9 +2044,9 @@ input[type='radio']:focus-visible ~ [data-radio-ring] {
 /* The ring itself (QA Q3-58). It was `--border-emphasized`, ink at 24%, which
  * measured 1.6:1 on white — under the 3:1 a control's boundary owes (WCAG
  * 1.4.11), so an unchecked radio read as a faint smudge beside its label. At
- * rest it is now `--text-muted`, which `check-contrast.mjs` holds to 4.5:1 on
- * every text ground and `focusFallback.test.ts` measures on every ground a
- * dialog paints, in all six scopes; checked, the accent edge as before.
+ * rest it is now `--border-control`, the checkbox's own edge (spec 2.6), which
+ * `focusFallback.test.ts` measures at 3:1 on every ground a dialog paints, in
+ * all six scopes; checked, the accent edge as before.
  *
  * ⚠ The rest rule is a BARE `[data-radio-ring]` (0,1,0) on purpose. The
  * forced-colours block at the end of this file redraws the ring with the same
@@ -2051,7 +2054,7 @@ input[type='radio']:focus-visible ~ [data-radio-ring] {
  * (`input ~ [data-radio-ring]`) would out-rank its `CanvasText` rule and paint
  * this token under `forced-color-adjust: none` in High Contrast. */
 [data-radio-ring] {
-  border-color: var(--text-muted);
+  border-color: var(--border-control);
 }
 
 input[type='radio']:checked ~ [data-radio-ring] {

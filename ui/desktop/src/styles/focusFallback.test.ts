@@ -517,9 +517,9 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     return found[0];
   };
 
-  it('paints the resting ring in --text-muted and the checked one in the accent edge', () => {
+  it('paints the resting ring in --border-control and the checked one in the accent edge', () => {
     const rest = top('[data-radio-ring]');
-    expect(rest.body.replace(/\s+/g, ' ')).toContain('border-color: var(--text-muted)');
+    expect(rest.body.replace(/\s+/g, ' ')).toContain('border-color: var(--border-control)');
     expect(isLayered(rest)).toBe(false);
     const checked = top("input[type='radio']:checked ~ [data-radio-ring]");
     expect(checked.body.replace(/\s+/g, ' ')).toContain('border-color: var(--border-accent)');
@@ -557,8 +557,9 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     expect(Object.keys(SCOPES)).toHaveLength(6);
     const shortfalls: string[] = [];
     for (const [name, scope] of Object.entries(SCOPES)) {
-      const ring = tokens.resolveHex('--text-muted', scope);
-      expect(ring, `${name}: --text-muted resolves`).toBeTruthy();
+      // The checkbox's own edge (spec 2.6). 3:1 is what WCAG 1.4.11 asks of a control boundary.
+      const ring = tokens.resolveHex('--border-control', scope);
+      expect(ring, `${name}: --border-control resolves`).toBeTruthy();
       for (const ground of grounds) {
         const hex = tokens.resolveHex(ground, scope);
         expect(hex, `${name}: ${ground} resolves`).toBeTruthy();
