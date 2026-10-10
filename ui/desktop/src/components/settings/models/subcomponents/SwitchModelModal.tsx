@@ -1,16 +1,12 @@
 import { useEffect, useState, useCallback, useId, useMemo, useRef } from 'react';
-import { Brain, ExternalLink } from '../../../icons/app-icons';
+import { ExternalLink } from '../../../icons/app-icons';
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../../ui/dialog';
+import { ModalShell } from '../../../ModalShell';
 import { Button } from '../../../ui/button';
 import { Checkbox } from '../../../ui/Checkbox';
+import CustomRadio from '../../../ui/CustomRadio';
+import { InfoTip } from '../../../ui/info-tip';
+import { Note } from '../../../ui/note';
 import { QUICKSTART_GUIDE_URL } from '../../providers/modal/constants';
 import { Input } from '../../../ui/input';
 import { Select } from '../../../ui/Select';
@@ -33,6 +29,8 @@ import {
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import { switchModelCopy } from '../copy';
+import './model-dialogs.css';
 import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   llamacppStatus,
@@ -219,10 +217,8 @@ const renderModelOptionLabel = (
 
   return (
     <div className="min-w-0 py-0.5">
-      <div className="truncate text-sm font-medium text-current">{option.label}</div>
-      <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-current opacity-70">
-        {detail}
-      </div>
+      <div className="truncate text-label text-current">{option.label}</div>
+      <div className="mt-0.5 line-clamp-2 text-supporting text-current opacity-70">{detail}</div>
     </div>
   );
 };
@@ -555,13 +551,21 @@ export const SwitchModelModal = ({
   const modelMessageId = useId();
   const modelMessage = validation.blocked ?? (attemptedSubmit ? validation.errors.model : '');
   const modelMessageNode = modelMessage ? (
-    <div id={modelMessageId} className="text-text-danger text-sm mt-1">
+    <div id={modelMessageId} className="mt-1 text-supporting text-text-danger">
       {modelMessage}
     </div>
   ) : null;
   // The provider field's twin: F6's refusal at once, "Select a provider" only
   // after an attempt. The confirm names every refusal in force as its reason.
   const providerMessageId = useId();
+  // The fields' labels point at react-select's own inputs, so each select takes an input id.
+  const fieldIdPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const providerInputId = `${fieldIdPrefix}-provider`;
+  const modelInputId = `${fieldIdPrefix}-model`;
+  const customModelInputId = `${fieldIdPrefix}-custom-model`;
+  const predefinedLabelId = `${fieldIdPrefix}-predefined-label`;
+  // A portalled menu escapes the dialog body's clip (the body scrolls); see `ui/Select.tsx`.
+  const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
   const providerMessage =
     validation.providerBlocked ?? (attemptedSubmit ? validation.errors.provider : '');
   // W2-PRV-15's sentence, up front, and the confirm's reason while it holds.
@@ -1007,22 +1011,58 @@ export const SwitchModelModal = ({
   };
 
   return (
-    <Dialog open={true} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[500px]" onCloseAutoFocus={returnFocusToOpener}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Brain size={24} className="text-text-default" />
-            {titleOverride || 'Switch models'}
-          </DialogTitle>
-          <DialogDescription>
-            {hostManaged
-              ? HOST_MANAGED_MODEL_TITLE
-              : chatScope
-                ? SWITCH_SCOPE_THIS_CHAT
-                : SWITCH_SCOPE_NEW_CHATS}
-          </DialogDescription>
-        </DialogHeader>
-
+    <ModalShell
+      open
+      onOpenChange={handleClose}
+      size="md"
+      // A form: Escape and the × leave, a click on the scrim does not (it would drop a half-made
+      // choice), and the models menus below are portalled out of the dialog's clip.
+      purpose="form"
+      scrollBody
+      title={titleOverride || switchModelCopy.title}
+      subtitle={
+        hostManaged
+          ? HOST_MANAGED_MODEL_TITLE
+          : chatScope
+            ? SWITCH_SCOPE_THIS_CHAT
+            : SWITCH_SCOPE_NEW_CHATS
+      }
+      onCloseAutoFocus={returnFocusToOpener}
+      footer={
+        <>
+          <a
+            href={QUICKSTART_GUIDE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mr-auto inline-flex items-center gap-1 text-secondary text-text-muted hover:text-text-default"
+          >
+            <ExternalLink size={14} />
+            {switchModelCopy.quickStart}
+          </a>
+          <Button variant="secondary" onClick={handleClose} type="button">
+            {switchModelCopy.cancel}
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={
+              !validation.isValid ||
+              hostManaged ||
+              crewFixed ||
+              switching ||
+              providerInputValue.trim().length > 0
+            }
+            // A barred selection's refusal, beside the field, is this
+            // button's reason for being disabled — so it is also its
+            // description, not merely a sentence that happens to be nearby.
+            // The provider's (F6) and the model's, when both are in force.
+            aria-describedby={confirmDescribedBy}
+          >
+            {switching ? switchModelCopy.switching : switchModelCopy.select}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4 py-3">
         {/*
           Above the controls, not below them: the reason a picker is inert has
           to be readable before the user tries it, which is the whole of SD-1's
@@ -1031,265 +1071,239 @@ export const SwitchModelModal = ({
         <HostManagedModelNote />
 
         {crewFixed && (
-          <div
-            id={crewFixedId}
-            role="note"
-            data-testid="switch-model-crew-fixed"
-            className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-sm leading-relaxed text-text-default [overflow-wrap:anywhere]"
-          >
+          <Note tone="neutral" role="status" id={crewFixedId} testId="switch-model-crew-fixed">
             {CREW_MODEL_FIXED_TEXT}
-          </div>
+          </Note>
         )}
 
-        <div className="flex flex-col gap-4 py-4">
-          {usePredefinedModels ? (
-            <div className="w-full flex flex-col gap-4">
-              <div className="flex justify-between items-center">
-                <label className="text-sm font-medium text-text-default">Choose a model:</label>
-              </div>
-
-              <div className="flex flex-col max-h-72 overflow-y-auto -mx-1 px-1">
-                {predefinedModels.map((model) => {
-                  const isSelected = selectedPredefinedModel?.name === model.name;
-                  return (
-                    <div
-                      key={model.id || model.name}
-                      // The predefined branch swaps both selects for this flat
-                      // list, so it bypasses `isDisabled` on them entirely — the
-                      // same hole `validation` documents for the tier
-                      // pre-flight, and it has to be closed here for the same
-                      // reason.
-                      onClick={
-                        hostManaged || crewFixed
-                          ? undefined
-                          : () => setSelectedPredefinedModel(model)
-                      }
-                      aria-disabled={hostManaged || crewFixed || undefined}
-                      className={[
-                        'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-container transition-colors',
-                        hostManaged || crewFixed
-                          ? 'cursor-not-allowed opacity-60'
-                          : 'cursor-pointer',
-                        isSelected
-                          ? '!border-border-default tint-selected tint-interactive'
-                          : hostManaged || crewFixed
-                            ? ''
-                            : 'hover:!border-border-default tint-interactive',
-                      ].join(' ')}
-                    >
-                      {/* Radio dot */}
-                      <div
-                        className={[
-                          'mt-0.5 h-4 w-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150',
-                          isSelected
-                            ? 'border-text-default bg-text-default'
-                            : 'border-border-subtle',
-                        ].join(' ')}
-                      >
-                        {isSelected && (
-                          <div className="h-1.5 w-1.5 rounded-full bg-background-default" />
-                        )}
-                      </div>
-
-                      {/* Model info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium text-text-default">
-                            {model.alias || model.name}
+        {usePredefinedModels ? (
+          <div className="br-model-field">
+            <span id={predefinedLabelId} className="text-label text-text-default">
+              {switchModelCopy.model}
+            </span>
+            <div
+              role="radiogroup"
+              aria-labelledby={predefinedLabelId}
+              className="-mx-1 flex max-h-72 flex-col overflow-y-auto px-1"
+            >
+              {predefinedModels.map((model) => {
+                // The predefined branch swaps both selects for this flat list, so it bypasses
+                // `isDisabled` on them entirely: the same hole `validation` documents for the
+                // tier pre-flight, and it has to be closed here for the same reason.
+                const radioId = `${fieldIdPrefix}-predefined-${model.id || model.name}`;
+                const recommended = model.alias?.toLowerCase().includes('recommended');
+                return (
+                  <CustomRadio
+                    key={model.id || model.name}
+                    id={radioId}
+                    name={`${fieldIdPrefix}-predefined`}
+                    value={model.name}
+                    checked={selectedPredefinedModel?.name === model.name}
+                    disabled={hostManaged || crewFixed}
+                    onChange={() => setSelectedPredefinedModel(model)}
+                    label={
+                      <>
+                        {model.alias || model.name}
+                        {recommended ? (
+                          <span className="ml-2 text-chip text-text-muted">
+                            {switchModelCopy.recommended}
                           </span>
-                          {model.alias?.toLowerCase().includes('recommended') && (
-                            <span className="text-caps text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-element shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
-                              Recommended
-                            </span>
-                          )}
-                        </div>
-                        {model.subtext && (
-                          <p className="text-xs text-text-muted mt-0.5 line-clamp-2 leading-relaxed">
-                            {model.subtext}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Provider badge */}
-                      {model.provider && (
-                        <span className="text-supporting text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-element flex-shrink-0 mt-0.5 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
-                          {model.provider}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {modelMessageNode}
-              {becomesPrivate && (
-                <p
-                  data-testid="switch-model-becomes-private"
-                  className="text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
-                >
-                  {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
-                </p>
-              )}
+                        ) : null}
+                      </>
+                    }
+                    secondaryLabel={
+                      model.subtext ? <span className="line-clamp-2">{model.subtext}</span> : null
+                    }
+                    rightContent={model.provider ? model.provider : null}
+                  />
+                );
+              })}
             </div>
-          ) : (
-            /* Manual Provider/Model Selection */
-            <div className="w-full flex flex-col gap-4">
-              <div>
-                <Select
-                  options={providerOptions}
-                  value={providerSelectValue}
-                  inputValue={providerInputValue}
-                  onInputChange={(inputValue: string, actionMeta?: { action?: string }) => {
-                    if (!actionMeta || actionMeta.action === 'input-change') {
-                      setProviderInputValue(inputValue);
-                    } else if (actionMeta.action === 'menu-close') {
-                      setProviderInputValue('');
-                    }
-                    return inputValue;
-                  }}
-                  onChange={(newValue: unknown) => {
-                    const option = newValue as { value: string; label: string } | null;
+
+            {modelMessageNode}
+            {becomesPrivate && (
+              <p
+                data-testid="switch-model-becomes-private"
+                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+              >
+                {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+              </p>
+            )}
+          </div>
+        ) : (
+          /* Manual Provider/Model Selection */
+          <>
+            <div className="br-model-field">
+              <label htmlFor={providerInputId} className="text-label text-text-default">
+                {switchModelCopy.provider}
+              </label>
+              <Select
+                inputId={providerInputId}
+                options={providerOptions}
+                value={providerSelectValue}
+                inputValue={providerInputValue}
+                onInputChange={(inputValue: string, actionMeta?: { action?: string }) => {
+                  if (!actionMeta || actionMeta.action === 'input-change') {
+                    setProviderInputValue(inputValue);
+                  } else if (actionMeta.action === 'menu-close') {
                     setProviderInputValue('');
-                    if (option?.value === 'configure_providers') {
-                      // W2-PRV-5: the catalog is a detour, not a destination.
-                      // It carries where it was opened from (and, from a chat,
-                      // that chat and its tier), so a provider set up there
-                      // comes back here and its model is chosen for this chat.
-                      // It used to land on Settings > Models with no way back,
-                      // and set the model every new chat starts on.
-                      setView(
-                        'ConfigureProviders',
-                        configureProvidersReturn(
-                          sessionId,
-                          privacyTier,
-                          onChooseForUnsentChat ? unsentChatTabId : undefined
-                        )
-                      );
-                      onClose(); // Close the current modal
-                    } else {
-                      setProvider(option?.value || null);
-                      setModel('');
-                      setIsCustomModel(false);
-                      setUserClearedModel(false);
-                      setModelInputValue('');
-                    }
-                  }}
-                  placeholder="Provider, type to search"
-                  isClearable
-                  isDisabled={hostManaged || crewFixed}
-                  // The private-chat pre-flight's shape, one level up: the row is
-                  // react-select's own `aria-disabled` option, with the reason in
-                  // its detail line — see `unavailableReasonFor`.
-                  formatOptionLabel={(rawOption: unknown, meta) =>
-                    renderModelOptionLabel(
-                      rawOption,
-                      meta,
-                      unavailableReasonFor((rawOption as ProviderOption).value)
-                    )
                   }
-                  isOptionDisabled={(rawOption: unknown) =>
-                    unavailableReasonFor((rawOption as ProviderOption).value) !== null
+                  return inputValue;
+                }}
+                onChange={(newValue: unknown) => {
+                  const option = newValue as { value: string; label: string } | null;
+                  setProviderInputValue('');
+                  if (option?.value === 'configure_providers') {
+                    // W2-PRV-5: the catalog is a detour, not a destination.
+                    // It carries where it was opened from (and, from a chat,
+                    // that chat and its tier), so a provider set up there
+                    // comes back here and its model is chosen for this chat.
+                    // It used to land on Settings > Models with no way back,
+                    // and set the model every new chat starts on.
+                    setView(
+                      'ConfigureProviders',
+                      configureProvidersReturn(
+                        sessionId,
+                        privacyTier,
+                        onChooseForUnsentChat ? unsentChatTabId : undefined
+                      )
+                    );
+                    onClose(); // Close the current modal
+                  } else {
+                    setProvider(option?.value || null);
+                    setModel('');
+                    setIsCustomModel(false);
+                    setUserClearedModel(false);
+                    setModelInputValue('');
                   }
-                />
-                {/* Shown before any attempt when the dialog opened ON an
+                }}
+                placeholder={switchModelCopy.providerPlaceholder}
+                isClearable
+                isDisabled={hostManaged || crewFixed}
+                menuPlacement="auto"
+                menuPortalTarget={menuPortalTarget}
+                // The private-chat pre-flight's shape, one level up: the row is
+                // react-select's own `aria-disabled` option, with the reason in
+                // its detail line — see `unavailableReasonFor`.
+                formatOptionLabel={(rawOption: unknown, meta) =>
+                  renderModelOptionLabel(
+                    rawOption,
+                    meta,
+                    unavailableReasonFor((rawOption as ProviderOption).value)
+                  )
+                }
+                isOptionDisabled={(rawOption: unknown) =>
+                  unavailableReasonFor((rawOption as ProviderOption).value) !== null
+                }
+              />
+              {/* Shown before any attempt when the dialog opened ON an
                     unavailable provider: the reason the button below is inert
                     has to be readable before the user tries it. */}
-                {providerMessage && (
-                  <div
-                    id={providerMessageId}
-                    data-testid="switch-model-provider-error"
-                    className="text-text-danger text-sm mt-1"
-                  >
-                    {providerMessage}
-                  </div>
-                )}
-                {/*
+              {providerMessage && (
+                <div
+                  id={providerMessageId}
+                  data-testid="switch-model-provider-error"
+                  className="text-supporting text-text-danger"
+                >
+                  {providerMessage}
+                </div>
+              )}
+              {/*
                   Issue #56, DR-26. Whose agreements cover the models under this
                   provider, stated before the user picks one. Nothing renders for
                   a public provider — it has no affiliation — so this row appears
                   exactly when there is something to say.
                 */}
-                {selectedAffiliationWords && (
-                  <div
-                    data-testid="switch-model-affiliation"
-                    className="mt-2 flex items-start gap-2"
-                  >
-                    <AffiliationBadge affiliation={selectedAffiliation} className="mt-0.5" />
-                    <p className="min-w-0 flex-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]">
-                      {selectedAffiliationWords.title}
-                    </p>
-                  </div>
-                )}
-                {becomesPrivate && (
-                  <p
-                    data-testid="switch-model-becomes-private"
-                    className="mt-2 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
-                  >
-                    {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+              {selectedAffiliationWords && (
+                <div data-testid="switch-model-affiliation" className="flex items-start gap-2">
+                  <AffiliationBadge affiliation={selectedAffiliation} className="mt-0.5" />
+                  <p className="min-w-0 flex-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
+                    {selectedAffiliationWords.title}
                   </p>
-                )}
-              </div>
-
-              {provider && (
-                <>
-                  {!isCustomModel ? (
-                    <div>
-                      <Select
-                        options={loadingModels ? [] : filteredModelOptions}
-                        onChange={handleModelChange}
-                        onInputChange={handleInputChange}
-                        inputValue={modelInputValue}
-                        value={modelSelectValue}
-                        formatOptionLabel={(rawOption: unknown, meta) =>
-                          renderModelOptionLabel(
-                            rawOption,
-                            meta,
-                            blockedReasonFor((rawOption as ModelOption).provider)
-                          )
-                        }
-                        isOptionDisabled={(rawOption: unknown) =>
-                          blockedReasonFor((rawOption as ModelOption).provider) !== null
-                        }
-                        placeholder={
-                          loadingModels ? 'Loading models…' : 'Select a model, type to search'
-                        }
-                        isClearable
-                        isDisabled={
-                          loadingModels ||
-                          hostManaged ||
-                          crewFixed ||
-                          validation.providerBlocked !== null
-                        }
-                      />
-
-                      {modelMessageNode}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-2">
-                      <div className="flex justify-between">
-                        <label className="text-sm text-text-muted">Custom model name</label>
-                        <button
-                          onClick={() => setIsCustomModel(false)}
-                          className="text-sm text-text-muted"
-                        >
-                          Back to model list
-                        </button>
-                      </div>
-                      <Input
-                        className="border-2 px-4 py-5"
-                        placeholder="Type model name here"
-                        onChange={(event) => setModel(event.target.value)}
-                        value={model}
-                        disabled={hostManaged || crewFixed}
-                      />
-                      {modelMessageNode}
-                    </div>
-                  )}
-                </>
+                </div>
+              )}
+              {becomesPrivate && (
+                <p
+                  data-testid="switch-model-becomes-private"
+                  className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+                >
+                  {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+                </p>
               )}
             </div>
-          )}
-        </div>
+
+            {provider && (
+              <>
+                {!isCustomModel ? (
+                  <div className="br-model-field">
+                    <label htmlFor={modelInputId} className="text-label text-text-default">
+                      {switchModelCopy.model}
+                    </label>
+                    <Select
+                      inputId={modelInputId}
+                      options={loadingModels ? [] : filteredModelOptions}
+                      onChange={handleModelChange}
+                      onInputChange={handleInputChange}
+                      inputValue={modelInputValue}
+                      value={modelSelectValue}
+                      formatOptionLabel={(rawOption: unknown, meta) =>
+                        renderModelOptionLabel(
+                          rawOption,
+                          meta,
+                          blockedReasonFor((rawOption as ModelOption).provider)
+                        )
+                      }
+                      isOptionDisabled={(rawOption: unknown) =>
+                        blockedReasonFor((rawOption as ModelOption).provider) !== null
+                      }
+                      placeholder={
+                        loadingModels
+                          ? switchModelCopy.loadingModels
+                          : switchModelCopy.modelPlaceholder
+                      }
+                      isClearable
+                      menuPlacement="auto"
+                      menuPortalTarget={menuPortalTarget}
+                      isDisabled={
+                        loadingModels ||
+                        hostManaged ||
+                        crewFixed ||
+                        validation.providerBlocked !== null
+                      }
+                    />
+
+                    {modelMessageNode}
+                  </div>
+                ) : (
+                  <div className="br-model-field">
+                    <div className="br-model-form-head">
+                      <label htmlFor={customModelInputId} className="text-label text-text-default">
+                        {switchModelCopy.customModelName}
+                      </label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto"
+                        onClick={() => setIsCustomModel(false)}
+                      >
+                        {switchModelCopy.backToList}
+                      </Button>
+                    </div>
+                    <Input
+                      id={customModelInputId}
+                      placeholder={switchModelCopy.customPlaceholder}
+                      onChange={(event) => setModel(event.target.value)}
+                      value={model}
+                      disabled={hostManaged || crewFixed}
+                    />
+                    {modelMessageNode}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
 
         {/*
           P4's opt-in, directly above the confirm it modifies. Unticked by
@@ -1300,73 +1314,30 @@ export const SwitchModelModal = ({
           ⚠ The `label` WRAPS the box, as `SessionListView`'s does. `Checkbox`
           draws a square beside an `sr-only` input, so with a sibling label
           (`htmlFor`) only the text toggled it and clicking the square itself did
-          nothing — found in the running app, which is where it showed.
+          nothing — found in the running app, which is where it showed. The InfoTip
+          is the label's SIBLING, never inside it: a click on its glyph would toggle the box.
         */}
         {chatScope && !hostManaged && !crewFixed && (
-          <label
-            className="flex cursor-pointer items-start gap-2"
-            data-testid="switch-model-also-new-chats"
-          >
-            <Checkbox
-              id="switch-model-also-new-chats"
-              checked={alsoForNewChats}
-              onChange={(event) => setAlsoForNewChats(event.target.checked)}
-              disabled={switching}
-              className="mt-0.5"
-            />
-            <span className="min-w-0">
-              <span className="block text-label text-text-default">{ALSO_FOR_NEW_CHATS_LABEL}</span>
-              <span className="block text-supporting text-text-muted">
-                {ALSO_FOR_NEW_CHATS_HINT}
-              </span>
-            </span>
-          </label>
+          <div className="flex items-center" data-testid="switch-model-also-new-chats">
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                id="switch-model-also-new-chats"
+                checked={alsoForNewChats}
+                onChange={(event) => setAlsoForNewChats(event.target.checked)}
+                disabled={switching}
+              />
+              <span className="text-label text-text-default">{ALSO_FOR_NEW_CHATS_LABEL}</span>
+            </label>
+            <InfoTip label={ALSO_FOR_NEW_CHATS_LABEL} help={ALSO_FOR_NEW_CHATS_HINT} />
+          </div>
         )}
 
         {submitError && (
-          <div
-            data-testid="switch-model-submit-error"
-            role="alert"
-            className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-sm leading-relaxed text-text-danger [overflow-wrap:anywhere]"
-          >
+          <Note tone="danger" role="alert" testId="switch-model-submit-error">
             {submitError}
-          </div>
+          </Note>
         )}
-
-        <DialogFooter className="pt-4 flex-col sm:flex-row gap-3">
-          <a
-            href={QUICKSTART_GUIDE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center text-text-muted hover:text-text-default text-sm mr-auto"
-          >
-            <ExternalLink size={14} className="mr-1" />
-            Quick start guide
-          </a>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={handleClose} type="button">
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSubmit}
-              disabled={
-                !validation.isValid ||
-                hostManaged ||
-                crewFixed ||
-                switching ||
-                providerInputValue.trim().length > 0
-              }
-              // A barred selection's refusal, beside the field, is this
-              // button's reason for being disabled — so it is also its
-              // description, not merely a sentence that happens to be nearby.
-              // The provider's (F6) and the model's, when both are in force.
-              aria-describedby={confirmDescribedBy}
-            >
-              {switching ? 'Switching\u2026' : 'Select model'}
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ModalShell>
   );
 };

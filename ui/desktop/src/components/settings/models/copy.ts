@@ -66,3 +66,48 @@ export const modelsDangerCopy = {
   confirm: 'Reset',
   cancel: 'Cancel',
 } as const;
+
+export const leadWorkerCopy = {
+  /** The dialog's title and the switch's name: pinned by the tests and the composer chip. */
+  title: 'Lead/worker mode',
+  mode: 'Lead/worker mode',
+  modeHelp:
+    'A stronger lead model plans and recovers from failures, and a faster worker model does the routine steps.',
+  leadModel: 'Lead model',
+  leadModelHelp: 'The strong model for initial planning and for recovery after failures.',
+  workerModel: 'Worker model',
+  workerModelHelp: 'The fast model for routine execution steps.',
+  leadPlaceholder: 'Select lead model…',
+  workerPlaceholder: 'Select worker model…',
+  customPlaceholder: 'Type model name here',
+  backToList: 'Back to model list',
+  leadTurns: 'Initial lead turns',
+  leadTurnsHelp: 'How many turns the lead model takes at the start.',
+  failureThreshold: 'Failure threshold',
+  failureThresholdHelp: 'How many failures in a row hand the work back to the lead model.',
+  fallbackTurns: 'Fallback turns',
+  fallbackTurnsHelp: 'How many turns the lead model takes after a fallback.',
+  loading: 'Loading…',
+  cancel: 'Cancel',
+  /** The button's name: pinned by hostManagedSettings and the dialog's tests. */
+  save: 'Save settings',
+} as const;
+
+export const switchModelCopy = {
+  /** The dialog's title: pinned by the Settings focus-return test and the browser-surface tests. */
+  title: 'Switch models',
+  provider: 'Provider',
+  providerPlaceholder: 'Provider, type to search',
+  model: 'Model',
+  modelPlaceholder: 'Select a model, type to search',
+  loadingModels: 'Loading models…',
+  customModelName: 'Custom model name',
+  customPlaceholder: 'Type model name here',
+  backToList: 'Back to model list',
+  recommended: 'Recommended',
+  quickStart: 'Quick start guide',
+  cancel: 'Cancel',
+  /** The confirm's name: pinned by every SwitchModelModal test. */
+  select: 'Select model',
+  switching: 'Switching…',
+} as const;

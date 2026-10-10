@@ -1,0 +1,56 @@
+/*
+ * The Lead/worker dialog's form geometry (codex simplicity redesign, spec 3.13).
+ *
+ * Authored next to the component rather than as new Tailwind strings: a newly written utility
+ * can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+
+/* A label on the left with its InfoTip, and one control on the right. */
+.br-model-form-row {
+  display: flex;
+  min-block-size: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.br-model-form-head {
+  display: flex;
+  min-block-size: 28px;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  align-items: center;
+}
+
+.br-model-form-row > .br-model-form-head {
+  flex: 0 1 auto;
+}
+
+/* The two model fields and the numbers share one gap, and go quiet while the mode is off. */
+.br-model-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.br-model-fields[data-enabled='false'] {
+  opacity: 0.5;
+}
+
+.br-model-field {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.br-model-numbers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.br-model-number-input {
+  inline-size: 72px;
+  flex: none;
+}
