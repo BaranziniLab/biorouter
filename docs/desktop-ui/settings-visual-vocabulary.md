@@ -173,10 +173,13 @@ is how three line-heights ended up on one 12px role.
 | Row-trailing glyph-only action | `variant="ghost" shape="round"` (32×32) with a Tooltip |
 | Destructive row action (Danger zone) | `variant="destructive" size="sm"`, always behind a confirmation |
 | Quiet secondary links in a row (Feedback) | `variant="ghost" size="sm"` |
-| Dialog footer | `variant="outline"` dismiss, `default` or `destructive` confirm |
+| Dialog footer | `variant="secondary"` dismiss (Cancel), `default` or `destructive` confirm |
 | Inline text link | `variant="link"` on a real `<Button>` |
 
-`outline` is no longer a secondary action on a page; it is the dialog dismiss. Each tab that
+`secondary` is the one secondary action, on a page and in a dialog footer alike: Crew's dialogs
+and `ui/ConfirmationModal` dismiss with it, and spec 2.6 retires `outline` wherever it stood in
+for a secondary. A footer's confirm keeps its own word ("Reset", "Save changes"), and a
+destructive confirm says "… everything" only when it really is everything. Each tab that
 has destructive work ends in one **Danger zone** section (Crew's wording) holding one
 `destructive sm` button per row, and the consequence is stated in the dialog that opens, at
 the moment of decision, never as a paragraph beside the button. The page never shows two red
