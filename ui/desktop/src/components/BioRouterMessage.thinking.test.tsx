@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
@@ -88,5 +88,46 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
       screen.getByRole('button', { name: transcriptCopy.activity.thought })
     ).toBeInTheDocument();
     expect(container.querySelector('.br-transcript-row')).not.toHaveAttribute('data-running');
+  });
+
+  it('times a thought it watched: "Thinking · 9s", then "Thought · 9s"', () => {
+    vi.useFakeTimers();
+    try {
+      const thinking: Message = {
+        ...thinkingMessage(),
+        content: [{ type: 'text', text: '<think>weighing two options</think>' }],
+      };
+      const view = renderMessage(thinking, true);
+      act(() => {
+        vi.advanceTimersByTime(9000);
+      });
+      expect(screen.getByRole('button', { name: /^Thinking ?· 9s$/ })).toBeInTheDocument();
+
+      // The answer starts: the clock stops where it was.
+      view.rerender(
+        <BioRouterMessage
+          sessionId="s1"
+          message={thinkingMessage()}
+          messages={[thinkingMessage()]}
+          toolCallNotifications={new Map()}
+          isStreaming
+          onRunInTerminal={null}
+          onOpenArtifact={noopOpenArtifact}
+        />
+      );
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByRole('button', { name: /^Thought ?· 9s$/ })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives a thought read from history no length it never measured', () => {
+    renderMessage(thinkingMessage(), false);
+    expect(
+      screen.getByRole('button', { name: transcriptCopy.activity.thought })
+    ).toBeInTheDocument();
   });
 });

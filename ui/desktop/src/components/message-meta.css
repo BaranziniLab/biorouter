@@ -50,13 +50,6 @@
   pointer-events: auto;
 }
 
-/* The first message sits at the top of the scroll area, which would clip a
-   cluster that rises above it, so there it drops inside the message (Crew does
-   the same under a day band). */
-[data-first-message] .br-message-actions {
-  top: 4px;
-}
-
 @media (hover: none) {
   /* It comes BEFORE the message in the DOM (so Tab reaches it first); `order`
      places it under the message all the same. Both hosts are flex columns. */

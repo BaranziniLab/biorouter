@@ -335,7 +335,6 @@ export default function ProgressiveMessageList({
               key={key}
               className={rowClassName}
               data-role="assistant"
-              data-first-message={gaps[index] === 'first' ? '' : undefined}
               data-motion-still={motionStill}
               data-testid="message-container"
             >
@@ -351,7 +350,6 @@ export default function ProgressiveMessageList({
             key={key}
             className={rowClassName}
             data-role={isUser ? 'user' : 'assistant'}
-            data-first-message={gaps[index] === 'first' ? '' : undefined}
             data-motion-still={motionStill}
             data-testid="message-container"
           >

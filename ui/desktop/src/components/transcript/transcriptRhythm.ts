@@ -20,9 +20,15 @@ import {
  */
 export type RowGap = 'first' | 'turn' | 'block' | 'tool' | 'none';
 
-/** The margin class each gap draws. `none` is a row that renders nothing. */
+/**
+ * The margin class each gap draws. `none` is a row that renders nothing.
+ *
+ * The first row also takes 16px of padding at the top of the transcript: room
+ * for its floating actions, which rise 12px above a message and would
+ * otherwise be clipped by the scroll area's top edge.
+ */
 export const ROW_GAP_CLASS: Record<RowGap, string> = {
-  first: 'mt-0',
+  first: 'mt-0 pt-4',
   turn: 'mt-6',
   block: 'mt-2',
   tool: 'mt-1',

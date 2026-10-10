@@ -26,6 +26,7 @@ import { TranscriptRow } from './TranscriptRow';
 import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
 import { splitAssistantText } from './transcript/transcriptRhythm';
+import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
   filePathLookupFromPaths,
@@ -95,6 +96,15 @@ export default function BioRouterMessage({
   const { visibleText, cotText } = splitAssistantText(message);
   // The thought is all there is so far: the answer has not started.
   const thinkingNow = isStreaming && !visibleText;
+  // "Thinking · 8s" while it lasts, "Thought · 8s" after, when this view
+  // watched it happen; a thought read from history has no measured length.
+  const thought = useThoughtDuration(!!cotText && thinkingNow);
+  const thinkingMeta =
+    thinkingNow && thought.since !== undefined ? (
+      <ThinkingClock since={thought.since} />
+    ) : (
+      thoughtTook(thought.tookMs)
+    );
   const imagePaths = extractImagePaths(visibleText);
   const displayText =
     imagePaths.length > 0 ? removeImagePathsFromText(visibleText, imagePaths) : visibleText;
@@ -164,13 +174,15 @@ export default function BioRouterMessage({
             thought is all there is so far and "Thought" once the answer has
             started, and a chevron that opens the thought indented 24px under
             the label. It stays open while mounted once opened, so a thought
-            you are reading does not shut as the turn continues below it. */}
+            you are reading does not shut as the turn continues below it. The
+            time it took follows the label ("Thought · 8s"). */}
         {cotText && (
           <TranscriptRow
             className="mb-2"
             icon={Brain}
             glyph="thinking"
             label={thinkingNow ? transcriptCopy.activity.thinking : transcriptCopy.activity.thought}
+            meta={thinkingMeta}
             running={thinkingNow}
             body="plain"
             open={thinkingOpen}
