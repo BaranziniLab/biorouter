@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import MemorySection from './MemorySection';
+import { memoryCopy } from './copy';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
 const mockInventory = vi.fn();
 const mockDeleteEntry = vi.fn();
@@ -270,5 +272,150 @@ describe('MemorySection', () => {
     fireEvent.click(screen.getByRole('button', { name: `Show the 1 memory in ${long}` }));
     const body = await screen.findByText('x'.repeat(2000));
     expect(body.className).toContain('[overflow-wrap:anywhere]');
+  });
+});
+
+// Spec 3.14: Memory is one `SettingSection` of one-line rows. The header carries its explanation
+// as an InfoTip and Refresh as a glyph; each store is a heading with a right-aligned count and an
+// InfoTip (who can read it, where it lives); an empty store is one muted row; an open category's
+// entries are sibling rows; and nothing is red until the person points at it.
+describe('MemorySection layout', () => {
+  it('is a section named Memory, reachable by its deep-link id, with its help as a tip', async () => {
+    const { container } = render(<MemorySection />);
+    await screen.findByText('clinical');
+
+    const section = screen.getByRole('region', { name: memoryCopy.section });
+    expect(section.id).toBe(SETTINGS_SECTION_IDS.memory);
+    expect(container.querySelector('[data-testid="memory-section"]')).toBe(section);
+    expect(
+      within(section).getByRole('button', { name: `About ${memoryCopy.section}` })
+    ).toHaveAccessibleDescription(memoryCopy.help);
+    // The header keeps no paragraph.
+    expect(section.querySelectorAll('.biorouter-settings-section-header p')).toHaveLength(0);
+  });
+
+  it('refreshes from a glyph with a name, not a labelled button', async () => {
+    render(<MemorySection />);
+    await screen.findByText('clinical');
+    expect(mockInventory).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: memoryCopy.refresh }));
+    await waitFor(() => expect(mockInventory).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Refresh')).toBeNull();
+  });
+
+  it('heads each store with its short name, a right-aligned count and a tip', async () => {
+    const { container } = render(<MemorySection />);
+    await screen.findByText('clinical');
+
+    expect(screen.getByRole('heading', { name: memoryCopy.global.heading })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: memoryCopy.local.heading })).toBeInTheDocument();
+    const counts = [...container.querySelectorAll('.br-memory-store-count')].map(
+      (node) => node.textContent
+    );
+    expect(counts).toEqual(['2 memories', '1 memory']);
+
+    // The audience sentence and the folder are the tip's description, so they are heard on
+    // reaching the glyph and are not standing text.
+    const globalTip = screen.getByRole('button', { name: 'About Global' });
+    expect(globalTip).toHaveAccessibleDescription(
+      expect.stringContaining('Shared by every chat on this computer')
+    );
+    expect(globalTip).toHaveAccessibleDescription(
+      expect.stringContaining('/Users/someone/.config/biorouter/memory')
+    );
+    expect(screen.getByRole('button', { name: 'About This project' })).toHaveAccessibleDescription(
+      expect.stringContaining('/Users/someone/work/proj/.biorouter/memory')
+    );
+    // The old sentence-long headings are gone.
+    expect(screen.queryByText(/Global: shared by every chat/)).toBeNull();
+    expect(screen.queryByText(/This project: only chats opened here/)).toBeNull();
+  });
+
+  it('shows a category as one line: its name, and only its count at the trailing edge', async () => {
+    render(<MemorySection />);
+    const name = await screen.findByText('clinical');
+    const row = name.closest('.biorouter-settings-row') as HTMLElement;
+
+    expect(row).toHaveTextContent('clinical');
+    expect(row.querySelector('.br-row-actions-meta')).toHaveTextContent('2 memories');
+    // Size and date are the name's tooltip, not text on the row.
+    expect(row.textContent).not.toMatch(/\d+(\.\d)? (B|KB)/);
+    expect(row.textContent).not.toMatch(/Updated/);
+  });
+
+  it('draws an open category’s entries as sibling rows, not inside the category row', async () => {
+    render(<MemorySection />);
+    const name = await screen.findByText('clinical');
+    const categoryRow = name.closest('.biorouter-settings-row') as HTMLElement;
+
+    fireEvent.click(screen.getByRole('button', { name: /show the 2 memories in clinical/i }));
+    const body = await screen.findByText('the cohort has 812 patients');
+    const entryRow = body.closest('.biorouter-settings-row') as HTMLElement;
+
+    expect(entryRow).not.toBe(categoryRow);
+    expect(categoryRow.contains(entryRow)).toBe(false);
+    expect(categoryRow.nextElementSibling).toBe(entryRow);
+    expect(entryRow.className).toContain('br-memory-entry');
+    // Entry text is the 13px role, one step under the 14px category name.
+    expect(body.className).toContain('text-secondary');
+    expect(body.className).not.toContain('text-supporting');
+  });
+
+  it('keeps delete out of sight and out of red until the person means it', async () => {
+    render(<MemorySection />);
+    await screen.findByText('clinical');
+    fireEvent.click(screen.getByRole('button', { name: /show the 2 memories in clinical/i }));
+
+    const buttons = [
+      screen.getByRole('button', { name: /delete the global category clinical/i }),
+      ...screen.getAllByRole('button', { name: /delete this memory from clinical/i }),
+    ];
+    expect(buttons).toHaveLength(3);
+    for (const button of buttons) {
+      // Inside the cluster that stays at opacity 0 until the row is hovered or focused, and
+      // that is always shown on a device without hover.
+      expect(button.closest('.br-row-actions')).not.toBeNull();
+      // Muted at rest (`.br-memory-delete`), never the standing red of the old column.
+      expect(button.className).toContain('br-memory-delete');
+      expect(button.className).not.toContain('text-text-danger');
+      expect(button).toHaveAttribute('data-row-action');
+    }
+  });
+
+  it('says an empty store in one muted row and keeps the rest in a tip', async () => {
+    mockInventory.mockResolvedValue(
+      inventoryResponse({
+        global: {
+          scope: 'global',
+          path: '/Users/someone/.config/biorouter/memory',
+          exists: false,
+          categories: [],
+        },
+      })
+    );
+    render(<MemorySection />);
+
+    const line = await screen.findByText(memoryCopy.empty);
+    expect(line.closest('.br-memory-empty')).not.toBeNull();
+    expect(line.closest('.br-memory-empty')!.querySelector('button')).toHaveAccessibleDescription(
+      memoryCopy.emptyHelp
+    );
+    // A Note (a bordered box) is not used for an empty list.
+    expect(line.closest('[class*="bg-background-muted"]')).toBeNull();
+  });
+
+  it('says "No project open" in one muted row, with the explanation as its tip', async () => {
+    mockInventory.mockResolvedValue(inventoryResponse({ local: null }));
+    render(<MemorySection />);
+    await screen.findByText('clinical');
+
+    const line = screen.getByText(memoryCopy.noProject);
+    expect(line.closest('.br-memory-empty')).not.toBeNull();
+    expect(
+      screen.getByRole('button', { name: `About ${memoryCopy.noProject}` })
+    ).toHaveAccessibleDescription(memoryCopy.noProjectHelp);
+    // The store still has its heading, so the page does not lose a section.
+    expect(screen.getByRole('heading', { name: memoryCopy.local.heading })).toBeInTheDocument();
   });
 });
