@@ -167,6 +167,12 @@ export function Command({
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    // The listbox keys belong to the field. A control placed inside the root (a "Select all"
+    // button, an InfoTip, a scope bar) keeps its own keys: without this, Enter on that button
+    // bubbled here, was prevented, and clicked the highlighted row instead (WS-PICKERS-2).
+    if (event.target instanceof HTMLElement && event.target.getAttribute('role') !== 'combobox') {
+      return;
+    }
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();

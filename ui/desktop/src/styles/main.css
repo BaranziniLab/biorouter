@@ -4821,7 +4821,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   min-inline-size: 0;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
+  /* 10px above and below the line, counting the row's 1px of transparent border room (the
+     straight-hairline recipe) as part of the bottom 10, so a one-line row is 40px exactly and
+     its content sits on the row's centre. */
+  padding: 10px 12px 9px;
 }
 
 .br-setting-row[data-disabled='true'] {
@@ -4862,6 +4865,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   display: flex;
   flex: none;
   align-items: center;
+  /* A 28px button, segmented track or select and a 32px field fit the 40px row: the control may
+     reach 6px into the row's 10px block padding, so every one-line row is 40px (spec 3.13,
+     WS-SETTINGS-A-1). The hit box is unchanged; only the row stops growing around it. */
+  margin-block: -6px;
 }
 
 .br-setting-section-header {

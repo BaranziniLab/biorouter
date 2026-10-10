@@ -35,6 +35,8 @@ const TOKEN_NAMES = [
   '--dur-fast-max',
   '--ease-out',
   '--ease-spring',
+  '--row-height',
+  '--radius-md',
 ];
 
 /** The first declaration of each token in main.css, so a token change reaches this test. */
@@ -80,6 +82,7 @@ import { SegmentedControl } from './segmented-control';
 import { InfoTip } from './info-tip';
 import { MENU_ROW_CLASS_NAME, MENU_ROW_TRAILING_CLASS_NAME } from './dropdown-menu';
 import { Tabs, TabsList, TabsTrigger } from './tabs';
+import { SettingRow, SettingSection } from './setting-row';
 
 const OPTIONS = [
   { value: 'light', label: 'Light' },
@@ -110,6 +113,19 @@ function App() {
       <p id="inline" style={{ margin: 0, padding: 16 }}>
         Prevent sleep<InfoTip label="Prevent sleep" help="The screen can still lock." />
       </p>
+      <div style={{ width: 560, padding: 16 }}>
+        <SettingSection title="General">
+          <SettingRow label="Text size" controlId="row-28">
+            <span id="row-28" style={{ display: 'block', width: 120, height: 28 }} />
+          </SettingRow>
+          <SettingRow label="Max turns" controlId="row-32">
+            <span id="row-32" style={{ display: 'block', width: 120, height: 32 }} />
+          </SettingRow>
+          <SettingRow label="Prevent sleep" controlId="row-switch">
+            <Switch id="row-switch" checked={false} onCheckedChange={() => {}} />
+          </SettingRow>
+        </SettingSection>
+      </div>
       <div style={{ padding: 16 }}>
         <Tabs defaultValue="general">
           <TabsList aria-label="Sections" data-testid="tabs" style={{ display: 'flex', gap: 20 }}>
@@ -405,6 +421,24 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       const end = await measure();
       near(end.indicator.left, end.active.left, 'indicator left after the switch');
       near(end.indicator.width, end.active.width, 'indicator width after the switch');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('keeps every one-line SettingRow at 40px, whatever its 20 to 32px control (WS-SETTINGS-A-1)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const heights = await tab.evaluate(() =>
+        ['row-28', 'row-32', 'row-switch'].map(
+          (id) =>
+            document.getElementById(id)!.closest('.br-setting-row')!.getBoundingClientRect().height
+        )
+      );
+      near(heights[0], 40, 'row with a 28px control');
+      near(heights[1], 40, 'row with a 32px control');
+      near(heights[2], 40, 'row with a switch');
     } finally {
       await tab.close();
     }
