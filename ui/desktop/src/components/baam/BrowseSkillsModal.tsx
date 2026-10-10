@@ -31,11 +31,7 @@ interface Props {
 }
 
 const CATEGORY_ORDER: SkillCategory[] = ['Core', 'Developer', 'Biomedical'];
-const CATEGORY_LABELS: Record<SkillCategory, string> = {
-  Core: 'Core skills',
-  Developer: 'Developer & authoring',
-  Biomedical: 'Biomedical analysis',
-};
+const CATEGORY_LABELS: Record<SkillCategory, string> = BROWSE_SKILLS_COPY.categories;
 
 type Filter = 'All' | SkillCategory;
 
@@ -154,7 +150,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
       try {
         const res = await installRegistrySkill(skill);
         if (!res.ok) {
-          failures.push({ id: skill.id, name: skill.name, error: res.error ?? 'failed' });
+          failures.push({
+            id: skill.id,
+            name: skill.name,
+            error: res.error ?? BROWSE_SKILLS_COPY.failedFallback,
+          });
         } else if (res.installed && res.installed.length > 0) {
           // The daemon's account of what landed, not the row's claim.
           landed.push(
@@ -173,7 +173,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
         failures.push({
           id: skill.id,
           name: skill.name,
-          error: error instanceof Error ? error.message : 'installation failed',
+          error: error instanceof Error ? error.message : BROWSE_SKILLS_COPY.installFailedFallback,
         });
       }
     }

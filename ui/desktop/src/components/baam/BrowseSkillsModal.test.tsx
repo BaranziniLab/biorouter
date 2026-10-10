@@ -191,7 +191,10 @@ describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => 
   it('groups the catalog under its category headings, in registry order', async () => {
     await openWithMarketplaceSkills();
 
-    expect(shownHeadings()).toEqual(['Core skills 4', 'Biomedical analysis 3']);
+    expect(shownHeadings()).toEqual([
+      `${BROWSE_SKILLS_COPY.categories.Core} 4`,
+      `${BROWSE_SKILLS_COPY.categories.Biomedical} 3`,
+    ]);
     expect(shownSkillNames()).toEqual([
       'Scientific Visual Communication',
       'ggplot2 Visualization',
@@ -219,13 +222,18 @@ describe('BrowseSkillsModal — browsing is grouped, a search is ranked', () => 
 
     await user.type(searchBox, '   ');
 
-    expect(shownHeadings()).toEqual(['Core skills 4', 'Biomedical analysis 3']);
+    expect(shownHeadings()).toEqual([
+      `${BROWSE_SKILLS_COPY.categories.Core} 4`,
+      `${BROWSE_SKILLS_COPY.categories.Biomedical} 3`,
+    ]);
   });
 
   it('keeps the category filter under a search', async () => {
     const { user, searchBox } = await openWithMarketplaceSkills();
 
-    await user.click(screen.getByRole('button', { name: 'Biomedical analysis' }));
+    await user.click(
+      screen.getByRole('button', { name: BROWSE_SKILLS_COPY.categories.Biomedical })
+    );
     await user.type(searchBox, 'R scripting ggplot visualization');
 
     expect(shownSkillNames()).toEqual(['Data Visualization', 'Clinical Biostatistics']);

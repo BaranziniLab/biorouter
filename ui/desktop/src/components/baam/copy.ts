@@ -37,6 +37,15 @@ export const BROWSE_SKILLS_COPY = {
   empty: 'No skills match your search.',
   filterLabel: 'Category',
   all: 'All',
+  /** The registry's three categories, as the filter chips and the group labels name them. */
+  categories: {
+    Core: 'Core skills',
+    Developer: 'Developer & authoring',
+    Biomedical: 'Biomedical analysis',
+  },
+  /** Fragments the install report joins to a row's name; the sentence around them is `installReport.ts`'s. */
+  failedFallback: 'failed',
+  installFailedFallback: 'installation failed',
   /** Counts ROWS, on purpose: a package is one box. */
   selectAll: (n: number) => `Select all (${n})`,
   clearSelection: 'Clear selection',
