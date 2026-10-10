@@ -270,29 +270,38 @@ export const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
 export const MENU_SURFACE_CLASS_NAME =
   'br-menu-surface br-menu-motion biorouter-popover-surface bg-background-default text-text-default z-[var(--z-modal-dropdown)] rounded-container p-1 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2';
 
-function DropdownMenuContent({
-  className,
-  sideOffset = 6,
-  onKeyDown,
+/**
+ * Spec 2.5, the focus ring after a mouse click (WS-PICKERS-3, measured in Chromium with real
+ * pointer input): when a POINTER pick closes a menu, the picked item unmounts, nothing holds
+ * focus, and Radix's focus return to the trigger then reads as keyboard focus, so the trigger
+ * wore the D-15 focus surface as if it had been Tabbed to. After such a pick focus stays where the
+ * click left it. A key pick (Enter, Space), Escape, a Tab out, and an item that keeps the menu
+ * open (a Copy that says "Copied", then closes by itself) keep Radix's focus return.
+ *
+ * Electron 39 (Chromium 142) ignores `focus({ focusVisible: false })` (probed 2026-10-10), so
+ * returning focus without the ring is not available; skipping the return is the fix.
+ *
+ * Returns the props to spread on the Radix content, composed with the caller's own. Not used by
+ * `ContextMenuContent`: a right-click focuses the row by pointer first, so Radix's return there
+ * lands without the ring (probed), and skipping it would only lose the row's focus.
+ */
+export function usePointerPickFocusRule<T extends HTMLElement>({
+  ref,
   onCloseAutoFocus,
   onKeyDownCapture,
   onPointerDownCapture,
-  ref,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
-  const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
-  // Spec 2.5, the focus ring after a mouse click (WS-PICKERS-3, measured in Chromium with real
-  // pointer input): when a POINTER pick closes the menu, the picked item unmounts, nothing holds
-  // focus, and Radix's focus return to the trigger then reads as keyboard focus, so the trigger
-  // wore the D-15 focus surface as if it had been Tabbed to. After such a pick focus stays where
-  // the click left it. A key pick (Enter, Space), Escape, a Tab out, and a menu that stays open
-  // after its item (a Copy that says "Copied", then closes by itself) keep Radix's focus return.
+}: {
+  ref?: React.Ref<T>;
+  onCloseAutoFocus?: (event: Event) => void;
+  onKeyDownCapture?: React.KeyboardEventHandler<T>;
+  onPointerDownCapture?: React.PointerEventHandler<T>;
+}) {
   const pointerInput = React.useRef(false);
   const pointerPickClosed = React.useRef(false);
   const contentRef = React.useCallback(
-    (node: HTMLDivElement | null) => {
+    (node: T | null) => {
       if (typeof ref === 'function') ref(node);
-      else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = node;
+      else if (ref) (ref as React.RefObject<T | null>).current = node;
       if (!node) return;
       // Radix dispatches this bubbling event on the item; by the time it reaches the content
       // the item's own `onSelect` has run, so `defaultPrevented` says whether the menu closes.
@@ -304,26 +313,48 @@ function DropdownMenuContent({
     },
     [ref]
   );
+  return {
+    ref: contentRef,
+    onKeyDownCapture: (event: React.KeyboardEvent<T>) => {
+      pointerInput.current = false;
+      onKeyDownCapture?.(event);
+    },
+    onPointerDownCapture: (event: React.PointerEvent<T>) => {
+      pointerInput.current = true;
+      onPointerDownCapture?.(event);
+    },
+    onCloseAutoFocus: (event: Event) => {
+      onCloseAutoFocus?.(event);
+      if (pointerPickClosed.current && !event.defaultPrevented) event.preventDefault();
+      pointerPickClosed.current = false;
+    },
+  };
+}
+
+function DropdownMenuContent({
+  className,
+  sideOffset = 6,
+  onKeyDown,
+  onCloseAutoFocus,
+  onKeyDownCapture,
+  onPointerDownCapture,
+  ref,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
+  const focusRule = usePointerPickFocusRule<HTMLDivElement>({
+    ref,
+    onCloseAutoFocus: handleCloseAutoFocus,
+    onKeyDownCapture,
+    onPointerDownCapture,
+  });
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
-        ref={contentRef}
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
-        onKeyDownCapture={(event) => {
-          pointerInput.current = false;
-          onKeyDownCapture?.(event);
-        }}
-        onPointerDownCapture={(event) => {
-          pointerInput.current = true;
-          onPointerDownCapture?.(event);
-        }}
         onKeyDown={handleKeyDown}
-        onCloseAutoFocus={(event) => {
-          handleCloseAutoFocus(event);
-          if (pointerPickClosed.current && !event.defaultPrevented) event.preventDefault();
-          pointerPickClosed.current = false;
-        }}
+        {...focusRule}
         // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
         //
         // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
