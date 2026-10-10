@@ -74,14 +74,20 @@ function ContextMenuContent({
 
 function ContextMenuItem({
   className,
+  variant = 'default',
   ...props
-}: React.ComponentProps<typeof ContextMenuPrimitive.Item>) {
+}: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
+  variant?: 'default' | 'destructive';
+}) {
   return (
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
+      data-variant={variant}
       className={cn(
         DROPDOWN_ROW_CLASS_NAME,
-        "[&_svg:not([class*='text-'])]:text-text-muted",
+        // The dropdown's destructive treatment, word for word: danger ink, a 10% (dark 20%)
+        // danger wash on highlight. One destructive look whichever way the menu was opened.
+        "data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted",
         className
       )}
       {...props}

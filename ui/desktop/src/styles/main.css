@@ -3849,6 +3849,421 @@ input[type='radio']:checked ~ [data-radio-ring] {
 
 /* No dark-mode override needed: the block is flat and token-driven in both themes. */
 
+/* @ws WS-PRIMITIVES begin: primitives */
+/* InfoTip, SegmentedControl, SettingRow, RowActions, Spinner, FilterInput, Textarea and the
+   tooltip motion. Authored, not utilities: every rule here is load-bearing for a shared primitive, and a newly
+   written Tailwind class can silently fail to generate under `BIOROUTER_NO_HMR` (CLAUDE.md,
+   "Desktop shell geometry"). Spec 2.6. */
+
+/* Tooltip and InfoTip motion: in over `--dur-fast`, out over `--dur-fast-min`, `--ease-out`.
+   `animate-in`/`animate-out` (tw-animate-css) read `--tw-duration` and `--tw-ease`. */
+.br-tooltip-motion {
+  --tw-duration: var(--dur-fast);
+  --tw-ease: var(--ease-out);
+}
+
+.br-tooltip-motion[data-state='closed'] {
+  --tw-duration: var(--dur-fast-min);
+}
+
+/* InfoTip trigger: a 14px glyph in a 24×24 hit box drawn with a −5px margin, so it adds 14px
+   to the line; the start margin is −1px so the glyph lands 4px after the label. */
+.br-info-tip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: 24px;
+  block-size: 24px;
+  margin-block: -5px;
+  margin-inline: -1px -5px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--text-subtle);
+  vertical-align: middle;
+  cursor: help;
+  -webkit-app-region: no-drag;
+  transition:
+    color var(--dur-fast-min) var(--ease-out),
+    background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-info-tip > svg {
+  inline-size: 14px;
+  block-size: 14px;
+  flex: none;
+}
+
+.br-info-tip:hover,
+.br-info-tip[data-state='open'] {
+  color: var(--text-default);
+}
+
+/* D-15: focus is a surface shift plus an inset edge, never a ring. */
+.br-info-tip:focus-visible {
+  outline: none;
+  color: var(--text-default);
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The `asChild` form (a badge as the trigger): Crew's ClassificationBadge ring, an outline
+   outside the chip, so the chip's own fill is untouched. */
+.br-info-tip-target {
+  cursor: help;
+}
+
+.br-info-tip-target:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.br-info-tip-content {
+  max-inline-size: min(280px, calc(100vw - 16px));
+  font-weight: 400;
+  text-align: start;
+  white-space: normal;
+}
+
+/* SegmentedControl: a 28px track (2px padding) of 24px segments; one thumb slides under the
+   selected segment. The thumb's `translate` and `width` are a named exception to "layout
+   snaps" (principle 9): it is absolutely positioned and moves no other box. */
+.br-segmented {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  block-size: var(--control-sm);
+  max-inline-size: 100%;
+  padding: 2px;
+  border-radius: var(--radius-element);
+  background: var(--background-muted);
+  -webkit-app-region: no-drag;
+}
+
+.br-segmented[data-fill='true'] {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  inline-size: 100%;
+}
+
+.br-segmented-item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  min-inline-size: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  block-size: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--text-secondary);
+  font-weight: 400;
+  line-height: var(--text-secondary--line-height);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.br-segmented-item:hover,
+.br-segmented-item[data-state='checked'] {
+  color: var(--text-default);
+}
+
+.br-segmented-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-segmented-item:disabled,
+.br-segmented-item[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.br-segmented-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-segmented-icon {
+  inline-size: 14px;
+  block-size: 14px;
+  flex: none;
+}
+
+.br-segmented-swatch {
+  inline-size: 10px;
+  block-size: 10px;
+  flex: none;
+  border-radius: var(--radius-full);
+}
+
+/* Before the first measurement the selected segment paints its own ground, so nothing slides
+   in from x=0 and nothing is missing in jsdom or a hidden ancestor. */
+.br-segmented[data-placed='false'] .br-segmented-item[data-state='checked'] {
+  background: var(--background-default);
+  box-shadow: var(--shadow-raised), var(--inset-hairline);
+}
+
+.br-segmented-thumb {
+  position: absolute;
+  z-index: 0;
+  inset-block: 2px;
+  inset-inline-start: 0;
+  border-radius: 6px;
+  background: var(--background-default);
+  box-shadow: var(--shadow-raised), var(--inset-hairline);
+  pointer-events: none;
+  transition:
+    translate var(--dur-fast-max) var(--ease-spring),
+    width var(--dur-fast-max) var(--ease-out);
+}
+
+.br-segmented-thumb[data-placed='false'] {
+  opacity: 0;
+}
+
+/* `fill`: equal columns, so the thumb is computed rather than measured. */
+.br-segmented[data-fill='true'] > .br-segmented-thumb {
+  inset-inline-start: 2px;
+  width: calc((100% - 4px) / var(--br-segmented-count, 1));
+  translate: calc(var(--br-segmented-index, 0) * 100%) 0;
+}
+
+.br-segmented-thumb[data-motion-still] {
+  transition: none;
+}
+
+/* SettingRow and SettingSection (`ui/setting-row.tsx`). The row box itself is
+   `.biorouter-settings-row`; these place what is inside it. */
+.br-setting-row {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.br-setting-row[data-disabled='true'] {
+  opacity: 0.5;
+}
+
+.br-setting-row-text {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.br-setting-row-head {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+}
+
+.br-setting-row-label {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+.br-setting-row-value {
+  min-inline-size: 0;
+  max-inline-size: 40%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-setting-row-control {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.br-setting-section-header {
+  display: flex;
+  min-block-size: 24px;
+  min-inline-size: 0;
+  align-items: center;
+  padding-inline: 12px;
+}
+
+.br-setting-section-title {
+  margin: 0;
+}
+
+.br-setting-section-action {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-inline-start: auto;
+}
+
+/* RowActions: hidden until the row is hovered or focused or its menu is open; always shown
+   without a hover pointer. Opacity only, so every action stays in the tab order (Crew's
+   `.crew-member-actions`). `meta` holds the cell at rest and gives way to the actions. */
+.br-row-actions-slot {
+  display: inline-grid;
+  flex: none;
+  align-items: center;
+  justify-items: end;
+}
+
+.br-row-actions-slot > .br-row-actions,
+.br-row-actions-slot > .br-row-actions-meta {
+  grid-area: 1 / 1;
+}
+
+.br-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-row-actions-meta {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+:is(.biorouter-list-row, .biorouter-settings-row, [data-row-actions-host]):is(
+    :hover,
+    :focus-within,
+    [data-state='open']
+  )
+  .br-row-actions,
+.br-row-actions:focus-within,
+.br-row-actions[data-state='open'] {
+  opacity: 1;
+}
+
+:is(.biorouter-list-row, .biorouter-settings-row, [data-row-actions-host]):is(
+    :hover,
+    :focus-within,
+    [data-state='open']
+  )
+  .br-row-actions-meta,
+.br-row-actions-slot[data-state='open'] > .br-row-actions-meta,
+.br-row-actions-slot:focus-within > .br-row-actions-meta {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .br-row-actions-slot {
+    display: inline-flex;
+    gap: 8px;
+  }
+
+  .br-row-actions-slot > .br-row-actions,
+  .br-row-actions-slot > .br-row-actions-meta {
+    grid-area: auto;
+  }
+
+  .br-row-actions,
+  .br-row-actions-meta {
+    opacity: 1 !important;
+  }
+}
+
+/* Spinner: one glyph, one period (`--dur-slow × 2`), linear; still under reduced motion. */
+@keyframes br-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.br-spinner {
+  flex: none;
+  animation: br-spin calc(var(--dur-slow) * 2) linear infinite;
+}
+
+.br-spinner[data-size='14'] {
+  inline-size: 14px;
+  block-size: 14px;
+}
+
+.br-spinner[data-size='16'] {
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+.br-spinner-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+/* FilterInput: a 28px field with a leading 16px search glyph. */
+.br-filter-input {
+  position: relative;
+  display: inline-flex;
+  min-inline-size: 0;
+  align-items: center;
+  -webkit-app-region: no-drag;
+}
+
+.br-filter-input-icon {
+  position: absolute;
+  inset-inline-start: 8px;
+  inline-size: 16px;
+  block-size: 16px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.br-filter-input-field {
+  block-size: var(--control-sm);
+  padding-inline-start: 28px;
+}
+
+.br-filter-input-field::-webkit-search-cancel-button,
+.br-filter-input-field::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Textarea: the field's resting edge is `--border-control` (3:1), not the 1.6:1 utility. */
+.br-textarea {
+  min-block-size: calc(3 * var(--text-body--line-height, 20px) + 14px);
+  border-color: var(--border-control, var(--border-emphasized));
+  resize: vertical;
+}
+
+.br-textarea[aria-invalid='true'] {
+  border-color: var(--border-danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-spinner {
+    animation: none;
+  }
+
+  .br-segmented-thumb,
+  .br-segmented-item,
+  .br-row-actions,
+  .br-row-actions-meta,
+  .br-info-tip {
+    transition: none;
+  }
+}
+/* @ws WS-PRIMITIVES end: primitives */
+
 /* D-09 / P1 — two-tone sidebar, separated by a hairline. The gradient edge
    overlay and the dark-mode drop shadow are gone: the warm surface step already
    separates it from the canvas. */

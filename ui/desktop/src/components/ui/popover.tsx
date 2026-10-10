@@ -8,6 +8,12 @@ import { cn } from '../../utils';
 export const Popover = PopoverPrimitive.Root;
 export const PopoverTrigger = PopoverPrimitive.Trigger;
 export const PopoverPortal = PopoverPrimitive.Portal;
+/**
+ * Positions a popover against an element that is not its trigger (spec 2.6, wave 0): a field
+ * that opens a menu below itself, a row that a summary card hangs from. The anchor takes no part
+ * in opening or closing; the caller owns `open`.
+ */
+export const PopoverAnchor = PopoverPrimitive.Anchor;
 
 export const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
