@@ -50,10 +50,12 @@ line is privacy information, so it is visible text and never an InfoTip
 
 A provider is a row on the shared settings-row geometry (`ProviderCard.tsx`, `providers.css`): a name
 over a one-line description (truncated, with a focusable tooltip for the rest), "Configured" as a success
-dot and a word, and one action. There is no initial tile. In settings the action (`Configure`, named for
-its row, as in "Configure Anthropic") shows on hover and on focus and is always shown without a hover
-pointer (`.br-row-actions`); on first run a configured provider's action is `Launch` and is always
-shown. An accordion row (the coding agents, and the local providers on first run) and its panel are two
+dot and a word, and one action. There is no initial tile. In settings the status and the action share one
+cell, Crew's `meta` recipe (`.br-row-actions-slot`): "Configured" at rest on the right edge, and the action
+(`Configure`, named for its row, as in "Configure Anthropic") in its place while the row is hovered or holds
+focus, always shown without a hover pointer (`.br-row-actions`), so the edge never moves. On first run the
+action is always shown, and a configured provider's is `Launch`; there the status and the button sit side by
+side. An accordion row (the coding agents, and the local providers on first run) and its panel are two
 siblings in the list, never one wrapper, because the list's hairline recipe drops the last child's rule.
 
 A section is a `SettingSection`: a caps heading with, where there is a reason to give, an InfoTip beside

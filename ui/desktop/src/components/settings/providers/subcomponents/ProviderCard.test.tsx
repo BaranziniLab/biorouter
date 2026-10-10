@@ -50,6 +50,17 @@ describe('ProviderCard keyboard access', () => {
     expect(screen.getByTestId('provider-card-versa_azure')).toHaveClass('biorouter-settings-row');
   });
 
+  it('swaps "Configured" for the action in one cell, so the right edge never moves', () => {
+    renderRow(true);
+    const status = screen.getByText(catalogCopy.configured);
+    const slot = status.closest('.br-row-actions-slot');
+    expect(slot, 'the status and the action share the shared reveal cell').not.toBeNull();
+    // The status is the cell's `meta` (shown at rest, gives way on hover and focus); the button is
+    // the cluster that takes its place.
+    expect(status).toHaveClass('br-row-actions-meta');
+    expect(slot).toContainElement(screen.getByTestId('provider-actions-versa_azure'));
+  });
+
   it('shows the actions at all times during first run', () => {
     render(
       <TooltipProvider>
@@ -62,6 +73,8 @@ describe('ProviderCard keyboard access', () => {
       </TooltipProvider>
     );
     expect(screen.getByTestId('provider-actions-versa_azure')).not.toHaveClass('br-row-actions');
+    // There the status and the button sit side by side: nothing is swapped.
+    expect(screen.getByText(catalogCopy.configured)).not.toHaveClass('br-row-actions-meta');
   });
 
   it('is text: no initial tile, and "Configured" is a success dot and a word', () => {

@@ -94,35 +94,58 @@ export const ProviderCard = function ProviderCard({
     </div>
   );
 
-  /** The configured status and the action button. */
-  const actions = (
-    <div className="br-provider-row-end">
-      {provider.is_configured && (
-        <span className="br-provider-configured text-supporting text-text-muted">
-          <StatusDot tone="success" />
-          {catalogCopy.configured}
-        </span>
+  /**
+   * The configured status and the action button.
+   *
+   * In settings the two share one cell, Crew's `meta` recipe (`.br-row-actions-slot`): "Configured"
+   * at rest on the right edge, and the Configure button in its place while the row is hovered or
+   * holds focus. The edge never moves, and the button stays in the tab order (opacity only). On
+   * first run the action is always shown, so there the status and the button sit side by side.
+   */
+  const configured = provider.is_configured ? (
+    <span
+      className={cn(
+        'br-provider-configured text-supporting text-text-muted',
+        !isOnboarding && 'br-row-actions-meta'
       )}
-      {/* ⚠ Keyed on the MODE, not on whether the row expands. Exempting
-          expandable rows left the two coding-agent rows wearing a permanent
-          Configure button in a list where every other row reveals one on hover,
-          which reads as two different kinds of row rather than as one list.
-          ⚠ `.br-row-actions` is the shared reveal: opacity only, on the row's hover AND
-          focus-within, and always shown without a hover pointer. Hover alone left a keyboard
-          user tabbing onto a Configure button, and its focus ring, at opacity 0 (W2-PRV-4).
-          This button is the row's keyboard path: the row's own click is a mouse convenience
-          that does the same thing. */}
-      <div
-        data-testid={`provider-actions-${slug}`}
-        className={cn('flex items-center', !isOnboarding && 'br-row-actions')}
-      >
-        <DefaultCardButtons
-          provider={provider}
-          onConfigure={onConfigure}
-          onLaunch={onLaunch}
-          isOnboardingPage={isOnboarding}
-        />
-      </div>
+    >
+      <StatusDot tone="success" />
+      {catalogCopy.configured}
+    </span>
+  ) : null;
+  // ⚠ Keyed on the MODE, not on whether the row expands. Exempting expandable rows left the two
+  // coding-agent rows wearing a permanent Configure button in a list where every other row
+  // reveals one on hover, which reads as two different kinds of row rather than as one list.
+  // ⚠ `.br-row-actions` is the shared reveal: opacity only, on the row's hover AND focus-within,
+  // and always shown without a hover pointer. Hover alone left a keyboard user tabbing onto a
+  // Configure button, and its focus ring, at opacity 0 (W2-PRV-4). This button is the row's
+  // keyboard path: the row's own click is a mouse convenience that does the same thing.
+  const action = (
+    <div
+      data-testid={`provider-actions-${slug}`}
+      className={cn('flex items-center', !isOnboarding && 'br-row-actions')}
+    >
+      <DefaultCardButtons
+        provider={provider}
+        onConfigure={onConfigure}
+        onLaunch={onLaunch}
+        isOnboardingPage={isOnboarding}
+      />
+    </div>
+  );
+  const actions = isOnboarding ? (
+    <div className="br-provider-row-end">
+      {configured}
+      {action}
+    </div>
+  ) : (
+    <div
+      className="br-row-actions-slot"
+      data-slot="row-actions-slot"
+      data-has-meta={configured ? 'true' : undefined}
+    >
+      {configured}
+      {action}
     </div>
   );
 
