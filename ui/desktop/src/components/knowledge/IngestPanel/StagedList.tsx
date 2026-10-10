@@ -1,6 +1,6 @@
 import { ClipboardList, FileText, Globe, X } from '../../icons/app-icons';
-import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { knowledgeCopy } from '../copy';
 import type { StagedSource } from '../hooks/useStagedSources';
 
 interface Props {
@@ -34,14 +34,15 @@ export function StagedList({ items, onRemove, onClear }: Props) {
 
   return (
     <div className="flex flex-col">
+      {/* The count joins the caps run, "STAGED 3" (Crew's "6 MEMBERS"), rather
+          than sitting in a badge of its own. */}
       <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="text-caps text-text-muted">Staged</span>
-        <div className="flex items-center gap-2">
-          <Badge>{items.length}</Badge>
-          <Button type="button" variant="ghost" size="sm" onClick={onClear}>
-            Clear
-          </Button>
-        </div>
+        <span className="text-caps tabular-nums text-text-muted">
+          {knowledgeCopy.ingest.stagedLabel} {items.length}
+        </span>
+        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+          Clear
+        </Button>
       </div>
       <div className="biorouter-list-shell">
         {items.map((s) => {
@@ -65,7 +66,7 @@ export function StagedList({ items, onRemove, onClear }: Props) {
               key={s.id}
               data-testid="knowledge-staged-item"
               data-label={label}
-              className="biorouter-list-row flex items-center gap-2 px-3"
+              className="biorouter-list-row flex items-center gap-2"
             >
               <Icon
                 className="h-icon-row w-icon-row flex-shrink-0 text-text-muted"
@@ -86,7 +87,7 @@ export function StagedList({ items, onRemove, onClear }: Props) {
                 type="button"
                 variant="ghost"
                 shape="round"
-                size="xs"
+                size="sm"
                 onClick={() => onRemove(s.id)}
                 aria-label={`Remove ${label} from the staging queue`}
               >

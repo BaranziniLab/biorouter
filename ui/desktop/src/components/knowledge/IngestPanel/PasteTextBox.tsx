@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { knowledgeCopy } from '../copy';
 
 interface Props {
   onStage: (text: string, title: string, urls: string[]) => void;
@@ -62,16 +63,16 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Optional title…"
+        placeholder={knowledgeCopy.ingest.pasteTitlePlaceholder}
         aria-label="Title for the pasted source"
       />
       <textarea
         ref={textRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
+        placeholder={knowledgeCopy.ingest.pastePlaceholder}
         aria-label="Text to stage"
-        className="biorouter-focus-surface min-h-[100px] w-full resize-y rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-label text-text-default placeholder:text-text-muted"
+        className="biorouter-focus-surface min-h-[100px] w-full resize-y rounded-element border border-border-control bg-background-default px-2 py-1.5 text-body text-text-default placeholder:text-text-muted"
       />
 
       {detectedUrls.length > 0 && (
@@ -100,7 +101,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
       )}
 
       <div className="flex items-center justify-between gap-2">
-        <span className="text-supporting text-text-muted">{text.length} chars</span>
+        <span className="text-supporting tabular-nums text-text-muted">{text.length} chars</span>
         <div className="flex gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
             Cancel

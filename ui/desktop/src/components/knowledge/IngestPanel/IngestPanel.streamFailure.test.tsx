@@ -11,6 +11,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
+import { knowledgeCopy } from '../copy';
 
 const mocks = vi.hoisted(() => ({
   knowledge: {
@@ -67,7 +68,7 @@ function sseResponse(text: string): Response {
 
 function stageSomeText() {
   fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-  fireEvent.change(screen.getByPlaceholderText(/Paste knowledge/i), {
+  fireEvent.change(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder), {
     target: { value: 'some knowledge' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Stage' }));

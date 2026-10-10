@@ -44,4 +44,33 @@ export const knowledgeCopy = {
 
   /** The format badge in the band. Legacy explains itself in an InfoTip. */
   legacyFormatName: 'Legacy format',
+
+  /** The Sources rail's staging affordances. */
+  ingest: {
+    dropLabel: 'Drag and drop to stage',
+    dropHint: 'PDF, Office, web pages, folders',
+    dropInfoLabel: 'Which files can be staged',
+    dropInfo:
+      'Readable files (.pdf, .pptx, .xlsx, .docx, .csv, .md, .html, .txt) are staged one by one, and folders and archives are unpacked; binaries are skipped. Import a .brkb archive from Manage bases.',
+    pasteText: 'Paste text',
+    chooserTitle: 'Stage knowledge sources',
+    chooserSubtitle: 'Add files, or a folder or archive.',
+    chooseFiles: 'Choose files',
+    chooseFolder: 'Choose folder or archive',
+    pastePlaceholder: 'Paste text or links',
+    pasteTitlePlaceholder: 'Title (optional)',
+    stagedLabel: 'Staged',
+    warnings: (n: number) => `${n} ${n === 1 ? 'warning' : 'warnings'}`,
+    warningsInfoLabel: 'Curation warnings',
+    warningsInfo:
+      'Keep readable, high-signal sources. Leave out installers, giant raw exports, and files that are mostly IDs or machine noise.',
+    /** The digest model picker's footer line, and its InfoTip. */
+    modelUse: 'Used for digests, not chat',
+    modelUseInfo:
+      'This model digests staged sources and scheduled knowledge curation. Chat replies use the model chosen in the composer.',
+    /** Why Digest does nothing yet, when there is nothing to fix: the button's Tooltip. */
+    stageAFile: 'Stage a file to digest.',
+    checkingModel: 'Checking which model this knowledge base digests with…',
+    errorDetails: 'Error details',
+  },
 } as const;

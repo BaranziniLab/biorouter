@@ -1,12 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Clipboard } from '../../icons/app-icons';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { toastError, toastSuccess } from '../../../toasts';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { expandKnowledgePath, knowledgeFetch } from '../hooks/knowledgeRequest';
 import { useIngestStream } from '../hooks/useIngestStream';
@@ -56,6 +58,7 @@ export function IngestPanel() {
   // The summoned box and the strip that would otherwise cover it.
   const pasteBoxRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
+  const quietReasonId = useId();
 
   /**
    * The digest log belongs to the base it ran against.
@@ -464,8 +467,8 @@ export function IngestPanel() {
 
   const busy = digestState !== 'idle';
   // K-04: the one primary action stays full-opacity even with nothing staged,
-  // guarded by a cursor + helper line, so it never trains the eye to ignore a
-  // permanently half-lit button.
+  // guarded by a cursor and an explanation, so it never trains the eye to ignore
+  // a permanently half-lit button.
   const nothingToDigest = !dispatchKbId || !model || items.length === 0;
   // ⚠ **There is deliberately no "choose a primary knowledge base" rung here.**
   // This panel cannot be mounted without one: `KnowledgeView` replaces its whole
@@ -485,12 +488,20 @@ export function IngestPanel() {
       ? 'Could not load your knowledge bases, so digestion is on hold.'
       : 'This knowledge base is unavailable, so digestion is on hold.'
     : modelPending
-      ? 'Checking which model this knowledge base digests with…'
+      ? knowledgeCopy.ingest.checkingModel
       : !model
         ? 'No model is configured. Choose a model above to enable digestion.'
         : items.length === 0
-          ? 'Stage a file to digest.'
+          ? knowledgeCopy.ingest.stageAFile
           : null;
+  // Spec 3.12: a visible line under Digest only when the person must act (the
+  // base is unavailable, or no model is configured). The resting reason and the
+  // model check are not problems to fix, so they ride on the button itself, in
+  // its Tooltip and its accessible description; K-04 still holds, because the
+  // button stays at full opacity and explains itself.
+  const reasonNeedsAction = kbUnavailable || (!modelPending && !model);
+  const visibleReason = !busy && reasonNeedsAction ? digestBlockedReason : null;
+  const quietReason = !busy && !reasonNeedsAction ? digestBlockedReason : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -516,17 +527,11 @@ export function IngestPanel() {
           rather than as a layout accident — and it is where a staged list
           actually grows into. */}
       <div className="flex min-h-0 flex-1 flex-col justify-start gap-3 overflow-y-auto p-4">
-        <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
-        <Button
-          data-testid="knowledge-ingest-paste-text"
-          type="button"
-          variant="secondary"
-          onClick={() => setShowPasteBox(true)}
-          className="w-full"
-        >
-          <Clipboard aria-hidden="true" />
-          Paste text
-        </Button>
+        <Dropzone
+          onFiles={onFiles}
+          onPathPickRequested={() => void onPathPickRequested()}
+          onPasteText={() => setShowPasteBox(true)}
+        />
         <IngestWarnings
           warnings={warnings}
           onDismiss={(id) =>
@@ -620,37 +625,53 @@ export function IngestPanel() {
           disabled={!dispatchKbId || savingDefaultModel}
           saving={savingDefaultModel}
         />
-        {/* K-04 preserved verbatim: the one primary action stays full-opacity
-            with nothing staged, guarded by a cursor and a helper line, so it
-            never trains the eye to ignore a permanently half-lit button.
+        {/* K-04: the one primary action stays full-opacity with nothing
+            staged, guarded by a cursor and its Tooltip (a visible line only
+            when the person must act), so it never trains the eye to ignore a
+            permanently half-lit button.
             `size="lg"` and NO className height — `size="sm" className="min-h-9"`
             was a contradiction that forced a 28px rung to render at 36px while
             keeping `sm`'s own 6px icon gap. */}
-        <Button
-          data-testid="knowledge-digest-button"
-          variant={busy ? 'secondary' : 'default'}
-          size="lg"
-          disabled={digestState === 'stopping'}
-          aria-disabled={(!busy && nothingToDigest) || undefined}
-          onClick={() => {
-            if (busy) {
-              onAbort();
-              return;
-            }
-            if (!nothingToDigest) void onDigest();
-          }}
-          className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
-        >
-          {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
-        </Button>
-        {digestBlockedReason && !busy && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              data-testid="knowledge-digest-button"
+              variant={busy ? 'secondary' : 'default'}
+              size="lg"
+              disabled={digestState === 'stopping'}
+              aria-disabled={(!busy && nothingToDigest) || undefined}
+              aria-describedby={quietReason ? quietReasonId : undefined}
+              onClick={() => {
+                if (busy) {
+                  onAbort();
+                  return;
+                }
+                if (!nothingToDigest) void onDigest();
+              }}
+              className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
+            >
+              {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
+            </Button>
+          </TooltipTrigger>
+          {quietReason && <TooltipContent side="top">{quietReason}</TooltipContent>}
+        </Tooltip>
+        {quietReason && (
+          <span id={quietReasonId} className="sr-only">
+            {quietReason}
+          </span>
+        )}
+        {visibleReason && (
           <p
-            className="text-center text-supporting text-text-muted"
-            // Only where it explains the line being shown — hung on an
-            // unrelated reason it is a tooltip about someone else's problem.
-            title={(kbUnavailable && basesError) || undefined}
+            data-testid="knowledge-digest-reason"
+            className="flex flex-wrap items-center justify-center gap-x-1 text-center text-supporting text-text-muted"
           >
-            {digestBlockedReason}
+            <span>{visibleReason}</span>
+            {/* The raw error behind "could not load", for the person who asks.
+                It used to be a native `title` on the line. The sentence itself
+                stays visible: an InfoTip never carries an error alone. */}
+            {kbUnavailable && basesError && (
+              <InfoTip label={knowledgeCopy.ingest.errorDetails} help={basesError} />
+            )}
             {/* The one state the user can act on from here: re-read the list.
                 Offered for a missing base too — a base that came back, or one
                 the prune has since cleared, both settle this line. */}
@@ -660,7 +681,6 @@ export function IngestPanel() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="ml-1 align-baseline"
                 onClick={() => void refresh()}
               >
                 Retry

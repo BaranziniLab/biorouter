@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Brain, Check, ChevronDown, LoaderCircle } from '../../icons/app-icons';
+import { Brain, Check, ChevronDown } from '../../icons/app-icons';
 import type { ProviderDetails } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';
-import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { InfoTip } from '../../ui/info-tip';
+import { Spinner } from '../../ui/spinner';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import {
   Command,
@@ -21,6 +22,7 @@ import {
   getOrderedProviderGroups,
   type OrderedProviderGroup,
 } from '../../settings/providers/providerOrdering';
+import { knowledgeCopy } from '../copy';
 
 interface Props {
   /** `null` when no model could be resolved — the trigger says so instead of naming a vendor. */
@@ -101,9 +103,8 @@ function NoModelsAvailable() {
  * field for every keystroke (see `components/ui/command.tsx`).
  *
  * The trigger takes the KB selector's chrome exactly (§4.1) — one Select shape
- * for both selectors in this rail — and `Set as default` moves from a
- * hand-rolled span in the trigger to a chip in the menu footer, where it
- * describes what picking a row will DO instead of decorating the resting state.
+ * for both selectors in this rail. The footer says what the pick is for in one
+ * line ("Used for digests, not chat"), with the rest in an InfoTip.
  */
 export function IngestModelPicker({
   value,
@@ -236,7 +237,7 @@ export function IngestModelPicker({
           disabled={disabled}
           aria-label="Knowledge model"
           aria-expanded={open}
-          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
+          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Brain className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
           <span className="shrink-0 text-caps text-text-muted">Model</span>
@@ -248,10 +249,7 @@ export function IngestModelPicker({
           {saving ? (
             <>
               <span className="sr-only">Saving</span>
-              <LoaderCircle
-                aria-hidden="true"
-                className="h-icon-row w-icon-row shrink-0 animate-spin text-text-muted"
-              />
+              <Spinner className="shrink-0 text-text-muted" />
             </>
           ) : (
             <ChevronDown
@@ -332,12 +330,15 @@ export function IngestModelPicker({
             )}
           </CommandList>
           {hasModels && (
-            <div className="flex-none border-t border-border-subtle px-2 py-2">
-              <Badge variant="chip">Set as default</Badge>
-              <p className="mt-1 text-supporting text-text-muted">
-                This model digests staged sources and scheduled knowledge curation. Chat replies
-                still use the model selected in the chat composer.
-              </p>
+            // One line and its InfoTip (spec 3.12). The "Set as default" chip that
+            // sat here looked like a button and did nothing: picking a row IS
+            // setting the base's default.
+            <div className="flex flex-none items-center gap-1 border-t border-border-subtle px-3 py-2 text-supporting text-text-muted">
+              <span>{knowledgeCopy.ingest.modelUse}</span>
+              <InfoTip
+                label={knowledgeCopy.ingest.modelUse}
+                help={knowledgeCopy.ingest.modelUseInfo}
+              />
             </div>
           )}
         </Command>

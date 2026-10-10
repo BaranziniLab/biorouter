@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
+import { knowledgeCopy } from '../copy';
 
 const mocks = vi.hoisted(() => ({
   knowledge: {
@@ -97,7 +98,7 @@ vi.mock('../../../toasts', () => ({
 
 function stageSomeText() {
   fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-  fireEvent.change(screen.getByPlaceholderText(/Paste knowledge/i), {
+  fireEvent.change(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder), {
     target: { value: 'some knowledge' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Stage' }));
@@ -203,6 +204,54 @@ describe('IngestPanel model selection', () => {
 
     const digest = screen.getByTestId('knowledge-digest-button');
     expect(digest).not.toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+/**
+ * Spec 3.12: one visible line under Digest, and only when the person must act.
+ * The resting reason and the model check are not problems, so they ride on the
+ * button (its Tooltip and its accessible description) rather than on a line
+ * that is there every time the rail is empty. K-04 holds either way: the
+ * button stays full-opacity and says why it does nothing.
+ */
+describe('IngestPanel digest explanation', () => {
+  it('explains a resting Digest on the button, with no line under it', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).toHaveAttribute('aria-disabled', 'true');
+    expect(digest).toHaveAccessibleDescription(knowledgeCopy.ingest.stageAFile);
+    expect(screen.queryByTestId('knowledge-digest-reason')).toBeNull();
+  });
+
+  it('keeps the line when there is something to fix', async () => {
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(screen.getByTestId('knowledge-digest-reason')).toHaveTextContent(
+      /no model is configured/i
+    );
+    expect(screen.getByTestId('knowledge-digest-button')).not.toHaveAccessibleDescription();
+  });
+
+  it('describes nothing once a source is staged and a model is set', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    render(<IngestPanel />);
+    stageSomeText();
+    await screen.findByTestId('knowledge-model-picker-trigger');
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).not.toHaveAttribute('aria-disabled');
+    expect(digest).not.toHaveAccessibleDescription();
+    expect(screen.queryByTestId('knowledge-digest-reason')).toBeNull();
+  });
+
+  it('offers Paste text inside the dropzone, not as a slab under it', () => {
+    render(<IngestPanel />);
+    const paste = screen.getByTestId('knowledge-ingest-paste-text');
+    expect(screen.getByTestId('knowledge-ingest-dropzone')).toContainElement(paste);
   });
 });
 
@@ -484,7 +533,7 @@ describe('IngestPanel paste box visibility', () => {
   it('puts the caret in the textarea without scrolling it back under the footer', () => {
     render(<IngestPanel />);
     fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-    expect(screen.getByPlaceholderText(/Paste knowledge/i)).toHaveFocus();
+    expect(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toHaveFocus();
   });
 });
 

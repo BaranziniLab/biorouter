@@ -4097,6 +4097,44 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-KNOWLEDGE end: band */
 
+/* @ws WS-KNOWLEDGE begin: dropzone */
+/* The Sources rail's drop target (spec 3.12). One muted field on a hairline,
+   holding its label button, a one-line hint with an InfoTip and "Paste text".
+   Hover is the neutral overlay over the field's own ground; a file dragged
+   over it firms the edge and steps the ground. Authored, because the drag
+   state is load-bearing feedback and must not depend on class scanning. */
+.br-knowledge-dropzone {
+  border: 1px solid var(--border-subtle);
+  background-color: var(--background-muted);
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    border-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-knowledge-dropzone:hover {
+  background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+}
+
+.br-knowledge-dropzone[data-dragging='true'] {
+  border-color: var(--border-strong);
+  background-color: var(--background-medium);
+}
+
+.br-knowledge-drop-plate {
+  border: 1px solid var(--border-subtle);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-knowledge-dropzone[data-dragging='true'] .br-knowledge-drop-plate {
+  background-color: var(--background-strong);
+  color: var(--text-default);
+}
+/* @ws WS-KNOWLEDGE end: dropzone */
+
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
     display: none;

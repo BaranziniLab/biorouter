@@ -1,20 +1,16 @@
 import { useCallback, useRef, useState } from 'react';
-import { FileStack, FolderTree, Info, Upload } from '../../icons/app-icons';
+import { Clipboard, FileStack, FolderTree, Upload } from '../../icons/app-icons';
+import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
+import { InfoTip } from '../../ui/info-tip';
+import { knowledgeCopy } from '../copy';
 import type { StagedFileCandidate } from './fileValidation';
 
 interface Props {
   onFiles: (files: StagedFileCandidate[]) => void | Promise<void>;
   onPathPickRequested: () => void | Promise<void>;
+  /** Summon the paste box. "Paste text" lives inside the dropzone (spec 3.12). */
+  onPasteText: () => void;
 }
 
 function labelFromPath(path: string): string {
@@ -59,7 +55,7 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
   return [...candidates.values()];
 }
 
-export function Dropzone({ onFiles, onPathPickRequested }: Props) {
+export function Dropzone({ onFiles, onPathPickRequested, onPasteText }: Props) {
   const [dragging, setDragging] = useState(false);
   const [chooserOpen, setChooserOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -85,16 +81,13 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
 
   return (
     <>
+      {/* The drop target. A press anywhere on it opens the chooser, as it always
+          has; the keyboard reaches the same thing through the label's own button,
+          because a `role="button"` box cannot also hold the "Paste text" button
+          and the InfoTip (an interactive control inside another). */}
       <div
-        role="button"
-        tabIndex={0}
+        data-testid="knowledge-ingest-dropzone"
         onClick={openChooser}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            openChooser();
-          }
-        }}
         onDragEnter={(e) => {
           e.preventDefault();
           dragCounterRef.current++;
@@ -112,15 +105,13 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         /* ⚠ **`flex-1` here is what closes the rail's empty middle, and it is a
            FUNCTIONAL fix rather than a cosmetic one.** The body packs its
            children at the top and the digest footer is pinned at the bottom, so
-           an unstaged rail showed a tall hole between them — a box of nothing
-           inside a bordered card. Letting the DROP TARGET absorb that slack
-           means the target is largest exactly when you have nothing staged and
-           are about to drop something, and shrinks back toward its floor as
-           staged rows claim the space. `min-h` is that floor, and it is the
-           114px this box measured before it could grow — the fixed 330px it
-           replaced was too tall at every pane size, which is a different bug
-           and must not come back through this door. */
-        className={`relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col justify-center rounded-container border px-4 py-4 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
+           an unstaged rail showed a tall hole between them. Letting the DROP
+           TARGET absorb that slack means the target is largest exactly when you
+           have nothing staged and are about to drop something, and shrinks back
+           toward its floor as staged rows claim the space. `min-h` is that
+           floor. */
+        data-dragging={dragging ? 'true' : undefined}
+        className="br-knowledge-dropzone relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -136,105 +127,88 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             e.target.value = '';
           }}
         />
-        {/* The medallion is `EmptyState`'s own plate: a 48px `rounded-container`
-            box with a 24px icon (`empty-state.tsx:34-35`). Not `rounded-full` —
-            A-04 restricts that to status dots, the switch knob and avatars, and
-            a 48px circle is none of them. The 24px icon follows what SHIPS: the
-            primitive draws `h-6 w-6` while `--icon-banner` says 20px, and that
-            disagreement is a design-system item rather than something this
-            surface silently picks a side of. */}
-        {/* ⚠ **330px → ~132px** (R-06), and every pixel of it came off
-            decoration rather than function. Measured in Chrome at the rail's
-            true 300px width, the dropzone was 330px tall of which 260px was a
-            48px medallion, two paragraphs totalling 251 characters wrapping to
-            three and four lines, and a ten-chip extension row wrapping to three
-            rows — in a rail whose resting content already ran 899px inside a
-            745px viewport. What survives is the affordance; what moved behind
-            the ⓘ is the reference material, which a user needs once and then
-            never again. */}
-        <div
-          className={`mx-auto flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
+        {/* A 32px `rounded-element` plate with a 16px icon: the dropzone's own
+            mark, deliberately smaller than `EmptyState`'s 48px plate, because
+            this is a control in a 300px rail and not a page's empty state. */}
+        <button
+          type="button"
+          className="br-knowledge-drop-target flex flex-col items-center gap-2 rounded-element px-2 py-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            openChooser();
+          }}
         >
-          <Upload className="h-4 w-4" aria-hidden="true" />
+          <span
+            aria-hidden="true"
+            className="br-knowledge-drop-plate flex h-8 w-8 items-center justify-center rounded-element"
+          >
+            <Upload className="h-icon-row w-icon-row" />
+          </span>
+          <span className="text-label">{knowledgeCopy.ingest.dropLabel}</span>
+        </button>
+        <div className="flex items-center justify-center gap-1 text-supporting text-text-muted">
+          <span>{knowledgeCopy.ingest.dropHint}</span>
+          <InfoTip
+            label={knowledgeCopy.ingest.dropInfoLabel}
+            help={knowledgeCopy.ingest.dropInfo}
+            side="bottom"
+            align="center"
+          />
         </div>
-        <div className="mt-2 text-label">Drag and drop to stage</div>
-        <div className="mt-1 flex items-center justify-center gap-1 text-supporting text-text-muted">
-          <span>PDF, Office, web pages, folders</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                tabIndex={0}
-                role="button"
-                aria-label="Which files can be staged"
-                className="biorouter-focus-surface rounded-inner px-0.5 text-text-subtle"
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-              >
-                <Info className="h-icon-row w-icon-row" aria-hidden="true" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[17rem]">
-              Readable files are staged one by one: .pdf, .pptx, .xlsx, .docx, .csv, .md, .html,
-              .txt, plus folders and archives, which are unpacked in the backend. Binaries are
-              skipped. <span className="text-text-default">Import from .brkb</span> stays in the
-              knowledge-base menu for full knowledge-base archives.
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        {/* "Paste text" is a second way IN, so it sits with the first one rather
+            than as a full-width slab under the dropzone (spec 3.12). */}
+        <Button
+          data-testid="knowledge-ingest-paste-text"
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPasteText();
+          }}
+        >
+          <Clipboard aria-hidden="true" />
+          {knowledgeCopy.ingest.pasteText}
+        </Button>
       </div>
 
-      <Dialog open={chooserOpen} onOpenChange={setChooserOpen}>
-        <DialogContent className="sm:max-w-[560px]">
-          <DialogHeader>
-            <DialogTitle>Stage knowledge sources</DialogTitle>
-            <DialogDescription>
-              Choose how you want to bring material into the staging queue. Folders and archives are
-              unpacked in the backend so their readable contents can be staged separately.
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell
+        open={chooserOpen}
+        onOpenChange={setChooserOpen}
+        size="md"
+        title={knowledgeCopy.ingest.chooserTitle}
+        subtitle={knowledgeCopy.ingest.chooserSubtitle}
+        bodyClassName="pb-4"
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            data-testid="knowledge-ingest-browse-files"
+            type="button"
+            onClick={() => {
+              setChooserOpen(false);
+              inputRef.current?.click();
+            }}
+            className="biorouter-modal-row flex items-center gap-3 rounded-element px-4 py-3 text-left transition-colors tint-interactive"
+          >
+            <FileStack className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
+            <span className="text-label">{knowledgeCopy.ingest.chooseFiles}</span>
+          </button>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <button
-              data-testid="knowledge-ingest-browse-files"
-              type="button"
-              onClick={() => {
-                setChooserOpen(false);
-                inputRef.current?.click();
-              }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
-            >
-              <FileStack className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-label">Choose files</div>
-              <p className="mt-1 text-supporting text-text-muted">
-                Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
-              </p>
-            </button>
-
-            <button
-              data-testid="knowledge-ingest-browse-path"
-              type="button"
-              onClick={() => {
-                setChooserOpen(false);
-                void onPathPickRequested();
-              }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
-            >
-              <FolderTree className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-label">Choose folder or archive</div>
-              <p className="mt-1 text-supporting text-text-muted">
-                Let Biorouter unpack archives, skip binaries, and stage readable children one by one
-                for curation.
-              </p>
-            </button>
-          </div>
-
-          <DialogFooter>
-            <Button type="button" variant="secondary" onClick={() => setChooserOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <button
+            data-testid="knowledge-ingest-browse-path"
+            type="button"
+            onClick={() => {
+              setChooserOpen(false);
+              void onPathPickRequested();
+            }}
+            className="biorouter-modal-row flex items-center gap-3 rounded-element px-4 py-3 text-left transition-colors tint-interactive"
+          >
+            <FolderTree className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
+            <span className="text-label">{knowledgeCopy.ingest.chooseFolder}</span>
+          </button>
+        </div>
+      </ModalShell>
     </>
   );
 }
