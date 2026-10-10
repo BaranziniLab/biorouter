@@ -174,8 +174,10 @@ const launchChromium = async (): Promise<Browser | null> => {
 
 /**
  * A drawer as `ChangeLogDrawer` builds it: the pane header with its own close, then the Sheet
- * primitive's corner close as the content's last child (`ui/sheet.tsx`: absolute, top and right
- * 16px, 32px square). The primitive's is the one `.br-knowledge-drawer` must hide.
+ * primitive's corner close, a direct child of the content named `data-slot="sheet-close"`
+ * (`ui/sheet.tsx`: absolute, top and right 16px, 32px square). The primitive's is the one
+ * `.br-knowledge-drawer` must hide; the header's own `SheetClose` sits one level down and must
+ * stay.
  */
 function drawerPage(css: string): string {
   const header = renderToStaticMarkup(
@@ -190,7 +192,7 @@ function drawerPage(css: string): string {
   return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
     <div class="br-knowledge-drawer" id="drawer" style="position:relative;display:flex;flex-direction:column;width:340px;height:300px">
       ${header}
-      <button id="primitive-close" type="button" style="position:absolute;top:16px;right:16px;width:32px;height:32px">x</button>
+      <button id="primitive-close" data-slot="sheet-close" type="button" style="position:absolute;top:16px;right:16px;width:32px;height:32px">x</button>
     </div>
   </body></html>`;
 }

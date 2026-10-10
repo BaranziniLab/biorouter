@@ -4146,10 +4146,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 /* A drawer draws its own close in that header (`SheetClose` over the same ghost
    round button a preview has). The Sheet primitive still renders its corner
-   close, always, as the content's last child; it would sit a second, rounded
-   square close over the band, so it is hidden. Only a `button` that is a direct
-   last child matches, and the drawer's own children are all `div`s. */
-.br-knowledge-drawer > button:last-child {
+   close, always; it would sit a second, rounded square close over the band, so
+   it is hidden. `data-slot='sheet-close'` is the primitive's own name for it
+   (WS-PRIMITIVES 3ea796185), and the `>` is what spares the drawer's own close,
+   which sits inside the header and not directly in the content. */
+.br-knowledge-drawer > [data-slot='sheet-close'] {
   display: none;
 }
 /* @ws WS-KNOWLEDGE end: pane header */
