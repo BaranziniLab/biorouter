@@ -12,6 +12,8 @@ export const COMPOSER_COPY = {
   placeholderEmpty: 'Ask Biorouter anything…',
   /** A chat that already has messages. */
   placeholderFollowUp: 'Ask a follow-up',
+  /** The field's accessible name; the placeholder changes with the chat, the name does not. */
+  inputLabel: 'Message',
 
   send: {
     label: 'Send message',

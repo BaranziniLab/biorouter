@@ -166,6 +166,15 @@ describe('the composer is one card and one footer line', () => {
   });
 });
 
+describe('the text field', () => {
+  it('has a name that does not change with the placeholder', () => {
+    renderComposer({ messagesLength: 3 });
+    expect(screen.getByRole('textbox', { name: COMPOSER_COPY.inputLabel })).toBe(
+      screen.getByTestId('chat-input')
+    );
+  });
+});
+
 describe('placeholders', () => {
   it('asks the open question in an empty chat', () => {
     renderComposer({ messagesLength: 0 });

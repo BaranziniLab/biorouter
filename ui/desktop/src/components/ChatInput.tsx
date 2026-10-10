@@ -2889,6 +2889,7 @@ export default function ChatInput({
             data-testid="chat-input"
             autoFocus={autoFocusAtMountRef.current}
             id="dynamic-textarea"
+            aria-label={COMPOSER_COPY.inputLabel}
             // An invitation, never an instruction: "Ask a follow-up" once the
             // chat has messages, the open question before that.
             placeholder={
