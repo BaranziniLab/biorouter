@@ -57,13 +57,31 @@ interface SearchBarProps {
  */
 export const DEFAULT_MIN_SEARCH_LENGTH = 2;
 
+/** The chat's composer field (`ChatInput`). */
+const COMPOSER_FIELD = 'textarea[data-testid="chat-input"]';
+
+/**
+ * The composer of the chat the bar belongs to: the nearest one up the tree from
+ * the bar, so a split's other panes are never chosen.
+ */
+function nearestComposer(from: HTMLElement | null): HTMLElement | null {
+  for (let el = from?.parentElement ?? null; el && el !== document.body; el = el.parentElement) {
+    const field = el.querySelector<HTMLElement>(COMPOSER_FIELD);
+    if (field) return field;
+  }
+  return null;
+}
+
 /**
  * Find in chat (spec 3.16): an OVERLAY pinned to the top right of the
  * transcript it searches, so opening it pushes nothing. It is positioned by
- * `.br-find-overlay` in `styles/search.css` against the nearest positioned box,
- * which is the transcript cell (`BaseChat`'s and `SessionHistoryView`'s
- * `ScrollArea` root, both `relative`). That box does not scroll, so the bar
- * stays put while the conversation scrolls under it.
+ * `.br-find-overlay` in `styles/search.css` against the transcript cell
+ * (`BaseChat`'s and `SessionHistoryView`'s `ScrollArea` root), which
+ * `SearchView` portals it into. That box does not scroll, so the bar stays put
+ * while the conversation scrolls under it.
+ *
+ * Focus: closing it hands focus back to where it was when the bar opened, or
+ * else to the chat's composer, never to the page (spec principle 12).
  *
  * Motion: it opens with opacity and an 8px drop over `--dur-fast-max`, and
  * closes with opacity and a 4px rise over `--dur-fast`; `onClose` runs on the
@@ -85,6 +103,12 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const [searchTerm, setSearchTerm] = useState(initialSearchTerm);
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
+  // Read once, in the first render, before the field takes focus: the element
+  // the person was in when they asked for the bar (vision V2-15).
+  const [focusedBeforeOpen] = useState<Element | null>(() =>
+    typeof document === 'undefined' ? null : document.activeElement
+  );
+  const overlayRef = useRef<HTMLDivElement>(null);
   const internalInputRef = React.useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef || internalInputRef;
   const debouncedSearchRef = useRef<ReturnType<typeof debounce> | null>(null);
@@ -199,9 +223,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     return () => window.removeEventListener('keydown', handleFindAgain);
   }, [cancelClose, isExiting]);
 
+  // Escape used to leave focus on <body>: the field blurred and nothing took it.
+  // Back to where the person was, unless that is gone or was the page itself,
+  // and then to this chat's composer.
+  const returnFocus = () => {
+    inputRef.current?.blur();
+    const overlay = overlayRef.current;
+    const previous =
+      focusedBeforeOpen instanceof HTMLElement &&
+      focusedBeforeOpen !== document.body &&
+      focusedBeforeOpen.isConnected &&
+      !overlay?.contains(focusedBeforeOpen)
+        ? focusedBeforeOpen
+        : null;
+    (previous ?? nearestComposer(overlay))?.focus({ preventScroll: true });
+  };
+
   const handleClose = () => {
     if (isExiting) return;
-    inputRef.current?.blur();
+    returnFocus();
     debouncedSearchRef.current?.cancel();
 
     // Reduced motion: no exit to wait for.
@@ -228,9 +268,11 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const iconButton = 'no-drag text-text-muted hover:text-text-default';
 
   return (
-    // The bar renders INSIDE the container it searches: without the marker its
-    // own "Aa" label and counter are counted as matches. See SEARCH_UI_ATTRIBUTE.
+    // Mounted bare (no transcript cell to portal into), the bar renders INSIDE
+    // the container it searches: without the marker its own "Aa" label and
+    // counter are counted as matches. See SEARCH_UI_ATTRIBUTE.
     <div
+      ref={overlayRef}
       {...{ [SEARCH_UI_ATTRIBUTE]: '' }}
       className="br-find-overlay"
       data-state={isExiting ? 'closed' : 'open'}

@@ -121,6 +121,61 @@ describe('SearchBar', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // Vision V2-15: closing the bar with Escape left focus on <body>.
+  describe('focus after closing', () => {
+    const field = () => screen.getByRole('textbox', { name: findInChatCopy.inputLabel });
+
+    it('Escape gives focus back to the element that had it when the bar opened', () => {
+      const before = document.createElement('button');
+      document.body.appendChild(before);
+      try {
+        before.focus();
+        render(<SearchBar onSearch={vi.fn()} onClose={vi.fn()} />);
+        expect(document.activeElement).toBe(field());
+
+        fireEvent.keyDown(field(), { key: 'Escape' });
+        expect(document.activeElement).toBe(before);
+      } finally {
+        before.remove();
+      }
+    });
+
+    it("falls back to this chat's composer when nothing had focus, and never another pane's", () => {
+      render(
+        <div>
+          <div>
+            <textarea data-testid="chat-input" aria-label="other pane" />
+          </div>
+          <div>
+            <div data-preview-transcript="">
+              <SearchBar onSearch={vi.fn()} onClose={vi.fn()} />
+            </div>
+            <textarea data-testid="chat-input" aria-label="this pane" />
+          </div>
+        </div>
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: findInChatCopy.close }));
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'this pane' }));
+    });
+
+    it('falls back to the composer when the element it came from has gone', () => {
+      const before = document.createElement('button');
+      document.body.appendChild(before);
+      before.focus();
+      render(
+        <div>
+          <SearchBar onSearch={vi.fn()} onClose={vi.fn()} />
+          <textarea data-testid="chat-input" aria-label="composer" />
+        </div>
+      );
+      before.remove();
+
+      fireEvent.keyDown(field(), { key: 'Escape' });
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'composer' }));
+    });
+  });
+
   /**
    * The minimum length used to be the literal `2`, the same on every surface
    * that mounts this bar. Two of them highlight a transcript, where a
