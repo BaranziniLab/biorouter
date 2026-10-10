@@ -1986,7 +1986,8 @@ const createChat = async (
 
   // Set up local keyboard shortcuts that only work when the window is focused
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'r' && input.meta) {
+    // ⌘R reloads; ⌘⌥R is "Rename chat" in the renderer (spec 3.4), so it must pass through.
+    if (input.key === 'r' && input.meta && !input.alt) {
       mainWindow.reload();
       event.preventDefault();
     }
