@@ -25,6 +25,7 @@ import { CHAT_MEASURE, summaryRailFit, type SummaryRailFit } from '../Layout/yie
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RAIL_CSS = readFileSync(resolve(here, 'summaryRail.css'), 'utf8');
+const CONTENT_CSS = readFileSync(resolve(here, 'chatSummary.css'), 'utf8');
 const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
 
 /** Rung 2's grid (the preview split), exactly as `measures.test.ts` scopes it. */
@@ -61,6 +62,14 @@ const TOKENS = `:root {
   --dur-fast: 125ms;
   --dur-fast-max: 175ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
+  --text-supporting: 12px;
+  --text-supporting--line-height: 16px;
+  --text-secondary: 13px;
+  --text-secondary--line-height: 18px;
+  --text-default: rgb(20, 20, 20);
+  --text-muted: rgb(110, 110, 110);
+  --text-accent: rgb(200, 60, 40);
+  --text-warning: rgb(170, 100, 0);
 }
 body { margin: 0; font: 14px/20px sans-serif; }
 * { box-sizing: border-box; }`;
@@ -78,9 +87,9 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-type Layout = { pane: number; preview?: number; fit: SummaryRailFit };
+type Layout = { pane: number; preview?: number; fit: SummaryRailFit; card?: string };
 
-function markup({ pane, preview, fit }: Layout): string {
+function markup({ pane, preview, fit, card }: Layout): string {
   const split: string[] = ['data-preview-split=""', 'class="split"', 'id="split"'];
   const style: string[] = [`width: ${pane}px`, `height: ${HEIGHT}px`];
   if (preview) {
@@ -104,7 +113,7 @@ function markup({ pane, preview, fit }: Layout): string {
     '</div>' +
     (fit.fits
       ? '<aside data-preview-area="rail" id="rail" data-rail-still="">' +
-        '<div class="br-summary-card" data-state="open" data-entered="" id="card"><div style="height: 240px"></div></div>' +
+        `<div class="br-summary-card" data-state="open" data-entered="" id="card">${card ?? '<div style="height: 240px"></div>'}</div>` +
         '</aside>'
       : '') +
     (preview ? '<div data-testid="artifact-viewer" id="preview"></div>' : '') +
@@ -131,6 +140,8 @@ async function boxes(page: Page): Promise<Record<string, Box | null>> {
       rail: read('rail'),
       card: read('card'),
       preview: read('preview'),
+      body: read('body'),
+      footer: read('footer'),
     };
   });
 }
@@ -173,6 +184,7 @@ describe('rung 0 in a real layout engine', () => {
         UTILITIES +
         rungTwoBlock() +
         RAIL_CSS +
+        CONTENT_CSS +
         '</style></head><body>' +
         markup({ ...layout, fit }) +
         '</body></html>'
@@ -249,5 +261,118 @@ describe('rung 0 in a real layout engine', () => {
     expect(at.rail).toBeNull();
     expect(at.preview!.width).toBe(783);
     expect(at.preview!.right).toBe(1632);
+  });
+});
+
+/**
+ * The card's contents, shaped like `ChatSummary`'s markup: the same classes over
+ * the real `chatSummary.css`. The Button primitive's own 28px height is a
+ * Tailwind utility the page does not load, so the footer rows are stood in.
+ */
+function cardContents(todos: number): string {
+  const rows = Array.from(
+    { length: todos },
+    (_, i) =>
+      `<li class="br-summary__todo" data-status="pending"><span class="br-summary__glyph"><svg width="14" height="14"></svg></span><span class="br-summary__todo-text">Task ${i}</span></li>`
+  ).join('');
+  const stat = (label: string, value: string) =>
+    `<div class="br-summary__stat"><dt class="br-summary__stat-label">${label}</dt><dd class="br-summary__stat-value">${value}</dd></div>`;
+  const action = (label: string) =>
+    `<button class="br-summary__action" style="display:flex;align-items:center;height:28px;border:0;background:none">${label}</button>`;
+  return (
+    '<div class="br-summary">' +
+    '<div class="br-summary__body biorouter-focus-region" id="body" tabindex="0">' +
+    (todos > 0
+      ? `<section><div class="br-summary__heading"><h3 class="br-summary__label">To do</h3><span class="br-summary__count">0 of ${todos}</span></div><ol class="br-summary__todos">${rows}</ol></section>`
+      : '') +
+    `<dl class="br-summary__stats"${todos > 0 ? ' data-after-todos=""' : ''}>` +
+    stat('Tool calls', '6') +
+    stat('Tokens', '211k') +
+    stat('Artifacts', '1') +
+    stat('Code', '+3 −1') +
+    '</dl></div>' +
+    `<div class="br-summary__footer" id="footer">${action('Make workflow')}${action('Diagnostics')}</div>` +
+    '</div>'
+  );
+}
+
+describe('the rail’s card in a real layout engine', () => {
+  let browser: Browser | null = null;
+  let page: Page | null = null;
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn(
+        'No Chromium found — skipping the summary card geometry tests. ' +
+          'Run `npx playwright install chromium` to enable them.'
+      );
+      return;
+    }
+    page = await browser.newPage({ viewport: { width: 2600, height: HEIGHT + 40 } });
+  }, 120_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  async function layCard(todos: number) {
+    const fit = summaryRailFit({
+      paneWidth: 1152,
+      previewMode: null,
+      previewWidth: 0,
+      previous: null,
+    });
+    await page!.setContent(
+      '<!doctype html><html><head><style>' +
+        TOKENS +
+        UTILITIES +
+        rungTwoBlock() +
+        RAIL_CSS +
+        CONTENT_CSS +
+        '</style></head><body>' +
+        markup({ pane: 1152, fit, card: cardContents(todos) }) +
+        '</body></html>'
+    );
+    return page!.evaluate(() => {
+      const heights = (selector: string) =>
+        Array.from(document.querySelectorAll(selector)).map(
+          (el) => el.getBoundingClientRect().height
+        );
+      const rect = (id: string) => document.getElementById(id)!.getBoundingClientRect();
+      const body = document.getElementById('body')!;
+      return {
+        todoHeights: heights('.br-summary__todo'),
+        statHeights: heights('.br-summary__stat'),
+        card: rect('card').toJSON() as { top: number; bottom: number; height: number },
+        rail: rect('rail').toJSON() as { top: number; bottom: number; height: number },
+        footer: rect('footer').toJSON() as { top: number; bottom: number; height: number },
+        bodyScrolls: body.scrollHeight > body.clientHeight,
+        bodyOverflowY: getComputedStyle(body).overflowY,
+      };
+    });
+  }
+
+  it('draws to-do rows and statistic rows 28px tall', async () => {
+    if (!page) return;
+    const at = await layCard(3);
+    expect(at.todoHeights).toEqual([28, 28, 28]);
+    expect(at.statHeights).toEqual([28, 28, 28, 28]);
+    // A short list does not scroll, and the card is only as tall as it needs.
+    expect(at.bodyScrolls).toBe(false);
+    expect(at.card.height).toBeLessThan(at.rail.height - 24);
+  });
+
+  it('keeps a long list inside the rail: the body scrolls and the footer stays pinned in view', async () => {
+    if (!page) return;
+    const at = await layCard(60);
+    expect(at.bodyOverflowY).toBe('auto');
+    expect(at.bodyScrolls).toBe(true);
+    // The card fills the rail cell's content box (12px padding top and bottom),
+    // and the footer is the card's last thing, inside it.
+    expect(at.card.top).toBe(at.rail.top + 12);
+    expect(at.card.bottom).toBe(at.rail.bottom - 12);
+    expect(at.footer.bottom).toBeLessThanOrEqual(at.card.bottom);
+    expect(at.footer.top).toBeGreaterThan(at.card.top);
   });
 });
