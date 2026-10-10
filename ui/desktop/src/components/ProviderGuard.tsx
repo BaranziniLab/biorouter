@@ -162,7 +162,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (isChecking) {
     return (
-      <div className="h-screen w-full bg-background-canvas flex items-center justify-center">
+      <div className="h-screen w-full bg-background-muted flex items-center justify-center">
         {/* 84px, not Tailwind's h-20 (80px), to match the pre-React boot
             splash's `.br-mark` exactly. This loader is what the splash hands
             off to, so a 4px difference read as the logo resizing mid-boot.
@@ -210,7 +210,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
       );
 
     return (
-      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-canvas">
+      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-muted">
         {/* Flat page header, on the same reading column as the panels below. */}
         <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
           <div className="mx-auto max-w-measure-chat">
@@ -239,7 +239,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         </div>
 
         {/* Scrollable body */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-background-canvas">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-background-muted">
           <div className="mx-auto max-w-measure-chat px-5 py-6 sm:px-6">
             {hostManaged ? (
               <HostManagedModelPanel />
