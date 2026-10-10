@@ -13,7 +13,7 @@ import {
   SidebarGroupContent,
 } from '../ui/sidebar';
 import { BioRouterWordmark } from '../icons/BioRouterWordmark';
-import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
+import { ViewOptions, View, navigateToRoute } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
@@ -213,7 +213,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const handleNavigation = (path: string) => {
     if (path === '/pair') {
       chatContext?.resetChat();
-      navigateWithViewTransition(navigate, '/pair', { newChat: true });
+      navigateToRoute(navigate, '/pair', { newChat: true });
       return;
     }
 
@@ -229,7 +229,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       return;
     }
 
-    navigateWithViewTransition(navigate, path);
+    navigateToRoute(navigate, path);
   };
 
   // Crew's unread messages across every connected workspace, and a notification when one
@@ -252,10 +252,10 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // the tab authoritatively. The summary carries `userSetName`, so a literal
   // user-chosen legacy placeholder is never mistaken for an automatic title.
   const handleOpenChat = (sessionId: string, title?: string, userSetName?: boolean) => {
-    // NB: the 3rd arg of navigateWithViewTransition IS the route state itself,
+    // NB: the 3rd arg of navigateToRoute IS the route state itself,
     // not an options bag — `{ state: … }` here would nest it one level deep and
     // silently do nothing.
-    navigateWithViewTransition(
+    navigateToRoute(
       navigate,
       `/pair?resumeSessionId=${sessionId}`,
       title ? { title, userSetName } : undefined
@@ -434,7 +434,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           isLoadingAll={isLoadingAll}
           onLoadMore={loadMore}
           onOpen={handleOpenChat}
-          onViewAll={() => navigateWithViewTransition(navigate, '/sessions')}
+          onViewAll={() => navigateToRoute(navigate, '/sessions')}
           view={chatView}
           onViewChange={setChatView}
           homeDir={homeDir}

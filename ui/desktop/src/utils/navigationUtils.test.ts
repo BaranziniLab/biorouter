@@ -4,7 +4,6 @@ import { renderHook } from '@testing-library/react';
 import {
   createNavigationHandler,
   navigateToRoute,
-  navigateWithViewTransition,
   ROUTE_SURFACE_SELECTOR,
   useRouteFade,
 } from './navigationUtils';
@@ -69,12 +68,6 @@ describe('navigation helpers', () => {
       replace: true,
       state: undefined,
     });
-  });
-});
-
-describe('the old name', () => {
-  it('is the same function until its last importer moves', () => {
-    expect(navigateWithViewTransition).toBe(navigateToRoute);
   });
 });
 

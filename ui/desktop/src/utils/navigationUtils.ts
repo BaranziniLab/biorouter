@@ -74,12 +74,6 @@ export const navigateToRoute = (
   navigate(to, { replace: options.replace, state });
 };
 
-/**
- * @deprecated The old name of {@link navigateToRoute}, kept only until its last
- * importer (`components/BaseChat.tsx`, WS-SUMMARY) moves; then it is deleted.
- */
-export const navigateWithViewTransition = navigateToRoute;
-
 /** The app shell's route surface: the `<main>` that holds every routed view (`AppLayout`). */
 export const ROUTE_SURFACE_SELECTOR = 'main.biorouter-route-surface';
 
