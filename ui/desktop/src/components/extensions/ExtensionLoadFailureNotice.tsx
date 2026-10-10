@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Note } from '../ui/note';
 import { Button } from '../ui/button';
-import { AlertCircle } from '../icons/app-icons';
+import { IconAction } from '../ui/row-actions';
+import { AlertCircle, X } from '../icons/app-icons';
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import {
   dismissExtensionLoadFailure,
@@ -11,6 +12,7 @@ import {
 } from '../../utils/extensionLoadFailures';
 import { createExtensionRecoverHints } from '../../utils/extensionErrorUtils';
 import { useTransientValue } from '../../hooks/useTransientFlag';
+import { LOAD_FAILURE_COPY } from './copy';
 
 /**
  * The standing extension-failure notice, on the page the failure is ABOUT.
@@ -50,7 +52,7 @@ export function ExtensionLoadFailureNotice({
   if (failures.length === 0) return null;
 
   return (
-    <div className="mb-6 space-y-2" data-testid="extension-load-failures">
+    <div className="mb-4 flex flex-col gap-2" data-testid="extension-load-failures">
       {failures.map((failure) => (
         <Note
           key={failure.name}
@@ -58,43 +60,44 @@ export function ExtensionLoadFailureNotice({
           role="alert"
           icon={AlertCircle}
           action={
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => dismissExtensionLoadFailure(failure.name)}
-            >
-              Dismiss
-            </Button>
-          }
-        >
-          <div className="font-medium text-text-default">
-            {formatExtensionName(failure.name)} failed to load
-          </div>
-          {/* The FULL error, not the toast's truncation. This surface has room,
-              and the truncated form is what sent people looking for details in
-              the first place. */}
-          <div className="mt-1 [overflow-wrap:anywhere]">{failure.error}</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {onAskBiorouter && (
+            // Two quiet text actions and a round X, in the Note's one trailing slot: the notice
+            // is a line and its error, not a card with a second row of buttons under it.
+            <div className="flex items-center gap-1">
+              {onAskBiorouter && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onAskBiorouter(createExtensionRecoverHints(failure.error))}
+                >
+                  {LOAD_FAILURE_COPY.askBiorouter}
+                </Button>
+              )}
               <Button
                 size="sm"
-                variant="secondary"
-                onClick={() => onAskBiorouter(createExtensionRecoverHints(failure.error))}
+                variant="ghost"
+                onClick={() => {
+                  navigator.clipboard?.writeText(failure.error);
+                  markCopied(failure.name);
+                }}
               >
-                Ask Biorouter
+                {copied === failure.name ? LOAD_FAILURE_COPY.copied : LOAD_FAILURE_COPY.copyError}
               </Button>
-            )}
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                navigator.clipboard?.writeText(failure.error);
-                markCopied(failure.name);
-              }}
-            >
-              {copied === failure.name ? 'Copied!' : 'Copy error'}
-            </Button>
+              <IconAction
+                icon={X}
+                label={LOAD_FAILURE_COPY.dismiss}
+                size="sm"
+                onSelect={() => dismissExtensionLoadFailure(failure.name)}
+              />
+            </div>
+          }
+        >
+          <div className="text-label text-text-default">
+            {LOAD_FAILURE_COPY.failedToLoad(formatExtensionName(failure.name))}
           </div>
+          {/* The error, which the Note clamps behind "Show more" past its ceiling. This
+              surface has room, and the toast's hard truncation is what sent people looking for
+              details in the first place. */}
+          <div className="mt-1 [overflow-wrap:anywhere]">{failure.error}</div>
         </Note>
       ))}
     </div>

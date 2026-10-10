@@ -82,10 +82,7 @@ describe('find in chat floats over the transcript', () => {
  * second test, so the owner deletes its line in the same commit.
  */
 const ALLOWED = ['components/BaseChat.tsx', 'components/sessions/SessionHistoryView.tsx'];
-const PENDING: Record<string, string> = {
-  // WS-EXTENSIONS: Extensions moves to the band FilterInput (spec 3.11).
-  'components/extensions/ExtensionsView.tsx': 'WS-EXTENSIONS',
-};
+const PENDING: Record<string, string> = {};
 
 const SRC = join(__dirname, '..');
 

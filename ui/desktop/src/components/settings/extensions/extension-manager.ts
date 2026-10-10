@@ -30,6 +30,13 @@ interface ToggleExtensionDefaultProps {
   itemKind?: 'capability' | 'extension';
 }
 
+/**
+ * Turn an extension (or a capability) on or off for new chats.
+ *
+ * ⚠ **No success toast** (owner decision 6.9, spec 3.11): the switch IS the confirmation, and a
+ * toast for it put a second, slower voice on every flip. A failure still raises one, because then
+ * the switch is the thing that is wrong. Capabilities share this call, so the same holds for them.
+ */
 export async function toggleExtensionDefault({
   toggle,
   extensionConfig,
@@ -37,14 +44,9 @@ export async function toggleExtensionDefault({
   itemKind = 'extension',
 }: ToggleExtensionDefaultProps) {
   const enabled = toggle === 'toggleOn';
-  const itemLabel = itemKind === 'capability' ? 'Capability' : 'Extension';
 
   try {
     await addToConfig(extensionConfig.name, extensionConfig, enabled);
-    toastService.success({
-      title: extensionConfig.name,
-      msg: enabled ? `${itemLabel} enabled for new chats` : `${itemLabel} disabled for new chats`,
-    });
   } catch (error) {
     console.error(`Failed to update ${itemKind} default in config:`, error);
     toastService.error({

@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   extensionsList: [] as Array<Record<string, unknown>>,
@@ -25,6 +26,9 @@ vi.mock('../../ConfigContext', () => ({
     addExtension: mocks.addExtension,
     removeExtension: mocks.removeExtension,
     getExtensions: mocks.getExtensions,
+    // The default provider is read on mount; no provider here, so the cards judge nothing.
+    read: vi.fn(async () => null),
+    getProviders: vi.fn(async () => []),
   }),
   // Every card now carries a `PrivacyBadge` (issue #56 §13.5), and the badge
   // reads the master switch off this same context. It throws rather than
@@ -50,10 +54,10 @@ vi.mock('../../../toasts', () => ({
 // is `undefined` and React throws "type is invalid" at render.
 import ExtensionsSection from './ExtensionsSection';
 
-// `ExtensionItem` labels its Radix switch `Toggle ${getFriendlyTitle(extension)}
-// extension` (`subcomponents/ExtensionItem.tsx`), and `getFriendlyTitle` for a
-// `platform` entry named `Workspace` is `formatExtensionName('Workspace')` =
-// 'Workspace' (it is not in PLATFORM_EXTENSION_DISPLAY_NAMES).
+// `ExtensionItem` names its Radix switch by the row's title (`aria-labelledby`), and
+// `getFriendlyTitle` for a `platform` entry named `Workspace` is
+// `formatExtensionName('Workspace')` = 'Workspace' (it is not in
+// PLATFORM_EXTENSION_DISPLAY_NAMES).
 
 /**
  * ⚠ These fixtures use the names the DAEMON sends, not the config keys.
@@ -107,8 +111,67 @@ describe('ExtensionsSection — Workspace is a capability, not an extension', ()
     mocks.extensionsList = [workspaceEntry(true), chatrecallEntry(false)];
     render(<ExtensionsSection />);
 
+    // The switch is named by the row's title now, so the query names the row. (`/Toggle
+    // Workspace/` would pass vacuously: nothing is called that any more.)
     await waitFor(() =>
-      expect(screen.queryByRole('switch', { name: /Toggle Workspace/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('switch', { name: /Workspace/i })).not.toBeInTheDocument()
     );
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+  });
+});
+
+const customEntry = {
+  type: 'stdio',
+  name: 'medcp',
+  description: 'Local clinical MCP',
+  cmd: 'node',
+  args: ['server.js'],
+  enabled: true,
+};
+
+describe('ExtensionsSection — the groups and the row menu', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.extensionsList = [customEntry];
+  });
+
+  it('labels the groups in the caps style with a count and no dot', async () => {
+    mocks.extensionsList = [customEntry, { ...customEntry, name: 'zzz', enabled: false }];
+    render(<ExtensionsSection />);
+
+    const enabled = await screen.findByRole('heading', { level: 2, name: /^Enabled 1$/ });
+    expect(enabled).toHaveClass('text-caps');
+    expect(screen.getByRole('heading', { level: 2, name: /^Available 1$/ })).toBeInTheDocument();
+    // The status dots were a second way of saying what the switch already says.
+    expect(document.querySelector('h2 > span.rounded-full')).toBeNull();
+    // And it is not the old title-cased wording.
+    expect(screen.queryByText(/Default Extensions/)).toBeNull();
+  });
+
+  it('says what a filter found nothing for, rather than leaving the page blank', async () => {
+    render(<ExtensionsSection searchTerm="no-such-extension" />);
+
+    expect(await screen.findByText('No matching extensions')).toBeInTheDocument();
+    expect(screen.queryByText('No extensions yet')).toBeNull();
+  });
+
+  it('opens the configure dialog from Configure… and the removal question from Remove…', async () => {
+    const user = userEvent.setup({ delay: null });
+    render(<ExtensionsSection />);
+
+    await user.click(await screen.findByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Configure…' }));
+    expect(await screen.findByRole('dialog', { name: 'Update extension' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove…' }));
+    // The dialog starts on the question, not on the form the person did not ask for.
+    expect(await screen.findByRole('dialog', { name: 'Remove "medcp"?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirm removal' })).toBeInTheDocument();
+    // Cancel closes it, since there was no form to go back to.
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });

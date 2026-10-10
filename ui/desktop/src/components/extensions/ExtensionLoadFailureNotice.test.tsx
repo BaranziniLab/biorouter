@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
+import { LOAD_FAILURE_COPY as COPY } from './copy';
 import {
   recordExtensionLoadResults,
   resetExtensionLoadFailuresForTests,
@@ -32,7 +33,7 @@ describe('ExtensionLoadFailureNotice', () => {
 
     render(<ExtensionLoadFailureNotice />);
 
-    expect(screen.getByText('Cdwagent failed to load')).toBeInTheDocument();
+    expect(screen.getByText(COPY.failedToLoad('Cdwagent'))).toBeInTheDocument();
     expect(screen.getByText(error)).toBeInTheDocument();
   });
 
@@ -57,6 +58,45 @@ describe('ExtensionLoadFailureNotice', () => {
 
     expect(screen.queryByText('Cdwagent failed to load')).not.toBeInTheDocument();
     expect(getExtensionLoadFailures()).toHaveLength(0);
+  });
+
+  /**
+   * Compact (spec 3.11): ONE danger note holds the title, the error and every action. The two
+   * text actions and the round X share the note's trailing slot, with no second row of buttons
+   * under the error, and the note is followed by 16px, not 24.
+   */
+  it('keeps its actions in the one trailing slot: two quiet text actions and a round X', () => {
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
+    const { container } = render(<ExtensionLoadFailureNotice onAskBiorouter={vi.fn()} />);
+
+    const alert = screen.getByRole('alert');
+    const buttons = within(alert).getAllByRole('button');
+    expect(buttons.map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual([
+      COPY.askBiorouter,
+      COPY.copyError,
+      COPY.dismiss,
+    ]);
+    // All three sit in the note's action slot, which is its last child; none is under the text.
+    const slot = alert.lastElementChild as HTMLElement;
+    for (const button of buttons) expect(slot).toContainElement(button);
+    // Quiet: ghost, not the `secondary` wash the second row used to carry.
+    expect(buttons[0].className).toMatch(/bg-transparent/);
+    expect(buttons[1].className).toMatch(/bg-transparent/);
+    expect(container.firstElementChild).toHaveClass('mb-4');
+  });
+
+  it('says "Copied" with no exclamation mark', () => {
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async () => undefined) },
+    });
+    render(<ExtensionLoadFailureNotice />);
+
+    fireEvent.click(screen.getByRole('button', { name: COPY.copyError }));
+
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    expect(screen.queryByText(/!/)).toBeNull();
   });
 
   /**

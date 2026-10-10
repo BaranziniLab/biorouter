@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import ExtensionItem from './ExtensionItem';
 import builtInExtensionsData from '../../../../built-in-extensions.json';
 import { ExtensionConfig } from '../../../../api';
@@ -5,14 +6,17 @@ import { FixedExtensionEntry } from '../../../ConfigContext';
 import type { DefaultProvider } from '../ExtensionsSection';
 import type { RegistryLoad } from '../../../baam/registry';
 import { EmptyState } from '../../../ui/empty-state';
-import { Puzzle } from '../../../icons/app-icons';
+import { InfoTip } from '../../../ui/info-tip';
+import { ENTITY_ICONS } from '../../../icons/entity-icons';
+import { EXTENSION_ROW_COPY } from '../copy';
+import './extension-row.css';
 
 interface ExtensionListProps {
   extensions: FixedExtensionEntry[];
   onToggle: (extension: FixedExtensionEntry) => Promise<boolean | void> | void;
   onConfigure?: (extension: FixedExtensionEntry) => void;
+  onRemove?: (extension: FixedExtensionEntry) => void;
   isStatic?: boolean;
-  disableConfiguration?: boolean;
   searchTerm?: string;
   /**
    * Pass-through only (issue #56, §14.5). Resolved once in `ExtensionsSection`
@@ -22,17 +26,23 @@ interface ExtensionListProps {
   defaultProvider?: DefaultProvider | null;
   /** Pass-through only, for the same reason (issue #56, §13.5). */
   catalog?: RegistryLoad | null;
+  /**
+   * How old the catalogue behind the provenance sentences is, or `null` when it is current.
+   * Said once, in the help of the first group's heading, rather than as a line of its own.
+   */
+  catalogFreshness?: string | null;
 }
 
 export default function ExtensionList({
   extensions,
   onToggle,
   onConfigure,
+  onRemove,
   isStatic,
-  disableConfiguration: _disableConfiguration,
   searchTerm = '',
   defaultProvider,
   catalog,
+  catalogFreshness,
 }: ExtensionListProps) {
   const matchesSearch = (extension: FixedExtensionEntry): boolean => {
     if (!searchTerm) return true;
@@ -60,73 +70,94 @@ export default function ExtensionList({
     getFriendlyTitle(a).localeCompare(getFriendlyTitle(b))
   );
 
+  const groups = [
+    { key: 'enabled', title: EXTENSION_ROW_COPY.groups.enabled, entries: sortedEnabledExtensions },
+    {
+      key: 'available',
+      title: EXTENSION_ROW_COPY.groups.available,
+      entries: sortedDisabledExtensions,
+    },
+  ].filter((group) => group.entries.length > 0);
+
   return (
-    <div className="space-y-8">
-      {sortedEnabledExtensions.length > 0 && (
-        <div>
-          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0"></span>
-            Default Extensions ({sortedEnabledExtensions.length})
-          </h2>
-          <div className="biorouter-list-shell">
-            {sortedEnabledExtensions.map((extension) => (
-              <ExtensionItem
-                key={extension.name}
-                extension={extension}
-                onToggle={onToggle}
-                onConfigure={onConfigure}
-                isStatic={isStatic}
-                defaultProvider={defaultProvider}
-                catalog={catalog}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+    <div className="flex flex-col gap-6">
+      {groups.map((group, index) => (
+        <ExtensionGroup
+          key={group.key}
+          title={group.title}
+          count={group.entries.length}
+          // The catalogue's age is about every provenance sentence below, so it is said once, on
+          // the first heading on the page.
+          note={index === 0 ? catalogFreshness : null}
+        >
+          {group.entries.map((extension) => (
+            <ExtensionItem
+              key={extension.name}
+              extension={extension}
+              onToggle={onToggle}
+              onConfigure={onConfigure}
+              onRemove={onRemove}
+              isStatic={isStatic}
+              defaultProvider={defaultProvider}
+              catalog={catalog}
+            />
+          ))}
+        </ExtensionGroup>
+      ))}
 
-      {sortedDisabledExtensions.length > 0 && (
-        <div>
-          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-background-strong rounded-full flex-shrink-0"></span>
-            Available Extensions ({sortedDisabledExtensions.length})
-          </h2>
-          <div className="biorouter-list-shell">
-            {sortedDisabledExtensions.map((extension) => (
-              <ExtensionItem
-                key={extension.name}
-                extension={extension}
-                onToggle={onToggle}
-                onConfigure={onConfigure}
-                isStatic={isStatic}
-                defaultProvider={defaultProvider}
-                catalog={catalog}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* The Extensions page's empty state, and the one vocabulary change made
-          in this directory (2026-09-07). `components/settings/extensions/` is
-          otherwise still OUT of the vocabulary sweep — it sits in the settings
-          root's own `extensions/` exclusion, and sweeping it triples the diff —
-          but this particular line is what the Extensions PAGE renders when it
-          has nothing to show, and a bare `text-sm` sentence pinned to the top
-          left of a 760px column is not an empty state. Rule 4: every in-place
-          prose block is a `Note` or the shared `EmptyState`.
-
-          No action on it. The three ways to get an extension (Add, Browse, Add
-          Custom) are already in the page header directly above, and repeating
-          one of them here would make the same act look like two different
-          offers. */}
+      {/* The Extensions page's empty states: one sentence each, the only content on the page.
+          No action on them: the three ways to get an extension are the band's Add menu directly
+          above, and repeating one here would make the same act look like two different offers. */}
       {extensions.length === 0 && (
         <EmptyState
-          icon={Puzzle}
-          title="No extensions yet"
-          description="MCP extensions add prompts, resources and tools to every new chat. Browse the marketplace or add one you already have."
+          icon={ENTITY_ICONS.extension}
+          title={EXTENSION_ROW_COPY.emptyTitle}
+          description={EXTENSION_ROW_COPY.emptyDescription}
+        />
+      )}
+      {extensions.length > 0 && groups.length === 0 && (
+        <EmptyState
+          icon={ENTITY_ICONS.extension}
+          title={EXTENSION_ROW_COPY.noMatchTitle}
+          description={EXTENSION_ROW_COPY.noMatchDescription}
+          compact
         />
       )}
     </div>
+  );
+}
+
+/**
+ * One group: a caps label carrying its count (Crew's form, no dot), then the rows. The label is
+ * inset to the rows' text so the two share a left edge.
+ */
+function ExtensionGroup({
+  title,
+  count,
+  note,
+  children,
+}: {
+  title: string;
+  count: number;
+  note?: string | null;
+  children: React.ReactNode;
+}) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="min-w-0">
+      <div className="br-ext-group-label">
+        <h2 id={headingId} className="truncate text-caps text-text-muted">
+          {title} <span className="tabular-nums">{count}</span>
+        </h2>
+        {note ? (
+          <InfoTip
+            label={EXTENSION_ROW_COPY.catalogName}
+            help={EXTENSION_ROW_COPY.catalogNote(note)}
+          />
+        ) : null}
+      </div>
+      <div className="biorouter-list-shell">{children}</div>
+    </section>
   );
 }
 

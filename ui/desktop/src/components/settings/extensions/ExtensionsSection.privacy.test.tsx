@@ -66,7 +66,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
   });
 
   it('the Settings extension card states which provider it judged against', async () => {
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
     expect(
       await screen.findByText(/unavailable in new chats \(default model is public\)/i)
@@ -80,7 +80,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
 
   it('says nothing about a private extension when the default provider is private', async () => {
     mocks.read.mockResolvedValue('versa_azure');
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
     await screen.findByText(/UCSF OMOP/);
     expect(screen.queryByText(/unavailable in new chats/i)).toBeNull();
@@ -88,7 +88,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
 
   it('says nothing about a public extension under a public default provider', async () => {
     mocks.extensionsList = [spoke];
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
     await screen.findByText(/SPOKE graph/);
     expect(screen.queryByText(/unavailable in new chats/i)).toBeNull();
@@ -105,7 +105,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
    * provenance a user reads must not depend on the network being up.
    */
   it('every card says where it came from, in §13.5 strings', async () => {
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
     expect(
       await screen.findByText('Private: published on the Biorouter marketplace')
@@ -122,7 +122,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
    * pills, not sentences.
    */
   it('every card carries the badge, not only the provenance sentence', async () => {
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
     await screen.findByText(/UCSF OMOP/);
 
     const badges = screen.getAllByTestId('privacy-badge');
@@ -147,7 +147,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
         enabled: true,
       },
     ];
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
     await screen.findByText(/Ships with Biorouter/);
 
     expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'public');
@@ -163,7 +163,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
     mocks.extensionsList = [
       { type: 'stdio', name: 'medcp', description: 'Local clinical MCP', enabled: true },
     ];
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
     expect(
       await screen.findByText(
