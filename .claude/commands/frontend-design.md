@@ -78,7 +78,8 @@ a bare `uppercase` and `font-bold`.
 | `text-subheading` | 17/24, 600 | Dialog and empty-state titles, chat h1 and h2 |
 | `text-title` | 24/32, 400 | Home greeting, document h1, stat values |
 
-Counts, dates, costs and percentages use the sans face with `tabular-nums`. Chat code blocks and
+The document default is `text-body`: unsized text renders at 14px, never 16. Still name a role on
+anything you write. Counts, dates, costs and percentages use the sans face with `tabular-nums`. Chat code blocks and
 tables use the shared `.br-md-code` and `.br-md-table` recipes.
 
 ## Spacing, rows and radii
@@ -113,7 +114,9 @@ Use the primitive in `components/ui/`, never a raw `<button>` or `<input>` with 
   `text-caps` section label with no paragraph under it.
 - `RowActions`: shown on hover, `:focus-within`, an open menu and always under `(hover: none)`;
   right-click opens the same menu. Only opacity changes.
-- `FilterInput` (28px, "Filter", ⌘F), `PageHeader` for a view's band, `ModalShell` for dialogs.
+- `FilterInput` (28px, "Filter", ⌘F), `PageHeader` for a view's band, `ModalShell` for dialogs:
+  pinned to the top so it grows downward, with a hairline under the header, unless a call site says
+  `anchor="center"` and why.
 
 Focus follows D-15: a control shifts its fill (`.biorouter-focus-surface`), a row takes
 `--background-focus` and an inset 2px `--border-focus` edge, a tab firms its underline. Never write
