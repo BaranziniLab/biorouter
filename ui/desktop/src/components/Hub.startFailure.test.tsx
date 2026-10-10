@@ -47,17 +47,39 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+// The model chip is a probe over the real effort store: these tests are about
+// which scope the composer hands it (Home's draft, a tab's draft, the new
+// chat's), not about how the picker draws.
+vi.mock('./bottom_menu/ModelEffortChip', async () => {
+  const React = await import('react');
+  const store = await import('../store/reasoningEffort');
+  function ModelEffortChip({ reasoningScope }: { reasoningScope: string }) {
+    const effort = React.useSyncExternalStore(
+      (listener) => store.subscribeToReasoningEffort(reasoningScope, listener),
+      () => store.getReasoningEffort(reasoningScope)
+    );
+    return (
+      <div>
+        <button aria-label={`Reasoning effort: ${store.REASONING_EFFORT_LABELS[effort]}`} />
+        {store.REASONING_EFFORTS.map((option) => (
+          <button
+            key={option}
+            role="menuitemradio"
+            aria-checked={option === effort}
+            onClick={() => store.setReasoningEffort(reasoningScope, option)}
+          >
+            {store.REASONING_EFFORT_LABELS[option]}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  return { ModelEffortChip };
+});
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);

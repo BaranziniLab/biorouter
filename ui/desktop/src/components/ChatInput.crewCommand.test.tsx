@@ -35,18 +35,11 @@ vi.mock('./ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../hooks/useDiverge', () => ({ useDiverge: () => ({ diverge: vi.fn() }) }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({ BottomMenuSkillSelection: () => null }));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({
   default: ({
     queuedMessages = [],
@@ -329,14 +322,14 @@ describe('the /crew command refuses local attachment extras', () => {
       chatState: ChatState.Streaming,
     });
 
-    expect(screen.getByTitle('report.txt')).toBeInTheDocument();
+    expect(screen.getByTestId('composer-file-chip')).toHaveTextContent('report.txt');
     fireEvent.click(sendButton());
 
     expect(toastWarning).toHaveBeenCalledWith(expect.objectContaining({ title: 'Draft kept' }));
     expect(setView).not.toHaveBeenCalled();
     expect(handleSubmit).not.toHaveBeenCalled();
     expect(composer().value).toBe('/crew');
-    expect(screen.getByTitle('report.txt')).toBeInTheDocument();
+    expect(screen.getByTestId('composer-file-chip')).toHaveTextContent('report.txt');
   });
 
   it('keeps a pasted image and draft, with no dispatch', async () => {

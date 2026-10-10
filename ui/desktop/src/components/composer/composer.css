@@ -172,6 +172,11 @@
   max-width: 100%;
 }
 
+/* The reference chips share the row with the attachments, one wrap. */
+.br-composer-chips > li.br-composer-chips__refs {
+  display: contents;
+}
+
 /* A 48px image thumbnail. The remove control sits in its corner and appears on
    hover or focus, like a row action. */
 .br-composer-thumb {
@@ -278,6 +283,13 @@
 
 .br-mention-menu {
   z-index: var(--z-modal-dropdown);
+}
+
+/* The list is driven from the textarea, so the highlight follows
+   `data-selected` (arrow keys, or the pointer), not focus. */
+.br-mention-menu [role='option'][data-selected] {
+  background-color: var(--overlay-hover);
+  color: var(--text-default);
 }
 
 /* @ws WS-COMPOSER end: the chat composer's own recipes */

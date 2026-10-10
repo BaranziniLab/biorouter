@@ -28,20 +28,11 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
@@ -141,8 +132,19 @@ describe('an attachment that could not be located', () => {
   it('leaves a file that does have a path alone', async () => {
     renderWithFiles([okFile]);
     await waitFor(() => {
-      expect(screen.getByText('text/csv')).toBeTruthy();
+      expect(screen.getByTestId('composer-file-chip')).toHaveTextContent('results.csv');
     });
     expect(screen.queryByText(/cannot be read/i)).toBeNull();
+    expect(screen.queryByTestId('composer-failed-chip')).toBeNull();
+  });
+
+  it('marks the failed file in danger ink and explains it in its help', async () => {
+    renderWithFiles([erroredFile]);
+    const chip = await screen.findByTestId('composer-failed-chip');
+    expect(chip).toHaveTextContent('results.csv');
+    expect(chip.className).toContain('text-text-danger');
+    expect(screen.getByRole('button', { name: 'About results.csv' })).toHaveAccessibleDescription(
+      /cannot be read from a browser tab/i
+    );
   });
 });

@@ -10,6 +10,11 @@ import {
 import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
+import { DROPDOWN_ROW_CLASS_NAME as MENU_ROW_CLASS_NAME } from './ui/dropdown-menu';
+import { Spinner } from './ui/spinner';
+import { COMPOSER_COPY } from './composer/copy';
+import { cn } from '../utils';
+import './composer/composer.css';
 import { CommandType, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import type { CatalogView } from '../api';
@@ -847,10 +852,17 @@ const MentionPopover = forwardRef<
       Math.max(8, window.innerWidth - menuWidth - 8)
     );
 
+    // The shared menu surface and row recipe (spec 2.6): 12px radius, 4px
+    // padding, 32px rows at 13px, the highlight a neutral fill. The list is
+    // driven from the textarea (arrows, Enter, Tab), so a row is highlighted by
+    // `data-selected`, not by focus.
     const menu = (
       <div
         ref={popoverRef}
-        className="biorouter-popover-surface fixed z-[1210] bg-background-default rounded-xl max-h-72 overflow-hidden"
+        role="listbox"
+        aria-label={isSlashCommand ? 'Commands' : 'Mentions'}
+        data-testid="mention-popover"
+        className="biorouter-popover-surface br-mention-menu fixed flex max-h-72 flex-col overflow-hidden rounded-container bg-background-default p-1"
         style={{
           left: menuLeft,
           top: position.y - 8,
@@ -858,62 +870,53 @@ const MentionPopover = forwardRef<
           transform: 'translateY(-100%)', // Move it fully above
         }}
       >
-        <div className="p-1.5 flex flex-col max-h-72">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-3">
-              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-text-muted"></div>
-              <span className="ml-2 text-sm text-text-muted">Scanning files...</span>
-            </div>
-          ) : (
-            <>
-              {displayItems.length > 0 && (
-                <div className="text-[11px] leading-3 text-text-muted mb-1 px-1">
-                  {displayItems.length} item{displayItems.length !== 1 ? 's' : ''} found
-                </div>
-              )}
+        {isLoading ? (
+          <div className="flex min-h-control-md items-center gap-2 px-3 text-secondary text-text-muted">
+            <Spinner size={14} />
+            <span>{COMPOSER_COPY.mention.searching}</span>
+          </div>
+        ) : (
+          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
+            {displayItems.map((item, index) => (
               <div
-                ref={listRef}
-                className="overflow-y-auto flex-1 scrollbar-thin scrollbar-thumb-borderStandard scrollbar-track-transparent"
-                style={{ maxHeight: '244px' }}
+                key={`${item.itemType}-${item.relativePath}-${item.name}`}
+                role="option"
+                aria-selected={index === selectedIndex}
+                data-selected={index === selectedIndex ? '' : undefined}
+                onClick={() => handleItemClick(index)}
+                onMouseEnter={() => onSelectedIndexChange(index)}
+                className={cn(MENU_ROW_CLASS_NAME, 'cursor-pointer')}
               >
-                {displayItems.map((item, index) => (
-                  <div
-                    key={`${item.itemType}-${item.relativePath}-${item.name}`}
-                    onClick={() => handleItemClick(index)}
-                    className={`flex items-center gap-1.5 px-1.5 py-1 rounded ring-1 ring-inset cursor-pointer transition-colors ${
-                      index === selectedIndex
-                        ? 'ring-border-subtle bg-background-strong/70'
-                        : 'ring-transparent hover:ring-border-subtle hover:bg-background-medium'
-                    }`}
-                  >
-                    <div className="flex-shrink-0 text-text-muted">
-                      <ItemIcon item={item} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <div className="text-xs leading-4 truncate text-text-default">
-                          {item.name}
-                        </div>
-                        {item.builtIn && <BuiltInBadge title="Built in. Ships with Biorouter." />}
-                      </div>
-                      <div className="text-[11px] leading-3 truncate text-text-muted">
-                        {item.extra}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {!isLoading && displayItems.length === 0 && query && (
-                  <div className="p-4 text-center text-text-muted text-sm">
-                    No items found matching "{query}"
-                  </div>
-                )}
+                <span className="flex-shrink-0 text-text-muted">
+                  <ItemIcon item={item} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-secondary text-text-default">{item.name}</span>
+                    {item.builtIn && <BuiltInBadge />}
+                  </span>
+                  {item.extra && (
+                    <span className="block truncate text-supporting text-text-muted">
+                      {item.extra}
+                    </span>
+                  )}
+                </span>
               </div>
-            </>
-          )}
-        </div>
+            ))}
+
+            {displayItems.length === 0 && query && (
+              <div className="flex min-h-control-md items-center px-3 text-secondary text-text-muted">
+                {COMPOSER_COPY.mention.noMatch(query)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
+
+    // An empty list with nothing typed yet (an `@` alone) draws nothing rather
+    // than an empty box.
+    if (!isLoading && displayItems.length === 0 && !query) return null;
 
     return createPortal(menu, document.body);
   }

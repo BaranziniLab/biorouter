@@ -29,21 +29,10 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({
-  default: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
+// The pickers are WS-PICKERS' modules, mocked by path. The footer is real:
+// the folder chip it holds is what this suite drives.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
 vi.mock('./bottom_menu/CostTracker', () => ({
   CostTracker: () => null,
 }));
@@ -120,16 +109,22 @@ describe('ChatInput pre-session working-directory wiring (#39)', () => {
     const onWorkingDirChange = vi.fn();
     renderChatInput(onWorkingDirChange);
 
-    // The folder chip shows the app default before any choice is made.
-    const chip = screen.getByText(DEFAULT_DIR);
-    fireEvent.click(chip.closest('button')!);
+    // The folder chip names the app default before any choice is made: the
+    // footer shows the folder's name, and the chooser's name carries the path.
+    const chip = screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` });
+    expect(chip).toHaveTextContent('workdir');
+    fireEvent.click(chip);
 
     await waitFor(() => expect(onWorkingDirChange).toHaveBeenCalledWith(CHOSEN_DIR));
 
     // No session — nothing may be persisted server-side yet.
     expect(updateWorkingDir).not.toHaveBeenCalled();
     // The chip reflects the choice locally (ChatInput's own state).
-    await waitFor(() => expect(screen.getByText(CHOSEN_DIR)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: `Working folder: ${CHOSEN_DIR}` })
+      ).toHaveTextContent('data')
+    );
   });
 });
 
@@ -153,8 +148,7 @@ describe('ChatInput working-directory lock once the chat has messages (#44)', ()
   it('keeps the chip interactive for a session with zero messages', () => {
     renderChatInput(vi.fn(), { sessionId: 'session-1', messagesLength: 0 });
 
-    const chip = screen.getByText(DEFAULT_DIR).closest('button');
-    expect(chip).not.toBeNull();
+    expect(screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` })).toBeEnabled();
     expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
   });
 });
@@ -187,6 +181,6 @@ describe('ChatInput authoritative working-dir lock (#44)', () => {
     });
 
     expect(screen.queryByTestId('dir-switcher-locked')).not.toBeInTheDocument();
-    expect(screen.getByText(DEFAULT_DIR).closest('button')).not.toBeNull();
+    expect(screen.getByRole('button', { name: `Working folder: ${DEFAULT_DIR}` })).toBeEnabled();
   });
 });

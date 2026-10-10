@@ -1,5 +1,6 @@
 import { X } from './icons/app-icons';
 import type { QuoteReference } from '../utils/quotedText';
+import './composer/composer.css';
 
 export function QuotedTextChip({
   quote,
@@ -14,7 +15,7 @@ export function QuotedTextChip({
       className="inline-flex max-w-full items-start gap-2 rounded-element border border-border-subtle bg-background-muted px-3 py-2 text-supporting text-text-default"
     >
       <span className="min-w-0">
-        <span className="block font-medium" title={quote.sourceLocator}>
+        <span className="block text-chip" title={quote.sourceLocator}>
           {quote.label}
         </span>
         <span
@@ -29,9 +30,9 @@ export function QuotedTextChip({
           type="button"
           onClick={onRemove}
           aria-label={`Remove quote from ${quote.label}`}
-          className="shrink-0 rounded-inner p-0.5 text-text-muted hover:text-text-default"
+          className="br-composer-chip-action"
         >
-          <X className="size-3" />
+          <X className="size-3.5" aria-hidden />
         </button>
       )}
     </span>

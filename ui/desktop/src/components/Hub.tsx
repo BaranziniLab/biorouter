@@ -8,7 +8,7 @@
  * - Displays SessionInsights (greeting + usage heatmap)
  * - Provides a ChatInput for users to start new conversations
  * - Creates a new session and navigates to Pair with the session ID
- * - Shows loading state while session is being created
+ * - Shows a spinner in Send while the session is being created
  *
  * Navigation Flow:
  * Hub (input submission) → Create Session → Pair (with session ID and initial message)
@@ -32,7 +32,6 @@ import {
   draftReasoningScope,
   getReasoningEffort,
 } from '../store/reasoningEffort';
-import LoadingBioRouter from './LoadingBioRouter';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import type { UserAttachment } from '../types/message';
 import { toastError } from '../toasts';
@@ -113,18 +112,13 @@ export default function Hub({
       </div>
 
       <div className="biorouter-home-composer shrink-0 px-4 pb-6 sm:px-6">
-        <div className="biorouter-composer-view-transition mx-auto w-full max-w-[760px]">
+        <div className="mx-auto w-full max-w-measure-chat">
           {/* H3 — the same standing off-state note every chat's composer
               carries, on the same `mx-3` rails. Home is the route the app
               LAUNCHES on, and a switch turned off outside the app takes effect
               at a launch, so a note that only chats carried would first be
               seen after the user had already started one. */}
           <PrivacyTiersOffNote className="mx-3 mb-2" />
-          {isCreatingSession && (
-            <div className="pointer-events-none mb-2.5 pl-2">
-              <LoadingBioRouter chatState={ChatState.LoadingConversation} />
-            </div>
-          )}
           <ChatInput
             sessionId={null}
             // Home's composer is left and come back to like a tab's: what it
@@ -133,6 +127,8 @@ export default function Hub({
             // under Home's key rather than dying with the component.
             draftKey={HOME_COMPOSER_DRAFT_KEY}
             handleSubmit={handleSubmit}
+            // While the chat is being created, Send shows a spinner (the
+            // composer's `LoadingConversation` state on a composer with no chat).
             chatState={isCreatingSession ? ChatState.LoadingConversation : ChatState.Idle}
             onStop={() => {}}
             initialValue=""

@@ -20,6 +20,7 @@ export const COMPOSER_COPY = {
     processingFiles: 'Processing dropped files…',
     restarting: 'Restarting chat…',
     starting: 'Starting chat…',
+    loading: 'Loading chat…',
     /** The steer chord, named only while a turn is running. */
     steerHint: (chord: string) => `${chord} adds it to the running turn`,
   },

@@ -48,26 +48,15 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({
-  default: ({ privacyTier }: { privacyTier?: string }) => (
+// The pickers and the footer are WS-PICKERS' modules, mocked by path. The
+// model chip reports the tier it was handed, which is what this suite reads.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({
+  ModelEffortChip: ({ privacyTier }: { privacyTier?: string }) => (
     <div data-testid="tier-probe">{privacyTier ?? 'unresolved'}</div>
   ),
 }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({
-  CostTracker: () => null,
-}));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({
   default: () => null,
 }));
