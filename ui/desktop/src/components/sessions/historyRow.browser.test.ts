@@ -105,6 +105,7 @@ function page(css: string) {
         <div class="biorouter-list-shell">
           ${row('a', 'A short chat')}
           ${row('c', 'A chat with no token figure and no extensions', ['7', '', ''])}
+          ${row('d', 'A chat with enormous figures', ['123,456', '1,234,567,890,123', '12'])}
           ${row('b', 'A chat whose name is long enough that it can never fit beside its stats and actions in a 712 pixel row')}
         </div>
       </section>
@@ -287,6 +288,25 @@ describe('Chat history rows in a real layout engine', () => {
       const tokens = await edge('a-tokens');
       expect(tokens.left - (a.left + a.width)).toBe(12);
       expect(tokens.figureRight).toBeCloseTo(tokens.left + tokens.width, 0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('grows a track for an outsized figure instead of painting it over its glyph', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const gap = (id: string) =>
+        tab.evaluate((el) => {
+          const node = document.getElementById(el)!;
+          const glyph = node.querySelector('svg')!.getBoundingClientRect();
+          const figure = node.querySelector('span')!.getBoundingClientRect();
+          return figure.left - glyph.right;
+        }, id);
+      for (const id of ['d-messages', 'd-tokens', 'd-ext']) {
+        expect(await gap(id), id).toBeGreaterThanOrEqual(0);
+      }
     } finally {
       await tab.close();
     }

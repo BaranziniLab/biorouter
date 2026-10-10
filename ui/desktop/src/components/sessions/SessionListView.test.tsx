@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -660,17 +662,30 @@ describe('SessionListView privacy markers', () => {
 
 // v1.89.0 visual review, D1. jsdom has no layout engine and never runs
 // Tailwind, so nothing here can measure the overlap that made these figures
-// illegible — `29,988,671` is 72px wide and the box was a fixed 48px, so the
+// illegible: `29,988,671` is 72px wide and the box was a fixed 48px, so the
 // last digits painted over the puzzle icon on every row carrying an estimate.
-// What IS testable is the property that caused it: a hard `width` on a span
-// whose content the app does not control. These pin that no count in the
-// cluster is given one, which is what a "just make the box bigger" fix would
-// re-introduce with a new cliff a few digits further out.
+// What IS testable is the property that caused it: a hard width on a box whose
+// content the app does not control. The stats are now three grid tracks (the
+// same width in every row, so the columns align), and each track is a FLOOR
+// (`minmax(n, max-content)`), never a fixed width. `historyRow.browser.test.ts`
+// measures that a longer figure grows its track instead of overlapping.
 describe('SessionListView stat column sizing', () => {
-  const statSpan = (text: string) =>
-    screen.getAllByText(text).find((el) => el.tagName === 'SPAN' && el.className.includes('w-'));
+  const CSS = readFileSync(resolve(__dirname, 'history.css'), 'utf8');
 
-  it('floors the count boxes instead of clipping them', async () => {
+  it('sizes every stat track as a floor, never a fixed width', () => {
+    const rule = CSS.match(/\.br-history-row-stats\s*\{([^}]*)\}/)?.[1] ?? '';
+    const floors = rule.match(/--stat-[a-z]+:\s*minmax\(\d+px,\s*max-content\);/g) ?? [];
+    expect(floors).toHaveLength(3);
+    const tracks = rule.match(/grid-template-columns:([^;]+);/)?.[1] ?? '';
+    // The three tracks are those floors, and nothing else is in the list.
+    expect(tracks.trim().split(/\s+/)).toEqual([
+      'var(--stat-messages)',
+      'var(--stat-tokens)',
+      'var(--stat-extensions)',
+    ]);
+  });
+
+  it('gives no stat figure a width of its own', async () => {
     mocks.listSessions.mockResolvedValue({
       data: {
         sessions: [
@@ -706,11 +721,10 @@ describe('SessionListView stat column sizing', () => {
     await screen.findByText('Long-running analysis');
 
     for (const text of ['12345', '29,988,671', '5']) {
-      const span = statSpan(text);
-      expect(span, `no stat span rendered for ${text}`).toBeDefined();
-      // A floor keeps the column; a fixed width is the clip.
-      expect(span!.className).toMatch(/\bmin-w-\d/);
-      expect(span!.className).not.toMatch(/(^|\s)w-\d/);
+      const figure = screen.getAllByText(text).find((el) => el.closest('.br-history-stat'));
+      expect(figure, `no stat figure rendered for ${text}`).toBeDefined();
+      expect(figure!.className).not.toMatch(/(^|\s)(min-)?w-\d/);
+      expect(figure!.closest('.br-history-stat')!.className).not.toMatch(/(^|\s)(min-)?w-\d/);
     }
   });
 });

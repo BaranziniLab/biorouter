@@ -49,10 +49,15 @@
   display: grid;
   flex-shrink: 0;
   align-items: center;
-  /* Messages · billed tokens · extensions. Wide enough for a 10-digit token
-     figure with its commas beside a 14px glyph; one width for every row so the
-     columns read straight down the list. */
-  grid-template-columns: 56px 96px 36px;
+  /* Messages · billed tokens · extensions. Each track is a floor, not a width:
+     wide enough for a 10-digit token figure with its commas beside a 14px glyph,
+     the same in every row so the columns read straight down the list, and free
+     to grow for the one row whose figure is longer rather than painting that
+     figure over its glyph (the clip the v1.89.0 review measured). */
+  --stat-messages: minmax(56px, max-content);
+  --stat-tokens: minmax(96px, max-content);
+  --stat-extensions: minmax(36px, max-content);
+  grid-template-columns: var(--stat-messages) var(--stat-tokens) var(--stat-extensions);
   column-gap: 12px;
 }
 
