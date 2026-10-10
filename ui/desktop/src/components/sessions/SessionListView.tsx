@@ -1,5 +1,13 @@
 import { deleteConversation } from '../../utils/deleteConversation';
-import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from 'react';
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  startTransition,
+} from 'react';
 import {
   MessageSquareText,
   Target,
@@ -18,7 +26,7 @@ import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { IconAction } from '../ui/row-actions';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
-import { ScrollArea } from '../ui/scroll-area';
+import { ScrollArea, type ScrollAreaHandle } from '../ui/scroll-area';
 import { Spinner } from '../ui/spinner';
 import { FilterInput } from '../ui/filter-input';
 import { uiCopy } from '../ui/copy';
@@ -714,6 +722,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     if (!debouncedFilter) setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
   }, [debouncedFilter]);
 
+  // A new query's results land at rest at the top. Kept where a scrolled list
+  // left it, the first match sat under the sticky bucket label 2,000px down
+  // (vision V1-L2). Layout, not passive: the reset happens before the results
+  // paint, so they never show at the old offset first.
+  const scrollAreaRef = useRef<ScrollAreaHandle>(null);
+  const queryRendered = useRef(debouncedFilter);
+  useLayoutEffect(() => {
+    if (queryRendered.current === debouncedFilter) return;
+    queryRendered.current = debouncedFilter;
+    const viewport = scrollAreaRef.current?.viewportRef.current;
+    if (viewport) viewport.scrollTop = 0;
+  }, [debouncedFilter]);
+
   const loadSessions = useCallback(async () => {
     const hasCachedSessions = getCachedSessionList() !== null;
     if (!hasCachedSessions) {
@@ -986,7 +1007,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
               `measures.test.ts` asserts no `<ReadableContent` here is left on the
               default size. The scroll area is the pane's, so its bar sits at
               the window edge rather than at the column's. */}
-          <ScrollArea handleScroll={handleScroll} className="flex-1 min-h-0">
+          <ScrollArea ref={scrollAreaRef} handleScroll={handleScroll} className="flex-1 min-h-0">
             <ReadableContent size="chat" className="relative px-6 pt-2 pb-6">
               {/* Loading layer, shaped like the rows that replace it. */}
               <div

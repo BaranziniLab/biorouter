@@ -33,9 +33,28 @@ vi.mock('../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
 }));
 
-vi.mock('../ui/scroll-area', () => ({
-  ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
+// The viewport is a plain div, but it hands History the same `viewportRef` the
+// real ScrollArea does, so the scroll reset can be observed.
+vi.mock('../ui/scroll-area', async () => {
+  const React = await import('react');
+  return {
+    ScrollArea: ({
+      children,
+      ref,
+    }: {
+      children: ReactNode;
+      ref?: React.Ref<{ viewportRef: React.RefObject<HTMLDivElement | null> }>;
+    }) => {
+      const viewportRef = React.useRef<HTMLDivElement>(null);
+      React.useImperativeHandle(ref, () => ({ viewportRef }), []);
+      return (
+        <div data-testid="history-viewport" ref={viewportRef}>
+          {children}
+        </div>
+      );
+    },
+  };
+});
 
 const session = (id: string, name: string, workingDir = '/Users/someone/Desktop'): Session =>
   ({
@@ -105,6 +124,23 @@ describe('SessionListView — the band filter', () => {
 
     fireEvent.keyDown(filter, { key: 'Escape' });
     await waitFor(() => expect(rowNames()).toHaveLength(3));
+  });
+
+  /** Vision V1-L2: results land at rest at the top, not under a sticky label mid-list. */
+  it('brings a new query to the top of a scrolled list', async () => {
+    const filter = await renderHistory();
+    const viewport = screen.getByTestId('history-viewport');
+    viewport.scrollTop = 2233;
+
+    fireEvent.change(filter, { target: { value: 'desktop' } });
+    await waitFor(() => expect(rowNames()).toEqual(['Desktop cleanup', 'Desktop icons']));
+    expect(viewport.scrollTop).toBe(0);
+
+    // And again when the query is cleared: the list is back on its first page.
+    viewport.scrollTop = 500;
+    fireEvent.change(filter, { target: { value: '' } });
+    await waitFor(() => expect(rowNames()).toHaveLength(3));
+    expect(viewport.scrollTop).toBe(0);
   });
 
   it('is focused by ⌘F while History is open', async () => {
