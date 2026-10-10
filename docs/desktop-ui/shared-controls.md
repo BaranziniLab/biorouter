@@ -58,7 +58,7 @@ Layout snaps and content glides, so a control moves only when the person chose s
 
 ## Focus
 
-Focus is a surface shift plus an inset 2px edge, never a ring. Three rules keep it from appearing when a mouse did the work:
+Focus is a surface shift plus an inset 2px edge, never a ring. Four rules keep it from appearing when a mouse did the work:
 
 - A tooltip (`Tooltip`, `AppTooltipLayer`, `InfoTip`) opens on focus only when Tab moved the focus, so a dialog or menu handing focus back never pops it.
 - A menu skips its focus return after a pointer pick, as above.
