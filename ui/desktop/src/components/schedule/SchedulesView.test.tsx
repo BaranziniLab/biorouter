@@ -237,18 +237,16 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
    * the strip, and a source grep for `<PageHeader` would pass on a view that
    * mounted it and then put a button somewhere else as well.
    */
-  it('puts both header actions on their own line, not on the title row', async () => {
+  it('puts both header actions in the band’s action cluster', async () => {
     renderSchedules();
 
     const heading = await screen.findByRole('heading', { level: 1, name: 'Scheduler' });
-    const titleRow = heading.parentElement as HTMLElement;
-    expect(titleRow.querySelector('button')).toBeNull();
+    const band = screen.getByTestId('page-header');
+    expect(band).toContainElement(heading);
 
     const create = screen.getAllByRole('button', { name: 'New schedule' })[0];
-    const strip = create.closest('.biorouter-settings-control-strip');
+    const strip = create.closest('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
-    // Both of them, in the same strip — the refresh glyph moved off the title
-    // row with the primary rather than being left behind on it.
     expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh schedules' }));
   });
 

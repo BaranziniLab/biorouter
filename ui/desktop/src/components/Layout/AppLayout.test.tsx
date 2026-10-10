@@ -1,7 +1,12 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppLayout, isChatRoute, sidebarAutoCollapseAction } from './AppLayout';
+import {
+  AppLayout,
+  routeOwnsTopBand,
+  sidebarAutoCollapseAction,
+  TOP_BAND_ROUTE_BODY_CLASS,
+} from './AppLayout';
 
 // The layout's own children are not what is under test; each is a heavy surface with its own
 // suite. What is under test is the layout's body class, so they are stood in for.
@@ -152,7 +157,7 @@ describe('sidebarAutoCollapseAction', () => {
   });
 });
 
-const CHAT_ROUTE_CLASS = 'biorouter-chat-route-active';
+const CHAT_ROUTE_CLASS = TOP_BAND_ROUTE_BODY_CLASS;
 
 /** A route body that can move the router, so one mounted layout sees a route change. */
 function RouteBody({ path }: { path: string }) {
@@ -161,6 +166,7 @@ function RouteBody({ path }: { path: string }) {
     <div data-testid="route-body" data-path={path}>
       <button onClick={() => navigate('/crew')}>go crew</button>
       <button onClick={() => navigate('/settings')}>go settings</button>
+      <button onClick={() => navigate('/welcome')}>go welcome</button>
     </div>
   );
 }
@@ -179,47 +185,67 @@ function renderLayoutAt(entry: string) {
 
 /**
  * The 32px titlebar drag strip stops taking pointer events on a route whose own top band holds
- * controls (issue #74). Crew's switcher, channel header and pane header live in that band, so
- * `/crew` is one of those routes. jsdom sees no drag rect; what it can see is the class the
- * `main.css` rule keys on.
+ * controls (issue #74). After the band redesign that is EVERY route inside the shell: the chat
+ * header, Crew's bands, and `PageHeader` on every other view, including the not-found page. The
+ * routes outside the shell keep the strip. jsdom sees no drag rect; what it can see is the class
+ * the `main.css` rule keys on.
  */
-describe('the chat-route body class', () => {
+describe('the top-band body class', () => {
   afterEach(() => {
     document.body.classList.remove(CHAT_ROUTE_CLASS);
   });
 
-  it('counts the chat, the new-chat route and Crew as chat routes, and nothing else', () => {
-    expect(isChatRoute('/')).toBe(true);
-    expect(isChatRoute('/pair')).toBe(true);
-    expect(isChatRoute('/crew')).toBe(true);
-    expect(isChatRoute('/crew/anything')).toBe(true);
-    expect(isChatRoute('/crewmate')).toBe(false);
-    expect(isChatRoute('/settings')).toBe(false);
-    expect(isChatRoute('/knowledge')).toBe(false);
+  it('counts every route inside the shell, including the catch-all', () => {
+    for (const path of [
+      '/',
+      '/pair',
+      '/crew',
+      '/crew/anything',
+      '/crewmate',
+      '/settings',
+      '/extensions',
+      '/applications',
+      '/sessions',
+      '/schedules',
+      '/workflows',
+      '/skills',
+      '/knowledge',
+      '/shared-session',
+      '/permission',
+      '/no-such-page',
+    ]) {
+      expect(routeOwnsTopBand(path), path).toBe(true);
+    }
   });
 
-  it('sets the class on /crew in the real layout', () => {
-    renderLayoutAt('/crew');
+  it('leaves the routes outside the shell on the drag strip', () => {
+    for (const path of [
+      '/launcher',
+      '/welcome',
+      '/configure-providers',
+      '/apps',
+      '/standalone-app',
+    ]) {
+      expect(routeOwnsTopBand(path), path).toBe(false);
+    }
+  });
+
+  it('sets the class on /crew and on a page band route in the real layout', () => {
+    const view = renderLayoutAt('/crew');
     expect(screen.getByTestId('route-body')).toBeInTheDocument();
     expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
-  });
+    view.unmount();
 
-  it('leaves it off a route with no controls in the band', () => {
     renderLayoutAt('/settings');
-    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
+    expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
   });
 
   it('follows the route as it changes, and clears it on unmount', () => {
     const view = renderLayoutAt('/settings');
-    expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
-
-    act(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'go crew' }));
-    });
     expect(document.body).toHaveClass(CHAT_ROUTE_CLASS);
 
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'go settings' }));
+      fireEvent.click(screen.getByRole('button', { name: 'go welcome' }));
     });
     expect(document.body).not.toHaveClass(CHAT_ROUTE_CLASS);
 

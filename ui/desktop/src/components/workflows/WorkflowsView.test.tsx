@@ -237,10 +237,9 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
 
     expect(screen.getByRole('heading', { level: 1, name: 'Workflows' })).toBeInTheDocument();
 
-    // The operator's decision, pinned here as well as in PageHeader's own
-    // suite: the page's actions sit in the control strip under the description,
-    // not in a hand-rolled `flex gap-3` beside the title.
-    const strip = container.querySelector('.biorouter-settings-control-strip');
+    // The band (spec 3.10): the page's actions sit at the band's trailing edge,
+    // in PageHeader's own cluster, not in a hand-rolled `flex gap-3`.
+    const strip = container.querySelector('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
     // Queried INSIDE the strip rather than page-wide and asserted to be
     // contained: the empty state below offers the same two actions under the
@@ -281,8 +280,9 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
     await screen.findByTitle('Use workflow');
 
     const columns = container.querySelectorAll('.biorouter-readable-content');
-    // The vacuous pass: with no columns the loop below asserts nothing.
-    expect(columns.length).toBeGreaterThan(1);
+    // The vacuous pass: with no columns the loop below asserts nothing. The band
+    // sits in no column, so the body's is the one there is.
+    expect(columns.length).toBeGreaterThan(0);
     for (const column of columns) expect(column).toHaveAttribute('data-size', 'chat');
   });
 

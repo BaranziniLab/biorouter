@@ -177,9 +177,11 @@ describe('ApplicationsView', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Built apps' })
     ).toBeInTheDocument();
-    expect(screen.getByText(/Apps you built with Agent Drafter/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Built apps' })).toHaveAccessibleDescription(
+      /Apps you built with Agent Drafter/
+    );
 
-    const strip = container.querySelector('.biorouter-settings-control-strip');
+    const strip = container.querySelector('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
     expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh' }));
     expect(container.querySelector('.page-transition')).toBeNull();

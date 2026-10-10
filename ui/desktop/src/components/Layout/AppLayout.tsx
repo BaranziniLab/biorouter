@@ -49,27 +49,57 @@ export function sidebarAutoCollapseAction(opts: {
 }
 
 /**
- * The routes whose own top band holds interactive controls where the 32px titlebar drag strip
- * lies: the chat (`/`, `/pair`) and Crew (`/crew`, whose workspace switcher, channel header and
- * pane header sit in that band). On them `biorouter-chat-route-active` makes the strip stop
- * taking pointer events (`main.css`), so it cannot take the clicks meant for those controls
- * (issue #74). Crew's bands declare no drag region of their own; the real-app check with the
- * sidebar open and collapsed is the only proof, because jsdom sees no drag rects.
+ * The routes rendered OUTSIDE the app shell (`App.tsx` declares them beside, not inside, the
+ * `AppLayout` route). They keep the 32px titlebar drag strip as their only drag region.
+ * `/apps` and `/standalone-app` are retired addresses that redirect home.
  */
-export function isChatRoute(pathname: string): boolean {
-  return (
-    pathname === '/' ||
-    pathname === '/pair' ||
-    pathname === '/crew' ||
-    pathname.startsWith('/crew/')
+const ROUTES_OUTSIDE_THE_SHELL = [
+  '/launcher',
+  '/welcome',
+  '/configure-providers',
+  '/apps',
+  '/standalone-app',
+] as const;
+
+/**
+ * Whether a route owns its top band: true for every route INSIDE the app shell.
+ *
+ * Every surface in the shell now opens with a 44px band of its own: the chat header (`/`,
+ * `/pair`), Crew's bands (`/crew`), and `PageHeader` everywhere else (`/settings`,
+ * `/extensions`, `/applications`, `/sessions`, `/schedules`, `/workflows`, `/skills`,
+ * `/knowledge`, `/shared-session`, `/permission`, and the `*` catch-all, whose
+ * `NotFoundView` renders `PageHeader`). Home (`/`) has no band, only its greeting, and still
+ * belongs here: nothing of its own sits under the strip either.
+ *
+ * On these routes the 32px titlebar drag strip stops taking pointer events (`main.css`,
+ * `body.biorouter-chat-route-active .titlebar-drag-region`), so it cannot take the clicks
+ * meant for the band's controls (issue #74), and the band's own drag rect (`PageHeader`'s
+ * `.biorouter-page-header-bar`, the chat header's title rect) is what drags the window.
+ *
+ * ⚠ Written as "inside the shell" rather than as a list of band routes on purpose: a new route
+ * added to the shell is covered the day it lands, so it cannot reintroduce issue #74 by being
+ * forgotten here. jsdom sees no drag rects, so the only proof that a band's controls take a
+ * click and its empty space drags the window is the real app, with the sidebar open and
+ * collapsed.
+ */
+export function routeOwnsTopBand(pathname: string): boolean {
+  return !ROUTES_OUTSIDE_THE_SHELL.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
   );
 }
 
-/** Keeps `biorouter-chat-route-active` on `<body>` exactly while a chat route is showing. */
-export function useChatRouteBodyClass(pathname: string): void {
+/**
+ * The body class the `main.css` rule keys on. The name predates the bands (it was set only on
+ * the chat and Crew routes); it is kept so the stylesheet rule, owned by the sidebar workstream,
+ * does not have to move with this predicate.
+ */
+export const TOP_BAND_ROUTE_BODY_CLASS = 'biorouter-chat-route-active';
+
+/** Keeps the top-band body class on `<body>` exactly while a band route is showing. */
+export function useTopBandRouteBodyClass(pathname: string): void {
   React.useEffect(() => {
-    document.body.classList.toggle('biorouter-chat-route-active', isChatRoute(pathname));
-    return () => document.body.classList.remove('biorouter-chat-route-active');
+    document.body.classList.toggle(TOP_BAND_ROUTE_BODY_CLASS, routeOwnsTopBand(pathname));
+    return () => document.body.classList.remove(TOP_BAND_ROUTE_BODY_CLASS);
   }, [pathname]);
 }
 
@@ -92,7 +122,7 @@ const AppLayoutContent: React.FC = () => {
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
 
-  useChatRouteBodyClass(location.pathname);
+  useTopBandRouteBodyClass(location.pathname);
 
   /**
    * Auto-collapse the sidebar when the window gets too narrow, and restore it

@@ -1,72 +1,149 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { PageHeader } from './PageHeader';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import { PageHeader, PageHeaderAction } from './PageHeader';
+import { Upload } from '../icons/app-icons';
 
 /**
- * The header's CONTRACT, not its paint. jsdom runs no Tailwind, so nothing here
- * asserts a colour or a computed width — `styles/measures.test.ts` makes the
- * measure claims against the stylesheet and the source, and the visual pass is
- * in the PR. What a render test can prove is the STRUCTURE the other two rely
- * on: that the actions land in the strip rather than beside the title, and that
- * the hairline is outside the column rather than on it.
+ * The band's CONTRACT, not its paint. jsdom runs no Tailwind and lays nothing out, so nothing
+ * here asserts a height or a position: `pageBandGeometry.browser.test.tsx` measures the band in
+ * a real layout engine against the authored CSS. What a render test can prove is the STRUCTURE
+ * the geometry and the drag rects rely on.
  */
 describe('PageHeader', () => {
-  it('renders the title as the page heading, with its description', () => {
-    render(<PageHeader title="Workflows" description="View and manage your saved workflows." />);
+  it('renders the title as the one page heading', () => {
+    render(<PageHeader title="Workflows" />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'Workflows' })).toBeInTheDocument();
-    expect(screen.getByText('View and manage your saved workflows.')).toBeInTheDocument();
-  });
-
-  it('omits the description paragraph entirely when there is none', () => {
-    const { container } = render(<PageHeader title="Extensions" />);
-
-    expect(container.querySelectorAll('p')).toHaveLength(0);
   });
 
   /**
-   * The operator's decision, pinned: the actions are NOT on the title row. A
-   * test that only asserted "the button renders" would pass in both placements,
-   * which is exactly the drift this component was built to end — so this asserts
-   * where the button lands, and the next test asserts where it does not.
+   * Principle 2: the explanation is help, not a paragraph. It must still reach a screen reader
+   * without a hover, so the info button is described by a node that is always in the DOM.
    */
-  it('puts the actions in a control strip below the description', () => {
+  it('renders info as an About button described by the help, never as a paragraph', () => {
     const { container } = render(
+      <PageHeader title="Workflows" info="Reusable chat setups. Start one from here." />
+    );
+
+    const about = screen.getByRole('button', { name: 'About Workflows' });
+    expect(about).toHaveAccessibleDescription('Reusable chat setups. Start one from here.');
+    expect(container.querySelectorAll('p')).toHaveLength(0);
+  });
+
+  it('treats the deprecated description as info', () => {
+    render(<PageHeader title="Skills" description="Reusable instruction sets." />);
+
+    expect(screen.getByRole('button', { name: 'About Skills' })).toHaveAccessibleDescription(
+      'Reusable instruction sets.'
+    );
+  });
+
+  it('renders no help button when there is nothing to explain', () => {
+    render(<PageHeader title="Extensions" />);
+
+    expect(screen.queryByRole('button', { name: /^About/ })).toBeNull();
+  });
+
+  /**
+   * The band: one line, the actions at its trailing edge. This is the reversal of the
+   * 2026-09-07 "actions on their own line" decision, pinned in its new direction.
+   */
+  it('puts the title, the adornment and the actions on one band', () => {
+    render(
       <PageHeader
-        title="Skills"
-        description="Add and manage skills."
-        actions={<button type="button">Add skill</button>}
+        title="Scheduler"
+        adornment={<span data-testid="adornment">3</span>}
+        actions={<button type="button">New schedule</button>}
       />
     );
 
-    const strip = container.querySelector('.biorouter-settings-control-strip');
-    expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Add skill' }));
-    expect(strip).toHaveClass('mt-5');
+    const band = screen.getByTestId('page-header');
+    expect(band.tagName).toBe('HEADER');
+    expect(band).toHaveAttribute('data-band');
+    expect(band).toContainElement(screen.getByRole('heading', { level: 1, name: 'Scheduler' }));
+    expect(band).toContainElement(screen.getByTestId('adornment'));
+    expect(band).toContainElement(screen.getByRole('button', { name: 'New schedule' }));
+    expect(band.querySelector('.biorouter-settings-control-strip')).toBeNull();
   });
 
-  it('never places an action inside the title row', () => {
-    render(<PageHeader title="Scheduler" actions={<button type="button">New schedule</button>} />);
+  it('keeps the deprecated titleAdornment working as the adornment', () => {
+    render(
+      <PageHeader title="Chat history" titleAdornment={<span data-testid="adornment">12</span>} />
+    );
 
-    const heading = screen.getByRole('heading', { level: 1, name: 'Scheduler' });
-    const titleRow = heading.parentElement;
-    expect(titleRow).not.toBeNull();
-    expect(titleRow?.querySelector('button')).toBeNull();
+    expect(screen.getByTestId('page-header')).toContainElement(screen.getByTestId('adornment'));
   });
 
-  it('renders no strip at all when a view has no actions', () => {
-    const { container } = render(<PageHeader title="Settings" description="Manage models." />);
-
-    expect(container.querySelector('.biorouter-settings-control-strip')).toBeNull();
-  });
-
-  it('puts a title adornment on the title row and extra children below', () => {
-    const { container } = render(
+  /**
+   * The drag geometry (issue #74): the header itself declares nothing; every control lives in
+   * the inner bar, which is the drag rect and which takes the titlebar reserve as a margin.
+   * Asserted as structure because jsdom has no drag rects.
+   */
+  it('holds every control inside the drag bar, which is the header’s only child', () => {
+    render(
       <PageHeader
-        title="Chat history"
-        description="View and search your past chats."
-        titleAdornment={<span data-testid="adornment">12</span>}
-      >
+        title="Scheduler"
+        onBack={() => {}}
+        info="Help."
+        tabs={<div role="tablist" />}
+        actions={<button type="button">Run now</button>}
+      />
+    );
+
+    const band = screen.getByTestId('page-header');
+    expect(band.children).toHaveLength(1);
+    const bar = band.firstElementChild as HTMLElement;
+    expect(bar).toHaveClass('biorouter-page-header-bar');
+    for (const button of screen.getAllByRole('button')) expect(bar).toContainElement(button);
+    expect(bar).toContainElement(screen.getByRole('tablist'));
+  });
+
+  it('renders a back button before the title when the page is a drill-in', async () => {
+    const onBack = vi.fn();
+    render(<PageHeader title="nightly-cohort" onBack={onBack} backLabel="Back to Scheduler" />);
+
+    const back = screen.getByRole('button', { name: 'Back to Scheduler' });
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(back.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(back);
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no back button on a top-level page', () => {
+    render(<PageHeader title="Workflows" />);
+
+    expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+  });
+
+  it('renders tabs inline in the band', () => {
+    render(
+      <PageHeader
+        title="Settings"
+        tabs={
+          <div role="tablist">
+            <button role="tab" type="button">
+              App
+            </button>
+          </div>
+        }
+      />
+    );
+
+    expect(screen.getByTestId('page-header')).toContainElement(screen.getByRole('tab'));
+  });
+
+  /** The band never sits in the reading column; only a view's body does. */
+  it('does not put the band in a reading column', () => {
+    const { container } = render(<PageHeader title="Built apps" />);
+
+    expect(container.querySelector('.biorouter-readable-content')).toBeNull();
+    expect(screen.getByTestId('page-header')).toHaveClass('biorouter-page-header');
+  });
+
+  it('renders the deprecated children in a row under the band, not in it', () => {
+    render(
+      <PageHeader title="Chat history">
         <label>
           <input type="checkbox" />
           Show subagent runs
@@ -74,52 +151,24 @@ describe('PageHeader', () => {
       </PageHeader>
     );
 
-    const heading = screen.getByRole('heading', { level: 1, name: 'Chat history' });
-    expect(heading.parentElement).toContainElement(screen.getByTestId('adornment'));
-
-    // The checkbox is a sibling of the description, not of the title.
     const checkbox = screen.getByRole('checkbox');
-    expect(heading.parentElement).not.toContainElement(checkbox);
-    expect(container.firstElementChild).toContainElement(checkbox);
+    expect(screen.getByTestId('page-header')).not.toContainElement(checkbox);
+    expect(checkbox.closest('.biorouter-page-subband')).not.toBeNull();
+    expect(checkbox.closest('.biorouter-readable-content')).toHaveAttribute('data-size', 'chat');
   });
 
-  it('sizes its reading column to the chat measure', () => {
-    const { container } = render(<PageHeader title="Extensions" />);
-
-    const column = container.querySelector('.biorouter-readable-content');
-    expect(column).not.toBeNull();
-    expect(column).toHaveAttribute('data-size', 'chat');
-  });
-
-  /**
-   * The hairline is on the WRAPPER, not on the column — the one difference
-   * between the seven views that got it right and Skills, whose rule stopped at
-   * the reading measure while every sibling's ran edge to edge. Asserted as
-   * "the column does not carry it AND its parent does", because either half
-   * alone passes while the bug is present.
-   */
-  it('hangs the hairline outside the reading column so the rule is full-bleed', () => {
-    const { container } = render(<PageHeader title="Built apps" />);
-
-    const wrapper = container.firstElementChild as HTMLElement;
-    const column = container.querySelector('.biorouter-readable-content') as HTMLElement;
-
-    expect(wrapper).toHaveClass('biorouter-page-header');
-    expect(column).not.toHaveClass('biorouter-page-header');
-    expect(column).not.toHaveClass('border-b');
-    expect(column.parentElement).toBe(wrapper);
-  });
-
-  /**
-   * `page-transition` matches no CSS rule in this repo and, measured in the
-   * running app, produces no animation and no transition. It was on seven of
-   * the eight headers this component replaces. Pinned so a later "restore the
-   * animation" edit has to add the missing stylesheet rule rather than
-   * re-adding the no-op class.
-   */
   it('carries no page-transition class', () => {
-    const { container } = render(<PageHeader title="Workflows" description="Anything." />);
+    const { container } = render(<PageHeader title="Workflows" info="Anything." />);
 
     expect(container.querySelector('.page-transition')).toBeNull();
+  });
+});
+
+describe('PageHeaderAction', () => {
+  it('names the icon button by its label, without a title attribute', () => {
+    render(<PageHeaderAction icon={Upload} label="Import workflow" onClick={() => {}} />);
+
+    const button = screen.getByRole('button', { name: 'Import workflow' });
+    expect(button).not.toHaveAttribute('title');
   });
 });
