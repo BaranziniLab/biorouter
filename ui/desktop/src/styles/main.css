@@ -6835,6 +6835,8 @@ code [class~='token'] {
 .br-paper-empty {
   padding-block: 40px;
   color: var(--text-muted);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
 }
 
 /* The status strip's count — `88 lines`, `70 rows · 11 columns` — is the first
