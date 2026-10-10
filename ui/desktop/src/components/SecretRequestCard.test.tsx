@@ -262,7 +262,7 @@ describe('SecretRequestCard shape (spec 3.6 cards)', () => {
       />
     );
     const root = container.querySelector('.biorouter-message-content')!;
-    expect(root.className).toContain('rounded-container');
+    expect(root).toHaveClass('br-action-card');
     expect(root.className).not.toContain('rounded-2xl');
     expect(screen.getByText('Saved on this machine. The model never sees it.')).toBeInTheDocument();
     expect(

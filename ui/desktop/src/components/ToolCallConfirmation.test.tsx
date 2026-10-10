@@ -440,8 +440,7 @@ describe('ToolCallConfirmation shape (spec 3.6 cards)', () => {
   it('asks in the one card recipe, with sentence-case decisions at the bottom right', () => {
     const { container } = renderCard();
     const card = container.querySelector('.biorouter-message-content')!;
-    expect(card.className).toContain('rounded-container');
-    expect(card.className).toContain('border-border-subtle');
+    expect(card).toHaveClass('br-action-card');
     expect(card.className).not.toContain('rounded-2xl');
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Always allow' })).toBeInTheDocument();
@@ -455,7 +454,7 @@ describe('ToolCallConfirmation shape (spec 3.6 cards)', () => {
     const { container } = renderCard();
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
     expect(await screen.findByText('Shell is allowed once')).toHaveClass('br-transcript-row-label');
-    expect(container.querySelector('.rounded-container')).toBeNull();
+    expect(container.querySelector('.br-action-card')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
     expect(screen.getByTestId('permission-modal')).toBeInTheDocument();
   });

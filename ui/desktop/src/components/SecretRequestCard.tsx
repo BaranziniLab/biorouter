@@ -180,7 +180,7 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
   // Asking: the one card recipe. Required fields first, then the optional ones,
   // each marked "(optional)" rather than filed under a second caps heading.
   return (
-    <div className="biorouter-message-content br-enter text-body flex min-w-0 flex-col gap-3 rounded-container border border-border-subtle bg-background-default p-4">
+    <div className="biorouter-message-content br-action-card br-enter text-body">
       <div className="flex min-w-0 flex-col gap-1">
         <div className="text-label text-text-default">{prompt || SECRET_COPY.fallbackPrompt}</div>
         {/* The decision point, so the reassurance stays visible in one short

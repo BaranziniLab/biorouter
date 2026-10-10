@@ -209,6 +209,71 @@ describe('TranscriptRow in a real layout engine', () => {
     expect(g.chevron!.left).toBe(g.label.right + 8);
   });
 
+  /** The computed paint of every row's chevron, label and head, outermost first. */
+  async function paint(element: React.ReactElement) {
+    const html = renderToStaticMarkup(element);
+    const tab = await browser!.newPage({ viewport: { width: 1000, height: 600 } });
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${TOKENS}${css}</style></head><body>` +
+          `<div id="column" style="width:${COLUMN}px;margin-left:100px">${html}</div></body></html>`
+      );
+      return await tab.evaluate(() => ({
+        chevrons: [...document.querySelectorAll('.br-transcript-row-chevron')].map((node) => {
+          const style = getComputedStyle(node);
+          return { transform: style.transform, opacity: style.opacity };
+        }),
+        labels: [...document.querySelectorAll('.br-transcript-row-label')].map(
+          (node) => getComputedStyle(node).animationName
+        ),
+        heads: [...document.querySelectorAll('.br-transcript-row-head')].map(
+          (node) => getComputedStyle(node).color
+        ),
+      }));
+    } finally {
+      await tab.close();
+    }
+  }
+
+  it("keeps a closed nested row's chevron at rest inside an open row", async () => {
+    if (!browser) return;
+    // Explored opens onto the calls themselves: the open row's rotated, full
+    // strength chevron must not reach down into a row nested in its body.
+    const p = await paint(
+      <TranscriptRow icon={Terminal} label="Explored" body="plain" defaultOpen>
+        <TranscriptRow icon={Terminal} label="Read a.ts">
+          <pre>x</pre>
+        </TranscriptRow>
+      </TranscriptRow>
+    );
+    expect(p.chevrons).toHaveLength(2);
+    expect(p.chevrons[0]).toEqual({ transform: 'matrix(0, 1, -1, 0, 0, 0)', opacity: '1' });
+    expect(p.chevrons[1]).toEqual({ transform: 'none', opacity: '0.6' });
+  });
+
+  it("does not pass a running or failed row's state down to the rows in its body", async () => {
+    if (!browser) return;
+    const running = await paint(
+      <TranscriptRow icon={Terminal} label="Exploring" body="plain" defaultOpen running>
+        <TranscriptRow icon={Terminal} label="Read a.ts">
+          <pre>x</pre>
+        </TranscriptRow>
+      </TranscriptRow>
+    );
+    expect(running.labels[0]).toBe('br-tool-text-pulse');
+    expect(running.labels[1]).toBe('none');
+
+    const danger = await paint(
+      <TranscriptRow icon={Terminal} label="Failed" tone="danger" body="plain" defaultOpen>
+        <TranscriptRow icon={Terminal} label="Read a.ts">
+          <pre>x</pre>
+        </TranscriptRow>
+      </TranscriptRow>
+    );
+    expect(danger.heads[0]).toBe('rgb(165, 26, 20)');
+    expect(danger.heads[1]).toBe('rgb(99, 92, 84)');
+  });
+
   it("nests rows on a plain body with their glyphs on the outer label's edge", async () => {
     if (!browser) return;
     // The Explored row (ToolCallRows): the calls of a run sit on a plain body.

@@ -64,7 +64,7 @@ export default function ElicitationRequest({
   // Asking: the one card recipe. The question is the card's title; the form
   // and its action follow. One box, not a bubble glued to a form.
   return (
-    <div className="biorouter-message-content br-enter text-body flex min-w-0 flex-col gap-3 rounded-container border border-border-subtle bg-background-default p-4">
+    <div className="biorouter-message-content br-action-card br-enter text-body">
       <div className="text-label text-text-default">
         {message || ELICITATION_COPY.fallbackQuestion}
       </div>

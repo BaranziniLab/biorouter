@@ -218,7 +218,6 @@ export type ProviderExecution = 'bridged' | 'child';
 /**
  * Read the mirror marker off a request/response pair.
  *
- * Both halves are stamped, so a row read on its own carries its own provenance;
  * Both halves are stamped, so a row read on its own carries its own provenance.
  * An unrecognised value is `null` — the same fail-safe direction the backend
  * takes: we only claim a provenance we positively recognise.
@@ -1768,7 +1767,7 @@ const ToolProgress = ({ progress, total, message }: Omit<Progress, 'progressToke
     <div className="flex w-full min-w-0 flex-col gap-1">
       {message && <div className="text-supporting text-text-muted">{message}</div>}
       <ProgressBarPrimitive
-        className="br-tool-progress"
+        size="thin"
         value={isDeterminate ? progress : 0}
         max={isDeterminate ? total : 100}
         indeterminate={!isDeterminate}

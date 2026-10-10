@@ -193,11 +193,11 @@ export default function ToolConfirmation({
   // for escalating this call — so its presence is what marks a security finding.
   //
   // One derived boolean rather than two independent reads of `prompt`: the
-  // warning banner and the withheld "Always Allow" are two halves of one
+  // warning banner and the withheld "Always allow" are two halves of one
   // decision, and a card that shows the banner while still offering a permanent
   // grant (or the reverse) is worse than either. Whitespace is not a finding —
   // a blank prompt used to paint an empty warning band *and* take the user's
-  // "Always Allow" away.
+  // "Always allow" away.
   //
   // ⚠ The coding-agent bridge used to put its own framing there ("<child> asked
   // to run this through Biorouter"), which put every bridged call behind a
@@ -208,7 +208,7 @@ export default function ToolConfirmation({
   // ⚠ That guard covers `bridge.rs` and ONLY `bridge.rs` — it string-matches that
   // one file. Do NOT read it as "nothing but an inspector writes `prompt`": five
   // other production sites still put framing there, so their cards still draw the
-  // banner and still withhold "Always Allow" —
+  // banner and still withhold "Always allow" —
   // `extension_manager_extension.rs` (install, delete), `platform_approval.rs`,
   // `skills_extension.rs` and `bug_report/mod.rs`. Withholding the grant is
   // arguably wanted for the destructive ones (they carry `requires_user_proof`),
@@ -278,7 +278,7 @@ export default function ToolConfirmation({
   // will do, then the decision at the bottom right.
   return (
     <>
-      <div className="biorouter-message-content br-enter text-body flex min-w-0 flex-col gap-3 rounded-container border border-border-subtle bg-background-default p-4">
+      <div className="biorouter-message-content br-action-card br-enter text-body">
         {findingLine}
 
         <div className="flex flex-wrap items-center gap-2">

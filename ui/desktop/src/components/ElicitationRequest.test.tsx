@@ -75,7 +75,7 @@ describe('ElicitationRequest', () => {
       />
     );
     const card = container.querySelector('.biorouter-message-content')!;
-    expect(card.className).toContain('rounded-container');
+    expect(card).toHaveClass('br-action-card');
     expect(card.className).not.toContain('rounded-2xl');
     expect(screen.getByText('Which cohort?')).toHaveClass('text-label');
   });

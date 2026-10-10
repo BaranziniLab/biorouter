@@ -68,7 +68,11 @@ button.br-transcript-row-head:focus-visible {
   color: var(--text-default);
 }
 
-.br-transcript-row[data-tone='danger'] .br-transcript-row-head {
+/* State selectors reach the row's OWN line through child combinators. A row can
+   hold rows (the Explored row opens onto its calls), and a descendant selector
+   would paint an open row's turned chevron, a running row's pulse or a failed
+   row's ink onto every row nested in its body. */
+.br-transcript-row[data-tone='danger'] > .br-transcript-row-line .br-transcript-row-head {
   color: var(--text-danger);
 }
 
@@ -114,11 +118,11 @@ button.br-transcript-row-head:focus-visible {
 
 button.br-transcript-row-head:hover .br-transcript-row-chevron,
 button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
-.br-transcript-row[data-state='open'] .br-transcript-row-chevron {
+.br-transcript-row[data-state='open'] > .br-transcript-row-line .br-transcript-row-chevron {
   opacity: 1;
 }
 
-.br-transcript-row[data-state='open'] .br-transcript-row-chevron {
+.br-transcript-row[data-state='open'] > .br-transcript-row-line .br-transcript-row-chevron {
   transform: rotate(90deg);
   transition-duration: var(--dur-fast-min), var(--dur-fast-max);
 }
@@ -126,12 +130,16 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
 /* Work in progress: the label breathes. One period for every "working" loop in
    the transcript (the activity line uses the same keyframes). Hovering or
    focusing the row stills it so the text can be read. */
-.br-transcript-row[data-running] .br-transcript-row-label {
+.br-transcript-row[data-running] > .br-transcript-row-line .br-transcript-row-label {
   animation: br-tool-text-pulse calc(var(--dur-slow) * 4) var(--ease-out) infinite;
 }
 
-.br-transcript-row[data-running] button.br-transcript-row-head:hover .br-transcript-row-label,
 .br-transcript-row[data-running]
+  > .br-transcript-row-line
+  button.br-transcript-row-head:hover
+  .br-transcript-row-label,
+.br-transcript-row[data-running]
+  > .br-transcript-row-line
   button.br-transcript-row-head:focus-visible
   .br-transcript-row-label {
   animation: none;
@@ -178,7 +186,7 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-transcript-row[data-running] .br-transcript-row-label {
+  .br-transcript-row[data-running] > .br-transcript-row-line .br-transcript-row-label {
     animation: none;
   }
 

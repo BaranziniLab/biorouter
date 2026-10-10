@@ -1,0 +1,232 @@
+// @vitest-environment node
+/**
+ * The cards of the transcript, measured in a real layout engine (spec 3.6, 5.7).
+ *
+ * jsdom lays nothing out and never evaluates `:hover`, `:focus-visible` or
+ * `::before`, so a component test that reads a class passes whether the rule
+ * behind it exists or not. The action card (approval, elicitation, secret
+ * request) and the artifact card are rendered to markup and laid out in
+ * Chromium with their own authored stylesheet (`tool-call.css`) at
+ * `main.css`'s token values, inside the 760px chat column.
+ */
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { chromium, type Browser } from 'playwright';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import MCPUIResourceRenderer from './MCPUIResourceRenderer';
+import type { EmbeddedResource } from '../api';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const COLUMN = 760;
+
+/** `main.css`'s values for the tokens the cards read. */
+const TOKENS = `:root {
+  --font-body: Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, sans-serif;
+  --text-supporting: 12px;
+  --text-supporting--line-height: 16px;
+  --radius-inner: 4px;
+  --radius-element: 8px;
+  --radius-container: 12px;
+  --text-muted: #635c54;
+  --text-default: #1c1b19;
+  --overlay-hover: rgba(0, 0, 0, 0.05);
+  --background-default: #ffffff;
+  --background-muted: #f0f0ec;
+  --background-focus: #e0e0dc;
+  --border-subtle: #e4e3df;
+  --border-focus: #6b6963;
+  --dur-fast-min: 95ms;
+  --dur-fast: 125ms;
+  --dur-fast-max: 175ms;
+  --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
+}
+body { margin: 0; font: 14px/20px var(--font-body); }
+* { box-sizing: border-box; }
+.text-label { font-size: 14px; line-height: 20px; font-weight: 500; }
+.text-supporting { font-size: 12px; line-height: 16px; }
+.block { display: block; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.min-w-0 { min-width: 0; }
+.flex-1 { flex: 1 1 0%; }
+/* main.css's entrance: the card must be able to opt out of it. */
+.br-enter { animation: br-enter 175ms cubic-bezier(0.24, 1, 0.4, 1) both; }
+@keyframes br-enter { from { opacity: 0; } to { opacity: 1; } }`;
+
+const launchChromium = async (): Promise<Browser | null> => {
+  for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
+    try {
+      return await chromium.launch(options);
+    } catch {
+      // try the next build
+    }
+  }
+  return null;
+};
+
+const artifact = {
+  type: 'resource',
+  resource: {
+    uri: 'ui://autovisualiser/chart',
+    mimeType: 'text/html',
+    text: '<!doctype html><html><body><h1>Chart</h1></body></html>',
+  },
+} as unknown as EmbeddedResource & { type: 'resource' };
+
+describe('the transcript cards in a real layout engine', () => {
+  let browser: Browser | null = null;
+  let css = '';
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn(
+        'No Chromium found (Playwright’s or Google Chrome): skipping the transcript card ' +
+          'geometry tests. Run `npx playwright install chromium` to enable them.'
+      );
+    }
+    css = readFileSync(resolve(here, 'tool-call.css'), 'utf8');
+  }, 120_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  async function open(html: string) {
+    const tab = await browser!.newPage({ viewport: { width: 1000, height: 600 } });
+    await tab.setContent(
+      `<!doctype html><html><head><style>${TOKENS}${css}</style></head><body>` +
+        `<div id="column" style="width:${COLUMN}px;margin-left:100px">${html}</div></body></html>`
+    );
+    return tab;
+  }
+
+  it('draws an action card at radius 12, a 1px hairline and 16px in, actions at the bottom right', async () => {
+    if (!browser) return;
+    const tab = await open(
+      `<div class="biorouter-message-content br-action-card br-enter" id="card">` +
+        `<div class="text-label">Run Shell?</div>` +
+        `<div id="actions" style="display:flex;justify-content:flex-end"><button id="go">Allow once</button></div>` +
+        `</div>`
+    );
+    try {
+      const m = await tab.evaluate(() => {
+        const card = document.getElementById('card')!;
+        const style = getComputedStyle(card);
+        const box = card.getBoundingClientRect();
+        const go = document.getElementById('go')!.getBoundingClientRect();
+        return {
+          width: box.width,
+          radius: style.borderTopLeftRadius,
+          border: `${style.borderTopWidth} ${style.borderTopStyle}`,
+          borderColor: style.borderTopColor,
+          padding: style.padding,
+          gap: style.rowGap,
+          shadow: style.boxShadow,
+          ground: style.backgroundColor,
+          // The button's right edge sits on the card's content edge: 16px in.
+          buttonInset: box.right - go.right,
+        };
+      });
+      expect(m.width).toBe(COLUMN);
+      expect(m.radius).toBe('12px');
+      expect(m.border).toBe('1px solid');
+      expect(m.borderColor).toBe('rgb(228, 227, 223)');
+      expect(m.padding).toBe('16px');
+      expect(m.gap).toBe('12px');
+      expect(m.shadow).toBe('none');
+      expect(m.ground).toBe('rgb(255, 255, 255)');
+      expect(m.buttonInset).toBe(17);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('plays the entrance for a card that arrives live and not for one that mounts at rest', async () => {
+    if (!browser) return;
+    const card = `<div class="br-action-card br-enter">Run Shell?</div>`;
+    const live = await open(card);
+    const still = await open(`<div data-motion-still="">${card}</div>`);
+    try {
+      const nameOf = (page: typeof live) =>
+        page.evaluate(
+          () => getComputedStyle(document.querySelector('.br-action-card')!).animationName
+        );
+      expect(await nameOf(live)).toBe('br-enter');
+      expect(await nameOf(still)).toBe('none');
+    } finally {
+      await live.close();
+      await still.close();
+    }
+  });
+
+  it('draws the artifact card across the 760 column: a 32px tile, the title over its kind, no shadow', async () => {
+    if (!browser) return;
+    const tab = await open(
+      renderToStaticMarkup(<MCPUIResourceRenderer content={artifact} onOpenArtifact={() => {}} />)
+    );
+    try {
+      const m = await tab.evaluate(() => {
+        const card = document.querySelector('.br-artifact-card') as HTMLElement;
+        const style = getComputedStyle(card);
+        const box = card.getBoundingClientRect();
+        const tile = card.querySelector('.br-artifact-card-tile')!.getBoundingClientRect();
+        const lines = [...card.querySelectorAll('.block')].map((node) =>
+          node.getBoundingClientRect()
+        );
+        return {
+          width: box.width,
+          radius: style.borderTopLeftRadius,
+          border: `${style.borderTopWidth} ${style.borderTopStyle}`,
+          shadow: style.boxShadow,
+          tile: { width: tile.width, height: tile.height },
+          titleAboveKind: lines.length === 2 && lines[0].bottom <= lines[1].top,
+          kind: card.getAttribute('data-artifact-kind'),
+          kindText: card.querySelectorAll('.block')[1]?.textContent,
+        };
+      });
+      expect(m.width).toBe(COLUMN);
+      expect(m.radius).toBe('12px');
+      expect(m.border).toBe('1px solid');
+      expect(m.shadow).toBe('none');
+      expect(m.tile).toEqual({ width: 32, height: 32 });
+      expect(m.titleAboveKind).toBe(true);
+      expect(m.kind).toBe('figure');
+      expect(m.kindText).toBe('Figure');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('washes the artifact card on hover and draws the row focus on a Tab', async () => {
+    if (!browser) return;
+    const tab = await open(
+      renderToStaticMarkup(<MCPUIResourceRenderer content={artifact} onOpenArtifact={() => {}} />)
+    );
+    try {
+      const wash = () =>
+        tab.evaluate(
+          () =>
+            getComputedStyle(document.querySelector('.br-artifact-card')!, '::before')
+              .backgroundColor
+        );
+      expect(await wash()).toBe('rgba(0, 0, 0, 0)');
+      await tab.hover('.br-artifact-card');
+      await tab.waitForTimeout(200);
+      expect(await wash()).toBe('rgba(0, 0, 0, 0.05)');
+
+      await tab.mouse.move(900, 500);
+      await tab.keyboard.press('Tab');
+      const focus = await tab.evaluate(() => {
+        const style = getComputedStyle(document.querySelector('.br-artifact-card')!);
+        return { ground: style.backgroundColor, shadow: style.boxShadow };
+      });
+      expect(focus.ground).toBe('rgb(224, 224, 220)');
+      expect(focus.shadow).toContain('inset');
+      expect(focus.shadow).toContain('2px');
+    } finally {
+      await tab.close();
+    }
+  });
+});
