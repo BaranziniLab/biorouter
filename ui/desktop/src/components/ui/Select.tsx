@@ -1,6 +1,11 @@
 import React from 'react';
-import ReactSelect from 'react-select';
-import { MENU_GROUP_LABEL_CLASS_NAME, MENU_ROW_CLASS_NAME } from './dropdown-menu';
+import ReactSelect, { components as selectComponents, type OptionProps } from 'react-select';
+import { CheckIcon } from '../icons/app-icons';
+import {
+  MENU_GROUP_LABEL_CLASS_NAME,
+  MENU_ROW_CLASS_NAME,
+  MENU_ROW_TRAILING_CLASS_NAME,
+} from './dropdown-menu';
 
 /**
  * A select option row: the one menu row (spec 2.6) plus a pointer cursor. A 32px FLOOR, never
@@ -48,10 +53,30 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
 // DialogContent — this tier is exactly what stops the menu painting under them.
 const MENU_Z = 500;
 
+/**
+ * The chosen option carries a 16px check at the trailing edge, as a selected radio item does in
+ * every other menu (spec 2.6, principle 5), so the choice reads without leaning on a wash that a
+ * highlighted row shares. Decorative: react-select already sets `aria-selected`. The label sits
+ * in a `min-w-0 flex-1` box so a long or two-line label wraps instead of pushing the check out.
+ */
+function SelectOption(props: OptionProps) {
+  return (
+    <selectComponents.Option {...props}>
+      <div className="min-w-0 flex-1">{props.children}</div>
+      {props.isSelected ? (
+        <span className={MENU_ROW_TRAILING_CLASS_NAME} data-slot="menu-item-indicator">
+          <CheckIcon className="size-4 text-text-default" aria-hidden />
+        </span>
+      ) : null}
+    </selectComponents.Option>
+  );
+}
+
 export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
   return (
     <ReactSelect
       {...props}
+      components={{ Option: SelectOption, ...props.components }}
       unstyled
       isSearchable={props.isSearchable !== false}
       closeMenuOnSelect={props.closeMenuOnSelect !== false}
@@ -168,7 +193,9 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
           overflowY: 'auto',
           pointerEvents: 'auto',
         }),
-        option: (base) => ({ ...base, pointerEvents: 'auto', cursor: 'pointer' }),
+        // react-select's own option rule is `display: block`, unlayered, and would beat the
+        // row's `flex`: the label and the trailing check would stack instead of sharing a line.
+        option: (base) => ({ ...base, display: 'flex', pointerEvents: 'auto', cursor: 'pointer' }),
       }}
     />
   );
