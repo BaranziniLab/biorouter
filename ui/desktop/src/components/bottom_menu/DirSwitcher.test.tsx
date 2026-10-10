@@ -258,6 +258,8 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     expect(label).toHaveTextContent('Desktop');
     expect(label).not.toHaveTextContent(WORKING_DIR);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    // A screen reader gets the path the pointer gets from the tooltip.
+    expect(label).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
 
     // The full path is still discoverable on hover.
     await user.hover(label);

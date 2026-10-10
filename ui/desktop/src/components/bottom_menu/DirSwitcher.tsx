@@ -178,7 +178,14 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
     </span>
   );
   const trigger = locked ? (
-    <span data-testid="dir-switcher-locked" className={cn('br-footline__item', className)}>
+    <span
+      data-testid="dir-switcher-locked"
+      // A static label whose full path is otherwise a hover-only tooltip: a group
+      // with a name hands a screen reader the path the sighted pointer gets.
+      role="group"
+      aria-label={`Working folder: ${workingDir}`}
+      className={cn('br-footline__item', className)}
+    >
       <Folder aria-hidden="true" />
       {name}
     </span>

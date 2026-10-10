@@ -115,6 +115,24 @@ describe('ContextWindowGauge compaction control', () => {
     expect(tooltip!.querySelectorAll('.block')).toHaveLength(0);
   });
 
+  it('reports itself expanded while its gauge is open, which the footer item styles on', async () => {
+    const user = userEvent.setup();
+    render(
+      <ContextWindowIndicator
+        totalTokens={10_000}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    const button = screen.getByTestId('context-window-indicator');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    await user.click(button);
+    // `pickers.css` follows `aria-expanded`: the tooltip around the trigger
+    // overwrites `data-state`, so `[data-state='open']` never matched.
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('draws the ring at the chip size with a 2px stroke, and no mono', () => {
     render(
       <ContextWindowIndicator

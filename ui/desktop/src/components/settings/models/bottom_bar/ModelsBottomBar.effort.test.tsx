@@ -5,6 +5,8 @@ import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy'
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import {
   getReasoningEffort,
+  REASONING_EFFORT_DESCRIPTIONS,
+  REASONING_EFFORTS,
   reasoningEffortForRequest,
   resetReasoningEffortForTests,
   setReasoningEffort,
@@ -127,7 +129,12 @@ describe('the model and effort chip', () => {
 
   it('chooses the effort from a radio group in the model menu', async () => {
     renderChip();
+    const chip = await screen.findByTestId('model-chip');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
     await openMenu();
+    // The chip's open ground follows `aria-expanded`, not `data-state`, which
+    // the tooltip around the trigger overwrites.
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
 
     expect(await screen.findByText(MODEL_COPY.effortGroup)).toBeInTheDocument();
     const radios = screen.getAllByRole('menuitemradio');
@@ -136,6 +143,13 @@ describe('the model and effort chip', () => {
       'aria-checked',
       'true'
     );
+
+    // The item's tooltip is for the pointer; a screen reader hears the same line.
+    for (const level of REASONING_EFFORTS) {
+      expect(screen.getByTestId(`effort-${level}`)).toHaveAccessibleDescription(
+        REASONING_EFFORT_DESCRIPTIONS[level]
+      );
+    }
 
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Deep' }));
     expect(getReasoningEffort(SCOPE)).toBe('deep');

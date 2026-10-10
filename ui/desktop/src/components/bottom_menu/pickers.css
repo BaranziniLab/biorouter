@@ -10,7 +10,16 @@
  * switches carry the accent, and both come from their own primitives.
  */
 
-/* A chip in the card's control row: ghost, 28px, 13/18, muted at rest. */
+/*
+ * A chip in the card's control row: ghost, 28px, 13/18, muted at rest.
+ *
+ * ⚠ "Open" is `aria-expanded`, never `data-state`. Each trigger sits inside a
+ * Tooltip's trigger, and Radix merges the tooltip's `data-state` ("closed",
+ * "delayed-open") over the popover's or menu's own, so `[data-state='open']`
+ * never matched: the chevron stayed down and the chip dropped its held ground
+ * the moment the pointer left. Measured with the real primitives in jsdom;
+ * `aria-expanded` is set by the popover and the menu and by nothing else.
+ */
 .br-picker-chip {
   display: inline-flex;
   align-items: center;
@@ -32,7 +41,7 @@
 }
 
 .br-picker-chip:hover,
-.br-picker-chip[data-state='open'] {
+.br-picker-chip[aria-expanded='true'] {
   background: var(--overlay-hover);
   color: var(--text-default);
 }
@@ -63,7 +72,7 @@
   transition: transform var(--dur-fast-max) var(--ease-out);
 }
 
-.br-picker-chip[data-state='open'] .br-picker-chip__chevron {
+.br-picker-chip[aria-expanded='true'] .br-picker-chip__chevron {
   transform: rotate(180deg);
 }
 
@@ -225,7 +234,7 @@ button.br-footline__item {
 }
 
 button.br-footline__item:hover,
-.br-footline__item[data-state='open'] {
+button.br-footline__item[aria-expanded='true'] {
   background: var(--overlay-hover);
   color: var(--text-default);
 }
@@ -247,6 +256,23 @@ button.br-footline__item:disabled {
   max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/*
+ * D-15's focus surface, for the two controls here that paint their own ground.
+ * The base rule (`:where(button):focus-visible`) sits in a cascade layer, and
+ * the unlayered `background` and `color` above beat it outright, so a Tab-focused
+ * chip kept its resting ink and no fill. Measured in Chromium: only the base
+ * block's inset edge survived. Same fix as `.biorouter-focus-surface`
+ * (main.css), written here so the chips do not depend on a class at each call
+ * site. After the hover rules, so a focused chip under the pointer keeps it.
+ */
+.br-picker-chip:focus-visible,
+button.br-footline__item:focus-visible {
+  outline: none;
+  background: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
 @media (prefers-reduced-motion: reduce) {

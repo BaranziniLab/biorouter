@@ -683,7 +683,14 @@ export default function ModelsBottomBar({
                 {REASONING_EFFORTS.map((level) => (
                   <Tooltip key={level}>
                     <TooltipTrigger asChild>
-                      <DropdownMenuRadioItem value={level} data-testid={`effort-${level}`}>
+                      <DropdownMenuRadioItem
+                        value={level}
+                        data-testid={`effort-${level}`}
+                        // The tooltip is for the pointer: a tooltip opens on focus only
+                        // after Tab, and arrow keys move focus in a menu. A screen reader
+                        // hears the same line as the item's description.
+                        aria-description={REASONING_EFFORT_DESCRIPTIONS[level]}
+                      >
                         <EffortBars effort={level} className="size-icon-row text-text-muted" />
                         <span>{REASONING_EFFORT_LABELS[level]}</span>
                       </DropdownMenuRadioItem>

@@ -103,8 +103,13 @@ describe('ToolsChip', () => {
 
   it('opens one popover with a segmented control over one list at a time', async () => {
     render(<ToolsChip sessionId="chat-1" />);
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
+    const chip = screen.getByTestId('composer-tools-chip');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(chip);
 
+    // `pickers.css` holds the chip's open ground and turns its chevron on
+    // `aria-expanded`: the tooltip around the trigger overwrites `data-state`.
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
     const tabs = await screen.findByRole('radiogroup', { name: TOOLS_COPY.segmentsLabel });
     const radios = Array.from(tabs.querySelectorAll('[role="radio"]'));
     expect(radios.map((radio) => radio.textContent)).toEqual(['Extensions', 'Skills', 'Knowledge']);

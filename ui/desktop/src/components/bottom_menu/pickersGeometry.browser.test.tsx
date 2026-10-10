@@ -83,6 +83,20 @@ svg { display: block; }
   --overlay-hover: rgb(0 0 0 / 0.05); --overlay-pressed: rgb(0 0 0 / 0.1); --border-subtle: #ccc; }
 `;
 
+/**
+ * The base layer's D-15 focus rule, as main.css declares it. It sits in a cascade
+ * layer, so a control that paints its own ground with unlayered CSS (both chips
+ * here do) loses it outright; `pickers.css` carries the rule the chips need.
+ */
+const BASE_FOCUS = `@layer base {
+  :where(button):focus-visible {
+    outline: none;
+    background-color: var(--background-focus);
+    color: var(--text-default);
+    box-shadow: inset 0 0 0 2px var(--border-focus);
+  }
+}`;
+
 const LONG_MODEL = 'gpt-5.6-sol-with-a-name-long-enough-to-need-an-ellipsis-on-any-composer';
 
 const ENTRY = `
@@ -104,6 +118,10 @@ function App() {
         <button type="button" className="br-picker-chip" data-kind="model" id="model">
           <span className="br-picker-chip__name" id="model-name">${LONG_MODEL}</span>
           <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" />
+        </button>
+        <button type="button" className="br-picker-chip" id="open-chip" aria-expanded="true">
+          <span>Tools</span>
+          <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" id="open-chevron" />
         </button>
       </div>
       <div className="br-picker-popover" id="popover" style={{ marginTop: 16 }}>
@@ -191,7 +209,7 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
-    css = PREFLIGHT + readTokens() + primitiveBlocks() + PICKERS_CSS;
+    css = PREFLIGHT + BASE_FOCUS + readTokens() + primitiveBlocks() + PICKERS_CSS;
   }, 120_000);
 
   afterAll(async () => {
@@ -351,6 +369,68 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
       expect(m.family).not.toMatch(/mono/i);
       near(m.glyph, 14, 'folder glyph');
       near(m.costRight, 0, 'cost on the trailing edge');
+    } finally {
+      await tab.close();
+    }
+  });
+  it('holds the ground and turns the chevron of a chip whose popover or menu is open', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      // Open is `aria-expanded`: the tooltip around each trigger overwrites
+      // `data-state`, so a `[data-state='open']` rule never matched.
+      await tab.waitForTimeout(250);
+      const m = await tab.evaluate(() => {
+        const style = (id: string) => getComputedStyle(document.getElementById(id)!);
+        return {
+          ground: style('open-chip').backgroundColor,
+          restingGround: style('tools').backgroundColor,
+          turned: style('open-chevron').transform,
+          restingChevron: style('tools-chevron').transform,
+        };
+      });
+      expect(m.ground).toBe('rgba(0, 0, 0, 0.05)');
+      expect(m.restingGround).toBe('rgba(0, 0, 0, 0)');
+      expect(m.turned).toBe('matrix(-1, 0, 0, -1, 0, 0)');
+      expect(m.restingChevron).toBe('none');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('gives a Tab-focused chip and footer item the focus surface, though each paints its own ground', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const reach = async (id: string) => {
+        for (let presses = 0; presses < 30; presses++) {
+          await tab.keyboard.press('Tab');
+          if (await tab.evaluate((want) => document.activeElement?.id === want, id)) break;
+        }
+        // The ground and ink transition over `--dur-fast-min`: read them at rest.
+        await tab.waitForTimeout(250);
+        return tab.evaluate((want) => {
+          const el = document.getElementById(want)!;
+          const style = getComputedStyle(el);
+          return {
+            focused: document.activeElement === el,
+            visible: el.matches(':focus-visible'),
+            ground: style.backgroundColor,
+            ink: style.color,
+            edge: style.boxShadow,
+          };
+        }, id);
+      };
+      for (const id of ['tools', 'model', 'folder', 'cost']) {
+        const m = await reach(id);
+        expect(m.focused, `${id} was reached with Tab`).toBe(true);
+        expect(m.visible, `${id} matches :focus-visible`).toBe(true);
+        // --background-focus (#ddd) and --text-default (#111), not the resting
+        // transparent ground and muted ink the unlayered rules would keep.
+        expect(m.ground, `${id} focus ground`).toBe('rgb(221, 221, 221)');
+        expect(m.ink, `${id} focus ink`).toBe('rgb(17, 17, 17)');
+        expect(m.edge, `${id} inset edge`).toMatch(/rgb\(85, 85, 85\) 0px 0px 0px 2px inset/);
+      }
     } finally {
       await tab.close();
     }
