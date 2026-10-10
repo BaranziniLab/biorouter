@@ -89,6 +89,7 @@ svg { display: block; }
 const ENTRY = `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import { Switch } from './switch';
 import { SegmentedControl } from './segmented-control';
 import { InfoTip } from './info-tip';
@@ -103,6 +104,28 @@ const OPTIONS = [
   { value: 'system', label: 'System' },
 ];
 
+/** Reads layout in a layout effect on every change, as a SegmentedControl re-measuring does. */
+function Measurer({ tick }: { tick: unknown }) {
+  const ref = React.useRef<HTMLSpanElement>(null);
+  React.useLayoutEffect(() => {
+    void ref.current?.offsetWidth;
+  }, [tick]);
+  return <span ref={ref} />;
+}
+
+/** A stored value that arrives after mount (Settings > App's "Prevent sleep while running"). */
+function AsyncSwitch() {
+  const [on, setOn] = React.useState(true);
+  (window as unknown as { setAsyncSwitch: (v: boolean) => void }).setAsyncSwitch = (v) =>
+    flushSync(() => setOn(v));
+  return (
+    <div style={{ padding: 16 }}>
+      <Switch id="async" aria-label="Async" checked={on} onCheckedChange={setOn} />
+      <Measurer tick={on} />
+    </div>
+  );
+}
+
 function App() {
   const [value, setValue] = React.useState('dark');
   (window as unknown as { setSegmented: (v: string) => void }).setSegmented = setValue;
@@ -112,6 +135,7 @@ function App() {
         <Switch id="off" checked={false} aria-label="Off" onCheckedChange={() => {}} />
         <Switch id="on" checked aria-label="On" onCheckedChange={() => {}} />
       </div>
+      <AsyncSwitch />
       <div style={{ padding: 16 }}>
         <SegmentedControl aria-label="Theme" options={OPTIONS} value={value} onValueChange={setValue} data-testid="fit" />
       </div>
@@ -312,6 +336,63 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       }
       near(m.off.knob.left - m.off.track.left, 2, 'off knob start inset');
       near(m.on.track.right - m.on.knob.right, 2, 'on knob end inset');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * V4-01 (vision round 1): a value that arrives without the person's toggle lands at rest even
+   * when something in the same commit reads layout. The flag used to be set one commit late, and a
+   * style read in between started the 125ms transition that `transition-duration: 0ms` can no
+   * longer stop. The person's own toggle still slides, which is what proves the sampling sees a
+   * transition at all.
+   */
+  it('lands an async switch value at rest, and slides the person’s toggle (V4-01)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const sample = () =>
+        tab.evaluate(
+          () =>
+            new Promise<{ running: number; x: number; still: boolean }>((done) =>
+              requestAnimationFrame(() => {
+                const track = document.getElementById('async')!;
+                const thumb = track.querySelector('.br-switch-thumb')!;
+                done({
+                  running: thumb.getAnimations().length,
+                  x: thumb.getBoundingClientRect().left - track.getBoundingClientRect().left,
+                  still: track.hasAttribute('data-motion-still'),
+                });
+              })
+            )
+        );
+
+      // The stored value arrives: on → off, with a layout read in the same commit.
+      await tab.evaluate(() =>
+        (window as unknown as { setAsyncSwitch: (v: boolean) => void }).setAsyncSwitch(false)
+      );
+      const arrived = await sample();
+      expect(arrived.still, 'the commit that shows it carries the flag').toBe(true);
+      expect(arrived.running, 'no transition runs on the knob').toBe(0);
+      near(arrived.x, 2, 'the knob is already at rest');
+      await tab.waitForTimeout(100);
+      const released = await sample();
+      expect(released.still, 'the flag is released').toBe(false);
+      expect(released.running, 'releasing it starts nothing').toBe(0);
+
+      // The person's toggle: the knob slides.
+      const toggled = await tab.evaluate(
+        () =>
+          new Promise<number>((done) => {
+            const track = document.getElementById('async')!;
+            track.click();
+            requestAnimationFrame(() =>
+              done(track.querySelector('.br-switch-thumb')!.getAnimations().length)
+            );
+          })
+      );
+      expect(toggled, 'a toggle animates').toBeGreaterThan(0);
     } finally {
       await tab.close();
     }

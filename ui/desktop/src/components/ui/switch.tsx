@@ -17,8 +17,17 @@ import { cn } from '../../utils';
  *   `<label>` row (or a `SettingRow`), the whole row toggles it.
  * - Motion: knob `transform` and track `background-color` over 125ms `--ease-out`. A value that
  *   changes without the person touching the switch (it loaded asynchronously, another window
- *   changed it) snaps: that commit carries `data-motion-still`, so a settings page that fills in
- *   after mount does not play a row of slides.
+ *   changed it) snaps: the render that shows it carries `data-motion-still`, so a settings page
+ *   that fills in after mount does not play a row of slides.
+ *
+ *   ⚠ **The flag is derived DURING the render that flips `data-state`, never in an effect after
+ *   it (vision round 1, V4-01).** It used to be set by a layout effect, one commit later. Any
+ *   style read between the two commits (a sibling's layout effect measuring: a SegmentedControl
+ *   in the same section re-measures on every render) made the browser compute the new
+ *   `data-state` with the 125ms duration and START the transition, and a running transition
+ *   ignores a later `transition-duration: 0ms`. Measured on Settings > App: "Prevent sleep while
+ *   running" slid 14 → 5.7 → 4 → 2 every time the tab opened. The flag is released two frames
+ *   later, so at least one frame is styled with it. `controlsGeometry.browser.test.tsx` pins it.
  * - Name: the visible row label, through `aria-labelledby` (or a `<label htmlFor>`). Never
  *   "Toggle …" or "Enable …", and never a name that changes with the state.
  * - Geometry and colour are authored CSS (`.br-switch` in `main.css`), so they cannot fail to
@@ -37,22 +46,37 @@ export const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitives.
     // When the person last toggled it. A change that follows within the window is theirs, even
     // when the caller saves first and updates `checked` once the save answers.
     const touchedAt = React.useRef<number | null>(null);
-    const previous = React.useRef(checked);
-    const [still, setStill] = React.useState(false);
+    // The value the last render showed, and a token (> 0) while a change that was NOT the
+    // person's is held at rest. A fresh token per change restarts the release.
+    const [shown, setShown] = React.useState(checked);
+    const [still, setStill] = React.useState(0);
 
-    React.useLayoutEffect(() => {
-      if (previous.current === checked) return;
-      previous.current = checked;
+    if (checked !== shown) {
+      // Derived state, set during render: React re-renders before committing, so the new
+      // `data-state` and `data-motion-still` reach the DOM in the same commit. Reading the ref is
+      // pure; it is cleared after the commit below.
+      setShown(checked);
       const touched =
         touchedAt.current !== null && Date.now() - touchedAt.current < SWITCH_TOUCH_WINDOW_MS;
+      setStill(touched ? 0 : still + 1);
+    }
+
+    React.useLayoutEffect(() => {
+      // The change this render showed has been judged; the next one is judged afresh.
       touchedAt.current = null;
-      if (!touched) setStill(true);
     }, [checked]);
 
     React.useEffect(() => {
       if (!still) return;
-      const frame = window.requestAnimationFrame(() => setStill(false));
-      return () => window.cancelAnimationFrame(frame);
+      // Two frames: the first is styled with the flag (the snap), the second releases it.
+      let second = 0;
+      const first = window.requestAnimationFrame(() => {
+        second = window.requestAnimationFrame(() => setStill(0));
+      });
+      return () => {
+        window.cancelAnimationFrame(first);
+        window.cancelAnimationFrame(second);
+      };
     }, [still]);
 
     const callerStill = (props as Record<string, unknown>)['data-motion-still'];
@@ -67,7 +91,7 @@ export const Switch = React.forwardRef<React.ElementRef<typeof SwitchPrimitives.
           onCheckedChange?.(next);
         }}
         {...props}
-        data-motion-still={still || callerStill !== undefined ? '' : undefined}
+        data-motion-still={still > 0 || callerStill !== undefined ? '' : undefined}
         ref={ref}
       >
         <SwitchPrimitives.Thumb data-slot="switch-thumb" className="br-switch-thumb" />
