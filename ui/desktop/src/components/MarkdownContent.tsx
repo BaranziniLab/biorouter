@@ -986,7 +986,7 @@ const MarkdownContent = memo(function MarkdownContent({
       // utilities here: a size that depends on Tailwind having scanned a new
       // class string can silently not exist (CLAUDE.md, BIOROUTER_NO_HMR).
       data-demote-h1={demoteFirstHeading ? '' : undefined}
-      className={`biorouter-markdown w-full min-w-0 overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
+      className={`biorouter-markdown w-full min-w-0 overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
       prose-pre:[&:has(>code)]:p-3 prose-pre:[&>code]:p-0
       prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
