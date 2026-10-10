@@ -59,6 +59,18 @@ function primitiveBlocks(): string {
   return out.join('\n');
 }
 
+/**
+ * The base D-15 rule that gives every `[tabindex]` element a focus fill and an inset edge,
+ * lifted out of main.css and put back in `@layer base`, so a focus test sees what the app sees.
+ */
+function baseFocusRule(): string {
+  const match = MAIN_CSS.match(
+    /:where\(\s*:is\(\s*a,\s*button,[\s\S]*?\)\s*:focus-visible\s*\{[^}]*\}/
+  );
+  if (!match) throw new Error('main.css has no base focus rule');
+  return `@layer base { ${match[0]} }`;
+}
+
 /** Tailwind's preflight, the parts the layout depends on, plus colours that only paint. */
 const PREFLIGHT = `
 *, *::before, *::after { box-sizing: border-box; }
@@ -83,6 +95,7 @@ import { InfoTip } from './info-tip';
 import { MENU_ROW_CLASS_NAME, MENU_ROW_TRAILING_CLASS_NAME } from './dropdown-menu';
 import { Tabs, TabsList, TabsTrigger } from './tabs';
 import { SettingRow, SettingSection } from './setting-row';
+import { RowActions } from './row-actions';
 
 const OPTIONS = [
   { value: 'light', label: 'Light' },
@@ -134,6 +147,39 @@ function App() {
           </TabsList>
         </Tabs>
       </div>
+      <div id="scaled" style={{ transform: 'scale(0.98)', transformOrigin: '50% 50%', width: 300, padding: 16 }}>
+        <Tabs defaultValue="models">
+          <TabsList aria-label="Scaled sections" data-testid="scaled-tabs" style={{ display: 'flex', gap: 20 }}>
+            <TabsTrigger value="general" style={{ padding: '8px 0' }}>General</TabsTrigger>
+            <TabsTrigger value="models" style={{ padding: '8px 0' }}>Models</TabsTrigger>
+            <TabsTrigger value="privacy" style={{ padding: '8px 0' }}>Privacy</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <div id="centred" style={{ width: 400, padding: 16 }}>
+        <Tabs defaultValue="models">
+          <TabsList aria-label="Centred sections" data-testid="centred-tabs" style={{ display: 'flex', gap: 20, justifyContent: 'center' }}>
+            <TabsTrigger value="general" style={{ padding: '8px 0' }}>General</TabsTrigger>
+            <TabsTrigger value="models" style={{ padding: '8px 0' }}>Models</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <div id="squeeze" style={{ width: 400, padding: 16 }}>
+        <SegmentedControl aria-label="Squeezed" options={OPTIONS} value="system" onValueChange={() => {}} data-testid="squeezed" />
+      </div>
+      <div data-row-actions-host="" id="meta-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: 360, padding: 8 }}>
+        <span>Nightly cohort</span>
+        <RowActions
+          meta={<time>2h ago</time>}
+          menu={[{ label: 'Rename', onSelect: () => {} }]}
+          menuTestId="meta-more"
+        />
+      </div>
+      <p style={{ margin: 0, padding: 16 }}>
+        <InfoTip label="Legacy" help="Kept for older bases." asChild>
+          <span id="as-child-target" data-testid="as-child-target">Legacy</span>
+        </InfoTip>
+      </p>
       <div style={{ width: 240, padding: 4 }}>
         <div role="menuitem" className={MENU_ROW_CLASS_NAME} id="row">Rename</div>
         <div role="menuitemcheckbox" aria-checked="true" className={MENU_ROW_CLASS_NAME} id="checked">
@@ -189,7 +235,7 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
-    css = PREFLIGHT + readTokens() + primitiveBlocks();
+    css = PREFLIGHT + readTokens() + baseFocusRule() + primitiveBlocks();
   }, 120_000);
 
   afterAll(async () => {
@@ -197,10 +243,10 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
   }, 120_000);
 
   /** The page, with every transition sampled on its first frame (no reduced motion). */
-  async function open(): Promise<Page> {
+  async function open(styles: string = css): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 800, height: 900 } });
     await tab.setContent(
-      `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div></body></html>`
+      `<!doctype html><html><head><style>${styles}</style></head><body><div id="root"></div></body></html>`
     );
     // Record the thumb's transition at the moment it is first placed, before anything settles.
     await tab.evaluate(() => {
@@ -439,6 +485,181 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       near(heights[0], 40, 'row with a 28px control');
       near(heights[1], 40, 'row with a 32px control');
       near(heights[2], 40, 'row with a switch');
+    } finally {
+      await tab.close();
+    }
+  });
+  /** Hover the row, then ask which element sits at the ⋯ button's centre, right and left edges. */
+  async function hitTestMore(tab: Page) {
+    await tab.hover('#meta-row');
+    await tab.waitForTimeout(250);
+    return tab.evaluate(() => {
+      const more = document.querySelector('[data-testid="meta-more"]')!;
+      const box = more.getBoundingClientRect();
+      const at = (x: number, y: number) => {
+        const top = document.elementFromPoint(x, y);
+        return top === more || more.contains(top);
+      };
+      return {
+        centre: at(box.left + box.width / 2, box.top + box.height / 2),
+        right: at(box.right - 2, box.top + box.height / 2),
+        left: at(box.left + 2, box.top + box.height / 2),
+      };
+    });
+  }
+
+  it('keeps the invisible meta off the ⋯ button, so the click lands on it (WS-VIEWS-A-3)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const hit = await hitTestMore(tab);
+      expect(hit.centre, 'the ⋯ centre').toBe(true);
+      expect(hit.right, 'the ⋯ right edge').toBe(true);
+      expect(hit.left, 'the ⋯ left edge').toBe(true);
+    } finally {
+      await tab.close();
+    }
+
+    // The instrument: without the rule the time paints over the button's centre and right edge.
+    const bare = await open(
+      css.replace(/(\.br-row-actions-meta \{[^}]*?)pointer-events: none;/, '$1')
+    );
+    try {
+      const hit = await hitTestMore(bare);
+      expect(hit.centre || hit.right, 'the bug this guards').toBe(false);
+    } finally {
+      await bare.close();
+    }
+  });
+
+  it('measures the tab underline in the list’s own pixels while an ancestor is scaled', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await tab.evaluate(() => {
+        const list = document.querySelector('[data-testid="scaled-tabs"]') as HTMLElement;
+        const indicator = list.querySelector('.br-tabs-indicator') as HTMLElement;
+        const active = list.querySelector('[role="tab"][data-state="active"]') as HTMLElement;
+        const box = active.getBoundingClientRect();
+        return {
+          x: parseFloat(indicator.style.translate),
+          width: parseFloat(indicator.style.width),
+          // Layout pixels, which the scale does not touch.
+          left: active.offsetLeft,
+          layoutWidth: box.width / 0.98,
+          scaled: list.getBoundingClientRect().width / list.offsetWidth,
+        };
+      });
+      expect(m.scaled, 'the list really is scaled').toBeLessThan(0.99);
+      near(m.x, m.left, 'underline x against the tab’s layout position');
+      near(m.width, m.layoutWidth, 'underline width against the tab’s layout width');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /** Record the indicator's or thumb's transition duration at every moment its box is rewritten. */
+  async function recordPlacements(tab: Page, selector: string) {
+    await tab.evaluate((sel) => {
+      const w = window as unknown as { placements: Array<{ duration: string; box: string }> };
+      w.placements = [];
+      const node = document.querySelector(sel) as HTMLElement;
+      new MutationObserver(() => {
+        w.placements.push({
+          duration: getComputedStyle(node).transitionDuration,
+          box: `${node.style.translate}|${node.style.width}`,
+        });
+      }).observe(node, { attributes: true, attributeFilter: ['style'] });
+    }, selector);
+  }
+
+  const placements = (tab: Page) =>
+    tab.evaluate(
+      () =>
+        (window as unknown as { placements: Array<{ duration: string; box: string }> }).placements
+    );
+
+  it('snaps the tab underline when the layout moves it, and glides when the person picks', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await recordPlacements(tab, '[data-testid="centred-tabs"] .br-tabs-indicator');
+      // The list is centred: narrowing its container moves the active tab.
+      await tab.evaluate(() => {
+        (document.getElementById('centred') as HTMLElement).style.width = '200px';
+      });
+      await tab.waitForTimeout(250);
+      const moved = await placements(tab);
+      expect(moved.length, 'the observer rewrote the underline').toBeGreaterThan(0);
+      for (const entry of moved) {
+        expect(parseFloat(entry.duration), 'a layout move is at rest').toBe(0);
+      }
+
+      await tab.evaluate(() => {
+        (window as unknown as { placements: unknown[] }).placements.length = 0;
+      });
+      await tab.click('[data-testid="centred-tabs"] [role="tab"]:not([data-state="active"])');
+      await tab.waitForTimeout(250);
+      const picked = await placements(tab);
+      expect(picked.length).toBeGreaterThan(0);
+      expect(parseFloat(picked[0].duration), 'a pick glides').toBeGreaterThan(0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('snaps the segmented thumb when a squeeze resizes its segments', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await recordPlacements(tab, '[data-testid="squeezed"] .br-segmented-thumb');
+      await tab.evaluate(() => {
+        (document.getElementById('squeeze') as HTMLElement).style.width = '120px';
+      });
+      await tab.waitForTimeout(250);
+      const squeezed = await placements(tab);
+      expect(squeezed.length, 'the observer rewrote the thumb').toBeGreaterThan(0);
+      for (const entry of squeezed) {
+        expect(parseFloat(entry.duration), 'a squeeze is at rest').toBe(0);
+      }
+      const m = await tab.evaluate(() => {
+        const track = document.querySelector('[data-testid="squeezed"]')!;
+        const thumb = track.querySelector('.br-segmented-thumb')!.getBoundingClientRect();
+        const selected = track
+          .querySelector('.br-segmented-item[data-state="checked"]')!
+          .getBoundingClientRect();
+        return { thumb, selected };
+      });
+      near(m.thumb.left, m.selected.left, 'thumb left after the squeeze');
+      near(m.thumb.width, m.selected.width, 'thumb width after the squeeze');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('gives a focused asChild InfoTip target one indicator, its outline (WS-HISTORY-2)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      // Keyboard modality first, so a script's focus() counts as :focus-visible.
+      await tab.keyboard.press('Tab');
+      const style = await tab.evaluate(() => {
+        const target = document.getElementById('as-child-target') as HTMLElement;
+        target.focus();
+        const s = getComputedStyle(target);
+        return {
+          focused: target.matches(':focus-visible'),
+          outlineStyle: s.outlineStyle,
+          outlineWidth: s.outlineWidth,
+          boxShadow: s.boxShadow,
+          background: s.backgroundColor,
+        };
+      });
+      expect(style.focused).toBe(true);
+      expect(style.outlineStyle).toBe('solid');
+      expect(style.outlineWidth).toBe('2px');
+      expect(style.boxShadow, 'no inset edge inside the outline').toBe('none');
+      expect(style.background, 'no focus fill on the chip').toBe('rgba(0, 0, 0, 0)');
     } finally {
       await tab.close();
     }

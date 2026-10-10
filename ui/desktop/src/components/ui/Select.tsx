@@ -80,9 +80,14 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         singleValue: () => 'text-text-default',
         input: () => 'text-text-default',
         dropdownIndicator: () => 'text-text-muted transition-transform',
-        // --radius-container (12px), matching every other floating surface (§4.5).
-        menu: () =>
-          'biorouter-popover-surface mt-1.5 bg-background-default rounded-container text-body select__menu absolute',
+        // --radius-container (12px), matching every other floating surface (§4.5). It opens the
+        // way every other menu does (`.br-select-menu` in main.css: opacity, scale .97 and 4px
+        // toward the side it hangs from, over `--dur-fast-max`); react-select unmounts it on
+        // close, so it has no exit.
+        menu: ({ placement }) =>
+          `biorouter-popover-surface mt-1.5 bg-background-default rounded-container text-body select__menu absolute br-select-menu${
+            placement === 'top' ? ' br-select-menu--top' : ''
+          }`,
         menuList: () => 'max-h-60 overflow-y-auto p-1',
         // `text-caps` carries the uppercase transform itself — a second
         // `uppercase` beside it is the redundancy the type roles exist to end.

@@ -4050,6 +4050,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   flex-shrink: 0;
 }
 
+/* A GROUP BREAK, not decoration. The band separates its children by 8px, so the
+   Sources/Graph pair began 8px after "38 links" and the row read as one run,
+   "43 pages · 38 links Sources Graph", which files a mode switcher among the
+   base's attributes (measured at a 760px pane before the band was merged, when
+   it took a rule and a wider gap). The counts describe the base; the pair
+   chooses which half of it shows. The break sits on the list itself, which
+   hides at the two-column step, so no dead space is left behind. */
+.br-knowledge-tabs {
+  margin-left: 24px;
+}
+
 /* The tier badge-button (Crew's ClassificationBadge). The chip inside is
    `PrivacyBadge`, the app's one tier mark; the button around it is
    transparent, so the focus is an outline outside the chip, as the InfoTip's
@@ -4538,6 +4549,29 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   }
 }
 
+/* The react-select menu (`ui/Select.tsx`) is not a Radix surface, so it has no `data-state` for
+   `.br-menu-motion` to key on. It opens with the same values as a keyframe: opacity, scale(.97)
+   and 4px toward the side it hangs from, from that side's origin, over `--dur-fast-max`,
+   `--ease-out`. react-select unmounts it on close, so there is no exit. The global
+   reduced-motion reset cuts the keyframe to one instant frame. */
+@keyframes br-select-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--br-select-menu-from)) scale(0.97);
+  }
+}
+
+.br-select-menu {
+  --br-select-menu-from: -4px;
+  transform-origin: top center;
+  animation: br-select-menu-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+.br-select-menu--top {
+  --br-select-menu-from: 4px;
+  transform-origin: bottom center;
+}
+
 /* The one menu row (`MENU_ROW_CLASS_NAME`): its highlight eases over `--dur-fast-min`. */
 .br-menu-row {
   transition-duration: var(--dur-fast-min);
@@ -4621,9 +4655,12 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-info-tip-target:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
-  /* InfoTip gives the target `tabindex="0"`, so the base D-15 rule (`[tabindex]` arm) also
-     matches it and draws its inset edge: a second ring inside the first (WS-HISTORY-2, measured
-     on a Tab-focused badge). The outline is the whole indicator; the chip's own ground stays. */
+  /* InfoTip gives the target `tabindex="0"`, so the base D-15 rule (`[tabindex]` arm) would also
+     match it and draw its inset edge and focus fill: a second ring inside this one (WS-HISTORY-2,
+     measured on a Tab-focused badge). The target carries `.biorouter-focus-region`, the base
+     rule's documented opt-out, which keeps the fill and the edge off; this `box-shadow: none`
+     takes back the region's own 1px inset edge. The outline is the whole indicator and the
+     chip's ground stays as it was. */
   box-shadow: none;
 }
 

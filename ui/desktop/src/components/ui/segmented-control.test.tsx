@@ -105,6 +105,13 @@ describe('SegmentedControl', () => {
     expect(thumb).toHaveAttribute('data-motion-still');
   });
 
+  it('opts the thumb into the resize rule, so it never glides against a drag', () => {
+    render(<Controlled />);
+    expect(document.querySelector('[data-slot="segmented-thumb"]')).toHaveAttribute(
+      'data-motion-layout'
+    );
+  });
+
   it('names an icon-only segment by its ariaLabel', () => {
     render(
       <SegmentedControl

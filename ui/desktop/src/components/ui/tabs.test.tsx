@@ -71,6 +71,11 @@ describe('Tabs', () => {
     );
   });
 
+  it('opts the indicator into the resize rule, so it never glides against a drag', () => {
+    const { container } = render(<Strip />);
+    expect(container.querySelector('.br-tabs-indicator')).toHaveAttribute('data-motion-layout');
+  });
+
   it('fades content in on the tokens, with no retired duration utility', () => {
     render(<Strip />);
     const panel = screen.getByRole('tabpanel');

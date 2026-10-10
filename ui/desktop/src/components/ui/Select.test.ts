@@ -57,6 +57,25 @@ describe('the shared Select', () => {
     expect(stylesBlock).toContain('minHeight: 0');
   });
 
+  /**
+   * Spec 2.6 / principle 9: every menu opens the same way. The react-select menu has no Radix
+   * `data-state`, so it carries `.br-select-menu`, an authored keyframe on the same values
+   * (opacity, scale .97, 4px toward the side it hangs from, `--dur-fast-max`, `--ease-out`).
+   */
+  it('opens the menu with the shared entrance, from the side it hangs from', () => {
+    expect(SELECT).toMatch(/menu:\s*\(\{ placement \}\)/);
+    expect(SELECT).toContain('br-select-menu');
+    expect(SELECT).toContain("placement === 'top'");
+    expect(SELECT).toContain('br-select-menu--top');
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    const rule = css.match(/\n\.br-select-menu \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule).toMatch(/animation:\s*br-select-menu-in var\(--dur-fast-max\) var\(--ease-out\)/);
+    const keyframes = css.match(/@keyframes br-select-menu-in \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(keyframes).toMatch(/opacity:\s*0/);
+    expect(keyframes).toMatch(/scale\(0\.97\)/);
+    expect(css).toMatch(/\.br-select-menu--top \{[^}]*--br-select-menu-from:\s*4px/);
+  });
+
   /** The rung itself still lives on the class, as the one source of truth. */
   it('keeps the 32px rung on the control class', () => {
     expect(SELECT).toMatch(/'flex h-control-md w-full items-center/);

@@ -83,7 +83,7 @@ export function Badge({
         'inline-flex flex-shrink-0 items-center gap-1 rounded-inner text-chip',
         variantClass[variant],
         // `text-caps` IS the caps style — it carries the uppercase transform, the
-        // +0.08em tracking and the 500 weight together, so there is nothing to
+        // +0.04em tracking and the 500 weight together, so there is nothing to
         // add beside it. It shares the `text` merge group with `text-chip` above,
         // which is why the override lands instead of both surviving.
         uppercase && 'text-caps',

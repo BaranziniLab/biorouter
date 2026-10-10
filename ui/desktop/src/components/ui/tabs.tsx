@@ -25,46 +25,90 @@ interface IndicatorPlacement {
  * Where the active trigger's underline belongs, measured against the list. `null` until a real
  * measurement exists: jsdom, a hidden ancestor and the first paint all measure 0, and then each
  * trigger's own `::after` bar is the underline, so nothing slides in from x=0.
+ *
+ * The underline glides only when the PERSON picks another tab (principle 9). A tab that moved
+ * because the layout did (a resize, a tab added before it, a label changing) is measured by the
+ * observers and lands at rest, and `data-motion-layout` stops the glide while the window or the
+ * sidebar is being dragged.
  */
 function useTabsIndicator(list: React.RefObject<HTMLDivElement | null>) {
   const [placement, setPlacement] = React.useState<IndicatorPlacement | null>(null);
-  // The first placement lands at rest (principle 9); only later moves travel.
+  const placementRef = React.useRef<IndicatorPlacement | null>(null);
+  // The first placement lands at rest (principle 9); only the person's later picks travel.
   const [still, setStill] = React.useState(true);
 
   React.useLayoutEffect(() => {
     const node = list.current;
     if (!node) return;
 
-    const measure = () => {
+    const measure = (fromLayout: boolean) => {
       const active = node.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+      const place = (next: IndicatorPlacement | null) => {
+        const current = placementRef.current;
+        if (
+          current === next ||
+          (current && next && current.x === next.x && current.width === next.width)
+        ) {
+          return;
+        }
+        placementRef.current = next;
+        if (fromLayout && current && next) setStill(true);
+        setPlacement(next);
+      };
       if (!active) {
-        setPlacement(null);
+        place(null);
         return;
       }
       const listBox = node.getBoundingClientRect();
       const tabBox = active.getBoundingClientRect();
       if (tabBox.width <= 0 || listBox.width <= 0) {
-        setPlacement(null);
+        place(null);
         return;
       }
-      const next = {
+      // An ancestor may be mid-animation (a dialog pops in at scale .98): both boxes are then
+      // scaled, while the indicator's `translate` and `width` are in the list's own pixels. The
+      // list's layout width tells the scale; a deviation inside the rounding of `offsetWidth` is
+      // none, so an unscaled list measures exactly.
+      const layoutWidth = node.offsetWidth;
+      const ratio = layoutWidth > 0 ? listBox.width / layoutWidth : 1;
+      const scale = Math.abs(ratio - 1) <= 0.5 / Math.max(layoutWidth, 1) + 0.002 ? 1 : ratio;
+      place({
         // Absolute boxes are placed from the padding edge, so the list's own start border
         // (Knowledge draws one) comes off.
-        x: tabBox.left - listBox.left - node.clientLeft + node.scrollLeft,
-        width: tabBox.width,
-      };
-      setPlacement((current) =>
-        current && current.x === next.x && current.width === next.width ? current : next
-      );
+        x: (tabBox.left - listBox.left) / scale - node.clientLeft + node.scrollLeft,
+        width: tabBox.width / scale,
+      });
     };
 
-    measure();
+    measure(false);
 
-    const mutations = new MutationObserver(measure);
-    mutations.observe(node, { attributes: true, attributeFilter: ['data-state'], subtree: true });
-    const resizes = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    const resizes =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => measure(true));
+    const observed = new Set<Element>();
+    const observeTabs = () => {
+      if (!resizes) return;
+      node.querySelectorAll('[role="tab"]').forEach((tab) => {
+        if (observed.has(tab)) return;
+        observed.add(tab);
+        resizes.observe(tab);
+      });
+    };
     resizes?.observe(node);
-    node.querySelectorAll('[role="tab"]').forEach((tab) => resizes?.observe(tab));
+    observeTabs();
+
+    const mutations = new MutationObserver((records) => {
+      // A tab added or removed moves the others: that is the layout's doing, not a pick. A
+      // `data-state` flip is the pick (or the controlled value changing under it).
+      const structural = records.some((record) => record.type === 'childList');
+      if (structural) observeTabs();
+      measure(structural);
+    });
+    mutations.observe(node, {
+      attributes: true,
+      attributeFilter: ['data-state'],
+      childList: true,
+      subtree: true,
+    });
 
     return () => {
       mutations.disconnect();
@@ -74,7 +118,7 @@ function useTabsIndicator(list: React.RefObject<HTMLDivElement | null>) {
 
   React.useEffect(() => {
     if (!placement || !still) return;
-    // One frame at rest, then later moves animate.
+    // One frame at rest, then later picks animate.
     const frame = requestAnimationFrame(() => setStill(false));
     return () => cancelAnimationFrame(frame);
   }, [placement, still]);
@@ -117,6 +161,7 @@ const TabsList = React.forwardRef<
         aria-hidden
         className="br-tabs-indicator"
         data-placed={placement ? 'true' : 'false'}
+        data-motion-layout=""
         data-motion-still={still ? '' : undefined}
         style={
           placement

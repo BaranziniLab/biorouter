@@ -183,7 +183,9 @@ export const InfoTip = React.forwardRef<HTMLElement, InfoTipProps>(function Info
 
   const Trigger: React.ElementType = asChild ? Slot : 'button';
   const triggerProps: Record<string, unknown> = asChild
-    ? { tabIndex: 0, className: cn('br-info-tip-target', className) }
+    ? // `biorouter-focus-region` keeps the base D-15 rule (a `[tabindex]` fill and inset edge)
+      // off the target, so the outline in `.br-info-tip-target` is its only focus mark.
+      { tabIndex: 0, className: cn('br-info-tip-target biorouter-focus-region', className) }
     : {
         type: 'button',
         'aria-label': uiCopy.infoTipName(label),

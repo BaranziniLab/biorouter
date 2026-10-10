@@ -18,6 +18,17 @@ describe('Field', () => {
     expect(screen.getByText('Shown in the sidebar.')).toHaveAttribute('id', fieldHelpId('wf-name'));
   });
 
+  it('wraps in .br-form-field, never the text field’s own .br-field edge class', () => {
+    const { container } = render(
+      <Field id="wf-name" label="Name">
+        <Input />
+      </Field>
+    );
+    expect(container.querySelector('[data-slot="field"]')).toHaveClass('br-form-field');
+    expect(container.querySelector('[data-slot="field"]')).not.toHaveClass('br-field');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveClass('br-field');
+  });
+
   it('replaces the helper with the error and marks the control invalid', () => {
     render(
       <Field id="wf-name" label="Name" helper="Shown in the sidebar." error="Name is taken">

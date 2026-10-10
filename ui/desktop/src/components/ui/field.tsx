@@ -10,6 +10,9 @@ import { InfoTip, useInfoTipId } from './info-tip';
  * by `aria-describedby`; an error replaces the helper in danger ink. The control is given `id`,
  * `aria-describedby` and `aria-invalid` unless it sets them itself.
  *
+ * The wrapper is `.br-form-field`, never `.br-field`: that class is the text field's resting edge
+ * (`--border-control`, main.css) and belongs on the `Input`, `Textarea` and Select trigger only.
+ *
  * ```tsx
  * <Field id="workflow-name" label="Name" helper="Shown in the sidebar." error={nameError}>
  *   <Input value={name} onChange={…} />
@@ -67,7 +70,7 @@ export function Field({
       })
     : children;
   return (
-    <div className={cn('br-field flex min-w-0 flex-col gap-1.5', className)} data-slot="field">
+    <div className={cn('br-form-field flex min-w-0 flex-col gap-1.5', className)} data-slot="field">
       {info ? (
         <div className="flex min-w-0 items-center">
           <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">

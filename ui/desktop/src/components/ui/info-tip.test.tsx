@@ -141,6 +141,17 @@ describe('InfoTip', () => {
     expect(badge).toHaveAccessibleDescription('Made before the format existed.');
   });
 
+  it('keeps the base focus fill and inset edge off an asChild target (its outline is the mark)', () => {
+    render(
+      <InfoTip label="Legacy" help="Made before the format existed." asChild>
+        <Badge>Legacy</Badge>
+      </InfoTip>
+    );
+    // `tabindex="0"` would otherwise match the base D-15 rule's `[tabindex]` arm; this class is
+    // that rule's documented opt-out. Measured in controlsGeometry.browser.test.tsx.
+    expect(screen.getByText('Legacy')).toHaveClass('biorouter-focus-region');
+  });
+
   it('accepts the help as children', () => {
     render(<InfoTip label="Spellcheck">{HELP}</InfoTip>);
     expect(trigger()).toHaveAccessibleDescription(HELP);

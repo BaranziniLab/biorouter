@@ -22,6 +22,11 @@ import { cn } from '../../utils';
  * segment with a `ResizeObserver`. Until the first measurement the selected segment paints its
  * own ground and the thumb is hidden, and the first placement never animates
  * (`data-motion-still`), so a mount does not slide in from x=0.
+ *
+ * It glides only when the PERSON picks another segment (principle 9). A box that moved because
+ * the layout did (a resize, a font arriving, a label changing) is measured by the observer and
+ * lands at rest, and `data-motion-layout` stops the glide while the window or the sidebar is
+ * being dragged.
  */
 
 export interface SegmentedOption<T extends string = string> {
@@ -75,7 +80,8 @@ function SegmentedControlInner<T extends string>(
   const trackRef = React.useRef<HTMLDivElement | null>(null);
   const segmentRefs = React.useRef(new Map<string, HTMLButtonElement>());
   const [thumb, setThumb] = React.useState<ThumbBox | null>(null);
-  // The first placement lands at rest; only later moves slide.
+  const thumbRef = React.useRef<ThumbBox | null>(null);
+  // The first placement lands at rest; only later moves slide, and only the person's.
   const [still, setStill] = React.useState(true);
   const selectedIndex = options.findIndex((option) => option.value === value);
 
@@ -88,29 +94,37 @@ function SegmentedControlInner<T extends string>(
     [ref]
   );
 
-  const measure = React.useCallback(() => {
-    if (fill) return;
-    const segment = segmentRefs.current.get(value);
-    if (!segment) return;
-    const width = segment.offsetWidth;
-    // jsdom (and a display:none ancestor) measures 0: keep the segment's own ground then.
-    if (width <= 0) return;
-    setThumb((current) =>
-      current && current.left === segment.offsetLeft && current.width === width
-        ? current
-        : { left: segment.offsetLeft, width }
-    );
-  }, [fill, value]);
+  /**
+   * `fromLayout` marks a measurement the observer took: the box moved because the layout did,
+   * not because the person chose another segment, so the thumb snaps there instead of gliding.
+   */
+  const measure = React.useCallback(
+    (fromLayout: boolean) => {
+      if (fill) return;
+      const segment = segmentRefs.current.get(value);
+      if (!segment) return;
+      const width = segment.offsetWidth;
+      // jsdom (and a display:none ancestor) measures 0: keep the segment's own ground then.
+      if (width <= 0) return;
+      const next = { left: segment.offsetLeft, width };
+      const current = thumbRef.current;
+      if (current && current.left === next.left && current.width === next.width) return;
+      thumbRef.current = next;
+      if (fromLayout && current) setStill(true);
+      setThumb(next);
+    },
+    [fill, value]
+  );
 
   React.useLayoutEffect(() => {
-    measure();
+    measure(false);
   }, [measure, options]);
 
   React.useEffect(() => {
     if (fill || typeof ResizeObserver === 'undefined') return;
     const track = trackRef.current;
     if (!track) return;
-    const observer = new ResizeObserver(() => measure());
+    const observer = new ResizeObserver(() => measure(true));
     observer.observe(track);
     segmentRefs.current.forEach((segment) => observer.observe(segment));
     return () => observer.disconnect();
@@ -118,7 +132,8 @@ function SegmentedControlInner<T extends string>(
 
   const placed = fill ? selectedIndex >= 0 : thumb !== null;
 
-  // Release the still flag one frame after the first placement, so the next move animates.
+  // Release the still flag one frame after a placement that was not the person's, so the next
+  // pick animates.
   React.useEffect(() => {
     if (!placed || !still) return;
     const frame = window.requestAnimationFrame(() => setStill(false));
@@ -167,6 +182,7 @@ function SegmentedControlInner<T extends string>(
         aria-hidden="true"
         className="br-segmented-thumb"
         data-slot="segmented-thumb"
+        data-motion-layout=""
         data-motion-still={still ? '' : undefined}
         data-placed={placed ? 'true' : 'false'}
         style={thumbStyle}
