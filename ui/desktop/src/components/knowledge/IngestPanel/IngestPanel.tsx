@@ -4,6 +4,7 @@ import { Progress } from '../../ui/progress';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
+import { prefersReducedMotion } from '../../../styles/motion';
 import { toastError, toastSuccess } from '../../../toasts';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
@@ -92,8 +93,7 @@ export function IngestPanel() {
     if (!showPasteBox) return;
     const box = pasteBoxRef.current;
     if (!box || typeof box.scrollIntoView !== 'function') return;
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
-    box.scrollIntoView({ block: 'end', behavior: reduced ? 'auto' : 'smooth' });
+    box.scrollIntoView({ block: 'end', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }, [showPasteBox]);
 
   // Only the user's explicit pick lives in state, and it is stamped with the
