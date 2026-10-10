@@ -161,6 +161,7 @@ describe('the composer recipes in a real layout engine', () => {
       read('../MentionPopover.tsx'),
     ].join('\n');
     for (const name of [
+      'br-composer-card',
       'br-composer-input',
       'br-composer-controls',
       'br-composer-controls__spacer',

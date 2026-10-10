@@ -10,6 +10,18 @@
    Motion is tokens only, and every hover is neutral (`--overlay-hover`).
    ============================================================ */
 
+/* ── The card ───────────────────────────────────────────────────────────── */
+
+/* The chat card's state changes (the focus edge turning accent, drag-over) on
+   the control tokens. On the chat composer's own class: Crew's card shares
+   `.biorouter-composer-card` and does not transition. */
+.br-composer-card {
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
 /* ── The queue, at the top of the card ───────────────────────────────────── */
 
 .br-queue {

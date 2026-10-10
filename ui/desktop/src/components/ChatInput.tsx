@@ -2793,7 +2793,9 @@ export default function ChatInput({
           // One edge, a hairline at 60% of the token: the field's shape, not an
           // outline drawn around it.
           'bg-background-default border border-border-subtle/60',
-          'transition-[box-shadow,background-color,border-color]',
+          // Its state changes (the focus edge, drag-over) on the motion tokens,
+          // authored in `composer.css`.
+          'br-composer-card',
           // The focus edge (`:has(textarea:focus)`, full accent) and the working
           // edge (`[data-working]`) are authored CSS in `main.css`, shared with
           // Crew's composer.
