@@ -41,6 +41,11 @@
   background: var(--overlay-pressed);
 }
 
+/* The model chip gives way first when the row is narrow; its name ellipsizes. */
+.br-picker-chip[data-kind='model'] {
+  max-width: 260px;
+}
+
 .br-picker-chip__name {
   min-width: 0;
   overflow: hidden;

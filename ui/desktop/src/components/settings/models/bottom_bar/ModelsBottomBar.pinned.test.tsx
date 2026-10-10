@@ -7,6 +7,7 @@ import ModelsBottomBar, {
 } from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { PendingChatModelContext } from '../pendingChatModel';
+import { MODEL_COPY } from '../../../bottom_menu/copy';
 
 /**
  * Issue #56 / F2 — the chip states what runs in THIS chat.
@@ -76,6 +77,12 @@ const providerEntry = (name: string, display: string, tier: 'private' | 'public'
   resolved_tier: tier,
 });
 
+/** The model menu's notes live in one InfoTip; its hidden description holds them. */
+function modelNotes(): string {
+  const id = screen.queryByTestId('model-notes-info')?.getAttribute('aria-describedby');
+  return (id && document.getElementById(id)?.textContent) || '';
+}
+
 function renderBar(effectiveModel?: { provider: string; model: string }) {
   return render(
     <ModelsBottomBar
@@ -136,9 +143,11 @@ describe('a chat bound to something other than the app-wide selection', () => {
     // `pointerDown`, not `click`: Radix's dropdown trigger opens on the pointer
     // event, exactly as the sibling suite in this directory does it.
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
-    const header = await screen.findByText('Current model');
+    await screen.findByText('Current model');
+    // The name on its own line, then the provider by its display name.
+    expect(screen.getByText('gpt-5.5-2026-04-24')).toBeInTheDocument();
     await waitFor(() =>
-      expect(header.parentElement).toHaveTextContent('gpt-5.5-2026-04-24 · Versa API Azure')
+      expect(screen.getByTestId('model-provider-line')).toHaveTextContent(/^Versa API Azure/)
     );
   });
 
@@ -170,11 +179,12 @@ describe('a chat bound to something other than the app-wide selection', () => {
     await screen.findByRole('button', { name: /Current model:/ });
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
 
-    const note = await screen.findByTestId('chat-binding-note');
-    expect(note).toHaveTextContent(CHAT_KEEPS_ITS_MODEL_NOTE);
-    // It names the mechanism, never privacy: this line appears on public chats
+    await screen.findByTestId('model-notes-info');
+    const notes = modelNotes();
+    expect(notes).toContain(CHAT_KEEPS_ITS_MODEL_NOTE);
+    // It names the mechanism, never privacy: this note appears on public chats
     // too, where privacy is not the cause.
-    expect(note.textContent).not.toMatch(/private/i);
+    expect(notes).not.toMatch(/private/i);
   });
 
   it('says nothing when the chat runs on exactly what is selected', async () => {
@@ -183,7 +193,7 @@ describe('a chat bound to something other than the app-wide selection', () => {
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
 
     await screen.findByText('Current model');
-    expect(screen.queryByTestId('chat-binding-note')).toBeNull();
+    expect(modelNotes()).not.toContain(CHAT_KEEPS_ITS_MODEL_NOTE);
   });
 });
 
@@ -209,7 +219,7 @@ describe('the chip where there is no chat yet', () => {
     await openDropdown();
 
     expect(await screen.findByText(NEW_CHATS_MODEL_HEADING)).toBeInTheDocument();
-    expect(screen.getByTestId('new-chats-model-note')).toHaveTextContent(NEW_CHATS_MODEL_NOTE);
+    expect(modelNotes()).toContain(NEW_CHATS_MODEL_NOTE);
     expect(screen.queryByText('Current model')).toBeNull();
   });
 
@@ -218,7 +228,7 @@ describe('the chip where there is no chat yet', () => {
     await openDropdown();
 
     expect(await screen.findByText('Current model')).toBeInTheDocument();
-    expect(screen.queryByTestId('new-chats-model-note')).toBeNull();
+    expect(modelNotes()).not.toContain(NEW_CHATS_MODEL_NOTE);
   });
 
   /**
@@ -238,9 +248,9 @@ describe('the chip where there is no chat yet', () => {
 
     expect(await screen.findByText('Current model')).toBeInTheDocument();
     expect(screen.queryByText(NEW_CHATS_MODEL_HEADING)).toBeNull();
-    expect(screen.queryByTestId('new-chats-model-note')).toBeNull();
+    expect(modelNotes()).not.toContain(NEW_CHATS_MODEL_NOTE);
 
-    fireEvent.click(await screen.findByText('Change model'));
+    fireEvent.click(await screen.findByText(MODEL_COPY.changeModel));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
     expect(lastSwitchProps()?.onChooseForUnsentChat).toBe(choose);
     // T3-SH-2: and the tab that names it, for "Use other provider".
@@ -251,7 +261,7 @@ describe('the chip where there is no chat yet', () => {
     switchModal.props = null;
     renderSessionless();
     await openDropdown();
-    fireEvent.click(await screen.findByText('Change model'));
+    fireEvent.click(await screen.findByText(MODEL_COPY.changeModel));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
     expect(lastSwitchProps()?.onChooseForUnsentChat).toBeUndefined();
     expect(lastSwitchProps()?.unsentChatTabId).toBeUndefined();

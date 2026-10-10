@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
+import { MODEL_COPY } from '../../../bottom_menu/copy';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { BROWSER_SURFACE_MARKER } from '../../../../utils/surface';
 
@@ -110,7 +111,7 @@ describe('ModelsBottomBar on a browser-served surface', () => {
       'aria-disabled',
       'true'
     );
-    expect(screen.getByRole('menuitem', { name: /Lead\/worker settings/ })).toHaveAttribute(
+    expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toHaveAttribute(
       'aria-disabled',
       'true'
     );

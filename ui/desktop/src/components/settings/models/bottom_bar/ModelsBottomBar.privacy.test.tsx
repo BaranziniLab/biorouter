@@ -200,9 +200,10 @@ describe('ModelsBottomBar — the chip carries the dense padlock, never a pill',
     ]);
     renderBar('public');
 
-    // The affiliation off the same row still lands, so this waits on the very
-    // effect that would have set a tier had one been served.
-    await screen.findByTestId('affiliation-badge');
+    // The affiliation off the same row still lands (it is in the chip's name),
+    // so this waits on the very effect that would have set a tier had one been
+    // served.
+    await screen.findByLabelText(/UCSF/);
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
 
     // ⚠ The dense badge alone cannot carry this assertion: its public form is
@@ -280,19 +281,22 @@ describe('ModelsBottomBar — the chip carries the dense padlock, never a pill',
    * model is covered by UCSF's agreements. A chip keyed on the chat's tier would
    * say nothing about the institution on precisely the chat where it matters.
    */
-  it('marks the bound model’s institution on the chip, and says it in the dropdown', async () => {
+  it('names the bound model’s institution, and marks it in the dropdown, not on the chip', async () => {
     mocks.currentProvider = 'versa_azure';
     renderBar('public');
 
-    const dense = await screen.findByTestId('affiliation-badge');
-    expect(dense).toHaveAttribute('data-affiliation', 'institutions');
-    expect(dense.getAttribute('aria-label')).toContain('UCSF');
+    // Spec 3.7: the chip carries one mark, the padlock. The institution is in
+    // its accessible name and tooltip...
+    const trigger = await screen.findByLabelText(/UCSF/);
+    expect(trigger).toHaveAttribute('data-testid', 'model-chip');
+    expect(screen.queryByTestId('affiliation-badge')).toBeNull();
 
-    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
-    // The dropdown header is where the WORD goes — the trigger is
-    // `max-w-[120px]` and already truncating the model name.
-    const badges = await screen.findAllByTestId('affiliation-badge');
-    expect(badges.some((badge) => /UCSF/.test(badge.textContent ?? ''))).toBe(true);
+    // ...and in the menu, as the glyph and the word.
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    const glyph = await screen.findByTestId('affiliation-badge');
+    expect(glyph).toHaveAttribute('data-affiliation', 'institutions');
+    expect(glyph.getAttribute('aria-label')).toContain('UCSF');
+    expect(screen.getByTestId('model-provider-line')).toHaveTextContent('UCSF');
   });
 
   /**
