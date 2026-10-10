@@ -2933,7 +2933,7 @@ export default function ChatInput({
           on the right, 12px muted, on the canvas under the card. The ring and
           the cost show only inside a chat. */}
       <ComposerFooter
-        className="pl-3 pr-2.5"
+        className="br-composer-footer"
         sessionId={sessionId}
         workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
         workingDirLocked={workingDirIsLocked}

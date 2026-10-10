@@ -291,6 +291,17 @@
   flex: 0 1 auto;
 }
 
+/* ── The footer line under the card ─────────────────────────────────────── */
+
+/* Derived insets, not chosen ones: the footer's items (`.br-footline__item`,
+   WS-PICKERS) hold their 14px glyph 6px in, so 11px puts the folder glyph on
+   the card's text edge (1px border + 16px padding = 17px), and 7px puts the
+   last readout's ink under Send's right edge (1px border + 12px padding). */
+.br-composer-footer {
+  padding-left: 11px;
+  padding-right: 7px;
+}
+
 /* ── The mention and slash-command menu ─────────────────────────────────── */
 
 .br-mention-menu {
