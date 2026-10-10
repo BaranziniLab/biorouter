@@ -117,7 +117,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
           // First focus lands in the editor, not on the help glyph beside its label.
           autoFocus
           rows={14}
-          className="resize-none p-3 font-mono text-code"
+          className="p-3 font-mono text-code"
           value={content}
           onChange={(e) => setContent(e.target.value)}
           spellCheck={false}

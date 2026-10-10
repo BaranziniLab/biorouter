@@ -593,7 +593,7 @@ function BundleRow({
               {SKILLS_COPY.bundleSummary(bundle.skills.length, bundle.package?.version)}
             </span>
           </button>
-          <RowActions menu={menu} />
+          <RowActions menu={menu} menuLabel={SKILLS_COPY.moreActionsNamed(bundle.displayName)} />
           <Switch checked={enabled} onCheckedChange={onToggle} aria-labelledby={titleId} />
         </div>
 

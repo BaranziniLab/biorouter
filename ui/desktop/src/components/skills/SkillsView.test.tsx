@@ -117,7 +117,7 @@ async function rowOf(name: string): Promise<HTMLElement> {
 async function openRowMenu(name: string) {
   const user = userEvent.setup();
   const row = await rowOf(name);
-  await user.click(within(row).getByRole('button', { name: 'More actions' }));
+  await user.click(within(row).getByRole('button', { name: SKILLS_COPY.moreActionsNamed(name) }));
   await screen.findByRole('menu');
   const items = screen.getAllByRole('menuitem').map((item) => item.textContent ?? '');
   return { user, items };
@@ -190,6 +190,19 @@ describe('SkillsView', () => {
     // No duplicate open target: the name is text, not a button.
     const row = await rowOf('my-skill');
     expect(within(row).queryByRole('button', { name: /Open skill/ })).not.toBeInTheDocument();
+  });
+
+  it('names each ⋯ button by its row, so a screen reader can tell them apart', async () => {
+    serve({ skills: [skill('alpha'), skill('beta')] });
+    render(<SkillsView />);
+    await screen.findByText('alpha');
+    expect(
+      screen.getByRole('button', { name: SKILLS_COPY.moreActionsNamed('alpha') })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: SKILLS_COPY.moreActionsNamed('beta') })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
   });
 
   it('opens a skill’s folder from its menu', async () => {

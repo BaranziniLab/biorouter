@@ -23,6 +23,8 @@ export const SKILLS_COPY = {
     matches: 'Matches',
   },
 
+  /** The `⋯` button's name: every row has one, so each says whose it is. */
+  moreActionsNamed: (name: string) => `More actions for ${name}`,
   openFolder: 'Open folder',
   copySkillMd: 'Copy SKILL.md',
   delete: 'Delete…',

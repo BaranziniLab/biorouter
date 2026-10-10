@@ -77,7 +77,7 @@ export default function SkillItem({
           </div>
           <p className="truncate text-supporting text-text-muted">{skill.description}</p>
         </div>
-        <RowActions menu={menu} />
+        <RowActions menu={menu} menuLabel={SKILLS_COPY.moreActionsNamed(skill.name)} />
         {/* Named by the row's title, the same in both states: the state is the
             switch's `aria-checked`, not part of its name (spec 2.6). */}
         <Switch checked={enabled} onCheckedChange={onToggle} aria-labelledby={titleId} />

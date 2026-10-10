@@ -25,6 +25,9 @@ export const BROWSE_EXTENSIONS_COPY = {
   empty: 'No extensions match your search.',
   add: 'Add',
   configure: 'Configure',
+  /** The buttons' names: every row has one, so each says whose it is. The visible word stays short. */
+  addNamed: (name: string) => `Add ${name}`,
+  configureNamed: (name: string) => `Configure ${name}`,
 } as const;
 
 export const BROWSE_SKILLS_COPY = {

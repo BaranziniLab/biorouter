@@ -118,7 +118,9 @@ function renderModal(over: Partial<Parameters<typeof BrowseExtensionsModal>[0]> 
 
 /** Click Add and wait for the installer's first step to settle. */
 async function addAndWait(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByRole('button', { name: 'Add' }));
+  await user.click(
+    await screen.findByRole('button', { name: BROWSE_EXTENSIONS_COPY.addNamed('Playwright Agent') })
+  );
 }
 
 const LOCAL_FILE_CONTROLS = [
@@ -220,7 +222,11 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
     });
     renderModal();
 
-    await user.click(await screen.findByRole('button', { name: 'Add' }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: BROWSE_EXTENSIONS_COPY.addNamed('Playwright Agent'),
+      })
+    );
     await user.click(await screen.findByRole('button', { name: 'Next: configure' }));
 
     expect(await screen.findByText('Configure Playwright Agent')).toBeInTheDocument();
@@ -246,7 +252,11 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
     });
     renderModal();
 
-    await user.click(await screen.findByRole('button', { name: 'Add' }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: BROWSE_EXTENSIONS_COPY.addNamed('Playwright Agent'),
+      })
+    );
 
     // Not "Next: configure": nothing here is required.
     const next = await screen.findByRole('button', { name: 'Next: optional settings' });
@@ -363,7 +373,11 @@ describe('BrowseExtensionsModal — installed rows (issue #116)', () => {
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText('Installed')).toBeInTheDocument();
 
-    await user.click(within(row as HTMLElement).getByRole('button', { name: 'Configure' }));
+    await user.click(
+      within(row as HTMLElement).getByRole('button', {
+        name: BROWSE_EXTENSIONS_COPY.configureNamed('Playwright Agent'),
+      })
+    );
     expect(onConfigureInstalled).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'playwright-agent' })
     );
@@ -373,7 +387,11 @@ describe('BrowseExtensionsModal — installed rows (issue #116)', () => {
     renderModal({ installedNames: new Set(['playwright agent']) });
 
     await screen.findByText('Installed');
-    expect(screen.queryByRole('button', { name: 'Configure' })).toBeNull();
+    expect(
+      screen.queryByRole('button', {
+        name: BROWSE_EXTENSIONS_COPY.configureNamed('Playwright Agent'),
+      })
+    ).toBeNull();
   });
 });
 
@@ -411,5 +429,25 @@ describe('BrowseExtensionsModal — a multi-word search (finding F5)', () => {
     );
 
     expect(shownExtensionNames()).toEqual(['SPOKEAgent', 'PrimeKGAgent', 'CodeGraph Agent']);
+  });
+});
+
+/// A list of identical "Add" buttons tells a screen reader nothing about which row each one
+/// belongs to, so the visible word stays short and the button's name carries the row.
+describe('BrowseExtensionsModal — each row action names its extension', () => {
+  it('names every Add button by its extension and keeps the visible word short', async () => {
+    loadRegistry.mockResolvedValue({
+      live: true,
+      registry: { extensions: MARKETPLACE_EXTENSIONS, skills: [] },
+    });
+    renderModal();
+
+    await screen.findByText('SPOKEAgent');
+    const adds = screen.getAllByRole('button', { name: /^Add / });
+    expect(adds.map((button) => button.getAttribute('aria-label'))).toEqual(
+      shownExtensionNames().map((name) => BROWSE_EXTENSIONS_COPY.addNamed(name))
+    );
+    for (const button of adds) expect(button).toHaveTextContent(/^Add$/);
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
   });
 });

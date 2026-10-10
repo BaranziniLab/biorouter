@@ -201,12 +201,22 @@ export default function BrowseExtensionsModal({
                   // end — its credentials are the thing a user most often comes
                   // back here to change.
                   onConfigureInstalled && (
-                    <Button size="sm" variant="secondary" onClick={() => onConfigureInstalled(ext)}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      aria-label={BROWSE_EXTENSIONS_COPY.configureNamed(ext.name)}
+                      onClick={() => onConfigureInstalled(ext)}
+                    >
                       {BROWSE_EXTENSIONS_COPY.configure}
                     </Button>
                   )
                 ) : (
-                  <Button size="sm" variant="secondary" onClick={() => handleAdd(ext)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    aria-label={BROWSE_EXTENSIONS_COPY.addNamed(ext.name)}
+                    onClick={() => handleAdd(ext)}
+                  >
                     {BROWSE_EXTENSIONS_COPY.add}
                   </Button>
                 )
