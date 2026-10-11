@@ -337,9 +337,12 @@ jobs:
       #     at the 5000ms default (test took 8005ms) and PASSED at 30000ms
       #     (same test, 8358ms). Only the flag changed.
       #
-      # So the fix is a timeout, applied here on the CLI so this workflow can
-      # merge without touching source. Raising a timeout costs nothing on a
-      # green run — it bounds failures only.
+      # So the fix is a timeout. Raising a timeout costs nothing on a green
+      # run — it bounds failures only. `--testTimeout` is kept here at the same
+      # 30000 the config now sets (src/test/timeouts.ts). There is NO
+      # `--hookTimeout` flag: it beats the config, and the config's 120000 is
+      # deliberately larger than a test's, because the ~80 browser files close
+      # a Chromium in `afterAll` and that overruns 30000 on a loaded machine.
       #
       # `--no-file-parallelism` is explicitly the WRONG lever: per-file fixed
       # overhead dominates (one measured file: 44.15s wall, of which ~34s was
@@ -354,7 +357,6 @@ jobs:
         run: |
           npx vitest run \
             --testTimeout=30000 \
-            --hookTimeout=30000 \
             --reporter=default \
             --reporter=junit \
             --outputFile.junit=./vitest-junit.xml
