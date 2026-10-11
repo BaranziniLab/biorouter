@@ -91,6 +91,7 @@ export const SHIPPED_SKILLS: readonly string[] = [
   'knowledge-ingest-biookf',
   'knowledge-lint',
   'update-soul',
+  'knowledge-bases',
 ];
 
 /** The parts of an app's agent config an export reads; `GET /apps` serves the whole manifest. */

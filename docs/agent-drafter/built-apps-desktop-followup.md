@@ -21,6 +21,9 @@ This lane did not start an app or run Cargo.
 - The export proof finding was already fixed in the handoff tree: `apps:export` passes the
   attached window's `daemon.userActionKey`; the source guard and export behavior tests pass.
   Shipped-skill filtering was also already present in `referencedSkills`.
+  A late export review found the seeded `knowledge-bases` bundle was missing from the list;
+  the UI mirror now omits that bundle too, with the existing full-export dialog regression
+  expanded to cover it. This mirror matches the export lane's Rust shipped-skill list.
 - While reviewing the proof path, the two renderer authentication getters were found to read
   current settings even though the window remained attached to its earlier daemon. After a
   Settings > External Backend change, the build-chat metadata read could carry the wrong proof.
@@ -65,6 +68,9 @@ point at another local chat active across the claimed creation time. Export stri
 37 ApplicationsView tests cover deleted, replaced, unavailable, pending, subagent-parent,
 proof-bearing metadata reads and revalidation-before-navigation behavior; they do not claim
 cryptographic identity proof.
+
+After adding the seeded-bundle mirror entry, the nine ExportAppDialog tests passed again on
+Node 24 with one worker; targeted lint and formatting checks passed for the two changed files.
 
 File writes remain bounded to the trusted allowlist. Choosing a destination outside home,
 temp, user data, the sandbox root or the current window's trusted working directory can be
