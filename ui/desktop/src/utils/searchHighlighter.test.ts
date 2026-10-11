@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clipMatchRect,
+  FIND_BAR_GAP,
+  FindClearance,
   glyphPaintedBeforeEllipsis,
   SearchHighlighter,
   trimRectToEllipsis,
@@ -71,11 +73,15 @@ describe('SearchHighlighter scrolling to a match', () => {
     scrollTo = true,
     scrollTop = 0,
     scrollHeight = 2000,
+    matchTop = MATCH_TOP,
+    clearance,
   }: {
     reducedMotion?: boolean;
     scrollTo?: boolean;
     scrollTop?: number;
     scrollHeight?: number;
+    matchTop?: number;
+    clearance?: FindClearance;
   } = {}) => {
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     vi.stubGlobal(
@@ -96,11 +102,11 @@ describe('SearchHighlighter scrolling to a match', () => {
     const scrollToSpy = vi.fn();
     if (scrollTo) viewport.scrollTo = scrollToSpy as unknown as typeof viewport.scrollTo;
 
-    const highlighter = new SearchHighlighter(content);
+    const highlighter = new SearchHighlighter(content, undefined, clearance);
     // One measured match, standing where the layout engine would have put it.
     const mark = document.createElement('div');
     mark.className = 'search-highlight';
-    mark.getBoundingClientRect = () => rect(MATCH_TOP, MATCH_HEIGHT);
+    mark.getBoundingClientRect = () => rect(matchTop, MATCH_HEIGHT);
     const container = document.createElement('div');
     container.appendChild(mark);
     const internals = highlighter as unknown as {
@@ -112,7 +118,7 @@ describe('SearchHighlighter scrolling to a match', () => {
     internals.currentTerm = 'alpha';
     // A scroll the hold lets through re-measures; count those instead of walking a document.
     const remeasure = vi.spyOn(highlighter, 'highlight').mockReturnValue([]);
-    return { highlighter, viewport, scrollToSpy, remeasure, internals };
+    return { highlighter, viewport, content, scrollToSpy, remeasure, internals };
   };
 
   beforeEach(() => vi.useFakeTimers());
@@ -160,10 +166,31 @@ describe('SearchHighlighter scrolling to a match', () => {
     viewport.dispatchEvent(new Event('scroll'));
     expect(remeasure).not.toHaveBeenCalled();
 
+    // The scroller has arrived where it was sent, and says so.
+    viewport.scrollTop = CENTRED;
     viewport.dispatchEvent(new Event('scrollend'));
     expect(internals.isScrollingProgrammatically).toBe(false);
     viewport.dispatchEvent(new Event('scroll'));
     expect(remeasure).toHaveBeenCalledTimes(1);
+  });
+
+  /// Making room for the match above a chat's first lines is an instant scroll
+  /// of its own (see FindClearance), and its `scrollend` is dispatched after the
+  /// smooth scroll has been asked for. It must not end the hold early.
+  it('is not ended by a scrollend that arrives before the scroller has landed', () => {
+    const { highlighter, viewport, remeasure, internals } = setUp();
+    highlighter.setCurrentMatch(0, true);
+
+    viewport.scrollTop = 24;
+    viewport.dispatchEvent(new Event('scrollend'));
+    expect(internals.isScrollingProgrammatically).toBe(true);
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(remeasure).not.toHaveBeenCalled();
+
+    // It is still listening: the scrollend that does end the scroll ends the hold.
+    viewport.scrollTop = CENTRED;
+    viewport.dispatchEvent(new Event('scrollend'));
+    expect(internals.isScrollingProgrammatically).toBe(false);
   });
 
   it('stops ignoring scrolls after a second even if scrollend never comes', () => {
@@ -193,6 +220,171 @@ describe('SearchHighlighter scrolling to a match', () => {
     highlighter.setCurrentMatch(0, true);
     highlighter.destroy();
     expect(removeEventListener).toHaveBeenCalledWith('scrollend', expect.any(Function));
+  });
+
+  /// Vision V2-R5-4. The bar floats over the scroller's top; where it is comes
+  /// from the find session's `FindClearance`. Real layout is pinned in
+  /// `findClearance.browser.test.ts`; here the bar's box is stubbed.
+  describe('with the find bar floating over the top', () => {
+    const BAR = { left: 40, top: 8, right: 90, bottom: 50 };
+    // `setUp` replaces the document body, so the bar joins it when it is asked for.
+    const bar = (box = BAR) => {
+      const element = document.createElement('div');
+      element.getBoundingClientRect = () => ({ ...box, width: 50, height: 42 }) as DOMRect;
+      return new FindClearance(() => {
+        if (!element.isConnected) document.body.appendChild(element);
+        return element;
+      });
+    };
+
+    it('centres the match in the part of the scroller below the bar and its gap', () => {
+      const { highlighter, scrollToSpy } = setUp({ clearance: bar() });
+      highlighter.setCurrentMatch(0, true);
+      const freeTop = BAR.bottom + FIND_BAR_GAP;
+      expect(scrollToSpy).toHaveBeenCalledWith({
+        top: MATCH_TOP - freeTop - (VIEWPORT_HEIGHT - freeTop - MATCH_HEIGHT) / 2,
+        behavior: 'smooth',
+      });
+    });
+
+    it('asks for no room for a match the scroll can put below the bar', () => {
+      const clearance = bar();
+      const makeRoom = vi.spyOn(clearance, 'makeRoom');
+      const { highlighter } = setUp({ clearance });
+      highlighter.setCurrentMatch(0, true);
+      expect(makeRoom).not.toHaveBeenCalled();
+    });
+
+    it('asks for exactly the shortfall when the scroll cannot lift a match clear of the bar', () => {
+      const clearance = bar();
+      const makeRoom = vi.spyOn(clearance, 'makeRoom').mockReturnValue(true);
+      // 40..56 at the top of the scroller, under the bar's 40..90 span: the
+      // free edge is 58, and `scrollTop` cannot go below 0.
+      const { highlighter, viewport, content } = setUp({ clearance, matchTop: 40 });
+      highlighter.setCurrentMatch(0, true);
+      expect(makeRoom).toHaveBeenCalledWith(viewport, BAR.bottom + FIND_BAR_GAP - 40, content);
+    });
+
+    it('asks for nothing for a match beside the bar, however high it sits', () => {
+      const clearance = bar({ left: 300, top: 8, right: 350, bottom: 50 });
+      const makeRoom = vi.spyOn(clearance, 'makeRoom');
+      const { highlighter } = setUp({ clearance, matchTop: 40 });
+      highlighter.setCurrentMatch(0, true);
+      expect(makeRoom).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('FindClearance', () => {
+  const scrollerWith = (rect: Partial<DOMRect> = {}) => {
+    const scroller = document.createElement('div');
+    document.body.appendChild(scroller);
+    scroller.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 100, bottom: 200, width: 100, height: 200, ...rect }) as DOMRect;
+    return scroller;
+  };
+  const boxed = (box: { left: number; top: number; right: number; bottom: number }) => {
+    const element = document.createElement('div');
+    document.body.appendChild(element);
+    element.getBoundingClientRect = () =>
+      ({ ...box, width: box.right - box.left, height: box.bottom - box.top }) as DOMRect;
+    return element;
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  it('knows no bar when there is none, when it is gone, or when it has no size', () => {
+    const scroller = scrollerWith();
+    expect(new FindClearance(() => null).barBox(scroller)).toBeNull();
+    const gone = boxed({ left: 0, top: 0, right: 50, bottom: 40 });
+    gone.remove();
+    expect(new FindClearance(() => gone).barBox(scroller)).toBeNull();
+    // jsdom's own rect for an element: all zeros.
+    expect(new FindClearance(() => document.createElement('div')).barBox(scroller)).toBeNull();
+  });
+
+  it('reports the bar only while it overlaps the scroller', () => {
+    const scroller = scrollerWith();
+    const inside = boxed({ left: 10, top: 8, right: 60, bottom: 50 });
+    expect(new FindClearance(() => inside).barBox(scroller)).toEqual({
+      left: 10,
+      top: 8,
+      right: 60,
+      bottom: 50,
+    });
+    const beside = boxed({ left: 300, top: 8, right: 350, bottom: 50 });
+    expect(new FindClearance(() => beside).barBox(scroller)).toBeNull();
+  });
+
+  it('adds no room for less than a pixel', () => {
+    const scroller = scrollerWith();
+    const content = boxed({ left: 0, top: 20, right: 100, bottom: 400 });
+    const clearance = new FindClearance(() => null);
+    expect(clearance.makeRoom(scroller, 0.4, content)).toBe(false);
+    expect(clearance.makeRoom(scroller, Number.NaN, content)).toBe(false);
+    expect(scroller.style.paddingTop).toBe('');
+  });
+
+  it('grows its inset by the whole pixels asked and puts the scroller back on release', () => {
+    const scroller = scrollerWith();
+    scroller.style.paddingTop = '3px';
+    scroller.scrollTop = 500;
+    const content = boxed({ left: 0, top: 20, right: 100, bottom: 400 });
+    const clearance = new FindClearance(() => null);
+
+    expect(clearance.makeRoom(scroller, 17.2, content)).toBe(true);
+    expect(clearance.makeRoom(scroller, 6, content)).toBe(true);
+    // 17.2 rounds up to 18; 18 + 6 on top of the 3px the scroller already had.
+    expect(scroller.style.paddingTop).toBe('27px');
+
+    // Scrolled past the inset: the padding goes at once, no glide to wait for.
+    clearance.release();
+    expect(scroller.style.paddingTop).toBe('3px');
+    expect(scroller.style.transition).toBe('');
+  });
+
+  it('glides the room away when the reader has not scrolled past it, then drops the transition', () => {
+    const scroller = scrollerWith();
+    scroller.scrollTop = 0;
+    const content = boxed({ left: 0, top: 20, right: 100, bottom: 400 });
+    const clearance = new FindClearance(() => null);
+    clearance.makeRoom(scroller, 24, content);
+
+    clearance.release();
+    expect(scroller.style.transition).toContain('padding-top');
+    expect(scroller.style.paddingTop).toBe('');
+
+    vi.advanceTimersByTime(400);
+    expect(scroller.style.transition).toBe('');
+  });
+
+  it('jumps under reduced motion', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      (query: string) => ({ matches: true, media: query }) as MediaQueryList
+    );
+    const scroller = scrollerWith();
+    const content = boxed({ left: 0, top: 20, right: 100, bottom: 400 });
+    const clearance = new FindClearance(() => null);
+    clearance.makeRoom(scroller, 24, content);
+
+    clearance.release();
+    expect(scroller.style.transition).toBe('');
+    expect(scroller.style.paddingTop).toBe('');
+  });
+
+  it('is a no-op to release a clearance that made no room, twice over', () => {
+    const scroller = scrollerWith();
+    scroller.style.paddingTop = '5px';
+    const clearance = new FindClearance(() => null);
+    clearance.release();
+    clearance.release();
+    expect(scroller.style.paddingTop).toBe('5px');
   });
 });
 

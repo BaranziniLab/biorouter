@@ -543,6 +543,149 @@ function prefersReducedMotion(): boolean {
   );
 }
 
+/** The gap find keeps between the bar floating over the transcript and the match it shows. */
+export const FIND_BAR_GAP = 8;
+
+/**
+ * Keeps the match find is showing clear of the bar that floats over the top of
+ * the transcript (vision V2-R5-4).
+ *
+ * ⚠ **Scrolling alone cannot do it, because the bar covers the first lines of
+ * the content and a scroller cannot scroll above its own top.** A match in the
+ * first 50px of a chat ("kdps" in the first message: 84..100 behind a bar that
+ * ends at 94) is already as high as `scrollTop = 0` can put it, so the target
+ * clamped to 0 and the current match stayed under the bar. The room has to be
+ * made, as an editor's find widget makes it: an inset above the content.
+ *
+ * ⚠ **The inset is lazy, and it never moves the text it leaves in view.**
+ * Opening the bar must not shift the conversation (spec 3.16;
+ * `findOverlay.browser.test.ts` holds it at zero pixels), so nothing is
+ * reserved up front. The inset grows only when the match find is about to show
+ * would land under the bar, by exactly the shortfall, and in the same frame the
+ * scroll position is raised by what the padding added, so the text is where it
+ * was; `scrollToMark` then scrolls it down into the clear the usual (smooth)
+ * way. Where the scroller cannot absorb it (a chat shorter than its viewport),
+ * the text moves down once by the shortfall.
+ *
+ * It belongs to the find session, not to one highlighter: `SearchView` makes a
+ * new highlighter for every term, and a highlighter that dropped the inset on
+ * `destroy` would pull the text up and push it down again on each keystroke.
+ * `SearchView` releases it when the bar closes.
+ *
+ * The bar is whatever `bar()` returns; the layout is measured, never assumed,
+ * because the bar's height changes with its note row and its box is moved by its
+ * own entrance animation.
+ */
+export class FindClearance {
+  private readonly bar: () => Element | null;
+  private inset = 0;
+  private scroller: HTMLElement | null = null;
+  /** The text's top edge as it moved with the padding: the one box this keeps still. */
+  private reference: Element | null = null;
+  /** The scroller's own padding before the inset, and what its inline style said. */
+  private basePadding = 0;
+  private inlinePadding = '';
+  private finishGlide: (() => void) | null = null;
+
+  constructor(bar: () => Element | null) {
+    this.bar = bar;
+  }
+
+  /** The bar's box when it floats over `scroller`, in viewport coordinates; otherwise null. */
+  barBox(scroller: HTMLElement): ViewportRect | null {
+    const bar = this.bar();
+    if (!bar || !bar.isConnected) return null;
+    const box = bar.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return null;
+    const area = scroller.getBoundingClientRect();
+    const overlaps =
+      box.bottom > area.top &&
+      box.top < area.bottom &&
+      box.right > area.left &&
+      box.left < area.right;
+    return overlaps ? { left: box.left, top: box.top, right: box.right, bottom: box.bottom } : null;
+  }
+
+  /**
+   * Add `by` px above the content of `scroller` and hold `reference` (the
+   * content's own box, which moves with the padding) where it is on screen.
+   * Returns whether the inset grew.
+   */
+  makeRoom(scroller: HTMLElement, by: number, reference: Element): boolean {
+    if (!(by >= 0.5)) return false;
+    const grow = Math.ceil(by);
+    this.finishGlide?.();
+    if (this.scroller && this.scroller !== scroller) this.release();
+    if (!this.scroller) {
+      this.scroller = scroller;
+      this.inlinePadding = scroller.style.paddingTop;
+      this.basePadding = parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+    }
+    this.reference = reference;
+    const before = reference.getBoundingClientRect().top;
+    this.inset += grow;
+    scroller.style.paddingTop = `${this.basePadding + this.inset}px`;
+    // Read back rather than assume: where the browser's scroll anchoring has
+    // already moved the scroll position for the padding this adds nothing, and
+    // where the scroller has no overflow to scroll into the text stays lower.
+    scroller.scrollTop += reference.getBoundingClientRect().top - before;
+    return true;
+  }
+
+  /**
+   * Take the inset away when the bar closes. Scrolled past it, that is
+   * invisible: the padding goes and the scroll position drops by as much.
+   * Short of it the text sits lower than its resting place and glides up over
+   * `--dur-fast` (it jumps under reduced motion).
+   */
+  release() {
+    this.finishGlide?.();
+    const { scroller, reference, inset } = this;
+    this.scroller = null;
+    this.reference = null;
+    this.inset = 0;
+    if (!scroller || inset === 0) return;
+    const restore = this.inlinePadding;
+    if (!scroller.isConnected) {
+      scroller.style.paddingTop = restore;
+      return;
+    }
+
+    const anchor = reference?.isConnected ? reference : null;
+    const before = anchor?.getBoundingClientRect().top ?? 0;
+    const pastInset = scroller.scrollTop >= inset - 0.5;
+    if (pastInset || prefersReducedMotion() || !anchor) {
+      scroller.style.paddingTop = restore;
+      if (anchor && pastInset) scroller.scrollTop += anchor.getBoundingClientRect().top - before;
+      return;
+    }
+
+    // Hold the text where it is on screen at the smallest padding that does it
+    // (everything above the reading position, nothing of the scroll offset)...
+    scroller.style.paddingTop = `${this.basePadding + inset - scroller.scrollTop}px`;
+    scroller.scrollTop += anchor.getBoundingClientRect().top - before;
+    void scroller.offsetHeight;
+    // ...then let it settle into its resting place.
+    const done = () => {
+      window.clearTimeout(net);
+      scroller.removeEventListener('transitionend', onEnd);
+      scroller.style.transition = '';
+      this.finishGlide = null;
+    };
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target === scroller && event.propertyName === 'padding-top') done();
+    };
+    const net = window.setTimeout(done, 400);
+    scroller.addEventListener('transitionend', onEnd);
+    this.finishGlide = () => {
+      scroller.style.paddingTop = restore;
+      done();
+    };
+    scroller.style.transition = 'padding-top var(--dur-fast, 125ms) var(--ease-out, ease-out)';
+    scroller.style.paddingTop = restore;
+  }
+}
+
 interface MatchRecord {
   node: Text;
   startOffset: number;
@@ -561,6 +704,7 @@ export class SearchHighlighter {
   private currentTerm: string = '';
   private caseSensitive: boolean = false;
   private onMatchesChange?: (count: number) => void;
+  private readonly clearance: FindClearance | null;
   private currentMatchIndex: number = -1;
   private isScrollingProgrammatically: boolean = false;
   private highlightTimeout?: ReturnType<typeof setTimeout>;
@@ -570,12 +714,41 @@ export class SearchHighlighter {
       this.updateHighlightPositions();
     }
   };
-  /** A smooth scroll of ours ended: stop ignoring the scroll events the user makes. */
-  private readonly handleScrollEnd = () => this.releaseScrollHold();
+  /** Where the smooth scroll of ours that is under way will land; null when none is. */
+  private smoothLanding: number | null = null;
+  /**
+   * A smooth scroll of ours ended: stop ignoring the scroll events the user
+   * makes. ⚠ `scrollend` also ends the INSTANT scroll that made room for the
+   * match (see {@link FindClearance.makeRoom}), and that one is dispatched after
+   * the smooth scroll has been asked for, so the first `scrollend` is not
+   * proof the second is over. It is over when the scroller is where it was sent.
+   */
+  private readonly handleScrollEnd = () => {
+    const scroller = this.scrollContainer;
+    if (
+      scroller &&
+      this.smoothLanding !== null &&
+      Math.abs(scroller.scrollTop - this.smoothLanding) > 1
+    ) {
+      scroller.addEventListener('scrollend', this.handleScrollEnd, { once: true });
+      return;
+    }
+    this.releaseScrollHold();
+  };
 
-  constructor(container: HTMLElement, onMatchesChange?: (count: number) => void) {
+  /**
+   * `clearance`: the find session's hold on the bar floating over the
+   * transcript. Without it (a list that filters, a bare mount) the current
+   * match is centred in the whole scroller, as it always was.
+   */
+  constructor(
+    container: HTMLElement,
+    onMatchesChange?: (count: number) => void,
+    clearance?: FindClearance
+  ) {
     this.container = container;
     this.onMatchesChange = onMatchesChange;
+    this.clearance = clearance ?? null;
 
     // Create overlay
     this.overlay = document.createElement('div');
@@ -843,20 +1016,52 @@ export class SearchHighlighter {
     // Only scroll if explicitly requested
     if (shouldScroll && this.scrollContainer) {
       const firstHighlight = highlightElements[0] as HTMLElement;
-      if (firstHighlight) {
-        // Calculate the target scroll position
-        const containerRect = this.scrollContainer.getBoundingClientRect();
-        const highlightRect = firstHighlight.getBoundingClientRect();
+      if (firstHighlight) this.scrollToMark(this.scrollContainer, firstHighlight);
+    }
+  }
 
-        // Calculate the target position that would center the highlight
-        const targetScrollTop =
-          this.scrollContainer.scrollTop +
-          (highlightRect.top - containerRect.top) -
-          (containerRect.height - highlightRect.height) / 2;
+  /**
+   * Scroll `scroller` so the current match sits in the middle of the part of it
+   * the find bar leaves free, and clear of the bar even where the scroller
+   * cannot scroll far enough up to put it there (see {@link FindClearance}).
+   */
+  private scrollToMark(scroller: HTMLElement, mark: HTMLElement) {
+    const area = scroller.getBoundingClientRect();
+    let box = mark.getBoundingClientRect();
 
-        this.scrollContainerTo(this.scrollContainer, targetScrollTop);
+    // The free part starts under the bar (and its gap), but never past the
+    // scroller's middle: a cell too short for the bar still centres somewhere.
+    const bar = this.clearance?.barBox(scroller) ?? null;
+    const freeTop = bar
+      ? Math.min(Math.max(area.top, bar.bottom + FIND_BAR_GAP), area.top + area.height / 2)
+      : area.top;
+    const centred = (rect: DOMRect) =>
+      scroller.scrollTop + (rect.top - freeTop) - (area.bottom - freeTop - rect.height) / 2;
+
+    let target = centred(box);
+    if (bar) {
+      // Where the match will sit once the scroll has landed, clamped as the
+      // scroller clamps it. Short of the free edge AND under the bar's span:
+      // make the room above the content and measure again.
+      const farthest = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const lands = Math.min(Math.max(target, 0), farthest);
+      const sits = box.top - (lands - scroller.scrollTop);
+      const underBar = box.right > bar.left && box.left < bar.right;
+      const short = freeTop - sits;
+      if (underBar && short >= 0.5 && this.clearance?.makeRoom(scroller, short, this.container)) {
+        // The inset moved the text in the layout; the marks are painted from
+        // the old one.
+        this.holdScrollUpdates();
+        this.updateHighlightPositions();
+        const fresh = this.highlights[this.currentMatchIndex]?.querySelector('.search-highlight');
+        if (fresh) {
+          box = fresh.getBoundingClientRect();
+          target = centred(box);
+        }
       }
     }
+
+    this.scrollContainerTo(scroller, target);
   }
 
   /**
@@ -886,6 +1091,7 @@ export class SearchHighlighter {
     // longer than the 100ms an instant one needs. `scrollend` ends the hold
     // exactly; the timer is only the net for a browser that never sends it.
     this.holdScrollUpdates(SMOOTH_SCROLL_NET_MS);
+    this.smoothLanding = lands;
     scroller.addEventListener('scrollend', this.handleScrollEnd, { once: true });
     scroller.scrollTo({ top, behavior: 'smooth' });
   }
@@ -900,6 +1106,7 @@ export class SearchHighlighter {
   private releaseScrollHold() {
     if (this.scrollEndTimeout) clearTimeout(this.scrollEndTimeout);
     this.scrollEndTimeout = undefined;
+    this.smoothLanding = null;
     this.scrollContainer?.removeEventListener('scrollend', this.handleScrollEnd);
     this.isScrollingProgrammatically = false;
   }

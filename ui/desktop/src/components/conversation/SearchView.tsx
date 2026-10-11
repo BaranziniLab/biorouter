@@ -4,11 +4,16 @@ import React, {
   useLayoutEffect,
   PropsWithChildren,
   useCallback,
+  useMemo,
   useRef,
 } from 'react';
 import { createPortal } from 'react-dom';
 import SearchBar from './SearchBar';
-import { SearchHighlighter } from '../../utils/searchHighlighter';
+import {
+  FindClearance,
+  SearchHighlighter,
+  SEARCH_UI_ATTRIBUTE,
+} from '../../utils/searchHighlighter';
 import '../../styles/search.css';
 
 /**
@@ -95,9 +100,25 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   // scroll. Without such a cell (a bare mount, as in the unit tests) it renders
   // in place.
   const [overlayHost, setOverlayHost] = useState<HTMLElement | null>(null);
+  const overlayHostRef = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    setOverlayHost(containerRef.current?.closest<HTMLElement>(FIND_OVERLAY_HOST) ?? null);
+    const host = containerRef.current?.closest<HTMLElement>(FIND_OVERLAY_HOST) ?? null;
+    overlayHostRef.current = host;
+    setOverlayHost(host);
   }, []);
+  // The find session's hold on the bar (vision V2-R5-4): where the bar is, so the
+  // match find shows is never left under it, and the room it asked of the
+  // transcript's top, given back when the bar closes. One per mount, shared by
+  // every highlighter a term creates. Only a bar that floats over a transcript
+  // cell has a position worth dodging; one rendered in place scrolls with the
+  // text, so there is none.
+  const clearance = useMemo(
+    () =>
+      new FindClearance(
+        () => overlayHostRef.current?.querySelector(`[${SEARCH_UI_ATTRIBUTE}]`) ?? null
+      ),
+    []
+  );
   const lastSearchRef = React.useRef<{ term: string; caseSensitive: boolean }>({
     term: '',
     caseSensitive: false,
@@ -192,26 +213,30 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         highlighterRef.current.destroy();
       }
 
-      highlighterRef.current = new SearchHighlighter(container, (count) => {
-        // Only update if this is still the latest search
-        if (
-          lastSearchRef.current.term === term &&
-          lastSearchRef.current.caseSensitive === caseSensitive
-        ) {
-          if (count > 0) {
-            setInternalSearchResults({
-              currentIndex: 1,
-              count,
-            });
-          } else {
-            setInternalSearchResults(null);
+      highlighterRef.current = new SearchHighlighter(
+        container,
+        (count) => {
+          // Only update if this is still the latest search
+          if (
+            lastSearchRef.current.term === term &&
+            lastSearchRef.current.caseSensitive === caseSensitive
+          ) {
+            if (count > 0) {
+              setInternalSearchResults({
+                currentIndex: 1,
+                count,
+              });
+            } else {
+              setInternalSearchResults(null);
+            }
           }
-        }
-      });
+        },
+        clearance
+      );
 
       scheduleHighlight(term, caseSensitive, highlighterRef.current);
     },
-    [onSearch, scheduleHighlight]
+    [clearance, onSearch, scheduleHighlight]
   );
 
   /**
@@ -334,10 +359,12 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
       highlighterRef.current.destroy();
       highlighterRef.current = null;
     }
+    // Give back the room find made above the transcript.
+    clearance.release();
 
     // Clear search when closing
     onSearch?.('', false);
-  }, [onSearch]);
+  }, [clearance, onSearch]);
 
   // Clean up highlighter on unmount
   useEffect(() => {
@@ -349,8 +376,9 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         highlighterRef.current.destroy();
         highlighterRef.current = null;
       }
+      clearance.release();
     };
-  }, []);
+  }, [clearance]);
 
   // Listen for keyboard events
   useEffect(() => {

@@ -27,7 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /** Launch whichever Chromium build this machine downloaded (full or headless shell). */
 const launchChromium = async (): Promise<Browser | null> => {
-  for (const options of [{}, { channel: 'chromium' }] as const) {
+  for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
     try {
       return await chromium.launch(options);
     } catch {
