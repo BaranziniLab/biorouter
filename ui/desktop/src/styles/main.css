@@ -3874,8 +3874,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   /* THE BAND IS A RECESSED GROUND (fills before lines, R-27, design.md 9.11 rule 2). It is the
      sidebar's own paint, and the rest fill (`--background-fill`) is 1.03:1 off it in light, so a
      filter field resting there was a white-on-white box nobody could find. A control on the band
-     rests one step deeper, on the strong fill (1.12:1 off the band, `--text-subtle` 4.62:1 on it
-     in light and 4.57:1 in dark), so the field reads as a quiet well. There is no deeper
+     rests one step deeper, on the strong fill (1.12:1 off the band in light, 1.28:1 in dark;
+     `--text-subtle` on it is 4.58:1 or better in all three families and both modes, measured by
+     `Layout/viewsFill.browser.test.tsx`), so the field reads as a quiet well. There is no deeper
      neutral that still clears 4.5:1 for the placeholder, so the field does not step further under
      the pointer: its hover equals its rest, and the focus edge is what answers a click. Every
      band's filter, whoever owns the view, rests this way. */

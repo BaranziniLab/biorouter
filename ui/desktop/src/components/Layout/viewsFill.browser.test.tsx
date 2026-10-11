@@ -265,6 +265,54 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
     }
   }, 120_000);
 
+  it('keeps the filter’s placeholder legible on the strong fill, in every family and both modes', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser.newPage();
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${css}</style></head><body></body></html>`
+      );
+      const ratios = await tab.evaluate(() => {
+        const luminance = ([r, g, b]: number[]) => {
+          const [lr, lg, lb] = [r, g, b].map((v) => {
+            const c = v / 255;
+            return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+        };
+        const read = (property: 'color' | 'backgroundColor', token: string) => {
+          const probe = document.createElement('div');
+          probe.style[property] = `var(${token})`;
+          document.body.append(probe);
+          const value = getComputedStyle(probe)[property];
+          probe.remove();
+          return (value.match(/\d+(\.\d+)?/g) ?? []).slice(0, 3).map(Number);
+        };
+        const out: Record<string, number> = {};
+        for (const family of ['parchment', 'alma-mater', 'roche-limit']) {
+          for (const mode of ['light', 'dark']) {
+            document.documentElement.setAttribute('data-theme', family);
+            document.documentElement.classList.toggle('dark', mode === 'dark');
+            const [a, b] = [
+              luminance(read('color', '--text-subtle')),
+              luminance(read('backgroundColor', '--background-fill-strong')),
+            ].sort((x, y) => y - x);
+            out[`${family} ${mode}`] = (a + 0.05) / (b + 0.05);
+          }
+        }
+        return out;
+      });
+      expect(Object.keys(ratios)).toHaveLength(6);
+      for (const [scope, ratio] of Object.entries(ratios)) {
+        expect(ratio, `${scope}: --text-subtle on --background-fill-strong`).toBeGreaterThanOrEqual(
+          4.5
+        );
+      }
+    } finally {
+      await tab.close();
+    }
+  }, 120_000);
+
   it('draws no hairline under the rows of a flat list, and keeps it under every other list, at the same height', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('light');
