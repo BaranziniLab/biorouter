@@ -906,6 +906,11 @@ describe('ProviderCatalog — anatomy', () => {
     expect(row.className).not.toMatch(/rounded-container|py-3|px-4/);
     // The list is the shared settings list, so the rows share one hairline recipe.
     expect(row.parentElement).toHaveClass('biorouter-settings-list');
+    // ...and the catalog opts out of the line by the shared scope (R-27), which draws it again in
+    // forced colours; `providers.css` keys the hovered row's fill on this same element.
+    const catalog = row.closest('.br-provider-catalog');
+    expect(catalog).not.toBeNull();
+    expect(catalog).toHaveClass('br-rows-flat');
   });
 
   it('puts "Add custom provider" in the API list as a row', () => {

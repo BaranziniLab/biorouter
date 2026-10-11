@@ -112,10 +112,13 @@ describe('ProviderGuard', () => {
     const { container } = renderGuard();
     await screen.findByText('CATALOG');
     // The boot splash hands off to this ground, so it stays muted. The rest fill IS the muted
-    // value there, so the page opts its controls onto the strong step through the one class
-    // (`onboarding.css`); without it a field and a secondary button would have no box.
+    // value there, so the page is a recessed ground (the shared class, `main.css`): its controls
+    // rest on the strong step, a button hovers one deeper and a neutral track steps in. Without
+    // it a field and a secondary button would have no box. `br-first-run-ground` names the page
+    // for the rules that are first run's own (`onboarding.css`, `providers.css`).
     const root = container.firstElementChild as HTMLElement;
     expect(root.className).toContain('bg-background-muted');
+    expect(root.className).toContain('br-ground-recessed');
     expect(root.className).toContain('br-first-run-ground');
   });
 

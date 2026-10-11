@@ -210,8 +210,12 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         </button>
       );
 
+    // The page stays on `--background-muted` (the boot splash hands off to it), where the rest
+    // fill is the ground itself. `br-ground-recessed` steps every filled control, a button's hover
+    // and a neutral track one step in; `br-first-run-ground` names the page for the two rules
+    // that are first run's own (`onboarding/onboarding.css`, `settings/providers/providers.css`).
     return (
-      <div className="br-first-run-ground flex h-screen w-full flex-col overflow-hidden bg-background-muted">
+      <div className="br-first-run-ground br-ground-recessed flex h-screen w-full flex-col overflow-hidden bg-background-muted">
         {/* Flat page header, on the same reading column as the panels below: the padding sits
             INSIDE the measure here, as the body's does, so the wordmark and the title start on
             the tabs' left edge at every window width (outside it they stood 24px to the left of

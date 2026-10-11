@@ -100,35 +100,44 @@
 /*
  * ROWS ARE FILLS, NOT LINES (owner message 13, R-27, design.md 9.11). Provider rows are two-line
  * blocks with 8px of air above and below, so the air and the hover fill tell them apart and the
- * shared rule under every row goes: only the `::after` (the 1px transparent bottom edge stays, so
- * nothing moves). Scoped to the catalog, because the shared recipe is the rows block in main.css
- * and every list that has not decided keeps its line.
+ * rule under every row goes. That is the shared decision, said once in the rows block of
+ * `main.css`: the catalog root carries `.br-rows-flat` (`ProviderCatalog`), which drops only the
+ * `::after` (the 1px transparent bottom edge stays, so nothing moves) and draws it again in forced
+ * colours, where every fill, the hover wash included, is repainted as Canvas and the line is all
+ * that tells one row from the next.
  *
- * A hovered row paints a fill, and a control inside it steps back one ground (a fill never sits on
- * a fill). The shared hover wash is the page ink at 5%, which on the canvas composites to the rest
- * fill's own value, so the row's Configure or Launch button, resting on that same fill, lost its
- * box the moment the pointer reached its row (measured in Chromium). The row now paints
- * `--br-row-fill` itself and its controls rest on the page ground, still hovering on the strong
- * step. Settings does the same for its rows (settings.css); the two are separate because the
- * provider page is not inside `.br-settings-page`. On the first-run ground (`--background-muted`,
- * `onboarding.css`) the rest fill IS the ground, so the row takes the strong step there. The
- * focus-visible half is for a row a keyboard is in; a row that is itself the focus target keeps its
- * own focus fill.
+ * A hovered row is a washed row, and the shared rows block already steps a control inside it back
+ * one ground (`--br-control-ground`: the page ground; `--br-control-hover`: the strong step; the
+ * neutral track one in). What is left here is the PAINT of the row. The shared wash is the page
+ * ink at 5%: in light it lands on the rest fill's value, and on first run's ground on the strong
+ * step, but in dark on the canvas it lands at rgb(30, 30, 29), where the button resting on the
+ * page ground (rgb(27, 27, 25)) is 1.03:1 off its row and has no box (measured in Chromium,
+ * `firstRunFill.browser.test.tsx`). The row paints `--br-row-fill` instead, the token a card is
+ * painted in: rgb(35, 35, 32) there, which leaves the button 1.10:1 off it, and the same
+ * rgb(244, 244, 242) as the wash in light. On the first-run ground (`--background-muted`,
+ * `onboarding.css`) the rest fill IS the ground, so the row takes the strong step, and a button
+ * in it hovers one deeper again (`--background-strong`, what `.br-ground-recessed` gives a
+ * button on that ground), because the shared washed row's hover is the strong step, which there
+ * is the row's own value and would erase the button under the pointer. The focus-visible half is
+ * for a row a keyboard is in; a row that is itself the focus target keeps its own focus fill.
+ *
+ * The selector names `.br-provider-catalog.br-rows-flat` (one element) on purpose: Settings' own
+ * `.br-rows-flat` hover paint (`settings.css`, `--background-fill`) has the same reach, and which
+ * of the two wins must not depend on the order the style sheets are bundled in. This one
+ * out-ranks it by specificity.
  */
 .br-provider-catalog {
   --br-row-fill: var(--background-fill);
+  --br-row-control-hover: var(--background-fill-strong);
 }
 
 .br-first-run-ground .br-provider-catalog {
   --br-row-fill: var(--background-fill-strong);
+  --br-row-control-hover: var(--background-strong);
 }
 
-.br-provider-catalog .biorouter-settings-row::after {
-  content: none;
-}
-
-.br-provider-catalog
+.br-provider-catalog.br-rows-flat
   .biorouter-settings-row:not(.tint-selected, :focus-visible):is(:hover, :has(:focus-visible)) {
   background-color: var(--br-row-fill);
-  --br-control-ground: var(--background-default);
+  --br-control-hover: var(--br-row-control-hover);
 }

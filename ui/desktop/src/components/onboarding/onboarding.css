@@ -8,9 +8,13 @@
  *     so the box does too;
  *   - on `--background-muted` (`ProviderGuard`, the page the boot splash hands off to) the rest fill
  *     IS the ground (1.00:1), so everything rests one step deeper, on `--background-fill-strong`
- *     (1.10:1): design.md 9.11 rule 2. `.br-first-run-ground` sets that once, as the shared private
- *     control ground, and every filled control inside it (a field, the model select, a secondary
- *     button) follows with no class of its own.
+ *     (1.10:1): design.md 9.11 rule 2. That page is a RECESSED GROUND, and says so with the shared
+ *     class (`.br-ground-recessed`, the grounds note in `main.css`): the control ground, a filled
+ *     button's hover and the track ground all step in once, and every filled primitive inside it (a
+ *     field, the model select, a secondary button, the gateway switch's track, a copy field) follows
+ *     with no class of its own. This file keeps only what the shared class cannot know: the root
+ *     also carries `.br-first-run-ground`, the name of the page itself, which the two first-run
+ *     rules below (and `providers.css`) are scoped to.
  *
  * A box that holds controls also carries `.br-fill-surface` (the shared primitives block), so the
  * field or button inside it steps back to the page ground and never sits fill on fill.
@@ -21,22 +25,6 @@
  * dropped: nothing moves, and forced colours draw it in the system ink, so the box keeps its edge
  * there.
  */
-
-.br-first-run-ground {
-  --br-control-ground: var(--background-fill-strong);
-}
-
-/* The two shared primitives that paint their own ground instead of the control ground. On the
-   muted page the segmented track (`--background-fill`) and a copy field (`--background-well`)
-   would both equal the page, so the Institutional gateway switch would show a lone white thumb
-   and a command would show no box. They take the same strong step. */
-.br-first-run-ground .br-segmented {
-  background: var(--background-fill-strong);
-}
-
-.br-first-run-ground .biorouter-copy-field {
-  background-color: var(--background-fill-strong);
-}
 
 .br-first-run-box,
 .br-first-run-card {
@@ -55,14 +43,13 @@
   border-radius: var(--radius-container);
 }
 
-/* A progress track inside a box. The shared track is `--background-muted`, which is the value of the
-   fill the box rests on (and the first-run ground itself), so it would vanish in the box it reports
-   on. It rests one step deeper than the box: the strong step in a canvas box, `--background-strong`
-   in a strong-fill box. The fill (the information) is the tone's own and is not touched. */
-.br-first-run-box .br-progress {
-  background-color: var(--background-fill-strong);
-}
-
+/* A progress track inside a box on the first-run page. A box that holds a control carries
+   `.br-fill-surface`, which already puts the track on the strong step in a canvas box (the shared
+   `.br-progress-track`, `--br-track-ground`), so there is no rule for that case here. On the
+   first-run page the box itself rests on the strong step, which is the track's own value, so the
+   track would vanish in the box it reports on: no shared rule guesses that, so it rests one step
+   deeper, on `--background-strong`. The fill (the information) is the tone's own and is not
+   touched. */
 .br-first-run-ground .br-first-run-box .br-progress {
   background-color: var(--background-strong);
 }

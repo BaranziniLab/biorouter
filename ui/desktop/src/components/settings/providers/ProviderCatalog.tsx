@@ -765,7 +765,7 @@ export default function ProviderCatalog({
       <Tabs
         value={activeTab}
         onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
-        className="br-provider-catalog flex flex-col"
+        className="br-provider-catalog br-rows-flat flex flex-col"
       >
         {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
             colour that says private from public at a glance. In the page band they sit on the

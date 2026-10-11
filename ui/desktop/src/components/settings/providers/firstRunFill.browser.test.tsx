@@ -3,10 +3,11 @@
  * First run and the provider page on the fill system, in a real layout engine (owner message 13,
  * R-27, design.md 9.11; WS-SETTINGS-M's surfaces).
  *
- * The claims are about the cascade, which jsdom does not run: a private ground variable the
- * first-run page sets once and every filled control inside it follows, a box that rests where a
- * field would, a row that paints a fill under the pointer while the button inside it steps back
- * one ground, and a hairline that goes from a row by scope. So the real components are bundled
+ * The claims are about the cascade, which jsdom does not run: the shared recessed ground
+ * (`.br-ground-recessed`, the grounds note in `main.css`) that the first-run page carries and every
+ * filled control inside it follows, a box that rests where a field would, a row that paints a fill
+ * under the pointer while the button inside it steps back one ground, and a hairline that goes
+ * from a row by the shared flat-rows scope (`.br-rows-flat`). So the real components are bundled
  * with esbuild, the real `styles/main.css` is compiled by Tailwind with the classes the bundle uses,
  * `providers.css` and `onboarding.css` are appended as authored, and Chromium paints them. Colours
  * are compared with probes that paint the token itself, so a token value can change without this
@@ -34,6 +35,7 @@ import { createRoot } from 'react-dom/client';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { Progress } from '../../ui/progress';
 import { SegmentedControl } from '../../ui/segmented-control';
 import { CopyField } from '../../ui/copy-field';
 
@@ -61,14 +63,14 @@ function Ground({ id, muted }: { id: string; muted: boolean }) {
   return (
     <div
       id={id}
-      className={muted ? 'br-first-run-ground' : ''}
+      className={muted ? 'br-first-run-ground br-ground-recessed' : ''}
       style={{
         background: muted ? 'var(--background-muted)' : 'var(--background-canvas)',
         padding: 24,
         width: 620,
       }}
     >
-      <div className="br-provider-catalog">
+      <div className="br-provider-catalog br-rows-flat">
         <div className="biorouter-settings-list" id={id + '-list'}>
           <ProviderCard provider={provider('openai', 'OpenAI', false) as never} onConfigure={() => {}} onLaunch={() => {}} isOnboarding={false} />
           <ProviderCard provider={provider('anthropic', 'Anthropic', true) as never} onConfigure={() => {}} onLaunch={() => {}} isOnboarding={false} />
@@ -77,7 +79,7 @@ function Ground({ id, muted }: { id: string; muted: boolean }) {
           <div id={id + '-box'} className="br-first-run-box br-fill-surface p-3">
             <p className="text-supporting text-text-muted">Gemma 4 · 9.6 GB download</p>
             <Button id={id + '-box-button'} variant="secondary" size="sm">Check again</Button>
-            <div className="br-progress" id={id + '-progress'}><div className="br-progress__fill" style={{ width: '40%' }} /></div>
+            <Progress id={id + '-progress'} label="Download" value={40} />
           </div>
           <Input id={id + '-field'} aria-label="API key" placeholder="Paste your API key here…" />
           <select id={id + '-select'} className="br-field block h-control-md w-full rounded-element border px-2 text-label"><option>Gemma 4 E4B</option></select>
@@ -209,7 +211,8 @@ describe('first run and the provider page on the fill system (R-27)', () => {
         // A control inside a filled box steps back to the page ground, on both grounds.
         expect(await ground(tab, '#canvas-box-button'), `${mode} canvas box button`).toBe(page);
         expect(await ground(tab, '#muted-box-button'), `${mode} muted box button`).toBe(page);
-        // The two shared primitives that paint their own ground take the step on the muted page.
+        // The two shared primitives that paint their own ground take the step from the recessed
+        // ground's own variables (the track ground, the control ground), with no rule of ours.
         expect(await ground(tab, '#muted .br-segmented'), `${mode} muted track`).toBe(strong);
         expect(await ground(tab, '#muted .biorouter-copy-field'), `${mode} muted copy`).toBe(
           strong
@@ -267,6 +270,25 @@ describe('first run and the provider page on the fill system (R-27)', () => {
     }
   });
 
+  it('gives the hairline back in forced colours, where the fill that told the rows apart is gone', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light', { forcedColors: true });
+    try {
+      const content = await tab.evaluate(
+        () =>
+          getComputedStyle(
+            document.querySelector('#canvas-list .biorouter-settings-row')!,
+            '::after'
+          ).content
+      );
+      // The shared flat-rows scope restores it (`.br-rows-flat` in `main.css`); the catalog's own
+      // `content: none` this replaced had no forced-colours half.
+      expect(content).not.toBe('none');
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('fills a hovered row and steps the button inside it back one ground, on both grounds', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
@@ -275,6 +297,7 @@ describe('first run and the provider page on the fill system (R-27)', () => {
         const fill = await paint(tab, 'var(--background-fill)');
         const strong = await paint(tab, 'var(--background-fill-strong)');
         const page = await paint(tab, 'var(--background-default)');
+        const deeper = await paint(tab, 'var(--background-strong)');
         for (const [id, rowFill] of [
           ['canvas', fill],
           ['muted', strong],
@@ -290,10 +313,18 @@ describe('first run and the provider page on the fill system (R-27)', () => {
           expect(await ground(tab, row), `${mode} ${id} hovered row`).toBe(rowFill);
           expect(await ground(tab, button), `${mode} ${id} the button in a hovered row`).toBe(page);
           expect(rowFill, `${mode} ${id} row differs from the button`).not.toBe(page);
-          // And the button still answers the pointer on its own.
+          // And the button still answers the pointer on its own. On the canvas that is the strong
+          // step, off the fill the row paints. On first run the row IS the strong step, so the
+          // button goes one deeper (what the recessed ground gives a button outside a row):
+          // the strong step there would be the row's own value and erase the button under the
+          // pointer.
           await tab.hover(button);
           await tab.waitForTimeout(250);
-          expect(await ground(tab, button), `${mode} ${id} the hovered button`).toBe(strong);
+          const hovered = id === 'muted' ? deeper : strong;
+          expect(await ground(tab, button), `${mode} ${id} the hovered button`).toBe(hovered);
+          expect(hovered, `${mode} ${id} the hovered button differs from its row`).not.toBe(
+            rowFill
+          );
         }
         await tab.mouse.move(690, 1490);
         await shoot(tab, `first-run-row-${mode}`);
@@ -303,17 +334,18 @@ describe('first run and the provider page on the fill system (R-27)', () => {
     }
   });
 
-  it('proves the instrument: without the ground rule the muted page loses its fields', async (ctx) => {
+  it('proves the instrument: without the recessed ground the muted page loses its fields, its track and its copy box', async (ctx) => {
     if (!browser) return ctx.skip();
-    const stripped = ONBOARDING_CSS.replace(
-      /\.br-first-run-ground\s*\{[^}]*\}/,
-      '.br-first-run-ground {}'
-    );
-    expect(stripped).not.toBe(ONBOARDING_CSS);
-    const tab = await open('light', { sheet: css + PROVIDERS_CSS + stripped });
+    const stripped = css.replace(/\.br-ground-recessed\s*\{[^}]*\}/, '.br-ground-recessed {}');
+    expect(stripped).not.toBe(css);
+    const tab = await open('light', { sheet: stripped + PROVIDERS_CSS + ONBOARDING_CSS });
     try {
       const muted = await paint(tab, 'var(--background-muted)');
       expect(await ground(tab, '#muted-field')).toBe(muted);
+      expect(await ground(tab, '#muted .br-segmented')).toBe(muted);
+      expect(await ground(tab, '#muted .biorouter-copy-field')).toBe(
+        await paint(tab, 'var(--background-well)')
+      );
     } finally {
       await tab.close();
     }
@@ -325,8 +357,68 @@ describe('first run and the provider page on the fill system (R-27)', () => {
     try {
       const strong = await paint(tab, 'var(--background-fill-strong)');
       const deeper = await paint(tab, 'var(--background-strong)');
+      // On the canvas the box is the fill, and the shared track ground a filled box hands its
+      // children (`.br-fill-surface`) is one step in: no rule of first run's is involved.
       expect(await ground(tab, '#canvas-progress')).toBe(strong);
+      // On the first-run page the box is the strong step itself: first run's one rule.
       expect(await ground(tab, '#muted-progress')).toBe(deeper);
+      // The instrument: without that rule the track is the box.
+      const stripped = ONBOARDING_CSS.replace(
+        /\.br-first-run-ground \.br-first-run-box \.br-progress\s*\{[^}]*\}/,
+        ''
+      );
+      expect(stripped).not.toBe(ONBOARDING_CSS);
+      const bare = await open('light', { sheet: css + PROVIDERS_CSS + stripped });
+      try {
+        expect(await ground(bare, '#muted-progress')).toBe(await ground(bare, '#muted-box'));
+      } finally {
+        await bare.close();
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('keeps the first-run row fill whichever of the two flat-rows hover paints is bundled last', async (ctx) => {
+    if (!browser) return ctx.skip();
+    // Settings paints a hovered row under `.br-rows-flat` with the rest fill (`settings.css`), and
+    // the catalog root carries that class too. On first run the rest fill is the ground, so that
+    // paint would erase the hover. The catalog's rule out-ranks it by specificity, so the style
+    // sheet order is not a contract. This stand-in has the same reach and the same declarations.
+    const settingsPaint =
+      '.br-rows-flat .biorouter-settings-row:not(.tint-selected, :focus-visible):is(:hover, :has(:focus-visible)) {' +
+      ' background-color: var(--background-fill); --br-control-ground: var(--background-default); }';
+    for (const order of ['settings first', 'settings last'] as const) {
+      const sheet =
+        order === 'settings first'
+          ? css + settingsPaint + PROVIDERS_CSS + ONBOARDING_CSS
+          : css + PROVIDERS_CSS + ONBOARDING_CSS + settingsPaint;
+      const tab = await open('light', { sheet });
+      try {
+        const strong = await paint(tab, 'var(--background-fill-strong)');
+        const row = '#muted-list [data-testid="provider-card-openai"]';
+        await tab.hover(row);
+        await tab.waitForTimeout(250);
+        expect(await ground(tab, row), order).toBe(strong);
+      } finally {
+        await tab.close();
+      }
+    }
+    // The instrument: without the catalog's rule that stand-in wins and the row is the ground.
+    const noCatalogRule = PROVIDERS_CSS.replace(
+      /\.br-provider-catalog\.br-rows-flat[^{]*\{[^}]*\}/,
+      ''
+    );
+    expect(noCatalogRule).not.toBe(PROVIDERS_CSS);
+    const tab = await open('light', {
+      sheet: css + noCatalogRule + ONBOARDING_CSS + settingsPaint,
+    });
+    try {
+      const muted = await paint(tab, 'var(--background-muted)');
+      const row = '#muted-list [data-testid="provider-card-openai"]';
+      await tab.hover(row);
+      await tab.waitForTimeout(250);
+      expect(await ground(tab, row)).toBe(muted);
     } finally {
       await tab.close();
     }
