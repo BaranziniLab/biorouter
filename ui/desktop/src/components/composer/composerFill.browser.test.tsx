@@ -165,6 +165,33 @@ function App() {
               onRemoveFile={() => {}}
             />
           </Card>
+          <Card id="refs" text="Plot these">
+            <div className="br-composer-notice">
+              <span className="text-supporting">No model selected</span>
+              <Button type="button" variant="link" size="xs" className="h-auto px-0 text-supporting">
+                Choose a provider
+              </Button>
+            </div>
+            <ComposerChips
+              refs={[
+                { kind: 'skill', value: 'ggplot', start: 0, end: 0, raw: '' },
+                { kind: 'knowledge_base', value: 'kb1', label: 'Soul', start: 0, end: 0, raw: '' },
+                {
+                  kind: 'quote',
+                  value: 'q',
+                  label: 'Response',
+                  start: 0,
+                  end: 0,
+                },
+              ]}
+              images={[{ id: 'i2', dataUrl: IMAGE, isLoading: true }]}
+              files={[]}
+              onRemoveRef={() => {}}
+              onRemoveImage={() => {}}
+              onRetryImage={() => {}}
+              onRemoveFile={() => {}}
+            />
+          </Card>
           <Card id="drag" dragging />
           <Card id="working" text="Summarise the run" working />
         </div>
