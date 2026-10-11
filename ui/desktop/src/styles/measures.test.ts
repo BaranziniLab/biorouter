@@ -811,9 +811,10 @@ describe('rung 2 — the panel stays mounted across a crossing', () => {
   });
 
   it('keeps the scroll anchor scoped to the live chat', () => {
-    expect(codeWithoutComments(BASE_CHAT)).toContain(
-      'anchorBottomOnResize={artifactPanel.isStacked}'
-    );
+    // Under a stacked preview, and while the reader follows the newest line (V2-R6-1).
+    const live = codeWithoutComments(BASE_CHAT);
+    expect(live).toContain('anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}');
+    expect(live).toMatch(/useTranscriptFollow\(\{[^}]*isPreviewStacked: artifactPanel\.isStacked,/);
     for (const { rel, source } of PREVIEW_HOSTS.slice(1)) {
       expect(source, rel).not.toContain('anchorBottomOnResize');
     }
