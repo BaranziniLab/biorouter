@@ -226,9 +226,9 @@ Also delete these:
 - `font-bold` and CSS `700`, which become 600;
 - `leading-*` where it only restates the role.
 
-`body` defaults to 16px (`main.css:1597-1600`). Moving it to `var(--text-body)` is P2 and is the
-**last** typography change. It needs a visual sweep, because KaTeX and any element without a size
-inherit it [typography R5].
+`body` defaulted to 16px (`main.css:1597-1600`). Moving it to `var(--text-body)` was P2 and the
+**last** typography change. It needed a visual sweep, because KaTeX and any element without a size
+inherit it [typography R5]. **Done:** the body is 14px since `ae2a222bb` (design.md 9.3 and 9.10).
 
 **Markdown headings** (`main.css:4287-4345`, WS-TRANSCRIPT):
 
@@ -348,7 +348,7 @@ New files and rules owned by WS-TOKENS:
 | Part | Spec |
 |---|---|
 | Track | 32×20, `--radius-full`. Off: `--control-track-off`. On: `--background-accent`. Disabled: 50% opacity, `cursor: not-allowed`. |
-| Knob | 16px, inset 2px on every side in both states, travel 12px, **no growth**. Off: `--background-default` with `box-shadow: 0 0 0 1px var(--border-control), 0 1px 2px rgb(0 0 0 / .12)` (dark: `--text-muted` fill). On: `--text-on-accent`. |
+| Knob | 16px, inset 2px on every side in both states, travel 12px, **no growth**. Off: `--background-default` with `box-shadow: 0 0 0 1px var(--border-control), 0 1px 2px rgb(0 0 0 / .12)` (the same in dark: a `--text-muted` dark knob read as the brighter, "on" state, coordinator ruling 8, 2026-10-10). On: `--text-on-accent`. |
 | Hit target | At least 24px tall. When the switch sits in a `<label>` row, the whole row toggles it. |
 | Motion | Knob `transform` and track `background-color` over 125ms `--ease-out`. **A value that loads asynchronously does not animate**: mount it with `data-motion-still`, which gives `transition-duration: 0ms` for the first commit after the value arrives. |
 | Name | `aria-labelledby` points at the visible label, so **the name is the row's label** everywhere (a settings label, an extension or skill title, a capability name). Names never depend on state. No "Toggle …" and no "Enable …" labels. The sites to change, each by its owner: `settings/capabilities/CapabilitiesSection.tsx:50`, `settings/contexts/ContextsSection.tsx:57`, `settings/brsdk/BrsdkSection.tsx:80`, `settings/extensions/subcomponents/ExtensionItem.tsx:194`, the skills rows, `KBManagerDialog`; `workflows/shared/WorkflowResourcePicker.tsx:181` becomes a checkbox anyway. Update the tests that query names [primitives §6.3], **and the e2e query at `tests/e2e/app.spec.ts:182-184`** (`Toggle ${MCP_EXTENSION_NAME} extension`). Keep the element a Radix `<button role="switch">`: `tests/e2e/spokeagent-skills.spec.ts:141,277` locate `button[role="switch"]`. |
@@ -1607,8 +1607,8 @@ reads with one voice.
   1. **Re-scroll when the strip narrows.** Add the overflow state to the
      `ArtifactViewer.tsx:835-841` effect, or observe the tablist. Add
      `scroll-padding-inline: 8px` to `.br-tabstrip__scroll`. That selector is in WS-MOTION's
-     family, so send them the request. Add an edge-fade mask that applies only while the strip is
-     scrolled.
+     family, so send them the request. Add an edge-fade mask (32px) that applies only while the
+     strip is scrolled.
   2. **Drag feedback.** Remove `opacity-50` and `bg-background-medium` (`:1359-1360`). Write
      `data-dropbefore` the way `ChatTabStrip` does, so the shared `.br-tab` rules dim the tab and
      draw the insertion hairline.
@@ -1625,7 +1625,11 @@ reads with one voice.
     icon buttons, the size of every other 44px band's actions (the chat header and Crew's pane
     header use 32). Drop to 28px only if a measured 380px panel cannot fit two tabs with them.
   - A `⋯` menu holds Quote selection, Annotate and Reveal in Finder. Quote can also appear only
-    while a selection exists. **The Annotate item keeps the accessible name "Send a region to the
+    while a selection exists. For an artifact that is not a file (a figure, report, app or page),
+    the menu would hold only "Send a region to the chat", so that action is a Camera icon button in
+    the header in the menu's place (pressed while a region is being picked; a second press
+    cancels). Files keep the menu. Where the action cannot work (a `biorouter serve` browser, SD-8)
+    the one-item menu stays, because its visible reason says why (vision V2-16). **The Annotate item keeps the accessible name "Send a region to the
     chat"**: the CI job `preview-panel` (`.github/workflows/frontend.yml`, macOS) runs
     `scripts/preview-panel-e2e.mjs`, which calls `page.getByLabel('Send a region to the chat').click()`
     at `:155`. Update the script in the same commit to open `⋯` first, and update
@@ -1638,7 +1642,8 @@ reads with one voice.
   metadata **before the content loads**, so it never disappears.
   - **Left:** the file name in 13px sans default ink, with the full path in a tooltip.
   - **Middle:** meta in `text-supporting` muted, for example `300 lines`, `500 of 620 rows`,
-    `7 cells`, `800×480 · 42 KB` or `12 pages`.
+    `7 cells`, `800×480 · 42 KB` or `12 pages`. A `ui://` artifact's bar carries its transcript
+    card's own word (Figure, Report, App) from `artifactCardKind`.
   - **Right:** an icon-only Copy (Copy, then Check, with the tooltip "Copy" and failures in the
     tooltip plus `aria-live`), then the view switch (`SegmentedControl`: Preview/Raw, Table/Raw,
     Fit/1:1, or the sheet picker with **sheet names**).
@@ -1685,8 +1690,13 @@ reads with one voice.
   - **Code:** padding 28/48 becomes 16/32. Keep 13/20 mono, the 70% gutter ink and the
     `wrapLines`-without-`wrapLongLines` invariant.
   - **CSV:** the bar count reads `500 of 620 rows`, and the cap sentence moves into its tooltip. The
-    table uses the shared `.br-md-table` recipe (section 0); the mono row index stays.
+    table uses the shared `.br-md-table` recipe (section 0); the mono row index stays. The frame
+    sits on the column edge the bar's name uses and leaves it only when moving toward the panel
+    edge shows the whole table (`data-yield`). A wider table keeps the edge and scrolls, fading out
+    over its last 40px while more lies right (each row's filler cell draws the fade; a mask on the
+    scroller would fade the vertical scrollbar).
   - **Notebook:**
+    - It opens at the paper inset, 16px, plus its first heading's margin (40px to the heading).
     - The DataFrame sandbox CSS copies the `.br-md-table` values (it renders in a sandbox, so the
       class cannot reach it): 12/600 muted header on `--background-muted`, no bold index, hairlines.
     - Image outputs get radius 10 plus a `0 0 0 1px var(--border-subtle)` ring.
