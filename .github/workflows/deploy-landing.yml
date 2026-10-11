@@ -98,6 +98,14 @@ jobs:
       - name: Check the site paints fills, not outlines, in a browser
         run: node --test landing/scripts/fill-rules.browser.test.mjs
 
+      # Layout that holds still (vision round 2, V5-R2-1 and V5-R2-2). The wall
+      # animation's composers keep the model's name at 390, 360 and 320 wide, and
+      # opening a BAAM row moves none of its GitHub link, download button or
+      # chevron out from under the pointer. Both are measurements, which jsdom
+      # cannot take; this reads the real pages in the same chromium.
+      - name: Check the site's layout holds still in a browser
+        run: node --test landing/scripts/layout-stability.browser.test.mjs
+
   deploy:
     needs: check
     runs-on: ubuntu-latest

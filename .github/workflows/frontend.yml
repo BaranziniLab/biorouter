@@ -296,6 +296,13 @@ jobs:
         working-directory: .
         run: node --test landing/scripts/fill-rules.browser.test.mjs
 
+      # Layout that holds still (V5-R2-1, V5-R2-2): the wall animation's
+      # composers keep the model's name in a narrow chat, and opening a BAAM
+      # row moves none of its controls from under the pointer.
+      - name: Site layout holds still
+        working-directory: .
+        run: node --test landing/scripts/layout-stability.browser.test.mjs
+
   # ── Unit tests ────────────────────────────────────────────────────────────
   unit:
     name: Unit tests (vitest)
