@@ -111,9 +111,16 @@ export const permissionDialogCopy = {
 
 export const hintsDialogCopy = {
   title: 'Project hints',
-  /** Before the file's path in the dialog's subtitle. */
-  found: 'Editing',
-  newFile: 'New file at',
+  /**
+   * The dialog's subtitle, in one family: the file's NAME, never its path (a path is a machine
+   * string, and set in mono inside a sans sentence it made two families in one line). The path
+   * is `copyPath` below, with the full path in its tooltip.
+   */
+  found: 'Editing your .biorouterhints file',
+  newFile: 'New .biorouterhints file',
+  copyPath: 'Copy path',
+  pathCopied: 'Path copied',
+  copyFailed: 'Could not copy the path',
   field: 'Hints',
   helper: 'Used by new chats while the Developer extension is on.',
   placeholder: 'Language, frameworks, coding style, important files…',
