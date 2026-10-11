@@ -412,11 +412,19 @@ async fn resuming_a_chat_in_the_terminal_does_not_move_it_but_switching_its_mode
         child.wait_with_output().unwrap()
     }
 
-    let cases: [(&str, serde_json::Value, &[&str], bool); 3] = [
+    let cases: [(&str, serde_json::Value, &[&str], bool); 4] = [
         (
             "a resume that continues",
             serde_json::json!({ "extensions": [] }),
             &[],
+            false,
+        ),
+        (
+            // Typing the model the chat already records restores it: that is
+            // not a switch, so the chat stays where it was.
+            "a resume that names the model the chat already records",
+            serde_json::json!({ "extensions": [] }),
+            &["--provider", "anthropic", "--model", MODEL],
             false,
         ),
         (
@@ -479,4 +487,67 @@ async fn resuming_a_chat_in_the_terminal_does_not_move_it_but_switching_its_mode
             assert_eq!(listed(&sandbox), [newer.clone(), older.clone()], "{case}");
         }
     }
+}
+
+/// R-30, the other half, from the terminal: renaming a chat IS activity.
+/// `biorouter session rename` moves the chat to the top of `session list`, and
+/// so of the desktop's lists, which read the same store. The resume test above
+/// pins that opening does not; this pins that the CLI's own rename still does.
+#[tokio::test]
+async fn renaming_a_chat_in_the_terminal_moves_it_to_the_top_of_session_list() {
+    let sandbox = Sandbox::new();
+    let data = sandbox.root.join("data");
+    let sm = SessionManager::new(data.clone());
+    let mut ids = Vec::new();
+    for name in ["Older chat", "Newer chat"] {
+        let id = sm
+            .create_session(data.clone(), name.into(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        sm.add_message(&id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        ids.push(id);
+        // `datetime('now')` has one-second resolution: each write, and the
+        // rename below, in a second of its own, so nothing ties.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    }
+    sm.close().await;
+    let (older, newer) = (ids[0].clone(), ids[1].clone());
+
+    let listed = || -> Vec<String> {
+        let out = sandbox.run(&["session", "list", "--format", "json"], "");
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {}", text(&out.stdout)));
+        rows.iter()
+            .filter_map(|row| row["id"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(listed(), [newer.clone(), older.clone()], "premise");
+
+    let out = sandbox.run(
+        &[
+            "session",
+            "rename",
+            "--session-id",
+            &older,
+            "--new-name",
+            "Renamed in the terminal",
+        ],
+        "",
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(
+        listed(),
+        [older, newer],
+        "a rename is activity (R-30): the renamed chat heads the list"
+    );
 }

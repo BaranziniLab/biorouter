@@ -12755,4 +12755,66 @@ mod opening_is_not_activity_app_tests {
             );
         }
     }
+
+    /// An app that declares a goal, with LLM guardrails switched on,
+    /// re-installs that goal on every connect by writing `goal.v0` into the
+    /// chat's `extension_data` (`Agent::set_goal` -> `persist_goal`, an
+    /// update that sets `extension_data` and nothing else). That write is
+    /// part of the connect too, so it must land and still not move the chat.
+    /// The test above never reaches it: its manifest declares no goal.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn connecting_to_an_app_with_a_goal_installs_it_without_moving_its_chat() {
+        use biorouter_mcp::agent_drafter::manifest::GuardrailsConfig;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let session = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "app:r30app".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        sm.add_message(&session, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let before = sm.get_session(&session, false).await.unwrap().updated_at;
+
+        let mut manifest = manifest();
+        if let Some(agent_cfg) = manifest.agent.as_mut() {
+            agent_cfg.guardrails = Some(GuardrailsConfig {
+                goal: Some("the report is written".to_string()),
+                ..Default::default()
+            });
+        }
+        let mut overrides = placeholder_key();
+        overrides.insert("BRSDK_LLM_GUARDRAILS".into(), "true".into());
+
+        for connect in ["first connect", "a reload after a restart"] {
+            let agent = fresh_agent(&sm, dir.path());
+            with_config_overrides(
+                overrides.clone(),
+                configure_agent(&agent, &state, &session, &manifest, &UiBridge::new(), false),
+            )
+            .await;
+
+            assert!(
+                sm.get_extension_state(&session, "goal", "v0")
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "{connect}: premise, the connect installed and persisted the app's goal"
+            );
+            assert_eq!(
+                sm.get_session(&session, false).await.unwrap().updated_at,
+                before,
+                "{connect}: re-installing an app's goal on connect is not activity (R-30)"
+            );
+        }
+    }
 }

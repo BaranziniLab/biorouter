@@ -7135,6 +7135,20 @@ mod opening_is_not_activity_route_tests {
 
         let (status, _) = call(state, "GET", &format!("/sessions/{id}"), None).await;
         assert_eq!(status, StatusCode::OK, "the transcript read");
+
+        // The reads the desktop makes around an open (measured live on
+        // 2026-10-11 against the same daemon build). They write nothing today;
+        // pinned here so one that starts writing fails as an R-30 regression
+        // rather than as a chat that quietly jumps in the sidebar.
+        for uri in [
+            format!("/sessions/{id}?metadata_only=true"),
+            format!("/sessions/{id}/extensions"),
+            format!("/sessions/{id}/usage"),
+            format!("/agent/callable_tool_count?session_id={id}"),
+        ] {
+            let (status, body) = call(state, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
     }
 
     /// The seeded ids in the order `GET /sessions` (History, the CLI's list)

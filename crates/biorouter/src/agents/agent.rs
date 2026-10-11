@@ -22072,6 +22072,56 @@ mod gate_a_bind_tests {
             "2001-01-01 00:00:00"
         );
     }
+
+    /// The same cold restore on a PRIVATE chat bound to a private model. Gate
+    /// A admits it, the model is bound, and the chat stays where it was: the
+    /// open path is the same for both tiers, so the timestamp must be too.
+    #[tokio::test]
+    async fn a_cold_restore_of_a_private_chats_own_model_does_not_move_it() {
+        let (dir, agent, session) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        sm.add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        ratchet_to_private(&sm, &session.id).await;
+        backdate(&sm, &session.id, "2001-01-01 00:00:00").await;
+        let row = reread(&sm, &session.id).await;
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"), "premise");
+        assert_eq!(
+            row.privacy_tier,
+            SessionClassification::Private,
+            "premise: the chat is private"
+        );
+
+        let cold = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sm),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ));
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &session.id,
+            "versa_azure",
+            private_provider(),
+        );
+        cold.restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cold.bound_provider_unchecked()
+                .await
+                .map(|p| p.get_name().to_string()),
+            Some("versa_azure".to_string()),
+            "the restore itself must still bind the private model"
+        );
+        assert_eq!(
+            stored_updated_at(&sm, &session.id).await,
+            "2001-01-01 00:00:00",
+            "opening a private chat is not activity in it (R-30)"
+        );
+    }
 }
 
 /// Issue #56 Gate B — the turn barrier, the ratchet, and Gate B' on the

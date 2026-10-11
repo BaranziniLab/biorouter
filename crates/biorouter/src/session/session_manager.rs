@@ -20399,4 +20399,158 @@ mod opening_is_not_activity_tests {
             "sidebar after a rename"
         );
     }
+
+    /// The sidebar pages with a keyset cursor: the last row's `updated_at`
+    /// and id. An open between two page reads used to stamp the opened chat
+    /// above the cursor, so the next page silently skipped it. Here the chat
+    /// the cursor names and the chat the next page starts with are both opened
+    /// between the two reads, and the walk must still be exactly the list.
+    #[tokio::test]
+    async fn a_keyset_walk_interrupted_by_an_open_neither_skips_nor_repeats_a_chat() {
+        let (_dir, sm) = store().await;
+        let oldest = chat(&sm, "oldest", OLDEST).await;
+        let middle = chat(&sm, "middle", MIDDLE).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        let first = sm
+            .list_session_summaries_page(2, None, false, false, false)
+            .await
+            .unwrap();
+        let first_ids: Vec<String> = first.iter().map(|row| row.summary.id.clone()).collect();
+        assert_eq!(first_ids, [newest.clone(), middle.clone()], "premise");
+        let cursor = first.last().unwrap().cursor.clone();
+
+        // Open the cursor's own row and the next page's first row, the way a
+        // cold desktop agent and a CLI resume do: rebind the model, save the
+        // roster.
+        for id in [&middle, &oldest] {
+            opening(async {
+                assert!(matches!(
+                    bind(&sm, id, "anthropic").await,
+                    BindOutcome::Bound
+                ));
+                save_roster(&sm, id).await;
+            })
+            .await;
+        }
+
+        let rest: Vec<String> = sm
+            .list_session_summaries_page(2, Some(&cursor), false, false, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.summary.id)
+            .collect();
+        assert_eq!(
+            rest,
+            std::slice::from_ref(&oldest),
+            "the page after the cursor must still hold the chat opened in between"
+        );
+        assert_eq!(
+            sidebar_order(&sm).await,
+            [newest, middle, oldest],
+            "a fresh walk after both opens"
+        );
+    }
+
+    /// Gate A admits a private model on a private chat. Inside an opening that
+    /// bind lands and, like the public one, leaves the chat where it was.
+    #[tokio::test]
+    async fn a_private_chats_own_private_model_binds_while_opening_without_moving_it() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "private", OLDEST).await;
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        let outcome = opening(sm.storage().bind_provider_if_allowed(
+            &id,
+            "versa_azure",
+            r#"{"model_name":"gpt-5.5"}"#,
+            true,
+        ))
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+        assert_eq!(
+            row.privacy_tier,
+            SessionClassification::Private,
+            "premise: the chat is private"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    /// A turn's own writes are activity even inside an opening scope: a
+    /// conversation rewrite (compaction), a truncation (edit or retry), the
+    /// token ledger a turn settles and a token-count update. One chat per
+    /// write, so a CASE added to any of them fails here by name.
+    #[tokio::test]
+    async fn a_turns_writes_are_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+
+        let rewritten = chat(&sm, "rewritten", OLDEST).await;
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("hello"),
+            Message::assistant().with_text("hi"),
+        ]);
+        opening(sm.replace_conversation(&rewritten, &conversation))
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &rewritten).await,
+            OLDEST,
+            "a conversation rewrite"
+        );
+
+        let truncated = chat(&sm, "truncated", OLDEST).await;
+        opening(sm.truncate_conversation(&truncated, 0))
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &truncated).await,
+            OLDEST,
+            "a truncation"
+        );
+
+        let billed = chat(&sm, "billed", OLDEST).await;
+        let recorded = opening(sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "r30-turn-1".to_string(),
+            session_id: billed.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(12),
+            current_input_tokens: Some(10),
+            current_output_tokens: Some(2),
+            billed_total_tokens: Some(12),
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            model_id: Some("m".to_string()),
+            provider: Some("p".to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        }))
+        .await
+        .unwrap();
+        assert!(recorded, "premise: the usage event was recorded");
+        assert_ne!(
+            stored_updated_at(&sm, &billed).await,
+            OLDEST,
+            "the token ledger"
+        );
+
+        let counted = chat(&sm, "counted", OLDEST).await;
+        opening(sm.update(&counted).total_tokens(Some(42)).apply())
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &counted).await,
+            OLDEST,
+            "a token-count update"
+        );
+    }
 }
