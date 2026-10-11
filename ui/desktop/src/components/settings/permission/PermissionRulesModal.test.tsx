@@ -70,6 +70,35 @@ describe('PermissionRulesModal', () => {
     expect(screen.getByTestId('permission-modal')).toHaveTextContent('developer');
   });
 
+  /**
+   * The daemon sends the workspace capability as `Workspace`, and the Capabilities list, the
+   * daemon's display name and the CLI all call it Workspace Control (vision V4-R2-3). The row
+   * and the dialog it opens carry the same name, and the list sorts by it.
+   */
+  it('names a bundled capability the way the Capabilities list does', async () => {
+    getExtensions.mockResolvedValue([
+      { type: 'platform', name: 'Workspace', description: 'Workspace', enabled: true },
+      { type: 'builtin', name: 'developer', display_name: 'Developer', enabled: true },
+      {
+        type: 'builtin',
+        name: 'extensionmanager',
+        display_name: 'Extension Manager',
+        enabled: true,
+      },
+    ]);
+
+    render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
+
+    const row = await screen.findByRole('button', { name: 'Workspace Control' });
+    expect(row).toHaveTextContent(/^Workspace Control$/);
+    expect(screen.queryByRole('button', { name: 'Workspace' })).toBeNull();
+    const names = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent)
+      .filter((text) => text && /^(Developer|Extension Manager|Workspace Control)$/.test(text));
+    expect(names).toEqual(['Developer', 'Extension Manager', 'Workspace Control']);
+  });
+
   it('shows a retryable error instead of leaving the extension list loading forever', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     getExtensions.mockRejectedValue(new Error('unavailable'));

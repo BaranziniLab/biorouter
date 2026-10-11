@@ -6,12 +6,28 @@ import { Button } from '../../ui/button';
 import { ModalShell } from '../../ModalShell';
 import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
 import { nameToKey } from '../extensions/utils';
+import { CAPABILITIES } from '../capabilities/capabilities';
 import { permissionDialogCopy } from '../chat/copy';
+
+/**
+ * The name a permission row shows for an extension. A bundled capability keeps the name the
+ * Capabilities list gives it (and the daemon serves: `bundled_extension_display_name`), so the
+ * same capability is not "Workspace" here and "Workspace Control" one section up (vision
+ * V4-R2-3). Everything else reads through the one extension-name resolver.
+ */
+export function permissionExtensionTitle(extension: FixedExtensionEntry): string {
+  if (extension.type === 'builtin' || extension.type === 'platform') {
+    const key = nameToKey(extension.name);
+    const capability = CAPABILITIES.find((entry) => entry.key === key);
+    if (capability) return capability.label;
+  }
+  return getFriendlyTitle(extension);
+}
 
 export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
   return extensions
     .filter((extension) => extension.enabled && nameToKey(extension.name) !== 'platform')
-    .sort((a, b) => getFriendlyTitle(a).localeCompare(getFriendlyTitle(b)));
+    .sort((a, b) => permissionExtensionTitle(a).localeCompare(permissionExtensionTitle(b)));
 }
 
 /**
@@ -25,7 +41,7 @@ export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
  */
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const title = getFriendlyTitle(extension);
+  const title = permissionExtensionTitle(extension);
 
   return (
     <>

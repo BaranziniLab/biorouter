@@ -5,13 +5,12 @@ import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
 import { ChevronRight } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
-import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
-import { getConfigurableExtensions } from './PermissionRulesModal';
+import { getConfigurableExtensions, permissionExtensionTitle } from './PermissionRulesModal';
 import { permissionDialogCopy } from '../chat/copy';
 
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const title = getFriendlyTitle(extension);
+  const title = permissionExtensionTitle(extension);
   const description = 'description' in extension ? extension.description || '' : '';
 
   return (
