@@ -133,6 +133,28 @@ describe('Group by Folder', () => {
     expect(screen.queryByTestId(`sidebar-folder-more-folder:${NOTES}`)).toBeNull();
   });
 
+  // Vision V1-R5-3: where focus goes is pinned here; that it is in view, in
+  // `sidebarFill.browser.test.tsx` (jsdom has no layout).
+  it('moves focus from Show more pressed by key to the first chat it shows, and no further', () => {
+    renderFolders();
+    const more = screen.getByTestId(`sidebar-folder-more-folder:${PROJECT}`);
+    // Enter or Space on a button is a click with no pointer count (`detail` 0).
+    more.focus();
+    fireEvent.click(more, { detail: 0 });
+    expect(screen.getByTestId('recent-chat-p5')).toHaveFocus();
+
+    // Show less by key keeps focus on the toggle.
+    more.focus();
+    fireEvent.click(more, { detail: 0 });
+    expect(more).toHaveTextContent(sidebarCopy.chats.showMore);
+    expect(more).toHaveFocus();
+
+    // A pointer's click moves focus to no row: a focused row would show its ⋯.
+    fireEvent.click(more, { detail: 1 });
+    expect(more).toHaveTextContent(sidebarCopy.chats.showLess);
+    expect(more).toHaveFocus();
+  });
+
   it('collapses a folder and remembers it', () => {
     const { unmount } = renderFolders();
     fireEvent.click(toggleOf(NOTES));

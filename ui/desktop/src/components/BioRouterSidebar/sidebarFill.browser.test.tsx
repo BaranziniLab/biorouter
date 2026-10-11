@@ -1193,6 +1193,96 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     });
 
     /**
+     * Vision V1-R5-3. Enter on a folder's "Show more" left keyboard focus out of view: the toggle,
+     * now "Show less" below every chat it showed, lay past the lines drawn so far and unmounted
+     * (focus fell to <body>), or it was drawn far below the visible list, which did not scroll.
+     * From the keyboard, focus now goes to the first chat it showed, on the line "Show more" held,
+     * and ArrowDown goes on from there. "Show less" from the keyboard keeps focus on the toggle and
+     * brings it into view wherever the collapse moved it. A pointer click moves no focus to a row
+     * (a focused row shows its ⋯).
+     */
+    it('keeps keyboard focus in view across a folder’s Show more and Show less (V1-R5-3)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openLongList(400, { perFolder: 100 });
+      const list = '[data-testid="recent-chat-scroll"]';
+      const toggleKey = (p: string) => `more:folder:/Users/me/projects/${p}`;
+      const toggle = (p: string) => `[data-row="${toggleKey(p)}"]`;
+      const inView = (selector: string) =>
+        tab.evaluate(
+          ([l, s]) => {
+            const box = document.querySelector(l)!.getBoundingClientRect();
+            const el = document.querySelector(s);
+            if (!el) return 'not drawn';
+            const at = el.getBoundingClientRect();
+            return at.top >= box.top && at.bottom <= box.bottom
+              ? 'in view'
+              : `out of view: ${Math.round(at.top)} in ${Math.round(box.top)}..${Math.round(box.bottom)}`;
+          },
+          [list, selector] as const
+        );
+      try {
+        await scrollLongList(tab, 0);
+        // Long folders below p0, for the collapse further down: p3, p2 and p1 opened with the
+        // pointer, from the bottom up, so each toggle is still where it was when it is clicked.
+        for (const p of ['p3', 'p2', 'p1']) {
+          await tab.click(toggle(p));
+          await settle(tab);
+          expect((await focusedRow(tab)) ?? 'none', `${p}: a click focuses no chat`).not.toMatch(
+            /^chat:/
+          );
+        }
+        await scrollListTo(tab, 0);
+
+        // Show more, from the keyboard.
+        const before = (await tab.locator(toggle('p0')).boundingBox())!;
+        await tab.focus(toggle('p0'));
+        await tab.keyboard.press('Enter');
+        await expect.poll(() => focusedRow(tab), { timeout: 2_000 }).toBe('chat:s6');
+        const first = (await tab.locator('[data-row="chat:s6"]').boundingBox())!;
+        expect(
+          Math.abs(first.y - before.y),
+          'the first chat shown sits on the line Show more held'
+        ).toBeLessThanOrEqual(1);
+        expect(await inView('[data-row="chat:s6"]')).toBe('in view');
+        expect(
+          await tab.evaluate(() => document.activeElement!.matches(':focus-visible')),
+          'its focus shows'
+        ).toBe(true);
+        if (SHOTS) {
+          await tab.screenshot({
+            path: resolve(SHOTS, 'sidebar-folder-show-more-key-light.png'),
+            clip: { x: 0, y: 0, width: 320, height: 900 },
+          });
+        }
+        await tab.keyboard.press('ArrowDown');
+        expect(await focusedRow(tab), 'ArrowDown goes on from it').toBe('chat:s7');
+
+        // Show less, from the keyboard, at the end of p0's hundred chats in the middle of the list.
+        // Chromium's scroll anchoring happens to pull this collapse back to the top here (it
+        // anchored on a row below and the shift ran past 0); it is a heuristic, not something the
+        // list can count on, so it is switched off and the list must bring the toggle into view.
+        await scrollLongList(tab, 0);
+        await tab.evaluate((l) => {
+          const el = document.querySelector<HTMLElement>(l)!;
+          el.style.overflowAnchor = 'none';
+          el.scrollTop = 101 * 30 - el.clientHeight / 2;
+        }, list);
+        await tab.waitForTimeout(200);
+        expect(await inView(toggle('p0'))).toBe('in view');
+        expect(await tab.locator(toggle('p0')).textContent()).toBe('Show less');
+        await tab.focus(toggle('p0'));
+        await tab.keyboard.press('Space');
+        await expect
+          .poll(() => tab.locator(toggle('p0')).textContent(), { timeout: 2_000 })
+          .toBe('Show more');
+        expect(await focusedRow(tab), 'focus stays on the toggle').toBe(toggleKey('p0'));
+        expect(await inView(toggle('p0')), 'and the toggle is in view').toBe('in view');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
      * The pixels of `clip` (page coordinates, whole pixels), one array of [r, g, b] per pixel row:
      * a mask is paint, so only a screenshot says what it did.
      */

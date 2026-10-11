@@ -1049,6 +1049,10 @@ export default function RecentChats({
   // The row that last had focus in the list, kept drawn so focus is never
   // unmounted from under the person when the list scrolls away from it.
   const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  // Where focus goes after a folder's Show more or Show less pressed from the
+  // keyboard (vision V1-R5-3): the first chat it showed, or the toggle itself.
+  // Kept drawn until it has focus.
+  const [focusAfterToggle, setFocusAfterToggle] = useState<string | null>(null);
 
   // R-28: the list reaches `renderBudget` lines down (the rest wait until it is
   // scrolled near its end), and of those it draws for real only the lines in
@@ -1064,13 +1068,23 @@ export default function RecentChats({
   const keptLines = useMemo(() => {
     const keys = new Set<string>();
     if (focusedRowKey) keys.add(focusedRowKey);
+    if (focusAfterToggle) keys.add(focusAfterToggle);
     if (lineMenuKey) keys.add(lineMenuKey);
     if (activeSessionId) keys.add(chatKey(activeSessionId));
     if (editing) keys.add(chatKey(editing.sessionId));
     if (reveal) keys.add(chatKey(reveal.sessionId));
     if (rowMenuOpen && menuRowId) keys.add(chatKey(menuRowId));
     return keys;
-  }, [focusedRowKey, lineMenuKey, activeSessionId, editing, reveal, rowMenuOpen, menuRowId]);
+  }, [
+    focusedRowKey,
+    focusAfterToggle,
+    lineMenuKey,
+    activeSessionId,
+    editing,
+    reveal,
+    rowMenuOpen,
+    menuRowId,
+  ]);
   const drawRange = drawn.range;
   const windowed = useMemo(
     () => ({
@@ -1392,6 +1406,28 @@ export default function RecentChats({
     setFocusedRowKey(null);
   };
 
+  // A folder's Show more or Show less pressed from the keyboard (vision
+  // V1-R5-3). The toggle moves when it acts: below every chat it showed, often
+  // past the lines drawn so far (it unmounted, and focus fell to the page) or
+  // far below the view; or back up under the folder's first five, above the
+  // view. So focus goes where the person is looking: to the first chat Show
+  // more showed, on the line the toggle held, and ArrowDown goes on from
+  // there; after Show less it stays on the toggle, brought into view. Both are
+  // drawn (`keptLines`) in the commit that moved them, so this runs before
+  // that frame paints.
+  useLayoutEffect(() => {
+    if (!focusAfterToggle) return;
+    setFocusAfterToggle(null);
+    const container = scrollContainerRef.current;
+    const target = container?.querySelector<HTMLElement>(
+      `[data-row="${CSS.escape(focusAfterToggle)}"]`
+    );
+    if (!container || !target) return;
+    if (document.activeElement !== target) target.focus({ preventScroll: true });
+    scrollRowIntoView(container, target);
+    syncDrawRange(container, false);
+  }, [focusAfterToggle, syncDrawRange]);
+
   // Anything that moves lines without a scroll (a view drawn, a folder opened
   // or closed, rows arriving, the list's box growing) is measured again before
   // the frame paints, so no placeholder is ever left where a row should be.
@@ -1702,14 +1738,25 @@ export default function RecentChats({
                                   aria-expanded={more === 'less'}
                                   tabIndex={roving.tabIndexFor(moreKey(group))}
                                   onFocus={() => onRowFocus(moreKey(group))}
-                                  onClick={() =>
+                                  onClick={(event) => {
+                                    // Enter or Space: a click no pointer counted. Focus
+                                    // follows what the toggle did (above); a pointer's click
+                                    // moves no focus, or a row would show its ⋯.
+                                    if (event.detail === 0) {
+                                      const firstShown = group.sessions[FOLDER_PREVIEW_COUNT];
+                                      setFocusAfterToggle(
+                                        more === 'more' && firstShown
+                                          ? chatKey(firstShown.id)
+                                          : moreKey(group)
+                                      );
+                                    }
                                     setExpandedFolders((current) => {
                                       const next = new Set(current);
                                       if (next.has(group.key)) next.delete(group.key);
                                       else next.add(group.key);
                                       return next;
-                                    })
-                                  }
+                                    });
+                                  }}
                                 >
                                   <span className="br-nav-row-label">
                                     {more === 'more'
