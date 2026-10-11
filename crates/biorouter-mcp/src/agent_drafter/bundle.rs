@@ -1096,19 +1096,18 @@ pub(crate) struct EsbuildCommand {
 
 fn packaged_esbuild(executable: &Path) -> Option<PathBuf> {
     let dir = executable.parent()?;
-    if let Some(beside) = esbuild_beside(dir) {
-        return Some(beside);
-    }
     // CLI-only Linux packages keep helpers under libexec so they do not
     // overwrite a separately installed /usr/bin/esbuild.
     #[cfg(target_os = "linux")]
     {
-        let candidate = dir.parent()?.join("libexec/biorouter/esbuild");
-        if candidate.is_file() {
-            return Some(candidate);
+        if let Some(prefix) = dir.parent() {
+            let candidate = prefix.join("libexec/biorouter/esbuild");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
-    None
+    esbuild_beside(dir)
 }
 
 /// Locate an esbuild executable, in this order:
@@ -3010,6 +3009,16 @@ mod tests {
             "{js}"
         );
 
+        let incomplete = Staging::new(&dist).unwrap();
+        std::fs::write(incomplete.0.join("app.css"), "bad output").unwrap();
+        assert!(install_bundle(&incomplete.0, &dist, &banner).is_err());
+        assert_eq!(std::fs::read_to_string(dist.join("app.js")).unwrap(), js);
+        assert_eq!(
+            std::fs::read_to_string(dist.join("app.css")).unwrap(),
+            "main{color:red}\n"
+        );
+        drop(incomplete);
+
         let staging = Staging::new(&dist).unwrap();
         std::fs::write(staging.0.join("app.js"), "two();\n").unwrap();
         install_bundle(&staging.0, &dist, &banner).unwrap();
@@ -3431,9 +3440,11 @@ mod tests {
         assert_eq!(packaged_esbuild(&executable), None);
         let helper = helpers.join("esbuild");
         std::fs::write(&helper, b"packaged").unwrap();
-        assert_eq!(packaged_esbuild(&executable), Some(helper));
+        assert_eq!(packaged_esbuild(&executable), Some(helper.clone()));
         let beside = bin.join("esbuild");
         std::fs::write(&beside, b"desktop").unwrap();
+        assert_eq!(packaged_esbuild(&executable), Some(helper.clone()));
+        std::fs::remove_file(helper).unwrap();
         assert_eq!(packaged_esbuild(&executable), Some(beside));
     }
 
