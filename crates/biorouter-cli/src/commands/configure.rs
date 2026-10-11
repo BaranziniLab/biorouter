@@ -1316,7 +1316,7 @@ fn configure_stdio_extension() -> anyhow::Result<()> {
     let name = prompt_extension_name("my-extension")?;
 
     let command_str: String = cliclack::input("What command should be run?")
-        .placeholder("npx -y @block/gdrive")
+        .placeholder("npx -y @example/my-server")
         .validate(|input: &String| {
             if input.is_empty() {
                 Err("Please enter a command")
@@ -1741,29 +1741,19 @@ const MODES: [BioRouterMode; 4] = [
     BioRouterMode::Chat,
 ];
 
-/// A mode's name and description, exactly as the desktop's mode picker
-/// (`ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx`) says them.
-/// `configure` used to say "Auto/Approve/Smart Approve/Chat Mode" while the app
-/// said "Autonomous/Manual/Smart/Chat only", so a person meeting a mode in one
-/// surface could not find it under the same name in the other.
+/// A mode's name and description, exactly as the desktop's approval mode menu
+/// (`approvalsCopy.modes` in `ui/desktop/src/components/settings/chat/copy.ts`)
+/// says them. `configure` used to say "Auto/Approve/Smart Approve/Chat Mode"
+/// while the app said "Autonomous/Manual/Smart/Chat only", so a person meeting a
+/// mode in one surface could not find it under the same name in the other. The
+/// desktop's words win: when its copy changes, the test below fails until these
+/// follow.
 fn mode_choice(mode: BioRouterMode) -> (&'static str, &'static str) {
     match mode {
-        BioRouterMode::Auto => (
-            "Autonomous",
-            "Use tools and edit, create, or delete files without asking first.",
-        ),
-        BioRouterMode::Approve => (
-            "Manual",
-            "Ask before using tools, extensions, or making file changes.",
-        ),
-        BioRouterMode::SmartApprove => (
-            "Smart",
-            "Ask only when an action\u{2019}s risk level requires your approval.",
-        ),
-        BioRouterMode::Chat => (
-            "Chat only",
-            "Chat with the selected model without tools or extensions.",
-        ),
+        BioRouterMode::Auto => ("Autonomous", "Uses tools and edits files without asking"),
+        BioRouterMode::Approve => ("Manual", "Asks before using tools or changing files"),
+        BioRouterMode::SmartApprove => ("Smart", "Asks only when an action looks risky"),
+        BioRouterMode::Chat => ("Chat only", "Talks to the model with no tools"),
     }
 }
 
@@ -2640,15 +2630,16 @@ mod mode_name_tests {
     use super::{mode_choice, MODES};
     use std::path::Path;
 
-    /// `configure` names and describes every mode exactly as the desktop's mode
-    /// picker does, read from its source so a rename on either side fails here.
+    /// `configure` names and describes every mode exactly as the desktop's approval
+    /// mode menu does, read from the copy module that menu renders so a rename on
+    /// either side fails here.
     #[test]
     fn configure_uses_the_desktop_mode_names() {
         let picker = std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx"),
+                .join("../../ui/desktop/src/components/settings/chat/copy.ts"),
         )
-        .expect("the desktop mode picker source");
+        .expect("the desktop approval mode copy");
         for mode in MODES {
             let (label, description) = mode_choice(mode);
             assert!(
