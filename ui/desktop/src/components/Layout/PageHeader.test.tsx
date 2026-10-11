@@ -117,6 +117,18 @@ describe('PageHeader', () => {
     expect(bar).toContainElement(screen.getByRole('tablist'));
   });
 
+  /**
+   * The band is a recessed ground: its paint is the sidebar's, on which the rest fill is 1.03:1
+   * off, so the controls in it rest one step deeper. It says so with the shared class and holds no
+   * ground of its own (`viewsFill.browser.test.tsx` measures the paint, and proves it goes without
+   * the class). jsdom runs no CSS, so the contract here is the class on the `<header>` itself.
+   */
+  it('wears the shared recessed-ground class on the header, so its controls step one fill in', () => {
+    render(<PageHeader title="Workflows" actions={<button type="button">Sort</button>} />);
+
+    expect(screen.getByTestId('page-header')).toHaveClass('br-ground-recessed');
+  });
+
   it('renders a back button before the title when the page is a drill-in', async () => {
     const onBack = vi.fn();
     render(<PageHeader title="nightly-cohort" onBack={onBack} backLabel="Back to Scheduler" />);

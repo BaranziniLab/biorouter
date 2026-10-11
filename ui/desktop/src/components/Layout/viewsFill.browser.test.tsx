@@ -3,10 +3,11 @@
  * The Workflows, Scheduler and Built apps surfaces under the fill rule, in a real layout engine
  * (owner message 13, R-27, design.md 9.11; spec 3.10).
  *
- * jsdom runs no CSS, and every claim here is about the cascade: a custom property a band sets
- * for the controls inside it, a `::after` rule a list switches off by scope, a card whose edge is
- * transparent and whose children step back one ground, a left edge shared by two different
- * containers. So the real components (`PageHeader`, `FilterInput`, `ParameterInput`,
+ * jsdom runs no CSS, and every claim here is about the cascade: a custom property a recessed
+ * ground (the band wears the shared `.br-ground-recessed`) sets for the controls inside it, a
+ * `::after` rule a list switches off by scope, a card whose edge is transparent and whose
+ * children step back one ground, a left edge shared by two different containers. So the real
+ * components (`PageHeader`, `FilterInput`, `ParameterInput`,
  * `ScheduleFacts`) are bundled with esbuild, the app's own `styles/main.css` is compiled by
  * Tailwind with the classes the bundle uses (plus `schedule.css`, which a component import would
  * have carried), and Chromium paints them. Colours are compared with probes that paint the token
@@ -186,9 +187,15 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
   const left = (tab: Page, selector: string) =>
     tab.evaluate((s) => document.querySelector(s)!.getBoundingClientRect().left, selector);
 
-  /** The sheet with ONE declaration removed from the rule that holds it, to prove an instrument. */
+  /**
+   * The sheet with ONE declaration removed from the rule that holds it, to prove an instrument.
+   * Every copy of the rule is stripped, never just the first: a second definition elsewhere in the
+   * file would keep the rule alive and read as "no change" (it did, when the flat rows' rule lived
+   * in two blocks and two cases here went red for it; WS-KNOWLEDGE-2).
+   */
   const without = (rule: RegExp, declaration: RegExp) => {
-    const stripped = css.replace(rule, (block) => block.replace(declaration, ''));
+    const every = new RegExp(rule.source, rule.flags.includes('g') ? rule.flags : `${rule.flags}g`);
+    const stripped = css.replace(every, (block) => block.replace(declaration, ''));
     expect(stripped, 'the rule to strip was found').not.toBe(css);
     return stripped;
   };
@@ -237,9 +244,11 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
       }
     }
 
+    // The band holds no ground of its own: the shared `.br-ground-recessed` on the real `<header>`
+    // carries it. Three mutations prove that, one for each half and one for the wiring.
     const bare = await open(
       'light',
-      without(/\.biorouter-page-header\[data-band\] \{[^}]*\}/, /\n\s*--br-control-ground:[^;]*;/)
+      without(/\.br-ground-recessed \{[^}]*\}/, /\n\s*--br-control-ground:[^;]*;/)
     );
     try {
       expect(
@@ -252,10 +261,7 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
 
     const flat = await open(
       'light',
-      without(
-        /\.biorouter-page-header\[data-band\] \.br-fill-hover:hover,\s*\.biorouter-page-header\[data-band\] \.br-fill-hover:active \{[^}]*\}/,
-        /\n\s*background-color:[^;]*;/
-      )
+      without(/\.br-ground-recessed \{[^}]*\}/, /\n\s*--br-control-hover:[^;]*;/)
     );
     try {
       await flat.hover('#band-button');
@@ -266,6 +272,21 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
       ).toBe(await paint(flat, 'var(--background-fill-strong)'));
     } finally {
       await flat.close();
+    }
+
+    const unclassed = await open('light');
+    try {
+      await unclassed.evaluate(() =>
+        document.querySelector('#band header')!.classList.remove('br-ground-recessed')
+      );
+      // A field eases its ground over a moment; read it once it has settled.
+      await unclassed.waitForTimeout(250);
+      expect(
+        await ground(unclassed, '#band .br-filter-input-field'),
+        'without the class on the header the filter falls back to the rest fill'
+      ).toBe(await paint(unclassed, 'var(--background-fill)'));
+    } finally {
+      await unclassed.close();
     }
   }, 120_000);
 

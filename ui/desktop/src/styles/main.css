@@ -3881,28 +3881,23 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   align-items: stretch;
   height: var(--chrome-height);
   background: var(--sidebar);
-  /* THE BAND IS A RECESSED GROUND (fills before lines, R-27, design.md 9.11 rule 2). It is the
-     sidebar's own paint, and the rest fill (`--background-fill`) is 1.03:1 off it in light, so a
-     filter field resting there was a white-on-white box nobody could find. A control on the band
-     rests one step deeper, on the strong fill (1.12:1 off the band in light, 1.28:1 in dark;
-     `--text-subtle` on it is 4.58:1 or better in all three families and both modes, measured by
-     `Layout/viewsFill.browser.test.tsx`), so the field reads as a quiet well. There is no deeper
-     neutral that still clears 4.5:1 for the placeholder, so the field does not step further under
-     the pointer: its hover equals its rest, and the focus edge is what answers a click. Every
-     band's filter, whoever owns the view, rests this way. */
-  --br-control-ground: var(--background-fill-strong);
 }
 
-/* A FILLED BUTTON on the band (a secondary or outline one: no view puts one there today)
-   would rest on the strong fill and hover on the same value, so it would answer the pointer
-   with nothing. It hovers one fill deeper instead, as Knowledge's recessed headers do
-   (`@ws WS-KNOWLEDGE begin: recessed ground`). Only a button: its label is `--text-default`
-   and clears 4.5:1 on the deeper step, which a field's placeholder does not (above). Unlayered,
-   so it beats the layered `.br-fill-hover:hover`. */
-.biorouter-page-header[data-band] .br-fill-hover:hover,
-.biorouter-page-header[data-band] .br-fill-hover:active {
-  background-color: var(--background-strong);
-}
+/* THE BAND IS A RECESSED GROUND (fills before lines, R-27, design.md 9.11 rule 2), and says so
+   with the shared class: `PageHeader` puts `.br-ground-recessed` on the `<header>` (the grounds
+   note, "THE GROUNDS"), so this block holds no ground of its own. The band is the sidebar's own
+   paint, and the rest fill (`--background-fill`) is 1.03:1 off it in light, so a filter field
+   resting there was a white-on-white box nobody could find. A control on the band rests one step
+   deeper, on the strong fill (1.12:1 off the band in light, 1.28:1 in dark; `--text-subtle` on it
+   is 4.58:1 or better in all three families and both modes, measured by
+   `Layout/viewsFill.browser.test.tsx`), so the field reads as a quiet well. There is no deeper
+   neutral that still clears 4.5:1 for the placeholder, so a field does not step further under the
+   pointer: its hover equals its rest, and the focus edge is what answers a click. A filled BUTTON
+   has no placeholder to protect, so it hovers one fill deeper (`--background-strong`), which the
+   same class carries as `--br-control-hover`. Every band's controls, whoever owns the view, rest
+   this way. (Until the class was adopted the band set the ground by hand and re-stated the button
+   hover in an unlayered `.br-fill-hover:hover` rule of its own, a second copy of what the class
+   does; WS-PRIMITIVES-6.) */
 
 .biorouter-page-header-bar {
   display: flex;
@@ -3989,35 +3984,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   padding-top: 0;
 }
 /* @ws WS-VIEWS-A end: page band */
-
-/* @ws WS-VIEWS-A begin: flat rows */
-/* ROW LISTS DROP THEIR HAIRLINES (owner message 13, R-27: "row lists drop inter-row hairlines
-   where spacing and the hover fill already separate rows"). The shared row recipe
-   (`@ws WS-PRIMITIVES begin: rows`) draws a straight rule under every row through `::after`;
-   that recipe stays as it is for every list that has not decided. A list that has (Workflows,
-   the Scheduler and its runs, Built apps) opts out by SCOPE, with `.br-rows-flat` on its
-   `.biorouter-list-shell`, so the shared recipe is not edited and every other list keeps its
-   line. Only the `::after` goes: the row keeps its 1px transparent bottom edge, so nothing
-   moves, and a keyboard row still shows its wash and its own focus edge.
-   Looked at both ways in light and dark: a two-line row (14px title, 12px muted line, 8px of
-   air above and below) reads as one block from the 16px of air between blocks, and the hover
-   wash marks the row under the pointer. Settings decided the same for its rows with the same
-   class name (`settings.css`); the one definition belongs in the shared rows block. */
-.br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
-  content: none;
-}
-
-/* Forced colours repaint every background as Canvas, so the hover wash that told a row from
-   its neighbour is gone, and so is every other fill. The line comes back there (a border, which
-   forced colours still draw), as every filled box keeps its transparent edge drawn in the
-   system ink. The shared `:last-child` rule, later in the file at the same specificity, still
-   leaves the last row without one. */
-@media (forced-colors: active) {
-  .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
-    content: '';
-  }
-}
-/* @ws WS-VIEWS-A end: flat rows */
 
 .biorouter-page-block {
   background: var(--background-default);

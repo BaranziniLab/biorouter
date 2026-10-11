@@ -94,12 +94,21 @@ describe('Views-A under the fill rule: source guards', () => {
     expect(shells).toBeGreaterThanOrEqual(8);
   });
 
-  it('keeps the band’s ground rule and the flat rows’ rule in main.css', () => {
+  it('takes the band’s ground from the shared recessed class and the flat rows’ rule from the shared rows block', () => {
+    // The band holds no ground of its own: the header wears `.br-ground-recessed`, so there is one
+    // definition of what a recessed ground asks of the controls on it.
     const band = MAIN_CSS.match(/\.biorouter-page-header\[data-band\] \{[^}]*\}/)?.[0] ?? '';
-    expect(band).toMatch(/--br-control-ground:\s*var\(--background-fill-strong\);/);
-    expect(MAIN_CSS).toMatch(
-      /\.br-rows-flat :is\(\.biorouter-list-row, \.biorouter-settings-row\)::after \{\s*content: none;\s*\}/
+    expect(band).not.toMatch(/--br-control-/);
+    expect(MAIN_CSS).not.toMatch(/\.biorouter-page-header\[data-band\] \.br-fill-hover/);
+    const header = sources.find((s) => s.name === 'Layout/PageHeader.tsx')?.text ?? '';
+    expect(code(header)).toMatch(/className="biorouter-page-header br-ground-recessed"/);
+    // `.br-rows-flat` is defined ONCE, in the shared rows block (WS-PRIMITIVES-6): a second copy
+    // keeps the list flat when the first is removed, which is how two Chromium cases read green
+    // and red for the wrong reason.
+    const flat = MAIN_CSS.match(
+      /\.br-rows-flat :is\(\.biorouter-list-row, \.biorouter-settings-row\)::after \{\s*content: none;\s*\}/g
     );
+    expect(flat).toHaveLength(1);
   });
 
   describe('the guard sees what it claims to', () => {

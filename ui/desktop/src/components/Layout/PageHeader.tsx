@@ -59,6 +59,11 @@ export type PageHeaderProps = {
  * strings, because a newly written utility can silently fail to generate under
  * `BIOROUTER_NO_HMR`.
  *
+ * **The band is a recessed ground** (fills before lines, R-27): it wears the sidebar's paint, on
+ * which the rest fill is 1.03:1 off, so the `<header>` carries the shared `.br-ground-recessed`
+ * and every filled control placed in `actions` (the `FilterInput`, a secondary button) rests one
+ * step deeper and stays visible. Nothing here sets a ground by hand.
+ *
  * ⚠ **This reverses the 2026-09-07 "actions on their own line" decision** (operator, recorded
  * as reversed on 2026-10-09 in `docs/design/astryx-adoption/astryx-ui-adoption-design.md`
  * §4.2). Its argument was that a title row with controls must truncate the title; the band
@@ -100,7 +105,11 @@ export function PageHeader({
   useMouseBackButton(onBack ? mouseBack : undefined);
   return (
     <>
-      <header className="biorouter-page-header" data-band="" data-testid="page-header">
+      <header
+        className="biorouter-page-header br-ground-recessed"
+        data-band=""
+        data-testid="page-header"
+      >
         <div className="biorouter-page-header-bar">
           {onBack && <PageHeaderAction icon={ArrowLeft} label={backLabel} onClick={onBack} />}
           <div className="biorouter-page-header-title">
