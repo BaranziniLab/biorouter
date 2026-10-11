@@ -610,10 +610,10 @@ mod tests {
         assert!(!out.contains("not-a-real-key"), "{out}");
         assert!(out.contains("BIOROUTER_PROVIDER: versa_azure"), "{out}");
 
-        let keyring = r#"{"VERSA_AZURE_API_KEY":"abcdef0123456789abcdef","GOOSE_MODEL":"gpt"}"#;
+        let keyring = r#"{"VERSA_AZURE_API_KEY":"abcdef0123456789abcdef","BIOROUTER_MODEL":"gpt"}"#;
         let out = redacted(keyring);
         assert!(!out.contains("abcdef0123456789abcdef"), "{out}");
-        assert!(out.contains(r#""GOOSE_MODEL":"gpt""#), "{out}");
+        assert!(out.contains(r#""BIOROUTER_MODEL":"gpt""#), "{out}");
 
         let dotenv = "export STRIPE_SECRET_KEY=\"fake_live_value_123456\"\nDEBUG=true\n";
         let out = redacted(dotenv);
@@ -654,7 +654,7 @@ mod tests {
             "commit 3f2a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a\n",
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKE tester@example\n",
             "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----\n",
-            "BIOROUTER_PROVIDER: versa_azure\nGOOSE_MODEL: gpt-5.5\n",
+            "BIOROUTER_PROVIDER: versa_azure\nBIOROUTER_MODEL: gpt-5.5\n",
         ] {
             assert_eq!(redact_text(text), None, "redacted ordinary text: {text}");
         }
