@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
+import * as themeTokens from '../../../scripts/lib/theme-tokens.mjs';
 import { StatusDot, type StatusDotTone } from './status-dot';
 
 const TONES: StatusDotTone[] = ['success', 'warning', 'danger', 'neutral', 'idle'];
@@ -60,6 +61,27 @@ describe('StatusDot', () => {
     expect(dot()).not.toHaveAttribute('data-live');
   });
 
+  /** V3-16: an idle dot is a state, so it reaches 3:1 on every ground it sits on. */
+  it('draws idle at 3:1 on the page, a card and the sidebar, in every family', () => {
+    type Scope = { decls: Record<string, string>; theme: Record<string, string> };
+    const tokens = themeTokens as unknown as {
+      buildScopes(css: string): Record<string, Scope>;
+      resolveHex(name: string, scope: Scope): string | null;
+      contrast(a: string, b: string): number;
+    };
+    const scopes = Object.entries(tokens.buildScopes(MAIN_CSS));
+    expect(scopes).toHaveLength(6);
+    for (const [name, scope] of scopes) {
+      const fill = tokens.resolveHex('--border-control', scope)!;
+      for (const ground of ['--background-default', '--background-card', '--sidebar']) {
+        const under = tokens.resolveHex(ground, scope)!;
+        expect(tokens.contrast(fill, under), `${name}: idle on ${ground}`).toBeGreaterThanOrEqual(
+          3
+        );
+      }
+    }
+  });
+
   /**
    * jsdom does not load main.css, so the paint is asserted at the source: each
    * tone maps to the token the spec names, never a literal, and the live halo
@@ -72,7 +94,7 @@ describe('StatusDot', () => {
       warning: 'var(--background-warning)',
       danger: 'var(--background-danger)',
       neutral: 'var(--text-subtle)',
-      idle: 'var(--background-strong)',
+      idle: 'var(--border-control)',
     };
     for (const tone of TONES) {
       expect(ruleBody(`.biorouter-status-dot[data-tone='${tone}']`)).toContain(
