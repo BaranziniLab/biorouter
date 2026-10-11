@@ -180,8 +180,13 @@ export default function AppSettingsSection() {
         </SettingRow>
       </SettingSection>
 
-      {/* Usage: accumulated (billed) tokens and cost. WS-USAGE owns the section. */}
-      {COST_TRACKING_ENABLED && showPricing && <UsageSection key={usageVersion} />}
+      {/*
+        Usage: accumulated (billed) tokens and cost. WS-USAGE owns the section. It stays mounted
+        when Show costs goes off and only drops its dollar figures: unmounting it took 110px out of
+        the page, which clamped the scroll and moved every row under the pointer, and it hid token
+        counts and turns that are not costs (vision V4-02).
+      */}
+      {COST_TRACKING_ENABLED && <UsageSection key={usageVersion} showCosts={showPricing} />}
 
       <SettingSection id={SETTINGS_SECTION_IDS.about} title={aboutCopy.section}>
         {UPDATES_ENABLED && shouldShowUpdates ? (

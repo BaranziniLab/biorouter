@@ -1,5 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 
@@ -7,7 +7,11 @@ import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 // other sections' business and pulls in the API client, the theme registry and
 // the usage panel.
 vi.mock('./UpdateSection', () => ({ default: () => null }));
-vi.mock('../usage/UsageSection', () => ({ default: () => null }));
+vi.mock('../usage/UsageSection', () => ({
+  default: ({ showCosts }: { showCosts?: boolean }) => (
+    <div data-testid="usage-section" data-show-costs={String(showCosts)} />
+  ),
+}));
 vi.mock('./ResetPanel', () => ({ default: () => null }));
 vi.mock('../../BioRouterSidebar/ThemeSelector', () => ({ default: () => null }));
 vi.mock('../../BioRouterSidebar/ThemeFamilySelector', () => ({ default: () => null }));
@@ -87,6 +91,40 @@ describe('the first render', () => {
     const html = renderToString(<AppSettingsSection />);
     expect(html).not.toContain(generalCopy.dock);
     expect(html).toContain(generalCopy.openNotificationsOther);
+  });
+});
+
+/**
+ * Show costs hides the dollars, not the section. Unmounting Usage dropped 110px from the page, so
+ * a person scrolled near the bottom had every row move 72px under the pointer and their next
+ * click land on Prevent sleep (vision V4-02).
+ */
+describe('Show costs', () => {
+  afterEach(() => localStorage.clear());
+
+  it('keeps the Usage section mounted, the same node, and tells it to drop its costs', async () => {
+    localStorage.clear();
+    render(<AppSettingsSection />);
+    const showCosts = await screen.findByRole('switch', { name: generalCopy.showCosts });
+    const usage = screen.getByTestId('usage-section');
+    expect(usage).toHaveAttribute('data-show-costs', 'true');
+
+    fireEvent.click(showCosts);
+    expect(showCosts).not.toBeChecked();
+    expect(localStorage.getItem('show_pricing')).toBe('false');
+    expect(screen.getByTestId('usage-section')).toBe(usage);
+    expect(usage).toHaveAttribute('data-show-costs', 'false');
+
+    fireEvent.click(showCosts);
+    expect(screen.getByTestId('usage-section')).toBe(usage);
+    expect(usage).toHaveAttribute('data-show-costs', 'true');
+  });
+
+  it('starts with costs hidden when the person hid them, on the first render', () => {
+    localStorage.setItem('show_pricing', 'false');
+    const html = renderToString(<AppSettingsSection />);
+    expect(html).toContain('data-testid="usage-section"');
+    expect(html).toContain('data-show-costs="false"');
   });
 });
 
