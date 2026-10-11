@@ -82,10 +82,16 @@ describe('ProviderCard keyboard access', () => {
     expect(screen.getByText(catalogCopy.configured)).toHaveClass('br-row-actions-meta');
     expect(screen.getByText(catalogCopy.configured).closest('.br-row-actions-slot')).not.toBeNull();
 
-    // A configured provider is launched, as its button says.
+    // A configured provider is used, as its button says: "Use", the verb the open panels use
+    // ("Use Claude Code"), named for the row (vision FR-R2-4: it read "Launch").
+    const use = screen.getByRole('button', { name: catalogCopy.useRow('Versa API Azure') });
+    expect(use).toHaveTextContent(/^Use$/);
+    expect(screen.queryByText('Launch')).toBeNull();
     await user.click(screen.getByTestId('provider-card-versa_azure'));
     expect(onLaunch).toHaveBeenCalledTimes(1);
     expect(onConfigure).not.toHaveBeenCalled();
+    await user.click(use);
+    expect(onLaunch).toHaveBeenCalledTimes(2);
 
     // One that is not set up is configured.
     rerender(
@@ -103,7 +109,7 @@ describe('ProviderCard keyboard access', () => {
   });
 
   // FR-R1-5: on first run an expandable row's panel holds the primary ("Use Claude Code",
-  // "Download and start", "Connect"); a hover "Launch" on the row was a second verb for one choice.
+  // "Download and start", "Connect"); a hover row action beside it was a second verb for one choice.
   it('gives an expandable first-run row no row action, and keeps "Configured" at rest', () => {
     render(
       <TooltipProvider>
@@ -122,7 +128,7 @@ describe('ProviderCard keyboard access', () => {
     );
     expect(screen.queryByTestId('provider-actions-versa_azure')).toBeNull();
     expect(
-      screen.queryByRole('button', { name: catalogCopy.launchRow('Versa API Azure') })
+      screen.queryByRole('button', { name: catalogCopy.useRow('Versa API Azure') })
     ).toBeNull();
     const status = screen.getByText(catalogCopy.configured);
     // Nothing takes its cell, so it does not give way on hover.

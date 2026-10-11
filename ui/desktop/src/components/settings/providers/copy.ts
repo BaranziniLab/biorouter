@@ -29,10 +29,16 @@ export const catalogCopy = {
   chooseModel: 'Choose model',
   configured: 'Configured',
   configure: 'Configure',
-  launch: 'Launch',
+  /**
+   * First run's action on a configured provider that does not open in place (an API row, Versa API
+   * Azure). The panels of the rows that do open say "Use Claude Code", "Use Codex", "Use Ollama",
+   * so this is the same verb (vision FR-R2-4: it read "Launch", a second word for one choice on
+   * the next tab). Settings never shows it: a Settings row's action is Configure.
+   */
+  use: 'Use',
   /** A row's own name, so repeated buttons are not all "Configure". */
   configureRow: (name: string) => `Configure ${name}`,
-  launchRow: (name: string) => `Launch ${name}`,
+  useRow: (name: string) => `Use ${name}`,
   emptyTab: 'Nothing here yet.',
   /** Shown under the Institutional tab, once. */
   otherInstitutions: "Don't see your institution?",

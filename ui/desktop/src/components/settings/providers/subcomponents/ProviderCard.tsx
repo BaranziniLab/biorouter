@@ -171,7 +171,7 @@ export const ProviderCard = function ProviderCard({
   /**
    * ⚠ **An expandable row on first run has no row action** (vision FR-R1-5, principle 5: one job,
    * one control). Its panel holds the primary for the same decision ("Use Claude Code", "Download
-   * and start", "Connect"), so a hover "Launch" beside it was a second verb for one choice. The
+   * and start", "Connect"), so a hover action beside it was a second control for one choice. The
    * row's resting status stays, and stays visible under the pointer, because nothing takes its
    * cell. Settings keeps the action on its expandable rows (an agent's Configure opens its command
    * path), where the panel has no primary that does the same thing.
@@ -253,7 +253,7 @@ export const ProviderCard = function ProviderCard({
     );
   }
 
-  // The row's click duplicates its action button for a mouse user: Configure, or Launch on a
+  // The row's click duplicates its action button for a mouse user: Configure, or Use on a
   // configured provider on first run (what the button says, via `DefaultCardButtons`). It is
   // deliberately not a second focusable control: a role="button" wrapping a real <button> is nested
   // interactive markup, and the button, revealed on focus above, reaches the same place by keyboard.

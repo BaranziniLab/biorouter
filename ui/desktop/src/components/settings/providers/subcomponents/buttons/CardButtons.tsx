@@ -65,14 +65,14 @@ export function ConfigureSettingsButton({ tooltip, className, text, ...props }: 
   );
 }
 
-/** First run's "Launch" on a configured provider. */
-export function RocketButton({ tooltip, className, text, ...props }: ActionButtonProps) {
+/** First run's "Use" on a configured provider, the verb its expandable neighbours' panels use. */
+export function UseProviderButton({ tooltip, className, text, ...props }: ActionButtonProps) {
   return (
     <ActionButton
-      data-testid="provider-launch-button"
+      data-testid="provider-use-button"
       tooltip={tooltip}
       variant="secondary"
-      text={text ?? catalogCopy.launch}
+      text={text ?? catalogCopy.use}
       className={clsx('cursor-pointer', className)}
       {...props}
     />

@@ -1,4 +1,4 @@
-import { ConfigureSettingsButton, RocketButton } from './CardButtons';
+import { ConfigureSettingsButton, UseProviderButton } from './CardButtons';
 import { ProviderDetails } from '../../../../../api';
 import { catalogCopy } from '../../copy';
 
@@ -13,7 +13,7 @@ interface CardButtonsProps {
 }
 
 /**
- * A provider row's one action. The visible word is short ("Configure", "Launch"); the accessible
+ * A provider row's one action. The visible word is short ("Configure", "Use"); the accessible
  * name carries the row, so a list of twenty rows is not twenty buttons called "Configure". A
  * tooltip that only repeated that name was dropped: the row already says whose it is.
  */
@@ -25,12 +25,12 @@ export default function DefaultCardButtons({
   describedBy,
 }: CardButtonsProps) {
   const name = provider.metadata.display_name || provider.name;
-  // A configured provider on the onboarding page is launched; every other row is configured
-  // (set up, or edited when it already is).
+  // A configured provider on the onboarding page is used, with the verb the open panels use ("Use
+  // Claude Code"); every other row is configured (set up, or edited when it already is).
   if (provider.is_configured && isOnboardingPage) {
     return (
-      <RocketButton
-        aria-label={catalogCopy.launchRow(name)}
+      <UseProviderButton
+        aria-label={catalogCopy.useRow(name)}
         aria-describedby={describedBy}
         onClick={(e) => {
           e.stopPropagation();
