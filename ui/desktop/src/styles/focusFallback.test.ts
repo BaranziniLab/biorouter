@@ -351,6 +351,17 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
     expect(body).toContain('border-radius: var(--radius-element)');
     expect(body).toContain('position: absolute');
     expect(body).toMatch(/inset-block: calc\(50% - 14px\)/);
+    // The ring keeps clear of the glyphs: a Radix trigger has no side padding, so the ring's inner
+    // edge is the inset minus its 2px border from the label. At 4px past the trigger that was 2px,
+    // and antialiasing made "Chat" touch it (vision V4-16); 4px clear is the floor. Two
+    // neighbours' rings still cannot meet inside the tablist's gap-5 (20px).
+    const inset = Number(body.match(/inset-inline: -(\d+)px/)?.[1]);
+    expect(inset, 'the ring is inset by a negative pixel value').toBeGreaterThan(0);
+    expect(
+      inset - 2,
+      'the ring’s inner edge is at least 4px clear of the label'
+    ).toBeGreaterThanOrEqual(4);
+    expect(inset * 2, 'two neighbours’ rings do not meet in gap-5').toBeLessThan(20);
     // The trigger this relies on is positioned, and `::after` is its selection bar.
     const tabs = readFileSync(join(HERE, '..', 'components', 'ui', 'tabs.tsx'), 'utf8');
     expect(tabs).toMatch(/"relative inline-flex/);

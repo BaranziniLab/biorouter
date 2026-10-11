@@ -1988,11 +1988,14 @@
  * so an outset outline stands 4px above the trigger — and Crew's details pane
  * pins its tablist `sticky top-0` flush against the top of its own scroller,
  * which clips that top edge off and leaves a U. The pseudo-element is the same
- * ring (2px `--border-focus`, 2px clear of the label, `--radius-element`)
- * sized to the LABEL: 28px tall and centred, so it sits inside the trigger's
- * height and no scroller can reach it, and 4px past each side, where the
- * tablist's gap-5 leaves room. The trigger is already `position: relative`
- * for its selection bar (`ui/tabs.tsx`), and `::after` stays that bar.
+ * ring (2px `--border-focus`, `--radius-element`) sized to the LABEL: 28px
+ * tall and centred, so it sits inside the trigger's height and no scroller can
+ * reach it, and 6px past each side, so the ring's inner edge is 4px clear of
+ * the label (at 4px the inner edge was 2px from the glyphs and antialiasing
+ * made "Chat" touch it, vision V4-16). Two neighbours' rings cannot meet: the
+ * tablist's gap-5 is 20px and the rings take 12 of it. The trigger is already
+ * `position: relative` for its selection bar (`ui/tabs.tsx`), and `::after`
+ * stays that bar.
  * `[data-orientation]` is what Radix writes on every trigger and nothing else
  * with the role carries, so a plain `role="tab"` button — which is not
  * positioned — keeps the outline.
@@ -2014,7 +2017,7 @@
 :where([role='tab'][data-orientation]:not(.br-tab)):focus-visible::before {
   content: '';
   position: absolute;
-  inset-inline: -4px;
+  inset-inline: -6px;
   inset-block: calc(50% - 14px);
   border: 2px solid var(--border-focus);
   border-radius: var(--radius-element);
