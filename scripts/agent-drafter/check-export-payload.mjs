@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -157,7 +158,7 @@ async function execute(backend, folder, profile, yes = true) {
   } else {
     write(
       join(folder, ".payload.ps1"),
-      `${ps}\nInstall-App\n$daemon = Start-Daemon\nInstall-Payload ([int]$daemon[0]) ([string]$daemon[1])\n`,
+      `${ps}\nWrite-Host ('PAYLOAD_FIXTURE_STATE=' + (@{ powershell = $PSVersionTable.PSVersion.ToString(); dir = $Dir; sourceDigest = $SourceDigest; payloadState = $PayloadState } | ConvertTo-Json -Compress))\nInstall-App\n$daemon = Start-Daemon\nInstall-Payload ([int]$daemon[0]) ([string]$daemon[1])\n`,
     );
     command = process.env.BIOROUTER_TEST_POWERSHELL || "powershell.exe";
     args = [
@@ -278,7 +279,15 @@ try {
     const failed = await execute(backend, folder, profile);
     assert(
       failed.includes("not fully installed"),
-      `${backend} reports partial failure`,
+      `${backend} reports partial failure: ${failed}`,
+    );
+    const stateDiagnostic = failed
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("PAYLOAD_FIXTURE_STATE="));
+    if (stateDiagnostic) console.log(stateDiagnostic);
+    assert(
+      existsSync(state),
+      `${backend} expected payload state ${state}; actual source-folder records: ${existsSync(dirname(state)) ? readdirSync(dirname(state)).join(", ") : "none"}; launcher output:\n${failed}`,
     );
     assert(
       !readdirSync(state).includes("complete"),
