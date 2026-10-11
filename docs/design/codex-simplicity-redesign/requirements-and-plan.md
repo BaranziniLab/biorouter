@@ -2,15 +2,15 @@
 
 > **What this is.** The owner's requirements for the October 2026 redesign of the desktop app
 > and the website, restated as numbered items, and the plan that turns them into work.
-> **Status:** Current. Work in progress; the live state of every item is in
-> [progress.md](progress.md).
+> **Status:** Current. Implemented; verification rounds 5 and 6 running. The live state of every
+> item is in [progress.md](progress.md).
 > **Audience:** developers and agents working on the desktop renderer or the landing site.
 
 In October 2026 the owner asked for a redesign of the whole desktop app and a careful revision of
 the website, with one governing rule: simplicity. The inspiration is OpenAI Codex (the
 [openai/codex](https://github.com/openai/codex) repository and the Codex desktop app). The
 requirements arrived as a series of messages with screenshots; this page restates them as items
-`R-01` to `R-24` so the plan and the progress tracker can refer to each one. Workstream names use
+`R-01` to `R-31` so the plan and the progress tracker can refer to each one. Workstream names use
 the prefix `WS-`. Both schemes are local to this folder.
 
 ## Requirements
@@ -72,6 +72,9 @@ the prefix `WS-`. Both schemes are local to this folder.
 | R-26 | The Effort choice in the model menu is a slider with three stops (Quick, Normal, Deep) instead of three menu rows. |
 | R-27 | Cards, panels, buttons, chips, tabs and fields use a subtle solid fill instead of an outline, as in the summary box. Lines remain only where they are structural and on floating surfaces. Every surface gets a careful review for subtle polish. |
 | R-28 | Reordering and regrouping the sidebar's chats is fast: the listing path (renderer paging, the daemon's session listing route and its database query) is measured and sped up, with the privacy filtering unchanged. |
+| R-29 | The Biorouter text wordmark is the logo wherever the app or the website shows one. The logo images and logo components nothing uses are deleted. |
+| R-30 | Opening a chat is not activity. Under "Last activity" a chat moves only when something happens in it: a message or a turn, a rename, or another deliberate change made to that chat. Opening it, and every automatic side effect of opening it, changes neither its activity time nor its place in any list sorted by activity. A backend change with tests at every level. |
+| R-31 | The retired upstream project and its publisher are named nowhere in the tracked tree except NOTICE: not in the interface, the CLI, model prompts, code, environment filters, docs, history records, release notes or test fixtures. A repo guard keeps the count at zero. |
 
 ## Owner decisions
 
@@ -81,6 +84,9 @@ the prefix `WS-`. Both schemes are local to this folder.
 | Crew | Reference only. Shared token changes reach it; its layout and components are not redesigned. |
 | Knowledge | Same structure and flows; simpler visuals. |
 | Website publication | The site deploys when `main` changes, so nothing is merged without the owner's approval. |
+| Logo | The Biorouter text wordmark. The unreferenced logo images are deleted (message 15). |
+| Activity | Renaming a chat is activity; opening it is not (message 15). Coordinator ruling 16 lists the other deliberate changes that count. |
+| Retired names | Removed everywhere, including credits, docs, test fixtures and the private-environment filters' prefix. NOTICE is kept verbatim, and the LICENSE appendix line stays removed (message 16, ruling 19). |
 
 ## Constraints
 
@@ -134,11 +140,14 @@ the prefix `WS-`. Both schemes are local to this folder.
 | WS-VERIFY | R-23 | Screenshot review loops across all of the above. |
 
 The workstream list is provisional until the specification phase finishes; the final file
-ownership is recorded in [progress.md](progress.md).
+ownership is recorded in [progress.md](progress.md). Owner messages 14 to 16 added three more:
+WS-PERF (R-28), WS-ACTIVITY (R-30) and WS-BRAND (R-29, R-31).
 
 ## Related documentation
 
 - [Progress tracker](progress.md): the live status of every requirement and workstream.
+- [Handoff](handoff.md): what is left and how to resume.
+- [Implementation spec](implementation-spec.md): sections 9 and 10 hold the owner's rulings for R-25 to R-31.
 - [Biorouter Design System](../../../design.md): the decision records this work builds on.
 - [Theme system architecture](../theming/theme-system-architecture.md): how theme tokens are generated.
 - [UI overhaul](../ui-overhaul/README.md): the previous whole interface revision.

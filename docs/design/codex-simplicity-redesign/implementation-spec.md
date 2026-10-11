@@ -4,8 +4,9 @@
 > principles, tokens, control specs, one section per workstream with file ownership and
 > acceptance checks, sequencing, verification and the owner decisions. Synthesized on 2026-10-09
 > from the owner's requirements, three research reports and fifteen audits, then checked by a
-> critic pass (section 7) and by the coordinator (section 8).
-> **Status:** Current. Implementation in progress; see [progress.md](progress.md).
+> critic pass (section 7) and by the coordinator (section 8). The owner's later rulings are in
+> sections 9 and 10.
+> **Status:** Current. Implemented; vision rounds 5 and 6 running; see [progress.md](progress.md).
 > **Audience:** implementation agents (one per workstream), the coordinator and the vision
 > reviewer.
 
@@ -21,7 +22,7 @@ selector. Inputs live in `/Users/wgu/biorouter-runs/redesign-2026-10-09/{researc
 This spec cites them as `[codex-ui]`, `[shell-sidebar]` and so on.
 
 **The in-repo record.** The owner's requirements are also restated in the repo as `R-01` to
-`R-24` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
+`R-31` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
 `progress.md` beside it. R-24 makes keeping both current a requirement, and that plan says "the
 final file ownership is recorded in progress.md". The coordinator owns
 `docs/design/codex-simplicity-redesign/**`: it copies section 3.17 (with the section 3.19 splits)
@@ -53,6 +54,9 @@ message names the R-IDs it serves.
 | M12 sidebar density as a hard criterion | 3.4 acceptance, 5.7 browser test |
 | R-22 landing site | 3.15 |
 | R-24 records | The paragraph above |
+| M13 / R-25, R-26, R-27 Tools switcher at the bottom, Effort slider, fills over lines | 9 |
+| M14 / R-28 fast sidebar reordering | 3.4 paging; the measurements in [progress.md](progress.md) |
+| M15, M16 / R-29, R-30, R-31 the wordmark, opening is not activity, the retired names | 10 |
 
 ---
 
@@ -986,11 +990,20 @@ Sort by  Last activity  ›     → radio items: Last activity · Created · Nam
     foot. **Every page request carries `userActionHeaders()` exactly as today's request does**:
     without the proof the daemon silently drops private rows (CLAUDE.md, privacy tiers), which would
     read as chats vanishing when the person changes the view.
+    **Superseded by R-28:** after the first page the rest comes in one request of up to 2,000
+    chats, the daemon's new page maximum (`MAX_SIDEBAR_SESSION_LIMIT` in `routes/session.rs`, 50
+    before), and the list changes once, when the read has landed. A daemon from before that change
+    is still read 50 at a time. See `docs/desktop-ui/sidebar-chat-list.md`, "Reading every chat".
   - Changing the view re-renders the list at rest, and the list fades from 0.6 to 1 over 175ms.
     Rows do not FLIP.
   - **A live re-sort waits for the pointer.** Under "Last activity" a running chat moves to the
     top. While the pointer is over the list, hold the previous order (principle 9) and apply the
     new one when it leaves, so a click never lands on a row that moved under it.
+  - **Two moves are not held:** a full read landing (a non-default view is not drawn until its
+    first full read lands, so the list changes once, from the view drawn before, or from nothing,
+    to the complete arrangement), and the person's own rename (ruling 16: the row moves, is
+    scrolled into view with its bucket and is refocused if the move remounted it). Every other
+    move, such as a turn in another chat, still waits for the pointer.
 
 **Row menu** (right-click, `⋯`, Shift+F10). It is text-only, in this fixed order:
 1. **Rename** (with an `F2` hint)
@@ -1333,8 +1346,10 @@ commit (`useArtifactPanel.ts:214-236, 620-643`). It is
   - Delete the `.assistant:has(+ .user)` rule (`main.css:4516-4518`) and the `mt-[16px]` on the
     user root.
 - **Message actions** use Crew's floating cluster (`crew/timeline/timeline.css:325-374`):
-  - It is `position:absolute` at the row's top right, 12px above it, on `--background-default`
-    with `--shadow-popover` and an inset hairline, radius 8, padding 2 and gap 2.
+  - It is `position:absolute` at the message's top right, rising 26px so it ends 2px into the
+    message (18px under a bubble that sits 8px below another; beside the provenance chip, 8px to
+    its left, when one is shown), on `--background-default` with `--shadow-popover` and an inset
+    hairline, radius 8, padding 2 and gap 2.
   - It holds 24px icon-only ghost buttons with tooltips. **No row is reserved for it**: delete the
     28px `MessageMeta` row.
   - The user message gets [Edit][Copy], and the assistant message gets [Copy][⋯ → Diverge from
@@ -3277,6 +3292,47 @@ they differ.
     trade-off.
   - Every workstream reviews its own surfaces for subtle polish under these rules.
 
+## 10. Owner messages 15 and 16 (2026-10-10, binding)
+
+The owner answered two open questions and widened one rule after vision round 1.
+They supersede any earlier section where they differ. The requirements are R-29 to R-31 in
+[requirements-and-plan.md](requirements-and-plan.md).
+
+- **R-29 The wordmark is the logo.** Wherever the app or the website shows a Biorouter logo, it is
+  the Biorouter text wordmark (`components/icons/BioRouterWordmark.tsx` in the app, the site's own
+  wordmark on the website). The logo images nothing referenced are deleted (`c351c5cc2`), and so are
+  the logo components nothing used (`aabd540ff`). About shows no image but the wordmark, and its
+  test fails on any `role="img"` with another name (`eb8676ab3`). Owner: WS-BRAND.
+- **R-30 Opening is not activity.** Under "Last activity" a chat moves only when something happens
+  in it. Ruling 16 sets the scope.
+  - Activity: a deliberate change made to that chat. That is a message or a turn, a rename, an
+    explicit switch to a model the chat does not already record, toggling its extensions or skills
+    from its composer, `workspace_set_tools` aimed at it, and a Crew grant on it.
+  - Not activity: opening it and every side effect of opening (agent resume, provider and model
+    restore, extension reload, working directory restore, read state, tab state); re-binding the
+    model it already records, including a `--shared-daemon` resume that names it; and machine wide
+    housekeeping that touches many chats at once, such as uninstalling an extension.
+  - The renderer shows a person's rename at once: the row moves with the pointer still on the list
+    (see the held moves in 3.4).
+  - The daemon holds the rule in `crates/biorouter/src/session/activity.rs`. An opening door runs
+    its setup writes inside `opening` (or `housekeeping`), and those writes leave `updated_at`
+    alone; every other write still stamps. The privacy predicates of those writes do not change.
+    Owner: WS-ACTIVITY.
+- **R-31 The retired upstream and its publisher are named nowhere but NOTICE.** Every mention of
+  the retired upstream project, its puns, and its publisher (the company name, its logo and its
+  repository URLs) leaves the tracked tree: interface, CLI, model prompts, code and identifiers,
+  the private-environment filters' variable prefix, docs, history records, release notes and test
+  fixtures.
+  - NOTICE stays verbatim. The LICENSE appendix's copyright line for the publisher stays removed
+    (ruling 19).
+  - Third party binaries are not edited.
+  - On Windows the app folder that carried the publisher's name is now `%APPDATA%\UCSF\biorouter`
+    (cache `%LOCALAPPDATA%\UCSF\biorouter`). The daemon moves the older folder once and rewrites
+    the paths stored inside (`crates/biorouter-mcp/src/app_folder/`).
+  - A repo guard, `scripts/check-no-goose-block.sh`, fails when a tracked file or file name brings a
+    name back; `just check-everything` and the `guards` job in `rust.yml` run it.
+  - Owner: WS-BRAND.
+
 ## Related documentation
 
 - `/Users/wgu/biorouter-runs/redesign-2026-10-09/REQUIREMENTS.md`
@@ -3286,5 +3342,5 @@ they differ.
   "Artifact side panel")
 - `docs/desktop-ui/{settings-visual-vocabulary,summary-and-figures-qa,artifact-display-surfaces}.md`,
   `docs/desktop-ui/preview-panel/narrow-panes.md`, `docs/security/privacy-tiers.md` §13.5
-- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-24, the
-  live tracker)
+- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-31, the
+  live tracker), and [handoff.md](handoff.md) (what is left)
