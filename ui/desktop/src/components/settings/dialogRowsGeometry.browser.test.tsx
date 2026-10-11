@@ -11,8 +11,9 @@
  *   - V4-22: the Reset data rows are 40px (they were 45) and the count above the list, the
  *     checkboxes and the permanence line below it start on one left edge;
  *   - V4-24: the settings select draws an edge in forced colours. Its trigger is a `Button`
- *     slotted into a `DropdownMenuTrigger`, whose own `data-slot` replaces the button's, so the
- *     shared `[data-slot='button']` edge never matches it; the rule that does is `settings.css`'s.
+ *     slotted into a `DropdownMenuTrigger`; `Button` writes its `data-slot` after the props it is
+ *     handed, so the trigger is still a `[data-slot='button']` and takes the shared edge in
+ *     `main.css` (WS-PRIMITIVES-3).
  *
  * The real `PermissionRulesModal`, `ResetPanel`, `ModalShell` and `SettingSelect` are bundled with
  * esbuild (the daemon client, toasts and extension helpers stubbed), rendered by React in
@@ -377,22 +378,21 @@ describe('Settings dialog rows and the settings select in a real layout engine',
   });
 
   /**
-   * The select's trigger is a Button slotted into a DropdownMenuTrigger. If it ever matches the
-   * shared `[data-slot='button']` edge again (the trigger keeps the button's slot), the settings
-   * rule is redundant and harmless; what must hold is that forced colours draw an edge on it.
+   * The select's trigger is a Button slotted into a DropdownMenuTrigger. `Button` keeps its own
+   * `data-slot` over the trigger's, so the shared `[data-slot='button']` edge in `main.css` is
+   * the rule that draws it in forced colours; at rest it is a fill with no outline.
    */
   it('draws the settings select with an edge in forced colours and none at rest (V4-24)', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open('select');
     try {
-      await tab.waitForSelector('[data-slot="dropdown-menu-trigger"]');
+      await tab.waitForSelector('button[aria-haspopup="menu"]');
       const edge = () =>
         tab.evaluate(() => {
-          const trigger = document.querySelector('[data-slot="dropdown-menu-trigger"]')!;
+          const trigger = document.querySelector('button[aria-haspopup="menu"]')!;
           const cs = getComputedStyle(trigger);
           const box = trigger.getBoundingClientRect();
           return {
-            slot: trigger.getAttribute('data-slot'),
             width: cs.borderTopWidth,
             style: cs.borderTopStyle,
             colour: cs.borderTopColor,
@@ -400,7 +400,6 @@ describe('Settings dialog rows and the settings select in a real layout engine',
           };
         });
       const rest = await edge();
-      expect(rest.slot).toBe('dropdown-menu-trigger');
       expect(rest.width, 'at rest the select is a fill with no outline (R-27)').toBe('0px');
 
       await tab.emulateMedia({ forcedColors: 'active' });
@@ -461,33 +460,6 @@ describe('Settings dialog rows and the settings select in a real layout engine',
       expect(ink.title, 'the title wears the active tab’s ink').toBe(ink.activeTab);
       // Scoped to Settings: a page header with no settings tab list keeps what it inherits.
       expect(ink.otherTitle).toBe(ink.inactiveTab);
-    } finally {
-      await tab.close();
-    }
-  });
-
-  /**
-   * The instrument can fail: without `settings.css` the shared Button edge does not reach this
-   * trigger, because its `data-slot` is the menu trigger's and not the button's. If the primitive
-   * ever stops losing it (`ui/button.tsx` writing its slot after the spread, or a second hook),
-   * the edge arrives on its own, this case skips itself, and `.br-setting-select` can be deleted.
-   */
-  it('would have no edge without the settings rule while the trigger is not slotted as a button', async (ctx) => {
-    if (!browser) return ctx.skip();
-    const withoutRule = PREFLIGHT + readTokens() + primitiveBlocks() + sharedButtonEdge();
-    const tab = await open('select', withoutRule);
-    try {
-      await tab.waitForSelector('button[aria-haspopup="menu"]');
-      await tab.emulateMedia({ forcedColors: 'active' });
-      const trigger = await tab.evaluate(() => {
-        const el = document.querySelector('button[aria-haspopup="menu"]')!;
-        return {
-          slot: el.getAttribute('data-slot'),
-          width: getComputedStyle(el).borderTopWidth,
-        };
-      });
-      if (trigger.slot === 'button') return ctx.skip();
-      expect(trigger.width).toBe('0px');
     } finally {
       await tab.close();
     }

@@ -37,25 +37,6 @@
 }
 
 /*
- * The settings select's edge in forced colours (vision V4-24). The trigger is a filled `Button`
- * slotted into a `DropdownMenuTrigger`; the trigger's `data-slot` replaces the button's, so the
- * shared `[data-slot='button'] { border: 1px solid ButtonText }` in `main.css` does not match it,
- * and forced colours (which repaint the fill as Canvas) left a value and a chevron with no
- * boundary, in the row above a Max turns field that has one. At rest it stays a fill with no
- * outline (R-27); only forced colours draw the edge, in the system colours, and the box is
- * `box-sizing: border-box` at a fixed height, so the edge costs no geometry.
- */
-@media (forced-colors: active) {
-  .br-setting-select {
-    border: 1px solid ButtonText;
-  }
-
-  .br-setting-select:disabled {
-    border-color: GrayText;
-  }
-}
-
-/*
  * The band's title is not a fourth tab (vision V4-06). `SettingsView` wraps the page header in
  * `<Tabs>`, whose root sets `text-text-muted`, so the `<h1>` inherited the very ink the inactive
  * tabs wear and "Settings Models Chat App" read as four tabs, the first one unselected. The

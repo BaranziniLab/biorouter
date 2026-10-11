@@ -375,9 +375,10 @@ paragraph in a row).
 | Open an editor | `secondary sm` button, "Edit…" | an icon-tile card |
 
 A select's trigger is a filled button with no outline at rest. Under forced colours the fill
-is repainted as Canvas, so `.br-setting-select` (`settings.css`) draws the system edge: a
-`Button` slotted into a `DropdownMenuTrigger` loses its own `data-slot`, and with it the shared
-`[data-slot='button']` edge (V4-24; the root cause is filed with the primitives' owner).
+is repainted as Canvas and the shared `[data-slot='button']` edge in `main.css` draws the
+system edge. A `Button` slotted into a `DropdownMenuTrigger` keeps its own `data-slot` (it is
+written after the props the trigger hands down), so the select needs no rule of its own
+(V4-24).
 
 The segmented thumb and the select's check are neutral; coral marks only a switch's on
 state, a checked checkbox and the one committing button. Enforced by **V10** (no native

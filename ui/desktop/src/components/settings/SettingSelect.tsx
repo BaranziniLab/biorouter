@@ -50,12 +50,6 @@ export interface SettingSelectProps<T extends string = string> {
  * The trigger's accessible name is the row label and the current value ("Approval mode
  * Autonomous"), so the visible word is in the name (label in name).
  *
- * ⚠ The trigger carries `br-setting-select` for its forced-colours edge (`settings.css`). It is a
- * `Button` slotted into a `DropdownMenuTrigger`, and the trigger's own `data-slot` replaces the
- * button's, so the shared `[data-slot='button']` edge in `main.css` never reaches it: under
- * Windows High Contrast the filled box was text and a chevron with no boundary beside a Max
- * turns field that had one (vision V4-24).
- *
  * ⚠ The row's `id` is NOT forwarded to the trigger: Radix names the menu after the trigger's own
  * id, and replacing it would leave the menu labelled by nothing.
  */
@@ -83,7 +77,7 @@ export function SettingSelect<T extends string>({
         <Button
           variant="secondary"
           size="sm"
-          className={cn('br-setting-select justify-between', triggerClassName)}
+          className={cn('justify-between', triggerClassName)}
           aria-busy={pending || undefined}
           aria-labelledby={ariaLabelledBy ? `${ariaLabelledBy} ${valueId}` : undefined}
           aria-label={ariaLabelledBy ? undefined : ariaLabel}
