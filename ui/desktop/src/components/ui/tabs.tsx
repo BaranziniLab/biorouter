@@ -196,16 +196,23 @@ const TabsTrigger = React.forwardRef<
 
 TabsTrigger.displayName = TabsPrimitive.Trigger.displayName;
 
+/**
+ * A tab's panel. It appears AT REST when its tab is picked (principle 9: a surface a tab switch
+ * mounts does not animate; vision round 1, V4-17, where every Settings tab switch faded its page
+ * in over 175ms). A surface that wants the person's pick to fade in marks the incoming panel
+ * `data-entering` and clears it on `animationend` (Knowledge does): `.br-tabs-content
+ * [data-entering]` in main.css runs `br-fade-in` over `--dur-fast-max`, `--ease-out`, and only a
+ * person's pick sets it, so a panel the layout shows or hides again never replays it.
+ *
+ * Radix makes every panel a Tab stop. A panel whose first stop is a control inside it can pass
+ * `tabIndex={-1}`, so one Tab from the tab list lands on that control instead of on a panel with
+ * no visible focus (Settings, V4-05). A panel that draws its own focus edge (Crew's) keeps it.
+ */
 const TabsContent = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
 >(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content
-    ref={ref}
-    // Fades in over `--dur-fast-max`, `--ease-out` (`.br-tabs-content` in main.css).
-    className={cn('br-tabs-content mt-2 animate-in fade-in', className)}
-    {...props}
-  />
+  <TabsPrimitive.Content ref={ref} className={cn('br-tabs-content mt-2', className)} {...props} />
 ));
 
 TabsContent.displayName = TabsPrimitive.Content.displayName;

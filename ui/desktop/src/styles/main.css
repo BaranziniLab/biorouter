@@ -5459,9 +5459,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   block-size: 3px;
 }
 
-.br-tabs-content {
-  --tw-duration: var(--dur-fast-max);
-  --tw-ease: var(--ease-out);
+/* A panel appears at rest when its tab is picked (principle 9, V4-17); only a panel its surface
+   marks `data-entering` (the person's own pick, cleared on `animationend`) fades in. */
+.br-tabs-content[data-entering] {
+  animation: br-fade-in var(--dur-fast-max) var(--ease-out) both;
 }
 
 /* ScrollArea (`ui/scroll-area.tsx`): the viewport's native scrollbar rests hidden and shows
@@ -5778,6 +5779,7 @@ input[type='radio']:checked ~ .br-radio-dot {
   .br-radio-dot,
   .br-segmented-thumb,
   .br-segmented-item,
+  .br-tabs-content[data-entering],
   .br-slider-fill,
   .br-slider-thumb-slot,
   .br-row-actions,

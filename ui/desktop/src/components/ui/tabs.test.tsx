@@ -76,11 +76,32 @@ describe('Tabs', () => {
     expect(container.querySelector('.br-tabs-indicator')).toHaveAttribute('data-motion-layout');
   });
 
-  it('fades content in on the tokens, with no retired duration utility', () => {
+  it('shows a picked panel at rest: no entrance utility on any panel (V4-17)', () => {
     render(<Strip />);
     const panel = screen.getByRole('tabpanel');
     expect(panel).toHaveClass('br-tabs-content');
-    expect(panel.className).not.toMatch(/duration-|motion-base/);
-    expect(body('.br-tabs-content')).toMatch(/--tw-duration:\s*var\(--dur-fast-max\)/);
+    expect(panel.className).not.toMatch(/animate-in|fade-in|duration-|motion-base/);
+  });
+
+  it('fades in only a panel its surface marks data-entering, on the tokens', () => {
+    expect(body('.br-tabs-content[data-entering]')).toMatch(
+      /animation:\s*br-fade-in var\(--dur-fast-max\) var\(--ease-out\) both/
+    );
+    // Nothing else on the panel animates.
+    expect(CSS).not.toMatch(/\n\.br-tabs-content \{/);
+  });
+
+  it('lets a panel leave the Tab order for the control inside it (V4-05)', () => {
+    render(
+      <Tabs defaultValue="a">
+        <TabsList aria-label="Sections">
+          <TabsTrigger value="a">A</TabsTrigger>
+        </TabsList>
+        <TabsContent value="a" tabIndex={-1}>
+          <button type="button">Inside</button>
+        </TabsContent>
+      </Tabs>
+    );
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
   });
 });
