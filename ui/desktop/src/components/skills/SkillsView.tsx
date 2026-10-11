@@ -260,7 +260,7 @@ export default function SkillsView() {
                   `total === 0`, and the empty state additionally requires the
                   load to have finished. */}
               {catalog.loading && !catalog.error && total === 0 && (
-                <div className="biorouter-list-shell" aria-hidden>
+                <div className="biorouter-list-shell br-rows-flat" aria-hidden>
                   <SkillRowSkeleton />
                   <SkillRowSkeleton />
                   <SkillRowSkeleton />
@@ -436,7 +436,9 @@ function SkillGroup({
       <h2 id={headingId} className="mb-1 truncate px-3 text-caps text-text-muted">
         {title} <span className="tabular-nums">{count}</span>
       </h2>
-      <div className="biorouter-list-shell">{children}</div>
+      {/* Told apart by space and the hover wash, not a line under each row
+          (R-27; `.br-rows-flat` is the shared opt-out, main.css). */}
+      <div className="biorouter-list-shell br-rows-flat">{children}</div>
     </section>
   );
 }

@@ -40,6 +40,22 @@
   padding: 8px 12px 4px;
 }
 
+/* THE ACTION BESIDE A ROW (Add, Configure) is a filled secondary button, and it rests on the
+   control ground, `--background-fill`. A row's hover wash (`--overlay-hover`, 5% ink) is
+   that same fill's value to within a shade, so under the pointer the button's box vanished into
+   the row it belongs to and only its label was left (measured, light: 1.01:1). While the row is
+   washed (pointer, or keyboard focus inside it, as the shared row recipe has it) the button
+   rests one step deeper, on the strong fill, and its own hover and press go one deeper again, as
+   a control on any recessed ground does (`.br-knowledge-recessed`, main.css). At rest the buttons
+   stay the quiet fill, so a column of them does not read as a column of boxes. */
+.br-marketplace-row:is(:hover, :has(:focus-visible)) {
+  --br-control-ground: var(--background-fill-strong);
+}
+
+.br-marketplace-row:is(:hover, :has(:focus-visible)) .br-fill-hover:is(:hover, :active) {
+  background-color: var(--background-strong);
+}
+
 /* A row's muted fact gives way before its name does. */
 .br-marketplace-row [data-marketplace-title] {
   flex-shrink: 1;

@@ -531,6 +531,42 @@ describe('SkillsView empty and loading states', () => {
 });
 
 /**
+ * R-27 (owner message 13): row lists drop the line under each row where space and the hover wash
+ * already tell the rows apart. `.br-rows-flat` is the shared opt-out (main.css) and it is scoped
+ * to a list's own shell, so the page has to put it on every shell it draws, groups and loading
+ * rows alike. jsdom runs no stylesheet; the paint is measured in `skillsFill.browser.test.tsx`.
+ */
+describe('SkillsView rows: fills before lines', () => {
+  it('opts every group’s rows out of the row hairline', async () => {
+    serve({
+      skills: [
+        skill('alpha'),
+        skill('word', {
+          source: { kind: 'extension', extension: 'BiorOffice', label: 'BiorOffice' },
+        }),
+      ],
+    });
+    render(<SkillsView />);
+    await screen.findByText('alpha');
+
+    const shells = document.querySelectorAll('section[aria-labelledby] > .biorouter-list-shell');
+    expect(shells).toHaveLength(2);
+    for (const shell of shells) expect(shell).toHaveClass('br-rows-flat');
+  });
+
+  it('opts the loading rows out too, so they do not show a line the loaded list will not', async () => {
+    mocks.skillCatalogHandler.mockReturnValue(new Promise(() => {}));
+    render(<SkillsView />);
+
+    await waitFor(() => expect(document.querySelector('[data-slot="skeleton"]')).not.toBeNull());
+    const shell = document
+      .querySelector('[data-slot="skeleton"]')!
+      .closest('.biorouter-list-shell')!;
+    expect(shell).toHaveClass('br-rows-flat');
+  });
+});
+
+/**
  * ⚠ **A seeded BUNDLE must offer no Delete, and its own field is the only
  * thing that can say so.** `SkillItem` gates its Trash on `CatalogSkill.builtin`
  * — the daemon's answer, not a list in the renderer — but a bundle row is a

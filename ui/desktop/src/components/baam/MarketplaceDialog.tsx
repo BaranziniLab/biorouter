@@ -127,7 +127,13 @@ export function MarketplaceDialog({
       </div>
 
       <div
-        className={cn('br-marketplace-list', footer == null && 'br-marketplace-list--to-edge')}
+        className={cn(
+          // `br-rows-flat`: rows are told apart by space and the hover wash, not a
+          // line under each (R-27); the list's own top edge, where it scrolls
+          // under the search and the chips, stays.
+          'br-marketplace-list br-rows-flat',
+          footer == null && 'br-marketplace-list--to-edge'
+        )}
         data-testid="marketplace-list"
       >
         {status === 'error' ? (

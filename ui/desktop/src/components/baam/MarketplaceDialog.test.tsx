@@ -84,6 +84,15 @@ describe('MarketplaceDialog — the shell both browse dialogs share', () => {
     expect(row.querySelector('svg')).toBeNull();
   });
 
+  it('tells rows apart by space and the hover wash: the list opts out of the row hairline', () => {
+    renderDialog();
+    // R-27: `.br-rows-flat` is the shared opt-out (main.css), so the rows keep their 1px
+    // transparent edge and nothing moves, and the list's own top edge stays where it scrolls.
+    const list = screen.getByTestId('marketplace-list');
+    expect(list).toHaveClass('br-marketplace-list', 'br-rows-flat');
+    expect(list.querySelector('[data-marketplace-row]')).not.toBeNull();
+  });
+
   it('shows the empty line in place of the list', () => {
     renderDialog({ empty: true });
     expect(screen.getByText('No things match your search.')).toBeInTheDocument();
