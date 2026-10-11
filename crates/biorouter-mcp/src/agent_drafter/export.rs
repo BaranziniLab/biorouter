@@ -1770,15 +1770,18 @@ fn stage_daemon_bundle(target: &Path, daemon: &Path) -> io::Result<serde_json::V
 }
 
 fn verify_esbuild_version(compiler: &Path, timeout: std::time::Duration) -> io::Result<()> {
-    use std::io::Read;
+    use std::io::{Read, Seek};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    // A descendant can inherit stdout after the helper exits. A file lets the
+    // completed probe inspect its output without waiting for that pipe's EOF.
+    let mut output = tempfile::tempfile()?;
     let mut command = Command::new(compiler);
     command
         .arg("--version")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::null());
     super::prepare_agent_drafter_child(&mut command);
     let mut child = command.spawn()?;
@@ -1797,15 +1800,12 @@ fn verify_esbuild_version(compiler: &Path, timeout: std::time::Duration) -> io::
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let mut output = Vec::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .take(64)
-        .read_to_end(&mut output)?;
+    output.rewind()?;
+    let mut reported = Vec::new();
+    output.take(65).read_to_end(&mut reported)?;
     if !status.success()
-        || std::str::from_utf8(&output).ok().map(str::trim) != Some(bundle::ESBUILD_VERSION)
+        || reported.len() > 64
+        || std::str::from_utf8(&reported).ok().map(str::trim) != Some(bundle::ESBUILD_VERSION)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -2046,11 +2046,65 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("pinned release"));
+        std::fs::write(
+            &compiler,
+            format!(
+                "#!/bin/sh\nprintf '%s' '{}{}unexpected'\n",
+                bundle::ESBUILD_VERSION,
+                " ".repeat(64)
+            ),
+        )
+        .unwrap();
+        assert!(verify_esbuild_version(&compiler, Duration::from_secs(5))
+            .unwrap_err()
+            .to_string()
+            .contains("pinned release"));
         std::fs::write(&compiler, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
         let started = Instant::now();
         let error = verify_esbuild_version(&compiler, Duration::from_millis(100)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fat_export_compiler_probe_does_not_wait_for_descendant_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let compiler = dir.path().join("compiler-probe");
+        let pipe = dir.path().join("blocked-child");
+        let pid_file = dir.path().join("child-pid");
+        let pipe_name = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(pipe_name.as_ptr(), 0o600) }, 0);
+        std::fs::write(
+            &compiler,
+            format!(
+                "#!/bin/sh\ncat < '{}' &\nprintf '%s' \"$!\" > '{}'\nprintf '%s\\n' '{}'\n",
+                pipe.display(),
+                pid_file.display(),
+                bundle::ESBUILD_VERSION
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (completed, completion) = mpsc::channel();
+        let probe = std::thread::spawn(move || {
+            let result = verify_esbuild_version(&compiler, Duration::from_secs(1));
+            let _ = completed.send(());
+            result
+        });
+        let returned = completion.recv_timeout(Duration::from_secs(2)).is_ok();
+        let child: libc::pid_t = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(child, libc::SIGTERM) }, 0);
+        probe.join().unwrap().unwrap();
+        assert!(
+            returned,
+            "a descendant's stdout cannot outlive the probe deadline"
+        );
     }
 
     #[test]

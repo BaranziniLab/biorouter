@@ -63,3 +63,32 @@ Fetch Metadata are still accepted on loopback for non-browser compatibility and 
 not protected by the navigation gate there; such browsers are refused through nonloopback HTTPS
 proxies. Browsers without `noopener-allow-popups` support and shared origin storage remain
 documented limits. No credential contents were read or printed by this lane.
+
+## Integrated fat-export review followup
+
+Reviewed integration `68f88b9b7` and its public compiler-contract fixture; the focused followup
+uses branch `codex/built-apps-security-probe` in the same security worktree. The packaged helper
+lookup stays relative to the selected daemon (sibling or Linux libexec), validates the native
+platform/architecture header, and probes the staged compiler bytes before one rename publishes
+both binaries. Failed staging leaves no partial bin payload. Backend ZIP classification and
+desktop extraction agree on executable daemon/compiler paths. No additional blocker was found
+in these paths.
+
+The version probe had one concrete deadline bypass: after its child exited, a blocking stdout
+pipe read could wait indefinitely for a descendant holding that pipe. A tiny compiled native
+helper passed the actual header validator, printed the pinned release and exited while its child
+retained stdout for two seconds. The original probe returned success after 2005 ms despite a
+500 ms timeout. Output now goes to an anonymous temporary file, so inspection after child exit
+does not wait for a descendant's EOF. The same native fixture returned success in 14 ms. The
+bounded version read also rejects output longer than 64 bytes instead of accepting a truncated
+pin followed by whitespace while ignoring later junk.
+
+Lightweight standalone checks compiled the actual probe and regression bodies with standard
+library stand-ins for the tempfile/libc seams; valid pin, incorrect pin, oversized output,
+running-child timeout and a FIFO-blocked descendant all passed. The FIFO regression kills only
+the PID its fixture created and uses channel deadlines rather than timing sleeps. Rustfmt and
+diff checks passed. Cargo execution remains with the coordinator; run
+`cargo test -p biorouter-mcp --lib fat_export_compiler_probe` after integration. The earlier
+all-suite sandbox failures were traced to an outer shared `BIOROUTER_PATH_ROOT`; rerun with
+that variable unset. The CLI unsafe-mode fixture also needs execution outside the tool sandbox,
+which silently strips setuid/setgid modes to secure 0600.
