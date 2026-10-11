@@ -102,6 +102,11 @@ ui/desktop/src/bin
 # Generated pinned native computer-use resources
 ui/desktop/src/computer-use/
 
+# pdf.js runtime assets, copied from pdfjs-dist by ui/desktop/vite-plugins/pdfjsAssets.mts
+# into <cwd>/public/pdfjs. ui/desktop/.gitignore covers the normal run from ui/desktop;
+# this covers a vite run whose cwd is the repo root. Build output, never committed.
+/public/pdfjs/
+
 # ── Vendored Computer Use upstream ──────────────────────────────────────────
 # `vendor/computer-use/source/` is a COMPLETE copy of the upstream
 # project at the pinned commit, and the whole point of vendoring it is that a
