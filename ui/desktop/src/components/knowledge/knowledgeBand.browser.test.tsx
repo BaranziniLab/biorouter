@@ -335,6 +335,63 @@ describe('the Knowledge band in a real layout engine', () => {
     }
   });
 
+  // V3-R5-2: at the narrow step the Sources and Graph labels sat 3.5px under the title's line
+  // (labels at y=25, the h1's midline at 21.5), because the tab wrapper bottom-aligned a 36px
+  // trigger in the 43px bar the title is centred in. The triggers now fill the band, so the
+  // label shares the title's centre line and the underline (which hangs from the list's bottom
+  // edge) still meets the hairline.
+  for (const width of [760, 812, 859]) {
+    it(`sets the Sources/Graph labels on the title's line at a ${width}px pane`, async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open(width);
+      try {
+        const m = await tab.evaluate(() => {
+          // The ink of a text node, not its box: both labels are 14px/500 in one face, so the
+          // glyph boxes compare like for like.
+          const ink = (el: Element) => {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const r = range.getBoundingClientRect();
+            return { mid: (r.top + r.bottom) / 2, height: r.height };
+          };
+          const rect = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return { top: r.top, bottom: r.bottom };
+          };
+          const header = document.querySelector('[data-testid="page-header"]')!;
+          const bar = header.querySelector('.biorouter-page-header-bar')!;
+          return {
+            band: rect(header),
+            bar: rect(bar),
+            title: ink(header.querySelector('h1')!),
+            list: rect(document.querySelector('.br-knowledge-tabs')!),
+            tabs: [...document.querySelectorAll('.br-knowledge-tabs [role="tab"]')].map((el) => ({
+              ...ink(el),
+              ...rect(el),
+            })),
+          };
+        });
+        expect(m.tabs).toHaveLength(2);
+        for (const t of m.tabs) {
+          expect(t.height, 'a label is one line').toBeGreaterThan(0);
+          expect(Math.abs(t.mid - m.title.mid), `${width}px label vs title midline`).toBeLessThan(
+            1
+          );
+          // The trigger fills the bar, so its own underline (and the list's indicator, which
+          // hangs from the same bottom edge) lands on the hairline under it.
+          expect(t.top, `${width}px trigger top`).toBeCloseTo(m.bar.top, 1);
+          expect(t.bottom, `${width}px trigger bottom`).toBeCloseTo(m.bar.bottom, 1);
+        }
+        expect(m.list.top).toBeCloseTo(m.bar.top, 1);
+        expect(m.list.bottom).toBeCloseTo(m.bar.bottom, 1);
+        // The bar ends where the band's 1px hairline begins.
+        expect(m.bar.bottom).toBeCloseTo(m.band.bottom - 1, 1);
+      } finally {
+        await tab.close();
+      }
+    });
+  }
+
   it('shows the Sources/Graph tabs only below the 860px step', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const [width, shown] of [

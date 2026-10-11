@@ -3988,12 +3988,32 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   gap: 6px;
 }
 
-/* Tabs fill the band's height so their underline lands on the hairline. */
+/* TABS FILL THE BAND, SO THE LABEL IS ON THE TITLE'S LINE AND THE UNDERLINE ON THE HAIRLINE
+   (vision V3-R5-2). The wrapper stretches to the bar (43px: the 44px band less its 1px
+   hairline), the list stretches to the wrapper, and each trigger stretches to the list. The
+   trigger's own 36px height (`h-control-lg`, a utility in `@layer utilities`) used to be
+   bottom-aligned here instead, which put its text at y=25 against the title's centre at 21.5:
+   3.5px low, so "Knowledge / Sources Graph" read as two lines that had slipped. A trigger that
+   fills the bar centres its label (`inline-flex items-center`) on the bar's own centre line, the
+   one the h1 is centred on, and the underline, which hangs from the list's bottom edge (the
+   Tabs indicator sits 1px below it, as the trigger's `::after` does before the indicator is
+   placed), has not moved: it still covers the hairline row. Unlayered, so `height: auto` beats
+   the layered utility whatever the specificity. Settings and the provider catalog drew the same
+   fix per view
+   before the shared rule had it (`settings.css`, `providers.css`); theirs now say the same thing
+   twice. A list the view wraps in its own host element (the catalog's) is not a direct child and
+   keeps its own rule. Guarded in Chromium by `Layout/pageBandGeometry.browser.test.tsx` (the
+   Tabs primitive, indicator placed) and `knowledge/knowledgeBand.browser.test.tsx`. */
 .biorouter-page-header-tabs {
   display: flex;
   align-self: stretch;
   min-width: 0;
-  align-items: flex-end;
+  align-items: stretch;
+}
+
+.biorouter-page-header-tabs > [role='tablist'] > [role='tab'] {
+  align-self: stretch;
+  height: auto;
 }
 
 .biorouter-page-header-actions {

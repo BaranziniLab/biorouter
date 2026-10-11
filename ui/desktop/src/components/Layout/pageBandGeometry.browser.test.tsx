@@ -56,6 +56,31 @@ function hairlineRule(): string {
   return match[0];
 }
 
+/**
+ * The Tabs primitive's own rules (`.br-tabs-list`, `.br-tabs-indicator`), cut from main.css so the
+ * real indicator hangs from the real list. Tailwind's `@layer utilities` is what the primitive's
+ * trigger height (`h-control-lg`) arrives in, so the few utilities the markup uses are declared
+ * inside that layer here too: an unlayered band rule beats them whatever its specificity, and a
+ * test that declared them unlayered would pass for a reason the app does not have.
+ */
+function tabsCss(): string {
+  const begin = MAIN_CSS.indexOf('@layer components {\n  .br-tabs-list {');
+  const endMarker = ".br-tabs-list:has(> [role='tab']:focus-visible) > .br-tabs-indicator {";
+  const end = MAIN_CSS.indexOf('}', MAIN_CSS.indexOf(endMarker));
+  if (begin < 0 || end < begin) throw new Error('main.css has no tab list rules');
+  return `
+:root { --accent-bar: #c4452d; --dur-fast-max: 175ms; --dur-fast: 95ms;
+  --ease-out: cubic-bezier(0.24, 1, 0.4, 1); --control-lg: 36px; }
+@layer utilities {
+  .flex { display: flex; } .flex-col { flex-direction: column; } .inline-flex { display: inline-flex; }
+  .items-center { align-items: center; } .gap-5 { gap: 20px; } .relative { position: relative; }
+  .h-control-lg { height: var(--control-lg); } .whitespace-nowrap { white-space: nowrap; }
+  .border-b-0 { border-bottom-width: 0; }
+  .text-label { font-size: 14px; line-height: 20px; font-weight: 500; }
+}
+${MAIN_CSS.slice(begin, end + 1)}`;
+}
+
 /** Tailwind's preflight, the parts the layout depends on, plus colours that only paint. */
 const PREFLIGHT = `
 *, *::before, *::after { box-sizing: border-box; }
@@ -80,6 +105,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { PageHeader, PageHeaderAction } from './PageHeader';
 import { Upload } from '../icons/app-icons';
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 
 function Shell({ state, onBack }: { state: 'expanded' | 'collapsed'; onBack?: boolean }) {
   return (
@@ -103,12 +129,35 @@ function Shell({ state, onBack }: { state: 'expanded' | 'collapsed'; onBack?: bo
   );
 }
 
+/** A band with tabs, as Knowledge and Settings pass them: a \`TabsList\` with no rule of its own. */
+function TabsShell() {
+  return (
+    <div data-slot="shell" id="tabs">
+      <div data-slot="sidebar" data-state="expanded" />
+      <main data-slot="sidebar-inset">
+        <Tabs defaultValue="graph">
+          <PageHeader
+            title="Knowledge"
+            tabs={
+              <TabsList className="border-b-0">
+                <TabsTrigger value="digest">Sources</TabsTrigger>
+                <TabsTrigger value="graph">Graph</TabsTrigger>
+              </TabsList>
+            }
+          />
+        </Tabs>
+      </main>
+    </div>
+  );
+}
+
 function App() {
   return (
     <div>
       <Shell state="expanded" />
       <Shell state="collapsed" />
       <Shell state="expanded" onBack />
+      <TabsShell />
     </div>
   );
 }
@@ -162,7 +211,8 @@ describe('the page band in a real layout engine (spec 3.10, 5.7)', () => {
       readTokens() +
       wsBlocks('WS-PRIMITIVES') +
       hairlineRule() +
-      wsBlocks('WS-VIEWS-A');
+      wsBlocks('WS-VIEWS-A') +
+      tabsCss();
   }, 120_000);
 
   afterAll(async () => {
@@ -290,6 +340,97 @@ describe('the page band in a real layout engine (spec 3.10, 5.7)', () => {
       expect(m.headerRegion).not.toBe('drag');
       expect(m.controlRegions.length).toBeGreaterThan(0);
       for (const region of m.controlRegions) expect(region).toBe('no-drag');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // V3-R5-2: a tab's label sat 3.5px under the title's line, because the tab wrapper
+  // bottom-aligned the primitive's 36px trigger in the 43px bar the title is centred in. The
+  // triggers now fill the bar. Measured with the real Tabs primitive after it has placed its
+  // indicator, so the underline is the one the app draws.
+  async function measureTabs(tab: Page) {
+    await tab.waitForSelector('#tabs .br-tabs-indicator[data-placed="true"]');
+    return tab.evaluate(() => {
+      const shell = document.getElementById('tabs')!;
+      const header = shell.querySelector('header.biorouter-page-header')!;
+      const bar = header.querySelector('.biorouter-page-header-bar')!;
+      // The ink of a text node, not its box: the title and the labels are one face and size, so
+      // the glyph boxes compare like for like.
+      const ink = (el: Element) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const r = range.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, mid: (r.top + r.bottom) / 2 };
+      };
+      const rect = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, width: r.width };
+      };
+      const active = shell.querySelector('[role="tab"][data-state="active"]')!;
+      return {
+        header: rect(header),
+        bar: rect(bar),
+        title: ink(header.querySelector('h1')!),
+        list: rect(shell.querySelector('[role="tablist"]')!),
+        indicator: rect(shell.querySelector('.br-tabs-indicator')!),
+        active: rect(active),
+        tabs: Array.from(shell.querySelectorAll('[role="tab"]')).map((el) => ({
+          ...rect(el),
+          ink: ink(el),
+        })),
+      };
+    });
+  }
+
+  it('sets a tab label on the title line, with the underline on the hairline', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await measureTabs(tab);
+      expect(m.tabs).toHaveLength(2);
+      for (const t of m.tabs) {
+        // One centre line for the title and every label (a pixel is the most a rounding gives).
+        expect(Math.abs(t.ink.mid - m.title.mid), 'label vs title midline').toBeLessThan(1);
+        // The trigger fills the bar, top to bottom, so it is a full-height target as well.
+        near(t.top, m.bar.top, 'trigger top');
+        near(t.bottom, m.bar.bottom, 'trigger bottom');
+      }
+      near(m.list.top, m.bar.top, 'list top');
+      near(m.list.bottom, m.bar.bottom, 'list bottom');
+      // The bar ends where the band's 1px hairline begins, and the indicator covers that row.
+      near(m.bar.bottom, m.header.bottom - 1, 'bar bottom');
+      near(m.indicator.bottom, m.header.bottom, 'underline bottom is the hairline');
+      near(m.indicator.bottom - m.indicator.top, 2, 'underline thickness');
+      // Under the active trigger, not somewhere else.
+      near(m.indicator.left, m.active.left, 'underline left');
+      near(m.indicator.width, m.active.width, 'underline width');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // The instrument: with the band's two tab rules put back to what they were (the wrapper
+  // bottom-aligning the trigger at its own 36px), the same measurement reads the 3.5px the
+  // vision pass found. A test that cannot fail says nothing.
+  it('measures the old offset when the tab rules are removed', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const fill = /\.biorouter-page-header-tabs > \[role='tablist'\] > \[role='tab'\] \{[^}]*\}/;
+    const stretch = /(\.biorouter-page-header-tabs \{[^}]*?align-items:\s*)stretch/;
+    expect(css, 'the trigger rule is in the stylesheet').toMatch(fill);
+    expect(css, 'the wrapper stretches its list').toMatch(stretch);
+    const old = css.replace(fill, '').replace(stretch, '$1flex-end');
+    const tab = await browser.newPage({ viewport: { width: 1200, height: 1300 } });
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${old}</style></head><body><div id="root"></div></body></html>`
+      );
+      await tab.addScriptTag({ content: script });
+      const m = await measureTabs(tab);
+      for (const t of m.tabs) {
+        near(t.ink.mid - m.title.mid, 3.5, 'the old label offset below the title');
+        near(t.bottom - t.top, 36, 'the old trigger height');
+      }
     } finally {
       await tab.close();
     }
