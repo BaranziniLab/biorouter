@@ -124,6 +124,20 @@ the cursor. A keyboard open hands focus on as before. jsdom has no `:focus-visib
 `LeadWorkerSettings.focusRing.browser.test.tsx` drives the real menu with Playwright's mouse and keyboard in
 Chromium and reads `:focus-visible` off the focused node; it fails against the previous `dialogFocus.ts`.
 
+## The Llama Server card's model picker is the shared select
+
+`LlamaServerInlineCard` (the first row of the Local tab, open by default in onboarding, and the expanded row in
+Settings) picks its model with `ui/Select`, the same select the Switch models and Lead/worker dialogs use. It
+was a native `<select>` until vision round 4 (V4-R4-3), which drew the OS chevron and opened the OS popup, the
+only ones in the app. The options are the same strings as before ("Gemma 4 E4B · 9.6 GB · Needs download"), the
+label still points at the field (`for` and `inputId` are both `llamacpp-model-select`), and the menu is portalled
+so a card or a scrolling page cannot clip it. react-select forwards no `data-*` attribute, so
+`data-testid="llamacpp-model-select"` sits on a wrapper around the select; read the chosen model from its text,
+not from a `value`. `LlamaServerInlineCard.select.browser.test.tsx` measures the trigger (32px, a 16px chevron),
+the menu (one row of at least 32px per model, a trailing check on the chosen one) and the disabled step in
+Chromium, light and dark. The two other native selects in the tree, `components/parameter/NativeSelect.tsx` and
+the enum branch of `components/ui/JsonSchemaForm.tsx`, are not this card's and were left alone.
+
 ## How the Configure dialog names a field
 
 One function, `providerFieldName` in `DefaultProviderSetupForm.tsx`, names a key for its label, its

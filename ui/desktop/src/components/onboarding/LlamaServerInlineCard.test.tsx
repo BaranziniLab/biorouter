@@ -96,6 +96,24 @@ const statusResponse = (sidecar: Record<string, unknown> = {}) => ({
   },
 });
 
+/**
+ * Open the Model menu from the keyboard, as the other shared-select tests do. Synchronous on
+ * purpose: Testing Library's `findBy*` polls on real timers and would hang under the fake ones a
+ * few of these cases use, so a caller waits for the card first and then calls this.
+ */
+function openModelMenu() {
+  fireEvent.keyDown(screen.getByRole('combobox', { name: 'Model' }), {
+    key: 'ArrowDown',
+    code: 'ArrowDown',
+  });
+}
+
+/** Click the option whose label matches in the open menu. */
+function chooseModel(label: RegExp) {
+  openModelMenu();
+  fireEvent.click(screen.getByRole('option', { name: label }));
+}
+
 describe('LlamaServerInlineCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -111,7 +129,66 @@ describe('LlamaServerInlineCard', () => {
   it('preselects the default catalog model', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const select = await screen.findByTestId('llamacpp-model-select');
-    await waitFor(() => expect(select).toHaveValue('gemma4'));
+    await waitFor(() => expect(select).toHaveTextContent('Gemma 4 E4B · 9.6 GB · Needs download'));
+    expect(select).not.toHaveTextContent('Gemma 4 12B');
+  });
+
+  // The Model picker is the app's one select (vision round 4, V4-R4-3): the OS chevron and the OS
+  // popup menu were the only ones left, drawn by a native <select>.
+  describe('the Model picker is the shared select, not a native one', () => {
+    it('is a combobox named by its label, with no native <select> anywhere in the card', async () => {
+      const { container } = render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      const box = await screen.findByRole('combobox', { name: 'Model' });
+      expect(box.id).toBe('llamacpp-model-select');
+      expect(container.querySelector('select')).toBeNull();
+    });
+
+    it('lists every catalog model with its size and download state, and marks the chosen one', async () => {
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      await screen.findByRole('combobox', { name: 'Model' });
+      openModelMenu();
+
+      const options = screen.getAllByRole('option');
+      expect(options.map((option) => option.textContent)).toEqual([
+        'Gemma 4 E4B · 9.6 GB · Needs download',
+        'Gemma 4 12B · 7.6 GB · Needs download',
+      ]);
+      expect(options[0]).toHaveAttribute('aria-selected', 'true');
+      expect(options[0].querySelector('[data-slot="menu-item-indicator"]')).not.toBeNull();
+      expect(options[1]).toHaveAttribute('aria-selected', 'false');
+      expect(options[1].querySelector('[data-slot="menu-item-indicator"]')).toBeNull();
+    });
+
+    it('picking a model changes the field and the facts below it', async () => {
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      await screen.findByRole('combobox', { name: 'Model' });
+      chooseModel(/Gemma 4 12B/);
+
+      expect(screen.getByTestId('llamacpp-model-select')).toHaveTextContent(
+        'Gemma 4 12B · 7.6 GB · Needs download'
+      );
+      expect(screen.getByTestId('llamacpp-size-speed')).toHaveTextContent(
+        '7.6 GB download · Fast — dense 12B, quick to load'
+      );
+    });
+
+    it('cannot be changed while a start is in flight', async () => {
+      mockLlamacppStatus.mockResolvedValue(
+        statusResponse({ state: 'starting', model: 'gemma4', detail: 'downloading 42%' })
+      );
+      llamaServerStore.beginOperation('start', 'gemma4', 'downloading 42%');
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      await screen.findByTestId('llamacpp-progress');
+
+      // react-select drops the combobox role from a disabled input, so read the field itself.
+      const field = screen.getByTestId('llamacpp-model-select');
+      expect(field.querySelector('input[disabled]')).not.toBeNull();
+      fireEvent.keyDown(field.querySelector('input') as HTMLElement, {
+        key: 'ArrowDown',
+        code: 'ArrowDown',
+      });
+      expect(screen.queryByRole('option')).toBeNull();
+    });
   });
 
   it('shows download size and expected speed for the selected model (#35)', async () => {
@@ -277,8 +354,7 @@ describe('LlamaServerInlineCard', () => {
 
     // The user retries with a DIFFERENT model; a new operation now owns the
     // singleton sidecar.
-    const select = screen.getByTestId('llamacpp-model-select');
-    fireEvent.change(select, { target: { value: 'gemma4-12b' } });
+    chooseModel(/Gemma 4 12B/);
     fireEvent.click(screen.getByTestId('llamacpp-start'));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);

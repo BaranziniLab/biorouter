@@ -3,6 +3,7 @@ import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
+import { Select } from '../ui/Select';
 import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
 import { Note } from '../ui/note';
@@ -17,6 +18,8 @@ interface LlamaServerInlineCardProps {
   /** See `OnboardingCardShell`. Defaults to the standalone card. */
   chrome?: OnboardingCardChrome;
 }
+
+type ModelOption = { value: string; label: string };
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
   kind === 'apple_unified' ? 'unified memory' : 'VRAM';
@@ -248,6 +251,14 @@ export default function LlamaServerInlineCard({
   };
 
   const selectedEntry = catalog.find((m) => m.name === selectedModel);
+  const modelOptions = useMemo<ModelOption[]>(
+    () =>
+      catalog.map((m) => ({
+        value: m.name,
+        label: [m.display_name, m.download_size, modelDownloadLabel(m)].filter(Boolean).join(' · '),
+      })),
+    [catalog]
+  );
   const modelMemoryWarning = useMemo(() => {
     if (!selectedEntry || !system) return null;
     const detected = system.accelerator_memory_gib;
@@ -384,22 +395,26 @@ export default function LlamaServerInlineCard({
               >
                 Model
               </label>
-              <select
-                id="llamacpp-model-select"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                disabled={isStarting || isConnecting}
-                data-testid="llamacpp-model-select"
-                className="br-field block h-control-md w-full min-w-0 max-w-full rounded-element border px-2 text-label text-text-default"
-              >
-                {catalog.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {[m.display_name, m.download_size, modelDownloadLabel(m)]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </option>
-                ))}
-              </select>
+              {/* The one select (`ui/Select`), not a native <select>: the OS chevron and the OS
+                  popup were the only ones in the app (vision round 4, V4-R4-3). react-select
+                  names its own input, so the label points at `inputId`, and the test id sits on
+                  a wrapper because the library forwards no `data-*` attribute. The menu is
+                  portalled so a card or a scrolling page can never clip it. */}
+              <div data-testid="llamacpp-model-select">
+                <Select
+                  inputId="llamacpp-model-select"
+                  options={modelOptions}
+                  value={modelOptions.find((option) => option.value === selectedModel) ?? null}
+                  onChange={(option: unknown) => {
+                    const chosen = option as ModelOption | null;
+                    if (chosen) setSelectedModel(chosen.value);
+                  }}
+                  isDisabled={isStarting || isConnecting}
+                  isSearchable={false}
+                  menuPlacement="auto"
+                  menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
+                />
+              </div>
             </div>
             {selectedEntry && (
               <div className="br-first-run-box br-fill-surface space-y-1.5 p-3">
