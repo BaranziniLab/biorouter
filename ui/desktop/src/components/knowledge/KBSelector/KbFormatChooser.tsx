@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle } from '../../icons/app-icons';
 import type { KbFormat } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { Field } from '../../ui/field';
 import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
@@ -57,6 +58,16 @@ const FORMATS: {
  * is obliged to say so. When migration ships the banner is deleted and nothing
  * else in this surface changes.
  *
+ * ⚠ **A name problem belongs to the Name field, and it REPLACES the folder line.**
+ * "Enter a name." used to be a detached 14px paragraph at the foot of the dialog: no
+ * danger edge, no `aria-invalid`, focus left on the button, and the paragraph's own
+ * height pushed Cancel and Create 36px down from under the pointer (V3-R4-3). It is the
+ * shared `Field`'s error now (12px, danger ink, the danger edge, `aria-invalid`, linked
+ * by `aria-describedby`), in the slot the folder preview holds, so the dialog does not
+ * grow, and focus goes to the field so the person can type. A failure the daemon reports
+ * is not about the field and stays a danger `Note` at the foot, as in the schedule
+ * dialog.
+ *
  * This is also the surface a future `Convert format` action reuses. Do not build
  * a second one.
  */
@@ -64,13 +75,18 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
   const [name, setName] = useState(initialName);
   const [format, setFormat] = useState<KbFormat>('okf');
   const [busy, setBusy] = useState(false);
+  // What is wrong with the Name the person typed, caught before anything is sent.
+  const [nameError, setNameError] = useState<string | null>(null);
+  // A failure the create request came back with: not about the field, so not on it.
   const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
     setName(initialName);
     setFormat('okf');
     setBusy(false);
+    setNameError(null);
     setError(null);
   }, [open, initialName]);
 
@@ -78,15 +94,21 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
 
   async function submit() {
     const trimmed = name.trim();
-    if (!trimmed) {
-      setError('Enter a name.');
-      return;
-    }
-    if (!previewKbId(trimmed)) {
-      setError('Choose a name with letters or numbers.');
+    const problem = !trimmed
+      ? knowledgeCopy.format.nameRequired
+      : !previewKbId(trimmed)
+        ? knowledgeCopy.format.nameNeedsLetters
+        : null;
+    if (problem) {
+      setNameError(problem);
+      setError(null);
+      // Create was pressed from the button or from the field; either way the next thing to do
+      // is type, so the caret goes to the field the message is about.
+      nameRef.current?.focus();
       return;
     }
     setBusy(true);
+    setNameError(null);
     setError(null);
     try {
       await onCreate(trimmed, format);
@@ -130,16 +152,38 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
       }
     >
       <div className="flex flex-col gap-4 pb-1">
-        <div>
-          <label className="mb-1 block text-label text-text-default" htmlFor="kb-format-name">
-            Name
-          </label>
+        {/* The id is a PREVIEW: the daemon owns slugs and collisions, so the
+            helper line says where the folder will probably go and the InfoTip
+            says that it can change. A name problem takes this line's place (a
+            Field shows its error where it shows its helper), so the dialog never
+            grows under the pointer. */}
+        <Field
+          id="kb-format-name"
+          label={knowledgeCopy.format.nameLabel}
+          required
+          error={nameError ? <span role="alert">{nameError}</span> : undefined}
+          helper={
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="shrink-0">{knowledgeCopy.format.folderLabel}</span>
+              <span className="min-w-0 truncate font-mono">
+                {knowledgeCopy.format.folder(id || '…')}
+              </span>
+              <InfoTip
+                label={knowledgeCopy.format.folderInfoLabel}
+                help={knowledgeCopy.format.folderInfo}
+              />
+            </span>
+          }
+        >
           <Input
-            id="kb-format-name"
+            ref={nameRef}
             data-testid="knowledge-format-name"
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameError(null);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
@@ -149,20 +193,7 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
             placeholder="Knowledge base name"
             autoFocus
           />
-          {/* The id is a PREVIEW: the daemon owns slugs and collisions, so the
-              line says where the folder will probably go and the InfoTip says
-              that it can change. */}
-          <div className="mt-1 flex min-w-0 items-center gap-1 text-supporting text-text-muted">
-            <span className="shrink-0">{knowledgeCopy.format.folderLabel}</span>
-            <span className="min-w-0 truncate font-mono">
-              {knowledgeCopy.format.folder(id || '…')}
-            </span>
-            <InfoTip
-              label={knowledgeCopy.format.folderInfoLabel}
-              help={knowledgeCopy.format.folderInfo}
-            />
-          </div>
-        </div>
+        </Field>
 
         <div role="radiogroup" aria-label="Knowledge base format" className="flex flex-col">
           {FORMATS.map((entry) => (
@@ -195,9 +226,9 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
         </Note>
 
         {error && (
-          <p role="alert" className="text-body text-text-danger">
+          <Note tone="danger" role="alert">
             {error}
-          </p>
+          </Note>
         )}
       </div>
     </ModalShell>

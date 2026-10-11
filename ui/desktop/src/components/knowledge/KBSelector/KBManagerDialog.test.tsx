@@ -285,4 +285,45 @@ describe('KBManagerDialog', () => {
     expect(within(primary as HTMLElement).getByText(/Primary/i)).toBeInTheDocument();
     expect((primary as HTMLElement).className).not.toContain('tint-selected');
   });
+
+  /**
+   * V3-R4-3, the rename card. "Enter a name." was a bare 14px line under the strip with no danger
+   * edge and no `aria-invalid`, and focus stayed on Save. It is the field's own error now.
+   */
+  describe('renaming with an empty name', () => {
+    async function startRename() {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByLabelText('More actions for Alpha'));
+      await user.click(await screen.findByRole('menuitem', { name: knowledgeCopy.manager.rename }));
+      const input = await screen.findByTestId('knowledge-kb-name-input');
+      return { user, input };
+    }
+
+    it('says so on the field, marks it invalid, and puts the caret in it', async () => {
+      const { user, input } = await startRename();
+      await user.clear(input);
+      await user.click(screen.getByTestId('knowledge-kb-submit'));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(knowledgeCopy.format.nameRequired);
+      expect(alert.closest('[data-slot="field-error"]')!.className).toMatch(/\btext-supporting\b/);
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(input).toHaveAccessibleDescription(knowledgeCopy.format.nameRequired);
+      expect(input).toHaveFocus();
+      // The card is named by its label, which points at the input.
+      expect(input).toHaveAccessibleName('Rename "Alpha"');
+    });
+
+    it('clears the message when the person types, and Enter asks the same way', async () => {
+      const { user, input } = await startRename();
+      await user.clear(input);
+      await user.type(input, '{Enter}');
+      expect(await screen.findByRole('alert')).toHaveTextContent(knowledgeCopy.format.nameRequired);
+
+      await user.type(input, 'A');
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(input).not.toHaveAttribute('aria-invalid');
+    });
+  });
 });

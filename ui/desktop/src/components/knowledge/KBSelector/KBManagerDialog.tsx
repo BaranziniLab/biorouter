@@ -13,6 +13,7 @@ import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { Field, fieldHelpId } from '../../ui/field';
 import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
@@ -73,8 +74,12 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   const [busyId, setBusyId] = useState<string | null>(null);
   const [baseToDelete, setBaseToDelete] = useState<KbListEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // What is wrong with the name typed into the rename card: the Field's error, on the field.
+  // `error` above is a request that failed, which is not about the field.
+  const [draftError, setDraftError] = useState<string | null>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
   const createRef = useRef<HTMLButtonElement>(null);
   // True from the moment the format chooser takes this dialog's place until the manager comes back
   // under it. The manager is UNMOUNTED while the chooser is up (one usable dialog, see the return
@@ -93,6 +98,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     setDraftMode(null);
     setChooserOpen(startInCreate);
     setDraft('');
+    setDraftError(null);
     setError(null);
     // A base created elsewhere (chat, the knowledge MCP tools) is invisible here
     // until something asks again.
@@ -160,7 +166,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
    */
   async function createWithFormat(name: string, format: KbFormat): Promise<string | undefined> {
     const id = makeUniqueId(name);
-    if (!id) throw new Error('Choose a name with letters or numbers.');
+    if (!id) throw new Error(knowledgeCopy.format.nameNeedsLetters);
     setBusyId('__create');
     try {
       const manifest = await create(id, name, { format });
@@ -174,6 +180,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
 
   function startRename(base: KbListEntry) {
     setError(null);
+    setDraftError(null);
     setDraftMode({ kind: 'rename', base });
     setDraft(base.name);
   }
@@ -181,15 +188,21 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   function resetDraft() {
     setDraft('');
     setDraftMode(null);
+    setDraftError(null);
     setError(null);
   }
 
   async function submitDraft() {
     const trimmed = draft.trim();
     if (!trimmed) {
-      setError('Enter a name.');
+      // On the field, with the caret in it (V3-R4-3): a bare line under the card had no danger
+      // edge and no `aria-invalid`, and left focus on Save.
+      setDraftError(knowledgeCopy.format.nameRequired);
+      setError(null);
+      renameRef.current?.focus();
       return;
     }
+    setDraftError(null);
 
     try {
       if (draftMode?.kind === 'rename') {
@@ -391,14 +404,29 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
             {draftMode && (
               // An element inside the 12px dialog container takes the next step
               // DOWN, so 8px — not the 12px this block used to carry.
-              <div className="mt-3">
-                <div className="mb-2 text-label">{`Rename "${draftMode.base.name}"`}</div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+              // The label points at the Input by id, and the row is the Field's child (the schedule
+              // dialog's shape for a field with buttons beside it), so the Input names its own
+              // description and validity.
+              <Field
+                id="kb-rename-name"
+                label={`Rename "${draftMode.base.name}"`}
+                error={draftError ? <span role="alert">{draftError}</span> : undefined}
+                className="mt-3"
+              >
+                <div id="kb-rename-name-row" className="flex flex-col gap-2 sm:flex-row">
                   <Input
+                    ref={renameRef}
+                    id="kb-rename-name"
                     data-testid="knowledge-kb-name-input"
                     type="text"
+                    aria-required
+                    aria-invalid={draftError ? true : undefined}
+                    aria-describedby={draftError ? fieldHelpId('kb-rename-name') : undefined}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => {
+                      setDraft(e.target.value);
+                      setDraftError(null);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
@@ -422,7 +450,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                     </Button>
                   </div>
                 </div>
-              </div>
+              </Field>
             )}
 
             {error && <div className="mt-3 text-body text-text-danger">{error}</div>}

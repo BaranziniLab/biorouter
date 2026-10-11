@@ -181,6 +181,10 @@ export const knowledgeCopy = {
     folderInfoLabel: 'the folder name',
     folderInfo: 'The id may change if it is taken.',
     permanent: 'You can’t change the format later.',
+    /** The Name field's own messages (the Field error, not a line at the foot of the dialog). */
+    nameLabel: 'Name',
+    nameRequired: 'Enter a name.',
+    nameNeedsLetters: 'Choose a name with letters or numbers.',
     okf: {
       name: 'General knowledge',
       line: 'General notes and project context',
