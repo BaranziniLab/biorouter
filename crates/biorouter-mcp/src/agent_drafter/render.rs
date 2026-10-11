@@ -2419,7 +2419,7 @@ const SERVE_MJS_TEMPLATE: &str = r##"// Dev server for the exported Biorouter ap
 import { createServer, request as httpRequest } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rename, mkdir, cp, rm, access } from "node:fs/promises";
-import { readdirSync, lstatSync, readFileSync, realpathSync, constants } from "node:fs";
+import { readdirSync, lstatSync, statSync, readFileSync, realpathSync, constants } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
 import { join, dirname, isAbsolute, win32, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -5201,11 +5201,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         // app's launch path, and records its pid so the test can stop it.
         let pid_file = dir.path().join("daemon.pid");
         let daemon = dir.path().join("fake-biorouterd");
+        let daemon_script = dir.path().join("fake-biorouterd.js");
         std::fs::write(
-            &daemon,
+            &daemon_script,
             format!(
-                r#"#!{node}
-const http = require("node:http");
+                r#"const http = require("node:http");
 require("node:fs").writeFileSync({pid:?}, String(process.pid));
 setTimeout(() => process.exit(0), 120000).unref();
 const secret = process.env.BIOROUTER_SERVER__SECRET_KEY;
@@ -5228,8 +5228,19 @@ http.createServer((req, res) => {{
   res.writeHead(404); res.end();
 }}).listen(Number(process.env.BIOROUTER_PORT), "127.0.0.1");
 "#,
-                node = node.display(),
                 pid = pid_file.display().to_string(),
+            ),
+        )
+        .unwrap();
+        // Hermit's `node` is a shell shim. Darwin cannot use a script as a
+        // shebang interpreter, but an explicit shell exec can run that shim.
+        let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
+        std::fs::write(
+            &daemon,
+            format!(
+                "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
+                quote(&node),
+                quote(&daemon_script)
             ),
         )
         .unwrap();
@@ -5260,7 +5271,11 @@ http.createServer((req, res) => {{
         // whatever took it.
         let mut lines = BufReader::new(serve.stdout.take().unwrap()).lines();
         let mut bound: Option<u16> = None;
+        let mut used_stand_in = false;
         for line in lines.by_ref().map_while(Result::ok) {
+            if line.starts_with(&format!("Started {} on :", daemon.display())) {
+                used_stand_in = true;
+            }
             if let Some(rest) = line.strip_prefix("App running at http://127.0.0.1:") {
                 bound = rest
                     .split_whitespace()
@@ -5275,6 +5290,10 @@ http.createServer((req, res) => {{
             stop(&mut serve);
             panic!("serve.mjs did not come up:\n{err}");
         };
+        if !used_stand_in {
+            stop(&mut serve);
+            panic!("serve.mjs must use the stand-in daemon, not an installed daemon");
+        }
 
         let get = |path: &str, host: &str, authorized: bool| -> (u16, String) {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", serve_port)).unwrap();
