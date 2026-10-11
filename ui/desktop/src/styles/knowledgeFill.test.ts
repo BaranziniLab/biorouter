@@ -91,14 +91,25 @@ describe('the graph filters are the filled control', () => {
 });
 
 describe('a recessed ground rests a filled control on the strong step', () => {
-  it('sets the control ground, and moves the hover one fill deeper', () => {
-    expect(rule('.br-knowledge-recessed')['--br-control-ground']).toBe(
-      'var(--background-fill-strong)'
-    );
-    const hover = rule(
-      '.br-knowledge-recessed .br-fill-hover:hover,\n.br-knowledge-recessed .br-fill-hover:active'
-    );
-    expect(hover['background-color']).toBe('var(--background-strong)');
+  it('is the shared ground, which sets the control, hover and track grounds', () => {
+    const ground = rule('.br-ground-recessed');
+    expect(ground['--br-control-ground']).toBe('var(--background-fill-strong)');
+    expect(ground['--br-control-hover']).toBe('var(--background-strong)');
+    expect(ground['--br-track-ground']).toBe('var(--background-fill-strong)');
+  });
+
+  it('is carried by the pane header and the graph canvas, with no rule of Knowledge’s own', () => {
+    const root = join(__dirname, '../components/knowledge');
+    for (const file of ['KnowledgePaneHeader.tsx', 'graph/KnowledgeGraphPanel.tsx']) {
+      const source = readFileSync(join(root, file), 'utf8');
+      expect(source, file).toMatch(/className="[^"]*\bbr-ground-recessed\b/);
+    }
+    // The class Knowledge used to write for itself, and the stop-gap keyed on the empty state's
+    // tile, are gone: the primitives read the control ground themselves now.
+    expect(CSS).not.toContain('br-knowledge-recessed');
+    for (const path of walk(root)) {
+      expect(readFileSync(path, 'utf8'), path).not.toContain('br-knowledge-recessed');
+    }
   });
 
   const cases = Object.entries(scopes);

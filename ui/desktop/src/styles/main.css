@@ -4541,32 +4541,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-KNOWLEDGE end: pane header */
 
-/* @ws WS-KNOWLEDGE begin: recessed ground */
-/* A RECESSED GROUND (R-27, design.md 9.11): a pane header paints `--sidebar` and the graph canvas
-   paints `--background-muted`, and the resting fill is 1.00:1 and 1.03:1 off them. A filled control
-   there rests on the strong step instead (`--br-control-ground`, which `.br-fill-rest` and every
-   field read), and then has no step left to hover to, since the hover IS the strong step, so the
-   hover goes one fill deeper, `--background-strong`. Unlayered, so it beats the layered
-   `.br-fill-hover` without a utility. It belongs on the ground itself (a controls' ancestor), and a
-   filled box inside it still sets its own control ground for its children (`.br-fill-surface`),
-   so a field in a card on the canvas keeps resting on the page ground. */
-.br-knowledge-recessed {
-  --br-control-ground: var(--background-fill-strong);
-}
-.br-knowledge-recessed .br-fill-hover:hover,
-.br-knowledge-recessed .br-fill-hover:active {
-  background-color: var(--background-strong);
-}
-/* An EmptyState's mark tile is `--background-fill` (R-27), the canvas's own value, so on the
-   canvas it drew nothing at all and the error and empty states lost the tile every other empty
-   state in the app has. It rests on the control ground like every other fill (the strong step
-   here). A stop-gap keyed on the primitive's own tile class: it goes when the tile reads
-   `--br-control-ground` itself (request WS-PRIMITIVES/WS-KNOWLEDGE-2). */
-.br-knowledge-recessed section > .bg-background-fill {
-  background-color: var(--br-control-ground);
-}
-/* @ws WS-KNOWLEDGE end: recessed ground */
-
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
     display: none;

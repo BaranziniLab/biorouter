@@ -60,7 +60,7 @@ export function KnowledgePaneHeader({
     </Button>
   );
   return (
-    <div className="br-knowledge-pane-header br-knowledge-recessed flex h-chrome flex-none items-center border-b border-border-subtle bg-sidebar">
+    <div className="br-knowledge-pane-header br-ground-recessed flex h-chrome flex-none items-center border-b border-border-subtle bg-sidebar">
       <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
         {leading}
         {title}

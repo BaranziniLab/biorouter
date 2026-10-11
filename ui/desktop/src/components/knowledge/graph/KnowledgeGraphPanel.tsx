@@ -110,7 +110,7 @@ export function KnowledgeGraphPanel({
       {/* canvas + detail rail. The rail only exists at the widest step; below
           it the same legend renders as the dismissible card inside the canvas. */}
       <div className="flex min-h-0 flex-1">
-        <div className="br-knowledge-recessed relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
+        <div className="br-ground-recessed relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
           {/* Two absolutely-stacked opacity layers, never a swap: loading out at
             `--dur-fast`, content in at `--dur-med`. */}
           <div
@@ -144,7 +144,7 @@ export function KnowledgeGraphPanel({
                 actions={
                   // The canvas ground is `--background-muted`, the very value the resting fill
                   // has (1.00:1), so a filled control here rests on the strong step and hovers one
-                  // fill deeper: `.br-knowledge-recessed` on the canvas sets both for every filled
+                  // fill deeper: the shared `.br-ground-recessed` on the canvas sets both for every filled
                   // control on it (R-27, design.md 9.11), so the button carries no ground of its own.
                   <Button variant="secondary" onClick={onRefresh}>
                     Try again

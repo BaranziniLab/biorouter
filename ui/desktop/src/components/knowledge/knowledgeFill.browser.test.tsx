@@ -111,15 +111,17 @@ function ruleCss(): string {
     // The shared control ground and the filled button and field recipe (WS-PRIMITIVES), as built.
     block('.br-fill-surface > *,'),
     block('@layer components {\n  .br-field,\n  .br-fill-rest {'),
+    // An EmptyState's mark tile reads the control ground, so on the canvas it rests on the strong
+    // step with no rule of Knowledge's own (WS-PRIMITIVES, R-27).
+    block('.br-empty-tile {'),
     cut('/* @ws WS-KNOWLEDGE begin: dropzone */', '/* @ws WS-KNOWLEDGE end: dropzone */').replace(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\n\}\n/,
       ''
     ),
     cut('/* @ws WS-KNOWLEDGE begin: filter facet */', '/* @ws WS-KNOWLEDGE end: filter facet */'),
-    cut(
-      '/* @ws WS-KNOWLEDGE begin: recessed ground */',
-      '/* @ws WS-KNOWLEDGE end: recessed ground */'
-    ),
+    // The shared recessed ground (control, hover and track grounds on the strong steps) that the
+    // pane header and the graph canvas carry; Knowledge has no recessed rule of its own.
+    block('.br-ground-recessed {'),
   ].join('\n');
 }
 
@@ -204,7 +206,7 @@ function documentFor(mode: Mode): string {
   const canvas = renderToStaticMarkup(
     <div
       id="canvas"
-      className="br-knowledge-recessed"
+      className="br-ground-recessed"
       style={{ background: 'var(--background-muted)', padding: 24, width: 360 }}
     >
       <Button id="retry" variant="secondary">
