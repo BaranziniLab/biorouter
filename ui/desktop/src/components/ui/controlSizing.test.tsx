@@ -94,9 +94,9 @@ describe('text fields are filled, with an edge only for focus and error', () => 
     expect(body('.br-field,\n.br-fill-rest')).toMatch(
       /background-color:\s*var\(--br-control-ground, var\(--background-fill\)\)/
     );
-    expect(
-      body('.br-field:hover:not(:focus, :disabled),\n.br-fill-hover:hover,\n.br-fill-hover:active')
-    ).toMatch(/background-color:\s*var\(--background-fill-strong\)/);
+    expect(body('.br-field:hover:not(:focus, :disabled)')).toMatch(
+      /background-color:\s*var\(--background-fill-strong\)/
+    );
     expect(body('.br-field:focus,\n.br-field:focus-visible')).toMatch(
       /border-color:\s*var\(--border-focus\)/
     );
@@ -135,13 +135,15 @@ describe('secondary and outline buttons are filled', () => {
     expect(layer).toMatch(
       /\.br-field,\n {2}\.br-fill-rest \{\n {4}background-color: var\(--br-control-ground, var\(--background-fill\)\);/
     );
+    // The hover reads the ground's button hover (`--br-control-hover`: one deeper on a recessed
+    // ground), the strong step everywhere else.
     expect(layer).toMatch(
-      /\.br-fill-hover:hover,\n {2}\.br-fill-hover:active \{\n {4}background-color: var\(--background-fill-strong\);/
+      /\.br-fill-hover:hover,\n {2}\.br-fill-hover:active \{\n {4}background-color: var\(--br-control-hover, var\(--background-fill-strong\)\);/
     );
     // Inside a filled box the controls step back to the page ground, through a private variable:
     // the shared fill tokens are declared once per mode (themeNeutrals.test.ts).
     expect(CSS).toMatch(
-      /\.br-fill-surface > \*,\n\.biorouter-modal-panel > \*,\n\.biorouter-modal-row > \* \{\n {2}--br-control-ground: var\(--background-default\);\n\}/
+      /\.br-fill-surface > \*,\n\.biorouter-modal-panel > \*,\n\.biorouter-modal-row > \* \{\n {2}--br-control-ground: var\(--background-default\);\n {2}--br-control-hover: var\(--background-fill-strong\);\n {2}--br-track-ground: var\(--background-fill-strong\);\n\}/
     );
   });
 

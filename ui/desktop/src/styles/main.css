@@ -2781,6 +2781,16 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-progress[data-size='thin'] {
   height: 4px;
 }
+
+/* The neutral track (every tone but heat): `--background-muted` on a page, which IS the rest fill,
+   so in a filled box, on a recessed ground or in a hovered row it read 1.00:1 and the bar floated
+   on nothing. It takes the track ground there, one step deeper (`--br-track-ground`, the grounds
+   note in the primitives block). Layered, so a caller's own `bg-*` still wins. */
+@layer components {
+  .br-progress-track {
+    background-color: var(--br-track-ground, var(--background-muted));
+  }
+}
 /* @ws WS-PRIMITIVES end: progress */
 
 @keyframes br-progress-sweep {
@@ -4091,9 +4101,58 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   border-top-color: var(--border-focus);
 }
 
+/* FLAT ROWS (owner message 13, R-27: "row lists drop inter-row hairlines where spacing and the
+   hover fill already separate rows"; WS-VIEWS-A-5). The hairline above stays the default, the
+   promoted Crew recipe (`crewParity.test.ts`); a list that has decided its rows read apart by air
+   and the hover wash puts `.br-rows-flat` on its shell (or any ancestor) and loses only the
+   `::after`. The row keeps its 1px transparent bottom edge, so nothing moves, and a keyboard row
+   keeps its wash and its own focus edge. Forced colours repaint every fill as Canvas, so the wash
+   that told a row from the next is gone there: the line comes back (a border, which forced colours
+   draw), and the `:last-child` rule after this, at the same specificity, still leaves the last
+   row without one. One definition: Workflows, the Scheduler and its runs, Built apps and the
+   Settings dialogs named this class before it lived here. */
+.br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
+  content: none;
+}
+
+@media (forced-colors: active) {
+  .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
+    content: '';
+  }
+}
+
 .biorouter-list-row:last-child::after,
 .biorouter-settings-row:last-child::after {
   content: none;
+}
+
+/* A WASHED ROW IS A FILL, SO A CONTROL IN IT STEPS BACK ONE GROUND (design.md 9.11 rule 3: a fill
+   never sits on a fill; WS-SETTINGS-M-3, WS-SKILLS' marketplace rows). The hover wash is the page
+   ink at 5%, which composites to the rest fill's own value in light (a secondary button or a
+   Select trigger resting on #f4f4f2 in a row washed to about #f5f5f4: 1.00:1), so the moment the
+   pointer reached a row its button lost its box, and found it again on reaching the button. While
+   the row is washed (pointer, keyboard focus on or in it) its controls rest on the page ground
+   and hover on the strong step, as in a filled card, and a neutral track in it steps one in. The
+   wash itself is unchanged, so it still adapts to the ground the list sits on. Custom properties
+   only: no row rule here paints anything new. */
+.biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)),
+.biorouter-settings-row:is(:hover, :focus-visible, :has(:focus-visible)) {
+  --br-control-ground: var(--background-default);
+  --br-control-hover: var(--background-fill-strong);
+  --br-track-ground: var(--background-fill-strong);
+}
+
+/* The privacy pills (`PrivacyBadge`, `AffiliationBadge`: `.br-privacy-pill`) rest on
+   `--background-muted`, the rest fill's own value, and the wash composites to it, so on a washed
+   list row the Public or Private pill lost its box and read as bare text (WS-SKILLS-1, measured
+   1.00:1 on the Browse extensions row in light and dark; the Extensions page and the knowledge
+   base manager are the same rows). There it steps to the strong step, where the neutral Badge
+   beside it already rests; both inks are held to 4.5:1 on it by `check-contrast.mjs`. Only here,
+   and only on a list row: Crew draws "🔒 Private · UCSF" as ONE chip whose own box paints the
+   muted token under the pill and the institution, and a pill that changed its fill everywhere
+   would split that chip in two. */
+.biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)) .br-privacy-pill {
+  background-color: var(--background-fill-strong);
 }
 
 .biorouter-list-row:hover,
@@ -5098,8 +5157,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   border-radius: var(--radius-element);
   /* The track is a field-like fill (R-27): the same `--background-fill` a field and a secondary
      button rest on (it has the value `--background-muted` had, in both modes, so no pixel moves).
-     The thumb stays the raised surface above it. */
-  background: var(--background-fill);
+     The thumb stays the raised surface above it. In a filled box and on a recessed ground the
+     track steps one deeper (`--br-track-ground`, the grounds note), where the fill would equal its
+     ground and leave a lone thumb. */
+  background: var(--br-track-ground, var(--background-fill));
   -webkit-app-region: no-drag;
 }
 
@@ -5656,6 +5717,43 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .biorouter-modal-panel > *,
 .biorouter-modal-row > * {
   --br-control-ground: var(--background-default);
+  --br-control-hover: var(--background-fill-strong);
+  --br-track-ground: var(--background-fill-strong);
+}
+
+/* THE GROUNDS, said once (WS-SETTINGS-M-3, WS-KNOWLEDGE-2). Three private variables carry what a
+   ground asks of the primitives on it, and every primitive reads them with today's value as the
+   fallback, so a plain page draws exactly what it drew:
+
+   - `--br-control-ground`: where a filled control rests (fields, the Select trigger, secondary and
+     outline buttons, a CopyField, an EmptyState's mark tile).
+   - `--br-control-hover`: where a filled BUTTON goes under the pointer (`.br-fill-hover`). A field's
+     hover stays on the strong step: on a recessed ground that equals its rest, because no deeper
+     neutral keeps the placeholder at 4.5:1 (the band's note, `@ws WS-VIEWS-A begin: page band`).
+   - `--br-track-ground`: the ground of a TRACK a raised or coloured mark rides (the segmented
+     track under its thumb, a neutral progress track under its bar). A track is one step deeper
+     than the ground it sits on, never one step back: a white track would hide a white thumb.
+
+   A filled box (above) steps controls back to the page and tracks one step in. A RECESSED ground,
+   `.br-ground-recessed`, steps everything one step in: the sidebar, `--background-muted` (first
+   run, the Knowledge graph canvas, the terminal dock) and the page band, where the rest fill IS the
+   ground (1.00:1 on muted, 1.03:1 on the sidebar) and the strong step is 1.10:1 and 1.12:1 off
+   them (design.md 9.11 rule 2). Put the class on the ground itself; a filled box inside it still
+   sets its own grounds for its children. It comes after the filled-box rule, so an element that is
+   both takes the class it names. */
+.br-ground-recessed {
+  --br-control-ground: var(--background-fill-strong);
+  --br-control-hover: var(--background-strong);
+  --br-track-ground: var(--background-fill-strong);
+}
+
+/* An EmptyState's 48px mark tile (`ui/empty-state.tsx`) is a filled control's ground: the rest fill
+   on a page, the page ground in a filled box, the strong step on a recessed ground, where the rest
+   fill drew nothing and the error and empty states showed a bare icon (WS-KNOWLEDGE-2, measured on
+   the graph canvas). The transparent 1px border on the element keeps its size and gives forced
+   colours an edge. */
+.br-empty-tile {
+  background-color: var(--br-control-ground, var(--background-fill));
 }
 
 /* Text fields (`Input`, `Textarea`, the schema form's field; the Select trigger draws the same look
@@ -5689,10 +5787,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     border-color: transparent;
   }
 
-  .br-field:hover:not(:focus, :disabled),
+  .br-field:hover:not(:focus, :disabled) {
+    background-color: var(--background-fill-strong);
+  }
+
   .br-fill-hover:hover,
   .br-fill-hover:active {
-    background-color: var(--background-fill-strong);
+    background-color: var(--br-control-hover, var(--background-fill-strong));
   }
 
   .br-field:focus,
@@ -8325,7 +8426,10 @@ code [class~='token'] {
    multi-line form keep its first line level with a top-right Copy. */
 /* @ws WS-PRIMITIVES begin: copy-field well */
 /* A well, not an outline (R-27): the 1px border stays, TRANSPARENT, so the 32px geometry above
-   holds and forced colours still draw the edge; the well alone sets the box off the page. */
+   holds and forced colours still draw the edge; the well alone sets the box off the page. It is a
+   field-like box, so it rests where a field does when a ground names one (`--br-control-ground`,
+   the grounds note): the page ground inside a filled box and the strong step on a recessed ground,
+   where the well (#f5f5f3 and #232320) equalled the fill and vanished. */
 .biorouter-copy-field {
   display: flex;
   align-items: center;
@@ -8335,7 +8439,7 @@ code [class~='token'] {
   padding-inline: 12px 1px;
   border: 1px solid transparent;
   border-radius: var(--radius-element);
-  background-color: var(--background-well);
+  background-color: var(--br-control-ground, var(--background-well));
 }
 /* @ws WS-PRIMITIVES end: copy-field well */
 

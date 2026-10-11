@@ -53,12 +53,16 @@ const TONE_FILL = {
  * `track` decouples the two for the one case that needs it: the usage gauge turns
  * its FILL danger past the limit while staying the same heat gauge, so the ramp
  * ground must not follow the fill into neutral.
+ *
+ * The neutral track is `.br-progress-track` (main.css): `--background-muted` on a
+ * page, one step deeper in a filled box, on a recessed ground and in a hovered row,
+ * where muted equalled the ground and the bar floated on nothing.
  */
 const TONE_TRACK = {
-  accent: 'bg-background-muted',
-  success: 'bg-background-muted',
-  warning: 'bg-background-muted',
-  danger: 'bg-background-muted',
+  accent: 'br-progress-track',
+  success: 'br-progress-track',
+  warning: 'br-progress-track',
+  danger: 'br-progress-track',
   heat: 'bg-heat-0',
 } as const;
 

@@ -144,6 +144,14 @@ const TIER: Record<
  * a filled chip. That is why Private is a padlock glyph AND the word, never a
  * colour: the fill is contrast for the ink, not the signal.
  *
+ * `--background-muted` is the rest fill's own value, and a list row's hover wash
+ * composites to it, so under the pointer the pill lost its box (WS-SKILLS-1,
+ * 1.00:1 on the Browse extensions row). `.br-privacy-pill` is the hook main.css's
+ * shared rows use to step it to `--background-fill-strong` on a washed list row,
+ * where the neutral `Badge` beside it already rests. The resting fill stays
+ * muted on purpose: Crew draws "🔒 Private · UCSF" as ONE chip whose own box
+ * paints the same token under the pill and the institution.
+ *
  * ⚠ **The padlock is the app's ONE mark for the private tier**, shared with
  * `chatKind.ts`'s padlocked speech bubble on a private conversation. The three
  * subjects this badge is hung on — a conversation, a bound model, an extension
@@ -237,7 +245,11 @@ export function PrivacyBadge({
       // ink, not the signal (see this component's doc comment), and swapping it
       // for a status colour would say "danger" on a surface where the honest
       // word is "off".
-      className={cn('bg-background-muted', off ? 'text-text-muted' : spec.ink, className)}
+      className={cn(
+        'br-privacy-pill bg-background-muted',
+        off ? 'text-text-muted' : spec.ink,
+        className
+      )}
     >
       {spec.glyph ? <Lock className="h-3 w-3" aria-hidden="true" /> : null}
       {spec.label}

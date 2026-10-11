@@ -32,8 +32,9 @@ export function EmptyState({
       } ${className}`.trim()}
     >
       {/* The mark's tile is a subtle fill, not an outline (R-27); the transparent border keeps
-          its size and gives forced colours an edge. */}
-      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-container border border-transparent bg-background-fill text-text-muted">
+          its size and gives forced colours an edge. `.br-empty-tile` (main.css) rests it on the
+          control ground, so it still shows on a recessed ground and inside a filled box. */}
+      <div className="br-empty-tile mb-5 flex h-12 w-12 items-center justify-center rounded-container border border-transparent text-text-muted">
         <Icon className="h-6 w-6" aria-hidden="true" />
       </div>
       <h2 id={titleId} className="text-subheading text-text-default">

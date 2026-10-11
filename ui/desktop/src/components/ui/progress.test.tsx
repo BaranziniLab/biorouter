@@ -86,7 +86,7 @@ describe('Progress', () => {
     const { rerender } = render(<Progress label="x" value={10} tone="heat" />);
     expect(screen.getByRole('progressbar')).toHaveClass('bg-heat-0');
     rerender(<Progress label="x" value={10} tone="accent" />);
-    expect(screen.getByRole('progressbar')).toHaveClass('bg-background-muted');
+    expect(screen.getByRole('progressbar')).toHaveClass('br-progress-track');
   });
 
   describe('the geometry, asserted in main.css because jsdom cannot measure it', () => {

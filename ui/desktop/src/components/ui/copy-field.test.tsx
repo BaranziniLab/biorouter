@@ -628,8 +628,9 @@ describe('CopyField', () => {
     const start = MAIN_CSS.indexOf('/* CopyField');
     expect(start).toBeGreaterThanOrEqual(0);
     const block = MAIN_CSS.slice(start, MAIN_CSS.indexOf('/* StatusDot', start));
+    // The well, unless a ground names where a field rests (a filled box, a recessed ground).
     expect(block).toMatch(
-      /\.biorouter-copy-field \{[^}]*background-color: var\(--background-well\);/
+      /\.biorouter-copy-field \{[^}]*background-color: var\(--br-control-ground, var\(--background-well\)\);/
     );
     expect(block).not.toMatch(/background(?:-color)?:[^;]*--background-code/);
     expect(block).toMatch(/\.biorouter-copy-field\[data-multiline='true'\]/);
