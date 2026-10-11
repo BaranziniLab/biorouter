@@ -802,7 +802,7 @@ raising a chat that exists, and a chat that did not exist a moment ago has nothi
 
 **What is pinned, and why that list.** `privacy::CAPABILITY_CONFIG_KEYS` verbatim —
 `BIOROUTER_PROVIDER`, `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER`, `OLLAMA_HOST`,
-`LLAMACPP_EXTERNAL_HOST` — plus `BIOROUTER_MODEL`. Reusing the list `/config/upsert` already guards
+`LLAMACPP_EXTERNAL_HOST` and, since 2026-10-10, `BIOROUTER_MODEL`. Reusing the list `/config/upsert` already guards
 is deliberate: `privacy::config_keys`'s scan of the tier-input files is what keeps it honest, so a
 key that starts deciding capability is pinned here without anyone remembering to, and a second
 hand-written list would be a third answer to a question that already has two agreeing ones.
@@ -810,16 +810,18 @@ hand-written list would be a third answer to a question that already has two agr
 Private exactly while its host is loopback, so flipping `OLLAMA_HOST` moves the tier with
 `BIOROUTER_PROVIDER` untouched — the same escalation through a different key.
 
-`BIOROUTER_MODEL` is pinned for a different reason and is **not** a capability key. No `tier()`
-implementation reads the model name — all five were checked: both Versa modules resolve
-`ucsf_gateway_tier(endpoint)`, `ollama` and `llamacpp` resolve `self_hosted_tier(base_url)`, and the
-lead/worker composite takes the `least` of its two halves. Writing it cannot move a tier; it decides
-which model runs, and `/agent/start` binds *both* halves of the operator's declaration
-(`configured_new_session_provider` requires the provider **and** the model), so the pin covers what
-the operator actually declared. Its classification, with that reasoning, is a row in
-`privacy::config_keys::NOT_CAPABILITY_CONFIG_KEYS`; what it permits without a proof is an integrity
-and availability question — silently downgrading every new chat to a different model, or making new
-chats fail outright — not a tier one.
+`BIOROUTER_MODEL` was first pinned for a different reason, and until 2026-10-10 it was **not** a
+capability key: no `tier()` implementation read the model name. It was pinned because
+`/agent/start` binds *both* halves of the operator's declaration (`configured_new_session_provider`
+requires the provider **and** the model), so the pin covers what the operator actually declared, and
+it was chained onto the capability list by hand. Since 2026-10-10 it is a capability key in its own
+right, because `ollama`'s `tier()` reads the model name: a cloud tag (`gpt-oss:120b-cloud`) is Public
+even through a loopback `OLLAMA_HOST`, because Ollama forwards the conversation to ollama.com, so
+with `BIOROUTER_PROVIDER=ollama` writing the model moves the tier in both directions, exactly as
+`OLLAMA_HOST` does. An unproven upsert or remove of it is refused like `OLLAMA_HOST`'s, the pinned set
+is the capability list with nothing added (`launch::pinned_config_keys`), and
+`privacy::config_keys`'s `the_model_key_is_a_capability_key_exactly_while_a_tier_reads_the_model`
+ties the classification to that read.
 
 On a daemon with no key, asking for the proof can only refuse everyone. The 2026-09-10 QA run
 measured it: with an institutional model configured, every new chat on a `serve` daemon was

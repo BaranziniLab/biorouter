@@ -474,60 +474,150 @@ The "Llama Server" provider (`llamacpp`) gives zero-setup local models: the
 desktop app bundles a pinned llama.cpp `llama-server` binary and manages it as
 a sidecar process. It is ranked first among Local Models (before Ollama), and
 Local ranks before Institutional/Commercial everywhere (GUI onboarding,
-settings provider grid, `biorouter configure`).
+settings provider grid, `biorouter configure`). Why the catalog, the window
+and the request policy look the way they do: a 2026-10 report that local models
+"kept returning JSON instead of doing the task" traced to a prompt cut to ~2k
+tokens (see the Ollama block below), and once a model saw the whole ~31-40k-token
+prompt both catalog models made structured tool calls reliably.
 
-- **Provider:** `crates/biorouter/src/providers/llamacpp.rs` — OpenAI-compat
-  HTTP to the sidecar; curated `MODEL_CATALOG` of **Gemma 4 and Qwen3.6**
-  models mirrored from the Ollama library, with Google's QAT GGUFs as the
-  Hugging Face fallback. `default_model_name()` is memory-tiered:
-  `gemma4-12b` at ≥64 GiB, `gemma4` (E4B) below. Unlisted models are accepted
-  as raw `owner/repo:QUANT` HF specs. ⚠ This block claimed a Qwen3.5 catalog
-  defaulting to `qwen3.5-4b` until 2026-08-23; there has never been a
-  `qwen3.5-4b` entry — read `MODEL_CATALOG` rather than trusting a summary.
+- **Catalog: exactly two models** (`MODEL_CATALOG` in
+  `crates/biorouter/src/providers/llamacpp.rs`): `qwen3.8-27b` — Qwen3.8 27B,
+  `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M` (the llama.cpp project's own conversion;
+  Qwen publishes no GGUF), 19 GB, **the default on every memory tier** — and
+  `gemma4-31b` — Gemma 4 31B, Google's own QAT `google/gemma-4-31B-it-qat-q4_0-gguf:Q4_0`,
+  18 GB. Both dense, 262k native window, 32 GiB minimum / 48 GiB recommended.
+  Each entry pins its GGUF file name, byte size and SHA-256 (measured
+  2026-10-09), its Ollama tags (the bare manifest-list tag plus the GGUF-only
+  `qwen3.8:27b-q4_K_M` / `gemma4:31b-it-q4_K_M`), its thinking control, vendor
+  sampling and `--spec-type`. Unlisted models are still accepted as raw
+  `owner/repo:QUANT` HF specs (strictly validated). ⚠ This block described a
+  Gemma 4/Qwen3.6 catalog defaulting to `gemma4-12b`/E4B until 2026-10-10, and
+  a Qwen3.5 one before that — read `MODEL_CATALOG` rather than trusting a summary.
+- **Retired names still resolve, two different ways** (`RETIRED_MODELS`:
+  `gemma4`, `gemma4-e2b`, `gemma4-12b`, `gemma4-26b`, `qwen3.6`, `qwen3.6-27b`
+  and the v1.85 `qwen3.5-*` / `gemma-4-*` names). For **chat**
+  (`chat_model_name` / `resolve_chat_model_source`: configs, sessions,
+  workflows, the `/llamacpp/ensure|warmup` routes, `biorouter models local pull`)
+  a retired name runs `qwen3.8-27b`, logged once per name. For **cache
+  deletion** (`resolve_model_source`: `/llamacpp/delete`, `models local rm`) it
+  keeps its OWN former spec, so deleting `gemma4` frees E4B's files, not Qwen's.
+  On `LLAMACPP_EXTERNAL_HOST` a name passes through verbatim — that server is
+  someone else's and may route on it.
 - **Sidecar manager:** `crates/biorouter/src/providers/llamacpp_sidecar.rs` —
   binary discovery (`BIOROUTER_LLAMACPP_BIN` → `<exe dir>/llamacpp/` → dev
-  repo path → PATH), spawn with `-hf` (models download from Hugging Face into
-  the Ollama model store on first use), `/health` readiness, status snapshots,
-  restart on model switch. Defaults: port 11543, q8_0 KV cache, and a
-  **memory-tiered context window** — `default_context_size()` returns 128k at
-  ≥64 GiB of GPU-addressable memory, 64k at ≥16 GiB, else 32k. It is **not**
-  `--ctx-size 0`: a model's native window can be 262k, and allocating that KV
-  cache is slow-to-impossible on a laptop. `LLAMACPP_CONTEXT_SIZE` pins it
-  (`0` means "auto"), and the window the server really allocated is read back
-  from `/props` so the gauge matches reality. Thinking is **off** by default
-  (`--reasoning off`), so short warm-up completions spend their budget on
-  visible content rather than hidden reasoning; `LLAMACPP_ENABLE_THINKING=true`
-  turns it on. `LLAMACPP_EXTRA_ARGS` for anything else, `LLAMACPP_EXTERNAL_HOST`
-  to use an unmanaged server.
-  **Speed:** `--spec-type ngram-simple` is passed by default —
-  self-speculative decoding that drafts from the context, so it needs no draft
-  model, no download and no extra VRAM. Measured on an M4 Max with
-  gemma-4-E4B: **79.7 → 354.4 tok/s** on repetition-heavy agentic generation
-  (quoting tool output, rewriting a file) with free text unchanged at ~82.
-  `ngram-mod` is faster still but costs 2% on free text; `ngram-map-k4v` loses
-  16% and is rejected. `LLAMACPP_SPEC_TYPE=none` disables it. Only Metal/Gemma
-  has been measured — re-benchmark before assuming it holds elsewhere.
-  **Self-heal:** three ordered retries on a dead child (drop optional flags
-  after an argv error → step down the auto context after an OOM → Hugging Face
-  fallback / resume a partial download). While any of them is deciding,
-  `status()` reports `Starting`, **not** `Error` — a terminal status there made
-  the GUI's 1500 ms poller abort startups that were about to recover.
+  repo path → PATH), `/health` readiness, status snapshots, restart on model
+  switch. **Launch order** (`launch_source_in_dir`): the catalog's HF file
+  already in the cache, started with `-m` so a launch needs no network (its size
+  is checked against the pin, with a warning on a mismatch); then the GGUF
+  `image.model` layer of an Ollama pull (GGUF magic checked, manifest lists
+  followed — an Apple Silicon pull of the bare tag is MLX safetensors, which is
+  not loadable and counts as not downloaded); only then `-hf`, which downloads
+  into the Ollama model store (`LLAMA_CACHE` = `OLLAMA_MODELS` or
+  `~/.ollama/models`). Port 11543, q8_0 KV cache.
+- **Context window:** `default_context_size()` is 128k at ≥48 GiB of
+  GPU-addressable memory (unified memory on Apple Silicon, VRAM on a discrete
+  GPU, system RAM on a CPU-only machine), else 64k. **There is no 32k tier**:
+  Biorouter's instructions plus tool schemas alone are ~31-40k tokens, so a 32k
+  window failed the first request of every chat. The out-of-memory step-down
+  stops at 64k (`next_lower_auto_context_size`) and then reports "not enough
+  memory" rather than starting a server that cannot answer. It is **not**
+  `--ctx-size 0` (a 262k KV cache is slow-to-impossible on a laptop).
+  `LLAMACPP_CONTEXT_SIZE` pins it (`0` = auto); the window the server really
+  allocated is read back from `/props`, and `from_env` clamps the reported
+  window to the server's before the first request.
+- **One request at a time:** `--parallel 1` (`LLAMACPP_PARALLEL` overrides).
+  llama-server's default 4 slots share one KV cache, and two concurrent
+  bootstrap-sized requests in a 64k window both failed (b9611). A request holds
+  a `SidecarLease` — the switch read lock plus one permit per server slot — so a
+  second request waits in-process instead of on a silent socket that the idle
+  timeout would cut, and a model switch waits for in-flight leases. A streamed
+  reply releases its lease when generation ends, never across a tool approval.
+- **Security:** a fresh random API key per launch, written 0600 to
+  `<data>/llamacpp/run/<pid>.key` and passed with `--api-key-file` after the
+  extra args; the provider sends it as Bearer and `/health` stays public (the
+  loopback bind alone let any web page drive the model, since llama-server
+  reflects any `Origin`). `--no-slots`, `--no-ui`, and the loopback
+  `--host`/`--port` re-asserted last. `LLAMACPP_EXTRA_ARGS` is an **allowlist**
+  (`ALLOWED_EXTRA_FLAGS`, plus `--spec-*` minus the draft-model/download flags),
+  matched the way llama.cpp parses (`_` → `-` in `--` flags, `--flag=value`
+  split, argument arity and value-token shape checked); it replaced a blocklist
+  that missed `--tools`. Missing or flag-shaped required values are rejected,
+  and `--flash-attn` values get an enum check. Most numeric and range constraints
+  remain for llama-server to validate.
+  The child's environment loses every `LLAMA_*` variable and HF token; only
+  `LLAMACPP_HF_TOKEN` reaches it, as `HF_TOKEN`.
+- **Requests:** streamed requests to the managed sidecar send
+  `return_progress: true`, so a cold prefill's `prompt_progress` frames keep the
+  idle timer fed. `LLAMACPP_TIMEOUT` is an IDLE bound — `0`, the declared
+  default, means 600 s, or 3600 s on a CPU-only machine — and a timeout is never
+  retried (`TimeoutRetry::GiveUp`). A request with no `max_tokens` gets 16384
+  (32768 with thinking); vendor sampling is filled in unless the caller set it.
+  Replies, streamed and blocking, pass through the same guarded text recovery
+  and argument normalisation as Ollama's (see the Ollama block's tool-call
+  bullet).
+- **Thinking:** the server starts with `--reasoning off` (`on` with
+  `LLAMACPP_ENABLE_THINKING=true`), but every Biorouter request states it in
+  `chat_template_kwargs.enable_thinking`, which overrides the flag both ways on
+  b11429: Quick off, Normal follows `LLAMACPP_ENABLE_THINKING`, Deep on. Qwen3.8
+  also gets `reasoning_effort` `medium` (Normal) or `xhigh` (Deep) — **never
+  `high`**, which its template rejects with HTTP 500; sending no level is
+  byte-identical to `xhigh`, so Normal and Deep would not differ. Warm-up and
+  titles use `complete_without_thinking`. llama-server's reasoning streams in
+  250 ms batches, but the agent holds them and shows one Thinking block per
+  phase when the phase ends (`reply_parts::HeldThinking`), because no client
+  merges live thinking yet. The desktop does not render Thinking blocks at all;
+  the CLI prints them only with `BIOROUTER_CLI_SHOW_THINKING`.
+- **Suitability** (`/llamacpp/status`, per model): `suitable`,
+  `above_recommendation`, `below_minimum` (under 32 GiB — still offered with a
+  warning, because there is no smaller model), `cpu_only` (an Intel Mac, whose
+  x64 build has no Metal, and the bundled Linux CPU build; budgeted by system
+  RAM and never "recommended") and `unknown_resources`.
+- **Speed** (measured 2026-10-10, M4 Max, b11429, 128k window, q8_0 KV, thinking
+  off, GPU uncontended): Qwen3.8 27B prefilled a cold ~31k-token prompt in
+  156 s (~197 tok/s), wrote free text at 18.3 tok/s and rewrote a file at
+  37.0 tok/s; Gemma 4 31B took 238 s for ~32k tokens (~136 tok/s), 16.9 and
+  37.8 tok/s. These are cold-prefill timings without a reusable prompt cache;
+  a shared cached prefix can shorten the wait in later chats.
+  `--spec-type ngram-simple` (self-speculative decoding: no draft model, no
+  download, no extra VRAM) is each catalog model's own default, re-measured on
+  b11429 because Qwen3.8's linear attention and Gemma 4's sliding window force
+  checkpoint-based speculation: paired against `none` (contended, so only the
+  ratios count) it is 2-4x faster on file rewrites and 4-10% slower on free
+  text. `LLAMACPP_SPEC_TYPE=none` disables it. The older 79.7 → 354.4 tok/s
+  figure was Gemma 4 E4B on b9611.
+  **Self-heal:** ordered retries on a dead child (drop optional flags after an
+  argv error → step down the auto context after an OOM → Hugging Face fallback
+  / resume a partial download). While any of them is deciding, `status()`
+  reports `Starting`, **not** `Error` — a terminal status there made the GUI's
+  1500 ms poller abort startups that were about to recover. A GPU compute
+  backend that fails mid-request (Metal out of memory: every later request 500s
+  while `/health` stays green) is discarded (`discard_failed_backend`) so the
+  next request starts a fresh server.
   **Orphan reaping:** statics never drop, so `kill_on_drop` cannot cover
   process exit; spawns are recorded in `<data>/llamacpp/run/<ppid>.pid` and
   the next `ensure()` in any Biorouter process kills children of dead parents.
-- **Pinned build:** `LLAMA_SERVER_BUILD` in the sidecar must match
+- **Pinned build:** `LLAMA_SERVER_BUILD = "b11429"` in the sidecar must match
   `LLAMA_BUILD` in `ui/desktop/scripts/fetch-llama-server.js`, which downloads
-  per-platform archives at package time into `src/bin/llamacpp/` (mac = Metal
-  ~10 MB, win = Vulkan ~37 MB with CPU fallback via ggml dynamic backends,
-  linux = CPU ~15 MB; CUDA stays opt-in via `BIOROUTER_LLAMACPP_BIN`). Bump
-  the pin deliberately and smoke-test — llama.cpp releases multiple times a
-  day with no semver.
+  per-platform archives at package time into `src/bin/llamacpp/` and checks
+  each against its pinned SHA-256 (`ASSET_SHA256`, plus the LICENSE) before
+  extracting — an asset with no pinned digest is refused, so a bump must add the
+  digests from `gh api repos/ggml-org/llama.cpp/releases/tags/<build>`. Builds:
+  mac arm64 = Metal, mac x64 = CPU only, win = Vulkan with CPU fallback via ggml
+  dynamic backends, linux = CPU; CUDA stays opt-in via
+  `BIOROUTER_LLAMACPP_BIN`. b11429 (2026-10-05) is the first build with every
+  fix the two models need (Qwen3 tool parser, `reasoning_effort` in templates,
+  the Gemma 4 required-tool grammar fix, `-hf` skipping draft files). Bump the
+  pin deliberately and smoke-test — llama.cpp releases multiple times a day
+  with no semver.
 - **Linux floor:** llama-server needs glibc ≥ 2.35-ish plus `libssl3` and
   `libgomp1` (declared in the deb/rpm maker configs in `forge.config.ts`) —
   i.e. Debian 12+/Ubuntu 22.04+. Debian 11 runs the app but not local models.
-- **HTTP routes:** `/llamacpp/status|ensure|stop` in
+- **HTTP routes:** `/llamacpp/status|ensure|warmup|delete|stop` in
   `crates/biorouter-server/src/routes/llamacpp.rs` (status includes the
-  catalog; ensure is async — poll status for download progress).
+  catalog and per-model suitability; ensure is async — poll status for download
+  progress). The CLI's `biorouter models local list|pull|rm` resolve names the
+  way these routes do: `pull` like `ensure`, `rm` like `delete`, and `list`
+  labels the copy the sidecar would launch (HF cache before Ollama).
 - **Frontend:** `LlamaServerInlineCard.tsx` (the first row of the Local tab,
   open by default in onboarding), provider ordering in `providerOrdering.ts`,
   tab + section order in `settings/providers/ProviderCatalog.tsx` (`ProviderGrid`
@@ -539,10 +629,213 @@ settings provider grid, `biorouter configure`).
   So a machine with a signed-in `claude` and nothing configured opens on Public,
   which is not a regression of the Local-first ranking. See
   [`docs/desktop-ui/provider-catalog.md`](docs/desktop-ui/provider-catalog.md).
-- **Tests:** unit tests in both modules; route tests
-  `cargo test -p biorouter-server --test llamacpp_routes`; live end-to-end
-  (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
+- **Tests:** `cargo test -p biorouter --lib providers::llamacpp` (both
+  modules), `cargo test -p biorouter-server --test llamacpp_routes`, and live
+  end-to-end against the default `qwen3.8-27b` (a ~19 GB one-time download, or
+  reuse `ollama pull qwen3.8:27b-q4_K_M`; `LLAMACPP_TEST_MODEL=gemma4-31b` or a
+  raw spec switches it):
   `BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1`
+  (11 tests, 450 s for Qwen3.8 on 2026-10-10). ⚠ Its tool tests (and the
+  survey's) accept any `ToolRequest`, and replies pass through text recovery
+  first, so a whole-reply JSON call passes too. The binary leaves its last
+  sidecar running at exit — statics never drop — and the next Biorouter
+  process's `ensure()` reaps it. Checklist:
+  [`docs/providers/llama-server/model-catalog-qa-checklist.md`](docs/providers/llama-server/model-catalog-qa-checklist.md).
+
+### Ollama provider
+
+`crates/biorouter/src/providers/ollama.rs` (what to send) and
+`formats/ollama.rs` (the wire format). User-facing reference:
+[`docs/providers/ollama/`](docs/providers/ollama/README.md).
+
+- **Native `POST /api/chat`, not `/v1`.** Until 2026-10 the provider used
+  `/v1/chat/completions`, which cannot set the context window. An Ollama whose
+  default window was 4096 tokens (every CPU-only or low-VRAM machine) silently
+  kept the first 4 and the last ~2046 tokens of the ~31-40k-token prompt; the
+  model saw only the tail of the tool list and wrote invented tool calls as
+  JSON text, while Biorouter believed it had 128k (a guess from the model's
+  name) and compaction trusted the truncated usage. That was the "returns JSON
+  instead of doing the task" report.
+- **`options.num_ctx` on every request**, resolved once per (instance, model):
+  `OLLAMA_NUM_CTX` → a context limit the user set (`BIOROUTER_CONTEXT_LIMIT`,
+  or a limit that differs from the name-based guess) → 128k at ≥64 GiB of
+  GPU-addressable memory (note: 48 GiB for Llama Server), else 64k — capped at
+  the model's trained window from `/api/show` (`<general.architecture>.context_length`).
+  The same number goes on turns, blocking calls and titles, because a different
+  `num_ctx` reloads the model, and `get_model_config()` reports it so
+  compaction and the gauge see the real window. A custom `ollama`-engine
+  provider uses `BIOROUTER_CONTEXT_LIMIT`, not the built-in `OLLAMA_*` keys.
+- **Post-load memory check:** native replies probe `GET /api/ps` once per
+  observed window for the matching model's `size`, `size_vram`, `context_length`.
+  The loaded context may be per-request or a whole multiple across parallel
+  slots; compaction still sees the per-request window. Derived automatic
+  windows stay automatic through provider rebuilds.
+  An automatic window above 64k drops to 64k for later requests when
+  `size_vram < size`, when the loaded allocation exceeds 75% of local system
+  RAM, or when it takes at least 25% and less than 20% of RAM remains available.
+  RAM checks are loopback-only; remote servers use their own GPU-spill figure.
+  The cap is process-wide per host/model, including fresh providers serving the
+  context gauge and reasoning-effort rebuilds. Turns, corrective retries,
+  summaries and titles use it; the next request costs one reload. At the 64k
+  floor it warns once rather than shrinking below the full agent prompt.
+  Explicit `OLLAMA_NUM_CTX`/`BIOROUTER_CONTEXT_LIMIT` and recognised user model
+  limits are preserved. A per-model limit identical to the name default has
+  no provenance and remains automatic;
+  use either explicit setting to pin that value. Restore bindings preserve the
+  construction config rather than the reported live window. Server settings are
+  never changed. Warnings name `OLLAMA_NUM_PARALLEL` (which multiplies the cache)
+  and `OLLAMA_NUM_CTX`. Failed/missing probes are best-effort and retried later;
+  a load failure before a reply cannot be repaired by this post-load check.
+- **No silent cuts.** `truncate: false` turns an over-window prompt into a 400,
+  mapped to `ContextLengthExceeded` in the canonical
+  `utils::context_overflow_message` sentence (so the agent can tell when
+  compaction cannot help) naming the setting to raise. For servers that cut
+  anyway (Ollama 0.4.0-0.12.5, or the `/v1` fallback) `TurnCheck` discards a
+  reply whose prompt count is implausibly small for the request's bytes (more
+  than 12 bytes per token over 20 KB; 6 when the count has the shape of
+  Ollama's cut, half a power-of-two window plus 1-8, because lfm2's 16,387 of
+  32,768 ran at ~9.8): no text shown, no tool run. Before 0.4.0
+  the count excludes the cache, so nothing is judged.
+- **`/v1` fallback** only when `/api/chat` answers 404 with anything other
+  than "model not found" (a non-Ollama server behind a custom provider);
+  sticky per instance, text held until the size check passes.
+- **Every request streams**, blocking ones collected, so `OLLAMA_TIMEOUT`
+  (600 s) bounds silence, never a whole generation; a timeout is never retried
+  (`TimeoutRetry::GiveUp`), a connection failure still is. An unpinned turn gets
+  `num_predict` 16384, or 32768 when the model may think.
+- **Thinking:** `think` only to models whose `/api/show` capabilities include
+  `thinking` (others answer `think:true` with a 400). Quick sends `false`;
+  Normal sends nothing unless `OLLAMA_THINK` is set; Deep sends the deepest
+  declared level — `xhigh` for qwen3.8, never `high`, which its renderer
+  rejects — or `true` for a boolean-only model such as gemma4. A pinned output
+  budget under 1024 tokens sends `false` unless Deep: `biorouter configure`'s
+  50-token probe otherwise came back as reasoning only (measured, Ollama 0.40.2).
+  Titles: `think:false`, `num_predict` 128.
+- **`keep_alive`** `OLLAMA_KEEP_ALIVE`, default `"30m"` (a number is seconds,
+  `-1` keeps the model loaded), so a 27-31B model is not unloaded and its
+  prompt re-processed after Ollama's 5-minute default.
+- **Models:** `OLLAMA_DEFAULT_MODEL = "qwen3.8:27b"`; `OLLAMA_RECOMMENDED_MODELS`
+  is that and `gemma4:31b` (a one-time warning below 32 GiB). The model list is
+  what the user pulled, minus tags whose `/api/show` capabilities lack `tools`
+  (the configured model always stays); `biorouter configure` puts the
+  recommended pair (and its quantisation variants) first and cloud tags LAST,
+  labelled. ⚠ `gemma4:31b-cloud` matches the variant prefix `gemma4:31b-`, so
+  the variant match must exclude cloud tags or Enter saves an ollama.com model
+  as "Recommended: Gemma 4 31B" (`commands/configure.rs` calls the provider's
+  own `utils::is_ollama_cloud_model`). `OLLAMA_HOST` resolves exactly as Ollama's
+  own client reads it (`resolve_ollama_base_url`: no scheme → 11434,
+  `http://` → 80).
+- **HTTP routes + desktop** (`crates/biorouter-server/src/routes/ollama.rs`):
+  `/ollama/recommended` serves the recommended pair, a memory suitability
+  rating and the resolved base URL to the onboarding card (`utils/ollamaDetection.ts`,
+  which hard-coded `gpt-oss:20b` until 2026-10); `/ollama/context_window?model=`
+  answers with the `num_ctx` a chat on that model would send, built through
+  `OllamaProvider::from_env` + `context_window_for`, and
+  `utils/liveContextWindow.ts` feeds it to the gauge in place of the
+  name-pattern guess ("qwen" read as 128k) that hid the original bug. These two
+  files and the route are the single sources of truth for the recommendation
+  and the gauge's local window. `/ollama/recommended` also returns `tier`, the
+  provider's own `tier()` for the default model: the onboarding card decides
+  "this computer" and private from it, never from its own host list (`0.0.0.0`
+  is Public, `::1` is Private), and keeps reachability (the CSP allows only
+  `127.0.0.1`) as a separate question. Memory is `ollama::sizing_memory()`,
+  shared by the route and the provider's `num_ctx` tier: on Linux an NVIDIA
+  GPU's VRAM (`llamacpp_sidecar::discrete_vram_gib`), never system RAM, because
+  the sidecar's `cpu_only` figure there describes its own bundled CPU build and
+  Ollama ships CUDA. Deleting a Llama Server row that came from Ollama removes
+  the tags whose `/api/show` FROM line names the listed blob, never
+  `ollama_name`, because on Apple Silicon the bare tag is the MLX build.
+- **Prompt clock:** for a local engine (`prompt_manager::is_local_engine`) the
+  system prompt states the date, not the hour. The clock sits near the top of
+  the prompt, so an hourly change re-prefilled everything after it: measured on
+  qwen3.8:27b, 8,191 of 30,745 tokens reused and 107 s of prefill on the first
+  request after each hour boundary. The MOIM still carries the minute.
+- **Tier: a cloud model is Public even on a loopback host.** `tier()` is
+  `self_hosted_tier(base URL)` (loopback → Private) EXCEPT when the model is
+  served remotely: a tag that is `cloud` or ends in `-cloud`
+  (`utils::is_ollama_cloud_model`), or one whose `/api/show` carries
+  `remote_host`/`remote_model` (a cloud model renamed with `ollama cp`).
+  Ollama forwards those to ollama.com, so they are Public with no affiliation.
+  This makes the model NAME a tier input in both directions, as `OLLAMA_HOST`
+  is: a local tag to a cloud tag lowers the tier, and back raises it, which is
+  why `BIOROUTER_MODEL` is in `CAPABILITY_CONFIG_KEYS`. A request for such a
+  model from an instance that already told the gates "Private" is refused
+  before anything is sent.
+- **Tool-call protocols:** every model's template decides what Ollama returns
+  for a tool call (built-in Go renderer/parser, Harmony, a Go template's tag
+  parser, the GGUF's Jinja template, or no tool support), so the same request
+  yields structured calls, calls written as text, or an empty reply depending
+  on the model. 12 models were probed on the wire (2026-10-10): `qwen2.5-coder:7b`
+  and `phi4-mini` made 0 structured calls, `deepseek-r1:8b` fabricates tool
+  output, `mistral-small3.2` returns empty replies on any argument named `name`.
+  Handling, all measured against those captures:
+  - **Text recovery** (`formats/text_tool_calls.rs`, wrapped around both local
+    providers' streams — Ollama and Llama Server): TIER1 only, i.e. the WHOLE
+    reply is one call object, an array/sequence of them, or phi4-mini's
+    `type`-named array, optionally fenced, or one of those wrapped whole in a
+    `<tool_call>` tag, closing tag optional (L8, seen live from
+    qwen2.5-coder:7b) — never in `<tool_response>`, the RESULT tag, where the
+    same model echoed and invented tool output. Guards: no structured call in the
+    turn, finish reason not `length`, a closed key set (`name` + `arguments` or
+    `parameters`, optional `id`/`type`), every name byte-identical to a tool in
+    THIS request, argument objects with required fields and basic/direct types
+    checked, all or nothing. Checks include nested properties/items and
+    `additionalProperties: false` to depth 16. They do not resolve `$ref` or
+    evaluate enum, composed schemas (`anyOf`/`oneOf`), or other JSON Schema
+    constraints; those remain for the tool's normal argument handling. Text
+    that could still be such a payload is held back while it
+    streams (thinking is not). A recovered call carries `recovered_from_text`
+    metadata and goes through the same approval path as any other. Prose plus a
+    call (TIER2: ≤400 characters of prose, then one block that may itself be an
+    array or sequence of calls) is recovered only by the toolshim, which is
+    opt-in (`BIOROUTER_TOOLSHIM`) but runs on ANY provider, reads the reply only
+    after it streamed, and has no finish reason to check.
+    ⚠ Do not add parsers for `[TOOL_CALLS]`, Harmony or pythonic lists, nor
+    Hermes tags beyond the whole-reply `<tool_call>` wrapper, "for robustness":
+    none of them ever reached Biorouter as text — Ollama parses or swallows
+    them — so such a parser would only ever see a model QUOTING one. Never
+    recover from `<tool_response>`, the RESULT tag. A call inside prose is never
+    acted on, not even by a retry: a quote cannot be told from an intention.
+  - **Argument normalisation** (R16) on every call, structured or recovered:
+    Cohere's `{tool_name, parameters}` wrapper is unwrapped, a stringified
+    object/array is decoded and `"10"`/`"true"` coerced where the schema asks
+    for a number/boolean (never where it allows a string); an enum violation is
+    left for the tool to report, so the model sees the error.
+  - **One corrective retry per turn**, Ollama's native path only (never `/v1`),
+    shared by three triggers: (1) a `tool '<x>' not found` error (never read as
+    "model not found"), re-asked with the tool list; (2) an empty reply to a
+    request with tools whose tokens may be a call Ollama's parser swallowed —
+    with no reasoning, more than 8 output tokens; with reasoning, always,
+    because measured reasoning ran 2.4-4.7 characters per token and qwen3:1.7b's
+    swallowed call fell inside that band (`TurnGuard::empty_reply`). The error
+    then says only what the numbers show: "could not parse as a tool call" only
+    beyond a ceiling for the reasoning (characters/2 + 16 tokens) plus 8, else
+    "returned reasoning only (N output tokens)"; a reply cut at `length`, or
+    one with no reasoning and at most 8 tokens, fails at once; (3) a WHOLE reply
+    that is a call recovery declined (`text_tool_calls::attempted_call`: a name
+    without its `extension__` prefix, arguments that do not fit, the
+    `<tool_response>` tag), whose name stands for an offered tool. That one
+    asks rather than orders, is skipped when the call echoes the conversation
+    (made by an earlier turn, or quoted in a tool result or earlier assistant
+    reply; `echoes_conversation`), and is best-effort: if it cannot be sent,
+    fails or comes back empty, the turn ends with the reply already shown. A
+    retry after shown text starts a new paragraph.
+  - **Tool roster for templates that hide tools** (R8): when `/api/show`'s
+    template shows tools only next to the last user message (llama3.1,
+    mistral-small3.2, mistral-nemo; `ModelFacts::tools_only_near_last_user`),
+    `tool_roster` appends one line per tool (name, params, first sentence;
+    ≤64 tools) to the system prompt on EVERY request for that model, so the
+    prefix stays cacheable, plus one warning per model.
+  - **No tool support** (`/api/show` capabilities lack `tools`, e.g.
+    `gemma3:4b`, which 400s any request with tools): refused before sending,
+    and hidden from the model list.
+
+  Per-model matrix, models to avoid, and the guards:
+  [`docs/providers/ollama/tool-call-protocols.md`](docs/providers/ollama/tool-call-protocols.md).
+- **Tests:** `cargo test -p biorouter --lib ollama`, and live against a real
+  Ollama with the two models pulled:
+  `cargo test -p biorouter --test ollama_live -- --ignored --test-threads=1`
+  (`OLLAMA_TEST_MODELS` replaces the list; it runs the real configure probe).
 
 ### Coding-agent providers (Claude Code / Codex)
 
@@ -1375,15 +1668,18 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   the agent holds `developer__shell`, and `Config`'s cache is keyed on a `FileStamp` it re-`stat`s
   per read — so a model with a shell on a keyless daemon configured PUBLIC could write a private
   provider into the file and get a 200 with Private capability where `main` answers 409 (measured
-  2026-09-12). The pinned set is `privacy::CAPABILITY_CONFIG_KEYS` verbatim plus `BIOROUTER_MODEL`;
+  2026-09-12). The pinned set is `privacy::CAPABILITY_CONFIG_KEYS` verbatim, which since 2026-10-10 includes `BIOROUTER_MODEL`;
   pinning the provider NAME alone is not enough, because flipping `OLLAMA_HOST` to loopback moves
   `ollama`'s tier with the name untouched. ⚠ And `NoKeyInstalled` is **not** the same thing as
   "this is `serve`" — a desktop spawn satisfies it when `userActionKey` is undefined or the
   daemon's bounded 2s stdin read times out. That case is a repairable fault, so the desktop
   launcher declares its intent in `BIOROUTER_USER_ACTION_EXPECTED` and such a daemon keeps
-  `main`'s refusal plus a startup `ERROR`. ⚠ `BIOROUTER_MODEL` is in neither capability-key list
-  by decision, not oversight: no `tier()` implementation reads the model name (all five checked),
-  so it is an integrity key and its row lives in `NOT_CAPABILITY_CONFIG_KEYS`. ⚠ **Still unreachable in a browser, and out of SD-12's scope:**
+  `main`'s refusal plus a startup `ERROR`. ⚠ Since 2026-10-10 `BIOROUTER_MODEL` is a capability
+  key, because `ollama`'s `tier()` reads the model name (a cloud tag is Public through a loopback
+  host); an unproven upsert or remove is refused like `OLLAMA_HOST`'s, and
+  `the_model_key_is_a_capability_key_exactly_while_a_tier_reads_the_model` ties the classification
+  to that read. Until then it was an integrity key in `NOT_CAPABILITY_CONFIG_KEYS`, pinned here by
+  hand. ⚠ **Still unreachable in a browser, and out of SD-12's scope:**
   `/agent/cancel` and `/interrupt` require the proof unconditionally, so Stop and mid-turn
   steering cannot work on a keyless daemon. ⚠ `privacy_ar15_is_retired.rs`'s closure scan took
   the FIRST `TierRaiseNeedsUser` in `routes/agent.rs`, which from `eb594ded` was the new-chat gate

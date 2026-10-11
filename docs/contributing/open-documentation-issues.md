@@ -23,11 +23,11 @@ this worktree; `file:line` references point at real current lines.
 | Severity | Meaning | Open |
 |---|---|---|
 | [Correctness risk](#correctness-risk) | Documentation that would lead someone into an unsafe or wrong action | 6 |
-| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 12 |
+| [Doc/code contradiction](#doccode-contradiction) | The docs and the code disagree, or two docs disagree | 11 |
 | [Dead references](#dead-references) | Cited documents, branches, artifacts, or paths that do not exist | 7 |
 | [Coverage gaps](#coverage-gaps) | Things a reader will look for and not find | 6 |
 | [Cosmetic](#cosmetic) | Worth noting, not worth chasing | 8 |
-| **Total** | | **39** |
+| **Total** | | **38** |
 
 ## Correctness risk
 
@@ -117,22 +117,6 @@ performance report's follow-up ("wire release-binary to release-dist after a not
 smoke test") is still open, contrary to the record.
 Affected: [jcode borrows implementation report](../history/performance-2026-06/jcode-borrows-implementation-report.md).
 **Decision needed:** wire it or correct the comment.
-
-### The llama-server sidecar defaults in `CLAUDE.md` match neither the code nor the checklist
-
-Three disagreements, all in `crates/biorouter/src/providers/llamacpp_sidecar.rs`.
-Context size: `CLAUDE.md` says model-native (`--ctx-size 0`, read back from `/props`);
-`default_context_size()` at line 620 returns a **memory-tiered** value (131072 at ≥64 GiB,
-65536 at ≥16 GiB, else 32768) and never passes `0`; the
-[model catalog QA checklist](../providers/llama-server/model-catalog-qa-checklist.md) says a
-flat 32768. Thinking: `CLAUDE.md` says enabled by default; `build_args` at lines 761-772
-defaults `LLAMACPP_ENABLE_THINKING` to **false** and emits `--reasoning off`, asserted by unit
-tests at lines 1780-1781 and 1831-1851. Catalog: the checklist names Qwen3.5 and Gemma-4 ids
-that no longer exist — the shipping `MODEL_CATALOG` is `gemma4`, `gemma4-e2b`, `gemma4-12b`,
-`gemma4-26b`, `gemma4-31b`, `qwen3.6`, `qwen3.6-27b`, so the checklist's
-`LLAMACPP_SURVEY_MODELS=qwen3.5-0.8b,gemma-4-e2b` selects nothing. Relatedly,
-`crates/biorouter/tests/llamacpp_survey.rs:253` hardcodes "32k ctx" into its report header.
-**Decision needed:** reconcile all three against the code, in one pass.
 
 ### The Knowledge plans put the module in the wrong crate, including in the architecture diagram
 
@@ -347,13 +331,10 @@ composite-report tool) is named there, so the page no longer omits it. The catal
 still eight of thirty-two. **Decision needed:** this needs a content pass, not a formatting
 pass.
 
-### The environment-variable catalogue is missing four families
+### The environment-variable catalogue is missing three families
 
 [Environment variables](../configuration/environment-variables.md) does not document: the
-llama.cpp sidecar variables (`LLAMACPP_CONTEXT_SIZE`, `LLAMACPP_EXTRA_ARGS`,
-`LLAMACPP_EXTERNAL_HOST`, `BIOROUTER_LLAMACPP_BIN`, `LLAMACPP_ENABLE_THINKING`) — of which
-`LLAMACPP_CONTEXT_SIZE` has no home anywhere under `docs/`; the auto-update variables
-(`BIOROUTER_UPDATE_FEED_URL`, `BIOROUTER_UPDATE_AUTO_INSTALL`); the hooks variables
+auto-update variables (`BIOROUTER_UPDATE_FEED_URL`, `BIOROUTER_UPDATE_AUTO_INSTALL`); the hooks variables
 (`BIOROUTER_VERIFY_BUILD`, `BIOROUTER_SKIP_VERIFY_HOOK`, `BIOROUTER_ALLOW_PROJECT_HOOKS`,
 documented only inside [hooks](../agent-loop/hooks/)); and roughly twenty `BIOROUTER_*`
 loop-safety variables enumerated only inside a historical wave report

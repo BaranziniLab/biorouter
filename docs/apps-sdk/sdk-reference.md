@@ -80,7 +80,7 @@ Only the Agent Drafter–specific blocks are shown.
     "greeting": "Ask me about the cohort.",
     "model": {                       // omit entirely to inherit the user's provider/model
       "provider": "llamacpp",
-      "model": "qwen3.5-4b",
+      "model": "qwen3.8-27b",
       "settings": { "temperature": 0.2, "max_tokens": 4096,
                     "reasoning_effort": "medium", "verbosity": null }
     },
@@ -133,12 +133,12 @@ Only the Agent Drafter–specific blocks are shown.
       },
       "workflows": { … },            // declarative Tool/Agent step lists
       "routes": {                    // named model routes for br.call({route})
-        "fast":  { "provider": "llamacpp", "model": "qwen3.5-4b" },
+        "local": { "provider": "llamacpp", "model": "qwen3.8-27b" },
         "deep":  { "model": "claude-opus-4-8" }   // absent field inherits session's
       },
       "agents": {                    // named worker profiles — subset-capped, serialized
         "critic": { "system_prompt": "Refute every claim.",
-                    "model": { "provider": "llamacpp", "model": "qwen3.5-4b" } }
+                    "model": { "provider": "llamacpp", "model": "qwen3.8-27b" } }
       },
       "lazy_tools": false
     }

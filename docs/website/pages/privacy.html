@@ -25,7 +25,7 @@
   </div>
   <figcaption>What is private, and what it makes private in turn.</figcaption>
 </figure>
-<p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
+<p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public, and so is an Ollama cloud model (a tag such as <code>gpt-oss:120b-cloud</code>), because Ollama sends it to ollama.com. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
 <p>A private chat, model, extension or knowledge base shows a padlock and the word Private. Public ones show the word Public.</p>
 
 <h2 id="privacy-becomes">How a chat becomes private</h2>

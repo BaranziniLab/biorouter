@@ -1,7 +1,7 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then **Configure providers**.
@@ -43,32 +43,34 @@ The providers are grouped below: local models, UCSF institutional models, commer
 
 **No API key required.** Provider id `llamacpp`.
 
-The desktop app bundles a pinned llama.cpp `llama-server` binary and runs it for you. It downloads a model's weights once, on first use; after that, nothing leaves your machine.
+The desktop app bundles a pinned llama.cpp `llama-server` binary and runs it for you. It downloads a model's weights once, on first use, or starts from a copy already on disk (including a GGUF build you pulled into Ollama); after that, nothing leaves your machine.
 
-Default model: `gemma4-12b` on machines with 64 GiB or more of GPU-addressable memory, `gemma4` (Gemma 4 E4B) below that.
+Default model: `qwen3.8-27b` (Qwen3.8 27B), on every machine.
 
-Available models include:
+Available models:
 
-- `gemma4`, `gemma4-e2b`, `gemma4-12b`, `gemma4-26b`, `gemma4-31b`
-- `qwen3.6`, `qwen3.6-27b`
+- `qwen3.8-27b`: Qwen3.8 27B, about 19 GB, the default
+- `gemma4-31b`: Gemma 4 31B, about 18 GB
 - Any other model, given as a raw Hugging Face `owner/repo:QUANT` spec
+
+Both models need about 32 GiB of GPU-addressable memory (unified memory on Apple Silicon), and 48 GiB is recommended. They still run below that, slowly. On an Intel Mac the bundled server has no GPU acceleration, so expect a few tokens per second. A model name from an earlier version of Biorouter, such as `gemma4` or `gemma4-12b`, now runs `qwen3.8-27b`. See the [Llama Server model catalog](../providers/llama-server/model-catalog.md) for the details.
 
 Optional configuration includes `LLAMACPP_CONTEXT_SIZE`, `LLAMACPP_ENABLE_THINKING` and `LLAMACPP_EXTERNAL_HOST`.
 
 #### Ollama (local)
 
-**No API key required** — runs fully on your machine.
+**No API key required**: runs fully on your machine.
 
-Use Ollama for completely local, private inference. No data leaves your device.
+Use Ollama for completely local, private inference with an [Ollama](https://ollama.com) server you install and run yourself. No data leaves your device.
 
-Default model: `qwen3`
+Default model: `qwen3.8:27b`
 
-Available models include:
+Supported models:
 
-- qwen3, qwen3-coder variants
-- Any model available in the Ollama library
+- `qwen3.8:27b` (Qwen3.8 27B, about 18 GB), the default
+- `gemma4:31b` (Gemma 4 31B, about 19 GB)
 
-To use: install [Ollama](https://ollama.com), pull a model (`ollama pull qwen3`), then configure Biorouter to use the Ollama provider. The endpoint defaults to `http://localhost:11434`.
+To use: install Ollama 0.32.12 or later (the oldest that runs `qwen3.8:27b`; `gemma4:31b` needs 0.31.0 on Apple Silicon and 0.30.9 elsewhere), pull a model (`ollama pull qwen3.8:27b`), then configure Biorouter to use the Ollama provider. The endpoint defaults to `http://localhost:11434`. The model list shows the models you have pulled that can call tools. Other models may work, but many write their tool calls as text or return empty replies; see [which local models to use](../providers/ollama/tool-call-protocols.md#which-models-to-use). Biorouter sets the context window itself (`OLLAMA_NUM_CTX` overrides it); see [context window and settings](../providers/ollama/context-window-and-settings.md).
 
 ### Institutional models (UCSF)
 
