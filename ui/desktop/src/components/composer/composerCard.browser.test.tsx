@@ -1,17 +1,20 @@
 // @vitest-environment node
 /**
- * The chat composer card under the whole stylesheet, in a real layout engine (owner message 13,
- * R-27 "fills before lines", spec 3.7 and section 9).
+ * The chat composer card under the whole stylesheet, in a real layout engine (owner message 17,
+ * R-32, which takes the card out of R-27's fill rule; spec 3.7).
  *
- * The claims are about the cascade, which jsdom does not run: the card's `border-transparent`
- * utility against the unlayered focus edge in `main.css`, the private control ground the card
- * hands its children through `.br-fill-surface`, a neutral chip's strong step off the card, and
- * forced colours drawing the transparent border. So the card's own class list
- * (`composerCardClassName`, the one `ChatInput` renders) and the real composer pieces (the `+`
- * menu, the queue, the chips row, `Button`) are bundled with esbuild, `styles/main.css` is
- * compiled by Tailwind with the classes the bundle uses, the composer's component CSS is appended
- * as written, and Chromium paints them. Colours are compared with probes that paint the token
- * itself, so a token value can change without this file changing.
+ * The card is the page ground with its resting hairline (`border-border-subtle/60`, the value it
+ * had before R-27 and the pair Crew's card writes), the coral focus edge and the working sweep
+ * on that same 1px border, and NOT a filled box: what sits in it rests as it does on any page
+ * ground. The claims are about the cascade, which jsdom does not run: the hairline utility
+ * against the unlayered focus edge in `main.css`, the control ground a filled box would hand its
+ * children through `.br-fill-surface` (and this card must not), a thumbnail's tile, and forced
+ * colours drawing the border. So the card's own class list (`composerCardClassName`, the one
+ * `ChatInput` renders for a chat and for Home) and the real composer pieces (the `+` menu, the
+ * queue, the chips row, `Button`) are bundled with esbuild, `styles/main.css` is compiled by
+ * Tailwind with the classes the bundle uses, the composer's component CSS is appended as written,
+ * and Chromium paints them. Colours are compared with probes that paint the token itself, so a
+ * token value can change without this file changing.
  *
  * Set `COMPOSER_SHOTS_DIR` to also save light and dark screenshots of the cards there.
  */
@@ -136,6 +139,18 @@ function App() {
     <div style={{ display: 'grid', gap: 0 }}>
       <div id="chat-ground" className="bg-background-default" style={{ padding: 24, width: 760 }}>
         <div style={{ display: 'grid', gap: 24 }}>
+          <span>
+            <Button
+              id="bare-send"
+              type="button"
+              size="default"
+              shape="round"
+              variant="secondary"
+              aria-label="Send"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          </span>
           <Card id="rest" />
           <Card id="full" text="Compare the two fits and say which one holds." ready>
             <MessageQueue
@@ -144,6 +159,7 @@ function App() {
               onClearQueue={() => {}}
               onStopAndSend={() => {}}
               onReorderMessages={() => {}}
+              onEditMessage={() => {}}
             />
             <ComposerChips
               refs={[]}
@@ -192,6 +208,7 @@ function App() {
               onRemoveFile={() => {}}
             />
           </Card>
+          <Card id="typing" text="Compare the two fits" />
           <Card id="drag" dragging />
           <Card id="working" text="Summarise the run" working />
         </div>
@@ -217,7 +234,7 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-describe('the chat composer card under the whole stylesheet (R-27)', () => {
+describe('the chat composer card under the whole stylesheet (R-32)', () => {
   let browser: Browser | null = null;
   let script = '';
   let css = '';
@@ -225,7 +242,7 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
   beforeAll(async () => {
     browser = await launchChromium();
     if (!browser) {
-      console.warn('No Chromium found: skipping the composer fill tests.');
+      console.warn('No Chromium found: skipping the composer card tests.');
       return;
     }
     const bundle = await build({
@@ -307,56 +324,84 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
     }, selector);
   const away = (tab: Page) => tab.mouse.move(800, 1090);
 
-  it('rests the card on the subtle fill with no line around it, on a chat and on Home', async (ctx) => {
+  /** The resting hairline: `border-border-subtle/60`, as Tailwind compiles it. */
+  const HAIRLINE = 'color-mix(in oklab, var(--border-subtle) 60%, transparent)';
+
+  it('rests the card on the page ground with its hairline, on a chat and on Home', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const tab = await open(mode);
       try {
+        const page = await paint(tab, 'var(--background-default)');
         const fill = await paint(tab, 'var(--background-fill)');
-        const clear = await paint(tab, 'transparent');
+        const hairline = await edgeOf(tab, HAIRLINE);
+        expect(hairline, `${mode} the hairline is a line`).not.toBe(
+          await paint(tab, 'transparent')
+        );
         for (const id of ['#rest', '#home']) {
           const card = await style(tab, id);
-          expect(card.ground, `${mode} ${id} is the fill`).toBe(fill);
-          expect(card.edge, `${mode} ${id} draws no resting line`).toBe(clear);
-          expect(card.edgeWidth, `${mode} ${id} keeps its 1px room`).toBe('1px');
+          expect(card.ground, `${mode} ${id} is the page ground`).toBe(page);
+          expect(card.ground, `${mode} ${id} has no grey fill`).not.toBe(fill);
+          expect(card.edge, `${mode} ${id} rests on its hairline`).toBe(hairline);
+          expect(card.edgeWidth, `${mode} ${id} draws 1px`).toBe('1px');
         }
-        expect(fill, `${mode} the fill is a step off the chat's ground`).not.toBe(
-          await paint(tab, 'var(--background-default)', '#chat-ground')
-        );
-        expect(fill, `${mode} the fill is a step off Home's canvas`).not.toBe(
-          await paint(tab, 'var(--background-canvas)', '#home-ground')
-        );
       } finally {
         await tab.close();
       }
     }
   });
 
-  it('turns the edge the accent while typing, without moving a pixel', async (ctx) => {
+  it('turns the hairline the accent while typing, without moving a pixel', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const tab = await open(mode);
       try {
-        const before = await style(tab, '#rest');
-        await tab.focus('#rest-text');
+        const hairline = await edgeOf(tab, HAIRLINE);
+        const before = await style(tab, '#typing');
+        await tab.focus('#typing-text');
         await tab.waitForTimeout(300);
-        const focused = await style(tab, '#rest');
+        const focused = await style(tab, '#typing');
         expect(focused.edge, `${mode} focus edge`).toBe(await edgeOf(tab, 'var(--border-accent)'));
-        expect(focused.ground, `${mode} the card keeps its fill while focused`).toBe(
-          await paint(tab, 'var(--background-fill)')
+        expect(focused.ground, `${mode} the card keeps the page ground while focused`).toBe(
+          await paint(tab, 'var(--background-default)')
         );
         expect(focused.size).toEqual(before.size);
-        // Focusing Send is not "typing here".
-        await tab.focus('#rest-send');
+        // Focusing Send is not "typing here": the hairline comes back.
+        await tab.focus('#typing-send');
         await tab.waitForTimeout(300);
-        expect((await style(tab, '#rest')).edge).toBe(await paint(tab, 'transparent'));
+        expect((await style(tab, '#typing')).edge, `${mode} Send focused`).toBe(hairline);
       } finally {
         await tab.close();
       }
     }
   });
 
-  it('steps what sits in the card back to the page ground, and a chip a step past the card', async (ctx) => {
+  it('runs the working sweep on the hairline, and dims a focused edge under it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      try {
+        const sweep = await tab.evaluate(() => {
+          const cs = getComputedStyle(document.getElementById('working')!, '::after');
+          return { name: cs.animationName, image: cs.backgroundImage };
+        });
+        expect(sweep.name, `${mode} the sweep runs`).toBe('br-composer-working');
+        expect(sweep.image).toContain('conic-gradient');
+        expect((await style(tab, '#working')).edge, `${mode} working, not focused`).toBe(
+          await edgeOf(tab, HAIRLINE)
+        );
+        await tab.focus('#working-text');
+        await tab.waitForTimeout(300);
+        expect((await style(tab, '#working')).edge, `${mode} working and focused`).toBe(
+          await edgeOf(tab, 'color-mix(in oklab, var(--border-accent) 30%, transparent)')
+        );
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('rests what sits in the card as it does on any page ground', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const tab = await open(mode);
@@ -364,8 +409,15 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
         const page = await paint(tab, 'var(--background-default)');
         const fill = await paint(tab, 'var(--background-fill)');
         const strong = await paint(tab, 'var(--background-fill-strong)');
-        // The quiet Send: the filled secondary button, on the page ground inside the card.
-        expect((await style(tab, '#rest-send')).ground, `${mode} quiet Send`).toBe(page);
+        // The quiet Send: the filled secondary button rests on the fill, exactly as it does
+        // straight on the page. A filled box would have stepped it back to the page ground.
+        const bare = (await style(tab, '#bare-send')).ground;
+        expect(bare, `${mode} a quiet Send on the page`).toBe(fill);
+        expect((await style(tab, '#rest-send')).ground, `${mode} quiet Send in the card`).toBe(
+          bare
+        );
+        expect((await style(tab, '#home-send')).ground, `${mode} quiet Send on Home`).toBe(bare);
+        expect(bare, `${mode} the quiet Send reads off the card`).not.toBe(page);
         await tab.hover('#rest-send');
         await tab.waitForTimeout(250);
         expect((await style(tab, '#rest-send')).ground, `${mode} quiet Send hovered`).toBe(strong);
@@ -374,14 +426,24 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
         expect((await style(tab, '#full-send')).ground).toBe(
           await paint(tab, 'var(--background-accent)')
         );
-        // A file chip (the neutral badge) rests on the strong step, never on the card's own fill.
+        // A file chip (the neutral badge) rests on the strong step, as anywhere.
         const chip = await style(tab, '#full [data-testid="composer-chips"] li:nth-child(2) > *');
         expect(chip.ground, `${mode} file chip`).toBe(strong);
-        expect(chip.ground).not.toBe(fill);
-        // The thumbnail draws no outline; its tile is the page ground.
+        // The thumbnail draws no outline (R-27 still holds for it); its tile is the subtle fill,
+        // so a loading or transparent image still shows a tile on the white card.
         const thumb = await style(tab, '#full [data-testid="composer-image-thumb"]');
         expect(thumb.edge, `${mode} thumbnail edge`).toBe(await paint(tab, 'transparent'));
-        expect(thumb.ground).toBe(page);
+        expect(thumb.ground, `${mode} thumbnail tile`).toBe(fill);
+        // The queue's edit field: the shared field's rest on the fill, not the page ground.
+        await tab.click('#full [data-testid="message-queue"] .br-queue-line');
+        await tab.waitForTimeout(200);
+        await tab.click('#full .br-queue-row .br-queue-edit');
+        await tab.waitForSelector('#full .br-queue-row textarea');
+        await tab.focus('#rest-text');
+        await away(tab);
+        await tab.waitForTimeout(250);
+        const field = await style(tab, '#full .br-queue-row textarea');
+        expect(field.ground, `${mode} queue edit field`).toBe(fill);
       } finally {
         await tab.close();
       }
@@ -400,7 +462,12 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
         expect(drag.ground, `${mode} drag-over ground`).toBe(
           await paint(tab, 'var(--background-fill-strong)')
         );
+        expect(drag.ground, `${mode} drag-over is not the resting card`).not.toBe(
+          await paint(tab, 'var(--background-default)')
+        );
         expect(drag.shadow, `${mode} drag-over edge`).toContain('inset');
+        // The quiet Send still reads on the strong fill.
+        expect((await style(tab, '#drag-send')).ground, `${mode} quiet Send`).not.toBe(drag.ground);
         expect((await style(tab, '#drag')).size).toEqual((await style(tab, '#rest')).size);
       } finally {
         await tab.close();
@@ -434,20 +501,43 @@ describe('the chat composer card under the whole stylesheet (R-27)', () => {
     for (const mode of ['light', 'dark'] as const) {
       const tab = await open(mode);
       try {
-        await tab.screenshot({ path: resolve(SHOTS, `composer-fill-${mode}.png`), fullPage: true });
+        const shot = (selector: string, name: string) =>
+          tab
+            .locator(selector)
+            .screenshot({ path: resolve(SHOTS, `composer-card-${mode}-${name}.png`) });
+        await tab.screenshot({ path: resolve(SHOTS, `composer-card-${mode}.png`), fullPage: true });
+        // At rest on a chat and on Home, and the drag-over card.
+        await shot('#rest', 'rest');
+        await shot('#home-ground', 'home');
+        await shot('#drag', 'drag-over');
+        // Focused while empty, then typing (focused with text).
         await tab.focus('#rest-text');
         await tab.waitForTimeout(300);
-        await tab
-          .locator('#chat-ground')
-          .screenshot({ path: resolve(SHOTS, `composer-fill-${mode}-focused.png`) });
-        // The queue unfolded, with a row hovered.
+        await shot('#rest', 'focused');
+        await tab.focus('#typing-text');
+        await tab.waitForTimeout(300);
+        await shot('#typing', 'typing');
+        await tab.focus('#home-text');
+        await tab.waitForTimeout(300);
+        await shot('#home-ground', 'home-focused');
+        // The quiet Send hovered.
+        await tab.focus('#rest-send');
+        await tab.hover('#rest-send');
+        await tab.waitForTimeout(250);
+        await shot('#rest', 'send-hover');
+        await away(tab);
+        // The queue unfolded, with a row hovered; the chips and thumbnails under it.
         await tab.click('#full [data-testid="message-queue"] .br-queue-line');
         await tab.waitForTimeout(200);
         await tab.hover('#full .br-queue-row');
         await tab.waitForTimeout(250);
-        await tab
-          .locator('#full')
-          .screenshot({ path: resolve(SHOTS, `composer-fill-${mode}-queue.png`) });
+        await shot('#full', 'queue');
+        await shot('#refs', 'refs');
+        // The queue's edit field open.
+        await tab.click('#full .br-queue-row .br-queue-edit');
+        await tab.waitForSelector('#full .br-queue-row textarea');
+        await tab.waitForTimeout(250);
+        await shot('#full', 'queue-edit');
       } finally {
         await tab.close();
       }

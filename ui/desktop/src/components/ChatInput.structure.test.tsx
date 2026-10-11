@@ -154,16 +154,17 @@ describe('the composer is one card and one footer line', () => {
     expect(card().previousElementSibling).toBeNull();
   });
 
-  it('is a subtle fill with no resting outline, and a fill surface for what sits in it (R-27)', () => {
+  it('is the page ground with a resting hairline, not a filled box (R-32)', () => {
     renderComposer();
     const classes = card().classList;
-    expect(classes.contains('bg-background-fill')).toBe(true);
-    // The 1px border stays, transparent: the focus and working edges ride on it.
+    expect(classes.contains('bg-background-default')).toBe(true);
+    // One 1px hairline at rest: the focus and working edges turn it the accent.
     expect(classes.contains('border')).toBe(true);
-    expect(classes.contains('border-transparent')).toBe(true);
-    expect([...classes].some((c) => c.startsWith('border-border-'))).toBe(false);
-    expect(classes.contains('bg-background-default')).toBe(false);
-    expect(classes.contains('br-fill-surface')).toBe(true);
+    expect(classes.contains('border-border-subtle/60')).toBe(true);
+    expect(classes.contains('border-transparent')).toBe(false);
+    // No grey fill, and not a filled box: what sits in it rests as on any page.
+    expect(classes.contains('bg-background-fill')).toBe(false);
+    expect(classes.contains('br-fill-surface')).toBe(false);
   });
 
   it('uses no monospace anywhere in the composer', () => {
@@ -202,8 +203,8 @@ describe('placeholders', () => {
 describe('Send and Stop', () => {
   it('is quiet while empty and the accent once there is something to send', () => {
     renderComposer();
-    // The filled primitive's ground (R-27); inside the card it steps back to the
-    // page ground through `.br-fill-surface`.
+    // The filled primitive's ground (R-27): on the card's page ground it rests
+    // on the fill, as on any page.
     expect(sendButton().className).toContain('br-fill-rest');
     fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'hello' } });
     expect(sendButton().className).toContain('bg-background-accent');

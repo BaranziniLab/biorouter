@@ -73,4 +73,22 @@ describe('the composer focus edge', () => {
     expect(COMPOSER_CARD).toContain("'biorouter-composer-card'");
     expect(CHAT_INPUT).toMatch(/className=\{composerCardClassName\(/);
   });
+
+  /**
+   * The edge the rule turns is the card's own RESTING hairline (owner message
+   * 17, R-32): the page ground with `border-border-subtle/60`, the pair Crew's
+   * card writes too, so focus is a colour change on a line that is already
+   * there, never a line appearing out of a transparent border on a grey fill.
+   */
+  it('turns a resting hairline on the page ground, the same pair Crew writes', () => {
+    const CREW = readFileSync(join(__dirname, '../components/crew/composer/Composer.tsx'), 'utf8');
+    // The class strings only: prose in a comment is about the look, not the look.
+    const code = COMPOSER_CARD.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const pair = 'bg-background-default border border-border-subtle/60';
+    expect(code).toContain(`'${pair}'`);
+    expect(CREW).toContain(pair);
+    expect(code).not.toMatch(/\bborder-transparent\b/);
+    expect(code).not.toMatch(/\bbg-background-fill\b(?!-)/);
+    expect(code).not.toMatch(/\bbr-fill-surface\b/);
+  });
 });

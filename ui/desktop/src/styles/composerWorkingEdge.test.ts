@@ -145,6 +145,18 @@ describe('the composer working edge', () => {
       expect(workingAt).toBeGreaterThan(-1);
       expect(workingAt).toBeGreaterThan(focusAt);
     });
+
+    /**
+     * Working but not focused is the resting hairline with the segment riding
+     * on it (owner message 17, R-32: the card rests on the page ground with its
+     * hairline again). No rule may recolour the base border for the working
+     * state alone, or the unfocused working card loses the edge the segment
+     * travels along.
+     */
+    it('keeps the resting hairline under the segment when the field is not focused', () => {
+      expect(CSS).not.toMatch(/\.biorouter-composer-card\[data-working='true'\]\s*\{/);
+      expect(COMPOSER_CARD).toContain("'bg-background-default border border-border-subtle/60'");
+    });
   });
 
   describe('reduced motion', () => {

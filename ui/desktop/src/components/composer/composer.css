@@ -233,9 +233,9 @@
    hover or focus, like a row action.
 
    No resting outline (R-27): the picture is its own edge, and before it paints
-   (or through a transparent PNG) the tile shows the page ground, one step back
-   from the card's fill, since a fill never sits on a fill. The 1px border stays,
-   transparent, so an error edge moves nothing and forced colours draw the tile. */
+   (or through a transparent PNG) the tile shows the subtle fill, a box on the
+   card's page ground (R-32). The 1px border stays, transparent, so an error edge
+   moves nothing and forced colours draw the tile. */
 .br-composer-thumb {
   position: relative;
   flex: none;
@@ -244,7 +244,7 @@
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: var(--radius-element);
-  background: var(--background-default);
+  background: var(--background-fill);
 }
 
 .br-composer-thumb[data-error] {

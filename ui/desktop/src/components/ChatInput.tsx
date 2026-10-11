@@ -2791,8 +2791,8 @@ export default function ChatInput({
       onDragLeave={handleLocalDragLeave}
     >
       <div
-        // The subtle fill with no resting outline (R-27); the focus and working
-        // edges ride on its transparent 1px border. `composer/composerCard.ts`.
+        // The page ground with a resting hairline (R-32); the focus and working
+        // edges turn that 1px border the accent. `composer/composerCard.ts`.
         className={composerCardClassName({ isDraggingOver })}
         // THE WORKING EDGE: an attribute, not a class, so the hook is something
         // Tailwind never had to generate. Absent when idle.
