@@ -716,8 +716,10 @@
   /* @ws WS-TOKENS begin: fill tokens */
   /* FILLS BEFORE LINES (owner message 13, R-27; design.md 9.2 and 9.5). A card,
      a boxed panel, a secondary button, a chip, a strip tab, the segmented track,
-     a text field, a select and the composer card rest on `--background-fill`
-     with NO outline; hover and press step to `--background-fill-strong`.
+     a text field and a select rest on `--background-fill` with NO outline;
+     hover and press step to `--background-fill-strong`. The chat composer's
+     card is the one box this does NOT reach (owner message 17, R-32): it rests
+     on the page ground with a `--border-subtle` hairline at 60%.
 
      One subtle step, measured as a contrast ratio and as CIELAB lightness:
      `#f4f4f2` is 1.10:1 on the white page and card (dL* 3.9, the same step the

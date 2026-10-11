@@ -800,6 +800,19 @@ about to drop something, shrinking back toward a 114px floor as staged rows clai
 fixed 330px it replaced was too tall at every pane size; that floor is what stops this returning
 through the same door.
 
+### 11.4 The drop target fills the rail again (2026-10-11)
+
+§11.3's 114px floor did not survive the 2026-10 interface redesign. Its vision round shrank the box to
+its content, about 160px, which left a small box over an empty rail (V3-12). The owner asked for the
+side-panel scale back (R-33), so the box is the one child of the rail that grows again: it takes the
+scroller's free height, and gives that room to the paste box, the staged list and the digest progress as
+they appear, down to a **240px** floor, after which the scroller scrolls. Its size is authored on
+`.br-knowledge-dropzone` in `main.css` (`flex: 1 1 0%`, `min-height: 240px`), not written as a utility at
+the call site. What V3-12 added stays: the whole rail is the drop target (a file let go on a staged row
+or the footer still stages; text fields are left alone), and the model picker and Digest button sit in one
+column capped at 22.5rem. `knowledge/knowledgeBand.browser.test.tsx` measures the fill at 264, 300 and
+820px, the room handed back, and the floor.
+
 ---
 
 ## Related documentation

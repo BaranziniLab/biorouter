@@ -2093,6 +2093,7 @@ opens on focus only after a Tab.
 | P1 surfaces, and 9.2 principle 8 as first written | Fills before lines: in-page boxes and controls are a subtle fill with no resting outline; see 9.11 |
 | 9.1 code block and table frames, §4.17 note | The code well and the table frame take the fill with no frame; the table's internal rules stay; see 9.11 |
 | 9.7 fields, SegmentedControl track | Fields rest on the fill with a transparent border; the track is the fill |
+| §4.7 the chat composer | Stands as written: the card is the page ground with its resting hairline, not a fill (R-32); see 9.11 |
 
 ### 9.10 · Open at the time of writing (2026-10-10)
 
@@ -2116,13 +2117,22 @@ ruling R-27 (spec section 9) makes it a general rule, and it replaces 9.2 princi
   wells. Same radius as before.
 - Controls: secondary and outline buttons, chips, the tab strip's tabs, the segmented track, filter and search
   inputs, text fields and selects.
-- The composer card. Its coral focus edge stays.
 - Row lists drop the hairlines between rows wherever spacing and the hover fill already separate them.
 
 **What keeps a line:** structural edges (the 44px band's bottom edge, pane dividers, resize handles, table
 rules inside a filled table) and floating surfaces (menus, popovers, tooltips, dialogs and toasts keep a
 hairline and a shadow, so they stay visible in dark). Crew is the reference and is not converted; shared
 tokens may reach it.
+
+**The one box the rule does not reach: the composer card** (owner message 17, R-32, which supersedes R-27 for
+this card only, in a chat and on Home). It is the page ground (white in light, `--background-default` in dark)
+with its resting 1px hairline, `border-border-subtle/60`, not the grey fill. It carries no `.br-fill-surface`,
+so a control inside it (the quiet Send, a chip, a queued message's edit field) rests as it does on any page
+ground. Its coral focus edge and its working sweep turn that same 1px border, as they did before the fill rule,
+and Crew's card already wrote the same pair. A reviewer who sees a white card with a resting hairline there is
+looking at the specified design, not at a missed fill. The card's classes live in
+`components/composer/composerCard.ts`; `composer/composerCard.browser.test.tsx` paints them under the real
+stylesheet.
 
 **The tokens.** Two shared neutrals, declared once per mode in the base `:root` and `.dark` blocks
 (`theme-contract.mjs` lists them as structural, so no family restates them):

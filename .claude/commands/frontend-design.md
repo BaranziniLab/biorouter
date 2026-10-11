@@ -18,7 +18,8 @@ wave 2. When they disagree, `design.md` wins, and its Part 9 wins over every ear
 - **Rows, not cards.** Anything enumerable is a row list, one primary line and at most one
   secondary line. A card is for something that asks the person to act. Never a box inside a box.
 - **Fills come before lines.** In-page cards, panels, buttons, chips, tabs and fields rest on a
-  subtle fill with no resting outline. Lines stay on structural edges and floating surfaces.
+  subtle fill with no resting outline. Lines stay on structural edges and floating surfaces. The
+  one box the rule does not reach is the composer card (see below).
 - **One job, one control, one look.** A variant lives in the primitive, never in a `className`
   override. Show names, not IDs: machine IDs and paths go behind a "Copy …" item or a tooltip.
 - **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by
@@ -35,7 +36,7 @@ Mater, Roche Limit); a family varies only its ink, accent and status hues. Value
 | `bg-background-default` | `#ffffff` | `#1b1b19` | Cards, popovers, dialogs |
 | `bg-background-muted` | `#f4f4f2` | `#232320` | Page ground, one real step off the canvas |
 | `bg-background-well` | `#f5f5f3` | `#232320` | Inline code, and code wells in the preview paper |
-| `bg-background-fill` | `#f4f4f2` | `#232320` | The resting fill of cards, buttons, chips, tabs, fields, the composer |
+| `bg-background-fill` | `#f4f4f2` | `#232320` | The resting fill of cards, buttons, chips, tabs and fields (not the composer card) |
 | `bg-background-fill-strong` | `#eaeae6` | `#2c2c29` | Hover and press on a fill; the resting fill on the sidebar or a muted ground |
 | `tint-interactive` | ink at 5% | ink at 5% | Hover (`--overlay-hover`); press is 10% plus scale 0.98 |
 | `border-border-subtle` | `#e4e4e0` | `#302f2c` | Structural edges and floating surfaces |
@@ -65,6 +66,12 @@ surfaces, which keep a hairline and a shadow.
 Row lists drop the hairline between rows when spacing and the hover fill separate them
 (`.br-rows-flat` on the list's shell). Hairlines are
 straight: no `border-bottom` on a rounded row. Crew keeps its own recipes.
+
+**The composer card is not a fill** (owner message 17, R-32; a chat and Home, and the in-place message
+edit card). It is the page ground, `bg-background-default border border-border-subtle/60`, with no
+`.br-fill-surface`, so a control in it rests as on any page ground. Its coral focus edge and working
+sweep turn that same 1px border. Its classes are `components/composer/composerCard.ts`. A white card with a
+resting hairline there is correct; do not "fix" it under the fill rule.
 
 | Token | Use |
 |---|---|
