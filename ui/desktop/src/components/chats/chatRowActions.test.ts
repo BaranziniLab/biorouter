@@ -52,6 +52,19 @@ describe('chatRowActions', () => {
   });
 
   /**
+   * V2-R6-3. A tab is the open tab: its surface says `null` and the list starts at
+   * the window, rather than carrying an opener that only selects what is open.
+   */
+  it('leaves out "Open in new tab" for a surface that is the tab itself', () => {
+    expect(
+      chatRowActions(target({ openInNewTab: null })).map((action) => [action.key, action.label])
+    ).toEqual([
+      ['open-window', 'Open in new window'],
+      ['copy-id', 'Copy chat ID'],
+    ]);
+  });
+
+  /**
    * "Reuse the existing tab/window paths, do not create another lifecycle."
    * `openInNewTab` is the surface's own opener, handed in, so this asserts the
    * action calls it rather than reaching for a second one.

@@ -884,6 +884,10 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     (tabId: string) => dispatch?.({ type: 'closeTab', tabId }),
     [dispatch]
   );
+  const handleCloseOthers = useCallback(
+    (tabId: string) => dispatch?.({ type: 'closeOtherTabs', tabId }),
+    [dispatch]
+  );
   const handleReorder = useCallback(
     (draggedTabId: string, targetTabId: string) =>
       dispatch?.({ type: 'reorderTab', draggedTabId, targetTabId }),
@@ -1358,6 +1362,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         memory={tabStripMemoryFor(tabStripMemories, groupId)}
         onSelect={handleSelect}
         onClose={handleClose}
+        onCloseOthers={handleCloseOthers}
         onReorder={handleReorder}
         reserveTitlebar={reserveTitlebarControls && groupId === reservedGroupId}
         isCompactSidebarOverlayOpen={isCompactSidebarOverlayOpen}

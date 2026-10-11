@@ -171,6 +171,58 @@ describe('chatRowMenuEntries', () => {
     ]);
   });
 
+  /**
+   * V2-R6-3. A tab's menu: no opener (it is the open tab), and the two closers in
+   * their own group after the chat's actions. Both are optional handlers, so a
+   * sidebar row, which passes neither, never shows a Close.
+   */
+  it('draws a tab’s closers as their own group, and a surface with none draws no Close', () => {
+    const tab = { sessionId: 's1', openInNewTab: null };
+    expect(
+      chatRowMenuEntries(tab, {
+        onRename: () => {},
+        onCloseTab: () => {},
+        onCloseOtherTabs: () => {},
+      }).map((entry) => entry.key)
+    ).toEqual([
+      'rename',
+      'after-rename',
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+      'close-other-tabs',
+    ]);
+    expect(chatRowMenuEntries(target).map((entry) => entry.key)).not.toContain('before-close');
+    // Close tab alone (a strip with one tab) is not preceded by a stray second hairline.
+    expect(chatRowMenuEntries(tab, { onCloseTab: () => {} }).map((entry) => entry.key)).toEqual([
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+    ]);
+  });
+
+  it('keeps the closers clear of Delete chat when a surface has both', () => {
+    expect(
+      chatRowMenuEntries(target, {
+        onCloseTab: () => {},
+        onDelete: () => {},
+      }).map((entry) => entry.key)
+    ).toEqual([
+      'open-tab',
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+      'before-delete',
+      'delete',
+    ]);
+  });
+
   it('draws an extra item’s note above it, visibly, in the menu', async () => {
     render(
       <ChatRowContextMenu

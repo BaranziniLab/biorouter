@@ -25,6 +25,8 @@ import { chatRowCopy } from './copy';
  *   ─
  *   Diverge · Export… · Copy chat ID · (a surface's own extra items)
  *   ─
+ *   Close tab · Close other tabs   (the tab strip only)
+ *   ─
  *   Delete chat…
  *
  * The three shared actions still come from `chatRowActions`, whose list is
@@ -32,6 +34,11 @@ import { chatRowCopy } from './copy';
  * when its chat allows it (History's `⋯` menu is the reference for which items a
  * subagent, scheduled or terminal chat offers). A handler that is absent leaves
  * its item out, so a surface never shows an action it cannot run.
+ *
+ * A tab's menu is this one with the opener dropped (`openInNewTab: null`, a tab
+ * is already one) and its two closers added. Closing a tab keeps the chat: it
+ * stays in the sidebar and History, which is why neither closer asks first and
+ * neither is styled as the danger item Delete chat is.
  */
 export interface ChatRowMenuHandlers {
   /** Start renaming the chat in place (the sidebar) or in the surface's own editor. */
@@ -41,6 +48,10 @@ export interface ChatRowMenuHandlers {
   onDiverge?: () => void;
   onExport?: () => void;
   onDelete?: () => void;
+  /** Close this chat's tab. Only the tab strip passes it. */
+  onCloseTab?: () => void;
+  /** Close every other tab beside this one. Left out by a strip with a single tab. */
+  onCloseOtherTabs?: () => void;
   /** A surface's own items, placed right after Copy chat ID (History's "Make this chat public"). */
   extraItems?: readonly ChatRowMenuExtraItem[];
 }
@@ -80,7 +91,9 @@ export function chatRowMenuEntries(
   handlers: ChatRowMenuHandlers = {}
 ): ChatRowMenuEntry[] {
   const entries: ChatRowMenuEntry[] = [];
-  const [openTab, openWindow, copyId] = chatRowActions(target);
+  const actions = chatRowActions(target);
+  const copyId = actions.find((action) => action.key === 'copy-id')!;
+  const openers = actions.filter((action) => action.key !== 'copy-id');
 
   if (handlers.onRename) {
     const shortcut =
@@ -97,7 +110,7 @@ export function chatRowMenuEntries(
     entries.push({ kind: 'separator', key: 'after-rename' });
   }
 
-  for (const action of [openTab, openWindow]) {
+  for (const action of openers) {
     entries.push({ kind: 'item', key: action.key, label: action.label, onSelect: action.run });
   }
   entries.push({ kind: 'separator', key: 'after-open' });
@@ -121,6 +134,26 @@ export function chatRowMenuEntries(
   entries.push({ kind: 'item', key: copyId.key, label: copyId.label, onSelect: copyId.run });
   for (const extra of handlers.extraItems ?? []) {
     entries.push({ kind: 'item', ...extra });
+  }
+
+  if (handlers.onCloseTab || handlers.onCloseOtherTabs) {
+    entries.push({ kind: 'separator', key: 'before-close' });
+    if (handlers.onCloseTab) {
+      entries.push({
+        kind: 'item',
+        key: 'close-tab',
+        label: chatRowCopy.menu.closeTab,
+        onSelect: handlers.onCloseTab,
+      });
+    }
+    if (handlers.onCloseOtherTabs) {
+      entries.push({
+        kind: 'item',
+        key: 'close-other-tabs',
+        label: chatRowCopy.menu.closeOtherTabs,
+        onSelect: handlers.onCloseOtherTabs,
+      });
+    }
   }
 
   if (handlers.onDelete) {

@@ -349,7 +349,18 @@ Right-click, `⋯` and Shift+F10 (or the ContextMenu key) open one menu, text on
 
 History and the tab strip draw the same menu (`chats/ChatRowContextMenu.tsx`), with each surface
 passing only the actions its chat allows. Diverge follows History's rule: not a subagent run, and at
-least one message. Every action keeps the request it always made, with `userActionHeaders()`, and a
+least one message.
+
+A chat tab's menu is that menu with two changes (vision V2-R6-3). A tab is already the open tab, so
+the strip passes `openInNewTab: null` and the list starts at Open in new window; the item used to
+map to the strip's own select, which opened nothing. In its place come Close tab and Close other
+tabs, a group of their own after Copy chat ID: Rename (`F2`), Open in new window, Copy chat ID,
+Close tab, Close other tabs. Close other tabs is left out when the strip holds a single tab, and it
+is one reducer action (`closeOtherTabs`), so the pane renders once instead of mounting each
+successor on the way. Closing a tab keeps the chat in the sidebar and History, so neither asks
+first and neither is styled as Delete chat is. A choice made with the pointer returns no focus to
+the tab (a script focus there drew a keyboard ring on a clicked tab); a keyboard Close tab puts
+focus on the tab that takes over, and a keyboard Close other tabs keeps it on the tab that stays. Every action keeps the request it always made, with `userActionHeaders()`, and a
 daemon refusal is shown as the daemon's own sentence.
 
 Export… (`utils/exportConversation.ts`, the one path for the sidebar and History) saves through the

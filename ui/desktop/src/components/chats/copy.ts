@@ -11,6 +11,9 @@ export const chatRowCopy = {
     diverge: 'Diverge',
     export: 'Export…',
     copyId: 'Copy chat ID',
+    /** The tab strip's own pair: a tab closes, the chat it holds is kept. */
+    closeTab: 'Close tab',
+    closeOtherTabs: 'Close other tabs',
     delete: 'Delete chat…',
   },
   copyId: {

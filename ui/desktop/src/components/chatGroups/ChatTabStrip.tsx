@@ -31,6 +31,7 @@ import {
   MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
 import { ChatRowRenameInput } from '../chats/ChatRowRenameInput';
+import { keepFocusOffAfterPointerClose, lastInputWasKey } from '../chats/menuFocusReturn';
 import { renameSessionOptimistically } from '../../utils/sessionNameSync';
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
@@ -274,6 +275,12 @@ export interface ChatTabStripProps {
   sessionWorkingDirs?: Record<string, string>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
+  /**
+   * Close every OTHER tab in this strip's group and leave the given one active
+   * (its menu's "Close other tabs"). Optional: a strip mounted without it
+   * simply has no such item, and one tab alone never offers it.
+   */
+  onCloseOthers?: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
   /**
    * True only for the FIRST leaf of the layout tree — computed by the shell with
@@ -318,6 +325,7 @@ export function ChatTabStrip({
   sessionWorkingDirs = {},
   onSelect,
   onClose,
+  onCloseOthers,
   onReorder,
   reserveTitlebar,
   isCompactSidebarOverlayOpen,
@@ -624,6 +632,32 @@ export function ChatTabStrip({
       ?.focus({ preventScroll: true });
   }, [editing]);
 
+  /**
+   * "Close tab" on a tab's menu. Closed with the keyboard, focus goes to the tab
+   * that takes over: the closed tab's button is the thing the menu would hand
+   * focus back to, and it is gone, so without this a Shift+F10, Enter close left
+   * focus on the page with the person's place lost. A pointer close asks for
+   * nothing (a click never put focus in the strip to keep).
+   */
+  const closeFromMenu = (tab: ChatTab, index: number) => {
+    if (lastInputWasKey()) {
+      const successor =
+        tab.tabId === activeTabId
+          ? tabs.filter((candidate) => candidate.tabId !== tab.tabId)[
+              Math.min(index, tabs.length - 2)
+            ]?.tabId
+          : activeTabId;
+      if (successor) requestTabKeyboardFocus(successor);
+    }
+    onClose(tab.tabId);
+  };
+
+  /** "Close other tabs": the tab stays and becomes the active one. */
+  const closeOthersFromMenu = (tabId: ChatTabId) => {
+    if (lastInputWasKey()) requestTabKeyboardFocus(tabId);
+    onCloseOthers?.(tabId);
+  };
+
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
     const tab = tabs[index];
     if (tab && event.key === 'F2' && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -904,18 +938,34 @@ export function ChatTabStrip({
                     </button>
                   </ContextMenuTrigger>
                   <ChatRowContextMenuContent
+                    // `null`, not the strip's `onSelect`: a tab IS the open tab,
+                    // and "Open in new tab" that only selected the tab under
+                    // the pointer opened nothing (V2-R6-3). The menu closes a
+                    // tab instead.
                     target={{
                       sessionId: tab.sessionId,
                       workingDir: tab.cwd,
-                      openInNewTab: () => onSelect(tab.tabId),
+                      openInNewTab: null,
                     }}
                     // Rename starts once the menu has let go of focus, or the
                     // menu would hand focus back to the tab over the new field.
                     onRename={() => {
                       renameAfterMenuRef.current = tab.tabId;
                     }}
+                    onCloseTab={() => closeFromMenu(tab, index)}
+                    onCloseOtherTabs={
+                      onCloseOthers && tabs.length > 1
+                        ? () => closeOthersFromMenu(tab.tabId)
+                        : undefined
+                    }
                     onCloseAutoFocus={(event) => {
-                      if (renameAfterMenuRef.current !== tab.tabId) return;
+                      if (renameAfterMenuRef.current !== tab.tabId) {
+                        // A choice made with the pointer leaves focus off the tab:
+                        // returned by script it draws a keyboard ring on a tab the
+                        // person only clicked (the sidebar's menus do the same).
+                        keepFocusOffAfterPointerClose(event);
+                        return;
+                      }
                       renameAfterMenuRef.current = null;
                       event.preventDefault();
                       startRename(tab.tabId);
