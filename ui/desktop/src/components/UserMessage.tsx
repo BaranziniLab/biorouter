@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { TranscriptIconButton } from './transcript/TranscriptIconButton';
 import { transcriptCopy } from './transcript/copy';
 import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
+import { composerCardSurfaceClassName } from './composer/composerCard';
 import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
 import { CLAMP_EXPAND_MS, CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../utils/messageClamp';
 import { cn } from '../utils';
@@ -349,15 +350,21 @@ export default function UserMessage({
           </div>
         )}
         {isEditing ? (
-          // Editing is one card on the composer's recipe (its accent edge on
-          // focus included), inside the 760 column: no second box around the
-          // textarea, and no line explaining the buttons, whose tooltips do.
-          // Like the composer it is the subtle fill with no resting outline
-          // (R-27): the 1px border stays, transparent, for the accent edge to
-          // turn and for forced colours to draw. `br-fill-surface` steps the
-          // secondary button inside back to the page ground, since a fill never
-          // sits on a fill.
-          <div className="biorouter-composer-card br-fill-surface w-full rounded-container border border-transparent bg-background-fill px-4 pt-3 pb-2 text-text-default">
+          // Editing a message is writing in a composer, so this is the
+          // composer's card (ruling 21): its surface is the one class list
+          // ChatInput's card reads (`composer/composerCard.ts`), the page ground
+          // with the resting hairline whose 1px edge turns the accent while the
+          // textarea has focus (R-32), and no fill. The buttons inside rest as
+          // they do on any page ground. Inside the 760 column: no second box
+          // around the textarea, and no line explaining the buttons, whose
+          // tooltips do.
+          <div
+            data-testid="message-edit-card"
+            className={cn(
+              'w-full rounded-container px-4 pt-3 pb-2 text-text-default',
+              composerCardSurfaceClassName
+            )}
+          >
             {editRefs.length > 0 && (
               <div
                 data-testid="edit-reference-rail"

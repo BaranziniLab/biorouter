@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import UserMessage from './UserMessage';
 import type { Message } from '../api';
 import { transcriptCopy } from './transcript/copy';
+import { composerCardSurfaceClassName } from './composer/composerCard';
 
 const message: Message = {
   id: 'message-1',
@@ -52,10 +53,11 @@ describe('UserMessage edit actions', () => {
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });
 
-  // R-27: the editor is the composer's card, so it is the subtle fill with a
-  // transparent edge (the coral focus edge turns it), never a hairline box, and
-  // the secondary button inside steps back to the page ground.
-  it('edits on the filled composer card, with no resting outline', () => {
+  // R-32, ruling 21: the editor is a composer, so it draws the composer card's
+  // surface from the one module ChatInput's card reads: the page ground with the
+  // resting hairline (the coral focus edge turns that border), never the grey
+  // fill, and nothing that hands the buttons inside a filled box's ground.
+  it("edits on the composer's card: the page ground with its resting hairline", () => {
     render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
 
@@ -63,13 +65,18 @@ describe('UserMessage edit actions', () => {
       .getByRole('textbox', { name: 'Edit message content' })
       .closest('.biorouter-composer-card');
     expect(card).not.toBeNull();
+    expect(card).toBe(screen.getByTestId('message-edit-card'));
+    // Every class of the composer's surface, and the pair Crew's card writes.
+    expect(card).toHaveClass(...composerCardSurfaceClassName.split(' '));
     expect(card).toHaveClass(
-      'bg-background-fill',
+      'bg-background-default',
       'border',
-      'border-transparent',
-      'br-fill-surface'
+      'border-border-subtle/60',
+      'br-composer-card'
     );
-    expect(card?.className).not.toMatch(/border-border-|bg-background-default/);
+    expect(card?.className).not.toMatch(
+      /\bbg-background-fill\b|\bborder-transparent\b|\bbr-fill-surface\b/
+    );
   });
 
   it('hands focus back to the Edit button when the editor closes', () => {
