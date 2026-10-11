@@ -56,7 +56,7 @@ import {
   FileText,
   FileX,
   Folder,
-  Github,
+  GitBranch,
   Globe,
   Image,
   Lock,
@@ -2541,9 +2541,11 @@ function DirectoryTreePreview({
           </PreviewBarScope>
         ) : (
           // One line, no paragraph (spec 3.8): the tree beside it explains itself.
+          // A git folder is not a GitHub one, so it never wears GitHub's mark (a
+          // third-party brand): the branch glyph, the thing the bar above names.
           <div className="br-preview-state">
             {isGitRepository ? (
-              <Github className="h-5 w-5 text-text-subtle" aria-hidden="true" />
+              <GitBranch className="h-5 w-5 text-text-subtle" aria-hidden="true" />
             ) : (
               <Folder className="h-5 w-5 text-text-subtle" aria-hidden="true" />
             )}

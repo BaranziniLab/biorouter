@@ -2456,6 +2456,52 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.queryByRole('treeitem', { name: /^staged\.ts/ })).toBeNull();
   });
 
+  it('draws no GitHub mark for a git folder with nothing selected (V2-R2-7)', async () => {
+    installElectronMock();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    const entries = [
+      {
+        name: 'README.md',
+        path: '/work/repository/README.md',
+        relativePath: 'README.md',
+        parentPath: '',
+        isDirectory: false,
+        status: 'pushed',
+      },
+    ];
+    const open = async (kind: 'gitDirectory' | 'directory') => {
+      readFile.mockResolvedValue({
+        kind,
+        title: 'repository',
+        path: '/work/repository',
+        ...(kind === 'gitDirectory' ? { branch: 'main', found: true } : {}),
+        entries,
+      });
+      const view = render(
+        <ThemeProvider>
+          <ArtifactViewer
+            artifact={{ kind: 'file', title: 'repository', path: '/work/repository' }}
+            onClose={vi.fn()}
+            onOpenArtifact={vi.fn()}
+          />
+        </ThemeProvider>
+      );
+      const hint = (await screen.findByText(PREVIEW_COPY.selectFile)).parentElement as HTMLElement;
+      const glyph = hint.querySelector('svg');
+      view.unmount();
+      return glyph;
+    };
+
+    // A git folder is not a GitHub one: the branch glyph, never the third-party mark.
+    const git = await open('gitDirectory');
+    expect(git).not.toBeNull();
+    expect(git?.getAttribute('class')).toContain('lucide-git-branch');
+    expect(git?.getAttribute('class')).not.toContain('lucide-github');
+    // A plain folder keeps the folder glyph.
+    const plain = await open('directory');
+    expect(plain?.getAttribute('class')).toContain('lucide-folder');
+  });
+
   it('recognizes Jupyter notebook files in the file-preview flow', async () => {
     installElectronMock();
     const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
