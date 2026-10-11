@@ -444,6 +444,8 @@ Prose stays capped at 68 characters and the column at 760px. What this closes is
 
 ### 4.5 Primary views
 
+⚠ **Superseded in part on 2026-10-10 (owner message 13, rule R-27, `design.md` 9.11): in-page boxes and controls are a subtle solid fill, not a line.** The "hairline list" and the "hairline rows" below are the 2026-09-07 recipe. Workflows, the Scheduler (its list and its runs) and Built apps now draw **no hairline between rows**: a two-line row is told from the next by the air between them and the hover wash, and `.br-rows-flat` on the list switches the shared row recipe's rule off (it comes back under forced colours, where fills and washes are gone). The schedule detail's facts are **one filled card**, a standalone object like the summary rail's card: `--background-fill` with a transparent 1px edge, the 12px container radius, and a step back to the page ground for the one button inside it. A workflow parameter in the editor is the same card. Read the rest of this section for the structure and the choices that still hold (the scaffold, the definition-row shape, the measure); read `design.md` 9.11 for how a box is drawn now.
+
 Every list view converges on: standard header (§4.2) → optional filter band → hairline list with 36px rows → shared empty state → shared skeleton. This closes seventeen of the eighteen items in the cross-view ledger, including the four error dialects and the five loading dialects.
 
 Two views need structural work rather than alignment:
