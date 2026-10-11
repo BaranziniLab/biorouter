@@ -30,6 +30,7 @@ import type { CatalogBundle, CatalogSkill } from '../../api';
 import { skillCatalogToggleKey, useSkillCatalog, type SkillCatalogEntry } from './useSkillCatalog';
 import { isBrowseQuery, rankCatalogEntries } from './searchCatalog';
 import { withoutStagingNonce } from './skillUtils';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import { SKILLS_COPY } from './copy';
 
 /**
@@ -119,13 +120,17 @@ export default function SkillsView() {
         title: SKILLS_COPY.groups.biorouter,
         entries: biorouter,
       });
-    for (const [extension, extensionEntries] of [...byExtension].sort()) {
-      out.push({
-        key: `extension:${extension}`,
-        title: SKILLS_COPY.groups.extension(extension),
-        entries: extensionEntries,
-      });
-    }
+    // The heading names the extension the way every other surface does (principle 10: names, not
+    // ids): the config key the catalog reports (`cdwagent`) is read through the one resolver, so
+    // it says `CDWAgent` to a screen reader as well as, in caps, to the eye. The groups sit in
+    // the order they read, which is not always the order of their keys.
+    const extensionGroups = [...byExtension].map(([extension, extensionEntries]) => ({
+      key: `extension:${extension}`,
+      title: SKILLS_COPY.groups.extension(extensionDisplayName(extension)),
+      entries: extensionEntries,
+    }));
+    extensionGroups.sort((a, b) => a.title.localeCompare(b.title));
+    out.push(...extensionGroups);
     if (other.length)
       out.push({
         key: 'other',

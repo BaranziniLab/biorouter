@@ -165,6 +165,36 @@ describe('SkillsView', () => {
   });
 
   /**
+   * Principle 10: names, not ids (V3-R3-5). The catalog reports the extension's config key
+   * (`cdwagent`); the heading's caps style hid the difference on screen, but a screen reader
+   * read the key, and `codegraphagent` would have read as one word instead of the name the
+   * marketplace gives it. The one name resolver decides, and the groups sit in the order they read.
+   */
+  it('names an extension group by its display name, not its config key', async () => {
+    const supplied = (extension: string) => ({
+      sourceRoot: `/extensions/${extension}/skills`,
+      source: { kind: 'extension' as const, extension, label: extension },
+    });
+    serve({
+      skills: [
+        skill('cohorts', supplied('cdwagent')),
+        skill('callers', supplied('codegraphagent')),
+        skill('word', supplied('bioroffice')),
+      ],
+    });
+    render(<SkillsView />);
+    await screen.findByText('cohorts');
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual([
+      `${SKILLS_COPY.groups.extension('BiorOffice')} 1`,
+      `${SKILLS_COPY.groups.extension('CDWAgent')} 1`,
+      `${SKILLS_COPY.groups.extension('CodeGraph Agent')} 1`,
+    ]);
+    // The heading's text is its accessible name, so none of the raw keys is what a reader hears.
+    expect(screen.queryByText(/From (cdwagent|codegraphagent|bioroffice)\b/)).toBeNull();
+  });
+
+  /**
    * A skill an extension supplies is not the user's to delete — the extension
    * would put it back. Same lesson as the built-in badge, second case.
    */
