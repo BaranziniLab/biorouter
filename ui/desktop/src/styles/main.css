@@ -7501,6 +7501,10 @@ code [class~='token'] {
   min-width: 100%;
   padding-block: 16px 32px;
   padding-right: var(--paper-gutter);
+  padding-left: var(--paper-inset);
+}
+
+.br-paper-table-frame[data-yield] {
   padding-left: max(
     var(--paper-lead),
     min(var(--paper-inset), calc(100cqw - var(--paper-table-width, 0px) - var(--paper-gutter)))
@@ -7512,13 +7516,14 @@ code [class~='token'] {
    three-column CSV stays packed on the left while its frame still spans the
    column. `max-content` so a wide table is as wide as its content, never
    squeezed into wrapping. The frame spans the column, but never more than the
-  padding-left: var(--paper-inset);
-}
-
-.br-paper-table-frame[data-yield] {
    panel has room for once the lead and the right gutter are taken, so a narrow
    CSV never scrolls sideways for nothing. */
 .br-paper-table {
+  /* The grounds the right-edge fade ends in (below): the page's, and the
+     header's. A table that changes its ground changes these. */
+  --paper-fade-width: 40px;
+  --paper-fade-ground: var(--background-default);
+  --paper-fade-head-ground: var(--background-muted);
   width: max-content;
   min-width: min(var(--paper-column), calc(100cqw - var(--paper-lead) - var(--paper-gutter)));
   color: var(--text-default);
@@ -7530,11 +7535,6 @@ code [class~='token'] {
 .br-paper-table.br-md-table {
   overflow: visible;
 }
-  /* The grounds the right-edge fade ends in (below): the page's, and the
-     header's. A table that changes its ground changes these. */
-  --paper-fade-width: 40px;
-  --paper-fade-ground: var(--background-default);
-  --paper-fade-head-ground: var(--background-muted);
 
 .br-paper-table.br-md-table th {
   position: sticky;
@@ -7715,9 +7715,16 @@ code [class~='token'] {
 }
 
 /* ── Notebook (NotebookPreview.tsx) ── */
+/* @ws WS-PREVIEW begin: notebook top */
+/* The first cell opens 16px under the bar, the paper inset the CSV table's frame
+   uses, plus the first heading's own margin (24px for an h1): the same 40px a
+   report's title sits at, not the 84px that 36px of padding, a markdown cell's
+   8px and a heading's 24px stacked into. A markdown cell's 8px belongs between
+   cells, so the first one has none. */
 .br-paper-nb {
   padding-block: 16px 88px;
 }
+/* @ws WS-PREVIEW end: notebook top */
 
 .br-paper-nb-cell {
   position: relative;
@@ -7726,16 +7733,13 @@ code [class~='token'] {
 
 .br-paper-nb-cell[data-kind='markdown'] {
   margin-top: 8px;
-/* @ws WS-PREVIEW begin: notebook top */
-/* The first cell opens 16px under the bar, the paper inset the CSV table's frame
-   uses, plus the first heading's own margin (24px for an h1): the same 40px a
-   report's title sits at, not the 84px that 36px of padding, a markdown cell's
-   8px and a heading's 24px stacked into. A markdown cell's 8px belongs between
-   cells, so the first one has none. */
+}
+
+.br-paper-nb > .br-paper-nb-cell:first-child {
+  margin-top: 0;
 }
 
 .br-paper-well {
-/* @ws WS-PREVIEW end: notebook top */
   overflow-x: auto;
   border-radius: 10px;
   background-color: var(--background-well);
@@ -7746,10 +7750,6 @@ code [class~='token'] {
   position: absolute;
   top: 12px;
   right: calc(100% + 14px);
-.br-paper-nb > .br-paper-nb-cell:first-child {
-  margin-top: 0;
-}
-
   color: var(--text-subtle);
   font: 12px/20px var(--font-mono);
   font-variant-numeric: tabular-nums;
