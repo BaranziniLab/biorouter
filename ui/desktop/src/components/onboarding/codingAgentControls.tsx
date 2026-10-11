@@ -17,6 +17,7 @@ import {
   type CodingAgentStatusResponse,
 } from './codingAgentStatus';
 import './onboarding.css';
+import { StatusPill, type PillTone } from './StatusPill';
 
 /**
  * The last coding-agent status this renderer probed, shared by every surface.
@@ -95,22 +96,9 @@ export const CODING_AGENT_TERMINAL_RESERVE_PX = 200;
 /** What "Could not check" says when the failure carried no message of its own. */
 export const CODING_AGENT_CHECK_FAILED = 'The check for installed coding agents returned an error.';
 
-type PillTone = 'success' | 'warning' | 'info';
-
-const PILL_DOT: Record<PillTone, string> = {
-  success: 'bg-background-success',
-  warning: 'bg-background-warning',
-  info: 'bg-background-info',
-};
-
-export function StatusPill({ tone, children }: { tone: PillTone; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PILL_DOT[tone]}`} />
-      {children}
-    </span>
-  );
-}
+// The status pill has its own module so the local cards can use it without this one's imports.
+export { StatusPill };
+export type { PillTone };
 
 /**
  * The pill for each auth state.

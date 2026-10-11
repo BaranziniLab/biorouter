@@ -43,3 +43,12 @@
   height: calc(20px * var(--app-font-scale, 1));
   margin-inline-end: 8px;
 }
+
+/* A status word with its dot (`StatusPill`): the catalog row's "Configured" geometry
+   (`.br-provider-configured`), so every status in the list is one size and one gap. */
+.br-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}

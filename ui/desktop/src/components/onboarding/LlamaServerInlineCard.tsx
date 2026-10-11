@@ -12,6 +12,7 @@ import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCard
 import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Spinner } from '../ui/spinner';
+import { StatusPill } from './StatusPill';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
@@ -330,35 +331,15 @@ export default function LlamaServerInlineCard({
   const statusPill = (() => {
     if (isChecking || !sidecar) return null;
     if (binaryMissing) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-          llama-server binary not found
-        </span>
-      );
+      return <StatusPill tone="warning">llama-server binary not found</StatusPill>;
     }
     if (isReadyForSelected) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
-          Running · {sidecar.model} ready
-        </span>
-      );
+      return <StatusPill tone="success">Running · {sidecar.model} ready</StatusPill>;
     }
     if (isRunningForSelected) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-          Running · warm-up needed
-        </span>
-      );
+      return <StatusPill tone="warning">Running · warm-up needed</StatusPill>;
     }
-    return (
-      <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-        <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
-        Built in · no install needed
-      </span>
-    );
+    return <StatusPill tone="success">Built in · no install needed</StatusPill>;
   })();
 
   return (

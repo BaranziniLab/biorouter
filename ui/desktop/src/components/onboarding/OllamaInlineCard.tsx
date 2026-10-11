@@ -16,6 +16,7 @@ import {
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import './onboarding.css';
 import { Spinner } from '../ui/spinner';
+import { StatusPill } from './StatusPill';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
@@ -111,23 +112,17 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   };
 
   const detectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
+    <StatusPill tone="success">
       Ollama running · {getPreferredModel()}
       {modelStatus === 'available'
         ? ' ready'
         : modelStatus === 'not-available'
           ? ' not installed'
           : ''}
-    </span>
+    </StatusPill>
   );
 
-  const notDetectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-      Ollama not detected
-    </span>
-  );
+  const notDetectedPill = <StatusPill tone="warning">Ollama not detected</StatusPill>;
 
   return (
     <OnboardingCardShell
