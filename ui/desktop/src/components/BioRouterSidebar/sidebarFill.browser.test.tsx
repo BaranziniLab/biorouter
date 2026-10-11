@@ -449,6 +449,40 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     }
   });
 
+  it('floats a row’s hover card 8px clear of the pane divider, not on it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      await tab.hover('[data-testid="recent-chat-s1"]');
+      // Radix renders the content twice inside the card (the text and a hidden copy for the
+      // tooltip role); either one finds the card.
+      await tab
+        .locator('[data-side] [data-testid="recent-chat-summary-s1"]')
+        .first()
+        .waitFor({ timeout: 5_000 });
+      await tab.waitForTimeout(300);
+      const gap = await tab.evaluate(() => {
+        const card = document
+          .querySelector('[data-side] [data-testid="recent-chat-summary-s1"]')!
+          .closest('[data-side]')!
+          .getBoundingClientRect();
+        const column = document
+          .querySelector('[data-slot="sidebar-container"]')!
+          .getBoundingClientRect();
+        return card.left - column.right;
+      });
+      expect(Math.abs(gap - 8), `card to divider: ${gap}`).toBeLessThanOrEqual(0.5);
+      if (SHOTS) {
+        await tab.screenshot({
+          path: resolve(SHOTS, 'sidebar-hover-card-light.png'),
+          clip: { x: 0, y: 200, width: 700, height: 200 },
+        });
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('hovers the titlebar controls on the strong fill', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {

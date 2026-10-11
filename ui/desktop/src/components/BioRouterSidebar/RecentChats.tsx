@@ -63,6 +63,14 @@ const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
 export const FOLDER_PREVIEW_COUNT = 5;
 /** The hover card waits for intent (Astryx §4.1 item 6). */
 export const CHAT_HOVER_CARD_DELAY_MS = 700;
+/**
+ * How far a row's hover card (and a folder's path tooltip) sits from the end of
+ * the row it describes. A row ends 8px inside the sidebar (the list's inset), so
+ * the app's 8px offset put the card's edge exactly ON the pane divider, where it
+ * read as stuck to the column; 16 lets it float 8px clear of the divider, at
+ * every sidebar width.
+ */
+export const CHAT_HOVER_CARD_OFFSET = 16;
 
 /*
  * The kind resolver lives in `components/chats/chatKind.ts`, where the sidebar,
@@ -340,7 +348,7 @@ function RecentChatRow({
           <TooltipContent
             side="right"
             align="start"
-            sideOffset={8}
+            sideOffset={CHAT_HOVER_CARD_OFFSET}
             hideWhenDetached
             className="px-2 py-1.5 font-normal"
           >
@@ -405,9 +413,11 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
   // The path tooltip opens beside the header's toggle, whose right edge is where
   // the hover-revealed + and ⋯ begin, so at the default offset it covers the very
   // buttons the pointer is heading for. Clear them: 24px each, 2px between and 2px
-  // of end padding (`.br-sidebar-folder`, `.br-sidebar-actions`).
+  // of end padding (`.br-sidebar-folder`, `.br-sidebar-actions`), then the row
+  // card's own offset, so the two land on the same x past the divider.
   const actionCount = (canStartChat ? 1 : 0) + (group.workingDir ? 1 : 0);
-  const pathTooltipOffset = 8 + 2 + actionCount * 24 + Math.max(0, actionCount - 1) * 2;
+  const pathTooltipOffset =
+    CHAT_HOVER_CARD_OFFSET + 2 + actionCount * 24 + Math.max(0, actionCount - 1) * 2;
 
   const copyPath = async () => {
     const path = group.workingDir ?? '';
