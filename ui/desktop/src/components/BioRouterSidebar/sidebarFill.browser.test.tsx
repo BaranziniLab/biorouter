@@ -794,6 +794,133 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     });
 
     /**
+     * Vision V1-R2-2, round 4 (R-28). The list grew as it was scrolled and never shrank: after a
+     * scroll to its end every chat was a mounted row, and with 5,542 drawn a right-click took
+     * about 2.2 s, most of it restyling them. Now only the lines near the viewport are rows; the
+     * rest are placeholders, and every row must still sit exactly where it would with all of them
+     * drawn: line N of the list at N × 30px (a 28px row and the list's 2px), and the list exactly
+     * as tall as its lines. Home still reaches the first chat, and the right-click menu is not
+     * modal, so it leaves <body> alone.
+     */
+    it('draws only the rows near the viewport, each where it would be (V1-R2-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const now = Date.now();
+      const TOTAL = 400;
+      const all = Array.from({ length: TOTAL }, (_, i) => ({
+        id: `s${i + 1}`,
+        name: `Chat ${i + 1}`,
+        created_at: new Date(now - i * 1_000).toISOString(),
+        updated_at: new Date(now - i * 1_000).toISOString(),
+        working_dir: '/Users/me/projects/cohort',
+        message_count: 2,
+        user_set_name: true,
+        privacy_tier: 'public',
+      }));
+      const serve = (url: string) => {
+        const query = new URL(url).searchParams;
+        const from = Number(query.get('cursor') ?? 0);
+        const rows = all.slice(from, from + Number(query.get('limit') ?? 10));
+        const next = from + rows.length;
+        return {
+          sessions: rows,
+          has_more: next < TOTAL,
+          next_cursor: next < TOTAL ? String(next) : null,
+        };
+      };
+      // Group by None: one list, no header, so line N is chat N + 1.
+      const stored = JSON.stringify({ v: 1, groupBy: 'none', sortBy: 'activity' });
+      const tab = await open('light', false, 'attached', {
+        serve,
+        init: `localStorage.setItem('biorouter:sidebar-chat-view', ${JSON.stringify(stored)});`,
+      });
+      try {
+        // Scroll to the end until every chat is in reach, then to the middle.
+        let height = 0;
+        for (let i = 0; i < 20; i++) {
+          const next = await tab.evaluate(() => {
+            const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+            el.scrollTop = el.scrollHeight;
+            return el.scrollHeight;
+          });
+          await tab.waitForTimeout(100);
+          if (next === height) break;
+          height = next;
+        }
+        await tab.evaluate(() => {
+          const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+          el.scrollTop = el.scrollHeight / 2;
+        });
+        await tab.waitForTimeout(200);
+        const state = await tab.evaluate(() => {
+          const scroll = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+          const box = scroll.getBoundingClientRect();
+          const list = scroll.querySelector('ul')!;
+          const listTop = list.getBoundingClientRect().top;
+          const rows = [...list.querySelectorAll<HTMLElement>('button[data-row^="chat:"]')];
+          const visible = rows.filter((row) => {
+            const rect = row.getBoundingClientRect();
+            return rect.bottom > box.top && rect.top < box.bottom;
+          });
+          const gaps = [...list.querySelectorAll<HTMLElement>('.br-chat-row-gap')];
+          const lines =
+            rows.length +
+            gaps.reduce(
+              (sum, gap) => sum + Number(gap.style.getPropertyValue('--br-gap-lines')),
+              0
+            );
+          return {
+            drawn: rows.length,
+            lines,
+            listHeight: list.getBoundingClientRect().height,
+            visible: visible.length,
+            // Each visible row's offset from the list's top, against where line N sits.
+            misplaced: visible
+              .map((row) => {
+                const line = Number(row.getAttribute('data-row')!.slice('chat:s'.length)) - 1;
+                const top = Math.round(row.getBoundingClientRect().top - listTop);
+                return top === line * 30 ? null : `${row.getAttribute('data-row')}@${top}`;
+              })
+              .filter(Boolean),
+            gapsInView: gaps.filter((gap) => {
+              const rect = gap.getBoundingClientRect();
+              return rect.bottom > box.top && rect.top < box.bottom;
+            }).length,
+          };
+        });
+        expect(state.lines, 'every chat is in reach').toBe(TOTAL);
+        expect(state.listHeight, 'the list is as tall as its lines').toBe(TOTAL * 30 - 2);
+        expect(state.visible).toBeGreaterThan(10);
+        expect(state.misplaced, 'every visible row on its own line').toEqual([]);
+        expect(state.gapsInView, 'no placeholder shows').toBe(0);
+        expect(state.drawn, 'only the rows near the viewport are drawn').toBeLessThan(80);
+
+        // The right-click menu opens on a visible row and leaves <body> alone.
+        const target = await tab.evaluate(() => {
+          const scroll = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+          const box = scroll.getBoundingClientRect();
+          const row = [...scroll.querySelectorAll('button[data-row^="chat:"]')].find(
+            (el) => el.getBoundingClientRect().top > box.top + 100
+          )!;
+          return row.getAttribute('data-testid')!;
+        });
+        await tab.click(`[data-testid="${target}"]`, { button: 'right' });
+        await tab.getByRole('menuitem', { name: /^Rename/ }).waitFor();
+        expect(await tab.evaluate(() => document.body.style.pointerEvents)).toBe('');
+        await tab.keyboard.press('Escape');
+        await tab.getByRole('menu').waitFor({ state: 'detached' });
+
+        // Home from a row in the middle reaches the first chat.
+        await tab.focus(`[data-testid="${target}"]`);
+        await tab.keyboard.press('Home');
+        await expect
+          .poll(() => tab.evaluate(() => document.activeElement?.getAttribute('data-row')))
+          .toBe('chat:s1');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
      * Vision V1-R3-3. A view that sorts or groups the whole list was drawn from the part already
      * read (the first page, or the ten rows the default view had paged in), and reordered when the
      * rest landed 0.2 to 0.4 s later, under a resting pointer. Every order the list paints, frame

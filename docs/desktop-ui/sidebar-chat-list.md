@@ -182,6 +182,31 @@ keyboard; then its menu root takes it over, already open when the press asked fo
 kept on it, and lets go when it loses focus with the menu shut. A folder header's ⋯ is the same
 button. In a production build a switch takes 8 to 30 ms, and 85 ms with 4,233 rows drawn.
 
+Only the lines near the viewport are rows (vision V1-R2-2, round 4). The list still reaches as far
+down as it has been scrolled, but every line outside the lines in view plus 12 on each side is
+folded into a placeholder exactly its height (`.br-chat-row-gap`: N lines of a 28px row and the
+2px the list puts between rows), and a folder header outside them is an empty box of its height; a
+date header is drawn anyway (one element). The lines in view are read from the drawn groups' boxes
+(`sidebarLinesInView`: a group's rows and gaps sit on one pitch below its first row, so no header
+or gap height is assumed), on every scroll, committed before the frame paints, and again after
+anything that moves lines without a scroll (a view drawn, a folder opened, rows arriving, the box
+growing). Three rows are kept drawn whatever the range: the focused row, a row being renamed or
+just renamed, and the row whose right-click menu is open, so neither focus nor an editor is ever
+unmounted under the person. Home and End scroll the list to its end before they move focus, so that
+end's row is drawn. Before this the drawn rows only grew: with 5,542 drawn after a scroll to the
+end, a right-click took about 2.2 s before its menu showed (mostly restyling every row) and a
+switch 0.5 s. The arithmetic is `sliceSidebarLines`, `sidebarLinesInView` and
+`nextSidebarDrawRange` in `sidebarChatView.ts`. Measured in a production build with 2,100 lines in
+reach, scrolled to the middle: 45 rows drawn instead of 2,100, a right-click 16 to 26 ms (was 171
+to 214), the view menu 3 to 16 ms (was 67 to 78), a switch 21 to 35 ms (was 41 to 50).
+
+The list's right-click menu is not modal (round 4). A modal Radix menu sets `pointer-events: none`
+on `<body>`, an inherited property, so opening it and closing it each restyled every element in the
+window (about 50 ms each way with 2,100 rows drawn, more with a long chat open), and it locked the
+page's scroll, which reads the body's computed style. A row's ⋯ menu, the same menu, was never
+modal; now both behave alike: a click outside closes the menu and lands where it was aimed, and the
+list can scroll under an open menu, its row kept drawn and lit.
+
 Rows are memoized with stable handlers, so the pointer
 entering the list or a keystroke in a rename re-renders no other row. Each view's arrangement is
 kept for as long as the list of chats is the same array (`arrangeSidebarChatsCached`, keyed by the
@@ -189,7 +214,7 @@ view, the home folder and the calendar day), so switching back is a lookup.
 
 A view change starts again from the first lines. A chat past the drawn lines (the current chat,
 far down a name-sorted list) has no row until the list is scrolled to it, so the single Tab stop
-falls back to the first row, as it does when the current chat is on a page not yet read. `⌘⌥R` is
+falls back to the first row drawn, as it does when the current chat is on a page not yet read. `⌘⌥R` is
 the one entry point that cannot wait for a scroll: it draws the list up to the current chat's row
 first (`linesToDrawRow`), because the editor mounts in that row.
 
@@ -349,17 +374,18 @@ tab stop, so Tab reaches them from the row.
 
 | File | Holds |
 |---|---|
-| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title |
+| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title; the drawn range: `sliceSidebarLines` (gaps of exact line counts, kept rows, headers outside the range), `sidebarLinesInView` (lines from group boxes by binary search) and `nextSidebarDrawRange` (a range that holds still while it covers the view) |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |
+| `BioRouterSidebar/RecentChats.drawRange.test.tsx` | The right-click menu leaving `<body>` alone (not modal), a list that cannot be measured drawing every line it reaches with no placeholder, and `scrollRowIntoView` showing a header only for its group's first line |
 | `BioRouterSidebar/RecentChats.menuRoots.test.tsx` | No menu root per drawn row: rendering and a key press add a handful of document listeners, not one per row; a `⋯` armed by focus keeps focus and opens from Enter; the one right-click menu opens on the row it came from and on nothing else |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, only the rows near the viewport drawn in a list scrolled to its middle (each visible row on its own line, the list exactly as tall as its lines, no placeholder in view, the right-click menu leaving `<body>` alone, Home reaching the first chat), and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation

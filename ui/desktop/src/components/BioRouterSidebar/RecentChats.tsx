@@ -6,12 +6,15 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type UIEvent,
 } from 'react';
+import { flushSync } from 'react-dom';
 
 import type { SessionSummary } from '../../api';
 import { useDiverge } from '../../hooks/useDiverge';
@@ -42,7 +45,7 @@ import {
 import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { useSidebar } from '../ui/sidebar';
-import { useRovingRows } from '../ui/useRovingRows';
+import { inMenuOpenedFrom, useRovingRows } from '../ui/useRovingRows';
 import { sidebarCopy } from './copy';
 import SidebarViewMenu from './SidebarViewMenu';
 import {
@@ -50,15 +53,20 @@ import {
   arrangeSidebarChatsCached,
   holdArrangement,
   linesToDrawRow,
+  nextSidebarDrawRange,
   SIDEBAR_RENDER_WINDOW,
   SIDEBAR_RENDER_WINDOW_STEP,
+  sidebarLinesInView,
   sidebarRenderWindow,
   sidebarRowTitle,
+  sliceSidebarLines,
   windowSidebarRows,
   tildePath,
   type HeldArrangement,
   type SidebarChatGroup,
   type SidebarChatView,
+  type SidebarDrawRange,
+  type SidebarGroupBox,
 } from './sidebarChatView';
 import { useCollapsedFolders } from './useSidebarChatView';
 import './sidebar.css';
@@ -713,7 +721,13 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
  */
 export function scrollRowIntoView(container: HTMLElement, row: HTMLElement): void {
   const section = row.closest('section');
-  const firstInSection = section?.querySelector('[data-row^="chat:"]') === row;
+  // The group's first LINE, not its first drawn row: rows above it may be
+  // folded into a gap (R-28), and showing that row's header would scroll the
+  // list up past all of them.
+  const item = row.closest('li');
+  const firstLine = section?.querySelector(':scope > ul > li');
+  const firstInSection =
+    item && firstLine ? firstLine === item : section?.querySelector('[data-row^="chat:"]') === row;
   const top = (firstInSection && section ? section : row).getBoundingClientRect().top;
   const { bottom } = row.getBoundingClientRect();
   const box = container.getBoundingClientRect();
@@ -845,13 +859,25 @@ export default function RecentChats({
   //
   // The first view a list draws is not a change: a first load whose stored
   // view waited for its full read (`shownView` null until then) draws at rest.
+  //
+  // `range` is the lines drawn for real (vision V1-R2-2, round 4): the rows
+  // near the viewport. `budget` is how far down the list reaches, and every
+  // line of it outside `range` is a placeholder of its height, so rows drawn
+  // never pile up as the list is scrolled. Null until the list is measured,
+  // and after a view change, which starts at the top: every line is drawn.
   const viewKey = shownView ? `${shownView.groupBy}/${shownView.sortBy}` : null;
-  const [drawn, setDrawn] = useState({ viewKey, generation: 0, budget: SIDEBAR_RENDER_WINDOW });
+  const [drawn, setDrawn] = useState<{
+    viewKey: string | null;
+    generation: number;
+    budget: number;
+    range: SidebarDrawRange | null;
+  }>({ viewKey, generation: 0, budget: SIDEBAR_RENDER_WINDOW, range: null });
   if (drawn.viewKey !== viewKey && viewKey !== null) {
     setDrawn({
       viewKey,
       generation: drawn.viewKey === null ? drawn.generation : drawn.generation + 1,
       budget: drawn.viewKey === null ? drawn.budget : sidebarRenderWindow(listHeight),
+      range: null,
     });
   }
   const viewGeneration = drawn.generation;
@@ -919,24 +945,105 @@ export default function RecentChats({
     [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId]
   );
 
-  // R-28: only the first lines are drawn; the rest wait until the list is
-  // scrolled near its end. The whole list is still held and arranged.
-  const windowed = useMemo(
+  // A rename the person made, and the list's right-click menu: declared here
+  // because the rows they name are always drawn (below).
+  const [reveal, setReveal] = useState<{ sessionId: string } | null>(null);
+  const [menuRowId, setMenuRowId] = useState<string | null>(null);
+  const [rowMenuOpen, setRowMenuOpen] = useState(false);
+  // The row that last had focus in the list, kept drawn so focus is never
+  // unmounted from under the person when the list scrolls away from it.
+  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+
+  // R-28: the list reaches `renderBudget` lines down (the rest wait until it is
+  // scrolled near its end), and of those it draws for real only the lines in
+  // `range` plus the rows that must stay: the focused row, a row being renamed
+  // or just renamed, and the row whose right-click menu is open. The whole list
+  // is still held and arranged. The current chat is not kept: when its row is
+  // not drawn, Tab lands on the first row drawn, as it does today when the row
+  // lies past the lines drawn so far.
+  const extent = useMemo(
     () => windowSidebarRows(shown, renderBudget, headerLines),
     [shown, renderBudget]
+  );
+  const keptRows = useMemo(() => {
+    const ids = new Set<string>();
+    if (focusedRowKey?.startsWith('chat:')) ids.add(focusedRowKey.slice('chat:'.length));
+    if (editing) ids.add(editing.sessionId);
+    if (reveal) ids.add(reveal.sessionId);
+    if (rowMenuOpen && menuRowId) ids.add(menuRowId);
+    return ids;
+  }, [focusedRowKey, editing, reveal, rowMenuOpen, menuRowId]);
+  const drawRange = drawn.range;
+  const windowed = useMemo(
+    () => ({
+      cut: extent.cut,
+      entries: sliceSidebarLines(extent.entries, drawRange, headerLines, (session) =>
+        keptRows.has(session.id)
+      ),
+    }),
+    [extent, drawRange, keptRows]
   );
 
   // One tab stop for the list (spec 3.4, F-18): ↑/↓/Home/End move between rows.
   const rowKeys = useMemo(
     () =>
-      windowed.entries.flatMap(({ group, rows, more }) => [
-        ...(group.kind === 'folder' ? [folderKey(group)] : []),
+      windowed.entries.flatMap(({ group, rows, more, headerDrawn }) => [
+        ...(group.kind === 'folder' && headerDrawn ? [folderKey(group)] : []),
         ...rows.map((session) => chatKey(session.id)),
         ...(more ? [moreKey(group)] : []),
       ]),
     [windowed]
   );
   const roving = useRovingRows(rowKeys, activeSessionId ? chatKey(activeSessionId) : null);
+  const setRovingRow = roving.onRowFocus;
+  const onRowFocus = useCallback(
+    (key: string) => {
+      setFocusedRowKey(key);
+      setRovingRow(key);
+    },
+    [setRovingRow]
+  );
+
+  // Which lines the list shows, read from the drawn groups' boxes (a group's
+  // rows and gaps sit on one pitch below its first row, so no row or header
+  // height is assumed), and the range to draw for them. From a scroll, the new
+  // rows are committed before the frame paints (`flushSync`), so a scroll
+  // never shows the empty placeholder where a row is about to be. A list that
+  // cannot be measured (hidden, or no layout, as in jsdom) keeps what it drew.
+  const syncDrawRange = useCallback((container: HTMLElement, beforePaint: boolean) => {
+    if (container.clientHeight === 0 || container.getBoundingClientRect().height === 0) return;
+    const sections = container.querySelectorAll<HTMLElement>('section[data-rows-line]');
+    const origin = container.getBoundingClientRect().top - container.scrollTop;
+    const boxes = new Map<number, SidebarGroupBox>();
+    const boxAt = (index: number): SidebarGroupBox => {
+      const known = boxes.get(index);
+      if (known) return known;
+      const section = sections[index];
+      const box = section.getBoundingClientRect();
+      const list = section.querySelector(':scope > ul');
+      const measured = {
+        rowsLine: Number(section.dataset.rowsLine),
+        headerLines: Number(section.dataset.headerLines),
+        top: box.top - origin,
+        rowsTop: (list ? list.getBoundingClientRect().top : box.bottom) - origin,
+      };
+      boxes.set(index, measured);
+      return measured;
+    };
+    const inView = sidebarLinesInView(
+      sections.length,
+      boxAt,
+      container.scrollTop,
+      container.scrollTop + container.clientHeight
+    );
+    const update = () =>
+      setDrawn((current) => {
+        const range = nextSidebarDrawRange(current.range, inView);
+        return range === current.range ? current : { ...current, range };
+      });
+    if (beforePaint) flushSync(update);
+    else update();
+  }, []);
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((wasExpanded) => {
@@ -991,7 +1098,6 @@ export default function RecentChats({
   // saved it (`activityAt` raises the row under "Last activity") or refused it
   // (the old name comes back). Each time the list is held again from the new
   // order, and the row is kept in view.
-  const [reveal, setReveal] = useState<{ sessionId: string } | null>(null);
   const revealed = useRef<{ sessionId: string } | null>(null);
   const showOwnRename = useCallback((sessionId: string) => {
     setHeld(null);
@@ -1077,8 +1183,6 @@ export default function RecentChats({
   // read from the target's `data-row` when the event arrives, and a
   // right-click (or a long press) that is not on a chat row opens nothing, as
   // before: it is stopped before the menu sees it.
-  const [menuRowId, setMenuRowId] = useState<string | null>(null);
-  const [rowMenuOpen, setRowMenuOpen] = useState(false);
   const renameAfterRowMenu = useRef<string | null>(null);
   const pickMenuRow = (event: ReactMouseEvent | ReactPointerEvent) => {
     const row = (event.target as Element | null)?.closest?.('[data-row^="chat:"]');
@@ -1125,13 +1229,55 @@ export default function RecentChats({
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const container = event.currentTarget;
+      syncDrawRange(container, true);
       const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (remainingScroll > LOAD_MORE_THRESHOLD_PX) return;
       if (windowCut) setRenderBudget((budget) => budget + SIDEBAR_RENDER_WINDOW_STEP);
       else if (hasMore && !isLoadingMore && !isLoadingAll) onLoadMore();
     },
-    [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore, setRenderBudget]
+    [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore, setRenderBudget, syncDrawRange]
   );
+
+  // Home and End move focus to the list's ends, which may be folded into gaps
+  // (R-28): scroll there and draw it first, so the roving keys find that end's
+  // row, as focusing it would have scrolled the list there anyway. A key typed
+  // in the rename field is the field's.
+  const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (
+      (event.key === 'Home' || event.key === 'End') &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      drawn.range !== null &&
+      target?.closest('[data-row-item]') &&
+      !target.matches('input, textarea')
+    ) {
+      const container = event.currentTarget;
+      container.scrollTop = event.key === 'Home' ? 0 : container.scrollHeight;
+      syncDrawRange(container, true);
+    }
+    roving.onKeyDown(event);
+  };
+  // Focus that leaves the list (not into a menu one of its rows opened) lets go
+  // of the row it was on, so that row is no longer kept drawn.
+  const onListBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
+    roving.onBlur(event);
+    const container = event.currentTarget;
+    const next = event.relatedTarget;
+    if (next instanceof Node && container.contains(next)) return;
+    if (next instanceof Element && inMenuOpenedFrom(next, container)) return;
+    setFocusedRowKey(null);
+  };
+
+  // Anything that moves lines without a scroll (a view drawn, a folder opened
+  // or closed, rows arriving, the list's box growing) is measured again before
+  // the frame paints, so no placeholder is ever left where a row should be.
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (container) syncDrawRange(container, false);
+  }, [windowed, listHeight, isExpanded, syncDrawRange]);
 
   // The list's own height, so the fill check below runs again when its box
   // changes (vision V1-R2-1). A list that ten rows filled in the short overlay
@@ -1250,7 +1396,7 @@ export default function RecentChats({
     homeDir,
     listShown: isExpanded && sidebarOpen,
     tabIndex: roving.tabIndexFor(chatKey(session.id)),
-    onRowFocus: roving.onRowFocus,
+    onRowFocus,
     onOpen: openChat,
     onStartRename: startRenameRow,
     onRequestDelete: setPendingDelete,
@@ -1311,9 +1457,9 @@ export default function RecentChats({
         onScroll={handleScroll}
         onPointerEnter={() => setPointerInside(true)}
         onPointerLeave={() => setPointerInside(false)}
-        onKeyDown={roving.onKeyDown}
+        onKeyDown={onListKeyDown}
         onFocus={roving.onFocus}
-        onBlur={roving.onBlur}
+        onBlur={onListBlur}
       >
         {isEmpty ? (
           <p
@@ -1323,7 +1469,14 @@ export default function RecentChats({
             {isLoadingMore || isLoadingAll ? sidebarCopy.chats.loading : sidebarCopy.chats.empty}
           </p>
         ) : (
-          <ContextMenu onOpenChange={setRowMenuOpen}>
+          // Not modal (R-28, vision V1-R2-2): a modal menu sets `pointer-events`
+          // on <body>, an inherited property, so opening and closing it restyled
+          // every element in the window (about 50 ms each way with 2,100 rows
+          // drawn, more with a long chat open), and it mounted a scroll lock that
+          // read the body's computed style. The row's ⋯ menu, the same menu,
+          // was never modal: both now behave alike, and a click outside closes
+          // the menu and lands where it was aimed.
+          <ContextMenu modal={false} onOpenChange={setRowMenuOpen}>
             <ContextMenuTrigger
               asChild
               onContextMenu={pickMenuRow}
@@ -1338,87 +1491,110 @@ export default function RecentChats({
                 className="br-sidebar-chat-groups"
                 data-view-changed={viewGeneration > 0 ? 'true' : undefined}
               >
-                {windowed.entries.map(({ group, collapsed, holdsActive, rows, more }) => (
-                  <section
-                    key={group.key}
-                    className="br-sidebar-group"
-                    aria-label={group.label || sidebarCopy.chats.header}
-                  >
-                    {group.kind === 'date' ? (
-                      <p className="br-sidebar-bucket">{group.label}</p>
-                    ) : null}
-                    {group.kind === 'folder' ? (
-                      <FolderHeader
-                        group={group}
-                        collapsed={collapsed}
-                        tabIndex={roving.tabIndexFor(folderKey(group))}
-                        onRowFocus={roving.onRowFocus}
-                        onToggle={() => {
-                          // What a click does follows what is DRAWN: an open folder
-                          // closes and a closed one opens, even when the open one is
-                          // only open because it holds the current chat.
-                          if (collapsed) {
-                            setFolderCollapsed(group.key, false);
-                            setClosedWithActive((current) => ({
-                              ...current,
-                              keys: current.keys.filter((key) => key !== group.key),
-                            }));
-                            return;
-                          }
-                          setFolderCollapsed(group.key, true);
-                          if (holdsActive) {
-                            setClosedWithActive((current) => ({
-                              sessionId: activeSessionId ?? null,
-                              keys: [
-                                ...(current.sessionId === (activeSessionId ?? null)
-                                  ? current.keys
-                                  : []),
-                                group.key,
-                              ],
-                            }));
-                          }
-                        }}
-                      />
-                    ) : null}
-                    {rows.length > 0 ? (
-                      <ul className="br-nav-list">
-                        {rows.map((session) => (
-                          <RecentChatRow key={session.id} {...rowProps(session)} />
-                        ))}
-                        {more ? (
-                          <li data-row-item="">
-                            <button
-                              type="button"
-                              className="br-nav-row br-sidebar-quiet-row no-drag"
-                              data-row={moreKey(group)}
-                              data-testid={`sidebar-folder-more-${group.key}`}
-                              // A disclosure of the folder's other rows. `aria-expanded`
-                              // also tells the overlay sidebar this is not a choice, so
-                              // showing more rows does not close the panel.
-                              aria-expanded={more === 'less'}
-                              tabIndex={roving.tabIndexFor(moreKey(group))}
-                              onFocus={() => roving.onRowFocus(moreKey(group))}
-                              onClick={() =>
-                                setExpandedFolders((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(group.key)) next.delete(group.key);
-                                  else next.add(group.key);
-                                  return next;
-                                })
-                              }
-                            >
-                              <span className="br-nav-row-label">
-                                {more === 'more'
-                                  ? sidebarCopy.chats.showMore
-                                  : sidebarCopy.chats.showLess}
-                              </span>
-                            </button>
-                          </li>
-                        ) : null}
-                      </ul>
-                    ) : null}
-                  </section>
-                ))}
+                {windowed.entries.map(
+                  ({ group, collapsed, holdsActive, lines, more, headerDrawn, rowsLine }) => (
+                    <section
+                      key={group.key}
+                      className="br-sidebar-group"
+                      aria-label={group.label || sidebarCopy.chats.header}
+                      // Where this group's rows start, for the line math (`syncDrawRange`).
+                      data-rows-line={rowsLine}
+                      data-header-lines={headerLines({ group })}
+                    >
+                      {group.kind === 'date' ? (
+                        <p className="br-sidebar-bucket">{group.label}</p>
+                      ) : null}
+                      {group.kind === 'folder' && !headerDrawn ? (
+                        // A folder header far from the viewport: its box alone, so
+                        // the lines below it keep their place.
+                        <div className="br-sidebar-folder" aria-hidden="true" />
+                      ) : null}
+                      {group.kind === 'folder' && headerDrawn ? (
+                        <FolderHeader
+                          group={group}
+                          collapsed={collapsed}
+                          tabIndex={roving.tabIndexFor(folderKey(group))}
+                          onRowFocus={onRowFocus}
+                          onToggle={() => {
+                            // What a click does follows what is DRAWN: an open folder
+                            // closes and a closed one opens, even when the open one is
+                            // only open because it holds the current chat.
+                            if (collapsed) {
+                              setFolderCollapsed(group.key, false);
+                              setClosedWithActive((current) => ({
+                                ...current,
+                                keys: current.keys.filter((key) => key !== group.key),
+                              }));
+                              return;
+                            }
+                            setFolderCollapsed(group.key, true);
+                            if (holdsActive) {
+                              setClosedWithActive((current) => ({
+                                sessionId: activeSessionId ?? null,
+                                keys: [
+                                  ...(current.sessionId === (activeSessionId ?? null)
+                                    ? current.keys
+                                    : []),
+                                  group.key,
+                                ],
+                              }));
+                            }
+                          }}
+                        />
+                      ) : null}
+                      {lines.length > 0 ? (
+                        <ul className="br-nav-list">
+                          {lines.map((line) => {
+                            if (line.kind === 'row') {
+                              return <RecentChatRow key={line.row.id} {...rowProps(line.row)} />;
+                            }
+                            if (line.kind === 'gap') {
+                              // Rows held but far from the viewport: one box their height.
+                              return (
+                                <li
+                                  key={line.key}
+                                  className="br-chat-row-gap"
+                                  aria-hidden="true"
+                                  style={{ '--br-gap-lines': line.lines } as CSSProperties}
+                                />
+                              );
+                            }
+                            return (
+                              <li key="more" data-row-item="">
+                                <button
+                                  type="button"
+                                  className="br-nav-row br-sidebar-quiet-row no-drag"
+                                  data-row={moreKey(group)}
+                                  data-testid={`sidebar-folder-more-${group.key}`}
+                                  // A disclosure of the folder's other rows. `aria-expanded`
+                                  // also tells the overlay sidebar this is not a choice, so
+                                  // showing more rows does not close the panel.
+                                  aria-expanded={more === 'less'}
+                                  tabIndex={roving.tabIndexFor(moreKey(group))}
+                                  onFocus={() => onRowFocus(moreKey(group))}
+                                  onClick={() =>
+                                    setExpandedFolders((current) => {
+                                      const next = new Set(current);
+                                      if (next.has(group.key)) next.delete(group.key);
+                                      else next.add(group.key);
+                                      return next;
+                                    })
+                                  }
+                                >
+                                  <span className="br-nav-row-label">
+                                    {more === 'more'
+                                      ? sidebarCopy.chats.showMore
+                                      : sidebarCopy.chats.showLess}
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
+                    </section>
+                  )
+                )}
               </div>
             </ContextMenuTrigger>
             {rowMenu}

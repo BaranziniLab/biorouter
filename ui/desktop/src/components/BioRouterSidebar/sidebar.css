@@ -413,6 +413,16 @@
   min-width: 0;
 }
 
+/* Rows the list holds but does not draw, far from the viewport (R-28): one
+   box exactly the height of the `--br-gap-lines` lines it stands for, each a
+   `--row-height-nav` row (a chat, an editor or "Show more") with the 2px
+   `.br-nav-list` puts between rows, so the scroll height and every drawn
+   row's place are the same as with real rows. */
+.br-chat-row-gap {
+  flex: none;
+  height: calc(var(--br-gap-lines, 1) * (var(--row-height-nav) + 2px) - 2px);
+}
+
 /* The kind glyph keeps its 16px slot however long the title is; the glyph's
    own `flex-none` is a Tailwind class, and this column must not depend on one
    having been generated. */
