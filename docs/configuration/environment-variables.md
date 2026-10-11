@@ -275,7 +275,7 @@ These variables are primarily used for developing, testing, and debugging biorou
 Default locations. There is no single root: config, data, and state resolve separately, and `biorouter info` prints the ones your machine is using.
 
 - macOS and Linux: config `~/.config/biorouter`, data `~/.local/share/biorouter`, state `~/.local/state/biorouter`
-- Windows: `%APPDATA%\Block\biorouter\config` and `%APPDATA%\Block\biorouter\data` (there is no separate state directory; state falls back to data)
+- Windows: a `config` folder and a `data` folder, both under `%APPDATA%` (there is no separate state directory; state falls back to data)
 
 When set, biorouter creates `config/`, `data/`, and `state/` subdirectories under the specified path. This is useful for isolating test environments, running multiple configurations, or CI/CD pipelines.
 
