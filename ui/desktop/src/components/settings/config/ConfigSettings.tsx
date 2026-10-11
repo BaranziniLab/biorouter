@@ -9,13 +9,16 @@ import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { cn } from '../../../utils';
 import { Save } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
-import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
+import { providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
 import { HostManagedModelNote, type HostManagedTopic } from '../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../destinationConfigKeys';
 import { ModalShell } from '../../ModalShell';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { configCopy } from './copy';
+import { configFieldLabel } from './configLabels';
+import './config.css';
+import type { ProviderDetails } from '../../../api';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
   PRIVACY_TIERS_KEY,
@@ -63,7 +66,7 @@ function isEditableValue(value: ConfigValue | undefined): boolean {
   return value === undefined || value === null || typeof value !== 'object';
 }
 export default function ConfigSettings() {
-  const { config, upsert, refreshConfig } = useConfig();
+  const { config, upsert, refreshConfig, getProviders } = useConfig();
   const { currentProvider: liveProvider, refreshCurrentModelAndProvider } = useModelAndProvider();
   const typedConfig = config as ConfigData;
   const [configValues, setConfigValues] = useState<ConfigData>({});
@@ -140,7 +143,7 @@ export default function ConfigSettings() {
       await upsert(key, configValues[key], false);
       toastSuccess({
         title: configCopy.savedTitle,
-        msg: configCopy.saved(getUiNames(key)),
+        msg: configCopy.saved(configFieldLabel(key)),
       });
 
       // Remove this key from modified keys since it's now saved
@@ -157,8 +160,8 @@ export default function ConfigSettings() {
       toastError({
         title: configCopy.saveFailedTitle,
         msg: reason
-          ? configCopy.notSaved(getUiNames(key), reason)
-          : configCopy.saveFailed(getUiNames(key)),
+          ? configCopy.notSaved(configFieldLabel(key), reason)
+          : configCopy.saveFailed(configFieldLabel(key)),
         traceback: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -193,6 +196,30 @@ export default function ConfigSettings() {
   // cached config value is only the fallback for the first paint, before the
   // live value has loaded.
   const currentProvider = liveProvider || typedConfig.BIOROUTER_PROVIDER || '';
+
+  // The row names the provider the way the Models tab does ("Versa API Azure"), not by the id the
+  // config file keeps (`versa_azure`, which is still the Provider field in the editor). `null` is
+  // "not looked up yet": the row shows no value for that instant rather than flashing the id.
+  const [providerList, setProviderList] = useState<ProviderDetails[] | null>(null);
+  // Read once, when the section mounts. `getProviders` changes identity whenever the cached list
+  // does, and a lookup that re-ran on that would ask again for an answer it already has.
+  const getProvidersRef = useRef(getProviders);
+  getProvidersRef.current = getProviders;
+  useEffect(() => {
+    let live = true;
+    void Promise.resolve(getProvidersRef.current(false))
+      .then((list) => live && setProviderList(list))
+      .catch(() => live && setProviderList([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const providerName =
+    providerList === null
+      ? undefined
+      : providerList.find((provider) => provider.name === currentProvider)?.metadata.display_name ||
+        currentProvider ||
+        undefined;
 
   // Opening Settings re-reads the provider from the backing config, so the
   // label is also correct after a change made outside this renderer session.
@@ -254,8 +281,7 @@ export default function ConfigSettings() {
       <SettingRow
         label={configCopy.row}
         help={configCopy.help}
-        value={currentProvider || undefined}
-        valueMono
+        value={providerName}
         controlId="configuration-edit"
         data-testid="config-settings-row"
       >
@@ -301,8 +327,8 @@ export default function ConfigSettings() {
         }
       >
         {/* The shell's header and footer own the body's top and bottom gutters only when the body
-            is bare text; this body starts with a box and ends with a field, so it pads itself. */}
-        <div className="py-3">
+            is bare text; this body starts with a list and ends with a field, so it pads itself. */}
+        <div className="br-config-body">
           <PrivacyConfigSummary
             config={typedConfig}
             onOpen={() => {
@@ -320,14 +346,11 @@ export default function ConfigSettings() {
                 const topic = hostTopic(key);
                 const fixedByHost = topic !== null;
                 const fieldId = `config-field-${key}`;
-                const uiName = getUiNames(key);
+                const uiName = configFieldLabel(key);
                 // ⚠ Exactly one button per row, and the row is this `div.grid`: two browser-surface
                 // tests find a row with `closest('.grid')` and take its only button. No InfoTip here.
                 return (
-                  <div
-                    key={key}
-                    className="grid grid-cols-[minmax(0,200px)_1fr_auto] items-center gap-3"
-                  >
+                  <div key={key} className="br-config-row grid items-center gap-3">
                     {/* The key itself is the label's tooltip, in the mono face: it is the name a
                       person looks for in the file. It was a native `title`, which opens on no
                       keyboard and looks like the OS. */}
@@ -444,17 +467,16 @@ function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: 
       : []),
   ];
   return (
-    <div
-      data-testid="config-privacy-summary"
-      className="mb-4 rounded-container border border-border-subtle px-3 py-2.5"
-    >
-      {/* The first column is the fields' 200px less the box's 1px border and 12px padding, so a value
-          starts exactly where the inputs below it do (at 13px it sat to their right). */}
-      <dl className="grid grid-cols-[minmax(0,187px)_1fr] gap-x-3 gap-y-1 text-body">
+    <div data-testid="config-privacy-summary" className="br-config-summary">
+      {/* Plain rows on the editor's own label column, so a value starts exactly where the inputs
+          below it do. It was a bordered box inside the dialog (a box in a box). */}
+      <dl className="br-config-summary-list">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
-            <dt className="text-text-muted">{label}</dt>
-            <dd className="min-w-0 text-text-default [overflow-wrap:anywhere]">{value}</dd>
+            <dt className="text-label text-text-default">{label}</dt>
+            <dd className="min-w-0 text-secondary text-text-muted [overflow-wrap:anywhere]">
+              {value}
+            </dd>
           </div>
         ))}
       </dl>
