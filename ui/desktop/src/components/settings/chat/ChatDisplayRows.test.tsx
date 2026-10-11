@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { displayCopy, projectCopy } from './copy';
 import { SpellcheckRow } from './SpellcheckToggle';
@@ -96,6 +96,46 @@ describe('Spellcheck', () => {
     expect(spellcheck).toHaveAccessibleDescription(
       `${displayCopy.spellcheckHelp} ${displayCopy.restartToApply}`
     );
+  });
+});
+
+describe('Spellcheck status', () => {
+  const click = async (spellcheck: HTMLElement) => {
+    await act(async () => {
+      fireEvent.click(spellcheck);
+    });
+  };
+
+  it('goes again when the switch is put back to what the window started with (V4-21)', async () => {
+    render(<SpellcheckRow />);
+    const spellcheck = await screen.findByRole('switch', { name: displayCopy.spellcheck });
+
+    await click(spellcheck);
+    expect(screen.getByText(displayCopy.restartToApply)).toBeInTheDocument();
+
+    await click(spellcheck);
+    expect(window.electron.setSpellcheck).toHaveBeenLastCalledWith(true);
+    expect(screen.queryByText(displayCopy.restartToApply)).not.toBeInTheDocument();
+    expect(spellcheck).toHaveAccessibleDescription(displayCopy.spellcheckHelp);
+
+    // And it comes back for the next change, not only the first one.
+    await click(spellcheck);
+    expect(screen.getByText(displayCopy.restartToApply)).toBeInTheDocument();
+  });
+
+  it('measures from a stored OFF as well as from ON', async () => {
+    window.electron.getSpellcheckState = vi.fn().mockResolvedValue(false);
+    render(<SpellcheckRow />);
+    const spellcheck = await screen.findByRole('switch', { name: displayCopy.spellcheck });
+    await waitFor(() => expect(spellcheck).not.toBeChecked());
+    expect(screen.queryByText(displayCopy.restartToApply)).not.toBeInTheDocument();
+
+    await click(spellcheck);
+    expect(spellcheck).toBeChecked();
+    expect(screen.getByText(displayCopy.restartToApply)).toBeInTheDocument();
+
+    await click(spellcheck);
+    expect(screen.queryByText(displayCopy.restartToApply)).not.toBeInTheDocument();
   });
 });
 
