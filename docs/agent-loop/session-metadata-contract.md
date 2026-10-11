@@ -142,6 +142,7 @@ carry either, and they are rendered differently — a sub-agent glyph versus "br
 | History nesting | `session_type === 'sub_agent'` **and** a `parent_session_id` resolving to a top-level row (`ui/desktop/src/components/sessions/sessionGrouping.ts`) |
 | History "Show subagent runs" toggle | Whether `sub_agent` rows are fetched at all, then `withoutSubagents` at every read of the shared cache |
 | The sub-agent mark on a History row | The row's kind glyph (`chatKind.ts`), which reads `session_type` and `parent_session_id`, so an unnested child is still marked. There is no separate "Subagent" badge, and `historyRowTitle` drops the stored `Subagent: ` prefix from the title the row shows (the stored name is unchanged and still searchable) |
+| The scheduled mark on a History row | The same glyph (the clock, `session_type === 'scheduled'`). `historyRowTitle` drops the stored `Scheduled job: ` prefix, so a row reads as the job id (`daily-meditation`) and a search for a job does not list the kind ten times over. The prefix is dropped for the scheduled kind only, and the stored name is unchanged: the Meditation job and the rename field still read it |
 | Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` (and, for a Crew task, `origin` then `working_dir`) over the title |
 | `workspace_list` | `parent_session_id` and `only_subagents` as independent filters |
 | CLI | `crates/biorouter-cli/src/commands/session_grouping.rs`, the same two fields |
