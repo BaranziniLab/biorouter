@@ -68,3 +68,69 @@ describe('Field info', () => {
     expect(input).toHaveAccessibleDescription('Runs use this model. Required.');
   });
 });
+
+describe('Field info name (vision V3-R3-3)', () => {
+  /** The workflow editor's "Initial prompt (optional)": a component that draws a muted suffix. */
+  function OptionalLabel({ children }: { children: string }) {
+    return (
+      <>
+        {children} <span className="text-text-muted">(optional)</span>
+      </>
+    );
+  }
+
+  it('names the InfoTip by the words a node label shows, never by the field id', () => {
+    render(
+      <Field
+        id="workflow-prompt"
+        label={<OptionalLabel>Initial prompt</OptionalLabel>}
+        info="Sent as the first message."
+      >
+        <Textarea />
+      </Field>
+    );
+    expect(screen.getByRole('button', { name: 'About Initial prompt' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /workflow-prompt/ })).toBeNull();
+  });
+
+  it('reads nested elements and collapses their whitespace', () => {
+    render(
+      <Field
+        id="wf-model"
+        label={
+          <span>
+            Model <strong>name</strong>
+          </span>
+        }
+        info="Runs use this model."
+      >
+        <Input />
+      </Field>
+    );
+    expect(screen.getByRole('button', { name: 'About Model name' })).toBeInTheDocument();
+  });
+
+  it('takes an explicit infoLabel over the derived words', () => {
+    render(
+      <Field
+        id="workflow-prompt"
+        label={<OptionalLabel>Initial prompt</OptionalLabel>}
+        infoLabel="The first message"
+        info="Sent as the first message."
+      >
+        <Textarea />
+      </Field>
+    );
+    expect(screen.getByRole('button', { name: 'About The first message' })).toBeInTheDocument();
+  });
+
+  it('falls back to words, not the id, when the label node holds no text', () => {
+    render(
+      <Field id="wf-icon" label={<svg aria-hidden="true" />} info="Shown beside the name.">
+        <Input />
+      </Field>
+    );
+    expect(screen.getByRole('button', { name: 'About this field' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /wf-icon/ })).toBeNull();
+  });
+});

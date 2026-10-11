@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { cn } from '../../utils';
-import { InfoTip, useInfoTipId } from './info-tip';
+import { InfoTip, plainTextOf, useInfoTipId } from './info-tip';
 
 /**
  * Field: the one form-field recipe (spec 2.6), copied from Crew's `dialogs/fields.tsx`.
@@ -34,6 +34,11 @@ export interface FieldProps {
    * linked to the control by `aria-describedby`. Plain text, two sentences at most.
    */
   info?: string;
+  /**
+   * The InfoTip's name ("About {infoLabel}") when `label` is not plain text. Without it the name
+   * is the text the label node shows; it is never the field's id (vision V3-R3-3).
+   */
+  infoLabel?: string;
   /** One muted line under the control. Replaced by `error` while there is one. */
   helper?: React.ReactNode;
   /** The field's validation message (danger ink). */
@@ -48,6 +53,7 @@ export function Field({
   id,
   label,
   info,
+  infoLabel,
   helper,
   error,
   required,
@@ -58,6 +64,9 @@ export function Field({
   const helpId = note ? fieldHelpId(id) : undefined;
   const generatedInfoId = useInfoTipId();
   const infoId = info ? generatedInfoId : undefined;
+  // An accessible name is words a person can say, never a DOM id: "About workflow-prompt" was
+  // what a node label (the workflow editor's "Initial prompt (optional)") used to announce.
+  const infoName = infoLabel ?? (plainTextOf(label) || 'this field');
   const control = React.isValidElement<Record<string, unknown>>(children)
     ? React.cloneElement(children, {
         id: (children.props.id as string | undefined) ?? id,
@@ -76,7 +85,7 @@ export function Field({
           <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">
             {label}
           </label>
-          <InfoTip label={typeof label === 'string' ? label : id} help={info} id={infoId} />
+          <InfoTip label={infoName} help={info} id={infoId} />
         </div>
       ) : (
         <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">

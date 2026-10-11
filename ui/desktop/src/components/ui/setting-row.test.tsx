@@ -59,6 +59,25 @@ describe('SettingRow', () => {
     expect(screen.getByRole('button', { name: 'About Prevent sleep while running' })).toBeVisible();
   });
 
+  it('names a node label’s InfoTip by the words it shows (vision V3-R3-3)', () => {
+    render(
+      <SettingSection title={<span>Danger zone</span>} help="Cannot be undone.">
+        <SettingRow
+          label={
+            <span>
+              Reset <em>everything</em>
+            </span>
+          }
+          help="Clears your settings."
+        >
+          <Switch checked={false} onCheckedChange={() => {}} />
+        </SettingRow>
+      </SettingSection>
+    );
+    expect(screen.getByRole('button', { name: 'About Reset everything' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Danger zone' })).toBeInTheDocument();
+  });
+
   it('uses the given controlId and keeps a control that names itself', () => {
     render(
       <SettingRow label="Text size" controlId="text-size">

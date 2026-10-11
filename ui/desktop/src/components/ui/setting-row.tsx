@@ -1,7 +1,7 @@
 import * as React from 'react';
 
 import { cn } from '../../utils';
-import { InfoTip, useInfoTipId } from './info-tip';
+import { InfoTip, plainTextOf, useInfoTipId } from './info-tip';
 
 /**
  * SettingSection and SettingRow: the one settings recipe (spec 2.6), shared by every Settings
@@ -80,7 +80,8 @@ export function SettingRow({
   const helpId = useInfoTipId();
   const labelId = settingLabelId(controlId);
   const statusId = settingStatusId(controlId);
-  const labelText = typeof label === 'string' ? label : undefined;
+  // A node label names its InfoTip by the words it shows (V3-R3-3), never by an id.
+  const labelText = plainTextOf(label) || undefined;
 
   // One element is enhanced; anything else (a fragment, several nodes) renders as given.
   const control = React.isValidElement<Record<string, unknown>>(children) ? children : null;
@@ -186,7 +187,7 @@ export function SettingSection({
 }: SettingSectionProps) {
   const generatedId = React.useId();
   const titleId = `${id ?? `section-${generatedId.replace(/[^a-zA-Z0-9_-]/g, '')}`}-title`;
-  const titleText = typeof title === 'string' ? title : undefined;
+  const titleText = plainTextOf(title) || undefined;
   return (
     <section
       id={id}

@@ -41,6 +41,25 @@ import { TOOLTIP_SURFACE_CLASS_NAME, isFocusFromTabKey } from './Tooltip';
 export const INFO_TIP_OPEN_DELAY_MS = 200;
 export const INFO_TIP_CLOSE_GRACE_MS = 100;
 
+/**
+ * The words a label node shows, for an InfoTip's name when the label is not a plain string:
+ * strings and numbers, and the `children` of elements, whitespace collapsed. A component's own
+ * output is not rendered, so `<OptionalLabel>Initial prompt</OptionalLabel>` reads
+ * "Initial prompt" without the "(optional)" it draws. Empty when the node holds no text.
+ */
+export function plainTextOf(node: React.ReactNode): string {
+  const walk = (part: React.ReactNode): string => {
+    if (part === null || part === undefined || typeof part === 'boolean') return '';
+    if (typeof part === 'string' || typeof part === 'number') return String(part);
+    if (Array.isArray(part)) return part.map(walk).join('');
+    if (React.isValidElement<{ children?: React.ReactNode }>(part)) {
+      return walk(part.props.children);
+    }
+    return '';
+  };
+  return walk(node).replace(/\s+/g, ' ').trim();
+}
+
 /** A stable id for an InfoTip's description, to share with the control it explains. */
 export function useInfoTipId(): string {
   const reactId = React.useId();
