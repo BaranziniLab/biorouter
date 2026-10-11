@@ -455,6 +455,19 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
 
   const near = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
 
+  /** WCAG's contrast ratio between two sRGB colours. */
+  function contrast(a: number[], b: number[]): number {
+    const luminance = (c: number[]) => {
+      const [r, g, bl] = c.map((v) => {
+        const s = v / 255;
+        return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+    };
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
   /** A file held over (or taken off) the last staged row, as the browser reports a drag. */
   const hold = (tab: Page, type: 'dragenter' | 'dragleave') =>
     tab.evaluate((t) => {
@@ -524,8 +537,12 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
         try {
           // The case the finding names: the box is above the scroller's top, out of view.
           expect(zoneBottom, `${mode}: the box is out of view`).toBeLessThanOrEqual(scrollerTop);
-          const edge = await paint(tab, 'var(--border-strong)');
+          // The composer card's drag-over edge, and 3:1 on the ground, as a state should be.
+          const edge = await paint(tab, 'var(--border-accent)');
           const ground = await paint(tab, 'var(--background-default)');
+          expect(contrast(edge, ground), `${mode}: the edge on the ground`).toBeGreaterThanOrEqual(
+            3
+          );
           // At rest the rail draws no edge of its own on the left, top and bottom.
           for (const side of ['left', 'top', 'bottom']) {
             const [x, y] = edges[side];
@@ -534,6 +551,7 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
 
           await hold(tab, 'dragenter');
           await tab.waitForSelector('[data-testid="knowledge-ingest-rail"][data-dragging="true"]');
+          if (SHOTS) await shoot(tab, `rail-held-scrolled-${mode}`);
           for (const side of Object.keys(edges)) {
             const [x, y] = edges[side];
             const got = await pixel(tab, x, y);
@@ -548,7 +566,6 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
             row
           );
           expect(hit, `${mode}: the row is still the drop's target`).toBe(true);
-          if (SHOTS) await shoot(tab, `rail-held-scrolled-${mode}`);
 
           await hold(tab, 'dragleave');
           await tab.waitForSelector('[data-testid="knowledge-ingest-rail"]:not([data-dragging])');

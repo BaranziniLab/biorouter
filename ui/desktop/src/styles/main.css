@@ -4530,12 +4530,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* The rail is the drop target (V3-12), so the rail answers a held file as well as the box. The box
    yields its room to the staged list and the paste box (R-33), and a long list scrolls it out of
    view; a file held over the rail then lit nothing on screen. While a file is held anywhere on the
-   rail, the rail draws the box's own drag edge (1px of `--border-strong`, inset) around itself.
-   A border on a pseudo-element laid over the rail's children, not an inset shadow on the rail:
-   the footer paints its own ground and would cover a shadow on its parent, and forced colours keep
-   a border where they drop a shadow. It takes no pointer, so the drop lands on what is under it.
-   `isolation` keeps its z-index inside the rail. Measured in
-   `knowledge/sourcesRail.browser.test.tsx`. */
+   rail, the rail draws a 1px inset accent edge around itself: the composer card's drag-over edge
+   (`composerCard.ts`). The box keeps its own neutral answer (the strong fill and the
+   `--border-strong` line), which works because the fill changes with it; that line alone, around
+   a whole column with no fill under it, barely showed in the review shots, so the rail does not
+   borrow it. A border on a pseudo-element laid over the rail's children, not an inset shadow on
+   the rail: the footer paints its own ground and would cover a shadow on its parent, and forced
+   colours keep a border where they drop a shadow. It takes no pointer, so the drop lands on what
+   is under it. `isolation` keeps its z-index inside the rail. Measured in
+   `knowledge/sourcesRail.browser.test.tsx` (the edge, 3:1 or more on the ground, light and dark). */
 .br-knowledge-rail {
   position: relative;
   isolation: isolate;
@@ -4546,7 +4549,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   position: absolute;
   inset: 0;
   z-index: 1;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-accent);
   pointer-events: none;
 }
 

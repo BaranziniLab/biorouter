@@ -810,8 +810,11 @@ they appear, down to a **240px** floor, after which the scroller scrolls. Its si
 `.br-knowledge-dropzone` in `main.css` (`flex: 1 1 0%`, `min-height: 240px`), not written as a utility at
 the call site. What V3-12 added stays: the whole rail is the drop target (a file let go on a staged row
 or the footer still stages; text fields are left alone), and the model picker and Digest button sit in one
-column capped at 22.5rem. `knowledge/knowledgeBand.browser.test.tsx` measures the fill at 264, 300 and
-820px, the room handed back, and the floor.
+column capped at 22.5rem. A file held anywhere on the rail also lights the rail's own edge (1px of the
+accent, the composer card's drag-over edge, on `.br-knowledge-rail`), so it gets an answer when a long
+staged list has scrolled the box out of view. `knowledge/sourcesRail.browser.test.tsx` mounts the real
+rail (the panel, the box, the paste box, the staged list, the model picker) and measures the fill at the
+264, 300 and 812px columns, the room handed back, the floor, and the held-file edge.
 
 ---
 

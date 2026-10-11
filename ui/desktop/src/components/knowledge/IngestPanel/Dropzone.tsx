@@ -67,7 +67,7 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
  * the staged list as they appear, so a file let go on a staged row, on the paste box's frame or on
  * the footer must still stage. `IngestPanel` spreads `dropProps` on the rail's root and hands
  * `dragging` to the box and to the rail: the box takes its drag fill and edge, and the rail draws
- * the same edge around itself (`.br-knowledge-rail`), so a held file gets an answer even when a
+ * an accent edge around itself (`.br-knowledge-rail`), so a held file gets an answer even when a
  * long staged list has scrolled the box out of view. The rail carries no fill.
  *
  * ⚠ **Text fields are left alone.** A drag that starts or lands inside the paste box's fields is a
