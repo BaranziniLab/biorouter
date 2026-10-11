@@ -13,11 +13,12 @@
 .docs-search { position: relative; margin: 0 0 22px; }
 .docs-search input {
   width: 100%; height: var(--h-control); padding: 0 10px 0 32px;
-  border: 1px solid var(--line); border-radius: var(--r-element); background: var(--paper);
+  border: 1px solid transparent; border-radius: var(--r-element); background: var(--fill);
   font: inherit; font-size: var(--fs-md); color: var(--ink);
-  transition: border-color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .docs-search input::placeholder { color: var(--subtle); }
+.docs-search input:hover:not(:focus) { background: var(--fill-strong); }
 .docs-search input:focus { outline: none; border-color: var(--coral); }
 /* The browser's own clear button is blue. It stays (it clears the field and
    announces itself), drawn as a muted x in the page's ink. */
@@ -35,7 +36,7 @@
 .docs-results.open { display: block; }
 .docs-results a { display: block; padding: 7px 10px; border-radius: var(--r-element); font-size: var(--fs-sm); color: var(--ink); line-height: 1.35; }
 .docs-results a span { display: block; color: var(--subtle); font-size: var(--fs-xs); margin-top: 2px; }
-.docs-results a:hover, .docs-results a.hit { background: var(--sidebar-active); text-decoration: none; }
+.docs-results a:hover, .docs-results a.hit { background: var(--fill-strong); text-decoration: none; }
 .docs-results .none { padding: 7px 10px; color: var(--subtle); font-size: var(--fs-sm); }
 .docs-group { margin: 0 0 20px; }
 .docs-group h2 { font-size: var(--fs-xs); font-weight: 400; color: var(--subtle); margin: 0 0 6px; padding: 0 10px; }
@@ -46,8 +47,8 @@
   font: inherit; font-size: var(--fs-md); line-height: 1.4; color: var(--muted); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.docs-nav-item:hover { background: var(--sidebar); color: var(--ink); text-decoration: none; }
-.docs-nav-item.active { color: var(--ink); background: var(--sidebar-active); }
+.docs-nav-item:hover { background: var(--fill); color: var(--ink); text-decoration: none; }
+.docs-nav-item.active { color: var(--ink); background: var(--fill-strong); }
 .docs-nav-item.active::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--coral-bar); }
 .docs-menu-btn { display: none; }
 html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
@@ -95,7 +96,7 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
 .doc-page a:not(.btn):hover { color: var(--coral); }
 .doc-page pre { background: var(--wash); border-radius: var(--r-container); padding: 16px 18px; margin: 0 0 20px; overflow-x: auto; font-size: var(--fs-sm); line-height: 1.7; color: var(--ink); }
 .doc-page pre code { background: none; padding: 0; font-size: inherit; }
-.doc-page kbd { font-size: var(--fs-xs); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: var(--r-inner); padding: 1px 5px; background: var(--paper); }
+.doc-page kbd { font-size: var(--fs-xs); border: 0; border-radius: var(--r-inner); padding: 1px 6px; background: var(--fill-strong); }
 
 /* Tables: hairlines, quiet header, scroll on small screens */
 .doc-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 0 24px; }
@@ -127,17 +128,20 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
   .doc-page .doc-options td + td { margin-top: 7px; }
 }
 
-/* A note: a quiet line, not a box */
-.note { border-left: 2px solid var(--coral-bar); padding: 2px 0 2px 16px; margin: 0 0 20px; }
+/* A note is the subtle fill with no outline; a warning is a wash of the danger
+   hue, as the app's Note draws it. A chip inside a note rests on the page
+   ground (a fill never sits on a fill). */
+.note { background: var(--fill); border-radius: var(--r-container); padding: 14px 18px; margin: 0 0 20px; }
 .note p, .note { color: var(--muted); font-size: var(--fs-md); line-height: 1.7; }
 .note p:last-child { margin: 0; }
-.note.warn { border-left-color: var(--danger); }
+.note.warn { background: var(--danger-wash); }
 .note strong { color: var(--ink); }
+.note code, .note kbd { background: var(--paper); }
 
 /* Numbered steps */
 .steps { list-style: none; counter-reset: step; padding: 0 !important; margin: 0 0 24px; }
 .steps > li { counter-increment: step; position: relative; padding: 0 0 18px 40px; margin: 0; }
-.steps > li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--coral-bar); color: var(--coral); font-size: var(--fs-xs); line-height: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 24px; height: 24px; border-radius: 50%; background: var(--coral-wash); color: var(--coral-ink); font-size: var(--fs-xs); line-height: 24px; text-align: center; font-variant-numeric: tabular-nums; }
 .steps > li > strong:first-child { display: block; font-weight: 400; color: var(--ink); font-size: var(--fs-body); margin-bottom: 2px; }
 
 /* Page footer: previous and next */
@@ -155,20 +159,25 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
    <div class="flow"><div class="node"><b>Title</b><span>note</span></div><i class="arrow"></i>...</div> */
 .flow { display: flex; align-items: stretch; flex-wrap: nowrap; gap: 0; }
 .flow > .node, .stack > .node, .layers > .node { flex: 1 1 0; min-width: 0; }
+/* A diagram box is the subtle fill with no outline. The variants are told
+   apart by what they say, not by a line: accent is a coral wash, private a navy
+   wash, ground a step deeper, quiet and refused quieter ink. */
 .node {
   display: flex; flex-direction: column; justify-content: center; gap: 3px;
-  padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--r-element);
-  background: var(--paper); font-size: var(--fs-md); line-height: 1.35; color: var(--ink);
+  padding: 12px 14px; border: 1px solid transparent; border-radius: var(--r-element);
+  background: var(--fill); font-size: var(--fs-md); line-height: 1.35; color: var(--ink);
 }
 .node b { font-weight: 400; color: var(--ink); }
 .node span { font-size: var(--fs-xs); color: var(--muted); }
-.node.accent { border-color: var(--coral); }
-.node.accent b { color: var(--coral); }
-.node.quiet { border-style: dashed; color: var(--muted); }
-.node.ground { background: var(--muted-ground); border-color: transparent; }
-.node.private { border-color: var(--navy); }
+.node code { background: var(--paper); }
+.node.accent { background: var(--coral-wash); }
+.node.accent b { color: var(--coral-ink); }
+.node.quiet, .node.quiet b { color: var(--muted); }
+.node.ground { background: var(--fill-strong); }
+.node.ground code { background: var(--fill); }
+.node.private { background: var(--navy-wash); }
 .node.private b::after { content: ''; display: inline-block; width: 11px; height: 11px; margin-left: 6px; vertical-align: -1px; background: var(--navy); -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }
-.node.refused { border-color: var(--line); color: var(--subtle); background: var(--wash); }
+.node.refused { color: var(--subtle); }
 .node.refused b { color: var(--subtle); text-decoration: line-through; text-decoration-color: var(--danger); }
 .arrow { position: relative; flex: 0 0 34px; align-self: center; height: 12px; font-style: normal; }
 .arrow::before { content: ''; position: absolute; left: 4px; right: 6px; top: 50%; height: 1px; background: var(--coral-bar); }
@@ -206,13 +215,19 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
 }
 
 /* A two-column comparison (for example private and public) */
-.split { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--line-2); border-radius: var(--r-container); overflow: hidden; }
-.split > div { padding: 16px 18px; }
-.split > div + div { border-left: 1px solid var(--line-2); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.split > div { padding: 16px 18px; background: var(--fill); border-radius: var(--r-container); }
+.split code, .split .privacy.is-private { background: var(--paper); }
 .split h4 { margin: 0 0 8px; font-size: var(--fs-md); font-weight: 400; }
 .split ul { margin: 0; padding-left: 18px; }
 .split li { font-size: var(--fs-md); line-height: 1.6; }
-@media (max-width: 560px) { .split { grid-template-columns: 1fr; } .split > div + div { border-left: 0; border-top: 1px solid var(--line-2); } }
+@media (max-width: 560px) { .split { grid-template-columns: 1fr; } }
+
+/* Forced colours drop fills, so the boxes that have no outline draw one in the
+   system ink. */
+@media (forced-colors: active) {
+  .note, .node, .split > div { border: 1px solid CanvasText; }
+}
 
 /* A small privacy mark for prose and tables */
 .lock { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; background: currentColor; -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }

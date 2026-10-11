@@ -50,7 +50,7 @@
 
   --ok: #1f7a3d;
   --danger: #b3261e;
-  --danger-wash: color-mix(in srgb, var(--danger) 10%, transparent);
+  --danger-wash: color-mix(in srgb, var(--danger) 8%, transparent);
 
   /* Type. The app's interface stack is Arial first. Inter is the brand face,
      used only for the wordmark and the BR mark. */
@@ -102,7 +102,7 @@
   --shadow-raised: 0 1px 2px rgba(31, 30, 28, .07);
   --shadow-popover: 0 8px 24px rgba(31, 30, 28, .11), 0 0 1px rgba(31, 30, 28, .16);
   /* An app window drawn on the page: the floating-surface recipe, quieter. */
-  --shadow-window: 0 8px 24px rgba(31, 30, 28, .07), 0 0 1px rgba(31, 30, 28, .14);
+  --shadow-window: 0 1px 3px rgba(31, 30, 28, .05), 0 12px 32px rgba(31, 30, 28, .08), 0 0 1px rgba(31, 30, 28, .2);
 
   --lock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E");
 }

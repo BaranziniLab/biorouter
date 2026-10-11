@@ -22,22 +22,25 @@
 .baam-catalog { padding-top: 40px; }
 .baam-search-wrap { position: relative; display: block; max-width: 780px; }
 .baam-search-wrap svg {
-  position: absolute; left: 0; top: 50%; width: 20px; height: 20px; margin-top: -10px;
+  position: absolute; left: 14px; top: 50%; width: 18px; height: 18px; margin-top: -9px;
   color: var(--faint); pointer-events: none;
   fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
 }
+/* The search is a filled field like the app's: the subtle fill at rest, the
+   strong fill under the pointer, and a coral edge only while it is typed in.
+   The 1px edge is there and transparent, so nothing moves, and forced colours
+   draw it. */
 #baam-search {
-  display: block; width: 100%; height: var(--h-cta); padding: 0 4px 0 32px; margin: 0;
-  font: inherit; font-size: var(--fs-h2); letter-spacing: var(--tr-h); color: var(--ink);
-  background: transparent; border: 0; border-bottom: 1px solid var(--line-2); border-radius: 0;
+  display: block; width: 100%; height: var(--h-cta); padding: 0 16px 0 42px; margin: 0;
+  font: inherit; font-size: var(--fs-h3); letter-spacing: var(--tr-h); color: var(--ink);
+  background: var(--fill); border: 1px solid transparent; border-radius: var(--r-element);
   outline: none; -webkit-appearance: none; appearance: none;
-  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 #baam-search::placeholder { color: var(--subtle); opacity: 1; }
-#baam-search:hover { border-bottom-color: var(--ghost); }
-#baam-search:focus { border-bottom-color: var(--coral); box-shadow: 0 1px 0 var(--coral); }
+#baam-search:hover:not(:focus) { background: var(--fill-strong); }
+#baam-search:focus { border-color: var(--coral); }
 #baam-search:focus-visible { outline: none; }
-@media (max-width: 640px) { #baam-search { font-size: var(--fs-h3); padding-left: 28px; } .baam-search-wrap svg { width: 18px; height: 18px; margin-top: -9px; } }
 
 .baam-tabs { display: flex; gap: 32px; margin-top: 32px; border-bottom: 1px solid var(--line); }
 .baam-tab {
@@ -78,8 +81,8 @@
   font-size: var(--fs-sm); line-height: 1; color: var(--muted); cursor: pointer; white-space: nowrap;
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.fchip:hover { color: var(--ink); background: var(--medium); }
-.fchip.active { color: var(--ink); background: var(--sidebar-active); }
+.fchip:hover { color: var(--ink); background: var(--fill); }
+.fchip.active { color: var(--ink); background: var(--fill-strong); }
 .fchip:active { transform: scale(0.98); }
 .fchip:focus-visible { outline-offset: 1px; }
 .fchip[data-facet="privacy"][data-match="private"]::before {
@@ -207,7 +210,7 @@
 .tag {
   display: inline-flex; align-items: center; gap: 5px;
   height: 20px; padding: 0 7px; border-radius: var(--r-inner);
-  border: 1px solid var(--line); background: var(--paper);
+  border: 1px solid transparent; background: var(--fill);
   font-size: var(--fs-xs); line-height: 1; color: var(--muted); white-space: nowrap;
 }
 /* Privacy badges follow the app: Private is the padlock on the muted ground,
@@ -228,17 +231,17 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .ext-gh-link svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
-.ext-gh-link:hover { background: var(--medium); color: var(--ink); text-decoration: none; }
+.ext-gh-link:hover { background: var(--fill-strong); color: var(--ink); text-decoration: none; }
 .brxt-chip, .skill-dl-btn {
   grid-column: 4; grid-row: 1 / span 3; align-self: center; margin-left: 8px;
   display: inline-flex; align-items: center; gap: 7px;
   height: var(--h-control); padding: 0 12px; border-radius: var(--r-element);
-  border: 1px solid var(--line-2); background: var(--paper); color: var(--ink);
+  border: 1px solid transparent; background: var(--fill); color: var(--ink);
   font-size: var(--fs-sm); line-height: 1; white-space: nowrap;
-  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .brxt-chip svg, .skill-dl-btn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.brxt-chip:hover, .skill-dl-btn:hover { border-color: var(--coral); color: var(--coral); text-decoration: none; }
+.brxt-chip:hover, .skill-dl-btn:hover { background: var(--fill-strong); text-decoration: none; }
 .brxt-chip:active, .skill-dl-btn:active { transform: scale(0.98); }
 .row-toggle {
   grid-column: 5; grid-row: 1 / span 3; align-self: center; margin: 0 0 0 6px; padding: 0;
@@ -247,7 +250,7 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .row-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform var(--dur-med) var(--ease); }
-.ext-card:hover > .row-toggle, .skill-card:hover > .row-toggle, .wf-card:hover > .row-toggle, .row-toggle:focus-visible { color: var(--ink); background: var(--medium); }
+.ext-card:hover > .row-toggle, .skill-card:hover > .row-toggle, .wf-card:hover > .row-toggle, .row-toggle:focus-visible { color: var(--ink); background: var(--fill-strong); }
 .open > .row-toggle { color: var(--ink); }
 .open > .row-toggle svg { transform: rotate(180deg); }
 
@@ -322,7 +325,7 @@
 .show-all-btn .chev, .show-more-btn .chev { width: 14px; height: 14px; color: var(--coral); transition: transform var(--dur-med) var(--ease); }
 .show-all-btn.open .chev, .show-more-btn.open .chev { transform: rotate(180deg); }
 .show-all-btn:hover .lbl, .show-more-btn:hover .lbl { color: var(--coral); }
-.no-results { padding: 32px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-md); }
+.no-results { margin-top: 24px; padding: 28px 24px; background: var(--fill); border-radius: var(--r-container); color: var(--muted); font-size: var(--fs-md); }
 .no-results a { color: var(--ink); border-bottom: 1px solid var(--coral-bar); white-space: nowrap; }
 .no-results a:hover { color: var(--coral); text-decoration: none; }
 .noscript-note { margin: 16px 0 0; font-size: var(--fs-md); color: var(--muted); }
