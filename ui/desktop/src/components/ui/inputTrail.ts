@@ -15,8 +15,8 @@
  *   menu item opened closes, the item and the menu are gone. The control that held focus when the
  *   menu took it (the row a Shift+F10 was pressed on) is the one place left to go back to.
  *
- * `chats/menuFocusReturn.ts` keeps its own copy of the modality listeners for the sidebar's menus;
- * the two agree because they read the same events.
+ * `chats/menuFocusReturn.ts` re-exports `lastInputWasKey` from here, so the sidebar's menus and the
+ * dialogs they open read one tracker.
  */
 let lastInputWasKeyboard = false;
 let lastOutsideMenu: HTMLElement | null = null;
