@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react';
 import { cn } from '../../utils';
 import { PanelRight } from '../icons/app-icons';
 import { Button } from '../ui/button';
@@ -37,13 +37,29 @@ export interface SummaryHeaderButtonProps {
   summary: ChatSummaryProps;
 }
 
+/** The chat header band the button sits in (BaseChat's 44px header row). */
+export const SUMMARY_BAND_SELECTOR = '[data-preview-area="header"]';
+
+/** The popover's gap below the band's bottom line (vision V2-R4-2). */
+export const SUMMARY_POPOVER_BAND_GAP = 4;
+
+/** The popover's least distance from the window's edges (vision V2-R4-2). */
+export const SUMMARY_POPOVER_WINDOW_GAP = 8;
+
+/** What Radix positions a popover against: a rect, plus the element to track. */
+interface BandAnchor {
+  getBoundingClientRect(): DOMRect;
+  contextElement?: Element;
+}
+
 /**
  * The Chat summary's header button: ONE button, two modes (spec 3.5).
  *
  * Where the rail fits it shows and hides the docked rail; where it does not, it
- * opens the same content as a 280px popover. The popover is ANCHORED to the
- * button rather than triggered by it, because a Radix trigger would stamp its
- * own `aria-expanded` and toggle the popover in rail mode too.
+ * opens the same content as a 280px popover. The popover is ANCHORED (to the
+ * band's bottom line, at the button's right edge) rather than triggered by the
+ * button, because a Radix trigger would stamp its own `aria-expanded` and
+ * toggle the popover in rail mode too.
  */
 export function SummaryHeaderButton({
   mode,
@@ -59,6 +75,31 @@ export function SummaryHeaderButton({
 }: SummaryHeaderButtonProps) {
   const popoverId = useId();
   const buttonRef = useRef<HTMLButtonElement>(null);
+  // The popover hangs from the BAND's bottom line at the button's right edge,
+  // not 6px below the button (vision V2-R4-2). The button is centred in the
+  // 44px band, so the primitive's offset put the popover's top edge exactly on
+  // the band's hairline. Measured from the band, the 4px gap holds at any
+  // button size and any device pixel ratio. `contextElement` is the button, so
+  // Radix keeps tracking it (scroll, resize, layout shift) as it would a real
+  // anchor. Outside a band (a test, a future host) it is the button's own rect.
+  const bandAnchor = useMemo<RefObject<BandAnchor>>(
+    () => ({
+      current: {
+        getBoundingClientRect() {
+          const button = buttonRef.current;
+          if (!button) return new DOMRect();
+          const own = button.getBoundingClientRect();
+          const band = button.closest(SUMMARY_BAND_SELECTOR);
+          const bottom = band ? band.getBoundingClientRect().bottom : own.bottom;
+          return new DOMRect(own.left, own.top, own.width, Math.max(own.height, bottom - own.top));
+        },
+        get contextElement() {
+          return buttonRef.current ?? undefined;
+        },
+      },
+    }),
+    []
+  );
   const railMode = mode === 'rail';
   const expanded = railMode ? railShown : popoverOpen;
   const controls = railMode
@@ -115,52 +156,55 @@ export function SummaryHeaderButton({
 
   return (
     <Popover open={popoverOpen} onOpenChange={onPopoverOpenChange}>
-      <PopoverAnchor asChild>
-        <span className="inline-flex">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                ref={buttonRef}
-                type="button"
-                variant="ghost"
-                shape="round"
-                // Pressed (the rail shown, or its popover open) is the band's
-                // fill step, the one every filled control hovers and presses on
-                // (R-27); the band is a recessed ground (`--sidebar`).
-                className={cn(
-                  'no-drag relative text-text-muted hover:text-text-default',
-                  expanded && 'bg-background-fill-strong text-text-default'
-                )}
-                aria-label={
-                  progress
-                    ? summaryCopy.buttonWithProgress(progress.done, progress.total)
-                    : summaryCopy.title
-                }
-                aria-expanded={expanded}
-                aria-controls={controls}
-                aria-haspopup={railMode ? undefined : 'dialog'}
-                data-summary-mode={mode}
-                data-still={stillAt !== 0 ? '' : undefined}
-                onClick={() => {
-                  setPressedByPerson(true);
-                  if (railMode) onToggleRail();
-                  else onPopoverOpenChange(!popoverOpen);
-                }}
-              >
-                <PanelRight />
-                {progress && <span aria-hidden="true" className="br-summary-dot" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{tooltip}</TooltipContent>
-          </Tooltip>
-        </span>
-      </PopoverAnchor>
+      {/* A virtual anchor renders nothing: the button below is the element. */}
+      <PopoverAnchor virtualRef={bandAnchor} />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            ref={buttonRef}
+            type="button"
+            variant="ghost"
+            shape="round"
+            // Pressed (the rail shown, or its popover open) is the band's
+            // fill step, the one every filled control hovers and presses on
+            // (R-27); the band is a recessed ground (`--sidebar`).
+            className={cn(
+              'no-drag relative text-text-muted hover:text-text-default',
+              expanded && 'bg-background-fill-strong text-text-default'
+            )}
+            aria-label={
+              progress
+                ? summaryCopy.buttonWithProgress(progress.done, progress.total)
+                : summaryCopy.title
+            }
+            aria-expanded={expanded}
+            aria-controls={controls}
+            aria-haspopup={railMode ? undefined : 'dialog'}
+            data-summary-mode={mode}
+            data-still={stillAt !== 0 ? '' : undefined}
+            onClick={() => {
+              setPressedByPerson(true);
+              if (railMode) onToggleRail();
+              else onPopoverOpenChange(!popoverOpen);
+            }}
+          >
+            <PanelRight />
+            {progress && <span aria-hidden="true" className="br-summary-dot" />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
       <PopoverContent
         id={popoverId}
         role="dialog"
         aria-label={summaryCopy.title}
         side="bottom"
         align="end"
+        sideOffset={SUMMARY_POPOVER_BAND_GAP}
+        // Keeps the popover 8px off the window's edges. Radix takes the padding
+        // off `--radix-popover-content-available-height` too, so a long list
+        // stops 8px above the window's bottom edge and scrolls inside.
+        collisionPadding={SUMMARY_POPOVER_WINDOW_GAP}
         className="br-summary-popover"
         // The button is outside the content, so a press on it would first
         // dismiss the popover and then reopen it with the click.

@@ -284,7 +284,10 @@
 
 /* The popover fallback (where the rail does not fit): the same content at the
    rail's width, on the shared popover surface. Unlayered, so it wins over the
-   primitive's default width and padding utilities. */
+   primitive's default width and padding utilities. The available height
+   already leaves the 8px window gap (`collisionPadding` in
+   SummaryHeaderButton.tsx), so a long list stops above the window's bottom
+   edge with its corners and hairline whole (vision V2-R4-2). */
 .br-summary-popover {
   display: flex;
   width: 280px;
