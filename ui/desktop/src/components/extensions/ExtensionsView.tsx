@@ -171,7 +171,11 @@ export default function ExtensionsView({
           adornment={count > 0 ? count : undefined}
           actions={
             <>
-              <FilterInput value={searchTerm} onValueChange={setSearchTerm} />
+              <FilterInput
+                value={searchTerm}
+                onValueChange={setSearchTerm}
+                label={EXTENSIONS_COPY.filterLabel}
+              />
               <AddExtensionMenu
                 onBrowse={() => setIsBrowseModalOpen(true)}
                 onFromFile={() => setIsBrxtModalOpen(true)}

@@ -188,7 +188,7 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     // The band's action cluster (`PageHeader`'s `.biorouter-page-header-actions`, spec 3.10)
     // holds the filter and the Add button.
     const cluster = page.locator('.biorouter-page-header-actions');
-    await expect(cluster.getByRole('searchbox', { name: 'Filter' })).toBeVisible();
+    await expect(cluster.getByRole('searchbox', { name: 'Filter extensions' })).toBeVisible();
     const addBtn = cluster.getByRole('button', { name: 'Add', exact: true });
     await expect(addBtn).toBeVisible();
     await addBtn.click();

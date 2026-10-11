@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getExtensionScrollBehavior } from './ExtensionsView';
 import { EXTENSIONS_COPY } from './copy';
-import { isMacPlatform } from '../ui/copy';
+import { isMacPlatform, uiCopy } from '../ui/copy';
 
 const mocks = vi.hoisted(() => ({
   addExtension: vi.fn(async () => undefined),
@@ -105,7 +105,7 @@ describe('ExtensionsView — the band', () => {
 
   const renderView = () =>
     render(<ExtensionsView onClose={vi.fn()} setView={vi.fn()} viewOptions={{}} />);
-  const filterField = () => screen.getByRole('searchbox', { name: 'Filter' });
+  const filterField = () => screen.getByRole('searchbox', { name: EXTENSIONS_COPY.filterLabel });
 
   it('has exactly one page title, in the band', async () => {
     renderView();
@@ -142,6 +142,22 @@ describe('ExtensionsView — the band', () => {
     const mac = isMacPlatform();
     fireEvent.keyDown(window, { key: 'f', metaKey: mac, ctrlKey: !mac });
     expect(field).toHaveFocus();
+  });
+
+  it('names the filter for what it filters, as its siblings do, and the tooltip starts the same way', async () => {
+    const user = userEvent.setup({ delay: null });
+    renderView();
+    await screen.findByRole('heading', { level: 1, name: 'Extensions' });
+
+    // Skills and Workflows say "Filter skills" / "Filter workflows"; a bare "Filter" read the
+    // same on every page (vision round 1, V3-25).
+    expect(EXTENSIONS_COPY.filterLabel).toBe('Filter extensions');
+    expect(filterField()).toHaveAccessibleName('Filter extensions');
+
+    await user.hover(filterField());
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(uiCopy.filterTooltip(EXTENSIONS_COPY.filterLabel));
+    expect(tooltip.textContent).toMatch(/^Filter extensions · /);
   });
 
   it('puts one Add menu in the band instead of three buttons', async () => {

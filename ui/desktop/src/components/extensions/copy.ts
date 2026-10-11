@@ -11,6 +11,9 @@ export const EXTENSIONS_COPY = {
   /** The band's InfoTip: what the page is for. The shortcut lives in the filter's tooltip. */
   info: 'Extensions add tools, prompts and resources. Enabled ones apply to every new chat.',
 
+  /** The band filter's name and the start of its tooltip ("Filter extensions · ⌘F"). */
+  filterLabel: 'Filter extensions',
+
   /** The band's one primary action and the three ways an extension arrives. */
   add: 'Add',
   browse: 'Browse marketplace',
