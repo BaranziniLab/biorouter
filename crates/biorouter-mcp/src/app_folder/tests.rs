@@ -138,8 +138,12 @@ fn a_moved_file_keeps_its_bytes() {
 /// Two processes racing: one rename wins, the other sees the current folder,
 /// and the tree arrives whole either way. Repeated, because the interleaving
 /// differs from run to run.
+///
+/// With retries, as in production: on Windows the other mover's marker handle,
+/// open for an instant inside the folder, is enough to refuse a rename once.
 #[test]
 fn two_movers_at_once_end_with_one_tree() {
+    const BRIEF: &[Duration] = &[Duration::from_millis(5); 5];
     for _ in 0..25 {
         let base = tempfile::tempdir().unwrap();
         let root = AppRoot::under(base.path());
@@ -153,7 +157,11 @@ fn two_movers_at_once_end_with_one_tree() {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    move_root(&root, true, &ops(false)).token()
+                    let ops = MoveOps {
+                        rename: &std_rename,
+                        retry_delays: BRIEF,
+                    };
+                    move_root(&root, true, &ops).token()
                 })
             })
             .collect();
