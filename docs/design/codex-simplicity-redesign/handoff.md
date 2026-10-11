@@ -7,7 +7,7 @@
 > **Audience:** the agent or developer who takes over the redesign.
 
 The redesign is defined by three documents beside this one: the owner's requirements
-([requirements-and-plan.md](requirements-and-plan.md), R-01 to R-33), the implementation spec
+([requirements-and-plan.md](requirements-and-plan.md), R-01 to R-34), the implementation spec
 ([implementation-spec.md](implementation-spec.md), sections 0 to 11) and the tracker
 ([progress.md](progress.md)). Read sections 9 to 11 of the spec before anything else: they hold
 the owner's latest rules (Tools switcher at the bottom, Effort slider, fills over lines, the
@@ -21,7 +21,7 @@ ground, the big Knowledge drop zone).
 | Branch | `claude/crew-landing-redesign-91b46e`, base `30e1f0622`, 728 commits ahead of `main` at `0cb5ab465` and pushed through it. No pull request yet. |
 | Worktree | `/Users/wgu/Desktop/BioRouter/.claude/worktrees/crew-landing-redesign-91b46e` |
 | Run directory (outside the repo) | `~/biorouter-runs/redesign-2026-10-09/` |
-| Owner's verbatim messages 1 to 17 | `REQUIREMENTS.md` in the run directory. The single most important input. |
+| Owner's verbatim messages 1 to 18 | `REQUIREMENTS.md` in the run directory. The single most important input. |
 | Coordinator rulings 1 to 21 | `requests/coordinator/RULINGS-GIVEN.md`; answered questions in `RULINGS-NEEDED-answered-*.md`. No question to the owner is open. |
 | Research and audits | `research/*.md`, `audit/*.md`, `icons/` (icon proposals and contact sheets) |
 | Old app screenshots | `baseline/*.png` and `audit/baseline-screens.md` |
@@ -76,7 +76,13 @@ ground, the big Knowledge drop zone).
    R-13, R-15, R-17, R-18 and R-28 stay "Implemented; vision round 5 pending" until they do, and
    R-32 and R-33 stay "vision check pending" until a round sees them on a build that has them.
    Route what they find to its owner, and repeat until each group is clean twice.
-2. **Round 4 low findings** still open (no commit after round 4 names them):
+2. **The first run redesign (R-34, owner message 18)** has no commit yet. Owner: WS-SETTINGS-M
+   (`ProviderGuard.tsx`, `components/onboarding/**`). The target and its limits are in spec section 11:
+   the same standard as the rest of the app, privacy copy and logic unchanged (class only changes,
+   ruling 15), and a review in a sandbox with no provider
+   (`~/biorouter-runs/launch-dev-gui.sh start <worktree> <run> <cdp-port> --no-provider`) that
+   never downloads a local model and never enters a key. Then it joins the vision rounds.
+3. **Round 4 low findings** still open (no commit after round 4 names them):
    - V1: History takes 0.95 s to show its rows (V1-R3-2), the auto collapse at the 1120 rung
      slid in 3 of 13 resize crossings (V1-R4-1), and the list's top edge cuts text when scrolled
      (V1-R4-2).
@@ -85,18 +91,18 @@ ground, the big Knowledge drop zone).
    - V3: V3-R4-2 to V3-R4-5. V3-R4-2 is the Knowledge tier badge's rest fill, a privacy UI
      presentation change for the review list.
    - V4: V4-R4-4 to V4-R4-6.
-3. **Final gate again** after the last fix, the same steps as `impl/gate-final-2.log`, ending
+4. **Final gate again** after the last fix, the same steps as `impl/gate-final-2.log`, ending
    with a clean `git status`.
-4. **`CLAUDE.md`** (ruling 3): at `0cb5ab465` it carried only the PreviewBar and rung 0 bullets.
+5. **`CLAUDE.md`** (ruling 3): at `0cb5ab465` it carried only the PreviewBar and rung 0 bullets.
    The coordinator docs pass `cc710982a` (2026-10-11) wrote the rest (the 28px sidebar rows and
    the view menu, the composer and Tools popover, the icon registry and lock badge, the fill rule
    and the R-32 composer card, the Slider primitive, the R-30 activity rule, the repo guard), and
    a claim pass checked it against the code. Re-measure any value a round 5 or 6 fix moves.
-5. **[progress.md](progress.md):** mark the pending rows Done as rounds 5 and 6 pass, and log
+6. **[progress.md](progress.md):** mark the pending rows Done as rounds 5 and 6 pass, and log
    each round.
-6. **A Windows run of the folder move** before release, with the checklist in `PR-BODY.md`
+7. **A Windows run of the folder move** before release, with the checklist in `PR-BODY.md`
    (from `impl/WS-BRAND.md`). Nothing in CI exercises the real Windows layout.
-7. **Pull request** against `main`, using `PR-BODY.md`. Do not merge: the landing site deploys
+8. **Pull request** against `main`, using `PR-BODY.md`. Do not merge: the landing site deploys
    when `main` changes, and the owner approves publication.
 
 ## Needs human review in the pull request
@@ -161,7 +167,7 @@ The full list, with reasons, is in `PR-BODY.md`. In short:
 
 ## Related documentation
 
-- [Requirements and plan](requirements-and-plan.md): R-01 to R-33 and the owner decisions.
+- [Requirements and plan](requirements-and-plan.md): R-01 to R-34 and the owner decisions.
 - [Implementation spec](implementation-spec.md): the rules, ownership and verification; sections 9
   to 11 hold the latest owner rulings.
 - [Progress](progress.md): the live tracker and the dated log.
