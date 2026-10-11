@@ -31,9 +31,10 @@ interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAr
    * preview opened. A function rather than a boolean because it is asked at the
    * instant of the resize, which lands between React commits.
    *
-   * Opt-in, and only the live chat's transcript opts in. Every other scroll area,
-   * and the live chat itself whenever no stacked sheet is on screen, keeps the
-   * behaviour it had.
+   * Opt-in. The live chat's transcript engages it under a stacked preview and
+   * while the reader follows the newest line (`summary/useTranscriptFollow.ts`);
+   * Crew's timeline while its reader follows (`crew/timeline/Timeline.tsx`).
+   * Every other scroll area keeps `scrollTop` through a resize.
    */
   anchorBottomOnResize?: () => boolean;
 }
