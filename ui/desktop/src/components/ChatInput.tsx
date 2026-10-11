@@ -327,12 +327,6 @@ interface ChatInputProps {
   };
   /** Real per-model usage rows from the token ledger (Issue #1 breakdown). */
   modelCostRows?: ModelCostRow[];
-  /**
-   * @deprecated Read by nothing: the composer has no entrance of its own (the
-   * route's one fade belongs to `useRouteFade`). Kept only until BaseChat stops
-   * passing it; then delete.
-   */
-  disableAnimation?: boolean;
   workflow?: Workflow | null;
   workflowAccepted?: boolean;
   initialPrompt?: string;

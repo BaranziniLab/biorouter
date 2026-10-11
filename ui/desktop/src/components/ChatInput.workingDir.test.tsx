@@ -97,7 +97,6 @@ function renderChatInput(
       onFilesProcessed={vi.fn()}
       messagesLength={messagesLength}
       workingDirLocked={workingDirLocked}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={onWorkingDirChange}
     />

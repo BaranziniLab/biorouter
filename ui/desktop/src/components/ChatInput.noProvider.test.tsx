@@ -96,7 +96,6 @@ function renderComposer(effectiveModel?: { provider: string; model: string }) {
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={0}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
       effectiveModel={effectiveModel}

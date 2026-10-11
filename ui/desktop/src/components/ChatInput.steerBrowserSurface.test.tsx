@@ -142,7 +142,6 @@ function renderComposer(onSteer: (text: string) => Promise<boolean>) {
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={2}
-      disableAnimation
       sessionCosts={undefined}
       toolCount={0}
     />
@@ -251,7 +250,6 @@ describe('the queue explains the steer it cannot perform, on a browser surface',
         droppedFiles={[]}
         onFilesProcessed={vi.fn()}
         messagesLength={2}
-        disableAnimation
         sessionCosts={undefined}
         toolCount={0}
       />

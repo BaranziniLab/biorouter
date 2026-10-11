@@ -119,7 +119,6 @@ function composerFor(spec: PaneSpec, handleSubmit: SubmitMock) {
       droppedFiles={spec.droppedFiles ?? []}
       onFilesProcessed={vi.fn()}
       messagesLength={2}
-      disableAnimation
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />

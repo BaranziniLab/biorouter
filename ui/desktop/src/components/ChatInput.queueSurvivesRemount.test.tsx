@@ -161,7 +161,6 @@ function Composer({
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={2}
-      disableAnimation
       sessionCosts={undefined}
       toolCount={0}
     />

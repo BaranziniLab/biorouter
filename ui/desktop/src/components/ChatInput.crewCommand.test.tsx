@@ -170,7 +170,6 @@ const renderComposer = (options: RenderOptions = {}) => {
       droppedFiles={options.droppedFiles ?? []}
       onFilesProcessed={vi.fn()}
       messagesLength={0}
-      disableAnimation
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
@@ -437,7 +436,6 @@ describe('Enter in a chat held by lapsed Crew access', () => {
           droppedFiles={[]}
           onFilesProcessed={vi.fn()}
           messagesLength={2}
-          disableAnimation
           toolCount={0}
           onWorkingDirChange={vi.fn()}
         />

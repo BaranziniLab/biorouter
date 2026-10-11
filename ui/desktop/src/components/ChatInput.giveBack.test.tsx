@@ -138,7 +138,6 @@ function NewChat({
       accumulatedInputTokens={0}
       accumulatedOutputTokens={0}
       messagesLength={0}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
@@ -178,7 +177,6 @@ function PlainComposer({
         accumulatedInputTokens={0}
         accumulatedOutputTokens={0}
         messagesLength={0}
-        disableAnimation={false}
         toolCount={0}
         onWorkingDirChange={vi.fn()}
       />
@@ -526,7 +524,6 @@ describe('D4 — a message still in flight when its composer goes is handed back
             accumulatedInputTokens={0}
             accumulatedOutputTokens={0}
             messagesLength={0}
-            disableAnimation={false}
             toolCount={0}
             onWorkingDirChange={vi.fn()}
           />

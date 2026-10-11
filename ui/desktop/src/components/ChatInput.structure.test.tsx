@@ -112,7 +112,6 @@ function renderComposer(
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={0}
-      disableAnimation
       toolCount={0}
       onWorkingDirChange={vi.fn()}
       {...overrides}

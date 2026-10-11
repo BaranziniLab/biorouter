@@ -97,7 +97,6 @@ const renderComposer = (
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={0}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
@@ -251,7 +250,6 @@ describe('the composer recognises a command with a reference attached', () => {
         droppedFiles={[]}
         onFilesProcessed={vi.fn()}
         messagesLength={0}
-        disableAnimation={false}
         toolCount={0}
         onWorkingDirChange={vi.fn()}
       />

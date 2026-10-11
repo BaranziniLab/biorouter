@@ -113,7 +113,6 @@ function chatInput(
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={messagesLength}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />

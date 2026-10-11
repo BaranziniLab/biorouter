@@ -85,7 +85,6 @@ function Pane({ label, autoFocus }: { label: string; autoFocus?: boolean }) {
         accumulatedInputTokens={0}
         accumulatedOutputTokens={0}
         messagesLength={0}
-        disableAnimation={false}
         toolCount={0}
         onWorkingDirChange={vi.fn()}
         autoFocus={autoFocus}
