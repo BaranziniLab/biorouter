@@ -161,9 +161,14 @@ describe('ProviderGuard', () => {
     await screen.findByText('CATALOG');
     const band = screen.getByTestId('first-run-band');
 
-    // The wordmark is the logo (R-29), at rest: no entrance animation on a launch (FR-S-15).
+    // The wordmark is the logo (R-29), at rest: no entrance animation on a launch (FR-S-15). The
+    // old `.biorouter-icon-animation` rule is gone from main.css (309338135), so the check names
+    // no class: nothing from the mark up to the body may carry an animation class or style.
     const mark = within(band).getByTestId('first-run-wordmark');
-    expect(mark.closest('.biorouter-icon-animation')).toBeNull();
+    for (let el: Element | null = mark; el && el !== document.body; el = el.parentElement) {
+      expect(el.getAttribute('class') ?? '').not.toMatch(/animat|entrance/i);
+      expect((el as HTMLElement).style.animationName ?? '').toBe('');
+    }
 
     const title = within(band).getByRole('heading', { level: 1 });
     expect(title).toHaveTextContent(firstRunCopy.title);
