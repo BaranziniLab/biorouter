@@ -82,7 +82,14 @@
    Fills before lines (R-27, design.md 9.11): the card is the subtle fill with
    NO resting outline. The 1px edge stays, transparent, so nothing moves
    between the old and the new look and forced colours still draw the card's
-   box in the system ink. */
+   box in the system ink.
+
+   A fill never sits on a fill, and that is said once, not here: both sections
+   carry `.br-fill-surface` (the primitives block of `main.css`), which gives the
+   range control's segmented track `--br-track-ground`, one step deeper than this
+   card's ground, and would do the same for a field, a secondary button or a
+   neutral progress track if the card ever held one. The thumb stays the raised
+   surface above the track. */
 .br-usage-card {
   min-inline-size: 0;
   border: 1px solid transparent;
@@ -130,14 +137,6 @@
 .br-usage-card-range {
   align-self: center;
   flex: none;
-}
-
-/* A fill never sits on a fill (design.md 9.11): the segmented track rests on
-   the page's `--background-fill`, which is this card's own ground, so inside the
-   card it steps one ground deeper, the recessed-ground rule. The thumb stays the
-   raised surface above it. */
-.br-usage-card .br-segmented {
-  background: var(--background-fill-strong);
 }
 
 .br-usage-card-body {

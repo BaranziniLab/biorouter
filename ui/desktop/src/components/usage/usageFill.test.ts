@@ -25,6 +25,7 @@ const tokens = themeTokens as unknown as {
 
 const usageCss = readFileSync(join(__dirname, 'usage.css'), 'utf8');
 const mainCss = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+const homeCard = readFileSync(join(__dirname, '../sessions/HomeUsageCard.tsx'), 'utf8');
 const scopes = tokens.buildScopes(mainCss);
 
 /** The declarations of the rule whose selector is exactly `selector` (comments are dropped). */
@@ -70,9 +71,26 @@ describe('the Home usage card is a fill, not an outline', () => {
     ]);
   });
 
-  it('rests the range control one ground deeper, because a fill never sits on a fill', () => {
-    const track = rule('.br-usage-card .br-segmented');
-    expect(track.background).toBe('var(--background-fill-strong)');
+  it('rests the range control one ground deeper through the shared fill surface', () => {
+    // A fill never sits on a fill: the segmented track must not be the card's own ground. That is
+    // said once, by `.br-fill-surface` in the primitives block, and the card only opts in. Both
+    // sections carry the class (the loaded card and its loading twin), so the track does not
+    // change colour when the real card replaces the skeleton.
+    const sections = homeCard.match(/<section[^>]*className="br-usage-card[^"]*"/g) ?? [];
+    expect(sections).toHaveLength(2);
+    for (const section of sections) expect(section).toMatch(/\bbr-fill-surface\b/);
+
+    // No second statement of it here: a hand-written track rule would drift from the primitive.
+    expect(usageCss.replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(/\.br-segmented/);
+
+    // And the primitive does what the card used to say by hand: its children's track is the
+    // strong step, and the track reads the variable.
+    const surface = mainCss.match(/\.br-fill-surface > \*,[^{]*\{([^}]*)\}/);
+    expect(surface, 'main.css has the .br-fill-surface rule').toBeTruthy();
+    expect(surface![1]).toMatch(/--br-track-ground:\s*var\(--background-fill-strong\)/);
+    expect(mainCss).toMatch(
+      /\n\.br-segmented \{[^}]*background:\s*var\(--br-track-ground, var\(--background-fill\)\)/
+    );
   });
 
   it('gives the Settings report’s tables the filled panel and no frame', () => {

@@ -129,6 +129,13 @@ describe('HomeUsageCard', () => {
     await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('GPT-5.6 Sol'));
   });
 
+  it('is a filled surface, so the controls inside it step off the card’s own ground', () => {
+    // `.br-fill-surface` is what gives the range control's track `--br-track-ground` (one step
+    // deeper than the card). The card used to restate that with a rule of its own.
+    render(<HomeUsageCard window={windowOf()} />);
+    expect(screen.getByTestId('home-usage-card')).toHaveClass('br-usage-card', 'br-fill-surface');
+  });
+
   it('says nothing in paragraphs: no live region, no caps, no 17px heading', async () => {
     const { container } = render(<HomeUsageCard window={windowOf()} />);
     await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('GPT-5.6 Sol'));
@@ -399,6 +406,8 @@ describe('HomeUsageCard', () => {
 describe('HomeUsageCardLoading', () => {
   it('is the same card, disabled, with skeletons and a named status but no words', () => {
     const { container } = render(<HomeUsageCardLoading />);
+    // The same ground as the loaded card, so the range track does not change colour on arrival.
+    expect(screen.getByTestId('home-usage-card')).toHaveClass('br-usage-card', 'br-fill-surface');
     const status = screen.getByRole('status', { name: copy.loading });
     expect(status).toHaveTextContent('');
     expect(screen.getAllByTestId('home-usage-tile-skeleton')).toHaveLength(6);

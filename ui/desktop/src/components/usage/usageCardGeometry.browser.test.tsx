@@ -11,7 +11,9 @@
  *  - the card is the 760px chat measure with a 36px head over a 1px hairline, and a FILL
  *    with a transparent 1px edge (R-27): no outline, nothing moves;
  *  - the segmented range control inside it rests one ground deeper than the card (a fill
- *    never sits on a fill), and an empty heatmap day is a step off the fill in light and dark;
+ *    never sits on a fill; the card opts in with `.br-fill-surface` and the primitives block
+ *    of `main.css` does the rest), and an empty heatmap day is a step off the fill in light
+ *    and dark;
  *  - six tiles in three columns, two under a 480px container, figures at 24px;
  *  - the heatmap is fluid: one equal column per week, square cells, a 3px gap,
  *    filling the card's 726px inner width; month labels are 12px, in one row, and a label in
@@ -88,13 +90,25 @@ function heatmapCss(): string {
 }
 
 /**
- * The segmented control's own track rule, cut from `main.css`: the card's override has to beat
- * THIS (a (0,2,0) selector over a (0,1,0) one), so the real rule is the thing to lay out against.
+ * The segmented control's own track rule, cut from `main.css`. It reads `--br-track-ground`, so
+ * the real rule is the thing to lay out against: the card's ground reaches it only through the
+ * variable below.
  */
 function segmentedTrackCss(): string {
   const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
   const match = main.match(/\n\.br-segmented \{[^}]*\}/);
   if (!match) throw new Error('.br-segmented rule not found in main.css');
+  return match[0];
+}
+
+/**
+ * The primitives block's filled-box rule, cut from `main.css`: what `.br-fill-surface` hands the
+ * controls inside (`--br-track-ground` among them). The card used to restate this by hand.
+ */
+function fillSurfaceCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  const match = main.match(/\n\.br-fill-surface > \*,[^{]*\{[^}]*\}/);
+  if (!match) throw new Error('.br-fill-surface rule not found in main.css');
   return match[0];
 }
 
@@ -120,11 +134,11 @@ const TILES: StatItem[] = [
 ];
 
 /** The card's markup: its classes, a stand-in head, and the real grid and heatmap. */
-function cardHtml(width: number): string {
+function cardHtml(width: number, { surface = true } = {}): string {
   const tiles = renderToStaticMarkup(<StatGrid items={TILES} />);
   const heatmap = renderToStaticMarkup(<UsageHeatmap window={YEAR} />);
   return `
-    <section class="br-usage-card" id="card" style="width:${width}px">
+    <section class="br-usage-card${surface ? ' br-fill-surface' : ''}" id="card" style="width:${width}px">
       <div class="br-usage-card-head" id="head">
         <div class="br-usage-card-tabs">
           <div role="tablist" id="tablist" style="display:flex;gap:20px">
@@ -164,7 +178,11 @@ describe('Home usage card in a real layout engine', () => {
           'tests. Run `npx playwright install chromium` to enable them.'
       );
     }
-    css = readFileSync(resolve(here, 'usage.css'), 'utf8') + heatmapCss() + segmentedTrackCss();
+    css =
+      readFileSync(resolve(here, 'usage.css'), 'utf8') +
+      heatmapCss() +
+      segmentedTrackCss() +
+      fillSurfaceCss();
   }, 120_000);
 
   afterAll(async () => {
@@ -240,6 +258,25 @@ describe('Home usage card in a real layout engine', () => {
         expect(m.track).toBe(mode === 'dark' ? 'rgb(44, 44, 41)' : 'rgb(234, 234, 230)');
         expect(m.track).not.toBe(m.fill);
         expect(m.trackHeight).toBe(28);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('owes the deeper track to the fill-surface opt-in: without it the track IS the card', async (ctx) => {
+    if (!browser) return ctx.skip();
+    // The instrument's own proof: the same card with the class left off lays the track on the fill
+    // (the invisible fill-on-fill the rule exists to prevent), so the assertion above can fail.
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(760, { html: cardHtml(760, { surface: false }) });
+      try {
+        const m = await tab.evaluate((dark) => {
+          document.documentElement.classList.toggle('dark', dark);
+          const style = (id: string) => getComputedStyle(document.getElementById(id)!);
+          return { fill: style('card').backgroundColor, track: style('range').backgroundColor };
+        }, mode === 'dark');
+        expect(m.track).toBe(m.fill);
       } finally {
         await tab.close();
       }

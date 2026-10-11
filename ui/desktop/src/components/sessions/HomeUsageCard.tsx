@@ -318,7 +318,11 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
   };
 
   return (
-    <section aria-label={copy.region} className="br-usage-card" data-testid="home-usage-card">
+    <section
+      aria-label={copy.region}
+      className="br-usage-card br-fill-surface"
+      data-testid="home-usage-card"
+    >
       <Tabs
         value={activeTab}
         onValueChange={(next) => {
@@ -387,7 +391,11 @@ export function HomeUsageCard({ window: activity }: { window: ActivityWindow }) 
 export function HomeUsageCardLoading() {
   const weeks = React.useMemo(() => expectedHeatmapWeeks(HOME_ACTIVITY_DAYS), []);
   return (
-    <section aria-label={copy.region} className="br-usage-card" data-testid="home-usage-card">
+    <section
+      aria-label={copy.region}
+      className="br-usage-card br-fill-surface"
+      data-testid="home-usage-card"
+    >
       <Tabs value="overview">
         <div className="br-usage-card-head">
           <div className="br-usage-card-tabs">
