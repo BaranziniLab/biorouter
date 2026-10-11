@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
@@ -10,6 +10,7 @@ import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 import { providerSetupCopy } from '../../../copy';
+import { useHandFocusOnReady } from '../../../../models/dialogFocus';
 
 type ValidationErrors = Record<string, string>;
 
@@ -166,20 +167,13 @@ export default function DefaultProviderSetupForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The fields exist only once the saved values are in, and the dialog around them is already
-  // open by then, so Radix could not put focus on one. The Configure dialog leaves focus on its
-  // own box (no ring) and this hands it to the first field, but only while the box still holds
-  // it: a person who has already moved on (Tab to Cancel, a click) is left where they went.
-  const fieldsRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (isLoading) return;
-    const fields = fieldsRef.current;
-    const dialog = fields?.closest('[role="dialog"]');
-    if (!fields || !dialog || document.activeElement !== dialog) return;
-    fields
-      .querySelector<HTMLInputElement>('input:not([disabled]):not([type="hidden"])')
-      ?.focus({ preventScroll: true });
-  }, [isLoading]);
+  // The fields exist only once the saved values are in, and the dialog around them is already open
+  // by then, so Radix could not put focus on one: the Configure dialog rests it on its box and
+  // this hands it to the first enabled field (see `models/dialogFocus.ts`).
+  const fieldsRef = useHandFocusOnReady<HTMLDivElement>(
+    !isLoading,
+    'input:not([disabled]):not([type="hidden"])'
+  );
 
   const getPlaceholder = (parameter: ConfigKey): string => {
     if (parameter.secret) {

@@ -14,6 +14,7 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../ui/button';
 import { providerSetupCopy } from '../copy';
+import { restOnDialog } from '../../models/dialogFocus';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
 import {
   CODING_AGENT_ORDER,
@@ -26,21 +27,6 @@ interface ProviderConfigurationModalProps {
   provider: ProviderDetails;
   onClose: () => void;
   onConfigured?: (provider: ProviderDetails) => void;
-}
-
-/**
- * The fields load after the dialog mounts (`DefaultProviderSetupForm` shows "Loading…" first), so
- * Radix's pick of the first tabbable control was the footer's Remove, or Cancel on a provider
- * with nothing saved: a keyboard user opened Configure on a destructive button. Focus rests on
- * the dialog box instead (it draws no ring, and a screen reader reads the title there) and the
- * form moves it to the first field once the values are in. The opener is recorded before this
- * runs, so closing still returns focus to it.
- */
-function restOnDialog(event: Event) {
-  const dialog = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-  if (!dialog) return;
-  event.preventDefault();
-  dialog.focus({ preventScroll: true });
 }
 
 export default function ProviderConfigurationModal({

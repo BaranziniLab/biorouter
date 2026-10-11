@@ -10,6 +10,7 @@ import { Skeleton } from '../../../ui/skeleton';
 import { ModalShell } from '../../../ModalShell';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { fetchModelsForProviders } from '../modelInterface';
+import { restOnDialog, useHandFocusOnReady } from '../dialogFocus';
 import { leadWorkerCopy } from '../copy';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
@@ -290,11 +291,19 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     }
   };
 
+  // The models load after the dialog mounts, so at mount its only control is the ×. The dialog
+  // rests focus on its box and the switch takes it once the form is there (`../dialogFocus.ts`).
+  const bodyRef = useHandFocusOnReady<HTMLDivElement>(
+    !isLoading,
+    'button[role="switch"]:not([disabled])'
+  );
+
   const shellProps = {
     open: isOpen,
     onOpenChange: (open: boolean) => {
       if (!open) onClose();
     },
+    onOpenAutoFocus: restOnDialog,
     size: 'md' as const,
     // A form: Escape and the × leave, a click on the scrim does not (it would drop a half-made
     // choice), and the models menus below are portalled out of the dialog's clip.
@@ -338,7 +347,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
         </>
       }
     >
-      <div className="flex flex-col gap-4 py-3">
+      <div ref={bodyRef} className="flex flex-col gap-4 py-3">
         <HostManagedModelNote />
 
         <div className="br-model-form-row">
