@@ -770,8 +770,18 @@ export default function ProviderCatalog({
             title's line, as Settings' do, and the band's own hairline is the one rule. */}
         {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
 
+        {/* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
+            the tab list would land on a panel that shows nothing. A panel with rows hands that
+            stop to its first control (V4-05, request WS-PRIMITIVES-3); one with no control to
+            hand it to (an empty institutional tab) keeps it, so a keyboard user can still reach
+            the line that explains why. */}
         {groups.map((group) => (
-          <TabsContent key={group.key} value={group.key} className="mt-0">
+          <TabsContent
+            key={group.key}
+            value={group.key}
+            className="mt-0"
+            {...(group.providers.length > 0 ? { tabIndex: -1 } : {})}
+          >
             {renderPanel(group)}
           </TabsContent>
         ))}

@@ -995,4 +995,28 @@ describe('ProviderCatalog — anatomy', () => {
       /^Private because inference runs on this machine/
     );
   });
+
+  // V4-05 (request WS-PRIMITIVES-3). Radix makes every panel a Tab stop and this one draws no
+  // focus edge, so Tab from the tab list would land on a panel that shows nothing.
+  it('hands the panel’s Tab stop to its first control when it has rows', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('llamacpp', PRIVATE_LOCAL, 'Llama Server')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('local');
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('tabindex', '-1');
+    expect(within(panel).getAllByRole('button').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the panel as a Tab stop when it has no control to hand it to', () => {
+    render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
+    clickTab('institutional');
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByTestId('catalog-empty-institutional')).toBeInTheDocument();
+    expect(panel).toHaveAttribute('tabindex', '0');
+  });
 });
