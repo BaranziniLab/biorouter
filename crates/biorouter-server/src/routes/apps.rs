@@ -733,7 +733,7 @@ impl biorouter_mcp::agent_drafter::export::PayloadAccess for HttpExportPayload {
     /// The seeder's own answer, which `export`'s copy of the list is tested
     /// against: a shipped skill never travels in a zip either.
     fn is_shipped_skill(&self, name: &str) -> bool {
-        biorouter::agents::skills_extension::is_builtin_skill_name(name)
+        biorouter::agents::skills_extension::is_builtin_skill_name(&name.to_ascii_lowercase())
     }
 }
 
@@ -1260,6 +1260,7 @@ mod export_route_tests {
         };
         for name in biorouter_mcp::agent_drafter::render::SHIPPED_SKILL_NAMES {
             assert!(payload.is_shipped_skill(name), "{name}");
+            assert!(payload.is_shipped_skill(&name.to_ascii_uppercase()), "{name}");
         }
         assert!(!payload.is_shipped_skill("ggplot-visualization"));
     }

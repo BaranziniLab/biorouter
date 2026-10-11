@@ -1089,8 +1089,10 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   backups before replacing installed contents.
 - **App pages require a document navigation** on browser credentials in a secure
   browser context (loopback or HTTPS). Plain HTTP on a network address refuses
-  app surfaces, because Fetch Metadata and opener protections do not apply
-  there. Authored inline scripts and handlers run under a response-specific CSP;
+  app surfaces and the secret-bearing serve shell, because Fetch Metadata and
+  opener protections do not apply there. Forwarded HTTPS on a network host also
+  requires browser-controlled Fetch Metadata, so a spoofed proxy header alone
+  cannot bypass that refusal. Authored inline scripts and handlers run under a response-specific CSP;
   runtime-injected handlers remain blocked. Figure frames have a separate policy
   and are admitted by the desktop preview only as the same app's subframe.
   Deleting an app retires its sockets and tokens; a replacement has a new
