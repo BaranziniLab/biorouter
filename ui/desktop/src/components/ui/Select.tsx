@@ -37,12 +37,13 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
  * until a call site opts in, so the four non-clipped call sites are unaffected.
  *
  * `unstyled` strips react-select's Emotion base styles, but Emotion still injects
- * `fontSize: inherit` on options AFTER Tailwind's layer. Pinning a 14px type role
- * on the menu makes the inherit chain resolve to the menu's own role, not to
- * whatever the portal target inherits (the <body> default, 14px since the 2026-10
- * body move and 16px before it).
- * That role is `text-body` (14/20/400), NOT `text-label` — a 500 weight on the menu
- * would erase the weight contrast the selected option uses to mark itself.
+ * `fontSize: inherit` on options AFTER Tailwind's layer, so an option's own
+ * `text-secondary` (from the menu row) loses and the option takes the menu's size.
+ * The menu therefore carries the menu row's role itself, `text-secondary` (13/18):
+ * the inherit chain resolves to the one menu size every other menu has (spec 2.6,
+ * vision round 1, V4-11: the select's 14px options sat beside 13px DropdownMenu rows
+ * in the same Settings flow), not to whatever the portal target inherits.
+ * The chosen option is marked by the trailing check and its wash, never by weight.
  *
  * D-08 selected a full migration to Radix Select + Command. That is staged
  * separately: three of the four call sites are plain selects, but the model
@@ -112,7 +113,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // toward the side it hangs from, over `--dur-fast-max`); react-select unmounts it on
         // close, so it has no exit.
         menu: ({ placement }) =>
-          `biorouter-popover-surface mt-1.5 bg-background-default rounded-container text-body select__menu absolute br-select-menu${
+          `biorouter-popover-surface mt-1.5 bg-background-default rounded-container text-secondary select__menu absolute br-select-menu${
             placement === 'top' ? ' br-select-menu--top' : ''
           }`,
         menuList: () => 'max-h-60 overflow-y-auto p-1',
@@ -120,7 +121,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // `uppercase` beside it is the redundancy the type roles exist to end.
         // A menu group label: 12/16 at 500, muted, sentence case (spec 2.6).
         groupHeading: () => MENU_GROUP_LABEL_CLASS_NAME,
-        noOptionsMessage: () => 'px-2 py-2 text-body text-text-muted',
+        noOptionsMessage: () => 'px-3 py-1.5 text-secondary text-text-muted',
         option: ({ isFocused, isSelected, isDisabled }) => {
           // 32px rows at 8px inset — the shared menu-row geometry (§3.8), which
           // is also what makes the option row and the trigger above it agree.
@@ -146,7 +147,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
             // choices: on its own the selected wash (14%) would be REPLACED by a
             // plain hover (5%) and the row would visibly un-select under the
             // pointer. The pair rule in main.css resolves it to 19% instead.
-            return `${base} tint-selected tint-interactive font-medium text-text-default pointer-events-auto`;
+            return `${base} tint-selected tint-interactive text-text-default pointer-events-auto`;
           }
           // `isFocused` is react-select's keyboard/pointer highlight — a state
           // class, not a pseudo — so it cannot come from `tint-interactive`.

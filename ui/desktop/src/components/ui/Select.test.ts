@@ -80,4 +80,22 @@ describe('the shared Select', () => {
   it('keeps the 32px rung on the control class', () => {
     expect(SELECT).toMatch(/'flex h-control-md w-full items-center/);
   });
+
+  // V4-11: Emotion's unlayered `fontSize: inherit` on every option beats the row's own
+  // `text-secondary`, so the option takes the MENU's size. The menu carries the menu row's role,
+  // so a select's options are 13px like every DropdownMenu row beside them, not 14px.
+  it('sizes its menu as every menu row: text-secondary, not text-body', () => {
+    const menu = SELECT.match(/menu: \(\{ placement \}\) =>\s*`([^`]*)`/);
+    expect(menu, 'the menu classNames entry').toBeTruthy();
+    expect(menu![1]).toMatch(/\btext-secondary\b/);
+    expect(menu![1]).not.toMatch(/\btext-body\b/);
+    expect(SELECT).toMatch(/noOptionsMessage: \(\) => '[^']*\btext-secondary\b/);
+  });
+
+  it('marks the chosen option with the check and the wash, never with weight', () => {
+    const selected = SELECT.match(/if \(isSelected\) \{[\s\S]*?return `([^`]*)`/);
+    expect(selected).toBeTruthy();
+    expect(selected![1]).toMatch(/tint-selected/);
+    expect(selected![1]).not.toMatch(/font-(medium|semibold|bold)/);
+  });
 });
