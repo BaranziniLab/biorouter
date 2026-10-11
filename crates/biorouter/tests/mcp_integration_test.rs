@@ -133,10 +133,10 @@ enum TestMode {
     vec!["github-mcp-server", "stdio"],
     vec![
         CallToolRequestParams { task: None, meta: None, name: "get_file_contents".into(), arguments: Some(object!({
-            "owner": "block",
+            "owner": "BaranziniLab",
             "repo": "biorouter",
-            "path": "README.md",
-            "sha": "ab62b863c1666232a67048b6c4e10007a2a5b83c"
+            "path": "rust-toolchain.toml",
+            "sha": "30e1f06221dfeb2322af99489722a7860783a2f3"
         }))},
     ],
     vec!["GITHUB_PERSONAL_ACCESS_TOKEN"]
