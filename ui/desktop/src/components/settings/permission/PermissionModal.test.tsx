@@ -39,9 +39,9 @@ describe('PermissionModal', () => {
       />
     );
 
-    expect(await screen.findByText('Search Available Extensions')).toBeInTheDocument();
+    expect(await screen.findByText('Search available extensions')).toBeInTheDocument();
     // The description is the row's help: the select hears it, and it is not a visible paragraph.
-    const select = screen.getByRole('button', { name: /Search Available Extensions Ask before/ });
+    const select = screen.getByRole('button', { name: /Search available extensions Ask before/ });
     expect(select).toHaveAccessibleDescription('Find extensions that can help with a task');
     expect(getTools).toHaveBeenCalledWith({
       query: { extension_name: 'Extension Manager', session_id: '' },
@@ -71,7 +71,40 @@ describe('PermissionModal', () => {
 
     render(<PermissionModal extensionName="skills" onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Install Marketplace Skill')).toBeInTheDocument();
+    expect(await screen.findByText('Install marketplace skill')).toBeInTheDocument();
+  });
+
+  /**
+   * Tool names are not product names, so they are sentence case like the transcript's tool rows
+   * (vision V4-R2-4): "Shell kill", "Text editor", "Image processor" were "Shell Kill", "Text
+   * Editor", "Image Processor". An acronym keeps its capitals and a server's own spelling stays.
+   */
+  it('names tools in sentence case, as the transcript does', async () => {
+    getTools.mockResolvedValue({
+      data: [
+        'developer__shell_kill',
+        'developer__shell_status',
+        'developer__text_editor',
+        'developer__image_processor',
+        'datasql__run_sql_query',
+        'medcp__MedCP-list_clinical_tables',
+      ].map((name) => ({ name, description: 'A tool.', parameters: [], permission: 'ask_before' })),
+    });
+
+    render(<PermissionModal extensionName="developer" onClose={vi.fn()} />);
+
+    await screen.findByText('Shell kill');
+    const labels = Array.from(document.querySelectorAll('.br-setting-row-label')).map(
+      (label) => label.textContent
+    );
+    expect(labels).toEqual([
+      'Shell kill',
+      'Shell status',
+      'Text editor',
+      'Image processor',
+      'Run SQL query',
+      'MedCP list clinical tables',
+    ]);
   });
 
   it('shows an actionable error state and can retry', async () => {

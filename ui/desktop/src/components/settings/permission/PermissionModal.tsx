@@ -3,7 +3,7 @@ import { Button } from '../../ui/button';
 import { SettingRow } from '../../ui/setting-row';
 import { ModalShell } from '../../ModalShell';
 import { getTools, PermissionLevel, ToolInfo, upsertPermissions } from '../../../api';
-import { toolIdentifierToTitleCase } from '../../../utils';
+import { toolDisplayName } from '../../toolCallCopy';
 import { SettingSelect } from '../SettingSelect';
 import { permissionDialogCopy } from '../chat/copy';
 
@@ -18,10 +18,14 @@ function getFirstSentence(text: string): string {
   return match ? match[0] : trimmed;
 }
 
+/**
+ * A tool's name as the transcript says it: sentence case, with acronyms and a server's own
+ * spelling kept ("Text editor", "Shell kill", "MedCP list clinical tables"). These are not product
+ * names, so they are not Title Case (vision V4-R2-4); `toolDisplayName` is the one module the
+ * transcript's tool rows and approval cards read, so a tool is not named two ways.
+ */
 function getToolLabel(name: string): string {
-  const nameParts = name.split('__');
-  const toolName = nameParts[nameParts.length - 1] || name;
-  return toolIdentifierToTitleCase(toolName);
+  return toolDisplayName(name);
 }
 
 interface PermissionModalProps {
