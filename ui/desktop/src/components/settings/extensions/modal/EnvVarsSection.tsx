@@ -99,9 +99,7 @@ export default function EnvVarsSection({
   const titleId = React.useId();
   const errorId = React.useId();
 
-  // Visible red edge for an invalid cell; `aria-invalid` carries it for assistive tech.
-  const bad = 'border-border-danger focus:border-border-danger';
-
+  // An invalid cell's red edge is the Input's own: `aria-invalid` draws it, focused or not.
   return (
     <div className="br-ext-section" role="group" aria-labelledby={titleId}>
       <div className="br-ext-section-title">
@@ -122,7 +120,7 @@ export default function EnvVarsSection({
                 placeholder={COPY.variableName}
                 aria-label={COPY.variableName}
                 aria-invalid={isFieldInvalid(index, 'key') || undefined}
-                className={cn('w-full', isFieldInvalid(index, 'key') && bad)}
+                className="w-full"
               />
               <Input
                 value={envVar.value}
@@ -135,11 +133,7 @@ export default function EnvVarsSection({
                 placeholder={COPY.value}
                 aria-label={COPY.value}
                 aria-invalid={isFieldInvalid(index, 'value') || undefined}
-                className={cn(
-                  'w-full',
-                  saved && 'text-text-muted opacity-60 cursor-not-allowed',
-                  isFieldInvalid(index, 'value') && bad
-                )}
+                className={cn('w-full', saved && 'text-text-muted opacity-60 cursor-not-allowed')}
               />
               {saved ? (
                 <IconAction
@@ -170,7 +164,7 @@ export default function EnvVarsSection({
           aria-label={COPY.variableName}
           aria-invalid={invalidFields.key || undefined}
           aria-describedby={validationError ? errorId : undefined}
-          className={cn('w-full', invalidFields.key && bad)}
+          className="w-full"
         />
         <Input
           value={newValue}
@@ -182,7 +176,7 @@ export default function EnvVarsSection({
           aria-label={COPY.value}
           aria-invalid={invalidFields.value || undefined}
           aria-describedby={validationError ? errorId : undefined}
-          className={cn('w-full', invalidFields.value && bad)}
+          className="w-full"
         />
         <Button variant="secondary" onClick={handleAdd} className="br-ext-kv-add">
           <Plus aria-hidden />

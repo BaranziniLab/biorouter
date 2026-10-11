@@ -4,7 +4,6 @@ import { InfoTip } from '../../../ui/info-tip';
 import { IconAction } from '../../../ui/row-actions';
 import { Plus, X } from '../../../icons/app-icons';
 import { Input } from '../../../ui/input';
-import { cn } from '../../../../utils';
 import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 
 interface HeadersSectionProps {
@@ -86,8 +85,8 @@ export default function HeadersSection({
 
   const titleId = React.useId();
   const errorId = React.useId();
-  const bad = 'border-border-danger focus:border-border-danger';
 
+  // An invalid cell's red edge is the Input's own: `aria-invalid` draws it, focused or not.
   return (
     <div className="br-ext-section" role="group" aria-labelledby={titleId}>
       <div className="br-ext-section-title">
@@ -106,7 +105,7 @@ export default function HeadersSection({
               placeholder={COPY.headerName}
               aria-label={COPY.headerName}
               aria-invalid={isFieldInvalid(index, 'key') || undefined}
-              className={cn('w-full', isFieldInvalid(index, 'key') && bad)}
+              className="w-full"
             />
             <Input
               value={header.value}
@@ -114,7 +113,7 @@ export default function HeadersSection({
               placeholder={COPY.value}
               aria-label={COPY.value}
               aria-invalid={isFieldInvalid(index, 'value') || undefined}
-              className={cn('w-full', isFieldInvalid(index, 'value') && bad)}
+              className="w-full"
             />
             {/* The same four columns as the environment variables, so the two groups share one
                 rhythm: a header has nothing to edit in place, so that column is empty. */}
@@ -138,7 +137,7 @@ export default function HeadersSection({
           aria-label={COPY.headerName}
           aria-invalid={invalidFields.key || undefined}
           aria-describedby={validationError ? errorId : undefined}
-          className={cn('w-full', invalidFields.key && bad)}
+          className="w-full"
         />
         <Input
           value={newValue}
@@ -150,7 +149,7 @@ export default function HeadersSection({
           aria-label={COPY.value}
           aria-invalid={invalidFields.value || undefined}
           aria-describedby={validationError ? errorId : undefined}
-          className={cn('w-full', invalidFields.value && bad)}
+          className="w-full"
         />
         <Button variant="secondary" onClick={handleAdd} className="br-ext-kv-add">
           <Plus aria-hidden />
