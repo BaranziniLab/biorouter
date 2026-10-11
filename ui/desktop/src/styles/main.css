@@ -4301,6 +4301,14 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-knowledge-drawer > [data-slot='sheet-close'] {
   display: none;
 }
+/* The drawers' header keeps its ground (V3-11). It is a direct child of the Sheet's modal surface,
+   and `.biorouter-modal-surface > .border-b` paints every such child transparent (a modal
+   header is a hairline on the dialog's own ground), which beat the header's `bg-sidebar`: the
+   drawer's band read white against the page band's `--sidebar`. Crew's pane header is that
+   band; the extra class keeps this one over the modal rule whatever the source order. */
+.biorouter-modal-surface.br-knowledge-drawer > .br-knowledge-pane-header {
+  background-color: var(--sidebar);
+}
 /* @ws WS-KNOWLEDGE end: pane header */
 
 @container br-knowledge-pane (min-width: 860px) {

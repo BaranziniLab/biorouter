@@ -106,6 +106,15 @@ function paneHeaderCss(): string {
   );
 }
 
+/**
+ * The modal surface's rule for a header-like direct child (`.biorouter-modal-surface > .border-b`):
+ * a Sheet's content is a modal surface, so this is what a drawer's header meets in the app.
+ */
+function modalSurfaceCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  return cut(main, '.biorouter-modal-surface > .border-b {', '}');
+}
+
 const LONG_NAME = 'A knowledge base whose name runs on far past the width a band could give it';
 
 /** The band as `KnowledgeView` renders it, inside the pane container, over a two-column body. */
@@ -196,7 +205,7 @@ function drawerPage(css: string): string {
     </Sheet>
   );
   return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
-    <div class="br-knowledge-drawer" id="drawer" style="position:relative;display:flex;flex-direction:column;width:340px;height:300px">
+    <div class="biorouter-modal-surface br-knowledge-drawer" id="drawer" style="position:relative;display:flex;flex-direction:column;width:340px;height:300px">
       ${header}
       <button id="primitive-close" data-slot="sheet-close" type="button" style="position:absolute;top:16px;right:16px;width:32px;height:32px">x</button>
     </div>
@@ -227,15 +236,6 @@ ${css}</style></head><body>
   </body></html>`;
 }
 
-type Box = { left: number; right: number; top: number; bottom: number; width: number };
-
-describe('the Knowledge band in a real layout engine', () => {
-  let browser: Browser | null = null;
-  let css = '';
-
-  beforeAll(async () => {
-    browser = await launchChromium();
-    if (!browser) {
 /** The dropzone block and the footer column, cut at their owner's markers. */
 function ingestCss(): string {
   const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
@@ -274,6 +274,15 @@ function railPage(css: string, railWidth: number): string {
   </body></html>`;
 }
 
+type Box = { left: number; right: number; top: number; bottom: number; width: number };
+
+describe('the Knowledge band in a real layout engine', () => {
+  let browser: Browser | null = null;
+  let css = '';
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
       console.warn(
         'No Chromium found (Playwright’s or Google Chrome): skipping the Knowledge band ' +
           'geometry tests. Run `npx playwright install chromium` to enable them.'
@@ -391,7 +400,7 @@ function railPage(css: string, railWidth: number): string {
     if (!browser) return ctx.skip();
     const tab = await browser.newPage({ viewport: { width: 800, height: 600 } });
     try {
-      await tab.setContent(drawerPage(paneHeaderCss()));
+      await tab.setContent(drawerPage(`${modalSurfaceCss()}\n${paneHeaderCss()}`));
       const header = (await box(tab, '.br-knowledge-pane-header'))!;
       const close = (await box(
         tab,
@@ -405,6 +414,29 @@ function railPage(css: string, railWidth: number): string {
       expect(header.right - close.right).toBe(8);
       // Text starts 16px in: 8px of band padding plus the title's own 8px.
       expect(title.left - header.left).toBe(16);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // V3-11: the drawer's header is the page band's ground (`--sidebar`), not the transparent
+  // white `.biorouter-modal-surface > .border-b` paints a modal header.
+  it('keeps the drawer header on the band ground the modal surface would clear', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser.newPage({ viewport: { width: 800, height: 600 } });
+    try {
+      await tab.setContent(drawerPage(`${modalSurfaceCss()}\n${paneHeaderCss()}`));
+      const ground = await tab.evaluate(() => {
+        const header = document.querySelector('.br-knowledge-pane-header')!;
+        const probe = document.createElement('div');
+        probe.style.background = 'var(--sidebar)';
+        document.body.appendChild(probe);
+        const sidebar = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return { header: getComputedStyle(header).backgroundColor, sidebar };
+      });
+      expect(ground.sidebar).not.toBe('rgba(0, 0, 0, 0)');
+      expect(ground.header).toBe(ground.sidebar);
     } finally {
       await tab.close();
     }
@@ -505,7 +537,6 @@ function railPage(css: string, railWidth: number): string {
       }
     });
   });
-});
   // V3-12: the dropzone is as tall as its content, and Digest is a button, not a bar.
   describe('the Sources rail', () => {
     async function measure(width: number) {
@@ -546,3 +577,4 @@ function railPage(css: string, railWidth: number): string {
       expect(wide.digest.left).toBe(wide.box.left);
     });
   });
+});
