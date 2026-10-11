@@ -121,7 +121,7 @@
   <li><strong>Chats.</strong> <code>sessions.db</code> in <code>~/.local/share/biorouter/sessions/</code></li>
   <li><strong>Logs.</strong> <code>~/.local/state/biorouter/logs/</code></li>
 </ul>
-<p>On Windows they sit under <code>%APPDATA%\Block\biorouter\</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
+<p>On Windows they sit under <code>%APPDATA%</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
 
 <h2 id="getstarted-next">Next steps</h2>
 <ul>
@@ -1857,7 +1857,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
 
 <h2 id="config-files">Where files live</h2>
-<p>The paths below are for macOS and Linux. On Windows, <code>~/.config/biorouter/</code> is <code>%APPDATA%\Block\biorouter\config\</code>, and both <code>~/.local/share/biorouter/</code> and <code>~/.local/state/biorouter/</code> are <code>%APPDATA%\Block\biorouter\data\</code>. <code>biorouter info</code> prints the paths on your computer.</p>
+<p>The paths below are for macOS and Linux. On Windows, the settings sit in a <code>config</code> folder and everything else, logs included, in a <code>data</code> folder, both under <code>%APPDATA%</code>. <code>biorouter info</code> prints the paths on your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>What</th><th>Path</th></tr></thead>
   <tbody>
