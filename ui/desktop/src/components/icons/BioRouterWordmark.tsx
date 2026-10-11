@@ -54,6 +54,18 @@ const UL_WIDTH = 1.0; // 1.0 = underline exactly the "oR" pair
 const WORK_SIZE = 100; // font-size in SVG user units; the viewBox scales it to `className`
 const BIO_LEN = 3; // "Bio" is the first three characters
 
+/**
+ * Every drawn part of the lockup (the two words and both halves of the bar)
+ * carries this class, and nothing else. The inks above are SVG `fill`
+ * attributes, which Chromium does NOT force under `forced-colors: active`
+ * (measured: both words and both bars kept their authored fills on a black
+ * canvas, so the navy "Bio" read at about 1.3:1). `styles/main.css`
+ * ("wordmark forced colours", WS-ICONS) takes the whole lockup to `CanvasText`
+ * there: a person who asked for their own palette gets one legible ink, not two
+ * brand colours that may sit on any ground they chose. A logo may be one ink.
+ */
+const INK_CLASS = 'br-wordmark-ink';
+
 import { BRAND_SANS as SANS } from './brandFont';
 
 type Geo = {
@@ -194,19 +206,31 @@ export function BioRouterWordmark({
         fontSize={WORK_SIZE}
         letterSpacing="0"
       >
-        <tspan fill={navy}>Bio</tspan>
-        <tspan fill={CORAL}>Router</tspan>
+        <tspan className={INK_CLASS} fill={navy}>
+          Bio
+        </tspan>
+        <tspan className={INK_CLASS} fill={CORAL}>
+          Router
+        </tspan>
       </text>
       {geo && (
         <>
+          {/* The navy rect is the WHOLE bar and the coral one is drawn over its right half,
+              not two rects meeting at splitX. Rects that meet at a fractional x leave a faint
+              background-coloured hairline where their anti-aliased edges join (measured at 1x
+              as a 3 to 7% dip in one column of solid pixels); it is invisible between two
+              inks and shows once forced colours paint both halves one colour. Layered, the
+              seam pixel is covered by the navy rect in full whatever the scale. */}
           <rect
+            className={INK_CLASS}
             x={geo.barLeft}
             y={geo.ulTop}
-            width={Math.max(0, geo.splitX - geo.barLeft)}
+            width={Math.max(0, geo.barRight - geo.barLeft)}
             height={geo.thick}
             fill={navy}
           />
           <rect
+            className={INK_CLASS}
             x={geo.splitX}
             y={geo.ulTop}
             width={Math.max(0, geo.barRight - geo.splitX)}
