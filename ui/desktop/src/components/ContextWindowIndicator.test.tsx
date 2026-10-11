@@ -2,7 +2,11 @@ import type React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
+import {
+  ContextWindowGauge,
+  ContextWindowIndicator,
+  contextWindowModelKey,
+} from './ContextWindowIndicator';
 import { FOOTER_COPY } from './bottom_menu/copy';
 
 // The gauge reads and writes the auto-compact threshold through ConfigContext
@@ -432,5 +436,134 @@ describe('the ring draws only against a loaded window (V2-R4-1)', () => {
       />
     );
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+/**
+ * V2-R4-1, round 5. A chat opened for the first time (a tab restored after a
+ * reload, a hash or History open) loads for up to seconds, and until its row
+ * lands the composer has no binding: it looks up the window of the model for NEW
+ * chats, and that lookup is loaded. Measured on a 200k chat: "0 of 1.1M", then a
+ * sweep to "64.6k of 1.1M", then "of 200k" five seconds later. The ring now draws
+ * a window only when it was looked up for the model the chat is bound to
+ * (`tokenLimitModel === boundModel`), and nothing while that model is unknown.
+ */
+describe('the ring draws only a window looked up for the chat’s own model (V2-R4-1, round 5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
+  });
+
+  const NEW_CHAT_MODEL = 'versa_azure/gpt-5.5';
+  const CHAT_MODEL = 'anthropic/claude-opus-4-5';
+
+  const ring = (props: Partial<React.ComponentProps<typeof ContextWindowIndicator>>) => (
+    <ContextWindowIndicator
+      sessionId="demo2"
+      totalTokens={0}
+      tokenLimit={1_050_000}
+      isTokenLimitLoaded
+      tokenLimitModel={NEW_CHAT_MODEL}
+      boundModel={null}
+      onCompact={vi.fn()}
+      showRemainingPercent
+      {...props}
+    />
+  );
+  const reading = () =>
+    screen.queryByTestId('context-window-indicator')?.getAttribute('aria-label') ?? null;
+
+  it('draws nothing while the chat loads, then one reading at rest for its own model', () => {
+    // Loading: the binding is unknown and the window loaded is the new-chat model's.
+    const { container, rerender } = render(ring({}));
+    expect(container).toBeEmptyDOMElement();
+
+    // The row lands: the chat's tokens and its binding arrive in one render, while
+    // the composer still holds the new-chat model's window (its re-read starts in
+    // an effect after this render).
+    rerender(ring({ totalTokens: 64_600, boundModel: CHAT_MODEL }));
+    expect(container).toBeEmptyDOMElement();
+    // The re-read starts: unloaded, the old value still in place.
+    rerender(ring({ totalTokens: 64_600, boundModel: CHAT_MODEL, isTokenLimitLoaded: false }));
+    expect(container).toBeEmptyDOMElement();
+
+    // The chat's own window lands: one reading, at rest.
+    rerender(
+      ring({
+        totalTokens: 64_600,
+        boundModel: CHAT_MODEL,
+        tokenLimitModel: CHAT_MODEL,
+        tokenLimit: 200_000,
+      })
+    );
+    expect(reading()).toBe(FOOTER_COPY.contextTooltip(68, '64.6k', '200k'));
+    expect(screen.getByTestId('context-ring-arc')).toHaveAttribute('data-motion-still');
+  });
+
+  it('draws the loaded window at once when the chat turns out to use the new-chat model', () => {
+    const { container, rerender } = render(ring({}));
+    expect(container).toBeEmptyDOMElement();
+    rerender(ring({ totalTokens: 110_100, boundModel: NEW_CHAT_MODEL }));
+    expect(reading()).toBe(FOOTER_COPY.contextTooltip(90, '110.1k', '1.1M'));
+    // The first reading after the load, so nothing to sweep from.
+    expect(screen.getByTestId('context-ring-arc')).toHaveAttribute('data-motion-still');
+  });
+
+  it('holds the window across a re-read of the same model, and not across a model change', () => {
+    const loaded = { totalTokens: 64_600, boundModel: CHAT_MODEL, tokenLimitModel: CHAT_MODEL };
+    const { container, rerender } = render(ring({ ...loaded, tokenLimit: 200_000 }));
+    const reading200k = FOOTER_COPY.contextTooltip(68, '64.6k', '200k');
+    expect(reading()).toBe(reading200k);
+
+    // The app's selection moved under this pinned chat: the lookup re-runs for the
+    // same model. The ring keeps its reading, no blink.
+    rerender(ring({ ...loaded, tokenLimit: 200_000, isTokenLimitLoaded: false }));
+    expect(reading()).toBe(reading200k);
+    rerender(ring({ ...loaded, tokenLimit: 200_000 }));
+    expect(reading()).toBe(reading200k);
+
+    // The person picks another model for this chat: the old window is not this
+    // model's, loaded or held, so nothing is drawn until the new one lands.
+    rerender(ring({ ...loaded, boundModel: NEW_CHAT_MODEL, tokenLimit: 200_000 }));
+    expect(container).toBeEmptyDOMElement();
+    rerender(
+      ring({
+        ...loaded,
+        boundModel: NEW_CHAT_MODEL,
+        tokenLimit: 200_000,
+        isTokenLimitLoaded: false,
+      })
+    );
+    expect(container).toBeEmptyDOMElement();
+    rerender(
+      ring({
+        ...loaded,
+        boundModel: NEW_CHAT_MODEL,
+        tokenLimitModel: NEW_CHAT_MODEL,
+        tokenLimit: 1_050_000,
+      })
+    );
+    expect(reading()).toBe(FOOTER_COPY.contextTooltip(94, '64.6k', '1.1M'));
+    expect(screen.getByTestId('context-ring-arc')).toHaveAttribute('data-motion-still');
+  });
+
+  it('drops the ring while a chat it was drawn for loads again', () => {
+    const { container, rerender } = render(
+      ring({ totalTokens: 64_600, boundModel: CHAT_MODEL, tokenLimitModel: CHAT_MODEL })
+    );
+    expect(reading()).not.toBeNull();
+    rerender(ring({ totalTokens: 64_600, boundModel: null, tokenLimitModel: CHAT_MODEL }));
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('contextWindowModelKey', () => {
+  it('names the chat’s binding when it has one, else the app’s selection', () => {
+    expect(
+      contextWindowModelKey({ provider: 'anthropic', model: 'claude-opus-4-5' }, 'versa_azure', 'x')
+    ).toBe('anthropic/claude-opus-4-5');
+    expect(contextWindowModelKey(undefined, 'versa_azure', 'gpt-5.5')).toBe('versa_azure/gpt-5.5');
+    expect(contextWindowModelKey(undefined, null, undefined)).toBe('/');
   });
 });

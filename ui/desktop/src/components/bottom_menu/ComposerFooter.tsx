@@ -29,6 +29,16 @@ export interface ComposerFooterProps {
   totalTokens?: number;
   tokenLimit: number;
   isTokenLimitLoaded: boolean;
+  /**
+   * The model the ring must measure for now (`contextWindowModelKey`: the chat's
+   * binding, else the app's selection), or `null` while the chat loads and its
+   * binding is not known. The ring draws a window only when `tokenLimitModel`
+   * names this same model, so the new-chat model's window never stands in for
+   * the chat's (V2-R4-1). Omitted, a loaded window is taken to be the chat's.
+   */
+  boundModel?: string | null;
+  /** The model `tokenLimit` was looked up for, spelled like `boundModel`. */
+  tokenLimitModel?: string | null;
   /** Runs the manual compaction (`ChatInput` submits its compact trigger). */
   onCompact: () => void;
   /** The chat's cost inputs, as `ChatInput` receives them from `BaseChat`. */
@@ -50,6 +60,8 @@ export function ComposerFooter({
   totalTokens,
   tokenLimit,
   isTokenLimitLoaded,
+  boundModel,
+  tokenLimitModel,
   onCompact,
   inputTokens,
   outputTokens,
@@ -77,6 +89,8 @@ export function ComposerFooter({
             totalTokens={totalTokens}
             tokenLimit={tokenLimit}
             isTokenLimitLoaded={isTokenLimitLoaded}
+            boundModel={boundModel}
+            tokenLimitModel={tokenLimitModel}
             showRemainingPercent
             onCompact={onCompact}
           />

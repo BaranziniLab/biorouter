@@ -333,6 +333,19 @@ interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
    */
   sessionId?: string | null;
   /**
+   * The model the ring must measure for NOW, spelled by
+   * {@link contextWindowModelKey}: the chat's own binding, else the app's
+   * selection. `null` while that is not known yet: the chat is loading, so its
+   * row, and the model the row names, has not landed, and the composer meanwhile
+   * looked up the window of the model for NEW chats (V2-R4-1, round 5).
+   *
+   * Omitted, a loaded window is taken to be this chat's (a caller with no
+   * binding to wait for).
+   */
+  boundModel?: string | null;
+  /** The model `tokenLimit` was looked up for, spelled like `boundModel`. */
+  tokenLimitModel?: string | null;
+  /**
    * Print "N% left" beside the ring once less than half the window remains
    * (spec 3.7). Above half the ring says enough on its own, and a figure that
    * reads "100%" beside a fresh chat says nothing at all.
@@ -406,8 +419,31 @@ function useArcStill(
 }
 
 /**
- * The window the ring may draw against: one the composer LOADED for this chat,
- * or 0 for none (V2-R4-1).
+ * How the composer spells "the model the context window belongs to" for
+ * `boundModel` and `tokenLimitModel`: the chat's binding when it has one, else
+ * the app's selection. One spelling in one place, so the two props can only be
+ * compared, never mis-spelled apart.
+ */
+export function contextWindowModelKey(
+  binding: { provider: string; model: string } | undefined,
+  selectedProvider: string | null | undefined,
+  selectedModel: string | null | undefined
+): string {
+  return binding
+    ? `${binding.provider}/${binding.model}`
+    : `${selectedProvider ?? ''}/${selectedModel ?? ''}`;
+}
+
+interface DrawnWindow {
+  /** The window to draw against, or 0 for none. */
+  limit: number;
+  /** A lookup that landed for this chat's model, not a window held across a re-read. */
+  fresh: boolean;
+}
+
+/**
+ * The window the ring may draw against: one the composer LOADED for this chat's
+ * model, or none (V2-R4-1).
  *
  * The composer mounts with a 128k fallback in `tokenLimit` and `isTokenLimitLoaded`
  * false, and the chat's real window lands about a second later. The ring used to
@@ -416,36 +452,63 @@ function useArcStill(
  * 10% full, and on a chat past 128k the empty ring and "0% left". So nothing is
  * drawn until a window has loaded.
  *
- * A RE-READ in the same chat (the model changed, or the app's selection moved
- * under a chat pinned to its own) holds the last loaded window until the new one
- * lands, rather than blinking the ring out for a second: that window was a real
- * lookup for this chat, never the fallback. The hold is per chat and ends with the
- * mount, so a tab switch (BaseChat remounts per tab) never carries one over, and
- * a re-read that finds no model (`tokenLimit` 0) draws nothing.
+ * LOADED IS NOT ENOUGH: IT MUST BE THIS CHAT'S MODEL (round 5). A chat opened for
+ * the first time (a tab restored after a reload, a hash or History open) loads
+ * for up to seconds, and until its row lands the composer has no binding and
+ * looks up the window of the model for new chats. That lookup is real and
+ * loaded, for the wrong model: a 200k chat read "0 of 1.1M", then swept to
+ * "64.6k of 1.1M" and snapped to "of 200k" five seconds later. So with
+ * `boundModel` given, a window draws only when it was looked up for exactly that
+ * model, and nothing draws while `boundModel` is `null` (the binding unknown).
  *
- * Derived during render, not in an effect, so the frame that would show the
- * fallback is never painted.
+ * A RE-READ OF THE SAME MODEL (the app's selection moved under a chat pinned to
+ * its own model, which re-runs the lookup with the same answer) holds the last
+ * window that model loaded rather than blinking the ring out for a second. A
+ * window held for one model never stands in for another: after a model change
+ * the ring draws nothing until the new model's window lands. The hold is per
+ * chat and ends with the mount, so a tab switch (BaseChat remounts per tab)
+ * never carries one over, and a re-read that finds no model (`tokenLimit` 0)
+ * draws nothing.
+ *
+ * Derived during render, not in an effect, so the frame that would show a wrong
+ * window is never painted.
  */
-function useLoadedWindow(
+function useDrawnWindow(
   sessionId: string | null | undefined,
+  boundModel: string | null | undefined,
+  tokenLimitModel: string | null | undefined,
   tokenLimit: number,
   loaded: boolean
-): number {
-  const [held, setHeld] = useState<{ sessionId: string | null | undefined; limit: number } | null>(
-    null
-  );
-  if (loaded && (!held || held.sessionId !== sessionId || held.limit !== tokenLimit)) {
-    setHeld({ sessionId, limit: tokenLimit });
+): DrawnWindow {
+  const [held, setHeld] = useState<{
+    sessionId: string | null | undefined;
+    model: string | null | undefined;
+    limit: number;
+  } | null>(null);
+  // Omitted (`undefined`): no binding to wait for, a loaded window is this chat's.
+  const forThisModel = boundModel === undefined || tokenLimitModel === boundModel;
+  const fresh = loaded && tokenLimit > 0 && boundModel !== null && forThisModel;
+  if (
+    fresh &&
+    (!held ||
+      held.sessionId !== sessionId ||
+      held.model !== boundModel ||
+      held.limit !== tokenLimit)
+  ) {
+    setHeld({ sessionId, model: boundModel, limit: tokenLimit });
   }
-  if (tokenLimit <= 0) return 0;
-  if (loaded) return tokenLimit;
-  return held && held.sessionId === sessionId ? held.limit : 0;
+  if (fresh) return { limit: tokenLimit, fresh: true };
+  if (tokenLimit <= 0 || boundModel === null) return { limit: 0, fresh: false };
+  const holds = held !== null && held.sessionId === sessionId && held.model === boundModel;
+  return { limit: holds ? held.limit : 0, fresh: false };
 }
 
 /** The footer's context readout: a ring that opens the gauge (threshold and
  * Compact) in a popover. One line of tooltip, "72% context left · 92k of 128k". */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   sessionId,
+  boundModel,
+  tokenLimitModel,
   totalTokens,
   tokenLimit,
   isTokenLimitLoaded,
@@ -454,23 +517,35 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
-  // NO LOADED WINDOW, NO RING (V2-R4-1). A context window is a property of a
-  // bound model, and the composer's 128k fallback stands in for it until the
-  // lookup lands: drawn against it, a 1M chat read "20% left" for a second on
-  // every tab switch. With no model there is no window at all: the ring once
-  // read "128k of 128k tokens remaining" during onboarding beside a chip that
-  // said no model was chosen. Asserted on the LIMIT as well as the loaded flag,
-  // because a lookup that finished and found nothing is exactly that case.
-  const total = useLoadedWindow(sessionId, tokenLimit || 0, isTokenLimitLoaded);
+  // NO WINDOW LOADED FOR THIS CHAT'S MODEL, NO RING (V2-R4-1). A context window
+  // is a property of a bound model, and the composer's 128k fallback stands in
+  // for it until the lookup lands: drawn against it, a 1M chat read "20% left"
+  // for a second on every tab switch; drawn against the new-chat model's window
+  // while a chat loads, a 200k chat read "of 1.1M". With no model there is no
+  // window at all: the ring once read "128k of 128k tokens remaining" during
+  // onboarding beside a chip that said no model was chosen. Asserted on the
+  // LIMIT as well as the loaded flag, because a lookup that finished and found
+  // nothing is exactly that case.
+  const drawnWindow = useDrawnWindow(
+    sessionId,
+    boundModel,
+    tokenLimitModel,
+    tokenLimit || 0,
+    isTokenLimitLoaded
+  );
+  const total = drawnWindow.limit;
   const drawn = total > 0;
   const remainingTokens = Math.max(total - current, 0);
   const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 1;
   const remainingPct = Math.round(remainingRatio * 100);
   const strokeOffset = RING_CIRCUMFERENCE * (1 - remainingRatio);
+  // A reading is "loaded" for the sweep only when its window is a fresh lookup
+  // for this chat's model: the first reading after a chat loads has nothing
+  // drawn before it, so it lands at rest rather than sweeping from the empty ring.
   const arcStill = useArcStill(
     sessionId,
     drawn ? strokeOffset : null,
-    isTokenLimitLoaded && totalTokens !== undefined
+    drawnWindow.fresh && totalTokens !== undefined
   );
   if (!drawn) return null;
   const summary = FOOTER_COPY.contextTooltip(remainingPct, fmt(current), fmt(total));

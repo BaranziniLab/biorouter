@@ -103,4 +103,32 @@ describe('ComposerFooter (spec 3.7)', () => {
     rerender(<ComposerFooter {...BASE} sessionId="chat-2" totalTokens={92_000} />);
     expect(screen.getByTestId('context-ring-arc')).toHaveAttribute('data-motion-still');
   });
+
+  // V2-R4-1, round 5: the ring hears which model the window belongs to, so the
+  // new-chat model's window never reads as a loading chat's.
+  it('hands the ring the model, so a window for another model draws nothing', async () => {
+    const { rerender } = render(
+      <ComposerFooter {...BASE} boundModel={null} tokenLimitModel="versa_azure/gpt-5.5" />
+    );
+    await settle();
+    expect(screen.queryByTestId('context-window-indicator')).toBeNull();
+    rerender(
+      <ComposerFooter
+        {...BASE}
+        boundModel="anthropic/claude-opus-4-5"
+        tokenLimitModel="versa_azure/gpt-5.5"
+      />
+    );
+    expect(screen.queryByTestId('context-window-indicator')).toBeNull();
+    rerender(
+      <ComposerFooter
+        {...BASE}
+        boundModel="anthropic/claude-opus-4-5"
+        tokenLimitModel="anthropic/claude-opus-4-5"
+      />
+    );
+    expect(
+      screen.getByRole('button', { name: FOOTER_COPY.contextTooltip(28, '92k', '128k') })
+    ).toBeInTheDocument();
+  });
 });

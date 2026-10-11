@@ -71,6 +71,8 @@ type Reading = {
   totalTokens?: number;
   tokenLimit: number;
   isTokenLimitLoaded: boolean;
+  boundModel?: string | null;
+  tokenLimitModel?: string | null;
 };
 
 let set: (next: Reading) => void = () => {};
@@ -98,6 +100,8 @@ type Reading = {
   totalTokens?: number;
   tokenLimit: number;
   isTokenLimitLoaded: boolean;
+  boundModel?: string | null;
+  tokenLimitModel?: string | null;
 };
 
 /** What the arc does right after a commit: its running transitions and its dashoffset. */
@@ -167,7 +171,7 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       (window as unknown as { __initial: unknown }).__initial = reading;
     }, initial);
     await tab.addScriptTag({ content: script });
-    if (initial.isTokenLimitLoaded) {
+    if (initial.isTokenLimitLoaded && initial.boundModel !== null) {
       await tab.waitForSelector('[data-testid="context-ring-arc"]');
     } else {
       await tab.waitForFunction(() => document.getElementById('root')!.childElementCount > 0);
@@ -202,6 +206,17 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
         running,
         offset: parseFloat(getComputedStyle(arc).strokeDashoffset),
         still: arc.hasAttribute('data-motion-still'),
+      };
+    }, next);
+  }
+
+  /** Commits `next` and says whether a ring is drawn, and the line's text. */
+  async function commitBare(tab: Page, next: Reading): Promise<{ arc: boolean; text: string }> {
+    return tab.evaluate((reading) => {
+      (window as unknown as { __set: (r: unknown) => void }).__set(reading);
+      return {
+        arc: document.querySelector('[data-testid="context-ring-arc"]') !== null,
+        text: document.getElementById('root')!.textContent ?? '',
       };
     }, next);
   }
@@ -274,6 +289,62 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       });
       expect(m.running).toEqual([]);
       near(m.offset, offsetFor(92_000, 128_000), 'arc');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // V2-R4-1, round 5: a chat opened for the first time loads for seconds, and
+  // until its row lands the composer has looked up the window of the model for
+  // NEW chats. Measured on a 200k chat: "0 of 1.1M", a 79ms sweep to "64.6k of
+  // 1.1M", then "of 200k". Now: nothing until the chat's own window, then one
+  // reading at rest.
+  it('draws nothing while a chat loads, then its own model’s reading at rest', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const loading: Reading = {
+      sessionId: 'demo2',
+      totalTokens: 0,
+      tokenLimit: 1_050_000,
+      isTokenLimitLoaded: true,
+      tokenLimitModel: 'versa_azure/gpt-5.5',
+      boundModel: null,
+    };
+    const tab = await open(loading);
+    try {
+      expect(
+        await tab.evaluate(() => ({
+          arc: document.querySelector('[data-testid="context-ring-arc"]') !== null,
+          text: document.getElementById('root')!.textContent,
+        }))
+      ).toEqual({ arc: false, text: '' });
+      // The row lands with its count and its binding; the window is still the
+      // new-chat model's, then its re-read starts.
+      const landed = { ...loading, totalTokens: 64_600, boundModel: 'anthropic/claude-opus-4-5' };
+      expect(await commitBare(tab, landed)).toEqual({ arc: false, text: '' });
+      await rest(tab);
+      expect(await commitBare(tab, { ...landed, isTokenLimitLoaded: false })).toEqual({
+        arc: false,
+        text: '',
+      });
+      await rest(tab);
+      const m = await commit(tab, {
+        ...landed,
+        tokenLimit: 200_000,
+        tokenLimitModel: 'anthropic/claude-opus-4-5',
+      });
+      expect(m.still).toBe(true);
+      expect(m.running).toEqual([]);
+      near(m.offset, offsetFor(64_600, 200_000), 'arc');
+      // And nothing starts once the still flag is released.
+      await rest(tab);
+      expect(
+        await tab.evaluate(
+          () =>
+            document
+              .querySelector<SVGCircleElement>('[data-testid="context-ring-arc"]')!
+              .getAnimations().length
+        )
+      ).toBe(0);
     } finally {
       await tab.close();
     }
