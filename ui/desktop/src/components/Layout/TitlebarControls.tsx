@@ -71,16 +71,21 @@ export function TitlebarControls({ hidden, isMacOS, onNewWindow }: TitlebarContr
       }
       onPointerDown={stopTitlebarDrag}
     >
+      {/* Both controls hover on the strong fill, the step every fill takes on
+          the band's recessed ground (R-27; the summary and terminal toggles
+          press on the same token). Both name themselves in the app tooltip
+          (`title`, upgraded by AppTooltipLayer), so the pair reads alike. */}
       <SidebarTrigger
         data-testid="titlebar-sidebar-toggle"
         size="sm"
         shape="round"
-        className="no-drag text-text-muted hover:!bg-background-medium hover:text-text-default"
+        title="Toggle sidebar"
+        className="no-drag text-text-muted hover:!bg-background-fill-strong hover:text-text-default"
       />
       <Button
         data-testid="titlebar-new-window"
         onClick={onNewWindow}
-        className="no-drag text-text-muted hover:!bg-background-medium hover:text-text-default"
+        className="no-drag text-text-muted hover:!bg-background-fill-strong hover:text-text-default"
         variant="ghost"
         size="sm"
         shape="round"

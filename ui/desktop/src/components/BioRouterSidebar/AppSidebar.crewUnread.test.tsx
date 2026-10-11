@@ -76,6 +76,9 @@ describe('the Crew item counts unread Crew messages (M2)', () => {
     const crew = screen.getByTestId('sidebar-crew-button');
     expect(crew).toHaveAccessibleName('Crew, 120 unread');
     expect(crew).toHaveTextContent('99+');
+    // The hook sidebar.css uses to step the badge to the page ground on a lit row (R-27);
+    // sidebarFill.browser.test.tsx measures the colours.
+    expect(crew.querySelector('.br-nav-row-badge')).toHaveTextContent('99+');
   });
 
   it('opens Crew when a notification is clicked, and tells the watcher which route shows', async () => {

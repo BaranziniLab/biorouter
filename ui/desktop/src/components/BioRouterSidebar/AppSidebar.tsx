@@ -324,8 +324,12 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               {sidebarCopy.shortcut.newChat(isMac)}
             </span>
           ) : null}
+          {/* The neutral badge is the strong fill. On a row that is lit
+              (hovered, current, focused) the row IS that fill, so there the
+              badge steps back to the page ground (`.br-nav-row-badge`,
+              sidebar.css): a fill never sits on a fill (R-27). */}
           {unread > 0 ? (
-            <Badge tone="neutral" className="tabular-nums" aria-hidden="true">
+            <Badge tone="neutral" className="br-nav-row-badge tabular-nums" aria-hidden="true">
               {attentionBadgeText(unread)}
             </Badge>
           ) : null}

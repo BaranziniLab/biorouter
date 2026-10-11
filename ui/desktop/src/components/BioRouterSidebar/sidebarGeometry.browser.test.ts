@@ -318,7 +318,7 @@ describe('the app sidebar in a real layout engine', () => {
    * Rename edits the title in place with no layout shift (spec 3.4 acceptance):
    * the editing row keeps the 28px box and the 30px pitch, the input is 24px
    * tall and centred in it, and the typed text starts on the label column at
-   * x=40 (the input's -4px margin cancels its 4px padding).
+   * x=40 (the input's -4px margin cancels its 1px border and 3px padding).
    */
   it('renames in place with no layout shift', async (ctx) => {
     if (!browser) return ctx.skip();
@@ -331,7 +331,12 @@ describe('the app sidebar in a real layout engine', () => {
     near(b['editing-input'].top - b.editing.top, 2, 'input centred in the row');
     const textX = await tab.evaluate(() => {
       const input = document.getElementById('editing-input')!;
-      return input.getBoundingClientRect().left + parseFloat(getComputedStyle(input).paddingLeft);
+      const style = getComputedStyle(input);
+      return (
+        input.getBoundingClientRect().left +
+        parseFloat(style.borderLeftWidth) +
+        parseFloat(style.paddingLeft)
+      );
     });
     near(textX, 40, 'typed text x');
     const fontSize = await tab.evaluate(

@@ -138,6 +138,17 @@
   opacity: 1;
 }
 
+/* Crew's unread count: the neutral badge, whose fill is the strong step. That
+   reads on the sidebar at rest, but a lit row IS the strong step (the current
+   row's `--sidebar-active` equals it in light and sits 1.01:1 off it in dark),
+   so on the Crew row while Crew is open the count vanished. On a lit row the
+   badge steps back to the page ground instead: a fill never sits on a fill
+   (R-27 rule 3). Unlayered, so it beats the badge's Tailwind fill. */
+.br-nav-row:is(:hover, :focus-visible, [data-active='true'], [aria-current='page'])
+  .br-nav-row-badge {
+  background-color: var(--background-default);
+}
+
 /* The Update row's download glyph is the accent (principle 7). */
 .br-nav-row[data-tone='update'] .br-nav-row-icon {
   color: var(--accent-bar);
@@ -242,6 +253,18 @@
   flex: none;
   align-items: center;
   gap: 2px;
+}
+
+/* "View options" stays pressed while its menu is open, so the menu reads as
+   coming from it once the pointer has moved into the menu (the ghost's hover
+   tint goes with the pointer). Pressed is the strong fill: on the sidebar, a
+   recessed ground, that is the step every fill takes (R-27 rule 2). A row or
+   a folder header whose menu is open is lit instead (`data-menu-open`, below),
+   so its ⋯ needs no state of its own. Read by `aria-expanded`: the tooltip
+   around the trigger overwrites its `data-state` (see the folder actions). */
+.br-sidebar-chats-actions [aria-haspopup='menu'][aria-expanded='true'] {
+  background-color: var(--background-fill-strong);
+  color: var(--text-default);
 }
 
 /* The scrolling list: an 8px inset on both sides and a 10px fade at the
@@ -359,9 +382,14 @@
   transition: opacity var(--dur-fast-min) var(--ease-out);
 }
 
+/* An open menu keeps its trigger on screen. The trigger is read by
+   `aria-expanded`, not `data-state`: each ⋯ sits inside a TooltipTrigger, and
+   the tooltip's `data-state` ('closed') overwrites the menu's on the same
+   element, so a `[data-state='open']` rule never matched and the ⋯ vanished
+   under its own open menu (measured in Chromium). */
 .br-sidebar-folder:hover .br-sidebar-actions,
 .br-sidebar-folder:focus-within .br-sidebar-actions,
-.br-sidebar-actions:has([data-state='open']) {
+.br-sidebar-actions:has([aria-haspopup='menu'][aria-expanded='true']) {
   opacity: 1;
 }
 
@@ -399,15 +427,16 @@
   transition: opacity var(--dur-fast-min) var(--ease-out);
 }
 
+/* `aria-expanded`, not `data-state`: see the folder actions above. */
 .br-chat-row-item:hover .br-chat-row-more,
 .br-chat-row-item:focus-within .br-chat-row-more,
-.br-chat-row-more[data-state='open'] {
+.br-chat-row-more[aria-expanded='true'] {
   opacity: 1;
 }
 
 .br-chat-row-item:hover .br-chat-row-trailing,
 .br-chat-row-item:focus-within .br-chat-row-trailing,
-.br-chat-row-item:has(.br-chat-row-more[data-state='open']) .br-chat-row-trailing {
+.br-chat-row-item:has(.br-chat-row-more[aria-expanded='true']) .br-chat-row-trailing {
   opacity: 0;
 }
 
@@ -451,16 +480,21 @@
   color: var(--text-default);
 }
 
+/* The editor is a focused field (R-27, design.md 9.11): it rests on the page
+   ground because its row is already the strong fill (a fill never sits on a
+   fill), and its edge is a real 1px BORDER in `--border-focus`, the field's own
+   focus edge, not a box-shadow ring: forced colours strip a shadow and keep a
+   border, so the editor stays outlined there. The border takes 1px of the
+   padding (3 + 1 = 4), so the typed text still starts on the label column. */
 .br-chat-row-rename-input {
   flex: 1 1 auto;
   min-width: 0;
   height: 24px;
   margin-inline-start: -4px;
-  padding: 0 4px;
-  border: 0;
+  padding: 0 3px;
+  border: 1px solid var(--border-focus);
   border-radius: var(--radius-inner);
   background-color: var(--background-default);
-  box-shadow: 0 0 0 1px var(--border-focus);
   font: inherit;
   color: var(--text-default);
   outline: none;
