@@ -44,7 +44,7 @@ type ProviderCardProps = {
   statusSlot?: React.ReactNode;
   /**
    * The row's second line, when the daemon's description is a sentence too long for one (the
-   * coding agents'). The description stays the line's tooltip.
+   * coding agents'). The description stays the row's accessible description.
    */
   summary?: string;
   children?: React.ReactNode;
@@ -100,6 +100,9 @@ export const ProviderCard = function ProviderCard({
     descriptionRef,
     summary ?? metadata?.description ?? ''
   );
+  // The line's tooltip opens only while the line is cut off (vision FR-R2-7): over a line that
+  // fits, it only said the same thing again, at length, over the next row.
+  const [descriptionTipOpen, setDescriptionTipOpen] = useState(false);
 
   if (!metadata) {
     return <div>ProviderCard error: No metadata provided</div>;
@@ -123,7 +126,10 @@ export const ProviderCard = function ProviderCard({
         {statusSlot}
       </div>
       {metadata.description && (
-        <Tooltip>
+        <Tooltip
+          open={descriptionTruncated && descriptionTipOpen}
+          onOpenChange={setDescriptionTipOpen}
+        >
           {/* A Tab stop ONLY while it is cut off, so a keyboard user can open the tooltip that
               holds the rest (a Radix trigger opens on focus as well as hover, but only if it can
               take focus). Every description used to be one, truncated or not, so the walk went
@@ -142,8 +148,12 @@ export const ProviderCard = function ProviderCard({
               {summary ?? <InlineCodeText text={metadata.description} />}
             </p>
           </TooltipTrigger>
+          {/* What is cut off, and only that: the line's own text, in the tooltip's one face (no
+              mono run: a tooltip is one family). An agent's short line was answered with the
+              daemon's three sentences, `claude` in mono, covering the Codex row (FR-R2-7); that
+              sentence is the row's accessible description instead, below. */}
           <TooltipContent side="bottom" className="max-w-72 text-wrap">
-            <InlineCodeText text={metadata.description} />
+            {summary ?? metadata.description.replace(/`/g, '')}
           </TooltipContent>
         </Tooltip>
       )}

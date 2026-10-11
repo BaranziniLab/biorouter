@@ -248,6 +248,76 @@ describe('ProviderCard keyboard access', () => {
     restore();
   });
 
+  // FR-R2-7: hovering a line that fits opened the full description over the next row, which for an
+  // agent's short line was the daemon's three sentences with `claude` in mono.
+  it('opens no tooltip on hover when the line fits', async () => {
+    const user = userEvent.setup();
+    renderRow(false);
+    await user.hover(screen.getByTestId('provider-description-versa_azure'));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it("opens no tooltip over an agent's short line, which fits, and keeps the sentence for a screen reader", async () => {
+    const user = userEvent.setup();
+    const agent = {
+      ...provider(false),
+      metadata: {
+        ...provider(false).metadata,
+        description: 'Uses your installed `claude` command. No API key. Requires the CLI.',
+      },
+    } as unknown as ProviderDetails;
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={agent}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding
+          expandable
+          onToggle={vi.fn()}
+          summary="Your plan · no API key"
+        />
+      </TooltipProvider>
+    );
+    await user.hover(screen.getByTestId('provider-description-versa_azure'));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(screen.getByTestId('provider-row-toggle-versa_azure')).toHaveAccessibleDescription(
+      'Uses your installed claude command. No API key. Requires the CLI.'
+    );
+  });
+
+  it('shows a cut-off line in full, in one face, with no mono run', async () => {
+    const restore = truncateDescriptions();
+    const user = userEvent.setup();
+    const agent = {
+      ...provider(false),
+      metadata: {
+        ...provider(false).metadata,
+        description: 'Uses your installed `claude` command. No API key. Requires the CLI.',
+      },
+    } as unknown as ProviderDetails;
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={agent}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding
+          expandable
+          onToggle={vi.fn()}
+          summary="Your plan · no API key"
+        />
+      </TooltipProvider>
+    );
+    await user.hover(screen.getByTestId('provider-description-versa_azure'));
+    const tip = await screen.findByRole('tooltip', { name: 'Your plan · no API key' });
+    expect(tip).toBeInTheDocument();
+    expect(document.querySelector('[data-slot="tooltip-content"] code')).toBeNull();
+    restore();
+  });
+
   it('describes an agent row by the daemon sentence its short line stands in for', () => {
     render(
       <TooltipProvider>
