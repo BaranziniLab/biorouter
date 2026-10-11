@@ -38,6 +38,7 @@ import CustomSkillModal from './CustomSkillModal';
 import { MarketplaceDialog, MarketplaceRow, MarketplaceSection } from '../baam/MarketplaceDialog';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { Checkbox } from '../ui/Checkbox';
 
 const state = { machineEnabled: true, session: 'default', sessionViaBundle: false, hiddenContext: false, effective: true };
@@ -71,7 +72,7 @@ function Market() {
         {['One', 'Two', 'Three'].map((n) => (
           <MarketplaceRow
             key={n} title={n} leading={n === 'One' ? <Checkbox aria-label={n} checked={false} onChange={noop} /> : undefined}
-            badges={<Badge tone="neutral">Public</Badge>} meta="UCSF · v0.1.0"
+            badges={n === 'Two' ? <PrivacyBadge tier="public" enforcementOff={false} /> : <Badge tone="neutral">Public</Badge>} meta="UCSF · v0.1.0"
             description="A description on one line"
             trailing={<Button size="sm" variant="secondary" aria-label={'Add ' + n}>Add</Button>}
           />
@@ -301,30 +302,72 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
     }
   });
 
-  it('keeps a row’s Add button visible when the row washes under the pointer', async (ctx) => {
+  /** WCAG's contrast ratio of two `rgb()` strings. */
+  const ratio = (a: string, b: string) => {
+    const channels = (c: string) => (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const lum = (c: string) => {
+      const [r, g, bl] = channels(c).map((v) => {
+        const x = v / 255;
+        return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+    };
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  /** What an element's background looks like once painted: every ancestor's fill, from the
+   * page down, composited the way the browser does it. A row's wash is a translucent ink in
+   * `oklab()`, which no channel parse can read, so a 2D canvas (which takes any CSS colour)
+   * does the compositing. */
+  const paintedBackground = (tab: Page, selector: string) =>
+    tab.evaluate((sel) => {
+      const layers: string[] = [];
+      for (let el = document.querySelector(sel); el; el = el.parentElement) {
+        layers.unshift(getComputedStyle(el).backgroundColor);
+      }
+      const ctx = document.createElement('canvas').getContext('2d')!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 1, 1);
+      for (const layer of layers) {
+        ctx.fillStyle = layer;
+        ctx.fillRect(0, 0, 1, 1);
+      }
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      return `rgb(${r}, ${g}, ${b})`;
+    }, selector);
+
+  it('keeps a row’s Add button visible when the row washes, by the shared row recipe and no rule of this area’s own', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const tab = await open('market', mode, { ready: '[data-marketplace-row] button' });
       try {
         const fill = await paint(tab, 'var(--background-fill)');
+        const page = await paint(tab, 'var(--background-default)');
         const strong = await paint(tab, 'var(--background-fill-strong)');
-        const deeper = await paint(tab, 'var(--background-strong)');
-        const button = '[data-marketplace-row]:nth-of-type(2) button';
+        const row = '[data-marketplace-row]:nth-of-type(2)';
+        const button = `${row} button`;
         // At rest a column of Add buttons is the quiet fill, not a column of heavier boxes.
         expect((await style(tab, button)).ground, `${mode} rest`).toBe(fill);
 
         // The row's wash is the rest fill's value to within a shade, so on it the button's box
-        // would have vanished (1.00:1). It steps one deeper while its row is washed.
-        await tab.hover('[data-marketplace-row]:nth-of-type(2) [data-marketplace-title]');
+        // would have vanished (1.00:1). While its row is washed the shared list-row recipe rests
+        // the button on the page ground, as it does on the Extensions page and in Settings.
+        await tab.hover(`${row} [data-marketplace-title]`);
         await tab.waitForTimeout(250);
-        expect((await style(tab, button)).ground, `${mode} row hovered`).toBe(strong);
-        expect((await style(tab, button)).ground).not.toBe(fill);
+        const resting = (await style(tab, button)).ground;
+        expect(resting, `${mode} row hovered`).toBe(page);
+        const wash = await paintedBackground(tab, row);
+        expect(wash).not.toBe(page);
+        expect(ratio(resting, wash), `${mode} box against the wash`).toBeGreaterThan(1.05);
         await shoot(tab, `market-row-hover-${mode}`);
 
-        // And its own hover and press go one deeper again, so it still answers the pointer.
+        // Its own hover and press go to the strong fill, so it still answers the pointer.
         await tab.hover(button);
         await tab.waitForTimeout(250);
-        expect((await style(tab, button)).ground, `${mode} button hovered`).toBe(deeper);
+        const hovered = (await style(tab, button)).ground;
+        expect(hovered, `${mode} button hovered`).toBe(strong);
+        expect(ratio(hovered, resting)).toBeGreaterThan(1.05);
 
         // A row the pointer is not on keeps the quiet fill.
         await tab.mouse.move(5, 5);
@@ -332,6 +375,66 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
         expect((await style(tab, '[data-marketplace-row]:nth-of-type(3) button')).ground).toBe(
           fill
         );
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('keeps a Public or Private pill’s box on a washed Browse row', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open('market', mode, { ready: '.br-privacy-pill' });
+      try {
+        // The pill rests on `--background-muted`, the rest fill's own value, which the row's wash
+        // composites to, so under the pointer it read as bare text (1.00:1 on this very row).
+        const row = '[data-marketplace-row]:nth-of-type(2)';
+        const pill = `${row} .br-privacy-pill`;
+        const muted = await paint(tab, 'var(--background-muted)');
+        expect((await style(tab, pill)).ground, `${mode} rest`).toBe(muted);
+        await tab.hover(`${row} [data-marketplace-title]`);
+        await tab.waitForTimeout(250);
+        const washed = (await style(tab, pill)).ground;
+        expect(washed, `${mode} on the washed row`).toBe(
+          await paint(tab, 'var(--background-fill-strong)')
+        );
+        expect(ratio(washed, await paintedBackground(tab, row))).toBeGreaterThan(1.05);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('keeps the Add button visible on a row that keyboard focus washes', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open('market', mode, { ready: '[data-marketplace-row] button' });
+      try {
+        // Tab to the first row's checkbox: `:focus-visible` inside the row washes it, the way the
+        // pointer does, while the Add button beside it is not the thing holding focus.
+        const input = '[data-marketplace-row]:nth-of-type(1) input';
+        let reached = false;
+        for (let i = 0; i < 12 && !reached; i += 1) {
+          await tab.keyboard.press('Tab');
+          reached = await tab.evaluate(
+            (sel) => document.activeElement?.matches(sel) ?? false,
+            input
+          );
+        }
+        expect(reached, `${mode}: focus reached the first row's checkbox`).toBe(true);
+        await tab.waitForTimeout(250);
+
+        const row = '[data-marketplace-row]:nth-of-type(1)';
+        const button = `${row} button`;
+        const wash = await paintedBackground(tab, row);
+        expect(wash, `${mode} focused row is washed`).not.toBe(
+          await paint(tab, 'var(--background-default)')
+        );
+        const resting = (await style(tab, button)).ground;
+        expect(resting, `${mode} button on the washed row`).toBe(
+          await paint(tab, 'var(--background-default)')
+        );
+        expect(ratio(resting, wash)).toBeGreaterThan(1.05);
       } finally {
         await tab.close();
       }

@@ -40,21 +40,13 @@
   padding: 8px 12px 4px;
 }
 
-/* THE ACTION BESIDE A ROW (Add, Configure) is a filled secondary button, and it rests on the
-   control ground, `--background-fill`. A row's hover wash (`--overlay-hover`, 5% ink) is
-   that same fill's value to within a shade, so under the pointer the button's box vanished into
-   the row it belongs to and only its label was left (measured, light: 1.01:1). While the row is
-   washed (pointer, or keyboard focus inside it, as the shared row recipe has it) the button
-   rests one step deeper, on the strong fill, and its own hover and press go one deeper again, as
-   a control on any recessed ground does (`.br-knowledge-recessed`, main.css). At rest the buttons
-   stay the quiet fill, so a column of them does not read as a column of boxes. */
-.br-marketplace-row:is(:hover, :has(:focus-visible)) {
-  --br-control-ground: var(--background-fill-strong);
-}
-
-.br-marketplace-row:is(:hover, :has(:focus-visible)) .br-fill-hover:is(:hover, :active) {
-  background-color: var(--background-strong);
-}
+/* THE ACTION BESIDE A ROW (Add, Configure) needs no rule here. It is a filled secondary button, and
+   while its row is washed (pointer, or keyboard focus inside it) the shared list-row recipe rests
+   it on the page ground and hovers it on the strong fill (`.biorouter-list-row` in `main.css`,
+   design.md 9.11 rule 3), as it does on the Extensions page and in Settings. A rule of this file's
+   own used to step it one deeper instead; it drew a box about 1.1:1 off the wash, as the shared one
+   does, and made this one list answer the pointer differently from every other. The button's box
+   against the wash is measured in `skills/skillsFill.browser.test.tsx`. */
 
 /* A LEADING CHECKBOX is a 16px box in a 24px hit target, so its visible edge sits 4px inside the
    row's content edge, and with it 4px off the search field, the chips and the group label above
