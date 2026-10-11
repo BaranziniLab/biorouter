@@ -121,8 +121,19 @@ can never disagree. The names are sentence case ("Anthropic API key", "Azure Ope
 "Llama Server context size"), the same as the custom provider form's "API key" and every other label in the
 app. The curated names in `utils/configUtils.ts` stay Title Case in the table, and each reader sentence-cases
 them on the way out: this function and the Configuration editor both use `sentenceCase` from
-`settings/config/configLabels.ts`, which keeps acronyms and product names. A key with no curated name falls back to its role ("API key", "API host") or to the key
-without the provider's prefix ("Access key ID").
+`settings/config/configLabels.ts`, which keeps acronyms and product names. A key with no curated name falls
+back to its role ("API key", "API host") or to the key without the provider's prefix ("Access key ID").
+
+## A disabled field dims once
+
+With Lead/worker mode off, the two model selects and the three number fields are disabled, and each control
+dims itself to the one 50% step every disabled control takes (the Select trigger's `opacity-50`, the Input's
+`disabled:opacity-50`). The group around them used to dim to 50% as well, so a field was painted at 25%: the
+placeholder was barely legible and, in dark, a number field's fill faded into the dialog. `.br-model-fields`
+in `model-dialogs.css` now carries no opacity, and the labels and InfoTips stay at full ink so a person can
+still read what a field is for. `LeadWorkerSettings.fill.browser.test.tsx` reads the product of opacities in
+Chromium (0.5 for every field, 1 for every label, light and dark) and puts the old rule back to prove it
+would see the defect.
 
 ## The page band
 

@@ -26,15 +26,19 @@
   flex: 0 1 auto;
 }
 
-/* The two model fields and the numbers share one gap, and go quiet while the mode is off. */
+/* The two model fields and the numbers share one gap.
+ *
+ * While the mode is off they go quiet by each CONTROL dimming itself, once, to the half step every
+ * disabled control takes (the Select trigger's `opacity-50`, the Input's `disabled:opacity-50`).
+ * This group used to dim as well, so a field was painted at 0.5 x 0.5 = 0.25: "Select lead
+ * model..." was barely legible and, in dark, a number field's fill (#232320 over the dialog's
+ * #1b1b19) faded out of sight (V4-R3-3). The labels and their InfoTips stay at full ink, so what
+ * each field is for, and what its tip says, can still be read while the field is off. Do not put an
+ * `opacity` back on this selector: the dim belongs to the control. */
 .br-model-fields {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.br-model-fields[data-enabled='false'] {
-  opacity: 0.5;
 }
 
 .br-model-field {
