@@ -232,3 +232,65 @@ describe('AddSkillModal: help on demand, not on the page', () => {
     expect(zone.textContent).toBe(ADD_SKILL_COPY.dropZone);
   });
 });
+
+/**
+ * R-27 (owner message 13): the drop zone is the one filled field the Workflows import and the
+ * .brxt dialog draw, and the preview is told apart from it by space, not a rule. jsdom runs no
+ * stylesheet, so these pin the class names and the `data-state` the recipe is keyed on; the paint
+ * is measured in Chromium (`skillsFill.browser.test.tsx`).
+ */
+describe('AddSkillModal: fills before lines', () => {
+  it('draws the drop zone with the shared recipe and keys its states on data-state', () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+
+    const zone = screen.getByRole('button', { name: ADD_SKILL_COPY.dropZoneName });
+    // The recipe's class and nothing else: no utility border or ground to fight the authored rule.
+    expect(zone.className).toBe('br-skill-dropzone');
+    expect(zone).not.toHaveAttribute('data-state');
+    expect(zone.querySelector('.br-skill-drop-plate')).not.toBeNull();
+
+    fireEvent.dragOver(zone);
+    expect(zone).toHaveAttribute('data-state', 'dragging');
+    fireEvent.dragLeave(zone);
+    expect(zone).not.toHaveAttribute('data-state');
+  });
+
+  it('marks the zone for an error and clears the mark once a lookup works', async () => {
+    mocks.previewSkillPackage.mockRejectedValueOnce(new Error('That host is not allowed.'));
+    mocks.previewSkillPackage.mockResolvedValueOnce({
+      data: { status: 'needsChoice', planId: 'plan-1', preview: preview() },
+    });
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+    const field = screen.getByPlaceholderText('https://github.com/owner/repo');
+    const zone = screen.getByRole('button', { name: ADD_SKILL_COPY.dropZoneName });
+
+    fireEvent.change(field, { target: { value: 'https://example.com/x.zip' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    await screen.findByText(/not allowed/);
+    expect(zone).toHaveAttribute('data-state', 'error');
+
+    fireEvent.change(field, { target: { value: 'https://github.com/o/r' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    await screen.findByText('HyperFrames');
+    expect(zone).not.toHaveAttribute('data-state');
+  });
+
+  it('tells the preview from the drop zone by space and holds its skills in one well', async () => {
+    mocks.previewSkillPackage.mockResolvedValue({
+      data: { status: 'needsChoice', planId: 'plan-1', preview: preview() },
+    });
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText('https://github.com/owner/repo'), {
+      target: { value: 'https://github.com/heygen-com/hyperframes' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    const name = await screen.findByText('HyperFrames');
+
+    const section = name.closest('section')!;
+    // The old section drew `border-t border-border-subtle` between itself and the zone above.
+    expect(section.className).toBe('br-skill-preview');
+    expect(section.querySelector('ul')!.className).toBe('br-skill-components');
+    // The dialog's own footer keeps its rule (a structural scroll edge); the body draws none.
+    expect(section.parentElement!.querySelector('.border-t, .border-b')).toBeNull();
+  });
+});

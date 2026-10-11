@@ -1,3 +1,4 @@
+import './skills.css';
 import { useState, useRef, DragEvent } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -216,19 +217,17 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         </div>
       </div>
 
-      {/* Knowledge's drop zone recipe (`knowledge/IngestPanel/Dropzone.tsx`): a
-          32px glyph plate over one label line, on the muted ground. A real
-          button, so the keyboard reaches the file chooser it opens.
-
-          ⚠ **Not `biorouter-modal-panel`.** That class is UNLAYERED in
-          main.css, so its `background` and `border` beat any utility whatever
-          the specificity, and the zone never changed on drag, on error or on
-          hover. Hover is `tint-interactive`, never `hover:bg-overlay-hover`,
-          which REPLACES an opaque ground rather than compositing over it. */}
+      {/* The one drop zone recipe (Workflows' Import, the .brxt dialog; `skills.css`): a 32px
+          glyph plate over one label line, on the subtle fill with no resting outline. A real
+          button, so the keyboard reaches the file chooser it opens. Its drag and error states are
+          authored in `skills.css` and keyed on `data-state`, not utilities: the unlayered
+          `biorouter-modal-panel` it once borrowed beat every utility, so the zone never changed on
+          drag, on error or on hover. */}
       <button
         type="button"
         aria-label={ADD_SKILL_COPY.dropZoneName}
         disabled={busy}
+        data-state={isDragging ? 'dragging' : error ? 'error' : undefined}
         onDragOver={(e) => {
           e.preventDefault();
           setIsDragging(true);
@@ -236,19 +235,9 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
-        className={[
-          'biorouter-focus-surface flex w-full cursor-pointer select-none flex-col items-center gap-2 rounded-container border px-4 py-6 text-center transition-colors',
-          isDragging
-            ? 'border-border-strong bg-background-medium'
-            : error
-              ? 'border-border-danger bg-background-muted tint-interactive'
-              : 'border-border-subtle bg-background-muted tint-interactive',
-        ].join(' ')}
+        className="br-skill-dropzone"
       >
-        <span
-          aria-hidden="true"
-          className={`flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle ${isDragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
-        >
+        <span aria-hidden="true" className="br-skill-drop-plate">
           <Upload className="h-4 w-4" />
         </span>
         <span className="text-label text-text-default">{ADD_SKILL_COPY.dropZone}</span>
@@ -282,9 +271,10 @@ function installLabel(preview: ImportPreview | null): string {
 }
 
 /**
- * What the daemon says will be installed. Flat, under a hairline: the dialog is
- * already the box, so the preview is a section of it rather than a card inside
- * it.
+ * What the daemon says will be installed. Told apart from the drop zone by space, not a rule
+ * (R-27: a divider between two blocks inside a dialog is space; the dialog is already the box),
+ * the same as the .brxt dialog's summary. The member list is the one filled well in it: it
+ * scrolls when a bundle carries many skills, and a scroller with no edge shows nothing of that.
  */
 function PreviewSummary({ preview, sourceLabel }: { preview: ImportPreview; sourceLabel: string }) {
   const entryPoint = preview.entryPoint;
@@ -297,7 +287,7 @@ function PreviewSummary({ preview, sourceLabel }: { preview: ImportPreview; sour
     sourceLabel,
   ].filter(Boolean);
   return (
-    <section className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+    <section className="br-skill-preview">
       <div className="min-w-0">
         <p className="truncate text-label text-text-default">{preview.displayName}</p>
         <p className="truncate text-supporting text-text-muted">{facts.join(' · ')}</p>
@@ -305,7 +295,7 @@ function PreviewSummary({ preview, sourceLabel }: { preview: ImportPreview; sour
           <p className="text-supporting text-text-muted">{ADD_SKILL_COPY.entryPoint(entryPoint)}</p>
         )}
       </div>
-      <ul className="flex max-h-[140px] flex-col gap-0.5 overflow-y-auto">
+      <ul className="br-skill-components">
         {preview.components.map((component) => (
           <li key={component.name} className="truncate text-supporting">
             <span className="text-text-default">{component.name}</span>
