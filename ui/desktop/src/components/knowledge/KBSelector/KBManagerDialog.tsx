@@ -485,9 +485,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                       >
                         <KbDot color={base.color} />
                         <div className="min-w-0 flex-1">
-                          {/* `br-wash-chips`: the chips below step back to the page ground
-                            while the row is washed (main.css, "washed-row chips"). */}
-                          <div className="br-wash-chips flex items-center gap-2">
+                          <div className="flex items-center gap-2">
                             <div
                               id={`kb-row-name-${base.id}`}
                               className="truncate text-label text-text-default"
@@ -526,9 +524,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                         {/* Neutral, not accent: the accent marks state and adds
                             zest, and a word on one row of a list is neither
                             (principle 7). */}
-                        {isPrimary && (
-                          <Badge className="br-wash-chip">{knowledgeCopy.manager.primary}</Badge>
-                        )}
+                        {isPrimary && <Badge>{knowledgeCopy.manager.primary}</Badge>}
                       </button>
 
                       <div className="flex shrink-0 items-center gap-2">

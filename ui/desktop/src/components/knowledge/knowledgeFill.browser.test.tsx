@@ -126,13 +126,10 @@ function ruleCss(): string {
     // The shared recessed ground (control, hover and track grounds on the strong steps) that the
     // pane header and the graph canvas carry; Knowledge has no recessed rule of its own.
     block('.br-ground-recessed {'),
-    // The shared washed row (WS-PRIMITIVES, "rows"): the hover wash and the privacy pill's step to
-    // the strong fill, which the Knowledge chip rule below has to come after and beat.
+    // The shared washed row (WS-PRIMITIVES, "rows"): the hover wash, and the page ground it sets
+    // for every neutral badge and the privacy pill (`--br-badge-ground`). Knowledge's chips take
+    // no class of their own: the shared rule is what steps them back.
     cut('/* @ws WS-PRIMITIVES begin: rows */', '/* @ws WS-PRIMITIVES end: rows */'),
-    cut(
-      '/* @ws WS-KNOWLEDGE begin: washed-row chips */',
-      '/* @ws WS-KNOWLEDGE end: washed-row chips */'
-    ),
   ].join('\n');
 }
 
@@ -159,8 +156,8 @@ svg { width: 16px; height: 16px; flex: none; }
 .hidden { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
 .absolute { position: absolute; } .pointer-events-none { pointer-events: none; }
-.border { border: 1px solid; } .border-transparent { border-color: transparent; }
-.border-b { border-bottom: 1px solid; } .border-border-subtle { border-color: var(--border-subtle); }
+.border { border-width: 1px; border-style: solid; } .border-transparent { border-color: transparent; }
+.border-b { border-bottom-width: 1px; border-bottom-style: solid; } .border-border-subtle { border-color: var(--border-subtle); }
 .bg-background-fill { background-color: var(--background-fill); }
 .bg-background-fill-strong { background-color: var(--background-fill-strong); }
 .bg-background-muted { background-color: var(--background-muted); }
@@ -245,14 +242,12 @@ function documentFor(mode: Mode): string {
   const rows = renderToStaticMarkup(
     <div id="rows" style={{ width: 420, background: 'var(--background-default)' }}>
       <div id="row-manager" className={row} style={{ height: 40 }}>
-        <div className="br-wash-chips flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <div>Soul</div>
           <Badge id="chip-format">OKF</Badge>
           <PrivacyBadge tier="private" enforcementOff={false} />
         </div>
-        <Badge id="chip-primary" className="br-wash-chip">
-          Primary
-        </Badge>
+        <Badge id="chip-primary">Primary</Badge>
         <button id="row-btn" type="button">
           Open
         </button>
@@ -265,7 +260,7 @@ function documentFor(mode: Mode): string {
       </div>
     </div>
   );
-  return `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${tokenCss(mode)}\n${UTILITIES}\n${ruleCss()}</style></head><body>
+  return `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>@layer base, components, utilities;\n${tokenCss(mode)}\n${UTILITIES}\n${ruleCss()}</style></head><body>
     ${rail}
     <div id="strip-rest" style="margin-top:12px;background:var(--background-default)">${stripMarkup(false)}</div>
     <div id="strip-on" style="margin-top:12px;background:var(--background-default)">${stripMarkup(true)}</div>
@@ -481,11 +476,14 @@ describe.each(Object.keys(MODES) as Mode[])('the Knowledge surfaces are fills (%
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     expect(await bg(format)).toBe(strong);
 
-    // A tinted chip (a flag is a problem marker) is left alone: it carries no step-back class.
-    const flagClass = await page.evaluate(
-      () => document.querySelector('#row-flag [data-testid="change-kind-chip"]')!.className
-    );
-    expect(flagClass).not.toContain('br-wash-chip');
+    // A tinted chip (a flag is a problem marker) is left alone: it keeps its own tint on a washed
+    // row, which is why only the neutral tone reads the ground the washed row sets.
+    const flag = '#row-flag [data-testid="change-kind-chip"]';
+    await page.mouse.move(0, 0);
+    const flagAtRest = await bg(flag);
+    expect(flagAtRest, 'a flag is a tint, not the strong fill').not.toBe(strong);
+    await page.hover('#row-flag');
+    expect(await bg(flag), 'a flag on a hovered entry').toBe(flagAtRest);
   });
 
   it('keeps the edge in forced colours, where the fill is repainted', async (ctx) => {

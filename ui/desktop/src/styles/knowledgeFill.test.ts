@@ -177,47 +177,19 @@ describe('an engaged filter stays legible and a step off a resting one', () => {
  * A chip on a washed row (vision round 2, V3-R2-5). The neutral Badge rests on the strong fill, and
  * a hovered list row is the page ink at 5%, so under the pointer the change log's kind chip and the
  * manager's Built-in, format, Private and Primary chips lost their boxes. R-27 usage rule 3 (a fill
- * never sits on a fill) says where they go: the page ground.
+ * never sits on a fill) says where they go: the page ground. The step itself is the shared rows
+ * block's (`--br-badge-ground` on a washed row, read by `.br-badge-neutral`; WS-PRIMITIVES), and
+ * `knowledgeFill.browser.test.tsx` measures the real chips in Chromium. What this file keeps is
+ * the reason for the colour: in both modes the page ground is the more visible box on that wash,
+ * and no fainter than a resting fill is on the page.
  */
 describe('a chip on a washed row steps back to the page ground', () => {
-  const WASHED = ':is(:hover, :focus-visible, :has(:focus-visible))';
-  const SELECTOR = `.biorouter-list-row${WASHED} :is(.br-wash-chip, .br-wash-chips > span)`;
-
-  it('names the chip, in the same three states the shared rows wash in', () => {
-    expect(rule(SELECTOR)['background-color']).toBe('var(--background-default)');
-    // The shared rows block washes (and steps its controls back) in exactly these states; this
-    // rule must not wash earlier or later than the row does.
-    expect(stripComments(CSS)).toContain(`.biorouter-list-row${WASHED},`);
-  });
-
-  it('is unlayered, so it beats the Badge utility and the privacy pill rule', () => {
-    const at = CSS.indexOf('@ws WS-KNOWLEDGE begin: washed-row chips');
-    expect(at).toBeGreaterThan(0);
-    // Not inside an @layer: the only `@layer` blocks before it close before it, which is what
-    // keeps `bg-background-fill-strong` (a utilities-layer class) under this rule.
-    const before = stripComments(CSS.slice(0, at));
-    let depth = 0;
-    for (const ch of before) {
-      if (ch === '{') depth += 1;
-      if (ch === '}') depth -= 1;
-    }
-    expect(depth, 'the rule sits at the top level of the stylesheet').toBe(0);
-    // And it comes after the privacy pill's washed-row rule, which has the same specificity.
-    expect(at).toBeGreaterThan(
-      CSS.indexOf(
-        '.biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)) .br-privacy-pill'
-      )
-    );
-  });
-
-  it('is carried by the kind chip, the Primary badge and the manager chip line', () => {
+  it("names no class of Knowledge's own: the shared rule does the step", () => {
+    expect(stripComments(CSS)).not.toContain('br-wash-chip');
     const root = join(__dirname, '../components/knowledge');
-    expect(readFileSync(join(root, 'changelog/ChangeKindChip.tsx'), 'utf8')).toContain(
-      "'br-wash-chip'"
-    );
-    const manager = readFileSync(join(root, 'KBSelector/KBManagerDialog.tsx'), 'utf8');
-    expect(manager).toMatch(/<Badge className="br-wash-chip">/);
-    expect(manager).toMatch(/className="br-wash-chips flex items-center gap-2"/);
+    for (const file of ['changelog/ChangeKindChip.tsx', 'KBSelector/KBManagerDialog.tsx']) {
+      expect(readFileSync(join(root, file), 'utf8'), file).not.toContain('br-wash-chip');
+    }
   });
 
   it.each(Object.entries(scopes))(

@@ -55,14 +55,10 @@ const TONE: Record<ChangeKind, BadgeTone> = {
 export function ChangeKindChip({ kind }: { kind: ChangeKind }) {
   const Glyph = GLYPH[kind];
   return (
-    // `br-wash-chip`: the neutral chip steps back to the page ground while its row is washed
-    // (main.css, "washed-row chips"; V3-R2-5). The danger tone is a tint and keeps its own.
-    <Badge
-      data-testid="change-kind-chip"
-      data-kind={kind}
-      tone={TONE[kind]}
-      className={TONE[kind] === 'neutral' ? 'br-wash-chip' : undefined}
-    >
+    // The neutral tone steps back to the page ground while its row is washed, through the shared
+    // `.br-badge-neutral` and the washed-row rule's `--br-badge-ground` (V3-R2-5); the danger tone
+    // is a tint and keeps its own.
+    <Badge data-testid="change-kind-chip" data-kind={kind} tone={TONE[kind]}>
       <Glyph className="h-icon-chip w-icon-chip" aria-hidden="true" />
       {knowledgeCopy.changeKind[kind]}
     </Badge>
