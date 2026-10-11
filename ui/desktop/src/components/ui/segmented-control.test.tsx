@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -73,6 +73,54 @@ describe('SegmentedControl', () => {
     expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute('aria-checked', 'true');
     await user.keyboard('{Home}');
     expect(onChange).toHaveBeenLastCalledWith('light');
+  });
+
+  it('selects the segment an arrow TAP moves to, even when the keyup lands first (V4-07)', async () => {
+    const onChange = vi.fn();
+    render(<Controlled onChange={onChange} />);
+    const light = screen.getByRole('radio', { name: 'Light' });
+    act(() => light.focus());
+    // Down and up in one go, before Radix's roving focus moves focus on its timer: Radix's own
+    // check then sees no arrow held, and used to leave focus on Dark with Light checked.
+    act(() => {
+      fireEvent.keyDown(light, { key: 'ArrowRight' });
+      fireEvent.keyUp(light, { key: 'ArrowRight' });
+    });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Dark' })).toHaveFocus());
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+    expect(onChange.mock.calls).toEqual([['dark']]);
+
+    const dark = screen.getByRole('radio', { name: 'Dark' });
+    act(() => {
+      fireEvent.keyDown(dark, { key: 'ArrowLeft' });
+      fireEvent.keyUp(dark, { key: 'ArrowLeft' });
+    });
+    await waitFor(() => expect(light).toHaveFocus());
+    expect(light).toHaveAttribute('aria-checked', 'true');
+    expect(onChange.mock.calls).toEqual([['dark'], ['light']]);
+  });
+
+  it('asks for a held arrow’s change once, though Radix asks too', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Controlled onChange={onChange} />);
+    act(() => screen.getByRole('radio', { name: 'Light' }).focus());
+    await user.keyboard('{ArrowRight>}');
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true')
+    );
+    await user.keyboard('{/ArrowRight}');
+    expect(onChange.mock.calls).toEqual([['dark']]);
+  });
+
+  it('does not select on a focus that no arrow moved (Tab in)', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Controlled onChange={onChange} />);
+    act(() => screen.getByRole('button', { name: 'Before' }).focus());
+    await user.tab();
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveFocus();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('selects on click', async () => {

@@ -23,6 +23,13 @@ import { cn } from '../../utils';
  * own ground and the thumb is hidden, and the first placement never animates
  * (`data-motion-still`), so a mount does not slide in from x=0.
  *
+ * The value follows the keyboard (vision round 1, V4-07). Radix checks a radio that an arrow key
+ * focused only if its document listener still believes an arrow is held when the focus lands,
+ * and the focus lands in a `setTimeout`: a keyup that arrives first (automation, assistive
+ * technology, a quick tap under load) left focus on the next segment with the old one checked.
+ * So the group remembers an arrow key itself, and the segment that focus then lands on is chosen;
+ * a change Radix also asks for is asked for once.
+ *
  * It glides only when the PERSON picks another segment (principle 9). A box that moved because
  * the layout did (a resize, a font arriving, a label changing) is measured by the observer and
  * lands at rest, and `data-motion-layout` stops the glide while the window or the sidebar is
@@ -60,6 +67,8 @@ export interface SegmentedControlProps<T extends string = string> {
 
 type ThumbBox = { left: number; width: number };
 
+const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
 function SegmentedControlInner<T extends string>(
   {
     options,
@@ -84,6 +93,19 @@ function SegmentedControlInner<T extends string>(
   // The first placement lands at rest; only later moves slide, and only the person's.
   const [still, setStill] = React.useState(true);
   const selectedIndex = options.findIndex((option) => option.value === value);
+
+  // The value last asked for (or shown), so a change both Radix and the arrow handling ask for is
+  // asked for once; and whether an arrow key moved focus that has not landed yet.
+  const requested = React.useRef(value);
+  const arrowPending = React.useRef(false);
+  React.useLayoutEffect(() => {
+    requested.current = value;
+  }, [value]);
+  const change = (next: T) => {
+    if (next === requested.current) return;
+    requested.current = next;
+    onValueChange(next);
+  };
 
   const setTrackRef = React.useCallback(
     (node: HTMLDivElement | null) => {
@@ -151,11 +173,18 @@ function SegmentedControlInner<T extends string>(
         // `width` (main.css), so a `transform` here snapped while only the width slid.
         ({ width: thumb!.width, translate: `${thumb!.left}px 0` } as React.CSSProperties);
 
+  // Capture phase, so the flag is up before Radix's roving focus sees the key, whether it then
+  // moves focus at once or on a timer. The segment focus lands on is chosen in its `onFocus`
+  // below, whatever the keyup did in between.
+  const onKeyDownCapture = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    arrowPending.current = ARROW_KEYS.has(event.key);
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Home' && event.key !== 'End') return;
     const enabled = options.filter((option) => !option.disabled);
     const target = event.key === 'Home' ? enabled[0] : enabled[enabled.length - 1];
-    if (target && target.value !== value) onValueChange(target.value);
+    if (target && target.value !== value) change(target.value);
   };
 
   return (
@@ -164,7 +193,7 @@ function SegmentedControlInner<T extends string>(
       id={id}
       name={name}
       value={value}
-      onValueChange={(next) => onValueChange(next as T)}
+      onValueChange={(next) => change(next as T)}
       disabled={disabled}
       orientation="horizontal"
       loop
@@ -176,7 +205,13 @@ function SegmentedControlInner<T extends string>(
       data-fill={fill ? 'true' : undefined}
       data-placed={placed ? 'true' : 'false'}
       className={cn('br-segmented', className)}
+      onKeyDownCapture={onKeyDownCapture}
       onKeyDown={onKeyDown}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          arrowPending.current = false;
+        }
+      }}
     >
       <span
         aria-hidden="true"
@@ -202,6 +237,11 @@ function SegmentedControlInner<T extends string>(
             data-testid={option.testId}
             data-slot="segmented-item"
             className="br-segmented-item"
+            onFocus={() => {
+              if (!arrowPending.current) return;
+              arrowPending.current = false;
+              if (!option.disabled && !disabled) change(option.value);
+            }}
           >
             {option.swatch ? (
               <span
