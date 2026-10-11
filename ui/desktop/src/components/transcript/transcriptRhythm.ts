@@ -1,4 +1,5 @@
 import type { Message } from '../../api';
+import { presentStoredTurnError } from '../conversation/ChatTurnError';
 import {
   getElicitationContent,
   getSecretRequestContent,
@@ -138,6 +139,55 @@ export function messageGaps(messages: Message[], isUser: (message: Message) => b
     previous = { role, message };
     return gap;
   });
+}
+
+/**
+ * An answer whose floating actions rise straight into the row above it: words
+ * and no tool call (`BioRouterMessage` floats the cluster on exactly these),
+ * no thought (a thought puts its own short line between the cluster and that
+ * row) and not the daemon's stored error notice (it draws as the error row,
+ * which carries no actions).
+ */
+function floatsActionsIntoRowAbove(message: Message): boolean {
+  if (getToolRequests(message).length > 0) return false;
+  const { visibleText, cotText } = splitAssistantText(message);
+  if (!visibleText || cotText) return false;
+  const allText = message.content.every((content) => content.type === 'text');
+  return !(allText && presentStoredTurnError(visibleText));
+}
+
+/**
+ * The rows an answer's floating actions reach into, index for index.
+ *
+ * The cluster rises 26px above an answer (`message-meta.css`). Under a question
+ * that is the 24px turn gap and the bubble's padding, but an answer 8px under a
+ * block of its own turn reaches 18px into that block, and the block is usually
+ * a tool row whose label (a shell command, a query) runs the full column: the
+ * cluster covered the label's end and its chevron (vision V2-12, round 3). The
+ * list marks that row (`data-actions-below`), and its last tool row ends the
+ * cluster's width short. Only the row the cluster reaches is marked.
+ */
+export function rowsUnderAnswerActions(
+  messages: Message[],
+  isUser: (message: Message) => boolean,
+  gaps: RowGap[] = messageGaps(messages, isUser)
+): boolean[] {
+  const marks = messages.map(() => false);
+  let lastShown = -1;
+  messages.forEach((message, index) => {
+    const gap = gaps[index] ?? 'none';
+    if (gap === 'none') return;
+    if (
+      gap === 'block' &&
+      lastShown >= 0 &&
+      !isUser(message) &&
+      floatsActionsIntoRowAbove(message)
+    ) {
+      marks[lastShown] = true;
+    }
+    lastShown = index;
+  });
+  return marks;
 }
 
 /**

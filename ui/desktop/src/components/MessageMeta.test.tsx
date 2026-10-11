@@ -62,6 +62,23 @@ describe('MessageActions (the floating cluster)', () => {
     expect(css).toMatch(/@media \(hover: none\) \{[\s\S]*?position: static;[\s\S]*?opacity: 1;/);
   });
 
+  it('ends the tool row an answer rises into short of the cluster (vision V2-12, round 3)', () => {
+    const selector =
+      '[data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line';
+    const escaped = selector.replace(/[[\].:-]/g, (c) => `\\${c}`);
+    const rules = Array.from(
+      css.matchAll(new RegExp(`${escaped} \\{([^}]*)\\}`, 'g')),
+      (match) => match[1]
+    );
+    // The widest cluster (183px) and 8px of air; in the flow (no hover
+    // pointer) it rises into nothing and the row keeps its width.
+    expect(rules).toHaveLength(2);
+    expect(rules[0]).toContain('padding-inline-end: 192px;');
+    expect(rules[1]).toContain('padding-inline-end: 0;');
+    const noHover = /@media \(hover: none\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+    expect(noHover).toContain(selector);
+  });
+
   it('keeps an edge under forced colours, where box shadows are dropped', () => {
     // The cluster's whole edge is a shadow; without a border it would float
     // edgeless over the words.

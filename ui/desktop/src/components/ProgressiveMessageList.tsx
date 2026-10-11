@@ -32,6 +32,7 @@ import {
   isToolResponseOnly,
   messageGaps,
   ROW_GAP_CLASS,
+  rowsUnderAnswerActions,
   trailingGap,
 } from './transcript/transcriptRhythm';
 import { useLiveRows } from './transcript/useLiveRows';
@@ -273,6 +274,12 @@ export default function ProgressiveMessageList({
   // rows), and the `.br-enter` entrance only for rows appended live: a history
   // load, a tab switch and a reload draw at rest (spec 3.6).
   const gaps = useMemo(() => messageGaps(messages, isUserMessage), [messages, isUserMessage]);
+  // The rows an answer's floating actions rise into: their last tool row ends
+  // the cluster's width short, so a hover covers no label (`message-meta.css`).
+  const underActions = useMemo(
+    () => rowsUnderAnswerActions(messages, isUserMessage, gaps),
+    [messages, isUserMessage, gaps]
+  );
   const rowKeys = useMemo(() => messages.map(rowKey), [messages]);
   const liveRows = useLiveRows(
     rowKeys,
@@ -351,6 +358,8 @@ export default function ProgressiveMessageList({
             // The gap above the row, for the floating actions' rise
             // (`message-meta.css`): a bubble 8px under another rises less.
             data-gap={gap}
+            // The answer under this row floats its actions into it.
+            data-actions-below={underActions[index] ? '' : undefined}
             data-motion-still={motionStill}
             data-testid="message-container"
           >
@@ -404,6 +413,7 @@ export default function ProgressiveMessageList({
     onSendAgain,
     recoveryIds,
     gaps,
+    underActions,
     liveRows,
   ]);
 

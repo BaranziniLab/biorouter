@@ -10,9 +10,9 @@
    turn's 24px gap that leaves 2px for the block above too, the bottom of its
    last line box or the bubble's bottom padding, so a hover covers no ink on
    either side. Below a block's 8px gap (an answer under a tool row or a
-   thought) it lands on the right end of that row, which is empty unless its
-   label runs the full width: a covered label end, never the answer the reader
-   is reading. Two user bubbles 8px apart are the one exception, below.
+   thought) it lands on the right end of that row, and a tool row whose label
+   runs the full width ends short of it (below). Two user bubbles 8px apart are
+   the one exception, below.
    Crew's cluster rises 12px and sits on its row's first line; the transcript
    reads prose under it, so it rises clear instead (spec 3.6 deviation).
 
@@ -58,6 +58,20 @@
   top: -18px;
 }
 
+/* An answer 8px under a block of its own turn rises 18px into that block, and
+   the block is usually a tool row: a shell command or a query runs the full
+   column, and the cluster hid the label's end and its chevron, so a pointer
+   going for the chevron met the cluster (vision V2-12, round 3). The list marks
+   the row above such an answer (`data-actions-below`, `transcriptRhythm.ts`),
+   and its last tool row ends the cluster's width short: 183px at the most (the
+   widest time, "12/31/2026 12:59 PM", two 24px buttons and the paddings) and
+   8px of air to the row's head, the box its hover wash fills. Only that row;
+   the rows above it keep the full column, and a row with a short label looks
+   the same either way. */
+[data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line {
+  padding-inline-end: 192px;
+}
+
 /* A message that carries a provenance chip ("Spawn context", "Injected by
    …") has the chip right above its bubble, at the same right edge the cluster
    takes, so the cluster would cover the chip (and its tooltip) on every hover.
@@ -97,6 +111,11 @@
     box-shadow: none;
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* Under the message, it rises into nothing: the row above keeps its width. */
+  [data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line {
+    padding-inline-end: 0;
   }
 
   /* On the chip's line it stays on that line, before the chip. */

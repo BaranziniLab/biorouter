@@ -367,6 +367,65 @@ describe('ProgressiveMessageList rhythm (spec 3.6)', () => {
     ]);
   });
 
+  // Vision V2-12, round 3: an answer 8px under a tool row floats its actions
+  // 18px into that row. The list marks the row the cluster reaches, so its last
+  // tool row ends the cluster's width short (`message-meta.css`).
+  it('marks the row an answer floats its actions into, and no other', () => {
+    const { container } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[
+          text('u1', 'user', 'question'),
+          toolCall('a1', 't1'),
+          toolResult('r1', 't1'),
+          text('e1', 'assistant', ''),
+          text('a2', 'assistant', 'answer'),
+          text('u2', 'user', 'follow-up'),
+          text('a3', 'assistant', 'answer under a question'),
+        ]}
+        isUserMessage={(m: Message) => m.role === 'user'}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    // The tool row, past the tool result and the empty message between them;
+    // an answer under a question reaches only the bubble's padding.
+    expect(rows(container).map((row) => row.hasAttribute('data-actions-below'))).toEqual([
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it('marks nothing when the answer floats no actions into the row above', () => {
+    const { container } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[
+          text('u1', 'user', 'question'),
+          toolCall('a1', 't1'),
+          toolResult('r1', 't1'),
+          // A thought draws its own short line between the cluster and the tool row.
+          text('a2', 'assistant', '<think>check the output</think>answer'),
+          toolCall('a3', 't3'),
+          toolResult('r3', 't3'),
+          // The daemon's stored notice draws as the error row, with no actions.
+          text('a4', 'assistant', 'Ran into this error: Server error: 500\n\nTry again.'),
+          toolCall('a5', 't5'),
+          toolResult('r5', 't5'),
+          // More of the turn: a tool call carries no cluster.
+          toolCall('a6', 't6'),
+        ]}
+        isUserMessage={(m: Message) => m.role === 'user'}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(container.querySelector('[data-actions-below]')).toBeNull();
+  });
+
   it('measures the trailing activity line from the last row that shows something', () => {
     const { getByTestId } = render(
       <ProgressiveMessageList

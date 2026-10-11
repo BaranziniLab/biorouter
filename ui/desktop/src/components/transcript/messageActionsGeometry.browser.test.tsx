@@ -29,6 +29,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import UserMessage from '../UserMessage';
 import { MessageActions } from '../MessageMeta';
+import { TranscriptRow } from '../TranscriptRow';
 import type { Message } from '../../api';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,8 @@ const COLUMN = 760;
 /** `main.css`'s values for the tokens the cluster reads. */
 const TOKENS = `:root {
   --font-body: Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, sans-serif;
+  --text-secondary: 13px;
+  --text-secondary--line-height: 18px;
   --radius-element: 8px;
   --background-default: #ffffff;
   --shadow-popover: 0 4px 16px rgb(0 0 0 / 0.12);
@@ -60,6 +63,8 @@ const TAILWIND_STANDINS = `
 .relative { position: relative; } .items-center { align-items: center; } .gap-2 { gap: 8px; }
 .mb-1 { margin-bottom: 4px; } .max-w-full { max-width: 100%; }
 .mt-6 { margin-top: 24px; } .mt-2 { margin-top: 8px; } .mt-0 { margin-top: 0; } .pt-7 { padding-top: 28px; }
+.gap-1 { gap: 4px; }
+.text-supporting { font-size: 12px; line-height: 16px; } .tabular-nums { font-variant-numeric: tabular-nums; }
 [data-provenance-kind] { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; }
 p { margin: 0; }`;
 
@@ -229,7 +234,11 @@ describe('message actions between the rows of a transcript', () => {
 
   beforeAll(async () => {
     browser = await launchChromium();
-    css = readFileSync(resolve(here, '../message-meta.css'), 'utf8');
+    // WS-TOOLS' row stylesheet, read as the app reads it: the tool rows above
+    // an answer are measured as they really lay out.
+    css =
+      readFileSync(resolve(here, '../transcript-row.css'), 'utf8') +
+      readFileSync(resolve(here, '../message-meta.css'), 'utf8');
   }, 120_000);
 
   afterAll(async () => {
@@ -254,18 +263,18 @@ describe('message actions between the rows of a transcript', () => {
     );
 
   /** BioRouterMessage's answer: the scope, the cluster first, then the words. */
-  const answer = (text: string) =>
+  const answer = (text: string, timestamp = '06/10/2026 1:28 PM') =>
     `<div class="br-message-actions-scope flex flex-col" data-answer>` +
     renderToStaticMarkup(
-      <MessageActions timestamp="06/10/2026 1:28 PM">
+      <MessageActions timestamp={timestamp}>
         <button type="button" aria-label="Copy" />
         <button type="button" aria-label="More" />
       </MessageActions>
     ) +
     `<p data-answer-text>${text}</p></div>`;
 
-  const row = (role: 'user' | 'assistant', gap: string, cls: string, html: string) =>
-    `<div class="relative ${cls}" data-role="${role}" data-gap="${gap}">${html}</div>`;
+  const row = (role: 'user' | 'assistant', gap: string, cls: string, html: string, attrs = '') =>
+    `<div class="relative ${cls}" data-role="${role}" data-gap="${gap}"${attrs}>${html}</div>`;
 
   async function lay(rows: string): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1000, height: 600 } });
@@ -395,6 +404,134 @@ describe('message actions between the rows of a transcript', () => {
       expect(g.cluster.top).toBeGreaterThanOrEqual(40);
     } finally {
       await tab.close();
+    }
+  });
+
+  /*
+   * Vision V2-12, round 3: inside a turn an answer sits 8px under a tool row,
+   * and the cluster's 26px rise reached 18px into it. A shell command's label
+   * runs the full column, so the cluster hid its end and its chevron (measured
+   * on chat 20260904_1: row 336..1104 x 375..403, cluster 928..1104 x 385..413).
+   * The list marks the row above such an answer, and its last tool row ends the
+   * cluster's width short.
+   */
+  const LONG_COMMAND =
+    'Ran cd /Users/wgu/Desktop/kdps-build && R CMD INSTALL kdps_1.0.0.tar.gz 2>&1 | tail -8 ' +
+    '&& Rscript -e \'library(kdps); packageVersion("kdps")\' && echo installed';
+
+  const Glyph = () => <svg viewBox="0 0 16 16" />;
+
+  /** BioRouterMessage's tool block: rows 4px apart, each a closed TranscriptRow. */
+  const tools = (...labels: string[]) =>
+    `<div class="flex w-full flex-col gap-1">` +
+    labels
+      .map(
+        (label) =>
+          `<div class="biorouter-message-tool">` +
+          renderToStaticMarkup(
+            <TranscriptRow icon={Glyph} glyph="shell" label={label}>
+              <p>output</p>
+            </TranscriptRow>
+          ) +
+          `</div>`
+      )
+      .join('') +
+    `</div>`;
+
+  /** The answer's cluster, and every tool row's label glyphs, head and chevron. */
+  const toolGeometry = (tab: Page) =>
+    tab.evaluate(() => {
+      const rect = (r: DOMRect) => ({ top: r.top, bottom: r.bottom, left: r.left, right: r.right });
+      const lines = Array.from(document.querySelectorAll<HTMLElement>('.br-transcript-row-line'));
+      return {
+        cluster: rect(
+          document.querySelector('[data-answer] .br-message-actions')!.getBoundingClientRect()
+        ),
+        rows: lines.map((line) => {
+          const label = line.querySelector<HTMLElement>('.br-transcript-row-label')!;
+          const range = document.createRange();
+          range.selectNodeContents(label);
+          return {
+            head: rect(line.querySelector('.br-transcript-row-head')!.getBoundingClientRect()),
+            chevron: rect(
+              line.querySelector('.br-transcript-row-chevron')!.getBoundingClientRect()
+            ),
+            // The label's glyphs as painted: the visible part of its text box.
+            ink: rect(range.getBoundingClientRect()),
+            labelBox: rect(label.getBoundingClientRect()),
+            truncated: label.scrollWidth > label.clientWidth,
+          };
+        }),
+      };
+    });
+
+  const underToolRows = (labels: string[], marked: boolean) =>
+    lay(
+      row('user', 'first', 'mt-0 pt-7', user('u1', 'Install the package')) +
+        row('assistant', 'turn', 'mt-6', tools(...labels), marked ? ' data-actions-below' : '') +
+        // The widest time `formatMessageTimestamp` writes: the widest cluster.
+        row('assistant', 'block', 'mt-2', answer(FULL_LINE, '12/31/2026 12:59 PM'))
+    );
+
+  it("under a full-width tool row, it covers neither the label's end nor the chevron", async () => {
+    if (!browser) return;
+    const tab = await underToolRows([LONG_COMMAND, LONG_COMMAND], true);
+    try {
+      const g = await toolGeometry(tab);
+      const [upper, last] = g.rows;
+      // The cluster still reaches into the last row's band (it rises 26px over
+      // an 8px gap): what keeps it off the row is the row ending short.
+      expect(g.cluster.top).toBeLessThan(last.head.bottom);
+      expect(last.truncated).toBe(true);
+      const visibleLabel = {
+        ...last.labelBox,
+        top: last.ink.top,
+        bottom: last.ink.bottom,
+      };
+      expect(overlaps(g.cluster, visibleLabel)).toBe(false);
+      expect(overlaps(g.cluster, last.chevron)).toBe(false);
+      expect(overlaps(g.cluster, last.head)).toBe(false);
+      // With the widest time the cluster is 183px; 8px of air stays between
+      // it and the row's head (its hover wash), 16px and more to the chevron.
+      expect(g.cluster.right - g.cluster.left).toBeGreaterThan(180);
+      expect(g.cluster.left - last.head.right).toBeGreaterThanOrEqual(8);
+      expect(g.cluster.left - last.chevron.right).toBeGreaterThanOrEqual(16);
+      // Only the row the cluster reaches ends short; the row above keeps the
+      // full column, out to the cluster's edge and past it.
+      expect(upper.truncated).toBe(true);
+      expect(upper.chevron.right).toBeGreaterThan(g.cluster.left);
+      expect(last.head.left).toBe(upper.head.left);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('without the mark the cluster lands on the label and the chevron (the case it fixes)', async () => {
+    if (!browser) return;
+    const tab = await underToolRows([LONG_COMMAND], false);
+    try {
+      const g = await toolGeometry(tab);
+      const [last] = g.rows;
+      expect(overlaps(g.cluster, last.chevron)).toBe(true);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('a short label is not moved by the mark', async () => {
+    if (!browser) return;
+    const short = 'Ran shell status';
+    const marked = await underToolRows([short], true);
+    const plain = await underToolRows([short], false);
+    try {
+      const a = await toolGeometry(marked);
+      const b = await toolGeometry(plain);
+      expect(a.rows[0].head).toEqual(b.rows[0].head);
+      expect(a.rows[0].truncated).toBe(false);
+      expect(overlaps(a.cluster, a.rows[0].head)).toBe(false);
+    } finally {
+      await marked.close();
+      await plain.close();
     }
   });
 });
