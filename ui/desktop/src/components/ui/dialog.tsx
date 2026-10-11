@@ -6,6 +6,59 @@ import { XIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
 import { installDialogTabRepair } from './dialogTabRepair';
+import { lastFocusOutsideMenu, lastInputWasKey } from './inputTrail';
+
+/**
+ * The control that stands for `element` as the opener of a dialog: the element itself, or, when
+ * it sits in a menu, the control that opened that menu. A menu item is gone by the time the
+ * dialog it opened closes (the menu closes as it acts), so the item is not an opener; the menu
+ * names its own, because Radix labels a DropdownMenu's content by its trigger
+ * (`aria-labelledby`), and a submenu is labelled by its sub-trigger, which is itself in a menu,
+ * hence the climb. A ContextMenu names nothing, so its opener is the control that held focus when
+ * the menu took it (`lastFocusOutsideMenu`: the row a Shift+F10 was pressed on).
+ *
+ * `viaMenu` says a menu was crossed, which is what changes the rules (see the hook).
+ */
+export function resolveDialogOpener(element: Element | null): {
+  opener: HTMLElement | null;
+  viaMenu: boolean;
+} {
+  let current: Element | null = element;
+  let viaMenu = false;
+  // A submenu nests a few levels; the bound only stops a malformed tree from looping.
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (!(current instanceof HTMLElement) || current === document.body) {
+      return { opener: null, viaMenu };
+    }
+    const menu = current.closest('[role="menu"]');
+    if (!menu) return { opener: current, viaMenu };
+    viaMenu = true;
+    const labelId = menu.getAttribute('aria-labelledby')?.split(/\s+/)[0];
+    let label = labelId ? document.getElementById(labelId) : null;
+    // A caller that puts its own `id` on the trigger replaces the one Radix names the menu after
+    // (the menu's label then dangles), but the trigger still `aria-controls` the open menu.
+    if (!label && menu.id) {
+      const controller = document.querySelector(
+        `[aria-controls="${menu.id.replace(/["\\]/g, '\\$&')}"]`
+      );
+      if (controller && !menu.contains(controller)) label = controller as HTMLElement;
+    }
+    if (!label || menu.contains(label)) {
+      // A menu that names no opener (a ContextMenu): the control that held focus when it opened.
+      const heldFocus = lastFocusOutsideMenu();
+      return { opener: heldFocus && !menu.contains(heldFocus) ? heldFocus : null, viaMenu };
+    }
+    current = label;
+  }
+  return { opener: null, viaMenu };
+}
+
+/**
+ * A field the browser draws its own focus for: a text box takes the fill-and-edge shift in every
+ * input modality, so a dialog whose first stop is one has nothing to hide after a pointer press.
+ */
+const TEXT_ENTRY =
+  'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="image"]):not([disabled]), textarea:not([disabled]), [contenteditable]:not([contenteditable="false"])';
 
 /**
  * Give the keyboard focus back to the control that opened a dialog or a sheet (WCAG 2.4.3; the
@@ -21,10 +74,24 @@ import { installDialogTabRepair } from './dialogTabRepair';
  * read when `DialogContent` first renders: this wrapper is mounted while the dialog is still
  * closed, and only the Radix content inside it mounts on open.) The caller's own handlers run
  * first, and `onCloseAutoFocus` wins when it cancels the event (Crew's dialogs return focus
- * themselves and say so). An opener that has gone by the time the dialog closes (a menu item, a
- * row that re-rendered) is left alone, and Radix does what it would have done. No ring is forced:
- * whether returned focus reads as keyboard focus is the browser's call from how the person closed
- * it (a click on Cancel shows none, Escape does).
+ * themselves and say so). An opener that has gone by the time the dialog closes (a row that
+ * re-rendered) is left alone, and Radix does what it would have done. No ring is forced: whether
+ * returned focus reads as keyboard focus is the browser's call from how the person closed it (a
+ * click on Cancel shows none, Escape does).
+ *
+ * **A dialog opened from a menu item** (sidebar row actions, "View info", "Delete"). The item is
+ * what holds focus when the dialog mounts, so the opener is the control that opened the menu
+ * (`resolveDialogOpener`), and the menus' own rule applies: a pick made with the KEYBOARD gives
+ * focus back when the dialog is closed with the keyboard (⋯, Enter, Enter on "View info", Escape
+ * lands on ⋯, not on `<body>`: V4-03); a pick made with the POINTER does not, because a
+ * script-focused ⋯ would wear a keyboard ring after a mouse click (`chats/menuFocusReturn.ts`).
+ * That pointer pick also gets a quiet open: after it every script focus matches `:focus-visible`
+ * (Chromium decides from the menu item the pointer just picked), so the first stop of a dialog
+ * with no text field (a Cancel button, a link) wore the inset ring after a mouse click (V4-04).
+ * Focus goes to the dialog box instead, which draws none (`.biorouter-modal-surface:focus` in
+ * `main.css`) and is where a screen reader reads the title and the message; the next Tab reaches
+ * the first control. A dialog that opens on a text field keeps it (a field is always ringed), and
+ * a caller that cancels the event and places focus itself is left alone.
  */
 export function useReturnFocusToOpener(handlers: {
   onOpenAutoFocus?: (event: Event) => void;
@@ -35,11 +102,25 @@ export function useReturnFocusToOpener(handlers: {
 } {
   const { onOpenAutoFocus, onCloseAutoFocus } = handlers;
   const opener = React.useRef<HTMLElement | null>(null);
+  // Set when the opener was found through a menu; true only if the pick was a key press too.
+  const fromMenu = React.useRef<{ pickedByKey: boolean } | null>(null);
   const handleOpen = React.useCallback(
     (event: Event) => {
-      const active = document.activeElement;
-      opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      const resolved = resolveDialogOpener(document.activeElement);
+      opener.current = resolved.opener;
+      const pickedByKey = lastInputWasKey();
+      fromMenu.current = resolved.viaMenu ? { pickedByKey } : null;
       onOpenAutoFocus?.(event);
+      if (event.defaultPrevented || !resolved.viaMenu || pickedByKey) return;
+      const content =
+        event.currentTarget instanceof HTMLElement
+          ? event.currentTarget
+          : event.target instanceof HTMLElement
+            ? event.target
+            : null;
+      if (!content || content.querySelector(TEXT_ENTRY)) return;
+      event.preventDefault();
+      content.focus({ preventScroll: true });
     },
     [onOpenAutoFocus]
   );
@@ -47,8 +128,12 @@ export function useReturnFocusToOpener(handlers: {
     (event: Event) => {
       onCloseAutoFocus?.(event);
       const target = opener.current;
+      const menu = fromMenu.current;
       opener.current = null;
+      fromMenu.current = null;
       if (event.defaultPrevented || !target || !target.isConnected) return;
+      // Picked or closed with the pointer: nothing to give back (see above).
+      if (menu && !(menu.pickedByKey && lastInputWasKey())) return;
       // Focus already sitting on something outside the content (a non-modal dialog closed by a
       // press on another field) is where the person went: leave it. Inside the content, or on
       // `<body>` once the focused control unmounted, is the case this exists for.

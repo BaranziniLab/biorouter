@@ -27,6 +27,8 @@ export function ConfirmationModal({
   isSubmitting = false,
   confirmVariant = 'default',
   children,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
 }: {
   isOpen: boolean;
   title: string;
@@ -43,6 +45,15 @@ export function ConfirmationModal({
    * behind it.
    */
   children?: React.ReactNode;
+  /**
+   * Radix's open-focus and close-focus hooks, passed through to the shell. A confirmation opened
+   * from a menu item returns focus to the menu's trigger by itself (`useReturnFocusToOpener`); a
+   * caller whose opener is neither the trigger nor the focused control (a ContextMenu row that
+   * re-rendered, a confirmation chained from another dialog) says where focus goes instead:
+   * `event.preventDefault()` and focus it yourself.
+   */
+  onOpenAutoFocus?: (event: Event) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const messageId = React.useId();
   return (
@@ -55,6 +66,8 @@ export function ConfirmationModal({
       purpose={isSubmitting ? 'required' : 'info'}
       title={title}
       describedBy={messageId}
+      onOpenAutoFocus={onOpenAutoFocus}
+      onCloseAutoFocus={onCloseAutoFocus}
       bodyClassName="flex flex-col gap-3"
       footer={
         <>

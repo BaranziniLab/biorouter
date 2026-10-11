@@ -2682,6 +2682,19 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-PRIMITIVES end: dialog motion */
 
+/* @ws WS-PRIMITIVES begin: dialog box focus */
+/* A dialog opened by a POINTER pick from a menu puts focus on its own box instead of its first
+   button (`useReturnFocusToOpener`, vision round 1 V4-04): after that pick every script focus
+   matches `:focus-visible`, so a Cancel button or a link wore the inset ring after a mouse click.
+   The box is where a screen reader reads the title and the message; it is not a control, so it
+   draws no ring of its own, and the next Tab reaches the first control, which does. Forced colours
+   and `prefers-contrast: more` keep the ring through their own `[tabindex]` arm, which comes later
+   in the file. */
+.biorouter-modal-surface:focus {
+  outline: none;
+}
+/* @ws WS-PRIMITIVES end: dialog box focus */
+
 /* D-05 — modal header/footer separators are hairlines, not gradient washes. */
 .biorouter-modal-surface > .border-b {
   border-bottom: 1px solid var(--border-subtle);
