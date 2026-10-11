@@ -324,7 +324,12 @@ export default function UserMessage({
           // Editing is one card on the composer's recipe (its accent edge on
           // focus included), inside the 760 column: no second box around the
           // textarea, and no line explaining the buttons, whose tooltips do.
-          <div className="biorouter-composer-card w-full rounded-container border border-border-subtle bg-background-default px-4 pt-3 pb-2 text-text-default">
+          // Like the composer it is the subtle fill with no resting outline
+          // (R-27): the 1px border stays, transparent, for the accent edge to
+          // turn and for forced colours to draw. `br-fill-surface` steps the
+          // secondary button inside back to the page ground, since a fill never
+          // sits on a fill.
+          <div className="biorouter-composer-card br-fill-surface w-full rounded-container border border-transparent bg-background-fill px-4 pt-3 pb-2 text-text-default">
             {editRefs.length > 0 && (
               <div
                 data-testid="edit-reference-rail"

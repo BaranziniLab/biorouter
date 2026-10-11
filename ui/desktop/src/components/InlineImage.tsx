@@ -90,7 +90,7 @@ export function InlineImage(props: InlineImageProps) {
       {isLoading && (
         // A still placeholder the image's size: a load is not work in
         // progress the eye needs to watch, so nothing pulses.
-        <div className="flex h-40 w-40 items-center justify-center rounded-element bg-background-medium">
+        <div className="flex h-40 w-40 items-center justify-center rounded-element bg-background-fill">
           <span className="text-supporting text-text-muted">{copy.loading}</span>
         </div>
       )}
