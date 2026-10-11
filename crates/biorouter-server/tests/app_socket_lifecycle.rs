@@ -40,7 +40,9 @@ async fn served_page_token(addr: std::net::SocketAddr) -> String {
         .unwrap();
     assert_eq!(page.status(), 200);
     let html = page.text().await.unwrap();
-    let start = html.find("\"wsToken\":\"").expect("the page carries its socket token")
+    let start = html
+        .find("\"wsToken\":\"")
+        .expect("the page carries its socket token")
         + "\"wsToken\":\"".len();
     html[start..start + 32].to_string()
 }
@@ -89,7 +91,10 @@ async fn deleting_an_app_closes_its_open_agent_socket() {
 
     let state = biorouter_server::state::AppState::new().await.unwrap();
     let app = biorouter_server::routes::configure(state, SECRET.to_string()).layer(
-        axum::middleware::from_fn_with_state(SECRET.to_string(), biorouter_server::auth::check_token),
+        axum::middleware::from_fn_with_state(
+            SECRET.to_string(),
+            biorouter_server::auth::check_token,
+        ),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -1226,7 +1226,11 @@ const VOLUME_ROOTS: &[&str] = &["/Volumes", "/media", "/run/media", "/mnt"];
 /// files into a new folder anywhere the account can write, such as a Python
 /// `site-packages` under Homebrew. The desktop's Export writes where the
 /// PERSON picked, and needs no such rule.
-fn placement_refusal(resolved: &Path, home: Option<&Path>, test_roots: &[PathBuf]) -> Option<String> {
+fn placement_refusal(
+    resolved: &Path,
+    home: Option<&Path>,
+    test_roots: &[PathBuf],
+) -> Option<String> {
     let named = |component: &Component, list: &[&str]| match component {
         Component::Normal(name) => {
             let name = name.to_string_lossy();
@@ -1234,10 +1238,10 @@ fn placement_refusal(resolved: &Path, home: Option<&Path>, test_roots: &[PathBuf
         }
         _ => false,
     };
-    let hidden = |component: &Component| {
-        matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
-    };
-    let rest: Vec<Component> = if let Some(rest) = home.and_then(|home| resolved.strip_prefix(home).ok()) {
+    let hidden = |component: &Component| matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'));
+    let rest: Vec<Component> = if let Some(rest) =
+        home.and_then(|home| resolved.strip_prefix(home).ok())
+    {
         let rest: Vec<Component> = rest.components().collect();
         if rest.is_empty() {
             return Some("is your home folder itself; name a new folder inside it.".to_string());
@@ -2217,7 +2221,10 @@ mod tests {
                     },
                 )
                 .unwrap();
-            assert!(!report.skills.contains(&"office-word".to_string()), "{skills:?}");
+            assert!(
+                !report.skills.contains(&"office-word".to_string()),
+                "{skills:?}"
+            );
             assert!(!out(&report).join("payload/skills/office-word").exists());
             assert!(
                 report
@@ -2260,7 +2267,9 @@ mod tests {
                 .collect()
         };
         let mut seeded = names_in("pub static BUILTIN_SKILLS: &[(&str, &str)] = &[");
-        seeded.extend(names_in("pub static KNOWLEDGE_SKILLS: &[(&str, &str)] = &["));
+        seeded.extend(names_in(
+            "pub static KNOWLEDGE_SKILLS: &[(&str, &str)] = &[",
+        ));
         let (_, rest) = soul
             .split_once("pub const SOUL_SKILL_DIR: &str = \"")
             .expect("SOUL_SKILL_DIR is still there");
@@ -2497,7 +2506,12 @@ mod tests {
             .unwrap()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("demo.replaced-"))
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("demo.replaced-")
+            })
             .collect();
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert_eq!(
@@ -2623,13 +2637,28 @@ mod tests {
             ("/home/u", "home folder itself"),
             ("/home/u/.config/biorouter-ish", "hidden"),
             ("/home/u/Desktop/.secret/my-app", "hidden"),
-            ("/home/u/Library/LaunchAgents/my-app", "applications keep their data"),
+            (
+                "/home/u/Library/LaunchAgents/my-app",
+                "applications keep their data",
+            ),
             ("/home/u/library/my-app", "applications keep their data"),
-            ("/home/u/AppData/Roaming/x/my-app", "applications keep their data"),
-            ("/home/u/snap/firefox/my-app", "applications keep their data"),
+            (
+                "/home/u/AppData/Roaming/x/my-app",
+                "applications keep their data",
+            ),
+            (
+                "/home/u/snap/firefox/my-app",
+                "applications keep their data",
+            ),
             ("/home/u/code/project/node_modules/my-app", "imported from"),
-            ("/home/u/py/lib/python3.12/site-packages/my-app", "imported from"),
-            ("/opt/homebrew/lib/python3.12/site-packages/my-app", "outside your home"),
+            (
+                "/home/u/py/lib/python3.12/site-packages/my-app",
+                "imported from",
+            ),
+            (
+                "/opt/homebrew/lib/python3.12/site-packages/my-app",
+                "outside your home",
+            ),
             ("/usr/local/my-app", "outside your home"),
             ("/etc/my-app", "outside your home"),
             ("/Volumes/USB", "outside your home"),

@@ -1408,9 +1408,8 @@ fn newest_mtime(dir: &Path, depth: usize) -> Option<std::time::SystemTime> {
 /// build path goes through here: [`ensure_bundle_fresh`] (serving, launch,
 /// export) and [`rebuild_and_stamp`] (an explicit build).
 fn with_app_build_lock<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
-    type Locks = std::sync::Mutex<
-        std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>,
-    >;
+    type Locks =
+        std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>;
     static LOCKS: std::sync::LazyLock<Locks> = std::sync::LazyLock::new(Default::default);
     let lock = LOCKS
         .lock()
@@ -1431,7 +1430,8 @@ fn with_app_build_lock<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
 /// the remembered answer; any edit is a new fingerprint and a new attempt.
 type FailedBuilds =
     std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, bundle::BuildReport)>>;
-static FAILED_BUILDS: std::sync::LazyLock<FailedBuilds> = std::sync::LazyLock::new(Default::default);
+static FAILED_BUILDS: std::sync::LazyLock<FailedBuilds> =
+    std::sync::LazyLock::new(Default::default);
 
 fn build_inputs_fingerprint(dir: &Path, manifest: &Manifest) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -3322,9 +3322,7 @@ impl AgentDrafterServer {
                 err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id))
             }
             export::ExportError::BadRequest(message)
-            | export::ExportError::Unexportable(message) => {
-                err(ErrorCode::INVALID_PARAMS, message)
-            }
+            | export::ExportError::Unexportable(message) => err(ErrorCode::INVALID_PARAMS, message),
             export::ExportError::Lint { message, .. } | export::ExportError::Io(message) => {
                 err(ErrorCode::INTERNAL_ERROR, message)
             }
@@ -3666,7 +3664,11 @@ mod tests {
                 .expect_err("another chat's app is not replaced silently");
             assert_eq!(refused.code, ErrorCode::INVALID_PARAMS, "{other:?}");
             assert!(refused.message.contains("\"First\""), "{}", refused.message);
-            assert!(refused.message.contains("replace: true"), "{}", refused.message);
+            assert!(
+                refused.message.contains("replace: true"),
+                "{}",
+                refused.message
+            );
         }
         let kept = s.store().load_manifest("dashboard").unwrap();
         assert_eq!(kept.title, "First");
@@ -3674,9 +3676,13 @@ mod tests {
         assert!(s.store().file_exists("dashboard", "workspace/data.csv"));
 
         // The chat that made it re-creates it, idempotently, as a new app.
-        s.create_app_inner(with_id("First again", false), Some("chat-a".into()), &caller)
-            .await
-            .unwrap();
+        s.create_app_inner(
+            with_id("First again", false),
+            Some("chat-a".into()),
+            &caller,
+        )
+        .await
+        .unwrap();
         let again = s.store().load_manifest("dashboard").unwrap();
         assert_eq!(again.title, "First again");
         assert_ne!(again.app_uid, first_uid, "a replaced app is a new app");
@@ -3703,15 +3709,17 @@ mod tests {
     #[tokio::test]
     async fn update_app_keeps_the_apps_uid() {
         let (_d, s) = server();
-        s.create_app_inner(create("Uid Kept", Some("static")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Uid Kept", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         let uid = s.store().load_manifest("uid-kept").unwrap().app_uid;
         assert!(uid.is_some());
-        let mut raw: serde_json::Value = serde_json::to_value(
-            s.store().load_manifest("uid-kept").unwrap(),
-        )
-        .unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::to_value(s.store().load_manifest("uid-kept").unwrap()).unwrap();
         raw["app_uid"] = serde_json::json!("0".repeat(32));
         raw["title"] = serde_json::json!("Renamed");
         s.update_app_public(Parameters(UpdateAppParams {
@@ -3733,12 +3741,20 @@ mod tests {
     #[tokio::test]
     async fn list_apps_reports_and_delete_app_removes_a_broken_app() {
         let (_d, s) = server();
-        s.create_app_inner(create("Healthy", Some("static")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
-        s.create_app_inner(create("Broken One", Some("static")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Healthy", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.create_app_inner(
+            create("Broken One", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         std::fs::write(
             s.store().root().join("broken-one").join("manifest.json"),
             "{\"id\": \"broken-one\"",
@@ -4461,20 +4477,34 @@ br.run("hello", "#missing");
     fn bundle_is_stale_after_src_update() {
         bundle::tests_without_esbuild::run(|| {
             let (_d, store) = agentic_app("fresh-check", DEFAULT_MAIN);
-            assert_eq!(staleness(&store, "fresh-check"), Some("it has never been built"));
+            assert_eq!(
+                staleness(&store, "fresh-check"),
+                Some("it has never been built")
+            );
             let report = rebuild_and_stamp(&store, "fresh-check").unwrap();
             assert!(report.ok, "{}", report.log);
             assert_eq!(staleness(&store, "fresh-check"), None);
-            assert!(!bundle_is_stale(&store, "fresh-check", &store.load_manifest("fresh-check").unwrap()));
+            assert!(!bundle_is_stale(
+                &store,
+                "fresh-check",
+                &store.load_manifest("fresh-check").unwrap()
+            ));
 
             // A timestamp in the future, contents untouched: not an edit.
-            let main = store.artifact_dir("fresh-check").unwrap().join("src/main.ts");
+            let main = store
+                .artifact_dir("fresh-check")
+                .unwrap()
+                .join("src/main.ts");
             touch_later(&main, 3600);
             assert_eq!(staleness(&store, "fresh-check"), None);
 
             // Edited behind the tool's back: built_at is still set.
             std::fs::write(&main, format!("{DEFAULT_MAIN}\nconsole.log(1);\n")).unwrap();
-            assert!(store.load_manifest("fresh-check").unwrap().built_at.is_some());
+            assert!(store
+                .load_manifest("fresh-check")
+                .unwrap()
+                .built_at
+                .is_some());
             assert_eq!(
                 staleness(&store, "fresh-check"),
                 Some("a file under src/ changed since the bundle was built")
@@ -4482,7 +4512,9 @@ br.run("hello", "#missing");
             // A new file counts as well as an edited one.
             rebuild_and_stamp(&store, "fresh-check").unwrap();
             assert_eq!(staleness(&store, "fresh-check"), None);
-            store.write_file("fresh-check", "src/extra.ts", "export {};\n").unwrap();
+            store
+                .write_file("fresh-check", "src/extra.ts", "export {};\n")
+                .unwrap();
             assert_eq!(
                 staleness(&store, "fresh-check"),
                 Some("a file under src/ changed since the bundle was built")
@@ -4573,9 +4605,13 @@ br.run("hello", "#missing");
         assert_eq!(staleness(&store, "newer"), None, "a newer SDK is not drift");
 
         // Asked to rebuild anyway, it keeps the vendored SDK.
-        let report = bundle::tests_without_esbuild::run(|| rebuild_and_stamp(&store, "newer").unwrap());
+        let report =
+            bundle::tests_without_esbuild::run(|| rebuild_and_stamp(&store, "newer").unwrap());
         assert!(report.log.contains("Kept src/sdk.ts"), "{}", report.log);
-        assert_eq!(std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(), newer_sdk);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+            newer_sdk
+        );
 
         // The same app, built by an OLDER Biorouter, is brought up to this SDK.
         // (A fallback bundle, which the fallback may replace: it never replaces
@@ -4625,10 +4661,17 @@ br.run("hello", "#missing");
             // trade the SDK in.
             assert_eq!(staleness(&store, "kept"), None);
             let again = rebuild_and_stamp(&store, "kept").unwrap();
-            assert!(again.ok && again.log.contains("Kept src/sdk.ts"), "{}", again.log);
+            assert!(
+                again.ok && again.log.contains("Kept src/sdk.ts"),
+                "{}",
+                again.log
+            );
             assert_eq!(staleness(&store, "kept"), None);
         });
-        assert_eq!(std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(), newer_sdk);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/sdk.ts")).unwrap(),
+            newer_sdk
+        );
         assert_eq!(
             store.load_manifest("kept").unwrap().sdk_hash,
             bundle::vendored_sdk_fingerprint(&dir)
@@ -4677,7 +4720,11 @@ br.run("hello", "#missing");
             .into_iter()
             .map(|t| t.join().unwrap())
             .collect();
-        assert_eq!(builds.iter().filter(|built| **built).count(), 1, "{builds:?}");
+        assert_eq!(
+            builds.iter().filter(|built| **built).count(),
+            1,
+            "{builds:?}"
+        );
         assert!(dir.join("dist/app.js").is_file());
     }
 
@@ -4703,14 +4750,19 @@ br.run("hello", "#missing");
                 older_sdk
             );
             assert!(first.build.as_ref().is_some_and(|b| !b.ok));
-            let log = first.missing_bundle_log().expect("no bundle, and it says why");
+            let log = first
+                .missing_bundle_log()
+                .expect("no bundle, and it says why");
             assert!(log.contains("./helper"), "{log}");
 
             let second = ensure_bundle_fresh(&store, "broken-build").unwrap();
             assert!(second.remembered, "unchanged inputs are not rebuilt");
             assert_eq!(second.missing_bundle_log(), Some(log));
 
-            let main = store.artifact_dir("broken-build").unwrap().join("src/main.ts");
+            let main = store
+                .artifact_dir("broken-build")
+                .unwrap()
+                .join("src/main.ts");
             std::fs::write(&main, DEFAULT_MAIN).unwrap();
             let third = ensure_bundle_fresh(&store, "broken-build").unwrap();
             assert!(!third.remembered, "an edit is a new attempt");
@@ -4733,7 +4785,10 @@ br.run("hello", "#missing");
                 "",
                 ArtifactKind::Static,
                 "index.html",
-                &[("index.html".to_string(), "<html><body>hi</body></html>".to_string())],
+                &[(
+                    "index.html".to_string(),
+                    "<html><body>hi</body></html>".to_string(),
+                )],
             )
             .unwrap();
         let check = ensure_bundle_fresh(&store, "plain").unwrap();
@@ -4742,7 +4797,11 @@ br.run("hello", "#missing");
         assert_eq!(check.missing_bundle_log(), None);
 
         store
-            .write_file("plain", "src/main.ts", "document.body.dataset.ready = \"1\";\n")
+            .write_file(
+                "plain",
+                "src/main.ts",
+                "document.body.dataset.ready = \"1\";\n",
+            )
             .unwrap();
         let check = ensure_bundle_fresh(&store, "plain").unwrap();
         assert_eq!(check.stale_because, Some("it has never been built"));
@@ -4760,17 +4819,49 @@ br.run("hello", "#missing");
     fn launch_browser_url_names_a_visitable_loopback_address() {
         let path = "/apps/demo/";
         for (base, port, want) in [
-            (Some("http://0.0.0.0:4123"), None, "http://127.0.0.1:4123/apps/demo/"),
-            (Some("http://[::]:4123/"), None, "http://[::1]:4123/apps/demo/"),
-            (Some("http://127.0.0.1:5555"), None, "http://127.0.0.1:5555/apps/demo/"),
-            (Some("https://lab.example.org"), None, "https://lab.example.org/apps/demo/"),
+            (
+                Some("http://0.0.0.0:4123"),
+                None,
+                "http://127.0.0.1:4123/apps/demo/",
+            ),
+            (
+                Some("http://[::]:4123/"),
+                None,
+                "http://[::1]:4123/apps/demo/",
+            ),
+            (
+                Some("http://127.0.0.1:5555"),
+                None,
+                "http://127.0.0.1:5555/apps/demo/",
+            ),
+            (
+                Some("https://lab.example.org"),
+                None,
+                "https://lab.example.org/apps/demo/",
+            ),
             (None, Some("4931"), "http://127.0.0.1:4931/apps/demo/"),
             (None, None, "http://127.0.0.1:3000/apps/demo/"),
-            (Some("not a url"), Some("4931"), "http://127.0.0.1:4931/apps/demo/"),
-            (Some("http://u:p@127.0.0.1:1/"), Some("7"), "http://127.0.0.1:7/apps/demo/"),
-            (Some("file:///tmp/x"), Some("8"), "http://127.0.0.1:8/apps/demo/"),
+            (
+                Some("not a url"),
+                Some("4931"),
+                "http://127.0.0.1:4931/apps/demo/",
+            ),
+            (
+                Some("http://u:p@127.0.0.1:1/"),
+                Some("7"),
+                "http://127.0.0.1:7/apps/demo/",
+            ),
+            (
+                Some("file:///tmp/x"),
+                Some("8"),
+                "http://127.0.0.1:8/apps/demo/",
+            ),
         ] {
-            assert_eq!(launch_browser_url(base, port, path), want, "{base:?} {port:?}");
+            assert_eq!(
+                launch_browser_url(base, port, path),
+                want,
+                "{base:?} {port:?}"
+            );
         }
     }
 
@@ -4837,10 +4928,16 @@ br.run("hello", "#missing");
             .await
             .unwrap();
         let text = text_of(&res);
-        assert!(text.contains("agentic now") && text.contains("src/sdk.ts"), "{text}");
+        assert!(
+            text.contains("agentic now") && text.contains("src/sdk.ts"),
+            "{text}"
+        );
         assert!(!text.contains("src/main.ts and"), "{text}");
         let store = s.store();
-        assert_eq!(store.load_manifest("was-static").unwrap().kind, ArtifactKind::Agentic);
+        assert_eq!(
+            store.load_manifest("was-static").unwrap().kind,
+            ArtifactKind::Agentic
+        );
         assert_eq!(
             store.read_file("was-static", "src/sdk.ts").unwrap(),
             bundle::sdk_template()
@@ -4862,12 +4959,19 @@ br.run("hello", "#missing");
     async fn create_app_guidance_and_starter_follow_the_kind() {
         let (_d, s) = server();
         let static_res = s
-            .create_app_inner(create("Plain Page", Some("static")), None, &KbCaller::restricted())
+            .create_app_inner(
+                create("Plain Page", Some("static")),
+                None,
+                &KbCaller::restricted(),
+            )
             .await
             .unwrap();
         let text = text_of(&static_res);
         assert!(!text.contains("build_app +"), "{text}");
-        assert!(text.contains("launch_app") && text.contains("onclick"), "{text}");
+        assert!(
+            text.contains("launch_app") && text.contains("onclick"),
+            "{text}"
+        );
         let page = s.store().read_file("plain-page", "index.html").unwrap();
         assert!(!page.contains("data-br-chat"), "{page}");
         assert!(page.contains("Plain Page"));
@@ -4880,13 +4984,20 @@ br.run("hello", "#missing");
 
         for blank in ["", "  "] {
             let refused = s
-                .create_app_inner(create("Blank Kind", Some(blank)), None, &KbCaller::restricted())
+                .create_app_inner(
+                    create("Blank Kind", Some(blank)),
+                    None,
+                    &KbCaller::restricted(),
+                )
                 .await
                 .expect_err("a blank kind names no kind");
             assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
         }
         assert_eq!(ArtifactKind::parse(""), None);
-        assert_eq!(ArtifactKind::parse(" Agentic "), Some(ArtifactKind::Agentic));
+        assert_eq!(
+            ArtifactKind::parse(" Agentic "),
+            Some(ArtifactKind::Agentic)
+        );
     }
 
     /// `launch_app` builds by the rule the daemon serves by: a static page's
@@ -4895,11 +5006,19 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn launch_app_builds_a_static_apps_code_and_stamps_it() {
         let (_d, s) = server();
-        s.create_app_inner(create("Static Code", Some("static")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Static Code", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         s.store()
-            .write_file("static-code", "src/main.ts", "document.title = \"ready\";\n")
+            .write_file(
+                "static-code",
+                "src/main.ts",
+                "document.title = \"ready\";\n",
+            )
             .unwrap();
         let res = s
             .launch_app(Parameters(AppIdParams {
@@ -4920,17 +5039,27 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn launch_app_serves_the_previous_bundle_when_a_rebuild_fails() {
         let (_d, s) = server();
-        s.create_app_inner(create("Kept Going", Some("agentic")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Kept Going", Some("agentic")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         let store = s.store();
         fake_bundle(&store, "kept-going", "esbuild", bundle::biorouter_version());
         // An edit that no bundler here can build: esbuild cannot resolve the
         // module, and the fallback refuses a second module.
-        let main = store.artifact_dir("kept-going").unwrap().join("src/main.ts");
+        let main = store
+            .artifact_dir("kept-going")
+            .unwrap()
+            .join("src/main.ts");
         let authored = std::fs::read_to_string(&main).unwrap();
-        std::fs::write(&main, format!("import {{ gone }} from \"./gone\";\n{authored}\ngone();\n"))
-            .unwrap();
+        std::fs::write(
+            &main,
+            format!("import {{ gone }} from \"./gone\";\n{authored}\ngone();\n"),
+        )
+        .unwrap();
         touch_later(&main, 60);
         let res = s
             .launch_app(Parameters(AppIdParams {
@@ -4943,26 +5072,43 @@ br.run("hello", "#missing");
         assert!(text.contains("PREVIOUS bundle"), "{text}");
 
         // With no bundle at all there is nothing to launch.
-        std::fs::remove_file(store.artifact_dir("kept-going").unwrap().join("dist/app.js")).unwrap();
+        std::fs::remove_file(
+            store
+                .artifact_dir("kept-going")
+                .unwrap()
+                .join("dist/app.js"),
+        )
+        .unwrap();
         let refused = s
             .launch_app(Parameters(AppIdParams {
                 id: "kept-going".into(),
             }))
             .await
             .expect_err("nothing to serve");
-        assert!(refused.message.contains("build failed before launch"), "{refused:?}");
+        assert!(
+            refused.message.contains("build failed before launch"),
+            "{refused:?}"
+        );
     }
 
     /// Models fill optional strings with "": a blank `kind` lists every app.
     #[tokio::test]
     async fn list_apps_treats_a_blank_kind_as_no_filter() {
         let (_d, s) = server();
-        s.create_app_inner(create("Plain Page", Some("static")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
-        s.create_app_inner(create("Live Agent", Some("agentic")), None, &KbCaller::restricted())
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Plain Page", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.create_app_inner(
+            create("Live Agent", Some("agentic")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         for blank in ["", "  "] {
             let all = text_of(
                 &s.list_apps(Parameters(ListAppsParams {
@@ -4971,7 +5117,10 @@ br.run("hello", "#missing");
                 .await
                 .unwrap_or_else(|e| panic!("kind {blank:?}: {e:?}")),
             );
-            assert!(all.contains("plain-page") && all.contains("live-agent"), "{all}");
+            assert!(
+                all.contains("plain-page") && all.contains("live-agent"),
+                "{all}"
+            );
         }
         assert!(s
             .list_apps(Parameters(ListAppsParams {

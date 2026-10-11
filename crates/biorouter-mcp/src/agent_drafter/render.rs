@@ -912,7 +912,10 @@ fn scan_start_tag(html: &str, at: usize) -> (String, Vec<TagAttr>, usize) {
             j += 1;
         }
         let key_end = j;
-        let key = html.get(key_start..j).unwrap_or_default().to_ascii_lowercase();
+        let key = html
+            .get(key_start..j)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         while j < b.len() && is_space(b[j]) {
             j += 1;
         }
@@ -1202,7 +1205,8 @@ pub fn runtime_digest(app_dir: &std::path::Path, entry: &str) -> Option<String> 
     }
     let mut lines = Vec::with_capacity(files.len());
     for rel in files {
-        let bytes = std::fs::read(rel.split('/').fold(app_dir.to_path_buf(), |p, s| p.join(s))).ok()?;
+        let bytes =
+            std::fs::read(rel.split('/').fold(app_dir.to_path_buf(), |p, s| p.join(s))).ok()?;
         lines.push(format!("{} {rel}\n", hex(&Sha256::digest(&bytes))));
     }
     lines.sort();
@@ -1226,7 +1230,10 @@ pub fn launcher_files(manifest: &Manifest, export_digest: Option<&str>) -> Vec<(
     let digest = digest.as_str();
     vec![
         ("package.json".to_string(), package_json(manifest)),
-        ("serve.mjs".to_string(), serve_mjs(&manifest.id, 8787, digest)),
+        (
+            "serve.mjs".to_string(),
+            serve_mjs(&manifest.id, 8787, digest),
+        ),
         ("README.md".to_string(), readme(manifest)),
         // Directly-runnable launchers (double-click on macOS / `bash run.sh`).
         (
@@ -3186,7 +3193,8 @@ mod tests {
             accent: Some("#8b5cf6".into()),
             ..Default::default()
         };
-        let raw = "<html lang=\"en\"><head><title>t</title></head><body><main>x</main></body></html>";
+        let raw =
+            "<html lang=\"en\"><head><title>t</title></head><body><main>x</main></body></html>";
         let fresh = assemble_app(&m, raw, Some("/apps/demo/"), None, Some("tok"));
         // What an export shipped (no token, an explicit endpoint), nested once
         // more by a re-export, then served.
@@ -3209,7 +3217,9 @@ mod tests {
             assert_eq!(served.matches("src=\"dist/app.js\"").count(), 1);
             assert_eq!(served.matches("<style id=\"biorouter-theme\">").count(), 1);
             assert_eq!(
-                served.matches("<style id=\"biorouter-theme-overrides\">").count(),
+                served
+                    .matches("<style id=\"biorouter-theme-overrides\">")
+                    .count(),
                 1
             );
             assert_eq!(served.matches("<base href=").count(), 1);
@@ -3236,14 +3246,21 @@ mod tests {
     #[test]
     fn injection_offsets_survive_characters_whose_lowercase_changes_length() {
         let m = manifest(ArtifactKind::Agentic);
-        for odd in ["10 k\u{2126}", "\u{0130}stanbul", "\u{212A}elvin \u{212B}ngstr\u{f6}m"] {
+        for odd in [
+            "10 k\u{2126}",
+            "\u{0130}stanbul",
+            "\u{212A}elvin \u{212B}ngstr\u{f6}m",
+        ] {
             let body = format!("<p>{odd}</p><p>{odd}</p>");
             let raw = format!("<html><HEAD></HEAD><body>{body}</BODY></html>");
             let out = assemble_app(&m, &raw, None, None, Some("t"));
             let (before_island, _) = out.split_once(ISLAND).expect("island");
             assert!(before_island.ends_with(&body), "{odd}: {out}");
             assert!(out.ends_with("</script>\n</BODY></html>"), "{odd}: {out}");
-            assert!(out.contains("<HEAD><style id=\"biorouter-theme\">"), "{odd}");
+            assert!(
+                out.contains("<HEAD><style id=\"biorouter-theme\">"),
+                "{odd}"
+            );
             // A second pass still finds every needle.
             assert_eq!(assemble_app(&m, &out, None, None, Some("t")), out);
         }
@@ -3314,12 +3331,14 @@ mod tests {
         let hash = |text: &str| {
             format!(
                 "'sha256-{}'",
-                base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(text.as_bytes()))
+                base64::engine::general_purpose::STANDARD
+                    .encode(sha2::Sha256::digest(text.as_bytes()))
             )
         };
         assert!(inline_script_sources("<html><body><p>x</p></body></html>").is_empty());
 
-        let scripts_only = inline_script_sources("<script>a()\r\nb()</script><script>a()\nb()</script>");
+        let scripts_only =
+            inline_script_sources("<script>a()\r\nb()</script><script>a()\nb()</script>");
         assert_eq!(scripts_only, [hash("a()\nb()")]);
 
         // Handlers are never hashed, and `'unsafe-hashes'` is never sent: with
@@ -3351,15 +3370,27 @@ mod tests {
 
         // Every authored handler outside the template is now a marker...
         assert!(out.contains("id=\"a\" data-br-on-click=\"c0ffee.0\" data-br-on-mouseover=\"c0ffee.1\" data-q=\"x\""), "{out}");
-        assert!(out.contains("id=\"b\" data-br-on-click=\"c0ffee.0\" >B"), "{out}");
-        assert!(out.contains("href=\"#\"data-br-on-click=\"c0ffee.2\""), "{out}");
+        assert!(
+            out.contains("id=\"b\" data-br-on-click=\"c0ffee.0\" >B"),
+            "{out}"
+        );
+        assert!(
+            out.contains("href=\"#\"data-br-on-click=\"c0ffee.2\""),
+            "{out}"
+        );
         assert!(out.contains("<p data-br-on-click=\"c0ffee.3\">"), "{out}");
         // ...the repeated attribute a browser drops is gone, and the template's
         // handler is left as written (and stays blocked).
         assert!(!out.contains("dropped()"), "{out}");
-        assert!(out.contains("<template><button onclick=\"inTemplate()\">"), "{out}");
+        assert!(
+            out.contains("<template><button onclick=\"inTemplate()\">"),
+            "{out}"
+        );
         let outside_template = out.replace("onclick=\"inTemplate()\"", "");
-        assert_eq!(authored_inline_code(&outside_template).handlers, Vec::<String>::new());
+        assert_eq!(
+            authored_inline_code(&outside_template).handlers,
+            Vec::<String>::new()
+        );
 
         // One binder, holding each distinct handler once, before the island.
         assert_eq!(out.matches("id=\"biorouter-inline-handlers\"").count(), 1);
@@ -3374,7 +3405,14 @@ mod tests {
         assert_eq!(inline_script_sources(&out).len(), 1);
 
         // A page with no handlers gets no binder.
-        let plain = assemble_app_page(&m, "<html><body><p>x</p></body></html>", None, Some("t"), false, "n");
+        let plain = assemble_app_page(
+            &m,
+            "<html><body><p>x</p></body></html>",
+            None,
+            Some("t"),
+            false,
+            "n",
+        );
         assert!(!plain.contains("biorouter-inline-handlers"));
         assert!(!plain.contains("data-br-on-"));
     }
@@ -3416,7 +3454,8 @@ mod tests {
     /// `this` the element and `return false` cancelling the event.
     #[test]
     fn the_handler_binder_binds_only_its_own_markers_once() {
-        let html = "<body><button id=\"a\" onclick=\"hits.push(this.id); return false\">a</button></body>";
+        let html =
+            "<body><button id=\"a\" onclick=\"hits.push(this.id); return false\">a</button></body>";
         let (out, script) = bind_inline_handlers(html, "abc123");
         let script = script.unwrap();
         let body = script
@@ -3466,7 +3505,10 @@ if (late.listeners.click) throw new Error("bound twice");
         let dir = tempfile::TempDir::new().unwrap();
         let file = dir.path().join("binder.cjs");
         std::fs::write(&file, harness).unwrap();
-        let out = std::process::Command::new(node).arg(&file).output().unwrap();
+        let out = std::process::Command::new(node)
+            .arg(&file)
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "{}{}",
@@ -3732,7 +3774,9 @@ if (late.listeners.click) throw new Error("bound twice");
         // malformed escape is a 400, not a crash.
         assert!(serve.contains(r#"for (const sub of ["dist", "assets"])"#));
         assert!(serve.contains("const rel = relative(base, file);"));
-        assert!(serve.contains("try { name = decodeURIComponent(rest); } catch { res.writeHead(400)"));
+        assert!(
+            serve.contains("try { name = decodeURIComponent(rest); } catch { res.writeHead(400)")
+        );
         assert!(!serve.contains("startsWith(ROOT + \"/\")"));
         assert!(!serve.contains("readFile(join(ROOT, \"payload"));
         // The page is the daemon's, so `/` goes there rather than to a page with
@@ -3819,7 +3863,9 @@ if (late.listeners.click) throw new Error("bound twice");
         // It never installs over another app, and never deletes a skill.
         assert!(ps1.contains("Test-SameApp $ours $theirs"));
         assert!(ps1.contains("BIOROUTER_EXPORT_REPLACE"));
-        assert!(ps1.contains("Move-Item -LiteralPath $dst -Destination (Join-Path $backup $d.Name)"));
+        assert!(
+            ps1.contains("Move-Item -LiteralPath $dst -Destination (Join-Path $backup $d.Name)")
+        );
         // export.json sits at the top of the folder.
         assert!(ps1.contains("(see export.json)"));
         assert!(!ps1.contains("payload/export.json"));
@@ -4068,7 +4114,9 @@ if (late.listeners.click) throw new Error("bound twice");
         let mut command = std::process::Command::new(bash);
         command
             .arg("-c")
-            .arg(format!("set -euo pipefail\n. ./biorouter-launch.sh\n{body}"))
+            .arg(format!(
+                "set -euo pipefail\n. ./biorouter-launch.sh\n{body}"
+            ))
             .current_dir(dir)
             .env("PATH", path)
             .env("HOME", home)
@@ -4104,7 +4152,11 @@ if (late.listeners.click) throw new Error("bound twice");
         let fallback = home.join(".config/biorouter");
         let bash_config = |env: &[(&str, &str)]| {
             let out = run_launcher(dir.path(), &home, env, None, "printf '%s' \"$CFG\"");
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).to_string()
         };
         // The override, exactly as the daemon applies it.
@@ -4186,7 +4238,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             .current_dir(dir.path())
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let got: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
         let windows = format!(
             "C:\\Users\\u\\AppData\\Roaming\\{}\\{}\\config",
@@ -4253,7 +4309,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
 
         // A fresh machine: installed, byte for byte.
         let out = install(&[]);
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             std::fs::read(store.join("assets/logo.png")).unwrap(),
             [0x89, b'P', b'N', b'G', 0xFF]
@@ -4283,7 +4343,9 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         std::fs::write(store.join("index.html"), "<html>newer</html>").unwrap();
         let out = install(&[]);
         assert!(out.status.success());
-        assert!(String::from_utf8_lossy(&out.stdout).contains("changed after this folder was exported"));
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("changed after this folder was exported")
+        );
         assert_eq!(
             std::fs::read_to_string(store.join("index.html")).unwrap(),
             "<html>newer</html>"
@@ -4303,8 +4365,15 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         );
         // ...and with one, moved to backups whole, workspace and all.
         let out = install(&[("BIOROUTER_EXPORT_REPLACE", "1")]);
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert!(!store.join("workspace").exists(), "the new app inherits nothing");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !store.join("workspace").exists(),
+            "the new app inherits nothing"
+        );
         assert_eq!(
             std::fs::read_to_string(store.join("index.html")).unwrap(),
             "<html>export</html>"
@@ -4371,7 +4440,9 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let node_digest = |app: &Path| -> Option<String> {
             let node = node.as_ref()?;
             let serve = file(&files, "serve.mjs");
-            let (_, rest) = serve.split_once("// biorouter:runtime-digest:start\n").unwrap();
+            let (_, rest) = serve
+                .split_once("// biorouter:runtime-digest:start\n")
+                .unwrap();
             let (function, _) = rest.split_once("// biorouter:runtime-digest:end").unwrap();
             let probe = format!(
                 "import {{ lstatSync, readdirSync, readFileSync }} from \"node:fs\";\n\
@@ -4386,7 +4457,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
                 .arg(app)
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             Some(String::from_utf8_lossy(&out.stdout).to_string())
         };
         let bash_digest = |app: &Path| {
@@ -4395,12 +4470,13 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
                 &home,
                 &[],
                 None,
-                &format!(
-                    "ENTRY=pages/index.html\nruntime_digest '{}'",
-                    app.display()
-                ),
+                &format!("ENTRY=pages/index.html\nruntime_digest '{}'", app.display()),
             );
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
@@ -4409,7 +4485,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             digest_fixture(&app, with_main);
             let rust = runtime_digest(&app, "pages/index.html").unwrap();
             assert_eq!(rust.len(), 64);
-            assert_eq!(bash_digest(&app), rust, "bash, with src/main.ts: {with_main}");
+            assert_eq!(
+                bash_digest(&app),
+                rust,
+                "bash, with src/main.ts: {with_main}"
+            );
             if let Some(js) = node_digest(&app) {
                 assert_eq!(js, rust, "node, with src/main.ts: {with_main}");
             }
@@ -4424,7 +4504,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
                 std::fs::write(app.join("dist/app.js"), "// rebuilt").unwrap();
                 runtime_digest(&app, "pages/index.html").unwrap()
             };
-            assert_eq!(bundle_changed == rust, with_main, "dist/ counts only without src/main.ts");
+            assert_eq!(
+                bundle_changed == rust,
+                with_main,
+                "dist/ counts only without src/main.ts"
+            );
             assert_eq!(bash_digest(&app), bundle_changed);
 
             // What does: an edit anywhere in src/, assets/ or the entry.
@@ -4463,8 +4547,7 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         std::fs::create_dir_all(folder).unwrap();
         let digest = runtime_digest(store, "index.html");
         assert!(digest.is_some());
-        for (rel, content) in launcher_files(&manifest(ArtifactKind::Agentic), digest.as_deref())
-        {
+        for (rel, content) in launcher_files(&manifest(ArtifactKind::Agentic), digest.as_deref()) {
             std::fs::write(folder.join(rel), content).unwrap();
         }
         let mut exported: serde_json::Value =
@@ -4515,7 +4598,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         export_of_store(&store, &folder);
         let install = |env: &[(&str, &str)]| {
             let out = run_launcher(&folder, &home, env, None, "install_app");
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).to_string()
         };
 
@@ -4523,7 +4610,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         write(&store.join("src/main.ts"), "// edited with text_editor");
         let said = install(&[]);
         assert!(said.contains("changed where it is installed"), "{said}");
-        assert_eq!(read(&store.join("src/main.ts")), "// edited with text_editor");
+        assert_eq!(
+            read(&store.join("src/main.ts")),
+            "// edited with text_editor"
+        );
 
         // (b) A newer Biorouter rebuilt it: a new SDK and its stamp.
         write(&store.join("src/main.ts"), "// v1");
@@ -4532,7 +4622,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let said = install(&[]);
         assert!(said.contains("changed where it is installed"), "{said}");
         assert_eq!(read(&store.join("src/sdk.ts")), "// sdk n+1");
-        assert_eq!(read(&store.join("dist/app.js")), "// bundle of v1 on sdk n+1");
+        assert_eq!(
+            read(&store.join("dist/app.js")),
+            "// bundle of v1 on sdk n+1"
+        );
 
         // Asked to, it replaces the installed copy and keeps a backup of it,
         // but still keeps the store's manifest (the author's chat link) and
@@ -4540,7 +4633,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let said = install(&[("BIOROUTER_EXPORT_REPLACE", "1")]);
         assert!(said.contains("Kept a copy"), "{said}");
         assert_eq!(read(&store.join("src/sdk.ts")), "// sdk n");
-        assert_eq!(read(&store.join("dist/app.js")), "// bundle of v1 on sdk n+1");
+        assert_eq!(
+            read(&store.join("dist/app.js")),
+            "// bundle of v1 on sdk n+1"
+        );
         assert!(read(&store.join("manifest.json")).contains("20261009_3"));
         let backups: Vec<_> = std::fs::read_dir(cfg.join("app-launcher/backups"))
             .unwrap()
@@ -4585,7 +4681,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         std::fs::create_dir_all(folder.join("payload/skills/office-word")).unwrap();
         std::fs::create_dir_all(folder.join("payload/skills/mine")).unwrap();
         export_folder(&folder, "uid-1", 100, 200);
-        std::fs::write(folder.join("payload/skills/office-word/SKILL.md"), "authors").unwrap();
+        std::fs::write(
+            folder.join("payload/skills/office-word/SKILL.md"),
+            "authors",
+        )
+        .unwrap();
         std::fs::write(folder.join("payload/skills/mine/SKILL.md"), "authors").unwrap();
         let home = root.path().join("home");
         let cfg = home.join(".config/biorouter");
@@ -4599,7 +4699,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             None,
             "install_payload",
         );
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let said = String::from_utf8_lossy(&out.stdout);
         assert!(said.contains("skipping skill office-word"), "{said}");
         assert_eq!(
@@ -4610,8 +4714,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             std::fs::read_to_string(cfg.join("skills/mine/SKILL.md")).unwrap(),
             "authors"
         );
-        let ps1 = file(&launcher_files(&manifest(ArtifactKind::Agentic), None), "run.ps1")
-            .to_string();
+        let ps1 = file(
+            &launcher_files(&manifest(ArtifactKind::Agentic), None),
+            "run.ps1",
+        )
+        .to_string();
         assert!(ps1.contains(r#"$shipped = @("office-word", "office-powerpoint""#));
     }
 
@@ -4639,7 +4746,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             None,
             "install_payload",
         );
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let said = String::from_utf8_lossy(&out.stdout);
         assert!(said.contains("  - skill: s1"), "{said}");
         assert!(!said.contains("skill: My"), "{said}");
@@ -4671,7 +4782,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let installed = root.path().join("installed");
         std::fs::create_dir_all(&installed).unwrap();
         script(&installed, "biorouterd", "#!/bin/sh\nexit 0\n");
-        let bundled = script(&folder.join("payload/bin"), "biorouterd", "#!/bin/sh\nexit 1\n");
+        let bundled = script(
+            &folder.join("payload/bin"),
+            "biorouterd",
+            "#!/bin/sh\nexit 1\n",
+        );
         let home = root.path().join("home");
 
         let out = run_launcher(&folder, &home, &[], Some(&installed), "find_biorouterd");
@@ -4682,7 +4797,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             installed.join("biorouterd").canonicalize().unwrap()
         );
 
-        script(&folder.join("payload/bin"), "biorouterd", "#!/bin/sh\nexit 0\n");
+        script(
+            &folder.join("payload/bin"),
+            "biorouterd",
+            "#!/bin/sh\nexit 0\n",
+        );
         let out = run_launcher(&folder, &home, &[], Some(&installed), "find_biorouterd");
         // bash reports the folder by its physical path, so compare real paths.
         let found = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
@@ -4826,7 +4945,9 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             let start = 47_000 + (std::process::id() % 900) as u16;
             (0..1000u16)
                 .map(|i| 47_000 + (start - 47_000 + i) % 1000)
-                .find(|&port| port != skip && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
+                .find(|&port| {
+                    port != skip && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+                })
                 .expect("a free port in 47000-47999")
         };
         let daemon_port = free_port(0);
@@ -4903,7 +5024,10 @@ http.createServer((req, res) => {{
         let mut bound: Option<u16> = None;
         for line in lines.by_ref().map_while(Result::ok) {
             if let Some(rest) = line.strip_prefix("App running at http://127.0.0.1:") {
-                bound = rest.split_whitespace().next().and_then(|port| port.parse().ok());
+                bound = rest
+                    .split_whitespace()
+                    .next()
+                    .and_then(|port| port.parse().ok());
                 break;
             }
         }
@@ -4916,7 +5040,11 @@ http.createServer((req, res) => {{
 
         let get = |path: &str, host: &str| -> (u16, String) {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", serve_port)).unwrap();
-            write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
+            write!(
+                stream,
+                "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
             let mut answer = String::new();
             let _ = stream.read_to_string(&mut answer);
             let status = answer
@@ -4934,7 +5062,10 @@ http.createServer((req, res) => {{
             get("/apps/demo/dist/..%2f..%2fexport.json", &own),
             get("/export.json", &own),
             get("/payload/notes.txt", &own),
-            get("/apps/demo/dist/app.js", &format!("rebound.example:{serve_port}")),
+            get(
+                "/apps/demo/dist/app.js",
+                &format!("rebound.example:{serve_port}"),
+            ),
             get("/apps/demo/dist/app.js", &format!("localhost:{serve_port}")),
         ];
         stop(&mut serve);
@@ -4942,8 +5073,15 @@ http.createServer((req, res) => {{
         let [root_page, bundle, malformed, climbing, export_json, payload, rebound, localhost] =
             results;
         assert_eq!(root_page.0, 302, "{}", root_page.1);
-        assert!(root_page.1.contains("Location: /apps/demo/\r\n"), "{}", root_page.1);
-        assert!(!root_page.1.contains("?t="), "the one-time link is never handed to `/`");
+        assert!(
+            root_page.1.contains("Location: /apps/demo/\r\n"),
+            "{}",
+            root_page.1
+        );
+        assert!(
+            !root_page.1.contains("?t="),
+            "the one-time link is never handed to `/`"
+        );
         assert_eq!(bundle.0, 200, "{}", bundle.1);
         assert!(bundle.1.contains("console.log('bundle');"), "{}", bundle.1);
         assert_eq!(malformed.0, 400, "{}", malformed.1);

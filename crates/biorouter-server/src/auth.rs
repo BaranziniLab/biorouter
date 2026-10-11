@@ -642,7 +642,10 @@ fn app_access_granted_by(
 /// handshake. That opens nothing: it matters only to script already running on
 /// such an address, and no app's page is served there to run it
 /// (`check_token`).
-pub fn reached_over_a_secure_context(headers: &axum::http::HeaderMap, uri: &axum::http::Uri) -> bool {
+pub fn reached_over_a_secure_context(
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+) -> bool {
     if crate::routes::request_scheme(headers) == "https" {
         return true;
     }
@@ -1910,7 +1913,10 @@ mod tests {
                 )
                 .await;
                 assert_eq!(status, StatusCode::FORBIDDEN, "{host} {uri}");
-                assert!(body.contains("only on this machine or over HTTPS"), "{body}");
+                assert!(
+                    body.contains("only on this machine or over HTTPS"),
+                    "{body}"
+                );
                 assert!(!body.contains("reached the app route"), "{host} {uri}");
             }
         }

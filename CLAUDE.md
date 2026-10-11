@@ -1060,8 +1060,16 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   need no region — the SDK always provides a `.br-dock` drawer.
 - **Apps vendor their own `src/sdk.ts`**, so `manifest.sdk_hash` fingerprints the
   SDK a bundle was built from. `build_app` refreshes the vendored copy and stamps
-  it; `serve_index` rebuilds on drift. Otherwise an app built before a protocol
-  addition silently ignores the new frames forever.
+  it; `serve_index` rebuilds on drift. The bundle also records the SDK's source
+  version, so an older daemon preserves a newer SDK across rebuilds. The desktop
+  ships pinned, integrity-checked esbuild beside the daemon; CLI packages stage
+  the same binary. Builds publish JavaScript and imported CSS together.
+- **Browser launch uses the daemon origin.** The desktop's shared-daemon proxy
+  requires its secret, so an external browser cannot use that proxy's address.
+  `POST /apps/{id}/launch` returns the daemon's own loopback URL and a one-time
+  access link; desktop launch and managed preview use that origin. Browser-open
+  failures are shown to the person. Build-chat buttons check session metadata
+  before opening a tab, and show a disabled reason when the chat is gone.
 - **Export is directly runnable.** `export_app` writes `manifest.json` (without
   it the daemon 404s the app), leaves the endpoint unset so the SDK derives it
   from the page origin (the desktop app starts `biorouterd` on an *ephemeral*
@@ -1071,6 +1079,23 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   binds loopback only. `.vault/` is excluded. The daemon's port env var is
   **`BIOROUTER_PORT`**, not `BIOROUTER_SERVER__PORT` (only the secret key uses
   the `__` form — `Settings` is a flat struct).
+- **Exports have one implementation:** `agent_drafter/export.rs`. The desktop
+  downloads the `POST /apps/{id}/export` zip, preserves executable modes, and
+  safely extracts it into the person's chosen folder. Launcher, Full and bundled
+  daemon options reach the exporter; Full filters shipped skills and privacy
+  gates knowledge payloads. Exported HTML stays raw for daemon assembly, binary
+  assets are preserved, and working files, secrets and build-chat ids are omitted.
+  Launchers honor `BIOROUTER_PATH_ROOT` for an isolated recipient store and retain
+  backups before replacing installed contents.
+- **App pages require a document navigation** on browser credentials in a secure
+  browser context (loopback or HTTPS). Plain HTTP on a network address refuses
+  app surfaces, because Fetch Metadata and opener protections do not apply
+  there. Authored inline scripts and handlers run under a response-specific CSP;
+  runtime-injected handlers remain blocked. Figure frames have a separate policy
+  and are admitted by the desktop preview only as the same app's subframe.
+  Deleting an app retires its sockets and tokens; a replacement has a new
+  `app_uid` and a separate durable conversation. Per-app origins and private-app
+  classification remain the separately documented platform followups.
 - **Tests:** `cargo test -p biorouter-mcp --lib agent_drafter::`,
   `cargo test -p biorouter-mcp --test ui_example_apps`,
   `cargo test -p biorouter-server --lib routes::apps`. Browser-level:

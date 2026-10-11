@@ -720,9 +720,22 @@ mod inline_cdn_tests {
             "<script>draw()</script>",
         );
         let inlined = inline_pinned_cdn_assets(&cdn_page);
-        assert!(!inlined.contains("cdn.jsdelivr.net"), "a remote reference survived");
-        assert!(!inlined.contains("<script src="), "a remote reference survived");
-        for source in [D3_MIN, D3_SANKEY, CHART_MIN, MERMAID_MIN, LEAFLET_JS, MARKERCLUSTER_JS] {
+        assert!(
+            !inlined.contains("cdn.jsdelivr.net"),
+            "a remote reference survived"
+        );
+        assert!(
+            !inlined.contains("<script src="),
+            "a remote reference survived"
+        );
+        for source in [
+            D3_MIN,
+            D3_SANKEY,
+            CHART_MIN,
+            MERMAID_MIN,
+            LEAFLET_JS,
+            MARKERCLUSTER_JS,
+        ] {
             assert!(inlined.contains(&script_inline(source)));
         }
         assert!(inlined.contains(&format!("<style>{LEAFLET_CSS}</style>")));

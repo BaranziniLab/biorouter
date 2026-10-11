@@ -531,9 +531,7 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
     );
     // The inline scripts the author wrote, and the one holding their handlers,
     // run, pinned by hash; anything injected later does not.
-    let csp = app_page_csp(&biorouter_mcp::agent_drafter::render::inline_script_sources(
-        &html,
-    ));
+    let csp = app_page_csp(&biorouter_mcp::agent_drafter::render::inline_script_sources(&html));
     app_page_response(StatusCode::OK, html, &csp)
 }
 
@@ -542,8 +540,9 @@ async fn serve_file(Path((id, sub)): Path<(String, String)>, prefix: &str) -> Re
     let rel = format!("{prefix}/{sub}");
     match store().read_bytes(&id, &rel) {
         Ok(bytes) => {
-            let mut resp =
-                with_app_file_csp(([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response());
+            let mut resp = with_app_file_csp(
+                ([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response(),
+            );
             if prefix == "dist" {
                 // A rebuild replaces the bundle under the same name.
                 resp.headers_mut().insert(
@@ -719,7 +718,10 @@ impl biorouter_mcp::agent_drafter::export::PayloadAccess for HttpExportPayload {
         // The catalog knows every root the daemon reads skills from (bundles,
         // extensions' roots), keyed by the name an app's manifest uses. The
         // export still checks the folder sits inside the root it was found in.
-        if let Some(skill) = biorouter::agents::skill_catalog::current().skills().get(name) {
+        if let Some(skill) = biorouter::agents::skill_catalog::current()
+            .skills()
+            .get(name)
+        {
             return Some(app_export::SkillLocation {
                 dir: skill.directory.clone(),
                 root: skill.source_root.clone(),
@@ -825,9 +827,13 @@ async fn export_zip_response(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("application/zip"),
     );
-    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
     // The id is a validated slug ([A-Za-z0-9_-]), so it needs no quoting rules.
-    if let Ok(value) = header::HeaderValue::from_str(&format!("attachment; filename=\"{id}.zip\"")) {
+    if let Ok(value) = header::HeaderValue::from_str(&format!("attachment; filename=\"{id}.zip\""))
+    {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
     if let Ok(value) = header::HeaderValue::from_str(&encoded) {
@@ -932,7 +938,9 @@ mod export_route_tests {
     use std::io::Read as _;
     use tempfile::TempDir;
 
-    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0xFE];
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF, 0xFE,
+    ];
 
     struct Stores {
         _dir: TempDir,
@@ -1046,7 +1054,9 @@ mod export_route_tests {
         assert!(summary["files"].as_u64().unwrap() > 5);
 
         let files = entries(&body_bytes(response).await);
-        assert!(files.iter().all(|(name, _, _)| name.starts_with("zip-demo/")));
+        assert!(files
+            .iter()
+            .all(|(name, _, _)| name.starts_with("zip-demo/")));
         let find = |rel: &str| {
             files
                 .iter()
@@ -1054,13 +1064,22 @@ mod export_route_tests {
                 .unwrap_or_else(|| panic!("{rel} is missing"))
         };
         for launcher in biorouter_mcp::agent_drafter::render::EXECUTABLE_EXPORT_FILES {
-            assert_eq!(find(launcher).1.map(|m| m & 0o777), Some(0o755), "{launcher}");
+            assert_eq!(
+                find(launcher).1.map(|m| m & 0o777),
+                Some(0o755),
+                "{launcher}"
+            );
         }
         assert_eq!(find("index.html").2, PAGE.as_bytes(), "the raw entry");
         assert_eq!(find("assets/logo.png").2, PNG, "binary files survive");
         let manifest = String::from_utf8(find("manifest.json").2.clone()).unwrap();
-        assert!(!manifest.contains("20261010_7"), "the author's chat stays home");
-        assert!(files.iter().all(|(name, _, _)| !name.contains("workspace/")));
+        assert!(
+            !manifest.contains("20261010_7"),
+            "the author's chat stays home"
+        );
+        assert!(files
+            .iter()
+            .all(|(name, _, _)| !name.contains("workspace/")));
         assert!(files.iter().all(|(name, _, _)| !name.contains(".vault")));
     }
 
@@ -1109,7 +1128,10 @@ mod export_route_tests {
 
         let proven = post(&stores, "kb-demo", body, Some(TEST_USER_ACTION_KEY)).await;
         assert_eq!(proven.status(), StatusCode::OK);
-        assert_eq!(report(&proven)["kbs"], serde_json::json!(["priv-kb", "pub-kb"]));
+        assert_eq!(
+            report(&proven)["kbs"],
+            serde_json::json!(["priv-kb", "pub-kb"])
+        );
     }
 
     #[tokio::test]
@@ -1123,7 +1145,10 @@ mod export_route_tests {
         let refused = post(&stores, "lint-demo", serde_json::json!({}), None).await;
         assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let answer: serde_json::Value = serde_json::from_slice(&body_bytes(refused).await).unwrap();
-        assert!(!answer["findings"].as_array().unwrap().is_empty(), "{answer}");
+        assert!(
+            !answer["findings"].as_array().unwrap().is_empty(),
+            "{answer}"
+        );
         assert!(answer["error"].as_str().unwrap().contains("lint-demo"));
 
         let anyway = post(
@@ -1149,18 +1174,22 @@ mod export_route_tests {
             let apps = stores.apps.clone();
             let knowledge = stores.knowledge.clone();
             async move {
-                export_zip_response(apps, knowledge, caller(None).await, id.to_string(), body)
-                    .await
+                export_zip_response(apps, knowledge, caller(None).await, id.to_string(), body).await
             }
         };
         assert_eq!(call("status-demo", b"").await.status(), StatusCode::OK);
-        assert_eq!(call("status-demo", b"{").await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            call("status-demo", b"{").await.status(),
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(
             call("status-demo", br#"{"mode":"fat"}"#).await.status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            call("status-demo", br#"{"bundle_daemon":"all"}"#).await.status(),
+            call("status-demo", br#"{"bundle_daemon":"all"}"#)
+                .await
+                .status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
@@ -1179,7 +1208,12 @@ mod export_route_tests {
     /// now with the raw entry and the binary files it cannot carry named.
     #[tokio::test]
     async fn the_legacy_get_still_answers_and_names_what_it_cannot_carry() {
-        let suffix: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let suffix: String = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect();
         let id = format!("legacy-{suffix}");
         let store = store();
         store
@@ -1198,10 +1232,14 @@ mod export_route_tests {
 
         let response = export_app_route(Path(id.clone())).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let answer: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_slice(&body_bytes(response).await).unwrap();
         assert_eq!(answer["files"]["index.html"], PAGE);
         assert!(answer["files"]["run.command"].is_string());
-        assert_eq!(answer["skipped_binary"], serde_json::json!(["assets/logo.png"]));
+        assert_eq!(
+            answer["skipped_binary"],
+            serde_json::json!(["assets/logo.png"])
+        );
         store.delete(&id).unwrap();
 
         let missing = export_app_route(Path("no-such-legacy-app".to_string())).await;
@@ -1535,7 +1573,8 @@ fn ws_token_for(app_id: &str) -> String {
 /// loaded the app's manifest, mints. A page from a previous daemon run is
 /// refused either way, as it always was: a fresh token would not match it.
 fn served_page_token(app_id: &str) -> String {
-    static NEVER_SERVED: LazyLock<String> = LazyLock::new(|| hex::encode(rand::random::<[u8; 16]>()));
+    static NEVER_SERVED: LazyLock<String> =
+        LazyLock::new(|| hex::encode(rand::random::<[u8; 16]>()));
     APP_WS_TOKENS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1570,8 +1609,9 @@ fn app_page_token_refused() -> Response {
 /// One token per app that every open agent socket of that app watches, so
 /// deleting the app closes them ([`forget_app_runtime`] cancels it and drops
 /// it; the next socket for the id gets a fresh one).
-static APP_SOCKET_RETIREMENT: LazyLock<Mutex<std::collections::HashMap<String, CancellationToken>>> =
-    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+static APP_SOCKET_RETIREMENT: LazyLock<
+    Mutex<std::collections::HashMap<String, CancellationToken>>,
+> = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// The token an agent socket for `app_id` watches: cancelled when the app is
 /// deleted. Taken by `agent_ws` BEFORE it checks the socket token, so a delete
@@ -5411,7 +5451,9 @@ mod app_isolation_and_lifecycle_tests {
     use biorouter_mcp::agent_drafter::store::{on_app_deleted, ArtifactKind};
 
     async fn body_of(resp: Response) -> String {
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
@@ -5450,7 +5492,8 @@ mod app_isolation_and_lifecycle_tests {
             let models = list_models(Path(id.to_string()), query(&pairs)).await;
             assert_eq!(models.status(), StatusCode::FORBIDDEN, "{presented:?}");
             assert!(body_of(models).await.contains("reload the app"));
-            let run = get_run_state(Path(id.to_string()), query(&pairs), State(state.clone())).await;
+            let run =
+                get_run_state(Path(id.to_string()), query(&pairs), State(state.clone())).await;
             assert_eq!(run.status(), StatusCode::FORBIDDEN, "{presented:?}");
             // An app that does not exist is refused the same way.
             let missing = list_models(Path("iso-not-an-app".to_string()), query(&pairs)).await;
@@ -5470,11 +5513,19 @@ mod app_isolation_and_lifecycle_tests {
             .unwrap_or_else(|p| p.into_inner())
             .contains_key("iso-not-an-app"));
 
-        let with_token = [("session", "iso-no-such-session"), ("token", token.as_str())];
+        let with_token = [
+            ("session", "iso-no-such-session"),
+            ("token", token.as_str()),
+        ];
         let models = list_models(Path(id.to_string()), query(&with_token)).await;
         assert_eq!(models.status(), StatusCode::OK);
         assert!(body_of(models).await.contains("\"providers\""));
-        let run = get_run_state(Path(id.to_string()), query(&with_token), State(state.clone())).await;
+        let run = get_run_state(
+            Path(id.to_string()),
+            query(&with_token),
+            State(state.clone()),
+        )
+        .await;
         assert_eq!(run.status(), StatusCode::OK);
         assert_eq!(body_of(run).await, r#"{"pending":false}"#);
     }
@@ -5518,7 +5569,10 @@ mod app_isolation_and_lifecycle_tests {
         let body = body_of(resp).await;
         assert_eq!(body, FIGURE_FRAME_HTML);
         assert!(body.contains("biorouter-figure-ready"));
-        assert!(body.contains("e.source!==window.parent"), "only the parent is heard");
+        assert!(
+            body.contains("e.source!==window.parent"),
+            "only the parent is heard"
+        );
 
         // The app page that frames it must allow framing its own origin, or the
         // shell never loads.
@@ -5623,7 +5677,10 @@ mod app_isolation_and_lifecycle_tests {
         let resp = delete_app_route(Path(id.to_string())).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        assert!(open_socket.is_cancelled(), "the deleted app's socket is closed");
+        assert!(
+            open_socket.is_cancelled(),
+            "the deleted app's socket is closed"
+        );
         assert!(!kept_socket.is_cancelled(), "another app's socket is not");
         assert!(
             !app_socket_retirement(id).is_cancelled(),
@@ -5633,7 +5690,11 @@ mod app_isolation_and_lifecycle_tests {
             !app_page_token_matches(id, Some(&token)),
             "the deleted app's page token opens nothing"
         );
-        assert_ne!(ws_token_for(id), token, "a new token for whatever comes next");
+        assert_ne!(
+            ws_token_for(id),
+            token,
+            "a new token for whatever comes next"
+        );
         assert_eq!(ws_token_for(kept), kept_token, "another app keeps its own");
         // The session's bridge is the one its cached agent's `ui_*` tools hold,
         // so a later socket for the same session must get that one back.
@@ -5718,7 +5779,9 @@ mod app_isolation_and_lifecycle_tests {
         assert!(row["updated_at"].as_u64().is_some());
         let healthy = rows.iter().find(|row| row["id"] == "iso-healthy").unwrap();
         assert!(healthy.get("broken").is_none(), "{healthy}");
-        assert!(healthy["app_uid"].as_str().is_some_and(|uid| uid.len() == 32));
+        assert!(healthy["app_uid"]
+            .as_str()
+            .is_some_and(|uid| uid.len() == 32));
 
         assert_eq!(
             delete_app_route(Path(id.to_string())).await.status(),
@@ -8957,7 +9020,10 @@ mod tests {
         assert!(super::APP_CSP.contains("style-src 'self' 'unsafe-inline'"));
         // Hashes are added to script-src only, and never 'unsafe-inline'.
         let with_hashes = super::app_page_csp(&["'sha256-abc='".to_string()]);
-        assert!(with_hashes.contains("script-src 'self' 'sha256-abc=';"), "{with_hashes}");
+        assert!(
+            with_hashes.contains("script-src 'self' 'sha256-abc=';"),
+            "{with_hashes}"
+        );
         let script_src = with_hashes
             .split(';')
             .find(|d| d.trim_start().starts_with("script-src"))
@@ -8979,11 +9045,7 @@ mod tests {
         // Exercise the exact response builders serve_index (HTML) and serve_file
         // (dist/assets) use, asserting the headers are present with the verbatim
         // policies.
-        let html = super::app_page_response(
-            StatusCode::OK,
-            "<html></html>".into(),
-            super::APP_CSP,
-        );
+        let html = super::app_page_response(StatusCode::OK, "<html></html>".into(), super::APP_CSP);
         let header_of = |resp: &axum::response::Response, name: &str| {
             resp.headers()
                 .get(name)
@@ -9002,7 +9064,10 @@ mod tests {
             Some("noopener-allow-popups")
         );
         assert_ne!(super::APP_PAGE_COOP, "same-origin");
-        assert_eq!(header_of(&html, "cache-control").as_deref(), Some("no-store"));
+        assert_eq!(
+            header_of(&html, "cache-control").as_deref(),
+            Some("no-store")
+        );
         assert_eq!(
             header_of(&html, "x-content-type-options").as_deref(),
             Some("nosniff")
@@ -9041,7 +9106,9 @@ mod tests {
         .await;
         let status = resp.status();
         let headers = resp.headers().clone();
-        let body = axum::body::to_bytes(resp.into_body(), 4 << 20).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 4 << 20)
+            .await
+            .unwrap();
         (status, headers, String::from_utf8_lossy(&body).into_owned())
     }
 
@@ -9091,7 +9158,10 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(script_src.contains(&sha256_source(script)), "{script_src}");
-        assert!(!script_src.contains(&sha256_source(handler)), "{script_src}");
+        assert!(
+            !script_src.contains(&sha256_source(handler)),
+            "{script_src}"
+        );
         assert!(!script_src.contains("'unsafe-hashes'"), "{script_src}");
         assert!(!script_src.contains("'unsafe-inline'"), "{script_src}");
         // The handler is in the binder script, pinned like the author's own,
@@ -9115,7 +9185,10 @@ mod tests {
         let (_, _, again) = served_page("csp-inline-static").await;
         assert_ne!(first, marker(&again), "a fresh nonce for every response");
         // The JSON data block is not code, and gets no hash.
-        assert!(!script_src.contains(&sha256_source("{\"a\":1}")), "{script_src}");
+        assert!(
+            !script_src.contains(&sha256_source("{\"a\":1}")),
+            "{script_src}"
+        );
         assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
         assert_eq!(
             headers
@@ -9123,7 +9196,10 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(super::APP_PAGE_COOP)
         );
-        assert!(!body.contains("dist/app.js"), "no bundle, so no bundle tag: {body}");
+        assert!(
+            !body.contains("dist/app.js"),
+            "no bundle, so no bundle tag: {body}"
+        );
         assert_eq!(body.matches("id=\"biorouter-app-config\"").count(), 1);
     }
 
@@ -9169,8 +9245,14 @@ mod tests {
                 "attempt {attempt}: {body}"
             );
             assert!(body.contains("could not be built"), "{body}");
-            assert!(body.contains("Build &lt;Fails&gt;"), "the title is escaped: {body}");
-            assert!(body.contains("missing-helper"), "the log names the problem: {body}");
+            assert!(
+                body.contains("Build &lt;Fails&gt;"),
+                "the title is escaped: {body}"
+            );
+            assert!(
+                body.contains("missing-helper"),
+                "the log names the problem: {body}"
+            );
             assert!(body.contains("build_app"), "{body}");
             assert_eq!(
                 headers.get("cache-control").and_then(|v| v.to_str().ok()),

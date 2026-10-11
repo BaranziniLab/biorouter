@@ -305,8 +305,7 @@ const MANIFESTLESS_GRACE: std::time::Duration = std::time::Duration::from_secs(3
 /// Called with an app's id after its directory is deleted. See [`on_app_deleted`].
 type AppDeletedHook = fn(&str);
 
-static APP_DELETED_HOOKS: std::sync::Mutex<Vec<AppDeletedHook>> =
-    std::sync::Mutex::new(Vec::new());
+static APP_DELETED_HOOKS: std::sync::Mutex<Vec<AppDeletedHook>> = std::sync::Mutex::new(Vec::new());
 
 /// Run `hook` whenever an app is deleted from any store in this process: through
 /// `DELETE /apps/{id}`, the `delete_app` tool, `create_app` replacing an app at
@@ -729,10 +728,7 @@ impl ArtifactStore {
                 if !file_type.is_dir() && !file_type.is_symlink() {
                     continue;
                 }
-                let modified = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|meta| meta.modified().ok());
+                let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok());
                 let modified_at = modified
                     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |since| since.as_secs());
@@ -854,8 +850,8 @@ impl ArtifactStore {
             return Ok(());
         }
         let entry = self.root.join(id);
-        let is_link = std::fs::symlink_metadata(&entry)
-            .is_ok_and(|meta| meta.file_type().is_symlink());
+        let is_link =
+            std::fs::symlink_metadata(&entry).is_ok_and(|meta| meta.file_type().is_symlink());
         if is_link {
             // The store root itself must still be a real directory.
             reject_store_symlinks(&self.root, &self.root)?;
@@ -1401,7 +1397,10 @@ mod tests {
         let uid = first.app_uid.clone().expect("a new app has a uid");
         assert_eq!(uid.len(), 32);
         assert!(uid.bytes().all(|b| b.is_ascii_hexdigit()), "{uid}");
-        assert_eq!(s.load_manifest("dashboard").unwrap().app_uid, Some(uid.clone()));
+        assert_eq!(
+            s.load_manifest("dashboard").unwrap().app_uid,
+            Some(uid.clone())
+        );
 
         s.delete("dashboard").unwrap();
         let again = s
@@ -1411,7 +1410,14 @@ mod tests {
         assert_ne!(again.app_uid, Some(uid.clone()), "deleted and re-created");
 
         let replaced = s
-            .create_with_id("dashboard", "Other", "", ArtifactKind::Static, "index.html", &[])
+            .create_with_id(
+                "dashboard",
+                "Other",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
             .unwrap();
         assert_ne!(replaced.app_uid, again.app_uid, "replaced at its id");
 
@@ -1441,7 +1447,10 @@ mod tests {
         std::fs::create_dir_all(s.root().join("half-made")).unwrap();
 
         let (apps, broken) = s.list_with_broken();
-        assert_eq!(apps.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["fine"]);
+        assert_eq!(
+            apps.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["fine"]
+        );
         assert_eq!(broken.len(), 1, "{broken:?}");
         assert_eq!(broken[0].id, "garbled");
         assert!(broken[0].error.contains("manifest.json"), "{broken:?}");
@@ -1464,7 +1473,10 @@ mod tests {
         let dir = s.root().join("abandoned");
         std::fs::create_dir_all(&dir).unwrap();
         let old = std::time::SystemTime::now() - MANIFESTLESS_GRACE * 4;
-        std::fs::File::open(&dir).unwrap().set_modified(old).unwrap();
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
         let (_, broken) = s.list_with_broken();
         assert_eq!(broken.len(), 1, "{broken:?}");
         assert!(broken[0].error.contains("no manifest.json"), "{broken:?}");
@@ -1486,7 +1498,14 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), s.root().join("linked")).unwrap();
 
         let m = s
-            .create_with_id("linked", "Real", "", ArtifactKind::Static, "index.html", &[])
+            .create_with_id(
+                "linked",
+                "Real",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
             .unwrap();
         assert_eq!(m.id, "linked");
         let meta = std::fs::symlink_metadata(s.root().join("linked")).unwrap();
@@ -1502,10 +1521,9 @@ mod tests {
     /// manifest that says it loads rather than hiding the app.
     #[test]
     fn a_manifest_kind_of_agent_reads_as_agentic() {
-        let m: Manifest = serde_json::from_str(
-            r#"{"id":"a","title":"A","kind":"agent","entry":"index.html"}"#,
-        )
-        .unwrap();
+        let m: Manifest =
+            serde_json::from_str(r#"{"id":"a","title":"A","kind":"agent","entry":"index.html"}"#)
+                .unwrap();
         assert_eq!(m.kind, ArtifactKind::Agentic);
         // Written back in the canonical spelling.
         assert!(serde_json::to_string(&m).unwrap().contains("\"agentic\""));
@@ -1528,10 +1546,24 @@ mod tests {
             .unwrap();
         s.delete("hooked-one").unwrap();
         s.delete("hooked-one").unwrap();
-        s.create_with_id("hooked-two", "Two", "", ArtifactKind::Static, "index.html", &[])
-            .unwrap();
-        s.create_with_id("hooked-two", "Two again", "", ArtifactKind::Static, "index.html", &[])
-            .unwrap();
+        s.create_with_id(
+            "hooked-two",
+            "Two",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
+        s.create_with_id(
+            "hooked-two",
+            "Two again",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
         let seen = DELETED
             .lock()
             .unwrap()
@@ -1564,12 +1596,22 @@ mod tests {
     fn a_case_variant_of_an_id_is_not_the_app() {
         on_app_deleted(record_deleted);
         let (_d, s) = store();
-        s.create_with_id("casefold-app", "Casefold", "", ArtifactKind::Static, "index.html", &[])
-            .unwrap();
+        s.create_with_id(
+            "casefold-app",
+            "Casefold",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
 
         assert!(!s.has_entry("CaseFold-App"));
         s.delete("CaseFold-App").unwrap();
-        assert!(s.load_manifest("casefold-app").is_ok(), "the app is still there");
+        assert!(
+            s.load_manifest("casefold-app").is_ok(),
+            "the app is still there"
+        );
         assert!(heard("casefold-").is_empty(), "{:?}", heard("casefold-"));
 
         assert!(s.has_entry("casefold-app"));
@@ -1585,8 +1627,15 @@ mod tests {
     fn deleting_every_app_tells_the_hooks_of_each() {
         on_app_deleted(record_deleted);
         let (_d, s) = store();
-        s.create_with_id("wipe-healthy", "Healthy", "", ArtifactKind::Static, "index.html", &[])
-            .unwrap();
+        s.create_with_id(
+            "wipe-healthy",
+            "Healthy",
+            "",
+            ArtifactKind::Static,
+            "index.html",
+            &[],
+        )
+        .unwrap();
         std::fs::create_dir_all(s.root().join("wipe-broken")).unwrap();
         std::fs::write(s.root().join("wipe-broken").join("manifest.json"), "{").unwrap();
         std::fs::create_dir_all(s.root().join("wipe-new")).unwrap();
