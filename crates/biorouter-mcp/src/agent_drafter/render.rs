@@ -2057,24 +2057,29 @@ function Get-RuntimeDigest([string]$Root, [string]$Entry) {
     }
     if ($builtFromSource) { [void]$files.Remove("src/sdk.ts") }
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($rel in $files) {
-      $hash = (Get-FileHash -LiteralPath (Join-Path $Root $rel) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-      $lines.Add("$hash $rel`n")
-    }
-    $sorted = $lines.ToArray()
-    $utf8Order = [Collections.Generic.Comparer[string]]::Create({
-      param($left, $right)
-      $a = [Text.Encoding]::UTF8.GetBytes($left)
-      $b = [Text.Encoding]::UTF8.GetBytes($right)
-      for ($i = 0; $i -lt [Math]::Min($a.Length, $b.Length); $i++) {
-        if ($a[$i] -ne $b[$i]) { return $a[$i].CompareTo($b[$i]) }
-      }
-      return $a.Length.CompareTo($b.Length)
-    })
-    [Array]::Sort($sorted, $utf8Order)
     $sha = [Security.Cryptography.SHA256]::Create()
-    $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($sorted -join "")))
-    return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
+    try {
+      foreach ($rel in $files) {
+        $stream = [IO.File]::OpenRead((Join-Path $Root $rel))
+        try {
+          $hash = (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) -join "")
+        } finally { $stream.Dispose() }
+        $lines.Add("$hash $rel`n")
+      }
+      $sorted = $lines.ToArray()
+      $utf8Order = [Collections.Generic.Comparer[string]]::Create({
+        param($left, $right)
+        $a = [Text.Encoding]::UTF8.GetBytes($left)
+        $b = [Text.Encoding]::UTF8.GetBytes($right)
+        for ($i = 0; $i -lt [Math]::Min($a.Length, $b.Length); $i++) {
+          if ($a[$i] -ne $b[$i]) { return $a[$i].CompareTo($b[$i]) }
+        }
+        return $a.Length.CompareTo($b.Length)
+      })
+      [Array]::Sort($sorted, $utf8Order)
+      $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($sorted -join "")))
+      return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally { $sha.Dispose() }
   } catch { return "" }
 }
 
@@ -4627,7 +4632,7 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             let probe = folder.join(".digest-probe.ps1");
             std::fs::write(
                 &probe,
-                format!("{definitions}\nGet-RuntimeDigest $Dir 'pages/index.html'\n"),
+                format!("{definitions}\nfunction Get-FileHash {{ throw 'digest must not depend on Get-FileHash' }}\nGet-RuntimeDigest $Dir 'pages/index.html'\n"),
             )
             .unwrap();
             let out = std::process::Command::new("powershell.exe")

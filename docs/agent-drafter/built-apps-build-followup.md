@@ -57,3 +57,28 @@ BIOROUTER_TEST_BIN=/absolute/path/to/target/debug/biorouterd \
 Set `BIOROUTER_PLAYWRIGHT_MODULE` to an existing Playwright `index.js` when the
 isolated worktree has no Node dependency installation. Set `PW_EXEC` only when
 using a Chromium executable other than the system Google Chrome.
+
+## Windows digest CI followup
+
+The early actual-template check exposed the Windows PowerShell 5.1 failure:
+`Get-FileHash` raised `CommandNotFoundException`, which the production digest
+correctly handled as an unknown digest but the earlier fixture hid as an empty
+string. The module search environment may explain the missing command; that
+environment explanation has not been independently proven and no module path
+or global installation was changed.
+
+The Windows launcher now hashes each file through .NET SHA-256 and `File.OpenRead`,
+disposes every stream in a `finally`, and disposes its hash instance after use.
+The UTF-8 byte ordering and digest protocol are unchanged. Both the Rust Windows
+fixture and the early Node runner retain strict equality against independently
+computed digests and expose the actual exception in their test probes.
+
+The early runner now checks the actual template with and without a throwing
+`Get-FileHash` shadow; speculative array/delegate variants were removed. It also
+opens hashed fixtures with exclusive access after hashing to check stream closure.
+The official portable PowerShell 7.6.6 arm64 archive was checked against its GitHub
+release SHA-256 and used only under `/private/tmp`, without a global installation.
+All four generated-script cases passed there, including the original CI fixture
+hashes with and without `src/main.ts`. Node syntax, Prettier, direct Rust formatting
+and diff checks passed. No Cargo jobs ran in this lane. Windows PowerShell 5.1 CI
+must still confirm the final production fix.

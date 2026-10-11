@@ -59,27 +59,11 @@ const diagnostic = definitions.replace(
   '} catch { return "" }',
   "} catch { [Console]::Error.WriteLine($_.Exception.ToString()); [Console]::Error.WriteLine($_.ScriptStackTrace); throw }",
 );
-const variants = [
-  ["actual-template", diagnostic],
+const probes = [
+  ["actual-template", ""],
   [
-    "typed-array",
-    diagnostic.replace(
-      "$sorted = $lines.ToArray()",
-      "[string[]]$sorted = $lines.ToArray()",
-    ),
-  ],
-  [
-    "typed-delegate",
-    diagnostic.replace("::Create({", "::Create([Comparison[string]]{"),
-  ],
-  [
-    "typed-array-and-delegate",
-    diagnostic
-      .replace(
-        "$sorted = $lines.ToArray()",
-        "[string[]]$sorted = $lines.ToArray()",
-      )
-      .replace("::Create({", "::Create([Comparison[string]]{"),
+    "without-Get-FileHash",
+    "function Get-FileHash { throw 'digest must not depend on Get-FileHash' }\n",
   ],
 ];
 
@@ -120,11 +104,16 @@ try {
       .map(([name, bytes]) => Buffer.from(`${sha(bytes)} ${name}\n`, "utf8"))
       .sort(Buffer.compare);
     const expected = sha(Buffer.concat(lines));
-    for (const [variant, body] of variants) {
+    for (const [variant, prelude] of probes) {
       const probe = join(folder, `.digest-${variant}.ps1`);
       writeFileSync(
         probe,
-        `${body}\n@{ powershell = $PSVersionTable.PSVersion.ToString(); digest = (Get-RuntimeDigest $Dir 'pages/index.html') } | ConvertTo-Json -Compress\n`,
+        `${diagnostic}\n${prelude}$actual = Get-RuntimeDigest $Dir 'pages/index.html'
+foreach ($path in @((Join-Path $Dir 'pages/index.html'), (Join-Path $Dir 'assets/logo.png'))) {
+  $exclusive = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+  $exclusive.Dispose()
+}
+@{ powershell = $PSVersionTable.PSVersion.ToString(); digest = $actual } | ConvertTo-Json -Compress\n`,
         "utf8",
       );
       const output = spawnSync(
@@ -168,7 +157,7 @@ try {
             output.stdout ||
             "PowerShell produced no diagnostic output",
         );
-        if (variant === "actual-template") failed = true;
+        failed = true;
       }
     }
   }
@@ -177,5 +166,5 @@ try {
 }
 assert(
   !failed,
-  "the actual Windows launcher digest must match UTF-8 byte ordering; variants above are diagnostics only",
+  "the actual Windows launcher digest must match UTF-8 byte ordering with and without Get-FileHash",
 );
