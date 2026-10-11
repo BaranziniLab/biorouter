@@ -12,10 +12,18 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
  * FilterInput: the one list filter for every view band (spec 2.6): Workflows, Built apps,
  * Extensions, Skills, History (and Scheduler if it ever needs one).
  *
- * A 28px `Input` with a leading 16px search glyph, placeholder "Filter" (History passes
- * `placeholder={uiCopy.searchHistory}`), a Tooltip "Filter · ⌘F", and ⌘F / Ctrl+F focusing it
- * while the view is mounted (`useFindShortcut`). It is `no-drag`, because it sits in a band that
- * is a window-drag region. Escape clears the text, and a second Escape leaves the field.
+ * A 28px `Input` with a leading 16px search glyph, placeholder "Filter" (History passes its own,
+ * which carries the shortcut), a Tooltip "Filter · ⌘F", and ⌘F / Ctrl+F focusing it while the
+ * view is mounted (`useFindShortcut`). It is `no-drag`, because it sits in a band that is a
+ * window-drag region. Escape clears the text, and a second Escape leaves the field.
+ *
+ * The tooltip is a HOVER hint for a field the person is not in (vision round 2, V1-R2-7). It
+ * opened on a Tab into the field, and over a field the person was typing in once the pointer came
+ * back across it, then stayed after a quick exit; each time it repeated what the field already
+ * says. So it never opens on focus or while the field holds focus, and focusing the field closes
+ * it. It is said once: no tooltip when the placeholder already names the shortcut (History's
+ * "Search history… ⌘F"), and none when ⌘F is off, which it would otherwise promise. The shortcut
+ * reaches assistive tech as `aria-keyshortcuts` instead of a focus tooltip.
  *
  * It replaces the views' use of `conversation/SearchView`, which becomes the transcript's find
  * overlay and is no longer a list filter.
@@ -75,6 +83,7 @@ export const FilterInput = React.forwardRef<HTMLInputElement, FilterInputProps>(
       className,
       inputClassName,
       onKeyDown,
+      onFocus,
       ...props
     },
     forwardedRef
@@ -90,6 +99,24 @@ export const FilterInput = React.forwardRef<HTMLInputElement, FilterInputProps>(
     );
     useFindShortcut(innerRef, findShortcut);
 
+    const shownPlaceholder = placeholder ?? uiCopy.filter;
+    const hint =
+      findShortcut && !shownPlaceholder.includes(uiCopy.findShortcut())
+        ? uiCopy.filterTooltip(label)
+        : null;
+    const [hintOpen, setHintOpen] = React.useState(false);
+    // Radix asks to open on hover (after the delay) and on a focus that was not a pointer press;
+    // both are refused while the field holds focus. A close always goes through.
+    const handleHintOpenChange = React.useCallback((next: boolean) => {
+      const field = innerRef.current;
+      setHintOpen(next && !(field && field.ownerDocument.activeElement === field));
+    }, []);
+
+    const handleFocus = (event: React.FocusEvent<HTMLInputElement>) => {
+      onFocus?.(event);
+      setHintOpen(false);
+    };
+
     const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
       onKeyDown?.(event);
       if (event.defaultPrevented || event.key !== 'Escape') return;
@@ -98,27 +125,33 @@ export const FilterInput = React.forwardRef<HTMLInputElement, FilterInputProps>(
       else event.currentTarget.blur();
     };
 
+    const field = (
+      <Input
+        ref={setRefs}
+        type="search"
+        role="searchbox"
+        aria-label={label}
+        aria-keyshortcuts={findShortcut ? (isMacPlatform() ? 'Meta+F' : 'Control+F') : undefined}
+        placeholder={shownPlaceholder}
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+        onFocus={handleFocus}
+        onKeyDown={handleKeyDown}
+        spellCheck={false}
+        autoComplete="off"
+        className={cn('br-filter-input-field', inputClassName)}
+        {...props}
+      />
+    );
+
     return (
       <div className={cn('br-filter-input no-drag', className)} data-slot="filter-input">
         <Search aria-hidden="true" focusable="false" size={16} className="br-filter-input-icon" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Input
-              ref={setRefs}
-              type="search"
-              role="searchbox"
-              aria-label={label}
-              placeholder={placeholder ?? uiCopy.filter}
-              value={value}
-              onChange={(event) => onValueChange(event.target.value)}
-              onKeyDown={handleKeyDown}
-              spellCheck={false}
-              autoComplete="off"
-              className={cn('br-filter-input-field', inputClassName)}
-              {...props}
-            />
-          </TooltipTrigger>
-          <TooltipContent>{uiCopy.filterTooltip(label)}</TooltipContent>
+        {/* Always the same tree, so the field never remounts (and loses focus) if the hint
+            comes or goes; without one the tooltip simply never opens. */}
+        <Tooltip open={hint !== null && hintOpen} onOpenChange={handleHintOpenChange}>
+          <TooltipTrigger asChild>{field}</TooltipTrigger>
+          {hint !== null ? <TooltipContent>{hint}</TooltipContent> : null}
         </Tooltip>
       </div>
     );
