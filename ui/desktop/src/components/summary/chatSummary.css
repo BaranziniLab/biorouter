@@ -215,8 +215,10 @@
 }
 
 /* A Button is 14/500 at every rung; the rail has two sizes, so the retry joins
-   the error line's 12. */
+   the error line's 12. Its label ends on the values' right edge: the compact
+   button's 8px inline padding is given back on the outside. */
 .br-summary .br-summary__retry {
+  margin-right: -8px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   font-weight: 400;

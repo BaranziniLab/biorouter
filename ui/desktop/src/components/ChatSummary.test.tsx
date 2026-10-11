@@ -70,6 +70,25 @@ describe('compact chat summary', () => {
     expect(screen.getByText('+120')).toHaveClass('text-text-success');
   });
 
+  it('mutes a count that is not a change, so a chat that touched no code shows no red', () => {
+    const { rerender } = render(<ChatSummary {...props} codeDelta={{ added: 0, removed: 0 }} />);
+    expect(screen.getByText('+0')).toHaveClass('text-text-muted');
+    expect(screen.getByText('−0')).toHaveClass('text-text-muted');
+    rerender(<ChatSummary {...props} codeDelta={{ added: 0, removed: 4 }} />);
+    expect(screen.getByText('+0')).toHaveClass('text-text-muted');
+    expect(screen.getByText('−4')).toHaveClass('text-text-danger');
+  });
+
+  it('parts the statistics from the list or from the refresh error that stands in for it', () => {
+    const { rerender } = render(<ChatSummary {...props} />);
+    const dl = () => screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;
+    expect(dl()).not.toHaveAttribute('data-after-todos');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, error: true }} />);
+    expect(dl()).toHaveAttribute('data-after-todos', '');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    expect(dl()).toHaveAttribute('data-after-todos', '');
+  });
+
   it('labels a blocked step for assistive technology and indents an expanded one', () => {
     // A status the panel does not render is a task the user cannot see: the
     // list reader keeps unknown statuses, so every one the backend can persist

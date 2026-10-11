@@ -86,7 +86,7 @@ One `PanelRight` button in the chat header's actions
 
 | Rung 0 | The button | Accessible state |
 |---|---|---|
-| Fits | Shows and hides the docked rail (the preference) | `aria-expanded`, `aria-controls` naming the rail; pressed fill `--background-medium`; tooltip "Hide summary" or "Show summary" |
+| Fits | Shows and hides the docked rail (the preference) | `aria-expanded`, `aria-controls` naming the rail; pressed fill `--background-fill-strong`, the band's fill step; tooltip "Hide summary" or "Show summary" |
 | Does not fit | Opens the summary in a 280px popover anchored to the button | `aria-haspopup="dialog"`, `aria-expanded`, `aria-controls` naming the popover; tooltip "Chat summary" |
 
 The popover is anchored with `PopoverAnchor` rather than triggered, because a Radix trigger would
@@ -95,22 +95,37 @@ the popover is open, the rail replaces it and the popover closes, and so does a 
 when the button turns into the rail's (the rail was closed, then the window widened).
 
 While the rail is hidden and a to-do step is running, the button carries a 6px coral dot and its
-name becomes "Chat summary, 2 of 5 to do items complete".
+name becomes "Chat summary, 2 of 5 to do items complete". The dot's 2px ring is the ground under
+it: the band at rest, the pressed fill while the popover is open. The terminal button beside it
+presses on the same fill.
 
 ## The content
 
-`components/ChatSummary.tsx` draws the same content in the rail and in the popover: a card with
-a 12px radius, a 1px `--border-subtle` edge and the `--background-default` ground, with a
-scrolling body over a pinned footer. Two type sizes only, 13px for rows and 12px for labels.
+`components/ChatSummary.tsx` draws the same content in the rail and in the popover. In the rail
+it sits on a card with a 12px radius and the subtle fill, `--background-fill`, with no outline:
+fills before lines (owner message 13, R-27; `design.md` 9.11). The card keeps its 1px border,
+transparent, so nothing moves and forced colours still draw its edge, and it is a
+`.br-fill-surface`, so a filled control placed inside it steps back to the page ground. The
+popover is a floating surface and keeps the shared popover hairline and shadow. Either way there
+is a scrolling body over a pinned footer, and the parts are told apart by space, never by a
+hairline: the to-do list, the statistics and the footer sit 12px apart (22px between their text,
+against 10px between rows). Where the list overflows, the edge that hides rows fades over 16px:
+the bottom while there is more below, the top once the list has scrolled. The fade follows the
+body's own scroll position (a CSS scroll timeline), so it needs no listener and moves nothing,
+and a focused body drops it so its focus edge is drawn whole. Two type sizes only, 13px for rows
+and 12px for labels.
 
 - **To do**, when there are items: a muted label with a tabular "2 of 5" count (announced as "2
   of 5 complete" through `aria-live`), a 4px progress bar, then 28px rows. Each status has its own
   glyph shape, an open circle (pending), a dashed circle in the accent ink (running), a check
   (complete) and an alert (blocked), so status never depends on colour. The status word is read
   to assistive technology ahead of the task text. There is no "no tasks" sentence; a failed
-  refresh shows one line, "To do could not refresh.", with Retry.
+  refresh shows one line, "To do could not refresh.", with Retry, whose label ends on the
+  values' right edge. On the card the 4px track rests on `--background-fill-strong`: the
+  primitive's own track is `--background-muted`, which is the fill itself and would vanish.
 - **Statistics**: a `dl` of 28px rows: Tool calls, Tokens (with an InfoTip saying what is
-  counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words.
+  counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words. A count of
+  zero is muted, so a chat that touched no code shows no red.
 - **Footer**: Make workflow (Workflow when the chat has one) and Diagnostics as full-width ghost
   rows.
 - The scrolling body is a focus region with a tab stop (`.biorouter-focus-region`), so a
@@ -175,11 +190,11 @@ or the pointer is over the summary.
 | `Layout/summaryRailPreference.test.ts` | The per-viewer store, its default and the `storage` event |
 | `hooks/useColumnGlide.test.ts` | No glide while resizing, under reduced motion or under 8px; the composer left to its own FLIP; the scroll anchor |
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
-| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
+| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
-| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, and the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from |
+| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
 | `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
-| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's left edge on the column's, and the column moving by half the rail |
+| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's left edge on the column's, the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end |
 
 ## Related documentation
 

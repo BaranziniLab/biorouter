@@ -246,7 +246,9 @@ export function ChatSummary({
         <dl
           aria-label={summaryCopy.statsLabel}
           className="br-summary__stats"
-          data-after-todos={total > 0 ? '' : undefined}
+          // The 12px that parts the statistics from what sits above them: the
+          // to-do list, or the refresh error that stands in for it.
+          data-after-todos={total > 0 || todos.error ? '' : undefined}
         >
           <Stat label={summaryCopy.toolCalls}>{toolCalls}</Stat>
           <Stat
@@ -264,9 +266,15 @@ export function ChatSummary({
             <span className="sr-only">
               {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
             </span>
+            {/* A count carries its colour only when it is a change: "+0" and
+                "−0" are muted, so a chat that touched no code shows no red. */}
             <span aria-hidden="true">
-              <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>{' '}
-              <span className="text-text-danger">−{codeDelta.removed.toLocaleString()}</span>
+              <span className={codeDelta.added > 0 ? 'text-text-success' : 'text-text-muted'}>
+                +{codeDelta.added.toLocaleString()}
+              </span>{' '}
+              <span className={codeDelta.removed > 0 ? 'text-text-danger' : 'text-text-muted'}>
+                −{codeDelta.removed.toLocaleString()}
+              </span>
             </span>
           </Stat>
         </dl>
