@@ -2,8 +2,8 @@
 
 > **What this is.** How the app sidebar lists chats: the Chats header and its View options menu,
 > Group by and Sort by (nine combinations), how every chat is read when a view needs them all and
-> how many rows are drawn at once, folder groups, the row menu, renaming a chat in place, the keyboard model, and the tests that
-> hold each part.
+> how many rows are drawn at once, folder groups, the row menu, renaming a chat in place, its fills,
+> the keyboard model, and the tests that hold each part.
 > **Status:** Current. Built in the Codex simplicity redesign (WS-SIDEBAR, October 2026).
 > **Audience:** developers working on the sidebar, the chat row menu, History or the tab strip.
 
@@ -118,9 +118,12 @@ every held row come in; a row that would land above or between held rows waits.
 A chat row is a 16px kind glyph (`ChatKindIcon`, which carries the lock badge of a private chat), the
 title, and a 16px trailing slot that holds the running ring and gives way to `⋯` on hover or focus.
 The hover card opens after 700ms with the title (only when it is cut off) and
-`~/folder · 3h ago · 12 messages`, sized to its text up to 320px. It closes when its row can no
+`~/folder · 3h ago · 12 messages`, sized to its text up to 320px. It opens 16px past the row's end,
+which puts it 8px clear of the pane divider rather than on it (a folder's path tooltip lands on the
+same x). It closes when its row can no
 longer be seen: Chats collapsed, the sidebar closed, or the row scrolled out of the list. The active
-chat shows the 2px accent rail. A row whose menu is open keeps its hover ground.
+chat shows the 2px accent rail. A row whose menu is open keeps its hover ground, and its `⋯` stays
+on screen until the menu closes.
 
 ### The row menu
 
@@ -159,6 +162,29 @@ sentence. There is no success toast: the row is the confirmation. Focus returns 
 `⌘⌥R` also needs the Electron main process to let the key through: its `before-input-event` handler
 reloads the window on any `⌘R`, so the handler has to skip the reload when Alt is held.
 
+## Fills, not lines
+
+The sidebar follows the app's fill rule (owner message 13, R-27; design.md 9.11). It is a recessed
+ground, so every fill on it is the strong step:
+
+- Rows rest clear and light with the sidebar's own steps, `--sidebar-hover` and `--sidebar-active`.
+  No hairline separates rows; spacing and the hover fill do.
+- The only lines are structural: the band's edge at y=44, the rule over the footer (the list
+  scrolls under it), the pane divider, and the compact overlay's edge and shadow (a floating
+  surface).
+- View options stays pressed on `--background-fill-strong` while its menu is open.
+- Crew's unread badge is the neutral badge, whose fill is the strong step. A lit row (hovered,
+  current or focused) is that same fill, so there the badge steps back to the page ground; a fill
+  never sits on a fill.
+- The rename editor rests on the page ground (its row is already the strong fill) and is edged by a
+  real 1px `--border-focus` border, not a box-shadow ring, so forced colours keep its outline.
+- The titlebar controls hover on `--background-fill-strong`, the band's step.
+
+⚠ A menu trigger in the sidebar sits inside a `TooltipTrigger`, and the tooltip's `data-state`
+("closed") overwrites the menu's on the same button. A rule written as `[data-state='open']` never
+matches there, which is how the row's `⋯` vanished under its own open menu. The sidebar's rules
+read `aria-expanded` instead.
+
 ## Keyboard
 
 The list is one Tab stop. Arrow Up and Arrow Down move between rows (folder headers included), Home
@@ -177,6 +203,7 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open |
 
 ## Related documentation
