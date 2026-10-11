@@ -275,12 +275,12 @@ export default function ToolConfirmation({
     );
   }
 
-  // Asking: the one card recipe for anything that needs the person to act —
-  // radius 12, a hairline, the default ground, 16px in. Title, what the call
+  // Asking: the one card recipe for anything that needs the person to act:
+  // radius 12, the subtle fill with no outline, 16px in. Title, what the call
   // will do, then the decision at the bottom right.
   return (
     <>
-      <div className="biorouter-message-content br-action-card br-enter text-body">
+      <div className="biorouter-message-content br-action-card br-fill-surface br-enter text-body">
         {findingLine}
 
         <div className="flex flex-wrap items-center gap-2">

@@ -1806,9 +1806,13 @@ function ToolResultView({ result, onOpenArtifact, workingDir }: ToolResultViewPr
                 {text}
               </pre>
             ) : (
+              // Not `whitespace-pre-wrap` on the root: chat markdown already
+              // turns each newline into a <br>, so pre-wrap drew every break
+              // twice and a blank line between blocks. The well keeps a
+              // paragraph's spaces itself (transcript-row.css).
               <MarkdownContent
                 content={text}
-                className="whitespace-pre-wrap max-w-full overflow-x-auto"
+                className="max-w-full overflow-x-auto"
                 onOpenArtifact={onOpenArtifact}
                 workingDir={workingDir}
               />

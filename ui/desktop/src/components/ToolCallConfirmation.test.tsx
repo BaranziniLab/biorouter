@@ -293,6 +293,9 @@ describe('ToolCallConfirmation (BR-63)', () => {
     // Collapsed: clipped body + an affordance to open it.
     const body = screen.getByTestId('tool-preview-body');
     expect(body.className).toContain('max-h-52');
+    // The frame is the authored box that steps back to the page ground inside
+    // the filled card (tool-call.css), not a second fill.
+    expect(body.parentElement).toHaveClass('br-tool-preview');
     expect(screen.getByRole('button', { name: /Allow once/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
@@ -448,6 +451,8 @@ describe('ToolCallConfirmation shape (spec 3.6 cards)', () => {
     const { container } = renderCard();
     const card = container.querySelector('.biorouter-message-content')!;
     expect(card).toHaveClass('br-action-card');
+    // A filled card (R-27): "Always allow" steps back to the page ground.
+    expect(card).toHaveClass('br-fill-surface');
     expect(card.className).not.toContain('rounded-2xl');
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Always allow' })).toBeInTheDocument();

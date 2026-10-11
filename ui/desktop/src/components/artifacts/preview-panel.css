@@ -299,7 +299,10 @@
   display: block;
   height: 10px;
   border-radius: var(--radius-inner);
-  background: var(--background-muted);
+  /* The strong fill: the quiet step the paper's fill is one short of, so a
+     placeholder line is perceivable on the paper (1.2:1) where the rest fill
+     (1.1:1) is only a tint. */
+  background: var(--background-fill-strong);
   opacity: 0;
   animation: br-preview-fade-in var(--dur-fast-max) var(--ease-out) forwards;
   /* Most reads land sooner: a quick one never shows the skeleton at all. */

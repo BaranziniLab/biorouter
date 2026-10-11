@@ -58,9 +58,10 @@ function TruncationNote() {
 }
 
 /**
- * Shared chrome: a well (the ground fenced code sits on) with a head row over
- * a hairline, after Crew's code block. No border of its own, so inside the
- * approval card it is a step of ground, not a box in a box.
+ * Shared chrome: a code box with a head row over a hairline, after Crew's code
+ * block. No border of its own (`.br-tool-preview`, tool-call.css): inside the
+ * filled approval card it steps back to the page ground, a step of ground and
+ * not a fill on a fill.
  */
 function PreviewFrame({
   icon,
@@ -84,7 +85,7 @@ function PreviewFrame({
   const bodyId = useId();
 
   return (
-    <div className="overflow-hidden rounded-element bg-background-well">
+    <div className="br-tool-preview">
       <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-supporting text-text-muted">
         <span aria-hidden="true" className="shrink-0">
           {icon}

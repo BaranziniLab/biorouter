@@ -33,7 +33,8 @@ const TOKENS = `:root {
   --text-default: #1c1b19;
   --overlay-hover: rgba(0, 0, 0, 0.05);
   --background-default: #ffffff;
-  --background-muted: #f0f0ec;
+  --background-fill: #f4f4f2;
+  --background-fill-strong: #eaeae6;
   --background-focus: #e0e0dc;
   --border-subtle: #e4e3df;
   --border-focus: #6b6963;
@@ -102,7 +103,7 @@ describe('the transcript cards in a real layout engine', () => {
     return tab;
   }
 
-  it('draws an action card at radius 12, a 1px hairline and 16px in, actions at the bottom right', async () => {
+  it('draws an action card at radius 12 on the subtle fill with no outline, 16px in, actions at the bottom right', async () => {
     if (!browser) return;
     const tab = await open(
       `<div class="biorouter-message-content br-action-card br-enter" id="card">` +
@@ -131,13 +132,34 @@ describe('the transcript cards in a real layout engine', () => {
       });
       expect(m.width).toBe(COLUMN);
       expect(m.radius).toBe('12px');
+      // Fills before lines (R-27): the 1px border stays, transparent, so no
+      // geometry moves and forced colours still draw it.
       expect(m.border).toBe('1px solid');
-      expect(m.borderColor).toBe('rgb(228, 227, 223)');
+      expect(m.borderColor).toBe('rgba(0, 0, 0, 0)');
       expect(m.padding).toBe('16px');
       expect(m.gap).toBe('12px');
       expect(m.shadow).toBe('none');
-      expect(m.ground).toBe('rgb(255, 255, 255)');
+      expect(m.ground).toBe('rgb(244, 244, 242)');
       expect(m.buttonInset).toBe(17);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it("steps the call's preview back to the page ground inside the filled card", async () => {
+    if (!browser) return;
+    const tab = await open(
+      `<div class="br-action-card"><div class="br-tool-preview" id="inside">x</div></div>` +
+        `<div class="br-tool-preview" id="alone">y</div>`
+    );
+    try {
+      const ground = (id: string) =>
+        tab.evaluate((target) => {
+          const style = getComputedStyle(document.getElementById(target)!);
+          return [style.backgroundColor, style.borderTopLeftRadius];
+        }, id);
+      expect(await ground('inside')).toEqual(['rgb(255, 255, 255)', '8px']);
+      expect(await ground('alone')).toEqual(['rgb(244, 244, 242)', '8px']);
     } finally {
       await tab.close();
     }
@@ -161,7 +183,7 @@ describe('the transcript cards in a real layout engine', () => {
     }
   });
 
-  it('draws the artifact card across the 760 column: a 32px tile, the title over its kind, no shadow', async () => {
+  it('draws the artifact card across the 760 column on the fill: a 32px tile, the title over its kind, no shadow', async () => {
     if (!browser) return;
     const tab = await open(
       renderToStaticMarkup(<MCPUIResourceRenderer content={artifact} onOpenArtifact={() => {}} />)
@@ -171,7 +193,8 @@ describe('the transcript cards in a real layout engine', () => {
         const card = document.querySelector('.br-artifact-card') as HTMLElement;
         const style = getComputedStyle(card);
         const box = card.getBoundingClientRect();
-        const tile = card.querySelector('.br-artifact-card-tile')!.getBoundingClientRect();
+        const tileNode = card.querySelector('.br-artifact-card-tile')!;
+        const tile = tileNode.getBoundingClientRect();
         const lines = [...card.querySelectorAll('.block')].map((node) =>
           node.getBoundingClientRect()
         );
@@ -179,8 +202,11 @@ describe('the transcript cards in a real layout engine', () => {
           width: box.width,
           radius: style.borderTopLeftRadius,
           border: `${style.borderTopWidth} ${style.borderTopStyle}`,
+          borderColor: style.borderTopColor,
+          ground: style.backgroundColor,
           shadow: style.boxShadow,
           tile: { width: tile.width, height: tile.height },
+          tileGround: getComputedStyle(tileNode).backgroundColor,
           titleAboveKind: lines.length === 2 && lines[0].bottom <= lines[1].top,
           kind: card.getAttribute('data-artifact-kind'),
           kindText: card.querySelectorAll('.block')[1]?.textContent,
@@ -189,8 +215,12 @@ describe('the transcript cards in a real layout engine', () => {
       expect(m.width).toBe(COLUMN);
       expect(m.radius).toBe('12px');
       expect(m.border).toBe('1px solid');
+      expect(m.borderColor).toBe('rgba(0, 0, 0, 0)');
+      expect(m.ground).toBe('rgb(244, 244, 242)');
       expect(m.shadow).toBe('none');
       expect(m.tile).toEqual({ width: 32, height: 32 });
+      // A fill never sits on a fill: the tile steps back to the page ground.
+      expect(m.tileGround).toBe('rgb(255, 255, 255)');
       expect(m.titleAboveKind).toBe(true);
       expect(m.kind).toBe('figure');
       expect(m.kindText).toBe('Figure');
@@ -199,25 +229,25 @@ describe('the transcript cards in a real layout engine', () => {
     }
   });
 
-  it('washes the artifact card on hover and draws the row focus on a Tab', async () => {
+  it('steps the artifact card to the strong fill on hover and draws the row focus on a Tab', async () => {
     if (!browser) return;
     const tab = await open(
       renderToStaticMarkup(<MCPUIResourceRenderer content={artifact} onOpenArtifact={() => {}} />)
     );
     try {
-      const wash = () =>
+      const ground = () =>
         tab.evaluate(
-          () =>
-            getComputedStyle(document.querySelector('.br-artifact-card')!, '::before')
-              .backgroundColor
+          () => getComputedStyle(document.querySelector('.br-artifact-card')!).backgroundColor
         );
-      expect(await wash()).toBe('rgba(0, 0, 0, 0)');
+      expect(await ground()).toBe('rgb(244, 244, 242)');
       await tab.hover('.br-artifact-card');
       await tab.waitForTimeout(200);
-      expect(await wash()).toBe('rgba(0, 0, 0, 0.05)');
+      expect(await ground()).toBe('rgb(234, 234, 230)');
 
       await tab.mouse.move(900, 500);
       await tab.keyboard.press('Tab');
+      // The ground transitions (95ms), so read it once it has settled.
+      await tab.waitForTimeout(200);
       const focus = await tab.evaluate(() => {
         const style = getComputedStyle(document.querySelector('.br-artifact-card')!);
         return { ground: style.backgroundColor, shadow: style.boxShadow };

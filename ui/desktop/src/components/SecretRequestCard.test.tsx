@@ -263,6 +263,8 @@ describe('SecretRequestCard shape (spec 3.6 cards)', () => {
     );
     const root = container.querySelector('.biorouter-message-content')!;
     expect(root).toHaveClass('br-action-card');
+    // A filled card (R-27): its fields step back to the page ground.
+    expect(root).toHaveClass('br-fill-surface');
     expect(root.className).not.toContain('rounded-2xl');
     expect(screen.getByText('Saved on this machine. The model never sees it.')).toBeInTheDocument();
     expect(

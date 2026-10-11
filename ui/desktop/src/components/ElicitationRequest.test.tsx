@@ -76,6 +76,8 @@ describe('ElicitationRequest', () => {
     );
     const card = container.querySelector('.biorouter-message-content')!;
     expect(card).toHaveClass('br-action-card');
+    // A filled card (R-27): its fields step back to the page ground.
+    expect(card).toHaveClass('br-fill-surface');
     expect(card.className).not.toContain('rounded-2xl');
     expect(screen.getByText('Which cohort?')).toHaveClass('text-label');
   });

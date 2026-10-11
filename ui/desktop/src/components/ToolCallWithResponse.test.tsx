@@ -1997,6 +1997,33 @@ describe('ToolCallWithResponse: a failed row and an empty output say so (V2-11, 
     expect(output.parentElement).toHaveTextContent(/^OutputNo output$/);
   });
 
+  it('renders a short output as markdown without pre-wrap on its root, so each break draws once', () => {
+    const { container } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={shellRequest('lines')}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'lines',
+          toolResult: {
+            status: 'success',
+            value: { content: [{ type: 'text', text: 'a.txt\nb.txt' }] },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText('Ran true').closest('button') as HTMLElement);
+    // Chat markdown turns the newline into a <br> and keeps the newline too;
+    // pre-wrap on the root drew both, and the newlines between blocks as well.
+    // The well keeps a paragraph's spaces itself (transcript-row.css, measured
+    // in transcriptRowGeometry.browser.test.tsx).
+    const markdown = container.querySelector('.br-transcript-row-well .biorouter-markdown');
+    expect(markdown).not.toBeNull();
+    expect(markdown!.classList.contains('whitespace-pre-wrap')).toBe(false);
+    expect(markdown!.querySelector('p br')).not.toBeNull();
+  });
+
   it('adds no Output section when the result carried no content at all', () => {
     render(
       <ToolCallWithResponse

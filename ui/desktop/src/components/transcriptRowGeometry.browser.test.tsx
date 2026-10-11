@@ -41,7 +41,8 @@ const TOKENS = `:root {
   --overlay-hover: rgba(0, 0, 0, 0.05);
   --background-focus: #e0e0dc;
   --border-focus: #6b6963;
-  --background-well: #f5f5f3;
+  --background-fill: #f4f4f2;
+  --background-default: #ffffff;
   --dur-fast-min: 95ms;
   --dur-fast: 125ms;
   --dur-fast-max: 175ms;
@@ -71,7 +72,7 @@ interface Geometry {
   glyph: { left: number; width: number; height: number };
   label: { left: number; right: number; height: number; clipped: boolean };
   chevron: { left: number; width: number } | null;
-  meta: { right: number; clipped: boolean } | null;
+  meta: { left: number; right: number; clipped: boolean } | null;
   well: { left: number; top: number } | null;
   /** The second row's glyph and head, when a row nests inside another's body. */
   nested: { glyphLeft: number; headHeight: number } | null;
@@ -128,6 +129,7 @@ describe('TranscriptRow in a real layout engine', () => {
           chevron: chevron ? { left: chevron.left - origin, width: chevron.width } : null,
           meta: metaNode
             ? {
+                left: metaNode.getBoundingClientRect().left - origin,
                 right: metaNode.getBoundingClientRect().right - origin,
                 clipped: metaNode.scrollWidth > metaNode.clientWidth,
               }
@@ -204,6 +206,18 @@ describe('TranscriptRow in a real layout engine', () => {
     expect(g.label.clipped).toBe(true);
     expect(g.label.height).toBe(18);
     expect(g.meta!.clipped).toBe(false);
+  });
+
+  it('sets the meta one word space after the label, the chevron 8px after the meta', async () => {
+    if (!browser) return;
+    const g = await layOut(
+      <TranscriptRow icon={Terminal} label="Explored" meta="· 2 files">
+        <p>x</p>
+      </TranscriptRow>
+    );
+    // "Explored · 2 files": 4px before the dot, about the space after it.
+    expect(g.meta!.left - g.label.right).toBe(4);
+    expect(g.chevron!.left).toBe(g.meta!.right + 8);
   });
 
   it('collapses an empty meta, so the chevron keeps its 8px from the label', async () => {
@@ -317,6 +331,89 @@ describe('TranscriptRow in a real layout engine', () => {
     } finally {
       await tab.close();
     }
+  });
+
+  /** Lay out `element` and read `read` off the page. */
+  async function measure<T>(element: React.ReactElement, read: () => T): Promise<T> {
+    const html = renderToStaticMarkup(element);
+    const tab = await browser!.newPage({ viewport: { width: 1000, height: 600 } });
+    try {
+      await tab.setContent(
+        `<!doctype html><html><head><style>${TOKENS}${css}</style></head><body>` +
+          `<div id="column" style="width:${COLUMN}px;margin-left:100px">${html}</div></body></html>`
+      );
+      return (await tab.evaluate(read)) as T;
+    } finally {
+      await tab.close();
+    }
+  }
+
+  it('rests the well on the subtle fill, with no outline (R-27)', async () => {
+    if (!browser) return;
+    const well = await measure(
+      <TranscriptRow icon={Terminal} label="Ran ls" defaultOpen>
+        <pre>ok</pre>
+      </TranscriptRow>,
+      () => {
+        const style = getComputedStyle(document.querySelector('.br-transcript-row-well')!);
+        return {
+          ground: style.backgroundColor,
+          edge: style.borderTopStyle,
+          radius: style.borderTopLeftRadius,
+        };
+      }
+    );
+    expect(well).toEqual({ ground: 'rgb(244, 244, 242)', edge: 'none', radius: '8px' });
+  });
+
+  it("breaks each line of an output paragraph once and keeps the line's spaces", async () => {
+    if (!browser) return;
+    // Chat markdown renders "a.txt\nb.txt" as `a.txt<br>` plus the newline
+    // itself, and pre-wrap honoured both: every break drew a blank line.
+    const p = await measure(
+      <TranscriptRow icon={Terminal} label="Ran ls" defaultOpen>
+        <div className="biorouter-markdown prose">
+          <p id="out">
+            {'a.txt'}
+            <br />
+            {'\nb.txt   c.txt'}
+          </p>
+        </div>
+      </TranscriptRow>,
+      () => {
+        const node = document.getElementById('out')!;
+        return {
+          height: node.getBoundingClientRect().height,
+          space: getComputedStyle(node).whiteSpace,
+        };
+      }
+    );
+    expect(p).toEqual({ height: 40, space: 'pre-wrap' });
+  });
+
+  it('steps a code block and a table in the output back to the page ground', async () => {
+    if (!browser) return;
+    const grounds = await measure(
+      <TranscriptRow icon={Terminal} label="Queried" defaultOpen>
+        <div className="biorouter-markdown prose">
+          <div className="br-md-code" id="code">
+            <pre>select 1;</pre>
+          </div>
+          <table className="br-md-table" id="table">
+            <tbody>
+              <tr>
+                <td>1</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </TranscriptRow>,
+      () =>
+        ['code', 'table'].map(
+          (id) => getComputedStyle(document.getElementById(id)!).backgroundColor
+        )
+    );
+    expect(grounds).toEqual(['rgb(255, 255, 255)', 'rgb(255, 255, 255)']);
   });
 
   it("nests rows on a plain body with their glyphs on the outer label's edge", async () => {

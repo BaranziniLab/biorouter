@@ -13,6 +13,13 @@
 /*
  * A chip in the card's control row: ghost, 28px, 13/18, muted at rest.
  *
+ * Ghost, not filled, under R-27 (fills before lines, design.md 9.11): the rule
+ * turns OUTLINED chips into fills, and these never had an outline. They sit
+ * inside the composer card, which is itself the fill, and a fill never sits on
+ * a fill; a resting fill here would have to step back to the page ground and
+ * draw two white pills in a grey card. The hover and open grounds are the ink
+ * overlay, which reads on the card's fill in both modes, like a ghost Button.
+ *
  * ⚠ "Open" is `aria-expanded`, never `data-state`. Each trigger sits inside a
  * Tooltip's trigger, and Radix merges the tooltip's `data-state` ("closed",
  * "delayed-open") over the popover's or menu's own, so `[data-state='open']`

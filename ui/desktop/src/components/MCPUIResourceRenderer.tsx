@@ -52,9 +52,9 @@ export function artifactCardKind(source: ArtifactSource, uri?: string): Artifact
  * the card (whenever `artifactSourceFromResource` yields a source) or a
  * no-preview note (when it yields none).
  *
- * The card spans the 760px column, carries a hairline and no shadow (it sits on
- * the page, it does not float), and holds a 32px kind tile, the title and the
- * kind. It only opens; there is no delete control (CLAUDE.md, Artifact side
+ * The card spans the 760px column, rests on the subtle fill with no outline and
+ * no shadow (it sits on the page, it does not float; R-27), and holds a 32px
+ * kind tile, the title and the kind. It only opens; there is no delete control (CLAUDE.md, Artifact side
  * panel). Styled in authored CSS (`.br-artifact-card`, tool-call.css).
  */
 export default function MCPUIResourceRenderer({

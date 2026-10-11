@@ -95,8 +95,12 @@ button.br-transcript-row-head:focus-visible {
   white-space: nowrap;
 }
 
+/* Every meta opens with "· " ("Explored · 2 files", "Thinking · 8s"), so it
+   sits one word space after the label: the head's 8px gap less 4px leaves 4px,
+   about the width of the space after the dot, and the phrase reads evenly. */
 .br-transcript-row-meta {
   flex-shrink: 0;
+  margin-inline-start: -4px;
   white-space: nowrap;
 }
 
@@ -152,6 +156,8 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
   min-width: 0;
 }
 
+/* The well is the subtle fill every in-page box takes (fills before lines,
+   R-27, design.md 9.11): no outline, the element radius. */
 .br-transcript-row-well {
   display: flex;
   flex-direction: column;
@@ -159,7 +165,7 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
   min-width: 0;
   padding: 12px;
   border-radius: var(--radius-element);
-  background: var(--background-well);
+  background: var(--background-fill);
 }
 
 /* A tool's output is machine text. It reads in the code role (13/20, mono), the
@@ -170,6 +176,26 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
   font-family: var(--font-mono);
   font-size: var(--text-code);
   line-height: var(--text-code--line-height);
+}
+
+/* Output keeps its runs of spaces and tabs (aligned columns), so a paragraph is
+   `pre-wrap`. Chat markdown also turns every newline into a <br> followed by
+   the newline itself, and `pre-wrap` honours both, so each line break doubled;
+   the <br> stands down and the newline carries the break. Only paragraphs:
+   on the markdown root, the newlines between blocks drew a blank line between
+   a paragraph and the table under it. */
+.br-transcript-row-well .biorouter-markdown p {
+  white-space: pre-wrap;
+}
+
+.br-transcript-row-well .biorouter-markdown p br {
+  display: none;
+}
+
+/* A code block or a table in the output steps back to the page ground: the
+   well is already the fill, and a fill never sits on a fill. */
+.br-transcript-row-well :is(.br-md-code, .br-md-table) {
+  background-color: var(--background-default);
 }
 
 .br-transcript-row-section {

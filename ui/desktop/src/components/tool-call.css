@@ -36,11 +36,15 @@
 /* @ws WS-TOOLS begin: action card */
 /*
  * The one card for anything that asks the person to act: an approval, an
- * elicitation, a secret request (spec 3.6). Radius 12, a 1px hairline, the
- * default ground, 16px in, 12px between its parts; actions end the card at the
- * bottom right. Authored here and not as utilities, because a newly written
- * Tailwind class can silently fail to generate under BIOROUTER_NO_HMR and the
- * three cards must not drift apart.
+ * elicitation, a secret request (spec 3.6). Radius 12, the subtle fill with no
+ * resting outline (fills before lines, R-27, design.md 9.11), 16px in, 12px
+ * between its parts; actions end the card at the bottom right. The 1px border
+ * stays, transparent: no geometry moves, and forced colours draw it in the
+ * system ink. The components add `.br-fill-surface`, so a field or a secondary
+ * button inside steps back to the page ground (a fill never sits on a fill).
+ * Authored here and not as utilities, because a newly written Tailwind class
+ * can silently fail to generate under BIOROUTER_NO_HMR and the three cards must
+ * not drift apart.
  */
 .br-action-card {
   display: flex;
@@ -48,9 +52,9 @@
   gap: 12px;
   min-width: 0;
   padding: 16px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background: var(--background-default);
+  background: var(--background-fill);
 }
 
 /* A card that mounts because of a history load, a tab switch or a reload
@@ -60,53 +64,61 @@
 .br-action-card[data-motion-still] {
   animation: none;
 }
+
+/* What the call will do (`ToolCallPreview`): a code box with a head row over a
+   hairline, after the code block recipe. Inside the filled card it steps back
+   to the page ground, so it reads as a window onto the call and never as a
+   fill on a fill; anywhere else it is the fill itself. */
+.br-tool-preview {
+  overflow: hidden;
+  border-radius: var(--radius-element);
+  background: var(--background-fill);
+}
+
+.br-action-card .br-tool-preview {
+  background: var(--background-default);
+}
 /* @ws WS-TOOLS end: action card */
 
 /* @ws WS-TOOLS begin: artifact card */
 /* The artifact card (`MCPUIResourceRenderer`): spans the 760px column, a 12px
-   radius, a hairline, no shadow, 32px kind tile, title over a human kind. It
-   asks for a click, so it answers the pointer with the neutral hover wash. */
+   radius, the subtle fill with no resting outline (R-27; the 1px border stays,
+   transparent, for forced colours), no shadow, a 32px kind tile, the title over
+   a human kind. It asks for a click, so the pointer steps the fill to
+   `--background-fill-strong`, the hover and press step of every filled box. */
 .br-artifact-card {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
   width: 100%;
   min-width: 0;
   padding: 12px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background: var(--background-default);
+  background-color: var(--background-fill);
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-
-/* The shared hover tint (ink at 5%) laid over the card's own ground. It is a
-   layer of its own because a background-image cannot transition. */
-.br-artifact-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: transparent;
-  pointer-events: none;
   transition: background-color var(--dur-fast-min) var(--ease-out);
 }
 
-.br-artifact-card:hover::before {
-  background: var(--overlay-hover);
+.br-artifact-card:hover,
+.br-artifact-card:active {
+  background-color: var(--background-fill-strong);
 }
 
-/* Focus follows the row recipe (D-15). The card paints its own ground, which
-   would out-rank the base layer's focus fill, so the fill is restated. */
+/* Focus follows the row recipe (D-15): the focus fill plus an inset edge. The
+   card paints its own ground, which would out-rank the base layer's focus
+   fill, so the fill is restated. */
 .br-artifact-card:focus-visible {
   outline: none;
-  background: var(--background-focus);
+  background-color: var(--background-focus);
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
+/* The tile steps back to the page ground inside the filled card (a fill never
+   sits on a fill), so it holds its shape at rest and under the pointer. */
 .br-artifact-card-tile {
   display: inline-flex;
   flex-shrink: 0;
@@ -115,12 +127,18 @@
   width: 32px;
   height: 32px;
   border-radius: var(--radius-element);
-  background: var(--background-muted);
+  background: var(--background-default);
   color: var(--text-muted);
 }
 
 .br-artifact-card-tile > svg {
   width: 16px;
   height: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-artifact-card {
+    transition: none;
+  }
 }
 /* @ws WS-TOOLS end: artifact card */
