@@ -36,6 +36,15 @@ describe('ContextsSection', () => {
     expect(container.querySelectorAll('p')).toHaveLength(0);
   });
 
+  // V4-20: the biorouter row's glyph was named "About About Biorouter".
+  it('names each help glyph for its row, never "About About …"', () => {
+    render(<ContextsSection />);
+    for (const { label } of CONTEXTS) {
+      expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /About about/i })).toBeNull();
+  });
+
   it('says "loaded only for … tasks" in the section header, not on every office row', () => {
     for (const { description } of CONTEXTS) {
       expect(description).not.toMatch(/loaded only/i);

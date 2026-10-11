@@ -102,6 +102,31 @@ describe('contexts', () => {
       expect(c.description).not.toContain('—');
     }
   });
+
+  // V4-20: the row's InfoTip is named "About {label}", so a label that starts with "About" gave a
+  // glyph named "About About Biorouter".
+  it('never starts a label with "About", which the row\'s InfoTip name already says', () => {
+    for (const c of CONTEXTS) {
+      expect(c.label, c.id).not.toMatch(/^about\b/i);
+    }
+  });
+
+  // V4-27: "Develop Biorouter Extension" and "Develop Biorouter Skill" were Title Case in a list of
+  // sentence-case names. The brand is the one capital after the first word.
+  it('writes every label in sentence case', () => {
+    for (const c of CONTEXTS) {
+      for (const word of c.label.split(' ').slice(1)) {
+        if (word === 'Biorouter') continue;
+        expect(word, `${c.id}: "${c.label}"`).not.toMatch(/^[A-Z][a-z]+$/);
+      }
+    }
+    expect(CONTEXTS.find((c) => c.id === 'develop-biorouter-extension')?.label).toBe(
+      'Develop Biorouter extension'
+    );
+    expect(CONTEXTS.find((c) => c.id === 'develop-biorouter-skill')?.label).toBe(
+      'Develop Biorouter skill'
+    );
+  });
 });
 
 /**

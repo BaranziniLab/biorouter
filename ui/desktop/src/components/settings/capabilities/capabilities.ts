@@ -13,6 +13,14 @@ import type { ExtensionConfig } from '../../../api/types.gen';
 export interface CapabilityMeta {
   /** Normalized extension key — see nameToKey(). */
   key: string;
+  /**
+   * The capability's own name, spelled as the daemon serves it (`bundled_extension_display_name`
+   * in `config/extensions.rs`) and as the transcript's tool rows, the permission dialogs and the
+   * CLI show it. These are product names, so "Web & Documents", "Code Execution", "Extension
+   * Manager" and "Workspace Control" stay in Title Case beside the sentence-case rows around them
+   * (vision finding V4-27): a label spelled differently here would name a different thing from the
+   * one the transcript says ran. Change the daemon's name and this one together.
+   */
   label: string;
   description: string;
   defaultEnabled: boolean;

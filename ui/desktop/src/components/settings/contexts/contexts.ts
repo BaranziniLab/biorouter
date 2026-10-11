@@ -40,6 +40,11 @@ export interface ContextMeta {
    * is also its directory name), or a BUNDLE's directory name.
    */
   id: string;
+  /**
+   * Sentence case, and never starting with "About": the row's InfoTip is named "About {label}".
+   * (The marketplace lists the same skills by their own Title Case names; that is its page, not
+   * this row.)
+   */
   label: string;
   /**
    * The row's InfoTip text: two sentences at most. "Loaded only for … tasks" is said once, in the
@@ -80,7 +85,9 @@ export const CONTEXTS: readonly ContextMeta[] = [
   },
   {
     id: 'about-biorouter',
-    label: 'About Biorouter',
+    // Not "About Biorouter": the row's InfoTip is named "About {label}", and the glyph read
+    // "About About Biorouter" (V4-20).
+    label: 'Biorouter overview',
     description: 'What Biorouter is and how its pieces fit together.',
   },
   {
@@ -90,12 +97,12 @@ export const CONTEXTS: readonly ContextMeta[] = [
   },
   {
     id: 'develop-biorouter-extension',
-    label: 'Develop Biorouter Extension',
+    label: 'Develop Biorouter extension',
     description: 'Build, package and publish an extension.',
   },
   {
     id: 'develop-biorouter-skill',
-    label: 'Develop Biorouter Skill',
+    label: 'Develop Biorouter skill',
     description: 'Write, test and package a skill.',
   },
   {
