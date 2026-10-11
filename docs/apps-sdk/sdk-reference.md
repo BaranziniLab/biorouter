@@ -740,7 +740,7 @@ External extensions are recorded as registry references, not staged as `.brxt` b
 - **Windows**: double-click `run.bat`, which runs `run.ps1`.
 - `biorouter-launch.sh` holds the shared steps that `run.sh` and `run.command` source.
 
-A launcher installs the app into the store the daemon reads, installs a full export's payload (with consent), starts or reuses a daemon, asks it for the app's one-time launch link, and opens that link in the default web browser. It also prints the link.
+A launcher installs the app into the store the daemon reads, starts or reuses a daemon, installs a full export's payload with consent, asks the daemon for the app's one-time launch link, and opens that link in the default web browser. It also prints the link.
 
 - **Where the store is.** The launchers resolve the configuration folder exactly as the daemon does (`paths::config_dir`): `$BIOROUTER_PATH_ROOT/config` when that is set; on macOS and Linux `$XDG_CONFIG_HOME/biorouter` when that is an absolute path, else `~/.config/biorouter`; on Windows `%APPDATA%\Block\biorouter\config`. `run.ps1` used to install under `~\.config\biorouter`, which no Windows daemon reads, so every Windows launch failed with "does not serve". A test runs the bash and Node expressions against the Rust resolver.
 - **Never over another app.** The launcher installs only the runtime files: the manifest and authored runtime files, including root assets and custom folders. It compares the store's copy with the folder by `app_uid` (or by creation time for an app made before `app_uid` existed):
@@ -758,7 +758,7 @@ A launcher installs the app into the store the daemon reads, installs a full exp
 
 ### First-run consent
 
-A full export's launcher prompts before installing its payload: `install_payload()` lists the knowledge bases and skills it is about to install and asks `y/N`. `BIOROUTER_EXPORT_YES=1` skips the prompt for CI and headless runs, and a marker file makes re-runs no-ops. Knowledge bases are staged under `knowledge-imports/` for the Knowledge panel's importer, since the CLI has no `knowledge import` command yet. A launcher-mode export carries no payload, so the step does nothing there.
+A full export's launcher lists its knowledge bases and skills and asks `y/N` before installation. `BIOROUTER_EXPORT_YES=1` provides consent for CI and headless runs. All three launchers import knowledge archives through the running daemon's authenticated multipart API, which preserves their privacy and owner markings. Each successful archive has a receipt, so retrying a partial failure does not duplicate successful imports. Matching app declarations follow the allocated knowledge ids while independent recipient edits remain intact. Selected custom skills are installed with backups after knowledge imports succeed; shipped skills are excluded. A content fingerprint marks complete installation, and failed imports leave it unfinished with an explicit retry message. Launcher mode carries no payload.
 
 The in-SDK capability re-consent screen the design describes is not built. `export.json` is the machine-readable record, and its `required_credentials` and `runtime_requirements` are empty because they cannot be enumerated without the BAAM registry.
 

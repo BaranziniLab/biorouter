@@ -1086,7 +1086,11 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   gates knowledge payloads. Exported HTML stays raw for daemon assembly, binary
   assets are preserved, and working files, secrets and build-chat ids are omitted.
   Launchers honor `BIOROUTER_PATH_ROOT` for an isolated recipient store and retain
-  backups before replacing installed contents.
+  backups before replacing installed contents. Full launchers start or reuse the
+  authenticated daemon before importing knowledge archives through its existing
+  multipart API. Import receipts prevent duplicate imports on retries; only
+  matching app declarations are rebound to allocated knowledge ids. Payload
+  consent and archive privacy/owner floors remain enforced.
 - **App pages require a document navigation** on browser credentials in a secure
   browser context (loopback or HTTPS). Plain HTTP on a network address refuses
   app surfaces and the secret-bearing serve shell, because Fetch Metadata and
