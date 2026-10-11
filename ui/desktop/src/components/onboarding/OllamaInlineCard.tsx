@@ -16,6 +16,7 @@ import {
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import './onboarding.css';
 import { Spinner } from '../ui/spinner';
+import { ollamaCopy } from './copy';
 import { StatusPill } from './StatusPill';
 
 interface OllamaInlineCardProps {
@@ -60,29 +61,29 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       const modelAvailable = await hasModel(getPreferredModel());
       setModelStatus(modelAvailable ? 'available' : 'not-available');
       toastService.success({
-        title: 'Ollama Detected!',
-        msg: 'Ollama is now running. You can connect to it.',
+        title: ollamaCopy.detectedToast,
+        msg: ollamaCopy.detectedToastDetail,
       });
     }, 3000);
   };
 
   const handleDownloadModel = async () => {
     setModelStatus('downloading');
-    setDownloadProgress({ status: 'Starting download…' });
+    setDownloadProgress({ status: ollamaCopy.startingDownload });
     const success = await pullOllamaModel(getPreferredModel(), (progress) => {
       setDownloadProgress(progress);
     });
     if (success) {
       setModelStatus('available');
       toastService.success({
-        title: 'Model Downloaded!',
-        msg: `Downloaded ${getPreferredModel()}`,
+        title: ollamaCopy.downloadedToast,
+        msg: ollamaCopy.downloadedToastDetail(getPreferredModel()),
       });
     } else {
       setModelStatus('not-available');
       toastService.error({
-        title: 'Download failed',
-        msg: `Failed to download ${getPreferredModel()}. Try again.`,
+        title: ollamaCopy.downloadFailed,
+        msg: ollamaCopy.downloadFailedDetail(getPreferredModel()),
         traceback: '',
       });
     }
@@ -96,15 +97,15 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       await upsert('BIOROUTER_MODEL', getPreferredModel(), false);
       await upsert('OLLAMA_HOST', 'localhost', false);
       toastService.success({
-        title: 'Success!',
-        msg: `Connected to Ollama with ${getPreferredModel()} model.`,
+        title: ollamaCopy.connectedToast,
+        msg: ollamaCopy.connectedToastDetail(getPreferredModel()),
       });
       onSuccess();
     } catch (error) {
       console.error('Failed to connect to Ollama:', error);
       toastService.error({
-        title: 'Connection failed',
-        msg: `Failed to connect to Ollama: ${errorMessage(error)}`,
+        title: ollamaCopy.connectFailed,
+        msg: ollamaCopy.connectFailedDetail(errorMessage(error)),
         traceback: error instanceof Error ? error.stack || '' : '',
       });
       setIsConnecting(false);
@@ -112,17 +113,10 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   };
 
   const detectedPill = (
-    <StatusPill tone="success">
-      Ollama running · {getPreferredModel()}
-      {modelStatus === 'available'
-        ? ' ready'
-        : modelStatus === 'not-available'
-          ? ' not installed'
-          : ''}
-    </StatusPill>
+    <StatusPill tone="success">{ollamaCopy.running(getPreferredModel(), modelStatus)}</StatusPill>
   );
 
-  const notDetectedPill = <StatusPill tone="warning">Ollama not detected</StatusPill>;
+  const notDetectedPill = <StatusPill tone="warning">{ollamaCopy.notDetected}</StatusPill>;
 
   return (
     <OnboardingCardShell
@@ -136,7 +130,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       {isChecking ? (
         <div className="flex items-center gap-2 text-supporting text-text-muted">
           <Spinner size={14} />
-          <span>Checking for Ollama…</span>
+          <span>{ollamaCopy.checking}</span>
         </div>
       ) : ollamaDetected ? (
         <div className="space-y-3">
@@ -145,7 +139,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
           {modelStatus === 'checking' && (
             <div className="flex items-center gap-2 text-supporting text-text-muted">
               <Spinner size={14} />
-              <span>Checking for model…</span>
+              <span>{ollamaCopy.checkingModel}</span>
             </div>
           )}
 
@@ -184,25 +178,17 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
             </div>
           )}
 
-          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+          {/* One action on the 32px rung, never stretched; the model's name is in the status
+              line above, so the button says what it does and how much it downloads (FR-S-8). */}
+          <div className="flex flex-wrap items-center gap-2">
             {modelStatus === 'not-available' && (
-              <Button
-                onClick={handleDownloadModel}
-                variant="secondary"
-                size="lg"
-                className="w-full sm:w-auto"
-              >
-                Download {getPreferredModel()} (~11GB)
+              <Button onClick={handleDownloadModel} variant="secondary">
+                {ollamaCopy.downloadModel}
               </Button>
             )}
             {modelStatus === 'available' && (
-              <Button
-                onClick={handleConnectOllama}
-                disabled={isConnecting}
-                size="lg"
-                className="w-full sm:w-auto"
-              >
-                {isConnecting ? 'Connecting…' : 'Connect to Ollama'}
+              <Button onClick={handleConnectOllama} disabled={isConnecting}>
+                {isConnecting ? ollamaCopy.connecting : ollamaCopy.use}
               </Button>
             )}
           </div>
@@ -210,21 +196,21 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       ) : (
         <div className="space-y-3">
           <div>{notDetectedPill}</div>
-          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+          <div className="flex flex-wrap items-center gap-2">
             {isPolling ? (
               <div className="flex items-center gap-2 text-supporting text-text-muted">
                 <Spinner size={14} />
-                <span>Waiting for Ollama to start…</span>
+                <span>{ollamaCopy.waiting}</span>
               </div>
             ) : (
-              <Button asChild variant="secondary" size="lg" className="w-full sm:w-auto">
+              <Button asChild variant="secondary">
                 <a
                   href={getOllamaDownloadUrl()}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={handleInstallClick}
                 >
-                  Install Ollama
+                  {ollamaCopy.install}
                 </a>
               </Button>
             )}

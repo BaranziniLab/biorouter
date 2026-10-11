@@ -134,3 +134,31 @@ export const commercialCopy = {
     }),
   },
 } as const;
+
+/** Ollama's panel (`OllamaInlineCard`). Sentence case, and no exclamation marks in a toast. */
+export const ollamaCopy = {
+  checking: 'Checking for Ollama…',
+  checkingModel: 'Checking for model…',
+  notDetected: 'Ollama not detected',
+  running: (model: string, state: string) =>
+    `Ollama running · ${model}${
+      state === 'available' ? ' ready' : state === 'not-available' ? ' not installed' : ''
+    }`,
+  install: 'Install Ollama',
+  waiting: 'Waiting for Ollama to start…',
+  /** The model's name is on the status line; the button says what it does and its size. */
+  downloadModel: 'Download model (11 GB)',
+  startingDownload: 'Starting download…',
+  use: 'Use Ollama',
+  connecting: 'Connecting…',
+  detectedToast: 'Ollama is running',
+  detectedToastDetail: 'You can connect to it now.',
+  downloadedToast: 'Model downloaded',
+  downloadedToastDetail: (model: string) => `Downloaded ${model}.`,
+  downloadFailed: 'Download failed',
+  downloadFailedDetail: (model: string) => `Could not download ${model}. Try again.`,
+  connectedToast: 'Connected to Ollama',
+  connectedToastDetail: (model: string) => `Chats start on ${model}.`,
+  connectFailed: 'Connection failed',
+  connectFailedDetail: (reason: string) => `Could not connect to Ollama: ${reason}`,
+} as const;
