@@ -655,13 +655,18 @@ export default function ModelsBottomBar({
               </div>
             )}
             {showPrivacyBlock && (
-              <p className="mt-1.5 text-supporting text-text-muted [overflow-wrap:anywhere]">
-                {privacyLine && <span data-testid="chat-privacy-line">{privacyLine}</span>}
-                {privacyLine && disclosureLine && ' '}
+              // Two subjects, two lines (V2-05). They used to be two spans in one
+              // `<p>` joined by a space, which read as the single run-on "Public
+              // chat Not HIPAA-compliant, …": the chat's tier is a label with no
+              // full stop, and the disclosure is a sentence about the MODEL. The
+              // texts are unchanged (§14.2 and DR-17 are locked); only the break
+              // between them is new. Still one `text-supporting` block (spec 3.7).
+              <div className="mt-1.5 flex flex-col gap-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
+                {privacyLine && <p data-testid="chat-privacy-line">{privacyLine}</p>}
                 {disclosureLine && (
-                  <span data-testid="non-private-model-chip-note">{disclosureLine}</span>
+                  <p data-testid="non-private-model-chip-note">{disclosureLine}</p>
                 )}
-              </p>
+              </div>
             )}
           </div>
           {/*

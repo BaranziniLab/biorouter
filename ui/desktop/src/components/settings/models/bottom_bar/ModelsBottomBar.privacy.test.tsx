@@ -264,6 +264,31 @@ describe('ModelsBottomBar — the chip carries the dense padlock, never a pill',
     );
   });
 
+  /**
+   * V2-05. The chat's tier ("Public chat", a label with no full stop) and the
+   * disclosure (a sentence about the model) were two spans inside ONE paragraph
+   * joined by a space, so the menu read "Public chat Not HIPAA-compliant, …".
+   * They are two paragraphs in one block now. jsdom lays nothing out, so the
+   * structure is what can be asserted: neither is a span in the other's
+   * paragraph, and the served words are untouched.
+   */
+  it('sets the chat’s tier and the disclosure on separate lines, not in one run-on', async () => {
+    mocks.currentProvider = 'openai';
+    renderBar('public');
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+
+    const chat = await screen.findByTestId('chat-privacy-line');
+    const note = await screen.findByTestId('non-private-model-chip-note');
+    expect(chat.tagName).toBe('P');
+    expect(note.tagName).toBe('P');
+    expect(chat.closest('p')).not.toBe(note.closest('p'));
+    expect(chat.parentElement).toBe(note.parentElement);
+    expect(chat).toHaveTextContent(/^Public chat$/);
+    expect(note).toHaveTextContent(/^SERVED-SHORT-MARKER/);
+    // No stray text node (the old joining space) between them in the block.
+    expect(Array.from(chat.parentElement!.childNodes)).toEqual([chat, note]);
+  });
+
   it('an institutional model does NOT, even while the chat itself is still public', async () => {
     mocks.currentProvider = 'versa_azure';
     renderBar('public');
