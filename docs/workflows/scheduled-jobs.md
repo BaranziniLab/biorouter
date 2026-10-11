@@ -99,7 +99,7 @@ The Scheduler page shows all active and paused jobs. Each row has:
 - A status dot and the status in words: Running, Paused, Failed or Scheduled
 - The schedule in words (the cron expression is in its tooltip) and when it last ran
 - On a failed job, the reason it failed
-- Actions on hover: Pause or Resume (Stop while a run is in progress) and a `⋯` menu with Edit, Run now, Inspect run and Delete
+- Actions on hover: Pause or Resume (Stop while a run is in progress) and a `⋯` menu with Edit, Run now, Inspect run and Delete… (it asks you to confirm)
 
 ### From the CLI
 

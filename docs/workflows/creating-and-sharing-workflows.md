@@ -55,8 +55,8 @@ Biorouter drafts the workflow from the conversation and shows it to you before a
 3. Click `New workflow`.
 4. In the dialog that opens, fill in the title, the description and the instructions. Open `Advanced` for the starter buttons, parameters, response schema, model and the extensions, skills and knowledge bases the workflow uses; its closed line states the defaults.
 5. When you're finished, you can:
-   - Click `Save` to save the workflow to your Workflow Library
-   - Click `Save and run` to save and immediately run the workflow in a new session
+   - Click `Create` to save the workflow to your Workflow Library
+   - Click `Create and run` to save and immediately run the workflow in a new session
 
 > **Warning.** You cannot create a workflow from an existing workflow session, but you can view or [edit the workflow](#edit-a-workflow).
 
@@ -453,13 +453,13 @@ You can also provide parameter values to pre-fill the `Workflow Parameters` dial
 biorouter workflow deeplink <FILE> --param key1=value1 --param key2=value2
 ```
 
-When someone clicks the link, it will open Biorouter Desktop with your workflow configuration. They can also use your workflow link to [import a workflow](workflow-storage-and-discovery.md#importing-workflows) for future use.
+When someone clicks the link, it will open Biorouter Desktop with your workflow configuration.
 
 ### Share via workflow file
 
 You can share a workflow with Desktop or CLI users by sending the workflow file directly.
 
-- Desktop users can [import the workflow](workflow-storage-and-discovery.md#importing-workflows) (YAML only).
+- Desktop users can [import the workflow](workflow-storage-and-discovery.md#importing-workflows) from a `.yaml` or `.json` file.
 - CLI users can run a YAML or JSON workflow using `biorouter run --workflow <FILE>` or open it directly in Biorouter Desktop with `biorouter workflow open <FILE>`. See the [CLI command reference](../cli/command-reference.md#workflow) for details.
 
 ## Schedule a workflow
@@ -492,13 +492,13 @@ When creating a schedule, you'll configure:
 
 **Manage scheduled workflows:**
 
-Your scheduled workflows are listed in the `Scheduler` page, each with a status dot (running, paused, failed or scheduled), when it runs in words, and when it last ran. Hover a row for its actions: `Pause` or `Resume` (`Stop` while a run is in progress) and a `⋯` menu with `Edit`, `Run now`, `Inspect run` and `Delete`. Click a schedule to open its page, where the same actions sit at the top:
+Your scheduled workflows are listed in the `Scheduler` page, each with a status dot (running, paused, failed or scheduled), when it runs in words, and when it last ran. Hover a row for its actions: `Pause` or `Resume` (`Stop` while a run is in progress) and a `⋯` menu with `Edit`, `Run now`, `Inspect run` and `Delete…`. Click a schedule to open its page, where the same actions sit at the top:
 
 - `Run now` to trigger the workflow manually
 - `Pause` or `Resume` to stop or restart automatic runs
-- the `⋯` menu for `Edit` (change the frequency) and `Delete`
+- the `⋯` menu for `Edit` (change the frequency) and `Delete…`, which asks you to confirm
 
-Below the facts on the schedule's page you can see the chats its runs created and open each one.
+Below the facts on the schedule's page, `Recent runs` lists the chats its runs created, each led by the date and time it started, and you can open any of them.
 
 ### In the CLI
 
