@@ -169,8 +169,11 @@ export function Dropzone({ onFiles, onPathPickRequested, onPasteText, dragging =
         {/* A 32px `rounded-element` plate with a 16px icon: the dropzone's own
             mark, deliberately smaller than `EmptyState`'s 48px plate, because
             this is a control in a 300px rail and not a page's empty state. */}
+        {/* Named for what a press does (it opens the chooser), not only for the drag its words
+            describe; the name starts with those words (copy.ts, `dropButtonName`). */}
         <button
           type="button"
+          aria-label={knowledgeCopy.ingest.dropButtonName}
           className="flex flex-col items-center gap-2 rounded-element px-2 py-1"
           onClick={(e) => {
             e.stopPropagation();

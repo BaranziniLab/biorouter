@@ -34,9 +34,28 @@ describe('Dropzone', () => {
     renderDropzone();
     expect(chooser()).toBeNull();
 
-    await user.click(screen.getByRole('button', { name: knowledgeCopy.ingest.dropLabel }));
+    await user.click(screen.getByRole('button', { name: knowledgeCopy.ingest.dropButtonName }));
     expect(chooser()).toBeInTheDocument();
     expect(screen.getByText(knowledgeCopy.ingest.chooserSubtitle)).toBeInTheDocument();
+  });
+
+  it('names its button for what a press does, and keeps the words a person sees first', async () => {
+    const user = userEvent.setup();
+    renderDropzone();
+    const { dropLabel, dropButtonName } = knowledgeCopy.ingest;
+    const button = screen.getByRole('button', { name: dropButtonName });
+
+    // The visible words stay, and they open the name, so saying them still reaches the button.
+    expect(button).toHaveTextContent(dropLabel);
+    expect(dropButtonName.startsWith(dropLabel)).toBe(true);
+    // A press opens the chooser, so the name says so, not only the drag.
+    expect(dropButtonName).not.toBe(dropLabel);
+    expect(dropButtonName).toMatch(/\bchoose\b/i);
+
+    // From the keyboard: Enter on the button opens the chooser the name promises.
+    button.focus();
+    await user.keyboard('{Enter}');
+    expect(chooser()).toBeInTheDocument();
   });
 
   it('opens the chooser when the empty part of the box is pressed', async () => {

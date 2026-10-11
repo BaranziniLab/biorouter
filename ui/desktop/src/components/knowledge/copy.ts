@@ -49,6 +49,13 @@ export const knowledgeCopy = {
   /** The Sources rail's staging affordances. */
   ingest: {
     dropLabel: 'Drag and drop to stage',
+    /**
+     * The box's button's accessible name. The visible label says what a drag does, but a press
+     * (Enter, Space, a click) opens the chooser, so the name says that too. It starts with the
+     * visible words, so a person who says what they see ("click Drag and drop to stage") still
+     * reaches the button (WCAG 2.5.3, label in name).
+     */
+    dropButtonName: 'Drag and drop to stage, or choose sources',
     dropHint: 'PDF, Office, web pages, folders',
     dropInfoLabel: 'staging files',
     dropInfo:
