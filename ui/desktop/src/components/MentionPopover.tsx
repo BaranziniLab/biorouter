@@ -13,6 +13,7 @@ import BuiltInBadge from './ui/BuiltInBadge';
 import { DROPDOWN_ROW_CLASS_NAME as MENU_ROW_CLASS_NAME } from './ui/dropdown-menu';
 import { Spinner } from './ui/spinner';
 import { COMPOSER_COPY } from './composer/copy';
+import { mentionMenuPlacement } from './composer/mentionMenuPlacement';
 import { cn } from '../utils';
 import './composer/composer.css';
 import { CommandType, getSessionExtensions, getSlashCommands, listBases } from '../api';
@@ -249,6 +250,7 @@ interface MentionPopoverProps {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (filePath: string) => void;
+  /** Where the list opens from: `mentionMenuAnchor` (the text's left edge, the card's top). */
   position: { x: number; y: number };
   query: string;
   isSlashCommand: boolean;
@@ -895,11 +897,9 @@ const MentionPopover = forwardRef<
     // query keeps the rows it has on screen until the new ones arrive.
     const searching = displayItems.length === 0 && (isLoading || !hasAnswered);
 
-    const menuWidth = Math.max(320, Math.min(448, window.innerWidth - 16));
-    const menuLeft = Math.min(
-      Math.max(8, position.x),
-      Math.max(8, window.innerWidth - menuWidth - 8)
-    );
+    // Above the composer card, 8px clear of its edge (V2-R5-2), and never up
+    // into the window-drag band at the top of a chat.
+    const placement = mentionMenuPlacement(position, window.innerWidth);
 
     // The shared menu surface and row recipe (spec 2.6): 12px radius, 4px
     // padding, 32px rows at 13px, the highlight a neutral fill. The list is
@@ -913,13 +913,8 @@ const MentionPopover = forwardRef<
           isSlashCommand ? COMPOSER_COPY.mention.commandsLabel : COMPOSER_COPY.mention.mentionsLabel
         }
         data-testid="mention-popover"
-        className="biorouter-popover-surface br-mention-menu fixed flex max-h-72 flex-col overflow-hidden rounded-container bg-background-default p-1"
-        style={{
-          left: menuLeft,
-          top: position.y - 8,
-          width: menuWidth,
-          transform: 'translateY(-100%)', // Move it fully above
-        }}
+        className="biorouter-popover-surface br-mention-menu fixed flex flex-col overflow-hidden rounded-container bg-background-default p-1"
+        style={placement}
       >
         {searching ? (
           <div className="flex min-h-control-md items-center gap-2 px-3 text-secondary text-text-muted">

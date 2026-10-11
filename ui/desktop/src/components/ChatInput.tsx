@@ -17,6 +17,7 @@ import { InfoTip } from './ui/info-tip';
 import { Spinner } from './ui/spinner';
 import { ComposerChips } from './composer/ComposerChips';
 import { composerCardClassName } from './composer/composerCard';
+import { mentionMenuAnchor } from './composer/mentionMenuPlacement';
 import { ComposerPlusMenu, type ComposerTrigger } from './composer/ComposerPlusMenu';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
@@ -1601,16 +1602,12 @@ export default function ChatInput({
       return;
     }
 
-    // Calculate position for the popover - position it above the chat input
-    const textAreaRect = textArea.getBoundingClientRect();
-
     setMentionPopover((prev) => ({
       ...prev,
       isOpen: true,
-      position: {
-        x: textAreaRect.left,
-        y: textAreaRect.top, // Position at the top of the textarea
-      },
+      // The list opens above the whole card from the text's left edge, never
+      // from the field's own top, which sits inside the card (V2-R5-2).
+      position: mentionMenuAnchor(textArea),
       query,
       mentionStart: triggerIndex,
       selectedIndex: 0, // Reset selection when query changes

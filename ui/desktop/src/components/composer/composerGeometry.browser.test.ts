@@ -19,7 +19,11 @@
  *    remove control appears on hover and on keyboard focus;
  *  - a quotation is a 2px rule with no fill (never a box in the card), its
  *    words stop at four lines, and in a queue row it folds to the row's line;
- *  - the mention menu enters with the menus' one animation.
+ *  - the mention menu enters with the menus' one animation;
+ *  - the Commands and @ lists open above the card, 8px clear of its top edge,
+ *    from the text's left edge, and never up into the window-drag band
+ *    (V2-R5-2). These lay the list out with the real `mentionMenuPlacement.ts`,
+ *    bundled into the page, so the arithmetic under test is the shipped one.
  *
  * The class names below are asserted to be the ones `ChatInput.tsx` and the
  * composer components use, so this markup cannot drift from the real one
@@ -28,6 +32,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -133,9 +138,26 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
+/** The field and controls row as `ChatInput` draws them, for the list placement cases. */
+const FIELD =
+  '<textarea id="text" rows="1" class="br-composer-input" ' +
+  'style="display: block; width: 100%; resize: none; border: 0; padding: 6px 0; line-height: 20px; font-size: 14px;"></textarea>';
+const CONTROLS =
+  `<div class="br-composer-controls"><button style="${BUTTON(28)}">+</button>` +
+  `<span class="br-composer-controls__spacer"></span><button style="${BUTTON(32)}">s</button></div>`;
+/** A chips row (one thumbnail) and a queue row, the things that push the field down the card. */
+const CARD_TOP_ROWS =
+  '<div class="br-queue"><ul class="br-queue-list"><li class="br-queue-row">' +
+  '<span class="br-queue-arrow">↳</span><button class="br-queue-text br-queue-edit">and rerun it</button>' +
+  '</li></ul></div>' +
+  '<ul id="chips" class="br-composer-chips"><li><div class="br-composer-thumb"></div></li></ul>';
+
 describe('the composer recipes in a real layout engine', () => {
   let browser: Browser | null = null;
   let page: Page | null = null;
+  /** A 1440x900 window, the size the review measured the overlap at. */
+  let placementPage: Page | null = null;
+  let placementScript = '';
 
   beforeAll(async () => {
     browser = await launchChromium();
@@ -148,9 +170,21 @@ describe('the composer recipes in a real layout engine', () => {
       `<!doctype html><html><head><style>${TOKENS}${read('composer.css')}</style></head>` +
         `<body style="padding: 40px">${MARKUP}</body></html>`
     );
+    const bundle = await build({
+      entryPoints: [resolve(here, 'mentionMenuPlacement.ts')],
+      bundle: true,
+      write: false,
+      format: 'iife',
+      globalName: 'MentionMenu',
+      platform: 'browser',
+      logLevel: 'silent',
+    });
+    placementScript = bundle.outputFiles[0].text;
+    placementPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   }, 120_000);
 
   afterAll(async () => {
+    await placementPage?.close();
     await page?.close();
     await browser?.close();
   }, 120_000);
@@ -188,9 +222,16 @@ describe('the composer recipes in a real layout engine', () => {
       'br-quote-chip__source',
       'br-quote-chip__text',
       'br-mention-menu',
+      'biorouter-composer-card',
     ]) {
       expect(source, name).toContain(name);
     }
+    // The list is placed by the module the placement cases below lay out.
+    expect(read('../ChatInput.tsx')).toContain('position: mentionMenuAnchor(textArea)');
+    expect(read('../MentionPopover.tsx')).toContain(
+      'mentionMenuPlacement(position, window.innerWidth)'
+    );
+    expect(read('../MentionPopover.tsx')).toContain('style={placement}');
   });
 
   it('keeps an empty field to one 32px line', async (ctx) => {
@@ -331,5 +372,76 @@ describe('the composer recipes in a real layout engine', () => {
     expect(motion.origin).toBe('0px 0px');
     // The inline lift is untouched by the animation (it moves `translate` and `scale`).
     expect(motion.transform).toBe('matrix(1, 0, 0, 1, 0, -64)');
+  });
+
+  /**
+   * Lays a card out at `cardTop` (or 104px off the window's bottom, where the
+   * chat's card sits at 1440x900), opens a list of `rows` 32px rows with the real
+   * anchor and placement, and returns the boxes. The list's markup is
+   * `MentionPopover`'s: a fixed flex column, 4px padding, a scrolling body.
+   */
+  const placeList = async (cardTop: number | 'bottom', inside: string, rows: number) => {
+    const where = cardTop === 'bottom' ? 'bottom: 104px' : `top: ${cardTop}px`;
+    const list = Array.from({ length: rows }, () => '<div style="height: 32px"></div>').join('');
+    await placementPage!.setContent(
+      `<!doctype html><html><head><style>${TOKENS}${read('composer.css')}</style></head><body>` +
+        `<div id="card" class="biorouter-composer-card" style="position: fixed; left: 400px; ${where}; ${CARD}">` +
+        `${inside}${FIELD}${CONTROLS}</div>` +
+        '<div id="list" class="br-mention-menu" style="position: fixed; display: flex; flex-direction: column; overflow: hidden; padding: 4px;">' +
+        `<div id="list-body" style="flex: 1; min-height: 0; overflow-y: auto">${list}</div></div>` +
+        `<script>${placementScript}</script>` +
+        // In a block: `setContent` keeps the window, and with it any top-level `const`.
+        `<script>{
+          const placed = MentionMenu.mentionMenuPlacement(
+            MentionMenu.mentionMenuAnchor(document.getElementById('text')),
+            window.innerWidth
+          );
+          const menu = document.getElementById('list');
+          for (const [key, value] of Object.entries(placed)) {
+            menu.style[key] = typeof value === 'number' ? value + 'px' : value;
+          }
+        }</script></body></html>`
+    );
+    const on = async (selector: string) => {
+      const rect = await placementPage!.locator(selector).boundingBox();
+      if (!rect) throw new Error(`no box for ${selector}`);
+      return rect;
+    };
+    return { card: await on('#card'), text: await on('#text'), list: await on('#list'), on };
+  };
+
+  it('opens the Commands and @ lists 8px above the card, clear of its focus edge', async (ctx) => {
+    if (!placementPage) return ctx.skip();
+    const { card, text, list } = await placeList('bottom', '', 3);
+    // The instrument: the field's top sits 11px inside the card (1px border,
+    // 10px padding), so a list hung from the field would cover the card's edge.
+    expect(text.y - card.y).toBe(11);
+    expect(list.height).toBe(3 * 32 + 8);
+    expect(list.y + list.height).toBe(card.y - 8);
+    // From the text's left edge, as before.
+    expect(list.x).toBe(text.x);
+  });
+
+  it('keeps the gap above a card that holds a queue and chips, and covers neither', async (ctx) => {
+    if (!placementPage) return ctx.skip();
+    const { card, text, list, on } = await placeList('bottom', CARD_TOP_ROWS, 3);
+    const chips = await on('#chips');
+    // The field is pushed well down the card here.
+    expect(text.y - card.y).toBeGreaterThan(11 + 48);
+    expect(list.y + list.height).toBe(card.y - 8);
+    expect(list.y + list.height).toBeLessThan(chips.y);
+  });
+
+  it('shortens the list under a card high in the window, never rising into the drag band', async (ctx) => {
+    if (!placementPage) return ctx.skip();
+    // Twelve rows want 392px; the card's top at 200px leaves 200 - 8 - 52 = 140.
+    const { card, list } = await placeList(200, '', 12);
+    expect(list.y + list.height).toBe(card.y - 8);
+    expect(list.y).toBe(52);
+    const scrolls = await placementPage.$eval(
+      '#list-body',
+      (el) => el.scrollHeight > el.clientHeight
+    );
+    expect(scrolls).toBe(true);
   });
 });
