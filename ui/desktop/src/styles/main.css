@@ -874,12 +874,13 @@
      are scaffolding; what varies per family is the ink and icon on them. */
   --sidebar: #f7f7f5;
   --sidebar-foreground: var(--text-default);
-  /* Nav-icon colour. PER FAMILY — one of the two axes a family owns. Parchment
-     keeps icons the same ink as their label, so this is a pass-through; Alma
-     Mater and Roche Limit override it to carry their accent. Defined here (and
-     in .dark) so every theme resolves it and check-contrast.mjs can assert it
-     across all six scopes. */
-  --sidebar-icon: var(--sidebar-foreground);
+  /* Nav-icon colour. PER FAMILY, so a family could tint it; none does. Every
+     family points it at its muted ink, the ink a nav row's label and a chat
+     row's glyph wear at rest, so the sidebar's icon column is one ink (vision
+     V1-R2-5; the accent is held for the active rail and the lock badge, V1-M3).
+     Defined here (and in .dark) so every theme resolves it and
+     check-contrast.mjs can assert it across all six scopes. */
+  --sidebar-icon: var(--text-muted);
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: var(--sidebar-hover);
@@ -1059,7 +1060,7 @@
      main canvas, with its own hover/active steps. Shared, like light. */
   --sidebar: #171716;
   --sidebar-foreground: var(--text-default);
-  --sidebar-icon: var(--sidebar-foreground);
+  --sidebar-icon: var(--text-muted);
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: var(--sidebar-hover);
@@ -1196,7 +1197,7 @@
   --heat-4: #0e5258;
   --sidebar: #f7f7f5;
   --sidebar-foreground: #052049;
-  --sidebar-icon: #052049;
+  --sidebar-icon: #506380;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
@@ -1275,7 +1276,7 @@
   --heat-4: #60d0da;
   --sidebar: #171716;
   --sidebar-foreground: #f2f3f4;
-  --sidebar-icon: #f2f3f4;
+  --sidebar-icon: #b4b9bf;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;
@@ -1386,7 +1387,7 @@
   --heat-4: #c4560e;
   --sidebar: #f7f7f5;
   --sidebar-foreground: #1f1e1c;
-  --sidebar-icon: #1f1e1c;
+  --sidebar-icon: #5c5a55;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
@@ -1465,7 +1466,7 @@
   --heat-4: #ee6c1a;
   --sidebar: #171716;
   --sidebar-foreground: #ededea;
-  --sidebar-icon: #ededea;
+  --sidebar-icon: #a5a39d;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;

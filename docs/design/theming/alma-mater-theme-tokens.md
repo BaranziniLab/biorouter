@@ -7,8 +7,9 @@
 > the shipped code on 2026-07-18 (light-theme revision the same day; originally implemented
 > 2026-07-10). **Revised 2026-08-08: the neutrals are no longer Alma Mater's own** — see the
 > banner below. §9 records what was actually built. **Revised 2026-10-10: nav icons wear the
-> label ink** (`--sidebar-icon` = `--sidebar-foreground`, navy in light); teal stays on the active
-> rail, the lock badge and the other accent roles (redesign principle 7, vision finding V1-M3).
+> label ink**; teal stays on the active rail, the lock badge and the other accent roles (redesign
+> principle 7, vision finding V1-M3). **Revised 2026-10-11:** that ink is the resting one,
+> `--sidebar-icon` = `--text-muted` (`#506380` light), so icons match their muted labels (V1-R2-5).
 > **Audience:** developers adding a component that reads colour tokens, and anyone proposing a
 > new theme family.
 
@@ -216,14 +217,14 @@ of these came from the UCSF palette any more.
 
 ### 5b · Sidebar (the two-tone signature)
 
-One calm step deeper than the canvas — same restraint as Parchment's sidebar (a *slightly deeper surface*, never a dark slab). The colour on the sidebar is carried by the **accent rail on the active item**, not by tinting the whole surface. Until 2026-10-10 `--sidebar-icon` was teal too; nav icons now wear the label ink, as in Parchment and Roche Limit. The greys are shared; the ink rows are Alma Mater's.
+One calm step deeper than the canvas, with the same restraint as Parchment's sidebar (a *slightly deeper surface*, never a dark slab). The colour on the sidebar is carried by the **accent rail on the active item**, not by tinting the whole surface. Until 2026-10-10 `--sidebar-icon` was teal too; nav icons now wear the muted label ink (`--text-muted`), as in Parchment and Roche Limit. The greys are shared; the ink rows are Alma Mater's.
 
 | Token | Light | src | Dark | src |
 |---|---|---|---|---|
 | `--sidebar` | `#F7F7F5` | shared | `#171716` | shared |
 | `--sidebar-hover` | `#EFEFEC` | shared | `#232320` | shared |
 | `--sidebar-active` | `#EAEAE6` | shared | `#2E2E2A` | shared |
-| `--sidebar-icon` | `#052049` | **=sidebar-foreground** (was C2 teal) | `#F2F3F4` | **=sidebar-foreground** (was C4) |
+| `--sidebar-icon` | `#506380` | **=text-muted** (was C2 teal, then navy) | `#B4B9BF` | **=text-muted** (was C4, then `#F2F3F4`) |
 | `--sidebar-border` | `#E7E7E3` | shared | `#2A2A27` | shared |
 | `--sidebar-foreground` | `#052049` | **=text-default** | `#F2F3F4` | **=text-default** |
 | `--sidebar-primary` | =`--background-accent` | | =`--background-accent` | |
@@ -468,7 +469,7 @@ Every text-carrying pair was computed from the hex. **AA floors: body ≥4.5:1, 
 | white ink | accent fill `#14828C` | 4.56 | ✅ AA |
 | text-accent `#14828C` | canvas `#FFFFFF` | 4.56 | ✅ AA |
 | accent-bar `#16A0AC` | white | 3.15 | ✅ (UI 3:1) |
-| sidebar-icon `#052049` (label ink since 2026-10-10) | sidebar-active `#EAEAE6` | 13.30 | ✅ (SC 1.4.11 3:1) |
+| sidebar-icon `#506380` (muted label ink since 2026-10-11) | sidebar-active `#EAEAE6` | 5.06 | ✅ (SC 1.4.11 3:1) |
 | text-default `#052049` | background-focus `#E0E0DC` | 12.12 | ✅ AAA |
 | danger-text `#C40D3E` | white | 6.04 | ✅ AA |
 | white ink | danger fill `#E61048` | 4.63 | ✅ AA (≥14px) |
@@ -490,7 +491,7 @@ darker than the navy surfaces they replaced, so the same navy-family inks sit on
 | navy ink `#052049` | accent fill `#60D0DA` | 8.81 | ✅ AAA |
 | accent-bar `#60D0DA` | canvas `#131312` | 10.21 | ✅ (UI 3:1) |
 | text-accent `#60D0DA` | card `#1B1B19` | 9.47 | ✅ AAA |
-| sidebar-icon `#F2F3F4` (label ink since 2026-10-10) | sidebar-active `#2E2E2A` | 12.27 | ✅ (SC 1.4.11 3:1) |
+| sidebar-icon `#B4B9BF` (muted label ink since 2026-10-11) | sidebar-active `#2E2E2A` | 6.90 | ✅ (SC 1.4.11 3:1) |
 | danger `#F5768A` | card | 6.44 | ✅ AA |
 | success `#5FBF74` | card | 7.55 | ✅ AA |
 | warning `#FEB80A` | card | 9.92 | ✅ AAA |

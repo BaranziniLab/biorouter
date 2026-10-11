@@ -91,7 +91,9 @@ export default {
       'heat-4': '#a04a27',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#2a2520',
-      'sidebar-icon': '#2a2520',
+      // Nav icons wear the row's resting ink, the muted label ink, so the icon
+      // column is one ink with the labels and the chat glyphs below (V1-R2-5).
+      'sidebar-icon': '#635c54',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -235,7 +237,7 @@ export default {
       'heat-4': '#e8895f',
       sidebar: '#171716',
       'sidebar-foreground': '#f4f0e6',
-      'sidebar-icon': '#f4f0e6',
+      'sidebar-icon': '#b0a892', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',

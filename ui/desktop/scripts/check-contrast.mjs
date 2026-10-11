@@ -544,11 +544,12 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
   // asks it against every row the icon can sit on — the resting sidebar, the
   // hover fill, and the active fill. The darkest row is what binds. Every
-  // family now paints them in its label ink (the 2026-10 redesign, V1-M3: the
-  // accent is held for the active rail and the lock badge), so these pass
-  // trivially today. The token stays per family and stays asserted, because a
-  // family that points it back at its accent could ship an icon that
-  // disappears the moment a row is selected.
+  // family now paints them in its muted ink, the ink a nav label and a chat
+  // glyph wear at rest (the 2026-10 redesign: V1-M3 held the accent for the
+  // active rail and the lock badge, V1-R2-5 made the icon column one ink), so
+  // these pass with room today. The token stays per family and stays asserted,
+  // because a family that points it back at its accent, or at a lighter step,
+  // could ship an icon that disappears the moment a row is selected.
   for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
     assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
   }

@@ -84,10 +84,11 @@ export default {
       'heat-4': '#c4560e',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#1f1e1c',
-      // Nav icons wear the label ink, as in Parchment and Alma Mater: the
-      // accent is held for the active rail and the lock badge (redesign
-      // principle 7). Orange icons were accent outside that list (V1-M3).
-      'sidebar-icon': '#1f1e1c',
+      // Nav icons wear the row's resting ink, the muted label ink, as in
+      // Parchment and Alma Mater: one ink with the labels and the chat glyphs
+      // below (V1-R2-5). The accent is held for the active rail and the lock
+      // badge (redesign principle 7); orange icons were accent outside it (V1-M3).
+      'sidebar-icon': '#5c5a55',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -251,7 +252,7 @@ export default {
       'heat-4': '#ee6c1a',
       sidebar: '#171716',
       'sidebar-foreground': '#ededea',
-      'sidebar-icon': '#ededea', // the label ink, as in light
+      'sidebar-icon': '#a5a39d', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',

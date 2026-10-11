@@ -207,18 +207,22 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
 });
 
 /**
- * Nav icons wear their row's label ink in every family (2026-10 redesign,
- * principle 7; vision finding V1-M3). `--sidebar-icon` is a per-family token so
- * a family COULD tint its icons, and Alma Mater and Roche Limit did: teal and
- * orange on Home, New chat, Crew and every Components row, which put the accent
- * outside the zest list and gave one column two icon inks. The accent belongs to
- * the active rail and the lock badge. Parchment always passed the label ink
- * through, and Crew's sidebar (the reference design) reads the same token.
+ * Nav icons wear their row's resting ink in every family (2026-10 redesign,
+ * principle 7; vision findings V1-M3 and V1-R2-5). `--sidebar-icon` is a
+ * per-family token so a family COULD tint its icons, and Alma Mater and Roche
+ * Limit did: teal and orange on Home, New chat, Crew and every Components row,
+ * which put the accent outside the zest list. The accent belongs to the active
+ * rail and the lock badge. The resting ink is the MUTED one: a nav row's label
+ * and a chat row's glyph both wear `--text-muted` at rest, so an icon in
+ * `--sidebar-foreground` (the default ink, which V1-M3 first chose) read heavier
+ * than its own label and gave the 16px icon column two inks. Crew's sidebar (the
+ * reference design) reads the same token beside its own muted rows.
  */
-describe.each(['light', 'dark'] as const)('%s: nav icons wear the label ink', (mode) => {
+describe.each(['light', 'dark'] as const)('%s: nav icons wear the resting label ink', (mode) => {
   it.each(Object.keys(FAMILIES) as (keyof typeof FAMILIES)[])('%s', (id) => {
     const tokens = FAMILIES[id][mode].tokens as Record<string, string>;
-    expect(tokens['sidebar-icon']).toBe(tokens['sidebar-foreground']);
+    expect(tokens['sidebar-icon']).toBe(tokens['text-muted']);
+    expect(tokens['sidebar-icon']).not.toBe(tokens['sidebar-foreground']);
     expect(tokens['sidebar-icon']).not.toBe(tokens['text-accent']);
   });
 });
