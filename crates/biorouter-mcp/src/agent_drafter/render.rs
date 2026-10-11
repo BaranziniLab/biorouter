@@ -4619,6 +4619,11 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             let expected = runtime_digest(&folder, "pages/index.html").unwrap();
             let launcher = run_ps1("demo", "");
             let (definitions, _) = launcher.split_once("\nInstall-App\n").unwrap();
+            assert_eq!(definitions.matches("} catch { return \"\" }").count(), 1);
+            let definitions = definitions.replace(
+                "} catch { return \"\" }",
+                "} catch { [Console]::Error.WriteLine($_.Exception.ToString()); [Console]::Error.WriteLine($_.ScriptStackTrace); throw }",
+            );
             let probe = folder.join(".digest-probe.ps1");
             std::fs::write(
                 &probe,
@@ -4642,7 +4647,12 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
                 "{}",
                 String::from_utf8_lossy(&out.stderr)
             );
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                expected,
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 

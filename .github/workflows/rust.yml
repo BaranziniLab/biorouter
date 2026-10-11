@@ -261,6 +261,11 @@ jobs:
         with:
           node-version: 24
 
+      - name: Windows launcher runtime digest (actual PowerShell template)
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 2
+        run: node scripts/agent-drafter/check-windows-runtime-digest.mjs
+
       - name: Stage pinned native app compiler
         timeout-minutes: 2
         shell: bash
