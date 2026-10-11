@@ -35,7 +35,13 @@ describe('MessageActions (the floating cluster)', () => {
     // jsdom applies no stylesheet, so the rule is read where the browser reads it.
     const rule = /\.br-message-actions \{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(rule).toContain('position: absolute;');
-    expect(rule).toContain('top: -12px;');
+    // Above an answer it rises 8px, the smallest gap an answer has, so it never
+    // lands on the block above; above the user bubble it rises 20px and ends in
+    // the bubble's top padding, clear of the words (vision V2-12).
+    expect(rule).toContain('top: -8px;');
+    expect(
+      /\.br-message-actions-anchor > \.br-message-actions \{([^}]*)\}/.exec(css)?.[1]
+    ).toContain('top: -20px;');
     expect(rule).toContain('opacity: 0;');
     expect(rule).toContain('box-shadow: var(--shadow-popover), var(--inset-hairline);');
     expect(rule).toContain('transition: opacity var(--dur-fast-min) var(--ease-out);');

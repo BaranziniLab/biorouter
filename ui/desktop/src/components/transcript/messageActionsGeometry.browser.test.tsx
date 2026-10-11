@@ -9,9 +9,10 @@
  * `UserMessage` is rendered to markup and laid out in Chromium with the
  * authored stylesheet (`message-meta.css`) inside the 760px chat column. It pins
  * what the redesign is for: no row is reserved for the actions (the old meta row
- * added 28px under every message), the cluster sits 12px above the bubble's top
- * right edge, it is invisible and click-through at rest, and a hover reveals it
- * without moving the bubble by a pixel.
+ * added 28px under every message), the cluster rises 20px above the bubble's
+ * top right edge and ends inside the bubble's top padding, clear of its first
+ * line (vision V2-12), it is invisible and click-through at rest, and a hover
+ * reveals it without moving the bubble by a pixel.
  *
  * Tailwind does not run here, so the 24px buttons are stood in for by one rule
  * (`TAILWIND_STANDINS`); everything the test measures about the cluster is
@@ -49,7 +50,7 @@ const TAILWIND_STANDINS = `
 .flex { display: flex; } .flex-col { flex-direction: column; } .justify-end { justify-content: flex-end; }
 .w-full { width: 100%; } .w-fit { width: fit-content; } .max-w-\\[85\\%\\] { max-width: 85%; }
 .min-w-0 { min-width: 0; } .self-end { align-self: flex-end; }
-[data-testid='user-message-bubble'] { padding: 8px 14px; }
+[data-testid='user-message-bubble'] { padding: 10px 14px; }
 .br-message-actions button { width: 24px; height: 24px; padding: 0; border: 0; background: none; }
 .br-message-actions svg { width: 14px; height: 14px; }`;
 
@@ -85,6 +86,7 @@ interface Measure {
   anchor: Box;
   bubble: Box;
   cluster: Box;
+  text: Box;
   opacity: number;
   pointerEvents: string;
 }
@@ -132,6 +134,7 @@ describe('message actions in a real layout engine', () => {
         anchor: box('.br-message-actions-anchor'),
         bubble: box("[data-testid='user-message-bubble']"),
         cluster: box('.br-message-actions'),
+        text: box("[data-testid='user-message-bubble'] > *"),
         opacity: Number(style.opacity),
         pointerEvents: style.pointerEvents,
       };
@@ -149,12 +152,16 @@ describe('message actions in a real layout engine', () => {
     }
   });
 
-  it("floats 12px above the bubble, on the bubble's right edge, hidden and click-through", async () => {
+  it("floats 20px above the bubble, on the bubble's right edge, hidden and click-through", async () => {
     if (!browser) return;
     const tab = await open();
     try {
       const m = await measure(tab);
-      expect(m.cluster.top).toBe(m.bubble.top - 12);
+      expect(m.cluster.top).toBe(m.bubble.top - 20);
+      // It ends inside the bubble's 10px top padding: never on the first line
+      // (vision V2-12), and inside the 24px turn gap above.
+      expect(m.cluster.bottom).toBeLessThanOrEqual(m.bubble.top + 10);
+      expect(m.text.top - m.cluster.bottom).toBeGreaterThanOrEqual(2);
       expect(Math.abs(m.cluster.right - m.bubble.right)).toBeLessThanOrEqual(0.5);
       // Two 24px buttons and the time, with 2px of padding: one compact strip.
       expect(m.cluster.height).toBe(28);

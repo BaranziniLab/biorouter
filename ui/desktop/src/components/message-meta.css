@@ -2,8 +2,13 @@
 /* A message's actions float: Crew's row-action cluster (`.crew-row-actions`,
    crew/timeline/timeline.css), copied rather than borrowed.
 
-   It sits at the message's top right, 12px above it, on the popover ground with
-   a popover shadow and an inset hairline. Nothing is reserved for it in the
+   It sits at the message's top right, on the popover ground with a popover
+   shadow and an inset hairline, and never on the words of the message or of
+   the block above (vision V2-12). Above an answer it rises 8px, the smallest
+   gap an answer has (a block gap under a tool row or a card), so it never
+   lands on that block's edge. Above the user bubble it rises 20px into the
+   24px turn gap, so its 28px reach ends 8px into the bubble, inside the
+   bubble's 10px top padding and clear of the first line. Nothing is reserved for it in the
    flow, so the 28px meta row that used to sit under every message, invisible
    until hover, is gone with the gap it made (spec 3.6). It shows on hover, on
    focus inside the message and while its menu is open; only its opacity
@@ -20,7 +25,7 @@
 
 .br-message-actions {
   position: absolute;
-  top: -12px;
+  top: -8px;
   right: 0;
   z-index: 3;
   display: flex;
@@ -35,6 +40,10 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-message-actions-anchor > .br-message-actions {
+  top: -20px;
 }
 
 /* The time label inside the cluster: 12px muted tabular, inset like a button's
