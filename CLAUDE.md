@@ -73,12 +73,29 @@ found`), and `.githooks/` holds only `commit-msg`. This line used to claim
 measurable: five files under `ui/desktop/src` failed `format:check` on `main`
 on 2026-09-02, and four on 2026-09-11. Those four were reformatted that day
 (formatting only), after which `format:check` passed with **0 failing files,
-measured 2026-09-11**. That meets the precondition this note used to set for
+measured 2026-09-11**, and again on the redesign branch on 2026-10-11. That
+meets the precondition this note used to set for
 wiring `format:check` into `lint:check` or CI — whether to do it is a
 maintainer's call — but nothing holds the count at zero, so re-measure right
 before wiring it in: a gate that fails on arrival gets disabled rather than
 obeyed. Until then, run `format:check` yourself before pushing frontend
 changes.
+
+⚠ **The retired-name guard** (`scripts/check-no-goose-block.sh`, R-31) fails
+when any tracked file's text **or path** names the former upstream project or
+its publisher. `NOTICE` is the only file allowed to, because it keeps the
+license attribution verbatim (owner ruling, 2026-10-11; `LICENSE` no longer
+carries a publisher copyright line). It reads the tracked tree through
+`git grep -I`, so ignored build output and binary files never trip it, and it
+matches the publisher only by its company name, possessive, logo file names and
+repository URLs, never the ordinary word "block". It runs in
+`just check-everything`, in `rust.yml`'s `guards` job and in
+`scripts/verify-docs.sh`. When it fires, remove the mention and write "the
+former upstream" or "the legacy folder" instead; never widen its allowlist. The
+one value the code still has to spell (the Windows legacy folder's author,
+below in Configuration) is declared once per language, `LEGACY_APP_AUTHOR` in
+`app_folder/mod.rs` and in `ui/desktop/src/utils/appFolder.ts`; everything else
+says "the legacy folder" or builds the path from the constant.
 
 ### Build & Release
 
@@ -244,6 +261,32 @@ is not dead code.
 - **`agents/extension_manager.rs`** — MCP extension lifecycle and tool registration
 - **`providers/`** — 45+ provider modules (Anthropic, OpenAI, Azure, AWS Bedrock, Databricks, Ollama, etc.); `factory.rs` creates providers, `base.rs` defines the abstract interface
 - **`session/`** — Session persistence (SQLite via sqlx)
+  - ⚠ **`sessions.updated_at` is ACTIVITY, and opening a chat is not activity (R-30).**
+    Everything sorted by activity reads it: the sidebar's Last activity, History's date
+    buckets, `GET /sessions`, `biorouter session list` and `--resume` with no id. A door
+    that opens a chat runs its setup inside `session::activity::opening`, and a
+    machine-wide sweep (uninstalling an extension prunes every saved roster) inside
+    `session::activity::housekeeping`, the same task-local scope under a second name
+    (`session/activity.rs`). Inside it, and only there, four **setup** writes leave
+    `updated_at` alone: the provider bind (`bind_provider_if_allowed`), the
+    extension-data write, a `SessionUpdateBuilder::apply` that sets `extension_data`
+    and nothing else, and the empty-chat working-directory write. A message, a turn's
+    token accounting, a rewrite or truncation and a rename stamp whether or not they run
+    inside a scope, and outside one every write stamps, so a forgotten scope costs a chat
+    that jumps on open (the old bug), never one that stays put while a turn runs. The
+    provider bind also stamps only when the provider or `model_name` differs from what
+    the row records, at every door. What counts as activity is coordinator ruling 16: a
+    message or turn, a rename, an explicit switch to a different model, a composer
+    extension or skill toggle, `workspace_set_tools` aimed at the chat, a Crew grant on
+    it. ⚠ The scope does not follow a `tokio::spawn`, so a door awaits its setup writes
+    inline, and `only_the_opening_and_housekeeping_doors_enter_a_scope` counts every door
+    that enters one (six files, measured 2026-10-11): wrapping a deliberate change in a
+    scope fails that census rather than quietly freezing a chat. The renderer shows a
+    person's own rename at once: the name channel carries `activityAt`, which raises the
+    row (`laterActivity` in `utils/sessionNameSync.ts`), and the sidebar releases its
+    pointer hold for that one move. Full list of doors and tests:
+    [`docs/desktop-ui/sidebar-chat-list.md`](docs/desktop-ui/sidebar-chat-list.md)
+    ("What moves a chat").
 - **`workflow/`** — Workflow definition (YAML/JSON), Jinja-style templating (minijinja), and execution
 - **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
 - **`security/`** — Permission modes, `.biorouterignore` handling
@@ -273,9 +316,9 @@ is not dead code.
 - **`components/`** — 75+ modular React UI components
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
-- **`components/knowledge/`** — Top-level Knowledge route in the sidebar
-  (between Skills and Settings). Provides KB selector with cmd-K-style
-  palette, ingest panel (dropzone / paste text with URL extraction / staged
+- **`components/knowledge/`** — The Knowledge route, under the sidebar's
+  Components disclosure (between Skills and Built apps). Provides KB selector
+  with cmd-K-style palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
 
 ### Privacy tiers (issue #56)
@@ -429,7 +472,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 
 - **Backend module:** `crates/biorouter-mcp/src/knowledge/` (types, store, git, graph, credibility, convert/, macros/, subagent/loop_, MCP server).
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
-- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). The chat-side KB chip lives at `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`.
+- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). There is no chat-side KB chip any more: a chat's knowledge bases are the Knowledge list of the composer's Tools popover (`KnowledgePanel` and `useKnowledgePicker` in `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, mounted by `bottom_menu/ToolsChip.tsx`; see "Desktop shell geometry").
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
 - **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted — and the two repairs differ (D2): hiding *promotes* to the first remaining base, deleting *clears* every pointer that named the base to that explicit blank, and a chat that only inherited the pointer is left inheriting. A blank `.active-kb` after a delete is the repair, not its absence. ⚠ The renderer adopts these repairs by re-reading; it never writes one (no `clear_primary` after a delete, no prune against its own base list), and every selection read from the desktop carries `userActionHeaders()`, because the gate refuses a private chat's selection without it. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
@@ -650,10 +693,10 @@ was removed to make it true:
   **Every text preview sits on "paper"** — `.br-paper`, painting
   `--background-default`, the exact ground an Auto Visualiser chart paints
   (`artifactPaper.test.ts` pins the two together) — with a 760px column
-  (`.br-paper-measure`, PROVISIONAL until the geometry track's
-  `.br-preview-measure` lands inside the scroller) and one left edge for prose,
-  code and tables. Fenced blocks, inline code and notebook source sit in the
-  shared `--background-well` token, not `--background-code` (which in dark *is*
+  (`.br-preview-measure`, `max-width: var(--measure-chat)` inside the scroller
+  with responsive gutters; the provisional `.br-paper-measure` is gone) and one
+  left edge for prose, code and tables. Fenced blocks, inline code and notebook
+  source sit in the shared `--background-well` token, not `--background-code` (which in dark *is*
   the page). Selection is renderer-wide Biorouter orange from `--selection-hue`
   / `--selection-alpha` — literals in a bare `:root`/`.dark` pair that no family
   may re-declare, because Alma Mater re-points the coral scale to teal. All of
@@ -790,6 +833,17 @@ Key invariants, each learned from a real bug:
   its own, so a diverged neutral passes every assertion. Roche Limit's file is
   the reference set; moving a neutral means editing all three `*.theme.mjs`
   files *and* `main.css`'s hand-authored `:root`/`.dark` base block together.
+  The two fill neutrals of the 2026-10 redesign are the exception that IS
+  enforced: `--background-fill` and `--background-fill-strong` (with
+  `--border-control` and `--control-track-off`) are `STRUCTURAL_TOKENS` in
+  `scripts/lib/theme-contract.mjs`, declared as a hex once per mode in the base
+  block and nowhere in a family, which `styles/themeNeutrals.test.ts` asserts;
+  the only other declaration is the dark popover's re-pointing (see "Fills
+  before lines" below). Since the redesign every family's `sidebar-icon` is its
+  muted label ink (it was the accent in Alma Mater and Roche Limit, the full ink
+  in Parchment), so a nav icon is one ink with its label and the accent is held
+  for the active row's rail and the lock badge; it still differs per family
+  because the ink does.
 - **`terminalGround` is now the same token in all three** — `--background-muted`,
   in both modes. The warning that used to sit here was right and still is, aimed
   at a changed fact: Parchment dark really did paint `--background-code`, and
@@ -801,8 +855,10 @@ Key invariants, each learned from a real bug:
 - **Derived, never authored:** terminal/code/splash grounds, picker label and
   swatch, the family list. These are the values that historically drifted.
 - **`check-contrast.mjs` discovers families** from the stylesheet; a new family
-  is audited with zero edits to it (330 assertions at three families, measured
-  2026-08-08 — re-measure rather than trusting this figure).
+  is audited with zero edits to it (1148 assertions at three families, measured
+  2026-10-11 with `npm run check:contrast`; it was 330 on 2026-08-08, and the
+  redesign's fill and dark-popover rows are added per family too. Re-measure
+  rather than trusting this figure).
 
 Design docs: [`docs/design/theming/theme-system-architecture.md`](docs/design/theming/theme-system-architecture.md)
 (architecture + the decisions and their reasons), plus one per family —
@@ -877,6 +933,71 @@ value's *location* is as load-bearing as the number.
   no layout: a test that mounts the sidebar cannot see how wide it got, and the
   handle's affordance (hover hairline + `col-resize`) is authored CSS in
   `main.css` for the same reason the composer's focus edge is.
+- **Sidebar rows are 28px on a 30px pitch, at every width** (owner message 12;
+  `BioRouterSidebar/sidebar.css`, `--row-height-nav: 28px` in `main.css`): a 2px
+  gap between rows, 13px labels (`--text-secondary`), the 16px icon at x=16 and
+  the label at x=40 whatever the sidebar's width (an 8px list inset plus 8px row
+  padding, then 16 + 8), muted ink at rest, and a 2px accent rail on the current
+  row. Nav rows, chat rows, the Chats header, folder headers, Show more and a row
+  being renamed (a 24px input in the same 28px box) share the box and both
+  columns. `sidebarGeometry.browser.test.ts`
+  measures it in Chromium at 216, 288 and 360px, because jsdom lays nothing out.
+  The rules are authored and unlayered, so they beat the cva string
+  `SidebarMenuButton` still carries; ⚠ a background set there also beats the
+  D-15 focus fill in `@layer base`, so every rule that paints a row restates the
+  focus fill and the 2px `--border-focus` edge for `:focus-visible`. Reference:
+  [`docs/desktop-ui/sidebar-chat-list.md`](docs/desktop-ui/sidebar-chat-list.md).
+- **The Chats header's View options menu** (owner message 3) groups the list by
+  Date, Folder or None and sorts it by Last activity, Created or Name (defaults:
+  Date, Last activity), as pure functions in `BioRouterSidebar/sidebarChatView.ts`.
+  The choice is per viewer, in `localStorage` key `biorouter:sidebar-chat-view`,
+  clamped field by field on read and synced across windows by the `storage` event
+  (`useSidebarChatView.ts`); collapsed folders live in
+  `biorouter:sidebar-collapsed-folders` (at most 200). The row menu is one
+  component shared with History and the tab strip (`chats/ChatRowContextMenu.tsx`:
+  Rename, Open in new tab, Open in new window, Diverge, Export…, Copy chat ID,
+  Delete chat…), and **Rename is in place** (owner message 4): from the menu, `F2`
+  on a focused row, or `⌘⌥R` (`Ctrl+Alt+R`) for the current chat, committed
+  through `renameSessionOptimistically` (`utils/sessionNameSync.ts`), the one
+  function every rename surface calls. ⚠ `⌘⌥R` reaches the renderer only because
+  the `before-input-event` handler in `main.ts` skips its `⌘R` reload while Alt is
+  held; drop that check and the shortcut reloads the window instead.
+- **Only the lines near the viewport are rows** (R-28; `sliceSidebarLines`,
+  `sidebarLinesInView` and `nextSidebarDrawRange` in `sidebarChatView.ts`). The
+  whole list is held and arranged, so its order is always complete, but every line
+  outside the lines in view plus `SIDEBAR_RENDER_OVERSCAN` (12) on each side is
+  folded into one `.br-chat-row-gap` placeholder of exactly its height, so the
+  scroll height and every drawn row's place are unchanged. The pitch is read off a
+  drawn row (`measuredLinePitch` in `RecentChats.tsx`), never assumed: the Text
+  size preference scales the 28px row and its 2px gap (34.5px a line under Larger
+  text), which is also why the placeholder scales its own 2px. Kept drawn whatever
+  the range: the focused line (row, folder header or Show more), the current chat
+  (so the list's single Tab stop stays on it), a row being renamed or just renamed,
+  and a line whose right-click or `⋯` menu is open, so focus, an open menu or the
+  editor is never unmounted under the person. ⚠ No row mounts a Radix menu root:
+  the list has ONE non-modal right-click menu that opens on the row the event came
+  from, and a `⋯` is a plain button (`LazyMenuButton`) until it is focused or
+  pressed, because every mounted root adds document `keydown` listeners that each
+  key press and view switch then paid for, row by row.
+- **One sidebar request may carry the whole list** (R-28, owner message 14).
+  `GET /sessions/sidebar` clamps `limit` to `MAX_SIDEBAR_SESSION_LIMIT`, 2,000
+  (`routes/session.rs`; it was 50), so a non-default view, which needs every chat
+  before it can arrange them because the server pages in last-activity order only,
+  reads the rest in one request (`useSidebarSessions({ loadAll: true })`, capped at
+  `SIDEBAR_SESSION_LOAD_ALL_CAP`, shown once when the read completes): 3.0 s to
+  0.2 s for 2,000 chats against a debug daemon, per the constant's own comment. The
+  page is a keyset over `ORDER BY s.updated_at DESC, s.id ASC` that walks
+  `idx_sessions_updated` (the type filter is written `+s.session_type` to keep the
+  planner off `idx_sessions_type`; `the_summary_listing_walks_the_updated_index`
+  pins the plan), with `EXISTS` and correlated `COUNT(*)` probes in place of the old
+  `JOIN messages … GROUP BY`. History's `GET /sessions` shares the shape
+  (`full_listing_sql`, `the_full_listing_walks_the_updated_index`). ⚠ Privacy
+  filtering did not change: it is still a SQL predicate
+  (`AND s.privacy_tier = 'public'`, which fails closed, for a caller whose
+  `lists_session` refuses a private chat), the cursor names the last row the page
+  RETURNED, and the 2,000 bound is not a privacy knob. Every page the renderer
+  asks for carries `userActionHeaders()`, or private chats silently drop out of a
+  re-sorted list.
 - **`--measure-chat` is a flat `760px`.** It was briefly widened into a clamp and
   that was wrong for this measure specifically — a 1180px composer is a line of
   prose the eye has to track back across. `styles/measures.test.ts` asserts the
@@ -894,14 +1015,62 @@ value's *location* is as load-bearing as the number.
   `components/summary/summaryRail.css`, not `main.css`, keyed on
   `[data-summary-rail]:not([data-preview-layout])`, and it snaps: only the conversation's FLIP
   (`hooks/useColumnGlide.ts`) and the card itself animate.
-- **The composer's card is the input, and nothing else** (`ChatInput.tsx`). Three
-  rows — context above, the card holding the prose *and* Send, controls below —
-  with the outer two directly on the canvas, so the only boxed thing on screen is
-  the one thing the user acts on. The focus edge is that card's own 1px border
-  turning `--border-accent` (not `--accent-muted`, which at 2px reads as a thick
-  warm-grey band), and it is **authored CSS** —
-  `.biorouter-composer-card:has(textarea:focus)` in `main.css` — never a Tailwind
-  `has-[...]` variant at the call site.
+- **Fills before lines** (R-27, owner message 13). In-page containers and
+  controls are a subtle solid fill with no resting outline: `--background-fill`
+  (`#f4f4f2` light, `#232320` dark) at rest and `--background-fill-strong`
+  (`#eaeae6`, `#2c2c29`) for hover and press, two neutrals declared once per mode
+  in the base blocks and shared by every family. Write
+  `bg-background-fill border border-transparent`, plus
+  `hover:bg-background-fill-strong` where the box answers the pointer. ⚠ Keep the
+  1px border, transparent, never `border-0`: no geometry moves between the
+  bordered and the filled look, and forced colours repaint the fill as Canvas and
+  draw the transparent border in the system ink, which is the only edge such a
+  box has there (`styles/fillTokens.browser.test.ts`). ⚠ **A fill never sits on a
+  fill.** Inside a filled box (`Card`, every `Note`, a dialog's inner panel and
+  row, a washed list row, or anything given `.br-fill-surface`) controls rest one
+  step back on `--background-default`; on a recessed ground (`.br-ground-recessed`:
+  the sidebar, the `--background-muted` grounds, the page band) they rest one step
+  in, on the strong step, because the rest fill IS the ground there. Those grounds
+  set three private variables the primitives read (`--br-control-ground`,
+  `--br-control-hover`, `--br-track-ground`); never set them at a call site. A row
+  list that reads apart by air and the hover wash drops its hairlines with
+  `.br-rows-flat` (forced colours bring the line back). **Lines stay only where
+  they are structural**: the 44px band's bottom edge, pane dividers and resize
+  handles, table rules inside a filled table, a dialog footer's scroll edge, and
+  floating surfaces (menus, popovers, tooltips, dialogs and toasts keep a hairline
+  and a shadow so they hold up in dark). Checkboxes, radios and the switch keep
+  `--border-control` at 3:1. ⚠ **Text fields have no resting border**: a field is
+  found by its fill, its label or placeholder and its place, and draws
+  `--border-focus` while focused or `--border-danger` while invalid. That
+  accessibility trade-off is recorded in [design.md](design.md) 9.11 (the rule,
+  the contrast floors `check-contrast.mjs` holds); the per-control table and the
+  three variables are in
+  [`docs/desktop-ui/shared-controls.md`](docs/desktop-ui/shared-controls.md)
+  ("Fills before lines"). A dark popover re-points the strong step one step deeper
+  (`.dark .biorouter-popover-surface`), so a field there rests as a quiet well and
+  still shows hover. Crew's own `crew-*` recipes keep their lines; the shared
+  primitives Crew renders take the fill like everywhere else (ruling 12). The
+  chat composer's card is the one exception (R-32, next bullet).
+- **The composer is one card and one muted footer line** (`ChatInput.tsx`, spec
+  3.7; `ChatInput.structure.test.tsx` pins the shape). The card holds the queue,
+  notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
+  the model and effort chip, and Send. Under the card, a 12px muted footer
+  (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
+  ring and the chat's cost on the right, only the folder on Home. The card's
+  classes live in one module, `composer/composerCard.ts`, and Home renders the
+  same `ChatInput`, so the two never differ. ⚠ **The card is the one box the fill
+  rule does not reach** (R-32, owner message 17, 2026-10-11, superseding R-27 for
+  this card only, in a chat and on Home): it is the page ground (white in light)
+  with its pre-R-27 resting 1px hairline, not the grey fill, and it carries no
+  `.br-fill-surface`, so what sits in it rests as on any page ground. Do not
+  "fix" it under the fill rule. The focus edge is that same 1px border turning
+  `--border-accent` (the family accent, coral in Parchment; not `--accent-muted`,
+  which at 2px reads as a thick warm-grey band), and it is **authored CSS**:
+  `.biorouter-composer-card:has(textarea:focus)` in `main.css`, unlayered so it
+  beats the card's border utility, and never a Tailwind `has-[...]` variant at
+  the call site. The working sweep rides the same border
+  (`.biorouter-composer-card[data-working='true']`). Crew's composer shares the
+  class and both edges.
   - ⚠ **The reason generalises far past the composer: a newly written Tailwind
     class can silently fail to generate.** Under `BIOROUTER_NO_HMR` the renderer
     runs `watch: { ignored: ['**'] }` (`vite.renderer.config.mts`), which is the
@@ -915,6 +1084,54 @@ value's *location* is as load-bearing as the number.
     `:has()`, so a component test that focuses the textarea and reads
     `borderColor` sees the resting value and passes whether the rule exists or
     not.
+  - **The Tools popover's switcher never moves** (R-25, owner message 13).
+    `bottom_menu/ToolsChip.tsx` opens one popover above the chip holding one list
+    at a time (a search field, a scope line saying where a change applies with
+    Enable all or Disable all, the switch rows) and the Extensions | Skills |
+    Knowledge `SegmentedControl` as its LAST child, so the control rides the
+    popover's bottom edge, 6px above the chip (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
+    longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
+    is load-bearing (collision handling would flip the popover below the chip or
+    slide it along it); the room above caps the height instead, through Radix's
+    available-height variable in `.br-picker-popover`'s `max-height`
+    (`pickers.css`) and `TOOLS_POPOVER_COLLISION_PADDING`, whose 52px top keeps
+    the search field off the 44px drag band. DOM order is the visual order, so
+    Tab walks top to bottom. `toolsPopover.browser.test.tsx` measures the control
+    14px above the chip in every list at two window heights.
+  - **Effort is a three-stop slider** (R-26): `bottom_menu/EffortSection.tsx` in
+    the model menu (`settings/models/bottom_bar/ModelsBottomBar.tsx`, opened from
+    `bottom_menu/ModelEffortChip.tsx`), Quick, Normal and Deep, applying at once
+    through the same store and scope the radio rows used
+    (`setReasoningEffort(scope, …)`, `store/reasoningEffort.ts`); the level
+    descriptions sit in an InfoTip the thumb is described by. The primitive is
+    `components/ui/slider.tsx`, built in house because `@radix-ui/react-slider` is
+    not a direct dependency and nothing may be installed: discrete stops only, the
+    THUMB is the `role="slider"` with `aria-valuetext` set to the stop's label,
+    arrows, Home, End and Page keys (mirrored in RTL), and a press that snaps and
+    drags stop to stop; its geometry and colour are authored `.br-slider*` rules in
+    `main.css`. Tests: `ui/slider.test.tsx`, `ui/slider.browser.test.tsx`,
+    `bottom_menu/effortSection.browser.test.tsx`.
+- **Icons: one registry, one glyph per concept** (owner messages 7, 9 and 11;
+  [design.md](design.md) 9.8). `components/icons/app-icons.tsx` is Lucide through
+  `light()`, which pins stroke 1.5 and `currentColor` after the prop spread, plus
+  hand-drawn glyphs under the same contract (`ChatBubble`, `CrewChat`, `Agent`,
+  `KnowledgeGraph`, `Skill`, `Copilot`). `ENTITY_ICONS` (`icons/entity-icons.ts`)
+  gives each entity one glyph (workflow, knowledge, extension, skill,
+  application, schedule, crew, agent, chat, model, folder), and the chat kinds and
+  tool rows read theirs from it. Chat kinds are `chats/chatKind.ts` (chat, Crew
+  task, branch, sub-agent, app, scheduled run, terminal, and a workflow run that
+  stays dormant until the listing carries an `origin`), drawn by `ChatKindIcon`.
+  ⚠ **Private is a shape, not a tint**: kind and privacy are separate axes composed
+  by `chatIconFor`, and `withPrivateBadge` puts a lock badge on any kind's glyph,
+  the badge in the family accent (`.br-icon-lock-badge`) over a body in the row's
+  ink, so an all-private list is not a wall of coral. Tool rows use
+  `utils/toolGlyph.ts`'s seven-rung ladder: specific glyphs only for Biorouter's
+  own extensions (`BUILT_IN_EXTENSION_KEYS`, which `toolGlyph.test.ts` checks
+  against the crates), the Puzzle for every external or installed extension
+  whatever its tools are called, and the wrench for a tool nothing recognises.
+  ⚠ Never change the glyph behind an export name Crew imports (57 files under
+  `components/crew/` import `icons/app-icons`, measured 2026-10-11); add a new
+  name instead, as `NewChat` (SquarePen) was added so `Plus` keeps meaning add.
 - **Long messages fold** (`utils/messageClamp.ts`): above 10 lines *or* 600
   characters, clipped to 200px behind a fade with an expand control. The
   arithmetic is deliberately free of React and the DOM — `UserMessage.tsx` owns
@@ -1550,6 +1767,11 @@ After changing server routes, always run `just generate-openapi` to regenerate t
 - User config: `~/.config/biorouter/config.yaml` (providers, API keys, extensions)
 - Session history: `~/.config/biorouter/sessions/` (SQLite)
 - Workflows/skills: `~/.config/biorouter/workflows/` and `~/.config/biorouter/skills/`
+- Windows: everything above sits under `%APPDATA%\UCSF\biorouter` (`config\`, and `data\`, which also holds state and logs because etcetera's Windows strategy has no state dir), the cache under `%LOCALAPPDATA%\UCSF\biorouter`. The author segment is `APP_AUTHOR = "UCSF"` in `crates/biorouter-mcp/src/app_folder/mod.rs`, deliberately not the product name, because Electron's own user-data folder on Windows is `%APPDATA%\Biorouter` and the two must stay apart; macOS and Linux use XDG, which never reads the author. Earlier releases used another author folder, **the legacy folder**, whose name is spelled only by `LEGACY_APP_AUTHOR` (once in Rust, once in `ui/desktop/src/utils/appFolder.ts`; never write it anywhere else, see the retired-name guard).
+  - **Resolution, on every call, in every process:** the legacy folder while it is present (a check that fails counts as present) and the current one is known absent; otherwise the current one, which wins when both exist (the legacy one is then left alone and the desktop app says so at start).
+  - ⚠ **Only the daemon moves it.** `biorouterd agent` calls `app_folder::move_for_this_process()` before logging (`biorouter-server/src/main.rs`); the CLI, `biorouterd mcp` children and the desktop main process never move anything. It moves only when the legacy folder is present, the current one absent (both known) and no other Biorouter process holds the legacy folder's `.biorouter-folder.lock` (`MOVE_LOCK`): every process that resolves the legacy folder holds that lock shared for life (through `platform_dirs`), because `Config::global`, the session store and the log directory freeze the path. The move drops `.folder-move-pending` (`MOVE_MARKER`) into the legacy folder first, then makes one rename inside one base, so it is atomic and never a copy.
+  - **The rewrite** (`app_folder/rewrite.rs`) then fixes stored absolute paths that pointed into the legacy folder, the ones that break silently otherwise: the per-chat `uv run --directory` snapshots of `.brxt` extensions, the knowledge base list, Crew's `daemon-profile.json` and a marketplace extension's provenance `install_dir`. It edits each file's text, matching both the environment's and `fs::canonicalize`'s spelling of the base, and writes only when re-parsing the new text equals rewriting the old parse; transcripts, logs, `*.bak*` and venvs are left alone. The marker travels with the tree, so a crash between the rename and the rewrite is finished on the next start.
+  - ⚠ **The desktop resolves by the same rule in `appFolder.ts`, and the two must agree.** Both run one table of cases, `app_folder/resolution-cases.json`, and `the_desktop_constants_match_these` (`app_folder/tests.rs`) reads `appFolder.ts` and pins `APP_AUTHOR`, `APP_NAME` and `LEGACY_APP_AUTHOR` equal across the two languages. User-facing steps: [`docs/troubleshooting/common-problems-and-fixes.md`](docs/troubleshooting/common-problems-and-fixes.md).
 - Shared daemon user-action key (macOS and Linux): `~/.local/state/biorouter/daemon/user-action-key.json`, mode 0600, written by whoever starts the daemon (desktop app or `biorouter crew`), read by every later client, removed by the daemon on exit. Nobody types an approval secret; a daemon whose key is missing or refused is stopped and replaced.
 - Secrets: OS credential store (macOS Keychain / Windows Credential Manager / Linux Secret Service) via the `keyring` crate, read once per process and cached in memory so macOS shows at most one Keychain authorization prompt per run (tell users to click "Always Allow"). `BIOROUTER_DISABLE_KEYRING=true` switches to plaintext `secrets.yaml`; headless Linux falls back to it automatically. On Windows the secrets blob is chunked across credentials (2560-byte cap each). `just copy-binary` re-signs dev binaries with the Developer ID (when present) so Keychain grants survive rebuilds. Logic in `crates/biorouter/src/config/base.rs`; see `docs/security/secret-storage.md`.
 
