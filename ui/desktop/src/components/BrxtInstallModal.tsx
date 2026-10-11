@@ -594,12 +594,12 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               should already know what dropping it in here means. */}
           {privacyLine}
 
-          {/* Knowledge's drop zone recipe (`knowledge/IngestPanel/Dropzone.tsx`), as Add skill
-              draws it: a glyph plate over one label line on the muted ground, and a real button,
-              so the keyboard reaches the file chooser it opens. Hover is `tint-interactive`,
-              never `hover:bg-overlay-hover`, which would REPLACE an opaque ground rather than
-              composite over it. Not `biorouter-modal-panel`: that class is unlayered, so its
-              background and border beat any utility and the zone never changed on drag or error. */}
+          {/* The one plated drop zone (Workflows' Import draws the same, spec 3.10): a 32px glyph
+              plate over one label line on the subtle fill, with no resting outline (owner
+              message 13, R-27), and a real button, so the keyboard reaches the file chooser it
+              opens. Its states are authored in `brxt-install.css` and keyed on `data-state`: a
+              file held over it firms the edge and steps the ground, an error takes the danger
+              edge, and hover steps the ground like every filled control. */}
           <button
             type="button"
             // Not `disabled` while a bundle is read: a disabled button cannot hold focus, and a
@@ -610,6 +610,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               isValidating ? COPY.reading : manifest ? COPY.dropZoneAnotherName : COPY.dropZoneName
             }
             aria-disabled={isValidating || undefined}
+            data-state={isDragging ? 'dragging' : error ? 'error' : undefined}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
@@ -627,15 +628,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               const fp = await window.electron.openBrxtFilePicker();
               if (fp) processFile(fp);
             }}
-            className={[
-              'biorouter-focus-surface flex w-full select-none flex-col items-center gap-2 rounded-container border px-4 py-6 text-center transition-colors',
-              isValidating ? 'cursor-progress' : 'cursor-pointer',
-              isDragging
-                ? 'border-border-strong bg-background-medium'
-                : error
-                  ? 'border-border-danger bg-background-muted tint-interactive'
-                  : 'border-border-subtle bg-background-muted tint-interactive',
-            ].join(' ')}
+            className="br-brxt-dropzone"
           >
             {isValidating ? (
               <span className="flex items-center gap-2 text-body text-text-muted">
@@ -644,10 +637,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               </span>
             ) : (
               <>
-                <span
-                  aria-hidden="true"
-                  className={`flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle ${isDragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
-                >
+                <span aria-hidden="true" className="br-brxt-drop-plate">
                   <Package className="h-4 w-4" />
                 </span>
                 <span className="text-label text-text-default">

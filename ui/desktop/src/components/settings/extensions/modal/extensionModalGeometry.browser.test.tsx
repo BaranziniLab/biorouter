@@ -205,4 +205,35 @@ describe('Extension dialog key-value groups in a real layout engine', { timeout:
       await tab.close();
     }
   });
+
+  it('sets a group off from what is above it by space, with no hairline (R-27)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await tab.evaluate(() => {
+        const sections = [...document.querySelectorAll('.br-ext-section')] as HTMLElement[];
+        const envBox = document.getElementById('env')!.getBoundingClientRect();
+        const headersBox = document.getElementById('headers')!.getBoundingClientRect();
+        const title = document
+          .querySelector('#headers .br-ext-section-title')!
+          .getBoundingClientRect();
+        return {
+          count: sections.length,
+          edges: sections.map((el) => getComputedStyle(el).borderTopWidth),
+          paddings: sections.map((el) => getComputedStyle(el).paddingTop),
+          between: headersBox.top - envBox.bottom,
+          titleOffset: title.top - headersBox.top,
+        };
+      });
+      expect(m.count).toBe(2);
+      // No rule: the fields are the fills, and a group is told from the one before by space.
+      for (const edge of m.edges) expect(edge).toBe('0px');
+      // 20px of form gap and 8px of the group's own top padding where the rule and its 20px stood.
+      for (const padding of m.paddings) expect(padding).toBe('8px');
+      expect(m.between).toBe(20);
+      expect(m.titleOffset).toBe(8);
+    } finally {
+      await tab.close();
+    }
+  });
 });

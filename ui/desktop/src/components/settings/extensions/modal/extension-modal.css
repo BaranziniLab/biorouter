@@ -3,7 +3,8 @@
  *
  * Authored rather than Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail
  * to generate (CLAUDE.md, "Desktop shell geometry"), and these rules carry the form's rhythm.
- * One rhythm for the whole form: 20px between groups, no per-child margins, no 45% hairlines.
+ * One rhythm for the whole form: 20px between groups, no per-child margins, no hairlines (owner
+ * message 13, R-27: the fields are the fills, and a group is told from the one before by space).
  */
 
 .br-ext-form {
@@ -55,13 +56,13 @@
   max-width: 8rem;
 }
 
-/* Environment variables and request headers: a group under one hairline, the form's only rule. */
+/* Environment variables and request headers: a group under its own title, set off from the fields
+   above by 8px more than the form's 20px (28px in all), where a hairline used to be. */
 .br-ext-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
 }
 
 .br-ext-section-title {

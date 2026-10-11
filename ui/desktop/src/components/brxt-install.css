@@ -3,8 +3,91 @@
  *
  * Authored rather than Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail
  * to generate (CLAUDE.md, "Desktop shell geometry"). The modal is flat: the dialog is the only
- * box, and its sections are separated by space and a hairline, never a card inside the card.
+ * box, the drop zone is its one filled field, and the sections are told apart by space, never a
+ * hairline and never a card inside the card (owner message 13, R-27: fills before lines, and a
+ * line only where it is structural: the footer's rule marks a body that scrolls, a divider
+ * between two blocks of text does not).
  */
+
+/* The drop zone: one filled field with a 32px plate over one label line, the recipe Workflows'
+   Import draws (`workflows.css`, V3-08), on the subtle fill and with no resting outline. The 1px
+   border is kept and transparent, so forced colours draw the edge and no geometry moves between
+   states. Hover steps to the strong fill, like every filled control, except while a bundle is
+   being read (the zone does nothing then). A file held over it firms the edge and the ground
+   (the "this will act" state), an error takes the danger edge. Keyed on `data-state`, not on
+   utilities, because the drag state is load-bearing feedback. */
+.br-brxt-dropzone {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-brxt-dropzone:hover {
+  background-color: var(--background-fill-strong);
+}
+
+.br-brxt-dropzone[data-state='dragging'] {
+  background-color: var(--background-fill-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.br-brxt-dropzone[data-state='error'] {
+  box-shadow: inset 0 0 0 1px var(--border-danger);
+}
+
+.br-brxt-dropzone[aria-disabled='true'] {
+  cursor: progress;
+}
+
+.br-brxt-dropzone[aria-disabled='true']:hover {
+  background-color: var(--background-fill);
+}
+
+/* Keyboard focus is the app's one treatment (D-15): the focus ground and a 2px inset ring. It is
+   restated here because this rule's own background would otherwise outrank the layered one. */
+.br-brxt-dropzone:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The 32px glyph plate. It sits on the field's fill, one step back (the page ground), so it is a
+   plate without being an outlined box. */
+.br-brxt-drop-plate {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-brxt-dropzone[data-state='dragging'] .br-brxt-drop-plate {
+  color: var(--text-default);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-brxt-dropzone,
+  .br-brxt-drop-plate {
+    transition: none;
+  }
+}
 
 /* Section 13.5's line above the Install button: a badge and ONE sentence, no panel around them. */
 .br-brxt-tier {
@@ -27,27 +110,25 @@
   padding-block: 20px;
 }
 
-/* What the bundle says it is: a name, one fact line, a sentence, then the skills it carries. */
+/* What the bundle says it is: a name, one fact line, a sentence, then the skills it carries. It
+   follows the drop zone or the tier line by the body's own 16px gap, with no rule above it. */
 .br-brxt-summary {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
 }
 
 .br-brxt-summary-desc {
   margin-top: 6px;
 }
 
+/* The skills a bundle carries are a second block under its sentence: 12px of space, no rule. */
 .br-brxt-skills {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-subtle);
+  margin-top: 12px;
 }
 
 /* The configure step's fields, one rhythm. */

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BrxtManifest } from '../types/brxt';
@@ -271,6 +271,41 @@ describe('BrxtInstallModal — the dialog', () => {
     expect(picker).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(validate).toHaveBeenCalledWith('/tmp/picked.brxt'));
     expect(await screen.findByText(COPY.detectedFromBundle)).toBeInTheDocument();
+  });
+
+  /**
+   * R-27 (owner message 13): the drop zone is one filled field with a plate, not an outlined box
+   * with a bordered tile. jsdom runs no stylesheet, so what it can pin is the contract with the
+   * sheet: the one authored class (every colour, edge and state lives in `brxt-install.css`, and
+   * `brxtInstallGeometry.browser.test.tsx` measures them), and the `data-state` that sheet keys
+   * on. A Tailwind outline utility on the zone is the old recipe coming back.
+   */
+  it('draws the drop zone as the plated fill, keyed on its state, with no outline utility', async () => {
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => {
+        throw new Error('The bundle could not be read');
+      }),
+      getPathForFile: () => '/tmp/bad.brxt',
+    };
+    render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
+
+    const zone = screen.getByRole('button', { name: COPY.dropZoneName });
+    expect(zone.className).toBe('br-brxt-dropzone');
+    expect(zone.querySelector('.br-brxt-drop-plate')).not.toBeNull();
+    expect(zone.querySelector('.br-brxt-drop-plate')).toHaveAttribute('aria-hidden', 'true');
+    expect(zone).not.toHaveAttribute('data-state');
+
+    // A file held over it, then taken away again.
+    fireEvent.dragOver(zone);
+    expect(zone).toHaveAttribute('data-state', 'dragging');
+    fireEvent.dragLeave(zone);
+    expect(zone).not.toHaveAttribute('data-state');
+
+    // A bundle that cannot be read leaves the zone in its error state, beside the banner.
+    fireEvent.drop(zone, {
+      dataTransfer: { files: [new File(['x'], 'bad.brxt')], items: [], types: ['Files'] },
+    });
+    await waitFor(() => expect(zone).toHaveAttribute('data-state', 'error'));
   });
 
   it('keeps the drop zone focusable while it reads a file, so first focus never lands on the dialog box', async () => {
