@@ -19,9 +19,17 @@
   margin-block: -2px;
 }
 
-/* The row's trailing cluster: Install (not installed yet) beside the hover-revealed ⋯. */
+/* The row's trailing cluster: the hover-revealed ⋯, then Install (not installed yet) at the row's
+   right edge. */
 .br-local-model-actions {
   gap: 4px;
+}
+
+/* The info dialog's body takes focus when it opens (see `LocalModelInventory`). A container, not a
+   control: it draws no ring of its own, and the first Tab reaches the Official URL. */
+.br-local-info-body:focus,
+.br-local-info-body:focus-visible {
+  outline: none;
 }
 
 /* What is happening to a model right now replaces its facts line: a spinner and the daemon's

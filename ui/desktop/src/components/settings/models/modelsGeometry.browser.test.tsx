@@ -7,9 +7,14 @@
  * node". The acceptance numbers for the tab are geometry: every Default model and Danger zone row
  * is one 40px line, a local model is two lines and 56px (a name over one facts line), the Local
  * models header stays the 24px every section header is (the 28px refresh button reaches into the
- * row padding instead of growing it), the Install buttons share one right edge, and the hover
- * `⋯` sits on the same right edge as the Change… button above, hidden until the row is pointed
- * at, without moving anything beside it.
+ * row padding instead of growing it), every trailing control (Change…, Reset…, Install and
+ * "Installed") shares one right edge with the hover `⋯` hidden until the row is pointed at, to the
+ * left of Install and without moving anything beside it.
+ *
+ * It also holds the two focus rules of the info dialog that only a real browser can show, because
+ * jsdom has no `:focus-visible` and runs no focus trap against a closing menu: a keyboard pick of
+ * View info gives focus back to the row's `⋯` on Escape (V4-03), and a right-click and mouse pick
+ * opens it with focus on a body that draws no ring (V4-04).
  *
  * The real `ModelsSection` is bundled with esbuild (the daemon, config, toast and Ollama
  * dependencies stubbed), rendered by React in Chromium, and styled by the authored
@@ -365,7 +370,69 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
     }
   });
 
-  it('lines the Install buttons and the hover ⋯ up on the right edge, and moves nothing on hover', async (ctx) => {
+  /** What holds focus, and whether the browser would draw a keyboard ring on it. */
+  const focusOf = (tab: Page) =>
+    tab.evaluate(() => {
+      const el = document.activeElement;
+      return {
+        tag: el?.tagName ?? null,
+        label: el?.getAttribute('aria-label') ?? el?.textContent?.trim().slice(0, 40) ?? null,
+        focusVisible: el ? el.matches(':focus-visible') : false,
+        // The browser's own ring is `outline: auto`; the app's (D-15) is not loaded in this page,
+        // so what is asserted is that nothing draws one.
+        outlineStyle: el ? getComputedStyle(el).outlineStyle : null,
+        insideDialog: Boolean(el?.closest('[role="dialog"]')),
+        isInfoBody: Boolean(el?.classList.contains('br-local-info-body')),
+      };
+    });
+
+  it('opens a model’s info from its ⋯ by keyboard and gives focus back to that ⋯ on Escape (V4-03)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const more = '[data-testid="local-model-gemma4"] button[aria-label^="More actions"]';
+      await tab.focus(more);
+      await tab.keyboard.press('Enter');
+      await tab.getByRole('menuitem', { name: 'View info' }).waitFor();
+      await tab.keyboard.press('Enter');
+      await tab.getByRole('dialog').waitFor();
+      await tab.keyboard.press('Escape');
+      await tab.getByRole('dialog').waitFor({ state: 'detached' });
+      const after = await focusOf(tab);
+      // Not <body>: a keyboard user keeps their place in the list.
+      expect(after.label).toBe('More actions for Gemma 4 E4B');
+      expect(after.focusVisible).toBe(true);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('opens the info from a right-click and a mouse click without a focus ring anywhere (V4-04)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.locator('[data-testid="local-model-gemma4"]').click({ button: 'right' });
+      await tab.getByRole('menuitem', { name: 'View info' }).click();
+      await tab.getByRole('dialog').waitFor();
+      const opened = await focusOf(tab);
+      // Chromium gives `:focus-visible` to every script focus after this menu path (measured:
+      // the dialog box, the Close button and a bare div all match), so the control it used to land
+      // on, the Official URL, wore the ring. Focus now starts on the dialog's own body, which
+      // draws none.
+      expect(opened.isInfoBody).toBe(true);
+      expect(opened.outlineStyle).toBe('none');
+      // The footer's Close (the dialog's own × shares the name and comes last).
+      await tab.getByRole('button', { name: 'Close', exact: true }).first().click();
+      await tab.getByRole('dialog').waitFor({ state: 'detached' });
+      const closed = await focusOf(tab);
+      // Closed with the pointer: no control is given focus (and so none wears a ring).
+      expect(closed.tag).toBe('BODY');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('puts every trailing control on one right edge, the hover ⋯ to the left of Install, and moves nothing on hover', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
@@ -376,8 +443,12 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
           const change = document.querySelector(
             '#settings-default-model button[aria-label="Switch models"]'
           )!;
+          const reset = document.querySelector(
+            '#settings-models-danger-zone .br-setting-row-control button'
+          )!;
           return {
             change: rect(change),
+            reset: rect(reset),
             installs: rows
               .map((row) => row.querySelector('button[aria-label^="Install "]'))
               .filter(Boolean)
@@ -387,6 +458,10 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
               const meta = row.querySelector('.br-row-actions-meta');
               return {
                 box: rect(button),
+                installBox: (() => {
+                  const install = row.querySelector('button[aria-label^="Install "]');
+                  return install ? rect(install) : null;
+                })(),
                 opacity: Number(getComputedStyle(button.closest('.br-row-actions')!).opacity),
                 // An installed row's quiet status; the ⋯ takes its cell over on hover.
                 meta: meta
@@ -400,11 +475,21 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       const before = await measure();
       // Two of the three models are not installed.
       expect(before.installs).toHaveLength(2);
-      near(before.installs[0].right, before.installs[1].right, 'Install buttons share an edge');
-      // The ⋯ is on the Change… button's right edge, and hidden at rest.
+      // V4-25: Install ends on the same right edge as Change… and Reset… (it used to stop 32px
+      // short, because the hidden ⋯ held the last 32px of the row).
+      for (const install of before.installs) {
+        near(install.right, before.change.right, 'Install against Change…');
+      }
+      near(before.reset.right, before.change.right, 'Reset… against Change…');
+      // The ⋯ is hidden at rest, on the Change… edge for an installed row, and to the LEFT of
+      // Install for one that is not.
       for (const menu of before.menus) {
-        near(menu.box.right, before.change.right, 'the ⋯ against the Change… button');
         expect(menu.opacity).toBe(0);
+        if (menu.installBox) {
+          expect(menu.box.right).toBeLessThanOrEqual(menu.installBox.left + EPSILON);
+        } else {
+          near(menu.box.right, before.change.right, 'the ⋯ against the Change… button');
+        }
       }
 
       // Only the installed model says "Installed", on the same right edge as the ⋯ and the buttons.
@@ -426,6 +511,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       expect(after.menus[0].opacity).toBe(0);
       // Revealing the ⋯ moves no box: opacity only.
       near(after.installs[0].left, before.installs[0].left, 'Install button after hover');
+      near(after.installs[0].right, before.installs[0].right, 'Install button edge after hover');
       near(after.menus[1].box.left, before.menus[1].box.left, '⋯ after hover');
     } finally {
       await tab.close();

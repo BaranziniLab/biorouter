@@ -24,6 +24,7 @@ import { Spinner } from '../../ui/spinner';
 import { StatusDot } from '../../ui/status-dot';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
+import { lastInputWasKey } from '../../chats/menuFocusReturn';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
 import './models.css';
@@ -118,6 +119,32 @@ function DetailRow({
   );
 }
 
+/**
+ * The info dialog's body, which takes focus when the dialog opens instead of its first control
+ * (V4-04). That control is the Official URL, and after a pointer pick of View info from the
+ * right-click menu it wore the keyboard ring: Chromium gives `:focus-visible` to every script
+ * focus on that path (measured: the dialog box, the Close button and a bare div all match), so the
+ * only way to show no ring is to focus something that draws none. A container, not a control:
+ * `.br-local-info-body` has no outline, and the first Tab reaches the URL.
+ *
+ * ⚠ **A passive effect, not a ref callback.** The menu this dialog was picked from is still
+ * mounted, in its exit animation, with its own focus trap on; a focus moved in the layout phase
+ * is pulled straight back to the menu row by that trap (logged in Chromium). Passive effects run
+ * after the trap's cleanup, and before the dialog's own focus scope looks at where focus is, and
+ * that scope leaves focus alone when it is already inside.
+ */
+function InfoDialogBody({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.focus({ preventScroll: true });
+  }, []);
+  return (
+    <div ref={ref} tabIndex={-1} className="br-local-info-body space-y-2 py-3">
+      {children}
+    </div>
+  );
+}
+
 export default function LocalModelInventory() {
   // Status + any in-flight install/warm-up operation live in the shared
   // store, so progress survives unmounting this panel (issue #34) and an
@@ -150,6 +177,39 @@ export default function LocalModelInventory() {
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  // Where focus goes when the info dialog closes (V4-03). The dialog is opened from a menu item,
+  // which is gone by the time it closes, so Radix has nothing to hand focus back to and a
+  // keyboard user was dropped on <body>, at the top of the page. `menuOpener` is what held focus
+  // when the row's menu opened (its ⋯, or the control a Shift+F10 was pressed on); a KEYBOARD pick
+  // of View info keeps it as the return target, a pointer pick keeps nothing (a script-focused
+  // control draws the keyboard ring after a mouse press, and its row would keep the ⋯ on screen).
+  const menuOpenerRef = useRef<HTMLElement | null>(null);
+  const infoReturnRef = useRef<HTMLElement | null>(null);
+  const rememberMenuOpener = useCallback((open: boolean) => {
+    if (!open) return;
+    const active = document.activeElement;
+    menuOpenerRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+  }, []);
+  const openInfo = useCallback((model: LlamaCppModel) => {
+    infoReturnRef.current = lastInputWasKey() ? menuOpenerRef.current : null;
+    // One task later, once the menu that picked it has closed. Radix runs an item's select inside
+    // `flushSync` and closes the menu after it, so a dialog mounted from `onSelect` appears while
+    // that menu's focus trap is still on, and the trap pulls focus back to the menu row (logged in
+    // Chromium); `InfoDialogBody` can only hold focus once the trap is gone.
+    window.setTimeout(() => {
+      if (mountedRef.current) setSelectedModel(model);
+    }, 0);
+  }, []);
+  const returnFocusAfterInfo = useCallback((event: Event) => {
+    const target = infoReturnRef.current;
+    infoReturnRef.current = null;
+    // Closed with the pointer (the Close button, the ×): nothing to give back.
+    if (!target || !target.isConnected || !lastInputWasKey()) return;
+    event.preventDefault();
+    target.focus();
   }, []);
 
   const busy = !!operation || !!deleteAction;
@@ -368,7 +428,7 @@ export default function LocalModelInventory() {
 
   const rowItems = (model: LlamaCppModel, busyNow: boolean): RowActionItem[] => {
     const items: RowActionItem[] = [
-      { label: localModelsCopy.viewInfo, onSelect: () => setSelectedModel(model) },
+      { label: localModelsCopy.viewInfo, onSelect: () => openInfo(model) },
     ];
     if (isInstalled(model)) {
       items.push(
@@ -460,7 +520,7 @@ export default function LocalModelInventory() {
           const items = rowItems(model, busy);
 
           return (
-            <RowContextMenu key={model.name} items={items}>
+            <RowContextMenu key={model.name} items={items} onOpenChange={rememberMenuOpener}>
               <div
                 className="biorouter-settings-row br-setting-row"
                 data-testid={`local-model-${model.name}`}
@@ -495,6 +555,25 @@ export default function LocalModelInventory() {
                   )}
                 </div>
                 <div className="br-setting-row-control br-local-model-actions">
+                  {/* The ⋯ comes first, so an Install button is the row's LAST control and ends
+                      on the same right edge as Change…, Manage… and "Installed" (V4-25). The
+                      cell it reserves is hidden at rest and opens on hover, to the left of
+                      Install, so nothing moves when the pointer arrives. */}
+                  <RowActions
+                    menu={items}
+                    size="sm"
+                    menuLabel={localModelsCopy.more(model.display_name)}
+                    onMenuOpenChange={rememberMenuOpener}
+                    // What an installed row says at rest, in the cell the ⋯ takes over on hover.
+                    meta={
+                      installed ? (
+                        <span className="br-local-model-installed">
+                          <StatusDot tone="success" />
+                          {localModelsCopy.installed}
+                        </span>
+                      ) : undefined
+                    }
+                  />
                   {!installed ? (
                     <Button
                       type="button"
@@ -518,20 +597,6 @@ export default function LocalModelInventory() {
                       )}
                     </Button>
                   ) : null}
-                  <RowActions
-                    menu={items}
-                    size="sm"
-                    menuLabel={localModelsCopy.more(model.display_name)}
-                    // What an installed row says at rest, in the cell the ⋯ takes over on hover.
-                    meta={
-                      installed ? (
-                        <span className="br-local-model-installed">
-                          <StatusDot tone="success" />
-                          {localModelsCopy.installed}
-                        </span>
-                      ) : undefined
-                    }
-                  />
                 </div>
               </div>
             </RowContextMenu>
@@ -544,6 +609,7 @@ export default function LocalModelInventory() {
         onOpenChange={(open) => !open && setSelectedModel(null)}
         size="lg"
         scrollBody
+        onCloseAutoFocus={returnFocusAfterInfo}
         title={selectedModel?.display_name ?? ''}
         subtitle={selectedModel?.description}
         footer={
@@ -570,7 +636,7 @@ export default function LocalModelInventory() {
         }
       >
         {selectedModel && (
-          <div className="space-y-2 py-3">
+          <InfoDialogBody>
             <DetailRow label={detail.status}>{installedLabel(selectedModel)}</DetailRow>
             <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
             <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
@@ -618,7 +684,7 @@ export default function LocalModelInventory() {
                 {selectedModel.model_path}
               </DetailRow>
             )}
-          </div>
+          </InfoDialogBody>
         )}
       </ModalShell>
 
