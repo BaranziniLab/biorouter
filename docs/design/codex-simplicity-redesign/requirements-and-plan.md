@@ -71,6 +71,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 | R-25 | In the composer's Tools popover, the Extensions, Skills and Knowledge switcher sits at the bottom, at a fixed place near the Tools button, so it does not move when the list length or the window height changes. |
 | R-26 | The Effort choice in the model menu is a slider with three stops (Quick, Normal, Deep) instead of three menu rows. |
 | R-27 | Cards, panels, buttons, chips, tabs and fields use a subtle solid fill instead of an outline, as in the summary box. Lines remain only where they are structural and on floating surfaces. Every surface gets a careful review for subtle polish. |
+| R-28 | Reordering and regrouping the sidebar's chats is fast: the listing path (renderer paging, the daemon's session listing route and its database query) is measured and sped up, with the privacy filtering unchanged. |
 
 ## Owner decisions
 

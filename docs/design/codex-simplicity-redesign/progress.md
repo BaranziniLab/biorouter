@@ -83,6 +83,7 @@ spec's tables are authoritative where this summary is shorter.
 | R-25 | Tools popover switcher at the bottom | WS-PICKERS | Not started |
 | R-26 | Effort slider | WS-PRIMITIVES, WS-PICKERS | Not started |
 | R-27 | Fill over lines, plus a polish review | WS-TOKENS, WS-PRIMITIVES, all | Not started |
+| R-28 | Fast sidebar reordering (listing path) | WS-PERF | Not started |
 
 ## Log
 
