@@ -395,8 +395,9 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
         await tab.hover(`${row} [data-marketplace-title]`);
         await tab.waitForTimeout(250);
         const washed = (await style(tab, pill)).ground;
+        // On the neutral badge's ground, the page ground, so one row is one ground (WS-KNOWLEDGE-3).
         expect(washed, `${mode} on the washed row`).toBe(
-          await paint(tab, 'var(--background-fill-strong)')
+          await paint(tab, 'var(--background-default)')
         );
         expect(ratio(washed, await paintedBackground(tab, row))).toBeGreaterThan(1.05);
       } finally {
