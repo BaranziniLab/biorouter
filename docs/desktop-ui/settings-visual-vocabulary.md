@@ -88,6 +88,13 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   validation message.
 - **One control per row.** A second control is a second row. Two related buttons (Feedback's
   "Report a bug" and "Request a feature") sit in one `role="group"` that the row names.
+- **A control that leaves the app says so.** A button or link that opens the default browser
+  ends in the 14px `ExternalLink` glyph (`size-3.5`, muted ink, `aria-hidden`; 4px from the
+  label) and is described "Opens in your browser" (`aria-describedby` a hidden element, so the
+  accessible name stays the visible words). Use `size-3.5`, never `h-3.5 w-3.5`: the button
+  primitive sizes every svg without a `size-` class to 16px, and that selector outranks a plain
+  height and width. Feedback's two buttons are the pattern (`settings/app/FeedbackLinks.tsx`,
+  read in Chromium by `FeedbackLinks.browser.test.tsx`).
 - **A row never arrives late.** What the platform or storage already knows
   (`window.electron.platform`, a `localStorage` key) is read in the `useState` initializer,
   inside a `try`, never in an effect: an effect lands a frame after the first paint, so a row

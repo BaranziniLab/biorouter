@@ -230,3 +230,56 @@ describe('App tab sections', () => {
     }
   });
 });
+
+/**
+ * Report a bug and Request a feature send the person to GitHub in their default browser, so they
+ * say so the way every other exit in Settings does (vision V4-R6-2): the 14px external-link glyph
+ * after the label, and the description "Opens in your browser" for a person who cannot see it.
+ * jsdom lays nothing out, so the glyph's size, place and ink are read in Chromium by
+ * `FeedbackLinks.browser.test.tsx`.
+ */
+describe('Feedback exits', () => {
+  const exits = [
+    [aboutCopy.reportBug, 'template=bug_report.md'],
+    [aboutCopy.requestFeature, 'template=feature_request.md'],
+  ] as const;
+
+  it.each(exits)('marks "%s" as leaving the app, by name and by description', async (name) => {
+    render(<AppSettingsSection />);
+    const exit = await screen.findByRole('button', { name });
+    // The glyph is decoration, so the name is still the visible words and nothing more.
+    expect(exit).toHaveAccessibleName(name);
+    expect(exit).toHaveAccessibleDescription(aboutCopy.opensInBrowser);
+    const glyph = exit.querySelector('svg');
+    expect(glyph).not.toBeNull();
+    expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    // After the label, not before it.
+    expect(exit.lastElementChild).toBe(glyph);
+    // `size-` keeps the button primitive from drawing it at 16px.
+    expect(glyph!.getAttribute('class')).toMatch(/\bsize-3\.5\b/);
+  });
+
+  it.each(exits)('still opens the right GitHub form from "%s"', async (name, template) => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      render(<AppSettingsSection />);
+      fireEvent.click(await screen.findByRole('button', { name }));
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(open.mock.calls[0][0]).toContain(template);
+      expect(open.mock.calls[0][1]).toBe('_blank');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('keeps the group the row names, with one hidden description for both exits', async () => {
+    const { container } = render(<AppSettingsSection />);
+    const reportBug = await screen.findByRole('button', { name: aboutCopy.reportBug });
+    expect(reportBug.closest('[role="group"]')).toHaveAccessibleName(aboutCopy.feedback);
+    // Hidden, so it takes no room in the row and is not read as a line of text.
+    const hidden = Array.from(container.querySelectorAll('[hidden]')).filter(
+      (node) => node.textContent === aboutCopy.opensInBrowser
+    );
+    expect(hidden).toHaveLength(1);
+  });
+});

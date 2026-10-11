@@ -14,11 +14,7 @@ import ThemeFamilySelector from '../../BioRouterSidebar/ThemeFamilySelector';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { useTransientFlag } from '../../../hooks/useTransientFlag';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
-
-const BUG_REPORT_URL =
-  'https://github.com/BaranziniLab/biorouter/issues/new?template=bug_report.md';
-const FEATURE_REQUEST_URL =
-  'https://github.com/BaranziniLab/biorouter/issues/new?template=feature_request.md';
+import FeedbackLinks from './FeedbackLinks';
 
 /** Whether costs are shown; on unless the person turned them off (and on when storage is closed). */
 function readShowPricing(): boolean {
@@ -202,18 +198,7 @@ export default function AppSettingsSection() {
           />
         )}
         <SettingRow label={aboutCopy.feedback}>
-          <div role="group" className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={() => window.open(BUG_REPORT_URL, '_blank')}>
-              {aboutCopy.reportBug}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => window.open(FEATURE_REQUEST_URL, '_blank')}
-            >
-              {aboutCopy.requestFeature}
-            </Button>
-          </div>
+          <FeedbackLinks />
         </SettingRow>
       </SettingSection>
 

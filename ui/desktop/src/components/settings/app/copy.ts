@@ -65,6 +65,8 @@ export const aboutCopy = {
   feedback: 'Feedback',
   reportBug: 'Report a bug',
   requestFeature: 'Request a feature',
+  /** The accessible description of a control that leaves the app, as the glyph says it to the eye. */
+  opensInBrowser: 'Opens in your browser',
 } as const;
 
 export const resetCopy = {
