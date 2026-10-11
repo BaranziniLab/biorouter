@@ -134,7 +134,11 @@ describe('IngestPanel model selection', () => {
     render(<IngestPanel />);
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      )
+    );
     expect(trigger.textContent).not.toMatch(/anthropic|claude/i);
   });
 
@@ -164,7 +168,11 @@ describe('IngestPanel model selection', () => {
     render(<IngestPanel />);
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+      )
+    );
   });
 
   it('says so and blocks digestion when no model can be resolved', async () => {
@@ -298,7 +306,9 @@ describe('IngestPanel model loading state', () => {
     stageSomeText();
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    expect(trigger).toHaveTextContent('ollama / qwen3.6:latest');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+    );
 
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
     await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
@@ -322,6 +332,7 @@ describe('IngestPanel model loading state', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     expect(trigger).toHaveTextContent(/loading/i);
     expect(trigger.textContent).not.toContain('versa_azure');
+    expect(trigger).toHaveAccessibleName(knowledgeCopy.ingest.modelName);
   });
 });
 
@@ -337,7 +348,11 @@ describe('IngestPanel model freshness', () => {
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+      )
+    );
 
     mocks.pickerValues.length = 0;
     mocks.knowledge.primaryKbId = 'kb-2';
@@ -347,7 +362,9 @@ describe('IngestPanel model freshness', () => {
     // Not "settles on the right model eventually" — the base that is no longer
     // primary must never be named once the switch has been committed.
     expect(modelLabels()).not.toContain('ollama / qwen3.6:latest');
-    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+    );
   });
 
   it('does not carry a model chosen for one base over to another', async () => {
@@ -356,7 +373,11 @@ describe('IngestPanel model freshness', () => {
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      )
+    );
 
     // Pick a per-base model for kb-1. Neither base has a `default_model` in this
     // fixture, so nothing the resolver reads changes when the base does — the
@@ -364,13 +385,19 @@ describe('IngestPanel model freshness', () => {
     await act(async () => {
       mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.6:latest' });
     });
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.6:latest'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+      )
+    );
 
     mocks.knowledge.primaryKbId = 'kb-2';
     mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };
     rerender(<IngestPanel />);
 
-    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+    );
 
     stageSomeText();
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
@@ -406,6 +433,7 @@ describe('IngestPanel with an unresolvable knowledge base', () => {
     // named for a base whose own default is unknown, on any commit.
     expect(modelLabels()).not.toContain('versa_azure / gpt-5.5-2026-04-24');
     expect(trigger.textContent).not.toContain('versa_azure');
+    expect(trigger).toHaveAccessibleName(knowledgeCopy.ingest.modelName);
     expect(trigger).toHaveTextContent(/unavailable/i);
   });
 

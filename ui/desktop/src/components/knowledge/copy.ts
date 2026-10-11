@@ -49,7 +49,7 @@ export const knowledgeCopy = {
   ingest: {
     dropLabel: 'Drag and drop to stage',
     dropHint: 'PDF, Office, web pages, folders',
-    dropInfoLabel: 'Which files can be staged',
+    dropInfoLabel: 'staging files',
     dropInfo:
       'Readable files (.pdf, .pptx, .xlsx, .docx, .csv, .md, .html, .txt) are staged one by one, and folders and archives are unpacked; binaries are skipped. Import a .brkb archive from Manage bases.',
     pasteText: 'Paste text',
@@ -61,17 +61,25 @@ export const knowledgeCopy = {
     pasteTitlePlaceholder: 'Title (optional)',
     stagedLabel: 'Staged',
     warnings: (n: number) => `${n} ${n === 1 ? 'warning' : 'warnings'}`,
-    warningsInfoLabel: 'Curation warnings',
+    warningsInfoLabel: 'curation warnings',
     warningsInfo:
       'Keep readable, high-signal sources. Leave out installers, giant raw exports, and files that are mostly IDs or machine noise.',
-    /** The digest model picker's footer line, and its InfoTip. */
+    /**
+     * The digest model picker's trigger. It shows the model's name and nothing else; the provider
+     * and the full id ride in its Tooltip and its accessible name (V3-03).
+     */
+    modelName: 'Knowledge model',
+    modelTriggerName: (model: string, provider: string) => `Knowledge model: ${model}, ${provider}`,
+    modelTriggerTip: (model: string, provider: string) => `${provider} · ${model}`,
+    /** The digest model picker's footer line, and its InfoTip (named "About digest models"). */
     modelUse: 'Used for digests, not chat',
+    modelUseLabel: 'digest models',
     modelUseInfo:
       'This model digests staged sources and scheduled knowledge curation. Chat replies use the model chosen in the composer.',
     /** Why Digest does nothing yet, when there is nothing to fix: the button's Tooltip. */
     stageAFile: 'Stage a file to digest.',
     checkingModel: 'Checking which model this knowledge base digests with…',
-    errorDetails: 'Error details',
+    errorDetails: 'error details',
   },
 
   /** The base switcher in the band, and its picker. */
@@ -92,7 +100,7 @@ export const knowledgeCopy = {
     title: 'Knowledge bases',
     /** One sentence, because it is the dialog's `aria-describedby` (ModalShell). */
     subtitle: 'Choose the bases this chat uses.',
-    infoLabel: 'Knowledge bases in this chat',
+    infoLabel: 'bases in this chat',
     info: 'The primary is where knowledge is written when no base is named. Bases left out can still be named.',
     primary: 'Primary',
     copyId: 'Copy ID',
@@ -109,7 +117,7 @@ export const knowledgeCopy = {
       `Synthesized from ${source ?? 'an uncited source'}`,
     directed: 'Directed',
     derivedNote: 'Derived from the cited source',
-    derivedNoteLabel: 'Derived links',
+    derivedNoteLabel: 'derived links',
     derivedNoteInfo:
       'Implicit link derived from the cited primary source so the provenance is visible. Author an explicit reported_in edge to make it first-class.',
     ciRange: (lower: string | number, upper: string | number) => `${lower} to ${upper}`,
@@ -144,7 +152,7 @@ export const knowledgeCopy = {
     title: 'Create knowledge base',
     folder: (id: string) => `knowledge/${id}/`,
     folderLabel: 'Folder:',
-    folderInfoLabel: 'Folder name',
+    folderInfoLabel: 'the folder name',
     folderInfo: 'The id may change if it is taken.',
     permanent: 'You can’t change the format later.',
     okf: {

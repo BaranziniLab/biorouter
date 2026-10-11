@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Brain, Check, ChevronDown } from '../../icons/app-icons';
 import type { ProviderDetails } from '../../../api';
@@ -9,6 +9,7 @@ import { EmptyState } from '../../ui/empty-state';
 import { InfoTip } from '../../ui/info-tip';
 import { Spinner } from '../../ui/spinner';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import {
   Command,
   CommandEmpty,
@@ -17,6 +18,7 @@ import {
   CommandItem,
   CommandList,
 } from '../../ui/command';
+import { friendlyModelName } from '../../bottom_menu/modelLabel';
 import { fetchModelsForProviders } from '../../settings/models/modelInterface';
 import {
   getOrderedProviderGroups,
@@ -190,24 +192,19 @@ export function IngestModelPicker({
   const currentProviderLabel = value
     ? (providerDisplayNames[value.provider] ?? value.provider)
     : '';
-  const selectedProvider = useMemo(
-    () =>
-      value
-        ? (sections
-            .flatMap((section) => section.providers)
-            .find((provider) => provider.name === value.provider) ?? null)
-        : null,
-    [sections, value]
-  );
+  // The model's name as the composer's chip says it (the release stamp comes off). The provider
+  // and the full id are in the Tooltip and the accessible name, which is where the 45px the old
+  // "MODEL" label took used to go: at 268px the name no longer truncates to "Versa API Azure / g…".
   const triggerLabel = value
-    ? selectedProvider
-      ? `${currentProviderLabel} / ${value.model}`
-      : `${value.provider} / ${value.model}`
+    ? friendlyModelName(value.model)
     : valueState === 'loading'
       ? 'Loading model…'
       : valueState === 'unavailable'
         ? 'Knowledge base unavailable'
         : 'No model configured';
+  const triggerName = value
+    ? knowledgeCopy.ingest.modelTriggerName(value.model, currentProviderLabel)
+    : knowledgeCopy.ingest.modelName;
 
   const needle = query.trim().toLowerCase();
   function matches(provider: ProviderDetails, model: string): boolean {
@@ -230,35 +227,42 @@ export function IngestModelPicker({
 
   return (
     <Popover open={open} onOpenChange={(next) => (disabled ? undefined : setOpen(next))}>
-      <PopoverTrigger asChild>
-        <button
-          data-testid="knowledge-model-picker-trigger"
-          type="button"
-          disabled={disabled}
-          aria-label="Knowledge model"
-          aria-expanded={open}
-          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Brain className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
-          <span className="shrink-0 text-caps text-text-muted">Model</span>
-          <span
-            className={`min-w-0 flex-1 truncate ${value ? 'text-text-default' : 'text-text-muted'}`}
-          >
-            {triggerLabel}
-          </span>
-          {saving ? (
-            <>
-              <span className="sr-only">Saving</span>
-              <Spinner className="shrink-0 text-text-muted" />
-            </>
-          ) : (
-            <ChevronDown
-              aria-hidden="true"
-              className={`h-icon-row w-icon-row shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
-            />
-          )}
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              data-testid="knowledge-model-picker-trigger"
+              type="button"
+              disabled={disabled}
+              aria-label={triggerName}
+              aria-expanded={open}
+              className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span
+                className={`min-w-0 flex-1 truncate ${value ? 'text-text-default' : 'text-text-muted'}`}
+              >
+                {triggerLabel}
+              </span>
+              {saving ? (
+                <>
+                  <span className="sr-only">Saving</span>
+                  <Spinner className="shrink-0 text-text-muted" />
+                </>
+              ) : (
+                <ChevronDown
+                  aria-hidden="true"
+                  className={`h-icon-row w-icon-row shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
+                />
+              )}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        {value && !open && (
+          <TooltipContent side="top">
+            {knowledgeCopy.ingest.modelTriggerTip(value.model, currentProviderLabel)}
+          </TooltipContent>
+        )}
+      </Tooltip>
 
       <PopoverContent
         align="start"
@@ -336,7 +340,7 @@ export function IngestModelPicker({
             <div className="flex flex-none items-center gap-1 border-t border-border-subtle px-3 py-2 text-supporting text-text-muted">
               <span>{knowledgeCopy.ingest.modelUse}</span>
               <InfoTip
-                label={knowledgeCopy.ingest.modelUse}
+                label={knowledgeCopy.ingest.modelUseLabel}
                 help={knowledgeCopy.ingest.modelUseInfo}
               />
             </div>
