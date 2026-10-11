@@ -113,8 +113,10 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
           <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
             Cancel
           </Button>
+          {/* Secondary: Digest, under the rail's staged list, is the one primary action (V3-04). */}
           <Button
             type="button"
+            variant="secondary"
             size="sm"
             disabled={!text.trim()}
             onClick={() => onStage(text.trim(), title.trim() || 'Pasted knowledge', urlsToFetch)}
