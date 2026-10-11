@@ -102,7 +102,6 @@ get_biorouter_db_path() {
     else
         local possible_paths=(
             "${HOME}/.local/share/biorouter/sessions/sessions.db"
-            "${HOME}/Library/Application Support/Block/biorouter/data/sessions/sessions.db"
         )
 
         for path in "${possible_paths[@]}"; do
