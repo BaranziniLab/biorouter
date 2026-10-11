@@ -1094,7 +1094,7 @@ pub(crate) struct EsbuildCommand {
     source: &'static str,
 }
 
-fn packaged_esbuild(executable: &Path) -> Option<PathBuf> {
+pub(crate) fn packaged_esbuild(executable: &Path) -> Option<PathBuf> {
     let dir = executable.parent()?;
     // CLI-only Linux packages keep helpers under libexec so they do not
     // overwrite a separately installed /usr/bin/esbuild.
@@ -3426,6 +3426,31 @@ mod tests {
         let as_dir = TempDir::new().unwrap();
         std::fs::create_dir(as_dir.path().join(name)).unwrap();
         assert_eq!(esbuild_beside(as_dir.path()), None);
+    }
+
+    #[test]
+    fn packaged_esbuild_is_relative_to_the_selected_executable() {
+        let root = TempDir::new().unwrap();
+        let selected = root.path().join("selected/bin");
+        let other = root.path().join("other/bin");
+        std::fs::create_dir_all(&selected).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        std::fs::write(other.join(name), b"other package").unwrap();
+        assert_eq!(packaged_esbuild(&selected.join("biorouterd")), None);
+        std::fs::write(selected.join(name), b"selected package").unwrap();
+        assert_eq!(
+            packaged_esbuild(&selected.join("biorouterd")),
+            Some(selected.join(name))
+        );
+        assert_eq!(
+            packaged_esbuild(&other.join("biorouterd")),
+            Some(other.join(name))
+        );
     }
 
     #[cfg(target_os = "linux")]
