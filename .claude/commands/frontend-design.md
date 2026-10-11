@@ -56,8 +56,10 @@ Fills come before lines (design.md 9.11). Write `bg-background-fill border borde
 `hover:bg-background-fill-strong` where it responds to the pointer: keep the 1px border transparent,
 never `border-0`, so nothing moves and forced colours still draw the edge. On the sidebar or a muted
 ground, rest on `bg-background-fill-strong`. A control inside a filled card rests on
-`bg-background-default`. Lines stay only on structural edges (the band edge, pane dividers, resize
-handles, rules inside a filled table) and on floating surfaces, which keep a hairline and a shadow.
+`bg-background-default`. Inside a dark popover the fill is a well under the lifted ground and its hover
+step goes deeper; the tokens re-point themselves, so write nothing special. Lines stay only on structural
+edges (the band edge, pane dividers, resize handles, rules inside a filled table) and on floating
+surfaces, which keep a hairline and a shadow.
 Row lists drop the hairline between rows when spacing and the hover fill separate them. Hairlines are
 straight: no `border-bottom` on a rounded row. Crew keeps its own recipes.
 

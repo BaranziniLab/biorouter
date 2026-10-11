@@ -34,6 +34,8 @@ import {
   discoverFamilies,
   assertBlockOrder,
   blend,
+  blocks,
+  parseDecls,
   resolveHex,
   resolveRaw,
   contrast as ratioOf,
@@ -698,6 +700,89 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     1.05,
     scope
   );
+
+  // The same fills INSIDE a dark popover (R-27 phase B; main.css "popover fill").
+  // `.dark .biorouter-popover-surface` lifts the ground to `--background-medium`
+  // (re-pointing `--background-default`), which is also the dark strong step, so
+  // a hovered field would have vanished into the popover; the rule re-points the
+  // strong step one step deeper. The scope is built the way the browser builds
+  // it: the family's own tokens under the rule's custom properties. A LIFTED
+  // fill was measured and rejected: `--text-subtle` falls under 4.5:1 on any
+  // fill a visible step above the lifted ground. So here the rest fill stays a
+  // well (darker than the ground) and the hover goes deeper still.
+  if (theme.endsWith(':dark')) {
+    const popover = Object.assign(
+      {},
+      ...blocks(css, (sel) => sel === '.dark .biorouter-popover-surface').map((b) =>
+        parseDecls(b.body)
+      )
+    );
+    const inside = { decls: { ...scope.decls, ...popover }, theme: scope.theme };
+    const at = `${theme} dark popover`;
+    assert(
+      `${at}: fill is a visible step off the ground`,
+      '--background-fill',
+      '--background-default',
+      1.08,
+      inside
+    );
+    assertAtMost(
+      `${at}: fill stays subtle on the ground`,
+      '--background-fill',
+      '--background-default',
+      1.35,
+      inside
+    );
+    assert(
+      `${at}: strong fill (hover) is a step off the fill`,
+      '--background-fill-strong',
+      '--background-fill',
+      1.08,
+      inside
+    );
+    assert(
+      `${at}: a hovered field is still a step off the ground`,
+      '--background-fill-strong',
+      '--background-default',
+      1.08,
+      inside
+    );
+    assertAtMost(
+      `${at}: strong fill stays subtle on the ground`,
+      '--background-fill-strong',
+      '--background-default',
+      1.5,
+      inside
+    );
+    assert(
+      `${at}: focus fill is a step off the strong fill`,
+      '--background-focus',
+      '--background-fill-strong',
+      1.05,
+      inside
+    );
+    for (const fill of ['--background-fill', '--background-fill-strong']) {
+      const name = fill.slice(2);
+      assert(`${at}: text-default on ${name}`, '--text-default', fill, 4.5, inside);
+      assert(`${at}: text-muted on ${name}`, '--text-muted', fill, 4.5, inside);
+      assert(`${at}: text-subtle (placeholder) on ${name}`, '--text-subtle', fill, 4.5, inside);
+      assert(
+        `${at}: control edge (border-control) on ${name}`,
+        '--border-control',
+        fill,
+        3.0,
+        inside
+      );
+      assert(`${at}: focus edge (border-focus) on ${name}`, '--border-focus', fill, 3.0, inside);
+    }
+    assert(
+      `${at}: switch off track is a step off the fill`,
+      '--control-track-off',
+      '--background-fill',
+      1.05,
+      inside
+    );
+  }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to
   // SC 1.4.11's 3:1, and Roche Limit's design doc used to guarantee it. The

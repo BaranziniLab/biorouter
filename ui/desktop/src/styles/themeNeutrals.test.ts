@@ -144,10 +144,20 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
   const generatedStart = raw.indexOf('THEMES:GENERATED:FAMILIES:START');
   const generatedEnd = raw.indexOf('THEMES:GENERATED:FAMILIES:END');
 
+  // The dark popover's one re-pointing of the strong fill is the only declaration of these tokens
+  // outside the two base blocks; it is held by its own test below.
+  const popoverFill = (() => {
+    const from = raw.indexOf('@ws WS-TOKENS begin: popover fill');
+    const to = raw.indexOf('@ws WS-TOKENS end: popover fill');
+    return [from, to] as const;
+  })();
+
   it.each(['border-control', 'control-track-off', 'background-fill', 'background-fill-strong'])(
     '--%s is declared as a hex once for light and once for dark, outside the family blocks',
     (token) => {
-      const declarations = [...css.matchAll(new RegExp(`(^|[\\s;{])--${token}:\\s*([^;]+);`, 'g'))];
+      const declarations = [
+        ...css.matchAll(new RegExp(`(^|[\\s;{])--${token}:\\s*([^;]+);`, 'g')),
+      ].filter((d) => (d.index ?? 0) < popoverFill[0] || (d.index ?? 0) > popoverFill[1]);
       expect(declarations.map((d) => d[2].trim())).toHaveLength(2);
       for (const declaration of declarations) {
         expect(declaration[2].trim()).toMatch(/^#[0-9a-f]{6}$/i);
@@ -158,6 +168,32 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
       }
     }
   );
+
+  /**
+   * A dark popover floats on `--background-medium` (#2c2c29), which is also the dark strong fill, so
+   * a hovered field there would vanish into the popover. The rule re-points the strong step one
+   * step DEEPER (#1b1b19) and nothing else: the rest fill is not lifted, because the placeholder ink
+   * falls under 4.5:1 on any fill a visible step above that ground (main.css "popover fill";
+   * `check-contrast.mjs` measures the rows in all three families).
+   */
+  it('re-points only the strong fill inside a dark popover, to the page ground, after the elevation rule', () => {
+    const [from, to] = popoverFill;
+    expect(from, 'main.css has the popover fill block').toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const block = css.slice(from, to);
+    const rule = block.match(/\.dark \.biorouter-popover-surface \{([^}]*)\}/);
+    expect(rule, 'the block holds the .dark .biorouter-popover-surface rule').toBeTruthy();
+    const declared = [...rule![1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((d) => [
+      d[1],
+      d[2].trim(),
+    ]);
+    expect(declared).toEqual([['--background-fill-strong', 'var(--color-neutral-900)']]);
+    // Only custom properties: the surface's own paint is WS-PRIMITIVES' rule, which comes first.
+    expect(rule![1].replace(/--[\w-]+\s*:[^;]+;/g, '').trim()).toBe('');
+    const elevation = raw.indexOf('@ws WS-PRIMITIVES end: popover elevation');
+    expect(elevation).toBeGreaterThan(-1);
+    expect(from).toBeGreaterThan(elevation);
+  });
 
   it('keeps the markers it measures against', () => {
     expect(generatedStart).toBeGreaterThan(0);

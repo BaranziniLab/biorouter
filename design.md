@@ -2144,7 +2144,13 @@ visible step in dark. On the dark canvas the transcript paints, the fill is 1.18
   a secondary button in an approval card) rests on `--background-default`, one step back toward the page, and
   hovers on `--background-fill-strong`.
 - A dark popover re-points `--background-default` to `--background-medium`, which equals the dark strong step;
-  a field there rests on the fill as a quiet well, 1.13:1 below the popover ground.
+  a field there rests on the fill as a quiet well, 1.13:1 below the popover ground, and
+  `.dark .biorouter-popover-surface` re-points `--background-fill-strong` to `#1b1b19` so the hover step goes
+  one step deeper (1.10:1 off the rest, 1.23:1 under the ground) instead of equalling the ground. Write
+  nothing special at the call site: `bg-background-fill` and `hover:bg-background-fill-strong` do the right
+  thing inside a popover. The fill is not lifted above the popover ground on purpose: `--text-subtle`
+  (placeholders) measures 4.15, 4.44 and 4.50:1 on the smallest useful lift (`#333330`) and 3.74 to 4.06:1 on
+  `--background-strong`, below the 4.5:1 a field owes it, and on the well it only gains.
 - Opaque on purpose: a sticky table head, a fade that ends at the fill and anything that sits over content
   need a solid ground, which a translucent ink would not give them.
 
@@ -2153,7 +2159,9 @@ the canvas, the default surface and the card; the strong step is at least 1.08:1
 `--background-muted`, and at most 1.5:1 on the page; the focus fill is 1.05:1 off the strong step; default and
 muted ink clear 4.5:1 on both fills (lowest 5.06:1), `--text-subtle` on the rest fill (lowest 5.06:1); the
 control edge and the focus edge clear 3:1 on both fills (lowest 3.10:1 and 4.55:1); the off switch track is a
-step off the fill. `styles/themeNeutrals.test.ts` keeps both tokens shared, and
+step off the fill. Inside a dark popover the same pair is measured again in the three dark scopes (the "dark
+popover" rows): the fill is 1.08 to 1.35:1 and the hover step at least 1.08:1 off the ground, 1.5:1 at most,
+and ink, placeholder and both edges clear their floors on both fills (lowest 4.31:1 for the control edge). `styles/themeNeutrals.test.ts` keeps both tokens shared, and
 `styles/fillTokens.browser.test.ts` measures the forced colours claim in Chromium.
 
 **The accessibility trade-off.** Text inputs and selects lose their resting border. A fill of 1.08 to 1.35:1 is

@@ -990,7 +990,9 @@
      is a smaller visible step here than in light: the lightness step is what
      was matched. ⚠ A dark popover re-points `--background-default` to
      `--background-medium` (#2c2c29), which equals the strong step: a field in
-     a dark popover rests on the fill as a quiet well (1.13:1 below it). */
+     a dark popover rests on the fill as a quiet well (1.13:1 below it), and
+     `.dark .biorouter-popover-surface` ("popover fill", below) re-points the
+     strong step one step DEEPER so its hover is still a change. */
   --background-fill: #232320;
   --background-fill-strong: #2c2c29;
   /* @ws WS-TOKENS end: fill tokens (dark) */
@@ -3738,6 +3740,21 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   background-color: var(--background-default);
 }
 /* @ws WS-PRIMITIVES end: popover elevation */
+
+/* @ws WS-TOKENS begin: popover fill */
+/* A field, chip or track inside a dark popover sits on a LIFTED ground (the rule above re-points
+   `--background-default` to `--background-medium`, #2c2c29), and the dark `--background-fill-strong`
+   IS that value: a hovered field would have vanished into the popover. The hover step goes DEEPER
+   instead, to the page's own #1b1b19, so rest (#232320, 1.13:1 under the ground) and hover read as a
+   well that deepens, 1.10:1 apart, 1.23:1 under the ground. The step does NOT go lighter, though
+   that is the page's direction in dark (and the first thing proposed): the placeholder ink
+   (`--text-subtle`) is 4.15, 4.44 and 4.50:1 on the smallest useful lift (#333330) and 3.74 to 4.06
+   on `--background-strong`, below the 4.5:1 a field owes it, while on the well it only gains.
+   `check-contrast.mjs` measures this scope in all three families (the "dark popover" rows). */
+.dark .biorouter-popover-surface {
+  --background-fill-strong: var(--color-neutral-900);
+}
+/* @ws WS-TOKENS end: popover fill */
 
 /* D-05 / P1 — a flat header separated by a hairline. The gradient wash and the
    chrome shadow that used to replace the border are gone. */
