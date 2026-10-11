@@ -361,6 +361,8 @@ interface RecentChatRowProps {
   listShown: boolean;
   tabIndex: 0 | -1;
   onRowFocus: (key: string) => void;
+  /** The row's ⋯ menu opened or closed: the list keeps a row drawn while its menu is open. */
+  onLineMenuChange: (key: string, open: boolean) => void;
   /**
    * `title` is the name this row is ALREADY rendering, handed to the opener so
    * the new tab is born with it. Omitted when the session is unnamed — then the
@@ -397,6 +399,7 @@ const RecentChatRow = memo(function RecentChatRow({
   listShown,
   tabIndex,
   onRowFocus,
+  onLineMenuChange,
   onOpen,
   onStartRename,
   onRequestDelete,
@@ -585,7 +588,10 @@ const RecentChatRow = memo(function RecentChatRow({
         testId={`recent-chat-more-${session.id}`}
         tabIndex={tabIndex}
         onFocus={() => onRowFocus(key)}
-        onOpenChange={setMenuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          onLineMenuChange(key, open);
+        }}
       >
         <ChatRowDropdownMenuContent
           target={target}
@@ -604,10 +610,18 @@ interface FolderHeaderProps {
   collapsed: boolean;
   tabIndex: 0 | -1;
   onRowFocus: (key: string) => void;
+  onLineMenuChange: (key: string, open: boolean) => void;
   onToggle: () => void;
 }
 
-function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: FolderHeaderProps) {
+function FolderHeader({
+  group,
+  collapsed,
+  tabIndex,
+  onRowFocus,
+  onLineMenuChange,
+  onToggle,
+}: FolderHeaderProps) {
   const key = folderKey(group);
   const [menuOpen, setMenuOpen] = useState(false);
   // The path tooltip and the + label are built when first shown; the ⋯ builds its own.
@@ -696,7 +710,10 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
             className="no-drag text-text-muted hover:text-text-default"
             tabIndex={tabIndex}
             onFocus={() => onRowFocus(key)}
-            onOpenChange={setMenuOpen}
+            onOpenChange={(open) => {
+              setMenuOpen(open);
+              onLineMenuChange(key, open);
+            }}
           >
             <DropdownMenuContent
               align="end"
@@ -972,35 +989,50 @@ export default function RecentChats({
   // The row that last had focus in the list, kept drawn so focus is never
   // unmounted from under the person when the list scrolls away from it.
   const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  // The row or folder header whose ⋯ menu is open. A ⋯ opened with the pointer
+  // never takes focus (Radix prevents it), and the menu is not modal, so the
+  // list can scroll under it: its line stays drawn, or the menu would vanish.
+  const [lineMenuKey, setLineMenuKey] = useState<string | null>(null);
+  const onLineMenuChange = useCallback(
+    (key: string, open: boolean) =>
+      setLineMenuKey((current) => (open ? key : current === key ? null : current)),
+    []
+  );
 
   // R-28: the list reaches `renderBudget` lines down (the rest wait until it is
   // scrolled near its end), and of those it draws for real only the lines in
-  // `range` plus the rows that must stay: the focused row, a row being renamed
-  // or just renamed, and the row whose right-click menu is open. The whole list
-  // is still held and arranged. The current chat is not kept: when its row is
-  // not drawn, Tab lands on the first row drawn, as it does today when the row
-  // lies past the lines drawn so far.
+  // `range` plus the lines that must stay: the focused line (a row, a folder
+  // header or a Show more), the current chat (the list's single Tab stop), a
+  // row being renamed or just renamed, and a line whose right-click or ⋯ menu
+  // is open. The whole list is still held and arranged. A current chat past
+  // `renderBudget` has no row, and Tab lands on the first row drawn, as before.
   const extent = useMemo(
     () => windowSidebarRows(shown, renderBudget, headerLines),
     [shown, renderBudget]
   );
-  const keptRows = useMemo(() => {
-    const ids = new Set<string>();
-    if (focusedRowKey?.startsWith('chat:')) ids.add(focusedRowKey.slice('chat:'.length));
-    if (editing) ids.add(editing.sessionId);
-    if (reveal) ids.add(reveal.sessionId);
-    if (rowMenuOpen && menuRowId) ids.add(menuRowId);
-    return ids;
-  }, [focusedRowKey, editing, reveal, rowMenuOpen, menuRowId]);
+  const keptLines = useMemo(() => {
+    const keys = new Set<string>();
+    if (focusedRowKey) keys.add(focusedRowKey);
+    if (lineMenuKey) keys.add(lineMenuKey);
+    if (activeSessionId) keys.add(chatKey(activeSessionId));
+    if (editing) keys.add(chatKey(editing.sessionId));
+    if (reveal) keys.add(chatKey(reveal.sessionId));
+    if (rowMenuOpen && menuRowId) keys.add(chatKey(menuRowId));
+    return keys;
+  }, [focusedRowKey, lineMenuKey, activeSessionId, editing, reveal, rowMenuOpen, menuRowId]);
   const drawRange = drawn.range;
   const windowed = useMemo(
     () => ({
       cut: extent.cut,
-      entries: sliceSidebarLines(extent.entries, drawRange, headerLines, (session) =>
-        keptRows.has(session.id)
+      entries: sliceSidebarLines(
+        extent.entries,
+        drawRange,
+        headerLines,
+        (session) => keptLines.has(chatKey(session.id)),
+        ({ group }, line) => keptLines.has(line === 'header' ? folderKey(group) : moreKey(group))
       ),
     }),
-    [extent, drawRange, keptRows]
+    [extent, drawRange, keptLines]
   );
 
   // One tab stop for the list (spec 3.4, F-18): ↑/↓/Home/End move between rows.
@@ -1259,25 +1291,41 @@ export default function RecentChats({
     [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore, setRenderBudget, syncDrawRange]
   );
 
-  // Home and End move focus to the list's ends, which may be folded into gaps
-  // (R-28): scroll there and draw it first, so the roving keys find that end's
-  // row, as focusing it would have scrolled the list there anyway. A key typed
-  // in the rename field is the field's.
+  // The roving keys move focus to lines that may be folded into gaps (R-28).
+  // Home and End scroll the list to that end and draw it first, as focusing
+  // its row would have scrolled the list there anyway. ArrowUp and ArrowDown on
+  // a line the list was scrolled away from (it stays drawn while it holds
+  // focus) bring the list back to it first, so the key reaches the line next to
+  // it rather than the first row drawn far down the list. A key typed in the
+  // rename field is the field's.
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
+    const item = target?.closest<HTMLElement>('[data-row-item]');
     if (
-      (event.key === 'Home' || event.key === 'End') &&
+      ['Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key) &&
       !event.altKey &&
       !event.ctrlKey &&
       !event.metaKey &&
       !event.shiftKey &&
       drawn.range !== null &&
-      target?.closest('[data-row-item]') &&
-      !target.matches('input, textarea')
+      item &&
+      !target?.matches('input, textarea')
     ) {
       const container = event.currentTarget;
-      container.scrollTop = event.key === 'Home' ? 0 : container.scrollHeight;
-      syncDrawRange(container, true);
+      if (event.key === 'Home' || event.key === 'End') {
+        container.scrollTop = event.key === 'Home' ? 0 : container.scrollHeight;
+        syncDrawRange(container, true);
+      } else {
+        const row = item.matches('[data-row]')
+          ? item
+          : (item.querySelector<HTMLElement>('[data-row]') ?? item);
+        const at = row.getBoundingClientRect();
+        const box = container.getBoundingClientRect();
+        if (at.bottom <= box.top || at.top >= box.bottom) {
+          scrollRowIntoView(container, row);
+          syncDrawRange(container, true);
+        }
+      }
     }
     roving.onKeyDown(event);
   };
@@ -1418,6 +1466,7 @@ export default function RecentChats({
     listShown: isExpanded && sidebarOpen,
     tabIndex: roving.tabIndexFor(chatKey(session.id)),
     onRowFocus,
+    onLineMenuChange,
     onOpen: openChat,
     onStartRename: startRenameRow,
     onRequestDelete: setPendingDelete,
@@ -1536,6 +1585,7 @@ export default function RecentChats({
                           collapsed={collapsed}
                           tabIndex={roving.tabIndexFor(folderKey(group))}
                           onRowFocus={onRowFocus}
+                          onLineMenuChange={onLineMenuChange}
                           onToggle={() => {
                             // What a click does follows what is DRAWN: an open folder
                             // closes and a closed one opens, even when the open one is

@@ -806,15 +806,20 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
       }
     });
 
-    /** `total` chats under Group by None, newest first: line N of the list is chat `s{N + 1}`. */
-    const openLongList = (total: number, options: { scale?: number } = {}) => {
+    /**
+     * `total` chats, newest first, under Group by None (line N of the list is chat `s{N + 1}`), or
+     * under Group by Folder with `perFolder` chats in each folder, the folders in the same order.
+     */
+    const openLongList = (total: number, options: { scale?: number; perFolder?: number } = {}) => {
       const now = Date.now();
       const all = Array.from({ length: total }, (_, i) => ({
         id: `s${i + 1}`,
         name: `Chat ${i + 1}`,
         created_at: new Date(now - i * 1_000).toISOString(),
         updated_at: new Date(now - i * 1_000).toISOString(),
-        working_dir: '/Users/me/projects/cohort',
+        working_dir: options.perFolder
+          ? `/Users/me/projects/p${Math.floor(i / options.perFolder)}`
+          : '/Users/me/projects/cohort',
         message_count: 2,
         user_set_name: true,
         privacy_tier: 'public',
@@ -830,7 +835,11 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
           next_cursor: next < total ? String(next) : null,
         };
       };
-      const stored = JSON.stringify({ v: 1, groupBy: 'none', sortBy: 'activity' });
+      const stored = JSON.stringify({
+        v: 1,
+        groupBy: options.perFolder ? 'folder' : 'none',
+        sortBy: 'activity',
+      });
       return open('light', false, 'attached', {
         serve,
         scale: options.scale,
@@ -987,6 +996,94 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
             'the list is as tall as its lines'
           ).toBeLessThanOrEqual(1);
         }
+      } finally {
+        await tab.close();
+      }
+    });
+
+    const focusedRow = (tab: Page) =>
+      tab.evaluate(() => document.activeElement?.getAttribute('data-row') ?? null);
+    const scrollListTo = async (tab: Page, fraction: number) => {
+      await tab.evaluate((f) => {
+        const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+        el.scrollTop = el.scrollHeight * f;
+      }, fraction);
+      await tab.waitForTimeout(200);
+    };
+
+    /**
+     * What the person reaches is unchanged by drawing only the rows near the viewport (V1-R2-2,
+     * round 4), with the list scrolled away under them by the wheel:
+     * - ArrowDown on the focused row goes to the line below it, not to the first row drawn far
+     *   down the list (the list comes back to the row first, as moving focus there would);
+     * - the single Tab stop is still the current chat, wherever the list is scrolled;
+     * - a row's ⋯ menu opened with the pointer stays open, its row drawn, as the list scrolls.
+     */
+    it('keeps the keyboard and the ⋯ menu where they were while the list scrolls (V1-R2-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openLongList(400);
+      try {
+        await scrollLongList(tab, 0);
+        await tab.focus('[data-testid="recent-chat-s5"]');
+        await scrollListTo(tab, 0.5);
+        expect(await focusedRow(tab), 'focus stays on its row').toBe('chat:s5');
+        await tab.keyboard.press('ArrowDown');
+        expect(await focusedRow(tab), 'ArrowDown reaches the next line').toBe('chat:s6');
+        await scrollListTo(tab, 0.5);
+        await tab.keyboard.press('ArrowUp');
+        expect(await focusedRow(tab), 'ArrowUp reaches the line above').toBe('chat:s5');
+
+        // Tabbing into the list lands on the current chat (s2), however far the list scrolled.
+        await scrollListTo(tab, 0.5);
+        await tab.focus('[data-testid="sidebar-view-options"]');
+        for (let i = 0; i < 6; i++) {
+          await tab.keyboard.press('Tab');
+          const inList = await tab.evaluate(
+            () => !!document.activeElement?.closest('[data-testid="recent-chat-scroll"]')
+          );
+          if (inList) break;
+        }
+        expect(await focusedRow(tab), 'the Tab stop is the current chat').toBe('chat:s2');
+
+        // A ⋯ menu the pointer opened survives the list scrolling away from its row.
+        await tab.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        await scrollListTo(tab, 0);
+        await tab.hover('[data-testid="recent-chat-s4"]');
+        await tab.click('[data-testid="recent-chat-more-s4"]');
+        await tab.getByRole('menuitem', { name: /^Rename/ }).waitFor();
+        await scrollListTo(tab, 0.5);
+        expect(await tab.getByRole('menu').count(), 'the menu is still open').toBe(1);
+        expect(await tab.locator('[data-testid="recent-chat-s4"]').count(), 'its row').toBe(1);
+        await tab.keyboard.press('Escape');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
+     * Group by Folder: a focused folder header and a focused "Show more" are lines too. Folded into
+     * a placeholder when the list scrolls away, they dropped focus to the page; they are kept drawn
+     * like a focused row, and ArrowDown from the header still reaches the folder's first chat.
+     */
+    it('keeps a focused folder header or Show more drawn while the list scrolls (V1-R2-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openLongList(420, { perFolder: 7 });
+      // A folder group's key is `folder:<path>`; its header's row is `folder:<key>`.
+      const header = 'folder:folder:/Users/me/projects/p1';
+      const more = 'more:folder:/Users/me/projects/p1';
+      try {
+        await scrollLongList(tab, 0);
+        await tab.waitForSelector(`[data-row="${header}"]`);
+        await tab.focus(`[data-row="${header}"]`);
+        await scrollListTo(tab, 0.5);
+        expect(await focusedRow(tab), 'the header keeps focus').toBe(header);
+        await tab.keyboard.press('ArrowDown');
+        expect(await focusedRow(tab), 'ArrowDown reaches its first chat').toBe('chat:s8');
+
+        await scrollListTo(tab, 0);
+        await tab.focus(`[data-row="${more}"]`);
+        await scrollListTo(tab, 0.5);
+        expect(await focusedRow(tab), 'Show more keeps focus').toBe(more);
       } finally {
         await tab.close();
       }

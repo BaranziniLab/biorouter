@@ -612,6 +612,18 @@ describe('sliceSidebarLines: draw only the lines near the viewport (R-28, V1-R2-
     expect(lineCount(sliced)).toBe(50);
   });
 
+  it('always draws a folder header or Show more it is told to keep', () => {
+    // Lines: a header 0, a0..a4 1-5, + 6, b header 7, b0..b2 8-10, c header 11, c0..c9 12-21.
+    const entries = [entry('a', 1, 5, 'more'), entry('b', 1, 3), entry('c', 1, 10)];
+    const keepLine = (e: Entry, line: 'header' | 'more') =>
+      (e.key === 'a' && line === 'more') || (e.key === 'b' && line === 'header');
+    const sliced = sliceSidebarLines(entries, { from: 15, to: 17 }, header, undefined, keepLine);
+    expect(show(sliced)).toBe('h ~5 + | H ~3 | h ~3 c3 c4 ~5');
+    expect(sliced[0].more).toBe('more');
+    expect(sliced.map((e) => e.headerDrawn)).toEqual([false, true, false]);
+    expect(lineCount(sliced)).toBe(22);
+  });
+
   it('keys each gap by the row it starts at, unique within its group', () => {
     const sliced = sliceSidebarLines([entry('all', 0, 30)], { from: 10, to: 12 }, header);
     const keys = sliced[0].lines.flatMap((l) => (l.kind === 'gap' ? [l.key] : []));

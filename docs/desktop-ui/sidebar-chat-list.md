@@ -187,13 +187,20 @@ down as it has been scrolled, but every line outside the lines in view plus 12 o
 folded into a placeholder exactly its height (`.br-chat-row-gap`: N lines of a 28px row and the
 2px the list puts between rows), and a folder header outside them is an empty box of its height; a
 date header is drawn anyway (one element). The lines in view are read from the drawn groups' boxes
-(`sidebarLinesInView`: a group's rows and gaps sit on one pitch below its first row, so no header
-or gap height is assumed), on every scroll, committed before the frame paints, and again after
-anything that moves lines without a scroll (a view drawn, a folder opened, rows arriving, the box
-growing). Three rows are kept drawn whatever the range: the focused row, a row being renamed or
-just renamed, and the row whose right-click menu is open, so neither focus nor an editor is ever
-unmounted under the person. Home and End scroll the list to its end before they move focus, so that
-end's row is drawn. Before this the drawn rows only grew: with 5,542 drawn after a scroll to the
+(`sidebarLinesInView`: a group's rows and gaps sit on one pitch below its first row, the pitch read
+off a drawn row by `measuredLinePitch`, so no header, row or gap height is assumed), on every
+scroll, committed before the frame paints, and again after anything that moves lines without a
+scroll (a view drawn, a folder opened, rows arriving, the box growing). The pitch is read, not
+assumed, because the Text size preference scales the row and its 2px gap (34.5px a line under
+Larger text): read at a fixed 30px, the middle of a long list showed only placeholder. For the same
+reason the placeholder scales its own 2px. Some lines are kept drawn whatever the range: the focused
+line (a row, a folder header or a Show more), the current chat, so the single Tab stop stays on it, a
+row being renamed or just renamed, and a line whose right-click or ⋯ menu is open (a ⋯ opened with
+the pointer never takes focus, and the list scrolls under it). So neither focus, an open menu nor an
+editor is ever unmounted under the person. Home and End scroll the list to its end before they move
+focus, so that end's row is drawn; ArrowUp and ArrowDown on a line the list was scrolled away from
+bring the list back to it first, so they reach the line next to it, not the first row drawn far down
+the list. Before this the drawn rows only grew: with 5,542 drawn after a scroll to the
 end, a right-click took about 2.2 s before its menu showed (mostly restyling every row) and a
 switch 0.5 s. The arithmetic is `sliceSidebarLines`, `sidebarLinesInView` and
 `nextSidebarDrawRange` in `sidebarChatView.ts`. Measured in a production build with 2,100 lines in
@@ -374,7 +381,7 @@ tab stop, so Tab reaches them from the row.
 
 | File | Holds |
 |---|---|
-| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title; the drawn range: `sliceSidebarLines` (gaps of exact line counts, kept rows, headers outside the range), `sidebarLinesInView` (lines from group boxes by binary search) and `nextSidebarDrawRange` (a range that holds still while it covers the view) |
+| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title; the drawn range: `sliceSidebarLines` (gaps of exact line counts, kept rows, a kept folder header or Show more, headers outside the range), `sidebarLinesInView` (lines from group boxes by binary search) and `nextSidebarDrawRange` (a range that holds still while it covers the view) |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
@@ -385,7 +392,7 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, only the rows near the viewport drawn in a list scrolled to its middle (each visible row on its own line, the list exactly as tall as its lines, no placeholder in view, the right-click menu leaving `<body>` alone, Home reaching the first chat), and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, only the rows near the viewport drawn in a list scrolled to its middle (each visible row on its own line, the list exactly as tall as its lines, no placeholder in view, the right-click menu leaving `<body>` alone, Home reaching the first chat), the same under Larger text (the stylesheet served through the font-scale plugin), and with the list scrolled away under them: ArrowUp and ArrowDown reaching the next line, Tab landing on the current chat, a pointer-opened ⋯ menu staying open, a focused folder header or Show more keeping focus, and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation

@@ -496,18 +496,22 @@ export type SidebarSlicedEntry<Entry extends { rows: readonly unknown[]; more: u
  * a folder header (a tooltip, a + and a menu button each) and draws a date
  * header anyway (one element).
  *
- * Always drawn whatever the range: every row `keep` names (the focused row, a
- * row being renamed or whose menu is open), so focus and an open editor are
- * never unmounted under the person. Nothing else is, so the rows drawn read in
- * the list's order with nothing between them; Home and End scroll the list to
- * its end before they move focus (`RecentChats`). A null range (the list not
- * measured yet, or no layout at all, as in jsdom) draws every line.
+ * Always drawn whatever the range: every row `keep` names (the focused row, the
+ * current chat, a row being renamed or whose menu is open), and every folder
+ * header or "Show more" `keepLine` names (focused, or its menu open), so focus,
+ * an open menu and an editor are never unmounted under the person, and the
+ * single Tab stop stays on the current chat. Each sits on its own line between
+ * the gaps, so the rows drawn read in the list's order; the roving keys bring
+ * the list back to a focused line before they move from it (`RecentChats`). A
+ * null range (the list not measured yet, or no layout at all, as in jsdom)
+ * draws every line.
  */
 export function sliceSidebarLines<Entry extends { rows: readonly unknown[]; more: unknown }>(
   entries: readonly Entry[],
   range: SidebarDrawRange | null,
   headerLines: (entry: Entry) => number,
-  keep: (row: Entry['rows'][number]) => boolean = () => false
+  keep: (row: Entry['rows'][number]) => boolean = () => false,
+  keepLine: (entry: Entry, line: 'header' | 'more') => boolean = () => false
 ): Array<SidebarSlicedEntry<Entry>> {
   type Row = Entry['rows'][number];
   const inRange = (line: number) => range === null || (line >= range.from && line < range.to);
@@ -515,7 +519,7 @@ export function sliceSidebarLines<Entry extends { rows: readonly unknown[]; more
   let line = 0;
   for (const entry of entries) {
     const header = headerLines(entry);
-    const headerDrawn = header === 0 || inRange(line);
+    const headerDrawn = header === 0 || inRange(line) || keepLine(entry, 'header');
     line += header;
     const rowsLine = line;
     const lines: Array<SidebarDrawnLine<Row>> = [];
@@ -539,7 +543,7 @@ export function sliceSidebarLines<Entry extends { rows: readonly unknown[]; more
     });
     let more: Entry['more'] | null = null;
     if (entry.more) {
-      if (inRange(line)) {
+      if (inRange(line) || keepLine(entry, 'more')) {
         closeGap();
         lines.push({ kind: 'more' });
         more = entry.more;
