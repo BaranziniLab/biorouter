@@ -149,6 +149,13 @@ falls back to the first row, as it does when the current chat is on a page not y
 the one entry point that cannot wait for a scroll: it draws the list up to the current chat's row
 first (`linesToDrawRow`), because the editor mounts in that row.
 
+A list with room to spare and nothing to scroll gets no scroll event, so the list also checks after
+each page, and whenever its own box changes height (a `ResizeObserver` on the scroll box), whether
+its rows fill it, and draws or reads more until they do. The box check is vision V1-R2-1: ten rows
+filled the short list of the overlay sidebar, and once the window widened into the docked sidebar
+(or Components collapsed) the same ten rows sat in a box twice their height, with no scrollbar,
+and every other chat was out of reach of the sidebar.
+
 ### Folder groups
 
 A folder header is a 28px row: a chevron, a folder glyph and the folder's name. The name is the last
@@ -169,8 +176,26 @@ buttons below.
 
 Under Last activity a running chat moves to the top. While the pointer is over the list, or a row is
 being renamed, the list keeps the order it had (`applyHeldArrangement`), and the live order applies
-when the pointer leaves. The same holds when a full read lands under the pointer. A row that was removed goes, a rename shows, and rows that arrive below
+when the pointer leaves. A row that was removed goes, a new name shows, and rows that arrive below
 every held row come in; a row that would land above or between held rows waits.
+
+Two moves are not held:
+
+- **A full read landing.** A non-default view shows its first page while the rest is read. Its rows
+  hold still under the pointer during the read, and when the read lands the complete arrangement
+  shows at once and is what the pointer holds from then on (vision V1-R2-3). Held as it was, the
+  first page's order (the wrong 50 chats, sorted by name) stayed on screen for as long as the
+  pointer rested on the list. Nothing is held while the list is empty either, so a first load is
+  held from the rows it draws.
+- **The person's own rename** (coordinator ruling 16; vision V1-R2-4). The hold is there so a row
+  never moves under a click the person is about to make. A rename they just committed is the move
+  they asked for, and the usual way to rename (row menu, type, Enter) leaves the pointer on the
+  list. So a commit lets go of the hold when the new name is announced (a name sort moves the row
+  then) and again when the daemon has saved the rename (its `activityAt` raises the row under Last
+  activity) or refused it, and the list is held again from the new order. The row is drawn,
+  scrolled into view with its date bucket (`scrollRowIntoView`, measured against the list, never
+  `scrollIntoView`), and focused again if the move took focus with it: a row that changes bucket
+  remounts. A move that is not the person's own, such as a turn in another chat, still waits.
 
 ## A row
 
@@ -216,7 +241,9 @@ with the title selected.
 A commit announces the name at once, then calls `renameSession` with the user-action proof through
 `renameSessionOptimistically` (`utils/sessionNameSync.ts`), the one function every rename surface
 calls. On failure it puts the old name back and shows "Couldn't rename chat" with the daemon's own
-sentence. There is no success toast: the row is the confirmation. Focus returns to the row.
+sentence. There is no success toast: the row is the confirmation. Focus returns to the row, and the
+row moves to where the new name or the rename's activity puts it at once, under the pointer too
+(see "Rows hold still under the pointer").
 
 `⌘⌥R` also needs the Electron main process to let the key through: its `before-input-event` handler
 reloads the window on any `⌘R`, so the handler has to skip the reload when Alt is held.
@@ -235,7 +262,8 @@ filled control placed in the column is right without a rule of its own.
   No hairline separates rows; spacing and the hover fill do.
 - The only lines are structural: the band's edge at y=44, the rule over the footer (the list
   scrolls under it), the pane divider, and the compact overlay's edge and shadow (a floating
-  surface).
+  surface). Closing, the overlay keeps its shadow until it has slid out, so its edge never goes
+  flat while it still covers the page (vision V1-R2-9).
 - View options stays pressed on `--background-fill-strong` while its menu is open.
 - Crew's unread badge is the neutral badge, whose fill is the strong step. A lit row (hovered,
   current or focused) is that same fill, so there the badge steps back to the page ground; a fill
@@ -266,14 +294,14 @@ tab stop, so Tab reaches them from the row.
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows` |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; the head re-read on a new open chat, on focus and on a meta change |
-| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder |
-| `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, and `⌘⌥R` drawing the current chat's row |
-| `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases |
+| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; the hold during a read giving way to the complete list when it lands, and a first load held from its own rows |
+| `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
+| `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
 | `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key. `SIDEBAR_SHOTS_DIR` saves screenshots |
-| `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open |
+| `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation
 
