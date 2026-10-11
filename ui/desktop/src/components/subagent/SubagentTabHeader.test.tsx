@@ -86,6 +86,15 @@ describe('SubagentTabHeader', () => {
     expect(screen.getByRole('button', { name: copy.stopLabel })).toHaveClass('text-secondary');
   });
 
+  it('takes the scroll area’s 24px, the half BaseChat’s px-1 wrapper completes (V2-R2-3)', () => {
+    const { container } = render(<SubagentTabHeader {...props} />);
+    // The root carries the 24px; BaseChat's wrapper adds the scroll root's 4px
+    // (pinned in BaseChat.summaryRail.test.ts). Together: the transcript's
+    // 28px a side, so the line starts on the column's left edge. If this
+    // changes, change the wrapper with it.
+    expect(container.firstElementChild).toHaveClass('px-6');
+  });
+
   it('Stop is offered while running and confirms through onStop', () => {
     render(<SubagentTabHeader {...props} />);
     fireEvent.click(screen.getByRole('button', { name: /stop subagent/i }));

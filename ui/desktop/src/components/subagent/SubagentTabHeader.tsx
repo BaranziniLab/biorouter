@@ -89,7 +89,11 @@ export function SubagentTabHeader({
       open={expanded && !!spawnContext}
       onOpenChange={setExpanded}
       // The transcript column's own inset (the scroll area's 24px), so the line
-      // starts where the chat's words start.
+      // starts where the chat's words start. ⚠ This is half of a pair: BaseChat
+      // wraps this component in `data-preview-area="subheader"` with the scroll
+      // root's `px-1`, and the two together are the transcript's 28px a side.
+      // Change this padding and that wrapper together (send WS-SUMMARY the
+      // diff), or the line and the column part again (vision V2-R2-3).
       className="px-6"
     >
       <div
