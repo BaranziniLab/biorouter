@@ -1479,20 +1479,22 @@ export function checkCrewManual(tree = repoTree()) {
   }
   const cardButtons = need(CARD_BUTTONS, 'product-docs');
   if (cardButtons !== null) {
-    // Either shape: the old JSX conditional, or the early return the redesign wrote.
+    // Either shape: the old JSX conditional, or the early return the redesign wrote. The button
+    // was RocketButton ("Launch") and is UseProviderButton ("Use <provider>") since FR-R2-4; a
+    // configured row on any other screen gets the Configure button, so no card says Launch.
     if (
-      !/provider\.is_configured && isOnboardingPage(?: && \(|\)\s*\{\s*return \()\s*<RocketButton/.test(
+      !/provider\.is_configured && isOnboardingPage(?: && \(|\)\s*\{\s*return \()\s*<UseProviderButton/.test(
         cardButtons
       )
     ) {
       fail(
         'product-docs',
-        `${CARD_BUTTONS} no longer shows Launch on the first run screen only; update this rule`
+        `${CARD_BUTTONS} no longer shows Use on the first run screen only; update this rule`
       );
     } else {
       refuseEverywhere(
         /\ba (?:"Launch"|Launch) button to switch\b|\bConfigure or Launch\b/,
-        'promises a Launch button on every provider card, which only the first run screen has'
+        "promises a Launch button on a provider card, which has none (the first run screen's configured rows say Use)"
       );
     }
   }

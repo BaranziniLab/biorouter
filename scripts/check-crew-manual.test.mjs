@@ -803,19 +803,26 @@ test('product-docs: the landing and product pages match the provider screens and
     'product-docs',
     /SageMaker TGI row does not name its default model sagemaker-tgi-endpoint/
   );
-  // The provider screens stop showing Launch on the first run screen only: the rule says so.
+  // The provider screens stop showing Use on the first run screen only: the rule says so, for the
+  // condition going and for the button being another one.
+  const cardButtons =
+    'ui/desktop/src/components/settings/providers/subcomponents/buttons/DefaultCardButtons.tsx';
   assertCaught(
     {
-      'ui/desktop/src/components/settings/providers/subcomponents/buttons/DefaultCardButtons.tsx': (
-        text
-      ) =>
-        text.replace(
-          'provider.is_configured && isOnboardingPage && (',
-          'provider.is_configured && ('
-        ),
+      [cardButtons]: swap(
+        'provider.is_configured && isOnboardingPage) {',
+        'provider.is_configured) {'
+      ),
     },
     'product-docs',
-    /no longer shows Launch on the first run screen only/
+    /no longer shows Use on the first run screen only/
+  );
+  assertCaught(
+    {
+      [cardButtons]: swap('<UseProviderButton', '<ConfigureSettingsButton'),
+    },
+    'product-docs',
+    /no longer shows Use on the first run screen only/
   );
 });
 
@@ -1291,7 +1298,10 @@ test('troubleshooting: a server that stopped saving, a restarted background serv
   assertCaught(
     {
       [TROUBLE]: (text) =>
-        text.replace(/^\| "Biorouter lost its connection to its background service, so Crew.*\n/m, ''),
+        text.replace(
+          /^\| "Biorouter lost its connection to its background service, so Crew.*\n/m,
+          ''
+        ),
     },
     'app-sentences',
     /does not quote the background-service note/
