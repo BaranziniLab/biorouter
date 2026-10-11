@@ -168,6 +168,17 @@ describe('Max turns', () => {
     expect(field).toHaveValue(40);
   });
 
+  // Vision V4-24. Every other control in the Approvals rows is on the 28px rung (the Approval mode
+  // trigger, the Tool permissions button), and the Input's own 32px made this row's field the one
+  // taller box in the list. jsdom computes no layout, so the class decides: the `sm` rung has to
+  // win over the Input's default `md` after tailwind-merge, with no second height left beside it.
+  it('is on the 28px control rung, like the other controls in its list', () => {
+    render(<MaxTurnsRow maxTurns={null} onMaxTurnsChange={vi.fn()} />);
+    const field = openLimits();
+    expect(field).toHaveClass('h-control-sm');
+    expect(field).not.toHaveClass('h-control-md');
+  });
+
   it('saves a valid entry through the config', async () => {
     config.read.mockImplementation(async (key: string) =>
       key === 'BIOROUTER_MAX_TURNS' ? 30 : 'auto'

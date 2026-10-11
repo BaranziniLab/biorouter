@@ -157,7 +157,10 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTu
         aria-invalid={message ? true : undefined}
         onChange={(e) => handleChange(e.target.value)}
         onBlur={flushSave}
-        className="w-20"
+        // The 28px rung, like the Approval mode trigger and the Tool permissions button in the
+        // rows above it: the Input's own 32px made this row's control the one taller box in the
+        // list (vision V4-24).
+        className="h-control-sm w-20"
       />
     </SettingRow>
   );
