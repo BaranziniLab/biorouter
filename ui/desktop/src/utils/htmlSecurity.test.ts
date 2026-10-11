@@ -52,12 +52,12 @@ describe('HTML Security Detection', () => {
       it('ignores auto-links', () => {
         expect(containsHTML('<https://example.com>')).toBe(false);
         expect(containsHTML('<http://test.org>')).toBe(false);
-        expect(containsHTML('<https://block.dev/docs>')).toBe(false);
+        expect(containsHTML('<https://docs.example.org/guide>')).toBe(false);
       });
 
       it('ignores email addresses', () => {
         expect(containsHTML('<user@example.com>')).toBe(false);
-        expect(containsHTML('<admin@block.dev>')).toBe(false);
+        expect(containsHTML('<admin@example.org>')).toBe(false);
         expect(containsHTML('<test.email+tag@domain.co.uk>')).toBe(false);
       });
 

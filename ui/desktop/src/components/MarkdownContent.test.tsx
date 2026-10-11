@@ -226,7 +226,7 @@ console.log(html);
     it('handles mixed safe and unsafe content', async () => {
       const content = `# Mixed Content Test
 
-1. Auto-link: <https://block.dev>
+1. Auto-link: <https://example.org>
 2. Inline code: \`const x = Array<T>();\`
 3. Real markup: <input type="text" disabled>
 4. Placeholder path: <project-root>/src`;
@@ -616,14 +616,14 @@ console.log('Hello, World!');
     });
 
     it('renders links with correct attributes', async () => {
-      const content = '[Visit Block](https://block.dev)';
+      const content = '[Visit Example](https://example.org)';
 
       render(<MarkdownContent content={content} />);
 
       await waitFor(() => {
-        const link = screen.getByRole('link', { name: 'Visit Block' });
+        const link = screen.getByRole('link', { name: 'Visit Example' });
         expect(link).toBeInTheDocument();
-        expect(link).toHaveAttribute('href', 'https://block.dev');
+        expect(link).toHaveAttribute('href', 'https://example.org');
         expect(link).toHaveAttribute('target', '_blank');
         expect(link).toHaveAttribute('rel', 'noopener noreferrer');
       });
