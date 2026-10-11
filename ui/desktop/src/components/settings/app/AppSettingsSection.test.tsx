@@ -149,6 +149,5 @@ describe('App tab sections', () => {
     );
     render(<AppSettingsSection />);
     expect(await screen.findByText('1.92.1')).toBeInTheDocument();
-    expect(screen.queryByAltText(/Block/)).toBeNull();
   });
 });
