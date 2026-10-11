@@ -122,8 +122,21 @@ export const ProviderCard = function ProviderCard({
    * Configure button, and its focus ring, at opacity 0 (W2-PRV-4). This button is the row's
    * keyboard path: the row's own click is a mouse convenience that does the same thing.
    */
+  /**
+   * ⚠ **An expandable row on first run has no row action** (vision FR-R1-5, principle 5: one job,
+   * one control). Its panel holds the primary for the same decision ("Use Claude Code", "Download
+   * and start", "Connect"), so a hover "Launch" beside it was a second verb for one choice. The
+   * row's resting status stays, and stays visible under the pointer, because nothing takes its
+   * cell. Settings keeps the action on its expandable rows (an agent's Configure opens its command
+   * path), where the panel has no primary that does the same thing.
+   */
+  const panelHoldsTheAction = isOnboarding && expandable;
   const configured = provider.is_configured ? (
-    <span className="br-provider-configured br-row-actions-meta text-supporting text-text-muted">
+    <span
+      className={`br-provider-configured text-supporting text-text-muted${
+        panelHoldsTheAction ? '' : ' br-row-actions-meta'
+      }`}
+    >
       <StatusDot tone="success" />
       {catalogCopy.configured}
     </span>
@@ -138,7 +151,9 @@ export const ProviderCard = function ProviderCard({
       />
     </div>
   );
-  const actions = (
+  const actions = panelHoldsTheAction ? (
+    configured
+  ) : (
     <div
       className="br-row-actions-slot"
       data-slot="row-actions-slot"

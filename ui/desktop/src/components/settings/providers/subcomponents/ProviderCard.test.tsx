@@ -102,6 +102,51 @@ describe('ProviderCard keyboard access', () => {
     expect(onConfigure).toHaveBeenCalledTimes(1);
   });
 
+  // FR-R1-5: on first run an expandable row's panel holds the primary ("Use Claude Code",
+  // "Download and start", "Connect"); a hover "Launch" on the row was a second verb for one choice.
+  it('gives an expandable first-run row no row action, and keeps "Configured" at rest', () => {
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(true)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding
+          expandable
+          expanded
+          onToggle={vi.fn()}
+        >
+          <button type="button">Use it</button>
+        </ProviderCard>
+      </TooltipProvider>
+    );
+    expect(screen.queryByTestId('provider-actions-versa_azure')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: catalogCopy.launchRow('Versa API Azure') })
+    ).toBeNull();
+    const status = screen.getByText(catalogCopy.configured);
+    // Nothing takes its cell, so it does not give way on hover.
+    expect(status).not.toHaveClass('br-row-actions-meta');
+    expect(screen.getByRole('button', { name: 'Use it' })).toBeInTheDocument();
+  });
+
+  it('keeps the action on an expandable row in Settings', () => {
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(true)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding={false}
+          expandable
+          onToggle={vi.fn()}
+        />
+      </TooltipProvider>
+    );
+    expect(screen.getByTestId('provider-actions-versa_azure')).toBeInTheDocument();
+    expect(screen.getByText(catalogCopy.configured)).toHaveClass('br-row-actions-meta');
+  });
+
   it('is text: no initial tile, and "Configured" is a success dot and a word', () => {
     const { container } = render(
       <TooltipProvider>
