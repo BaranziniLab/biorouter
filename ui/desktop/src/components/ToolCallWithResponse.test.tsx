@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
+import { toolRowLabel } from './toolCallCopy';
 import type { NotificationEvent, ToolRequestMessageContent } from '../types/message';
 
 // The transcript is no longer a display surface for artifacts — it can only hand
@@ -53,7 +54,7 @@ describe('summarizeToolCall', () => {
         name: 'ucsfomopagent__cohort_lookup',
         arguments: { cohort_id: 42, table: 'condition_occurrence' },
       })
-    ).toBe('Cohort Lookup · Cohort ID: 42 · Table: condition_occurrence');
+    ).toBe('Looking up cohort · condition_occurrence');
   });
 
   it('describes todo lifecycle calls instead of presenting task ids as operations', () => {
@@ -315,7 +316,7 @@ describe('summarizeToolCall', () => {
         name: 'thirdparty__authenticate',
         arguments: { api_key: 'do-not-render', account: 'research' },
       })
-    ).toBe('Authenticate · Account: research');
+    ).toBe('Authenticating · research');
   });
 
   // #27 — module/skill tools carry their targets under argument names the
@@ -361,21 +362,23 @@ describe('summarizeToolCall', () => {
         name: 'otherext__read_module',
         arguments: { module_path: 'developer/shell' },
       })
-    ).toBe('Reading Module · Module Path: developer/shell');
+    ).toBe('Reading module · shell');
 
     expect(
       summarizeToolCall({
         name: 'otherext__search_modules',
         arguments: { terms: ['fetch', 'http'] },
       })
-    ).toBe('Searching Modules');
+    ).toBe('Searching modules');
 
     expect(
       summarizeToolCall({
         name: 'otherext__loadSkill',
         arguments: { name: 'single-cell' },
       })
-    ).not.toContain('Loading skill');
+      // The generic label, read off the tool's own name; the built-in special
+      // case would say "Loading skill single-cell".
+    ).toBe('Loading skill · single-cell');
   });
 
   it('still says something for module/skill calls with missing targets', () => {
@@ -414,7 +417,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Agent Drafter Build App → Agent Drafter Smoke App');
+    ).toBe('Agent Drafter build app → Agent Drafter smoke app');
   });
 
   it('does not repeat identical action descriptions in a coordinated label', () => {
@@ -446,7 +449,7 @@ describe('summarizeToolCall', () => {
         name: 'code_execution__execute_code',
         arguments: { tool_graph: [{ tool: 'files/read', description }] },
       })
-    ).toBe('Files Read');
+    ).toBe('Files read');
   });
 
   it('preserves an ordinal label when it also names substantive work', () => {
@@ -492,28 +495,28 @@ describe('summarizeToolCall', () => {
         name: 'workspace__create_thread',
         arguments: { threadId: 'thread-42' },
       })
-    ).toBe('Creating Thread · Thread ID: thread-42');
+    ).toBe('Creating thread');
     expect(
       summarizeToolCall({
         name: 'data__spreadsheet_summary',
         arguments: { spreadsheetId: 'sheet-7' },
       })
-    ).toBe('Spreadsheet Summary · Spreadsheet ID: sheet-7');
+    ).toBe('Running spreadsheet summary');
     expect(
       summarizeToolCall({
         name: 'clinical__doctor_lookup',
         arguments: { id: 'doctor-3' },
       })
-    ).toBe('Doctor Lookup · ID: doctor-3');
+    ).toBe('Looking up doctor');
   });
 
   it('distinguishes reading, opening, and fetching actions', () => {
     expect(
       summarizeToolCall({ name: 'codex__open_in_codex', arguments: { operationId: 'op-3' } })
-    ).toBe('Opening in Codex · Operation ID: op-3');
+    ).toBe('Opening in Codex');
     expect(
       summarizeToolCall({ name: 'network__fetch_profile', arguments: { id: 'person-7' } })
-    ).toBe('Fetching Profile · ID: person-7');
+    ).toBe('Fetching profile');
   });
 
   it('renders the friendly summary before raw details and reveals details on demand', () => {
@@ -1171,15 +1174,15 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen
-        .getByText('Stopped: Agent Drafter Build App → Agent Drafter Smoke App')
+        .getByText('Stopped: Agent Drafter build app → Agent Drafter smoke app')
         .closest('button') as HTMLElement
     );
-    expect(screen.getByText('1. Agent Drafter Build App')).toHaveAttribute(
+    expect(screen.getByText('1. Agent Drafter build app')).toHaveAttribute(
       'title',
       'Tool: agent_drafter/build_app'
     );
-    expect(screen.getByText('2. Agent Drafter Configure App (uses 1)')).toBeInTheDocument();
-    expect(screen.getByText('3. Agent Drafter Smoke App (uses 2)')).toBeInTheDocument();
+    expect(screen.getByText('2. Agent Drafter configure app (uses 1)')).toBeInTheDocument();
+    expect(screen.getByText('3. Agent Drafter smoke app (uses 2)')).toBeInTheDocument();
     // "Steps" is the well's section label; a numbered placeholder is "Step 1".
     expect(screen.queryByText(/(?:Step \d|Update task|Operation no\.)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/agent_drafter\//)).not.toBeInTheDocument();
@@ -1829,7 +1832,186 @@ describe('summarizeToolCall: Crew tool rows read as actions (AG-F10)', () => {
 
   it('leaves another extension’s request tool to the generic label', () => {
     expect(summarizeToolCall({ name: 'other__request', arguments: { method: 'blob.read' } })).toBe(
-      'Request · Method: blob.read'
+      'Running request · blob.read'
     );
+  });
+});
+
+/**
+ * V2-04 (vision round 1). A tool with no dedicated summary used to fall back to
+ * its identifier in Title Case plus raw argument keys: "Ingest Conversation ·
+ * Kb ID: soul", "Failed: Manage Schedule · Action: sessions · Limit: 50",
+ * "Listed Workspace List". The fallback now names the action from the tool's
+ * own name in sentence case, so the verb can carry the state, and keeps one
+ * argument VALUE at most: never a key, an ID, a number or a flag.
+ */
+describe('summarizeToolCall: a tool without its own summary still reads as an action', () => {
+  const label = (name: string, args: Record<string, unknown> = {}) =>
+    summarizeToolCall({ name, arguments: args });
+
+  it.each([
+    [
+      'platform__manage_schedule',
+      { action: 'sessions', limit: 50 },
+      'Managing schedule · sessions',
+    ],
+    ['memory__retrieve_memories', { category: '*', is_global: false }, 'Retrieving memories'],
+    ['workspace__workspace_watch', { timeout_s: 120 }, 'Watching workspace'],
+    ['workspace__workspace_list', {}, 'Listing workspace'],
+    ['cdwagent__msagent_list_tables', {}, 'Listing msagent tables'],
+    [
+      'webdocuments__web_scrape',
+      { url: 'https://www.ucsf.edu/people/' },
+      'Fetching ucsf.edu/people',
+    ],
+    ['ucsfomopagent__omop_lookup', { concept: 'diabetes' }, 'Looking up OMOP · diabetes'],
+    [
+      'thirdparty__spreadsheet_summary',
+      { spreadsheetId: 'sheet-7' },
+      'Running spreadsheet summary',
+    ],
+  ])('%s', (name, args, expected) => {
+    expect(label(name, args)).toBe(expected);
+  });
+
+  it('names the knowledge base an unlisted knowledge tool works in, not its kb_id key', () => {
+    const summary = label('knowledge__ingest_conversation', {
+      kb_id: 'soul',
+      focus: 'Durable facts about the project and the pages that relate to it.',
+    });
+    expect(summary).toMatch(/^Ingesting conversation in Soul · Durable facts about the project/);
+    expect(summary.endsWith('…')).toBe(true);
+    expect(summary).not.toMatch(/Kb|ID:|:/);
+  });
+
+  it('draws an Auto Visualiser call as the figure it renders', () => {
+    expect(label('autovisualiser__render_figure', { kind: 'volcano', data: {} })).toBe(
+      'Rendering volcano plot'
+    );
+    expect(label('autovisualiser__render_figure', { kind: 'kaplan_meier', data: {} })).toBe(
+      'Rendering Kaplan-Meier curve'
+    );
+    expect(label('autovisualiser__render_figure', { data: {} })).toBe('Rendering a figure');
+    expect(label('autovisualiser__describe_figure', { kind: 'chart' })).toBe(
+      'Checking the chart format'
+    );
+    expect(label('autovisualiser__describe_figure')).toBe('Listing figure kinds');
+    expect(label('autovisualiser__render_dashboard', { title: 'Enrollment' })).toBe(
+      'Rendering report · Enrollment'
+    );
+    // Legacy per-kind tools in chats saved before render_figure.
+    expect(label('autovisualiser__render_donut', { data: {} })).toBe('Rendering donut chart');
+    expect(label('autovisualiser__show_chart', { data: {} })).toBe('Rendering chart');
+  });
+
+  it('conjugates the fallback with the row state, never prefixing a verb it cannot', () => {
+    const summary = label('platform__manage_schedule', { action: 'sessions', limit: 50 });
+    expect(toolRowLabel(summary, 'done')).toBe('Managed schedule · sessions');
+    expect(toolRowLabel(summary, 'failed')).toBe('Failed to manage schedule · sessions');
+    expect(toolRowLabel(label('thirdparty__spreadsheet_summary'), 'done')).toBe(
+      'Ran spreadsheet summary'
+    );
+    expect(toolRowLabel(label('ucsfomopagent__cohort_lookup'), 'stopped')).toBe(
+      'Stopped looking up cohort'
+    );
+  });
+
+  it('never shows an argument key, an ID, a number or a flag on the collapsed line', () => {
+    const summaries = [
+      label('platform__manage_schedule', { action: 'sessions', limit: 50 }),
+      label('memory__retrieve_memories', { category: '*', is_global: false }),
+      label('workspace__workspace_watch', { timeout_s: 120 }),
+      label('thirdparty__create_record', {
+        record_id: 'rec-1',
+        ownerId: 'u-9',
+        uuid: '0b8c7a52-3f6e-4d2b-9a1c-5e7f8d9c0a1b',
+        title: 'Cohort notes',
+      }),
+    ];
+    for (const summary of summaries) {
+      expect(summary).not.toMatch(/\b[A-Z][a-z]+ [A-Z][a-z]+/);
+      expect(summary).not.toMatch(/\w: /);
+      expect(summary).not.toMatch(/\b(?:50|120|false|rec-1|u-9|0b8c7a52)\b/);
+    }
+    expect(summaries[3]).toBe('Creating record · Cohort notes');
+  });
+});
+
+describe('ToolCallWithResponse: a failed row and an empty output say so (V2-11, V2-19)', () => {
+  const shellRequest = (id: string): ToolRequestMessageContent => ({
+    type: 'toolRequest',
+    id,
+    toolCall: {
+      status: 'success',
+      value: { name: 'developer__shell', arguments: { command: 'true' } },
+    },
+  });
+
+  it('draws a failed call in danger ink before it is opened, and a finished one muted', () => {
+    const { container, rerender } = render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={shellRequest('failed')}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'failed',
+          toolResult: { status: 'error', error: 'exit status 1' },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText('Failed to run true')).toBeInTheDocument();
+    expect(container.querySelector('.br-transcript-row')).toHaveAttribute('data-tone', 'danger');
+
+    rerender(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={shellRequest('failed')}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'failed',
+          toolResult: { status: 'success', value: { content: [{ type: 'text', text: 'ok' }] } },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText('Ran true')).toBeInTheDocument();
+    expect(container.querySelector('.br-transcript-row')).toHaveAttribute('data-tone', 'muted');
+  });
+
+  it('says "No output" under Output when the command printed nothing', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={shellRequest('blank')}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'blank',
+          toolResult: { status: 'success', value: { content: [{ type: 'text', text: ' \n' }] } },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText('Ran true').closest('button') as HTMLElement);
+    const output = screen.getByText('Output');
+    expect(output.parentElement).toHaveTextContent(/^OutputNo output$/);
+  });
+
+  it('adds no Output section when the result carried no content at all', () => {
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={shellRequest('none')}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'none',
+          toolResult: { status: 'success', value: { content: [] } },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    fireEvent.click(screen.getByText('Ran true').closest('button') as HTMLElement);
+    expect(screen.queryByText('Output')).not.toBeInTheDocument();
+    expect(screen.queryByText('No output')).not.toBeInTheDocument();
   });
 });

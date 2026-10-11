@@ -1,8 +1,7 @@
 import React from 'react';
 import { toolGlyphFor } from '../utils/toolGlyph';
-import { toolIdentifierToTitleCase } from '../utils';
 import { TranscriptRow } from './TranscriptRow';
-import { TOOL_ROW_COPY } from './toolCallCopy';
+import { TOOL_ROW_COPY, toolNamePhrase } from './toolCallCopy';
 import type { PendingToolCallView } from '../hooks/chatStreamStore';
 
 /**
@@ -19,7 +18,8 @@ import type { PendingToolCallView } from '../hooks/chatStreamStore';
  * is. The card is a placeholder, not a preview of unparsed bytes.
  */
 export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = ({ pending }) => {
-  const toolSummary = toolIdentifierToTitleCase(pending.name.split('__').pop() ?? pending.name);
+  // Inside the sentence "Preparing text editor", so sentence case.
+  const toolSummary = toolNamePhrase(pending.name.split('__').pop() ?? pending.name);
   // No arguments yet, so the ladder answers from the name alone.
   const glyph = toolGlyphFor(pending.name);
   // The same 28px line the real call will draw, static (nothing to open yet)

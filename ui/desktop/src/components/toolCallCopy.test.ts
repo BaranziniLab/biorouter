@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { toolRowLabel } from './toolCallCopy';
+import {
+  toolActionPhrase,
+  toolDisplayName,
+  toolNamePhrase,
+  toolNameWords,
+  toolRowLabel,
+} from './toolCallCopy';
 
 describe('toolRowLabel: the verb carries the state', () => {
   it.each([
@@ -37,5 +43,48 @@ describe('toolRowLabel: the verb carries the state', () => {
 
   it('does not mistake a capitalized noun for a verb', () => {
     expect(toolRowLabel('Readings from the sensor', 'done')).toBe('Readings from the sensor');
+  });
+});
+
+describe('tool names read in sentence case (V2-04)', () => {
+  it('splits every identifier style into the same words', () => {
+    expect(toolNameWords('installMarketplaceSkill')).toEqual(['install', 'marketplace', 'skill']);
+    expect(toolNameWords('agent_drafter/build-app')).toEqual(['agent', 'drafter', 'build', 'app']);
+    expect(toolNameWords('files.read')).toEqual(['files', 'read']);
+  });
+
+  it('keeps acronyms and product names in capitals and nothing else', () => {
+    expect(toolNamePhrase('text_editor')).toBe('text editor');
+    expect(toolNamePhrase('ucsf_omop_query')).toBe('UCSF OMOP query');
+    expect(toolNamePhrase('agent_drafter_build_app')).toBe('Agent Drafter build app');
+    expect(toolNamePhrase('autovisualiser_kb_sync')).toBe('Auto Visualiser KB sync');
+    expect(toolDisplayName('developer__text_editor')).toBe('Text editor');
+  });
+
+  it.each([
+    [['ingest', 'conversation'], 'Ingesting conversation'],
+    [['cohort', 'lookup'], 'Looking up cohort'],
+    [['workspace', 'watch'], 'Watching workspace'],
+    [['get', 'page'], 'Getting page'],
+    [['authenticate'], 'Authenticating'],
+    // A noun that is also a verb only counts as the first word.
+    [['smoke', 'test'], 'Running smoke test'],
+    [['spreadsheet', 'summary'], 'Running spreadsheet summary'],
+    [[], 'Running a tool'],
+  ])('names the action of %j', (words, expected) => {
+    expect(toolActionPhrase(words)).toBe(expected);
+  });
+
+  it('writes only gerunds that conjugate', () => {
+    for (const words of [
+      ['ingest', 'x'],
+      ['cohort', 'lookup'],
+      ['set', 'x'],
+      ['show', 'x'],
+    ]) {
+      const phrase = toolActionPhrase(words);
+      expect(toolRowLabel(phrase, 'done')).not.toBe(phrase);
+      expect(toolRowLabel(phrase, 'failed')).toMatch(/^Failed to [a-z]/);
+    }
   });
 });

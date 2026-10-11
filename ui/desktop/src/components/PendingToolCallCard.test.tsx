@@ -8,7 +8,9 @@ describe('PendingToolCallCard', () => {
       <PendingToolCallCard pending={{ id: 'tool-1', name: 'skills__installMarketplaceSkill' }} />
     );
 
-    expect(screen.getByText('Install Marketplace Skill')).toBeInTheDocument();
-    expect(screen.queryByText('Installmarketplaceskill')).not.toBeInTheDocument();
+    // Sentence case inside "Preparing install marketplace skill".
+    expect(screen.getByText('install marketplace skill')).toBeInTheDocument();
+    expect(screen.queryByText(/installmarketplaceskill/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Install Marketplace Skill')).not.toBeInTheDocument();
   });
 });

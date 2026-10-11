@@ -16,47 +16,195 @@ export type ToolRowState = 'running' | 'done' | 'failed' | 'stopped';
  */
 const VERB_FORMS: Record<string, readonly [past: string, base: string]> = {
   Adding: ['Added', 'add'],
+  Analyzing: ['Analyzed', 'analyze'],
   Applying: ['Applied', 'apply'],
   Attaching: ['Attached', 'attach'],
+  Authenticating: ['Authenticated', 'authenticate'],
   Breaking: ['Broke', 'break'],
   Browsing: ['Browsed', 'browse'],
+  Building: ['Built', 'build'],
+  Calling: ['Called', 'call'],
+  Canceling: ['Canceled', 'cancel'],
   Capturing: ['Captured', 'capture'],
   Checking: ['Checked', 'check'],
+  Clearing: ['Cleared', 'clear'],
   Closing: ['Closed', 'close'],
+  Configuring: ['Configured', 'configure'],
+  Converting: ['Converted', 'convert'],
+  Copying: ['Copied', 'copy'],
   Creating: ['Created', 'create'],
   Delegating: ['Delegated', 'delegate'],
+  Describing: ['Described', 'describe'],
   Detaching: ['Detached', 'detach'],
   Downloading: ['Downloaded', 'download'],
   Editing: ['Edited', 'edit'],
   Executing: ['Executed', 'execute'],
+  Exporting: ['Exported', 'export'],
   Fetching: ['Fetched', 'fetch'],
+  Finding: ['Found', 'find'],
   Generating: ['Generated', 'generate'],
+  Getting: ['Got', 'get'],
+  Importing: ['Imported', 'import'],
+  Ingesting: ['Ingested', 'ingest'],
   Inspecting: ['Inspected', 'inspect'],
   Installing: ['Installed', 'install'],
+  Linting: ['Linted', 'lint'],
   Listing: ['Listed', 'list'],
   Loading: ['Loaded', 'load'],
+  Looking: ['Looked', 'look'],
   Managing: ['Managed', 'manage'],
   Marking: ['Marked', 'mark'],
+  Merging: ['Merged', 'merge'],
+  Moving: ['Moved', 'move'],
   Opening: ['Opened', 'open'],
+  Parsing: ['Parsed', 'parse'],
   Posting: ['Posted', 'post'],
   Previewing: ['Previewed', 'preview'],
+  Querying: ['Queried', 'query'],
   Reading: ['Read', 'read'],
+  Recalling: ['Recalled', 'recall'],
   Removing: ['Removed', 'remove'],
   Renaming: ['Renamed', 'rename'],
+  Rendering: ['Rendered', 'render'],
   Replacing: ['Replaced', 'replace'],
+  Retrieving: ['Retrieved', 'retrieve'],
   Returning: ['Returned', 'return'],
   Running: ['Ran', 'run'],
+  Saving: ['Saved', 'save'],
+  Scheduling: ['Scheduled', 'schedule'],
   Searching: ['Searched', 'search'],
   Selecting: ['Selected', 'select'],
   Sending: ['Sent', 'send'],
+  Setting: ['Set', 'set'],
   Sharing: ['Shared', 'share'],
+  Showing: ['Showed', 'show'],
   Starting: ['Started', 'start'],
   Stopping: ['Stopped', 'stop'],
+  Storing: ['Stored', 'store'],
+  Summarizing: ['Summarized', 'summarize'],
+  Syncing: ['Synced', 'sync'],
+  Testing: ['Tested', 'test'],
   Unloading: ['Unloaded', 'unload'],
   Updating: ['Updated', 'update'],
+  Uploading: ['Uploaded', 'upload'],
   Using: ['Used', 'use'],
+  Validating: ['Validated', 'validate'],
+  Viewing: ['Viewed', 'view'],
+  Waiting: ['Waited', 'wait'],
+  Watching: ['Watched', 'watch'],
   Writing: ['Wrote', 'write'],
 };
+
+/** Words a tool name spells in capitals inside a sentence-case label. */
+const NAME_ACRONYMS = new Set([
+  'api',
+  'baam',
+  'cdw',
+  'csv',
+  'ehr',
+  'html',
+  'http',
+  'id',
+  'json',
+  'kb',
+  'llm',
+  'mcp',
+  'okf',
+  'omop',
+  'pdf',
+  'sql',
+  'ucsf',
+  'ui',
+  'url',
+]);
+
+/** Product names keep their capitals (copy rules), whatever the identifier spelled. */
+const PRODUCT_NAMES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bagent drafter\b/g, 'Agent Drafter'],
+  [/\bauto ?visualiser\b/g, 'Auto Visualiser'],
+  [/\bbiorouter\b/g, 'Biorouter'],
+  [/\bcodex\b/g, 'Codex'],
+  [/\bcrew\b/g, 'Crew'],
+  [/\bgithub\b/g, 'GitHub'],
+];
+
+/**
+ * A tool identifier as lowercase words: `ingest_conversation`, `kbSearch`,
+ * `files/read` and `web-scrape` all split the same way.
+ */
+export function toolNameWords(identifier: string): string[] {
+  return identifier
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((word) => word.toLowerCase());
+}
+
+/**
+ * A tool identifier as words that read inside a sentence: lowercase, with
+ * acronyms and product names in capitals ("text editor", "UCSF OMOP query",
+ * "Agent Drafter build app"). The transcript never shows Title Case.
+ */
+export function toolNamePhrase(identifier: string | readonly string[]): string {
+  const words = typeof identifier === 'string' ? toolNameWords(identifier) : identifier;
+  return PRODUCT_NAMES.reduce(
+    (text, [pattern, name]) => text.replace(pattern, name),
+    words.map((word) => (NAME_ACRONYMS.has(word) ? word.toUpperCase() : word)).join(' ')
+  );
+}
+
+/** The first letter in capitals, the rest as written. */
+export function sentenceStart(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A tool identifier as a sentence-case name: `developer__text_editor` → "Text editor". */
+export function toolDisplayName(identifier: string): string {
+  return sentenceStart(toolNamePhrase(identifier.split('__').pop() ?? identifier));
+}
+
+/** Base verb → gerund, read off {@link VERB_FORMS} so every gerund it writes conjugates. */
+const NAME_VERBS: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(VERB_FORMS).map(([gerund, [, base]]) => [base, gerund])),
+  lookup: 'Looking up',
+};
+
+/**
+ * Verbs that name the action wherever they sit in a tool's name
+ * (`cohort_lookup`, `workspace_watch`). Every other verb counts only as the
+ * first word, because words such as `test` or `set` are nouns at the end of a
+ * name (`smoke_test`, `data_set`).
+ */
+const VERBS_ANYWHERE = new Set([
+  'authenticate',
+  'configure',
+  'ingest',
+  'lookup',
+  'render',
+  'retrieve',
+  'summarize',
+  'validate',
+  'watch',
+]);
+
+/**
+ * What a tool does, as a gerund phrase built from its name, so the row's verb
+ * can carry the state: `ingest_conversation` → "Ingesting conversation" (done:
+ * "Ingested conversation"), `cohort_lookup` → "Looking up cohort". A name
+ * with no verb in it runs: `spreadsheet_summary` → "Running spreadsheet
+ * summary", "Ran spreadsheet summary" once done.
+ */
+export function toolActionPhrase(words: readonly string[]): string {
+  const index =
+    words.length > 0 && NAME_VERBS[words[0]] !== undefined
+      ? 0
+      : words.findIndex((word) => VERBS_ANYWHERE.has(word));
+  if (index === -1) return words.length > 0 ? `Running ${toolNamePhrase(words)}` : 'Running a tool';
+  const rest = words.filter((_, position) => position !== index);
+  return rest.length > 0
+    ? `${NAME_VERBS[words[index]]} ${toolNamePhrase(rest)}`
+    : NAME_VERBS[words[index]];
+}
 
 /**
  * The visible row label for a summary in a given state.
@@ -110,6 +258,7 @@ export const TOOL_ROW_COPY = {
   steps: 'Steps',
   code: 'Code',
   output: 'Output',
+  noOutput: 'No output',
   logs: 'Logs',
   liveLogs: 'Live logs',
   progress: 'Progress',
@@ -143,6 +292,55 @@ export const TOOL_ROW_COPY = {
   // Tool content previews
   showMore: 'Show more',
   showLess: 'Show less',
+} as const;
+
+/**
+ * What an Auto Visualiser figure kind is called on a row: "Rendering volcano
+ * plot", not "Render figure · volcano". Keys are the kind slugs `render_figure`
+ * takes and the legacy per-kind tool names without their `render_`/`show_`.
+ */
+export const FIGURE_NAMES: Readonly<Record<string, string>> = {
+  area: 'area chart',
+  boxplot: 'box plot',
+  bubble: 'bubble chart',
+  calendar_heatmap: 'calendar heatmap',
+  chart: 'chart',
+  choropleth: 'choropleth map',
+  chord: 'chord diagram',
+  class_diagram: 'class diagram',
+  dashboard: 'report',
+  dendrogram: 'dendrogram',
+  donut: 'donut chart',
+  er_diagram: 'ER diagram',
+  flowchart: 'flowchart',
+  forest: 'forest plot',
+  gantt: 'Gantt chart',
+  gauge: 'gauge',
+  heatmap: 'heatmap',
+  histogram: 'histogram',
+  kaplan_meier: 'Kaplan-Meier curve',
+  manhattan: 'Manhattan plot',
+  map: 'map',
+  mermaid: 'diagram',
+  mindmap: 'mind map',
+  network: 'network',
+  radar: 'radar chart',
+  report: 'report',
+  sankey: 'Sankey diagram',
+  sequence: 'sequence diagram',
+  state_diagram: 'state diagram',
+  sunburst: 'sunburst',
+  timeline: 'timeline',
+  treemap: 'treemap',
+  volcano: 'volcano plot',
+  wordcloud: 'word cloud',
+};
+
+export const FIGURE_COPY = {
+  render: (figure: string) => `Rendering ${figure}`,
+  renderAny: 'Rendering a figure',
+  describe: (figure: string) => `Checking the ${figure} format`,
+  describeAll: 'Listing figure kinds',
 } as const;
 
 /** One row for a run of reads, lists and searches (D18, Codex's "Explored"). */

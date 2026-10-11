@@ -26,7 +26,11 @@ export interface TranscriptRowProps {
   trailing?: React.ReactNode;
   /** Work in progress: the label breathes until the row is hovered or focused. */
   running?: boolean;
-  /** `danger` draws the whole line in danger ink (a row that failed to render). */
+  /**
+   * `danger` draws the line in danger ink: a call that failed, or a row that
+   * failed to render. Only the row's own line; rows nested in its body keep
+   * their own tone.
+   */
   tone?: 'muted' | 'danger';
   /** A screen-reader status beside the glyph ("Tool status: success"). */
   statusLabel?: string;

@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { toolIdentifierToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
 import { Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
 import { TranscriptRow } from './TranscriptRow';
-import { APPROVAL_COPY } from './toolCallCopy';
+import { APPROVAL_COPY, sentenceStart, toolNamePhrase } from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 import { isBrowserSurface } from '../utils/surface';
 
@@ -48,9 +47,12 @@ const toolConfirmationState = new Map<
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 
-/** `developer__text_editor` → `Text Editor`. */
+/**
+ * `developer__text_editor` → "text editor", for the middle of a sentence ("Run
+ * text editor?"). Sentence case: acronyms and product names keep capitals.
+ */
 function friendlyToolName(toolName: string): string {
-  return toolIdentifierToTitleCase(toolName.split('__').pop() ?? toolName);
+  return toolNamePhrase(toolName.split('__').pop() ?? toolName);
 }
 
 interface ToolConfirmationProps {
@@ -250,7 +252,7 @@ export default function ToolConfirmation({
             label={
               isClicked
                 ? APPROVAL_COPY.unavailable
-                : APPROVAL_COPY.resolved(friendlyToolName(toolName), actionDisplay)
+                : APPROVAL_COPY.resolved(sentenceStart(friendlyToolName(toolName)), actionDisplay)
             }
             trailing={
               <Button
@@ -285,7 +287,7 @@ export default function ToolConfirmation({
           <span className="text-label text-text-default">
             {/* Name the tool. "this tool" told the user nothing.
                 ⚠ NOT `font-mono`. `friendlyToolName` returns a display name
-                ("Install Extension"), not the raw
+                ("install extension"), not the raw
                 `extensionmanager__install_extension` id it started life as, and
                 the answered row renders the SAME string in the body font. The
                 <span> keeps the name a distinct node, which is what lets a test

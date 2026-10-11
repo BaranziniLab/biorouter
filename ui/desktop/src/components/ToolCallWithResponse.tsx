@@ -32,7 +32,17 @@ import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { stripHiddenCharacters } from '../utils/untrustedText';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
 import { InfoTip } from './ui/info-tip';
-import { TOOL_ROW_COPY, toolRowLabel, type ToolRowState } from './toolCallCopy';
+import {
+  FIGURE_COPY,
+  FIGURE_NAMES,
+  TOOL_ROW_COPY,
+  sentenceStart,
+  toolActionPhrase,
+  toolNamePhrase,
+  toolNameWords,
+  toolRowLabel,
+  type ToolRowState,
+} from './toolCallCopy';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -313,6 +323,17 @@ function getToolResultError(toolResult: unknown): string | null {
   return 'The tool reported that it could not complete the request.';
 }
 
+/** Text content that holds nothing to read, and nothing else beside it. */
+function isBlankTextResult(content: Content): boolean {
+  const record = content as Record<string, unknown>;
+  return (
+    typeof record.text === 'string' &&
+    record.text.trim() === '' &&
+    !('data' in record) &&
+    !('resource' in record)
+  );
+}
+
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
   return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
 }
@@ -525,6 +546,11 @@ export type ToolCallSummaryInput = {
 
 const MAX_SUMMARY_VALUE_LENGTH = 96;
 
+/**
+ * Title Case, for the one place a row names something by its own name: an
+ * extension or a skill ("Installing Spoke Agent v0.4.1"). A tool's action never
+ * reads this way; it goes through `toolActionPhrase` and `toolNamePhrase`.
+ */
 const humanize = toolIdentifierToTitleCase;
 
 const stringifySummaryValue = (value: unknown): string => {
@@ -548,11 +574,7 @@ const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
     /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
       text
     );
-  return placeholder
-    ? humanize(tool.replace(/(?:__|[/\\])/g, '_'))
-        .replace(/\s+/g, ' ')
-        .trim()
-    : text;
+  return placeholder ? sentenceStart(toolNamePhrase(tool)) : text;
 };
 
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
@@ -567,7 +589,21 @@ const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
   return `${shorten(actions[0], actionLimit)} → ${shorten(actions[actions.length - 1], actionLimit)}`;
 };
 
+/** A web address as a row names it: the host and the path ("ucsf.edu/people"). */
+const urlLabel = (text: string): string | null => {
+  if (!/^https?:\/\//i.test(text)) return null;
+  try {
+    const url = new URL(text);
+    const path = url.pathname.replace(/\/+$/, '');
+    return compactValue(`${url.host.replace(/^www\./, '')}${path}`, 48);
+  } catch {
+    return null;
+  }
+};
+
 const basename = (value: unknown): string => {
+  const url = typeof value === 'string' ? urlLabel(value.trim()) : null;
+  if (url) return url;
   const text = compactValue(value);
   const parts = text.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || text;
@@ -945,32 +981,89 @@ const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
   return 'Managing browser tabs';
 };
 
-const summarizeSafeArguments = (args: Record<string, unknown>): string | null => {
-  const hidden = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
-  const parts = Object.entries(args)
-    .filter(
-      ([key, value]) => !hidden.test(key) && ['string', 'number', 'boolean'].includes(typeof value)
-    )
-    .slice(0, 2)
-    .map(([key, value]) => `${humanize(key)}: ${compactValue(value, 40)}`);
-  return parts.length > 0 ? parts.join(' · ') : null;
+/** Arguments a collapsed row never shows: free text and anything secret-like. */
+const HIDDEN_ARGUMENT = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
+/** Machine IDs live in the well's Input section, not on the row (principle 10). */
+const ID_ARGUMENT = /(?:^|[_-])(?:ids?|uuid)$|^ids?$/i;
+const ID_ARGUMENT_CAMEL = /[a-z0-9](?:Ids?|Uuid|UUID)$/;
+const MACHINE_VALUE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,})$/i;
+const MAX_ARGUMENT_VALUE_LENGTH = 40;
+
+/**
+ * The one argument VALUE a collapsed row may carry after its action ("Managing
+ * schedule · sessions"), or null. Never a key: "Action: sessions · Limit: 50"
+ * was the identifier leaking onto the line. Only a string that says something
+ * qualifies; a number, a flag, a wildcard or an ID means nothing without its
+ * key, and the well's Input section shows every argument with its key.
+ */
+const collapsedArgumentValue = (args: Record<string, unknown>): string | null => {
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== 'string') continue;
+    if (HIDDEN_ARGUMENT.test(key) || ID_ARGUMENT.test(key) || ID_ARGUMENT_CAMEL.test(key)) {
+      continue;
+    }
+    const text = value.replace(/\s+/g, ' ').trim();
+    if (!/[\p{L}\p{N}]/u.test(text) || MACHINE_VALUE.test(text)) continue;
+    // Prose keeps its opening words; a path or a command keeps both ends.
+    if (!/\s/.test(text)) return compactValue(basename(text), MAX_ARGUMENT_VALUE_LENGTH);
+    const characters = Array.from(text);
+    return characters.length <= MAX_ARGUMENT_VALUE_LENGTH
+      ? text
+      : `${characters
+          .slice(0, MAX_ARGUMENT_VALUE_LENGTH - 1)
+          .join('')
+          .trimEnd()}…`;
+  }
+  return null;
 };
 
-const withSafeArguments = (label: string, args: Record<string, unknown>): string => {
-  const details = summarizeSafeArguments(args);
-  return details ? `${label} · ${details}` : label;
+const withArgumentValue = (label: string, args: Record<string, unknown>): string => {
+  const value = collapsedArgumentValue(args);
+  return value ? `${label} · ${value}` : label;
+};
+
+/** "Rendering volcano plot" for a figure kind slug or a legacy per-kind tool name. */
+const figureName = (identifier: string): string => {
+  const words = toolNameWords(identifier);
+  const kind = (words[0] === 'render' || words[0] === 'show' ? words.slice(1) : words).join('_');
+  return FIGURE_NAMES[kind] ?? toolNamePhrase(kind);
+};
+
+/** An Auto Visualiser call as the figure it draws, or null for one this does not know. */
+const summarizeFigureCall = (toolName: string, args: Record<string, unknown>): string | null => {
+  const kind = typeof args.kind === 'string' && args.kind.trim() ? args.kind.trim() : null;
+  if (toolName === 'render_figure') {
+    return kind ? FIGURE_COPY.render(figureName(kind)) : FIGURE_COPY.renderAny;
+  }
+  if (toolName === 'describe_figure') {
+    return kind ? FIGURE_COPY.describe(figureName(kind)) : FIGURE_COPY.describeAll;
+  }
+  if (toolName === 'render_dashboard') {
+    return withArgumentValue(FIGURE_COPY.render(FIGURE_NAMES.dashboard), args);
+  }
+  if (/^(?:render|show)_/.test(toolName)) return FIGURE_COPY.render(figureName(toolName));
+  return null;
 };
 
 export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
-  const displayName = humanize(toolName);
-  const toolWords = toolName
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .toLowerCase()
-    .split(/[_-]/)
-    .filter(Boolean);
+  const toolWords = toolNameWords(toolName);
   const hasToolWord = (...words: string[]) => words.some((word) => toolWords.includes(word));
+  /**
+   * The tool's name without the verb a branch matched, as words that read in a
+   * sentence: `msagent_list_tables` under "list" is "msagent tables", so the
+   * row says "Listing msagent tables", never "Listing Msagent List Tables".
+   */
+  const nameWithout = (...verbs: string[]): string => {
+    const index = toolWords.findIndex((word) => verbs.includes(word));
+    return toolNamePhrase(toolWords.filter((_, position) => position !== index));
+  };
+  const action = (gerund: string, ...verbs: string[]): string => {
+    const subject = nameWithout(...verbs);
+    return subject ? `${gerund} ${subject}` : gerund;
+  };
   const target = firstPresent(args, [
     'path',
     'file',
@@ -1004,9 +1097,9 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     : null;
   if (skillsSummary) return skillsSummary;
 
+  const baseId = toolCall.name.startsWith('knowledge__') ? namedArgument(args, ['kb_id']) : null;
+  const base = baseId === 'soul' ? 'Soul' : baseId;
   if (toolCall.name.startsWith('knowledge__')) {
-    const baseId = namedArgument(args, ['kb_id']);
-    const base = baseId === 'soul' ? 'Soul' : baseId;
     if (toolName === 'kb_get_active') return 'Checking the primary knowledge base';
     if (toolName === 'kb_list_bases') return 'Listing knowledge bases';
     if (toolName === 'kb_list_pages')
@@ -1021,6 +1114,11 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   }
 
   if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
+
+  const figureSummary = toolCall.name.startsWith('autovisualiser__')
+    ? summarizeFigureCall(toolName, args)
+    : null;
+  if (figureSummary) return figureSummary;
 
   // Matched on the FULL prefixed name, so another extension's `request` keeps its own label.
   if (toolCall.name.startsWith('crew__')) return summarizeCrewCall(toolName, args, toolResult);
@@ -1065,42 +1163,45 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   if (hasToolWord('read')) {
     return targetName
       ? `Reading ${targetName}`
-      : withSafeArguments(`Reading ${displayName.replace(/^Read /, '')}`, args);
+      : withArgumentValue(action('Reading', 'read'), args);
   }
 
   if (hasToolWord('open')) {
-    const subject = displayName.replace(/^Open /, '').replace(/^In /, 'in ');
-    return targetName ? `Opening ${targetName}` : withSafeArguments(`Opening ${subject}`, args);
+    return targetName
+      ? `Opening ${targetName}`
+      : withArgumentValue(action('Opening', 'open'), args);
   }
 
-  if (hasToolWord('fetch')) {
+  // `web_scrape` fetches a page; "Web Scrape for people" named neither the
+  // action nor the page.
+  if (hasToolWord('fetch', 'scrape')) {
     return targetName
       ? `Fetching ${targetName}`
-      : withSafeArguments(`Fetching ${displayName.replace(/^Fetch /, '')}`, args);
+      : withArgumentValue(action('Fetching', 'fetch', 'scrape'), args);
   }
 
   if (hasToolWord('write', 'update', 'edit')) {
     return targetName
       ? `Updating ${targetName}`
-      : withSafeArguments(`Updating ${displayName.replace(/^(Write|Update|Edit) /, '')}`, args);
+      : withArgumentValue(action('Updating', 'write', 'update', 'edit'), args);
   }
 
   if (hasToolWord('create')) {
     return targetName
       ? `Creating ${targetName}`
-      : withSafeArguments(`Creating ${displayName.replace(/^Create /, '')}`, args);
+      : withArgumentValue(action('Creating', 'create'), args);
   }
 
   if (hasToolWord('delete', 'remove')) {
     return targetName
       ? `Removing ${targetName}`
-      : withSafeArguments(`Removing ${displayName.replace(/^(Delete|Remove) /, '')}`, args);
+      : withArgumentValue(action('Removing', 'delete', 'remove'), args);
   }
 
   if (hasToolWord('list')) {
     return targetName
       ? `Listing ${targetName}`
-      : withSafeArguments(`Listing ${displayName.replace(/^List /, '')}`, args);
+      : withArgumentValue(action('Listing', 'list'), args);
   }
 
   if (hasToolWord('search', 'query')) {
@@ -1109,29 +1210,34 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     );
     return query
       ? `Searching for ${query}`
-      : withSafeArguments(`Searching ${displayName.replace(/^(Search|Query) /, '')}`, args);
+      : withArgumentValue(action('Searching', 'search', 'query'), args);
   }
 
   if (hasToolWord('download')) {
     return targetName
       ? `Downloading ${targetName}`
-      : withSafeArguments(`Downloading ${displayName.replace(/^Download /, '')}`, args);
+      : withArgumentValue(action('Downloading', 'download'), args);
   }
 
   if (hasToolWord('send', 'post')) {
-    return targetName ? `Sending to ${targetName}` : `${displayName}`;
+    if (targetName) return `Sending to ${targetName}`;
+    return withArgumentValue(
+      hasToolWord('post') ? action('Posting', 'post') : action('Sending', 'send'),
+      args
+    );
   }
 
-  if (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet')) {
-    return operation
-      ? `${humanize(compactValue(operation))} in a spreadsheet`
-      : withSafeArguments(displayName, args);
+  // The operation names the action ("add_sheet" → "Adding sheet in a
+  // spreadsheet"); without one, the generic action below names the tool.
+  if (operation && (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet'))) {
+    return `${toolActionPhrase(toolNameWords(compactValue(operation)))} in a spreadsheet`;
   }
 
-  if (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents')) {
-    return operation
-      ? `${humanize(compactValue(operation))} in a document`
-      : withSafeArguments(displayName, args);
+  if (
+    operation &&
+    (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents'))
+  ) {
+    return `${toolActionPhrase(toolNameWords(compactValue(operation)))} in a document`;
   }
 
   if (toolName === 'execute_code') {
@@ -1140,12 +1246,13 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     return `Executing code`;
   }
 
-  if (targetName) return `${displayName} for ${targetName}`;
-
-  const safeArguments = summarizeSafeArguments(args);
-  if (safeArguments) return `${displayName} · ${safeArguments}`;
-
-  return displayName;
+  // Every other tool: its own name as an action, so the verb can carry the
+  // state ("Ingesting conversation", "Ingested conversation"; a name with no
+  // verb "Running x", "Ran x"), then one value at most. Never Title Case and
+  // never an argument key (V2-04).
+  const generic = `${toolActionPhrase(toolWords)}${base ? ` in ${base}` : ''}`;
+  if (targetName) return `${generic} · ${targetName}`;
+  return withArgumentValue(generic, args);
 }
 
 export const logToString = (logMessage: NotificationEvent) => {
@@ -1343,7 +1450,7 @@ function ToolCallView({
   const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
   const code = toolCall.arguments?.code as unknown as string | undefined;
   const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
-  const visibleResults = isCancelledMessage
+  const listedResults = isCancelledMessage
     ? []
     : toolResults.filter(
         (result) =>
@@ -1354,6 +1461,10 @@ function ToolCallView({
             result.text.trim() === toolError.trim()
           )
       );
+  // A command that printed nothing answers with blank text. Drawn as is, that
+  // was an "Output" label over nothing (V2-19); it says "No output" instead.
+  const visibleResults = listedResults.filter((result) => !isBlankTextResult(result));
+  const outputWasBlank = listedResults.length > 0 && visibleResults.length === 0;
   const showProgress = toolResults.length === 0 && progressEntries.length > 0;
   const hasBody =
     hasToolGraph ||
@@ -1363,7 +1474,8 @@ function ToolCallView({
     Boolean(toolError) ||
     (logs?.length ?? 0) > 0 ||
     showProgress ||
-    visibleResults.length > 0;
+    visibleResults.length > 0 ||
+    outputWasBlank;
 
   // The ONE deliberate visual difference in the whole mirror feature. A `child`
   // call ran in the coding agent's own sandbox and passed none of Biorouter's
@@ -1432,6 +1544,12 @@ function ToolCallView({
         </TranscriptRowSection>
       )}
 
+      {outputWasBlank && (
+        <TranscriptRowSection label={TOOL_ROW_COPY.output}>
+          <div className="text-supporting text-text-muted">{TOOL_ROW_COPY.noOutput}</div>
+        </TranscriptRowSection>
+      )}
+
       {visibleResults.map((result, index) => (
         <ToolResultView
           key={index}
@@ -1457,6 +1575,9 @@ function ToolCallView({
       label={toolRowLabel(toolSummary, rowState)}
       meta={metaParts.length > 0 ? metaParts.join(' ') : undefined}
       running={loadingStatus === 'loading'}
+      // A failed call says so before it is opened: the verb ("Failed to …")
+      // and the line's ink, not only the well's "Tool call failed" (V2-11).
+      tone={rowState === 'failed' ? 'danger' : 'muted'}
       statusLabel={TOOL_ROW_COPY.statusLabel(toolCallStatus)}
       open={isOpen}
       onOpenChange={setOpenChoice}
@@ -1633,6 +1754,7 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
         icon={glyph.Icon}
         glyph={glyph.kind}
         label={toolRowLabel(summary, call.status === 'error' ? 'failed' : 'done')}
+        tone={call.status === 'error' ? 'danger' : 'muted'}
         statusLabel={TOOL_ROW_COPY.statusLabel(call.status === 'error' ? 'error' : 'success')}
       />
       <div className="flex min-w-0 flex-col gap-2 pl-6">

@@ -176,13 +176,20 @@ describe('ToolCallConfirmation (BR-63)', () => {
 
   it('names the tool instead of asking about "this tool"', () => {
     renderCard({ toolName: 'developer__text_editor' });
-    expect(screen.getByText('Text Editor')).toBeInTheDocument();
+    // Sentence case inside the question ("Run text editor?"), never Title Case.
+    expect(screen.getByText('text editor')).toBeInTheDocument();
+  });
+
+  it('starts the answered row with the tool name in sentence case', async () => {
+    renderCard({ toolName: 'developer__text_editor' });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
+    expect(await screen.findByText('Text editor is allowed once')).toBeInTheDocument();
   });
 
   /// The display name is PROSE and must be set in the body font.
   ///
   /// It was `font-mono` — a leftover from when this printed the raw
-  /// `developer__text_editor` identifier rather than "Text Editor" — while the
+  /// `developer__text_editor` identifier rather than "text editor" — while the
   /// RESOLVED state a few lines away rendered the same string in the body font.
   /// One string, two typefaces, in one component, both visible in the same
   /// screenshot.
@@ -191,7 +198,7 @@ describe('ToolCallConfirmation (BR-63)', () => {
   /// typeface. This is the one that fails if the mono comes back.
   it('sets the tool name in the body font, not monospace', () => {
     renderCard({ toolName: 'developer__text_editor' });
-    const name = screen.getByText('Text Editor');
+    const name = screen.getByText('text editor');
     expect(name.className).not.toMatch(/font-mono/);
     // …and no ancestor inside the card imposes it either, which is how this
     // would regress without touching the element itself.
@@ -203,13 +210,13 @@ describe('ToolCallConfirmation (BR-63)', () => {
 
   it('separates camel-case manager names in authorization cards', () => {
     renderCard({ toolName: 'skills__installMarketplaceSkill' });
-    expect(screen.getByText('Install Marketplace Skill')).toBeInTheDocument();
+    expect(screen.getByText('install marketplace skill')).toBeInTheDocument();
   });
 
   it('keeps the first character of an unprefixed tool name', () => {
     renderCard({ toolName: 'install_extension' });
-    expect(screen.getByText('Install Extension')).toBeInTheDocument();
-    expect(screen.queryByText('Nstall Extension')).not.toBeInTheDocument();
+    expect(screen.getByText('install extension')).toBeInTheDocument();
+    expect(screen.queryByText('nstall extension')).not.toBeInTheDocument();
   });
 
   it('shows the resolved shell command so a destructive one is visible before approval', () => {
