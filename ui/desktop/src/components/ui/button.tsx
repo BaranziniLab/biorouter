@@ -144,10 +144,18 @@ const Button = React.forwardRef<
 
   return (
     <Comp
-      data-slot="button"
       className={cn(buttonVariants({ variant, size, shape, className }))}
       ref={ref}
       {...props}
+      // ⚠ AFTER the spread, deliberately. A Button slotted into a Radix trigger
+      // (`<DropdownMenuTrigger asChild><Button …/></DropdownMenuTrigger>`, 59 sites) is handed the
+      // trigger's own `data-slot` through `props`, and a slot written BEFORE the spread was
+      // replaced by it: the element is drawn by `buttonVariants` and is a button, but
+      // `[data-slot='button']` (main.css: the forced-colours edge on every button, the link
+      // underline, the copy field's footer) no longer matched it, so a filled trigger lost its
+      // boundary under Windows High Contrast (V4-24). Nothing keys on a trigger's slot, so
+      // "a Button is always a button" costs nothing. Pinned in button.test.tsx.
+      data-slot="button"
     />
   );
 });
