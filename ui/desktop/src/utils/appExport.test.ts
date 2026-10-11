@@ -161,6 +161,30 @@ describe('exportAppToFolder', () => {
     expect(await fs.readdir(picked)).toEqual([APP]);
   });
 
+  it('restores executable modes for bundled daemons and native compilers without zip modes', async () => {
+    const paths = [
+      'payload/bin/biorouterd',
+      'payload/bin/biorouterd.exe',
+      'payload/bin/esbuild',
+      'payload/bin/esbuild.exe',
+    ];
+    const files: Record<string, [Buffer | string, number]> = {
+      'assets/esbuild': ['authored asset', 0o644],
+    };
+    for (const executable of paths) files[executable] = [PNG, 0o644];
+    const target = path.join(picked, APP);
+    extractExportZip(daemonZip(files), APP, target);
+    for (const executable of paths) {
+      expect(await fs.readFile(path.join(target, executable))).toEqual(PNG);
+      if (process.platform !== 'win32') {
+        expect(await modeOf(path.join(target, executable))).toBe(0o755);
+      }
+    }
+    if (process.platform !== 'win32') {
+      expect(await modeOf(path.join(target, 'assets/esbuild'))).toBe(0o644);
+    }
+  });
+
   it('replaces a folder with something in it only on a yes, and moves the old one to the Trash', async () => {
     const target = path.join(picked, APP);
     await fs.mkdir(target);

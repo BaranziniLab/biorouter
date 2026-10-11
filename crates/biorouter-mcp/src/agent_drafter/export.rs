@@ -1046,12 +1046,14 @@ pub(crate) fn make_executable(path: &Path) {
 }
 
 /// Whether the export path `rel` must be executable: the launchers, and a
-/// bundled daemon. A writer that cannot read file modes (a zip on Windows, a
+/// bundled daemon and compiler. A writer that cannot read file modes (a zip on Windows, a
 /// legacy file map) asks this.
 pub fn is_executable_export_path(rel: &str) -> bool {
     render::EXECUTABLE_EXPORT_FILES.contains(&rel)
         || rel == "payload/bin/biorouterd"
         || rel == "payload/bin/biorouterd.exe"
+        || rel == "payload/bin/esbuild"
+        || rel == "payload/bin/esbuild.exe"
 }
 
 /// Count what was written: files, bytes and relative paths.
@@ -1711,49 +1713,189 @@ fn find_biorouterd_binary() -> Option<PathBuf> {
     None
 }
 
-/// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
-/// export. Returns the `export.json` record on success (or `None` → thin), plus
-/// a note either way. The launchers use it only when it runs on the machine
-/// they find themselves on, so a fat export opened on another platform falls
-/// back to an installed daemon.
-fn stage_current_daemon(target: &Path) -> (Option<serde_json::Value>, String) {
+fn is_native_esbuild(path: &Path) -> io::Result<bool> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0u8; 64];
+    file.read_exact(&mut header)?;
+    #[cfg(target_os = "macos")]
+    {
+        let cpu = match std::env::consts::ARCH {
+            "aarch64" => 0x0100_000cu32,
+            "x86_64" => 0x0100_0007u32,
+            _ => return Ok(false),
+        };
+        Ok(header[..4] == [0xcf, 0xfa, 0xed, 0xfe] && header[4..8] == cpu.to_le_bytes())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let (class, machine) = match std::env::consts::ARCH {
+            "aarch64" => (2, 183u16),
+            "x86_64" => (2, 62u16),
+            "x86" => (1, 3u16),
+            _ => return Ok(false),
+        };
+        Ok(header[..4] == *b"\x7fELF"
+            && header[4] == class
+            && header[5] == 1
+            && header[18..20] == machine.to_le_bytes())
+    }
+    #[cfg(windows)]
+    {
+        use std::io::{Seek, SeekFrom};
+        let machine = match std::env::consts::ARCH {
+            "aarch64" => 0xaa64u16,
+            "x86_64" => 0x8664u16,
+            "x86" => 0x014cu16,
+            _ => return Ok(false),
+        };
+        if header[..2] != *b"MZ" {
+            return Ok(false);
+        }
+        let offset = u32::from_le_bytes(header[60..64].try_into().unwrap());
+        file.seek(SeekFrom::Start(offset.into()))?;
+        let mut pe = [0u8; 6];
+        file.read_exact(&mut pe)?;
+        Ok(pe[..4] == *b"PE\0\0" && pe[4..6] == machine.to_le_bytes())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    Ok(false)
+}
+
+fn stage_daemon_bundle(target: &Path, daemon: &Path) -> io::Result<serde_json::Value> {
+    stage_daemon_bundle_with_probe(target, daemon, |compiler| {
+        verify_esbuild_version(compiler, std::time::Duration::from_secs(5))
+    })
+}
+
+fn verify_esbuild_version(compiler: &Path, timeout: std::time::Duration) -> io::Result<()> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut command = Command::new(compiler);
+    command
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    super::prepare_agent_drafter_child(&mut command);
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "esbuild --version timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .take(64)
+        .read_to_end(&mut output)?;
+    if !status.success()
+        || std::str::from_utf8(&output).ok().map(str::trim) != Some(bundle::ESBUILD_VERSION)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "esbuild --version did not report the pinned release {}",
+                bundle::ESBUILD_VERSION
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn stage_daemon_bundle_with_probe(
+    target: &Path,
+    daemon: &Path,
+    probe: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<serde_json::Value> {
+    let esbuild = bundle::packaged_esbuild(daemon).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "the selected daemon has no packaged esbuild; it cannot rebuild apps on a fresh machine",
+        )
+    })?;
+    if !is_native_esbuild(&esbuild)? {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the packaged esbuild is not a native executable for this platform and architecture",
+        ));
+    }
     let bin_name = if cfg!(windows) {
         "biorouterd.exe"
     } else {
         "biorouterd"
     };
-    match find_biorouterd_binary() {
-        Some(bin) => {
-            let dst = target.join("payload").join("bin").join(bin_name);
-            if let Some(parent) = dst.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::copy(&bin, &dst) {
-                Ok(bytes) => {
-                    make_executable(&dst);
-                    let rec = serde_json::json!({
-                        "platform": std::env::consts::OS,
-                        "arch": std::env::consts::ARCH,
-                        "file": format!("payload/bin/{bin_name}"),
-                        "bytes": bytes,
-                    });
-                    (
-                        Some(rec),
-                        format!(
-                            "bundled the {}-{} daemon at payload/bin/{bin_name} (fat export)",
-                            std::env::consts::OS,
-                            std::env::consts::ARCH
-                        ),
-                    )
-                }
-                Err(e) => (
-                    None,
-                    format!(
-                        "could not copy biorouterd into the payload ({e}); thin export instead"
-                    ),
-                ),
-            }
+    let compiler_name = if cfg!(windows) {
+        "esbuild.exe"
+    } else {
+        "esbuild"
+    };
+    let payload = target.join("payload");
+    std::fs::create_dir_all(&payload)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".biorouter-bin-")
+        .tempdir_in(&payload)?;
+    let daemon_bytes = std::fs::copy(daemon, staging.path().join(bin_name))?;
+    let compiler_bytes = std::fs::copy(esbuild, staging.path().join(compiler_name))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in [bin_name, compiler_name] {
+            std::fs::set_permissions(
+                staging.path().join(name),
+                std::fs::Permissions::from_mode(0o755),
+            )?;
         }
+    }
+    probe(&staging.path().join(compiler_name))?;
+    std::fs::rename(staging.path(), payload.join("bin"))?;
+    Ok(serde_json::json!({
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "file": format!("payload/bin/{bin_name}"),
+        "bytes": daemon_bytes,
+        "esbuild": {
+            "file": format!("payload/bin/{compiler_name}"),
+            "bytes": compiler_bytes,
+            "version": bundle::ESBUILD_VERSION,
+        },
+    }))
+}
+
+/// Stage the selected daemon and its native compiler together. A missing
+/// compiler makes this a thin export: shipping only the daemon leaves edits
+/// and SDK refreshes dependent on the recipient's Node/npm installation.
+fn stage_current_daemon(target: &Path) -> (Option<serde_json::Value>, String) {
+    match find_biorouterd_binary() {
+        Some(bin) => match stage_daemon_bundle(target, &bin) {
+            Ok(rec) => (
+                Some(rec),
+                format!(
+                    "bundled the {}-{} daemon and native esbuild under payload/bin (fat export)",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+            ),
+            Err(e) => (
+                None,
+                format!("could not bundle the daemon and compiler ({e}); thin export instead"),
+            ),
+        },
         None => (
             None,
             "biorouterd not found for a fat export; thin export instead (the launcher locates or \
@@ -1768,6 +1910,197 @@ mod tests {
     use super::*;
     use crate::agent_drafter::store::AgentConfig;
     use tempfile::TempDir;
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn native_compiler_header() -> Vec<u8> {
+        let mut header = vec![0u8; 128];
+        #[cfg(target_os = "macos")]
+        {
+            header[..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
+            let cpu = if cfg!(target_arch = "aarch64") {
+                0x0100_000cu32
+            } else {
+                0x0100_0007u32
+            };
+            header[4..8].copy_from_slice(&cpu.to_le_bytes());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            header[..4].copy_from_slice(b"\x7fELF");
+            header[4] = if cfg!(target_arch = "x86") { 1 } else { 2 };
+            header[5] = 1;
+            let machine = if cfg!(target_arch = "aarch64") {
+                183u16
+            } else if cfg!(target_arch = "x86") {
+                3u16
+            } else {
+                62u16
+            };
+            header[18..20].copy_from_slice(&machine.to_le_bytes());
+        }
+        #[cfg(windows)]
+        {
+            header[..2].copy_from_slice(b"MZ");
+            header[60..64].copy_from_slice(&64u32.to_le_bytes());
+            header[64..68].copy_from_slice(b"PE\0\0");
+            let machine = if cfg!(target_arch = "aarch64") {
+                0xaa64u16
+            } else if cfg!(target_arch = "x86") {
+                0x014cu16
+            } else {
+                0x8664u16
+            };
+            header[68..70].copy_from_slice(&machine.to_le_bytes());
+        }
+        header
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn fat_export_stages_its_selected_daemon_and_native_compiler_together() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("selected/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let daemon_name = if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        };
+        let compiler_name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        let daemon = bin.join(daemon_name);
+        let compiler = bin.join(compiler_name);
+        let compiler_bytes = native_compiler_header();
+        std::fs::write(&daemon, b"the selected daemon").unwrap();
+        std::fs::write(&compiler, &compiler_bytes).unwrap();
+        let target = dir.path().join("export");
+        let record = stage_daemon_bundle_with_probe(&target, &daemon, |staged| {
+            assert_eq!(std::fs::read(staged).unwrap(), compiler_bytes);
+            assert!(is_native_esbuild(staged).unwrap());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(record["file"], format!("payload/bin/{daemon_name}"));
+        assert_eq!(record["bytes"], 19);
+        assert_eq!(
+            record["esbuild"]["file"],
+            format!("payload/bin/{compiler_name}")
+        );
+        assert_eq!(record["esbuild"]["bytes"], compiler_bytes.len());
+        assert_eq!(record["esbuild"]["version"], bundle::ESBUILD_VERSION);
+        assert_eq!(
+            std::fs::read(target.join("payload/bin").join(compiler_name)).unwrap(),
+            compiler_bytes
+        );
+        assert_eq!(
+            std::fs::read_dir(target.join("payload")).unwrap().count(),
+            1
+        );
+        for name in [daemon_name, compiler_name] {
+            assert!(is_executable_export_path(&format!("payload/bin/{name}")));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(target.join("payload/bin").join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o755);
+            }
+        }
+        let refused = dir.path().join("rejected-export");
+        let error = stage_daemon_bundle_with_probe(&refused, &daemon, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compiler probe refused",
+            ))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("compiler probe refused"));
+        assert_eq!(
+            std::fs::read_dir(refused.join("payload")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fat_export_compiler_probe_requires_the_pin_and_has_a_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        let dir = TempDir::new().unwrap();
+        let compiler = dir.path().join("compiler-probe");
+        std::fs::write(
+            &compiler,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", bundle::ESBUILD_VERSION),
+        )
+        .unwrap();
+        std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o755)).unwrap();
+        verify_esbuild_version(&compiler, Duration::from_secs(5)).unwrap();
+        std::fs::write(&compiler, "#!/bin/sh\nprintf '%s\\n' '0.0.0'\n").unwrap();
+        assert!(verify_esbuild_version(&compiler, Duration::from_secs(5))
+            .unwrap_err()
+            .to_string()
+            .contains("pinned release"));
+        std::fs::write(&compiler, "#!/bin/sh\nwhile :; do :; done\n").unwrap();
+        let started = Instant::now();
+        let error = verify_esbuild_version(&compiler, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn fat_export_refuses_a_missing_compiler_or_a_node_wrapper_without_partial_binaries() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("selected/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let daemon = bin.join(if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        });
+        let compiler = bin.join(if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        });
+        std::fs::write(&daemon, b"the selected daemon").unwrap();
+        let target = dir.path().join("export");
+        let error = stage_daemon_bundle(&target, &daemon).unwrap_err();
+        assert!(error.to_string().contains("no packaged esbuild"), "{error}");
+        assert!(!target.join("payload/bin").exists());
+        std::fs::write(
+            &compiler,
+            format!("#!/usr/bin/env node\n{}", " ".repeat(128)),
+        )
+        .unwrap();
+        let error = stage_daemon_bundle(&target, &daemon).unwrap_err();
+        assert!(
+            error.to_string().contains("not a native executable"),
+            "{error}"
+        );
+        assert!(!target.join("payload/bin").exists());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn fat_export_refuses_a_compiler_for_another_architecture() {
+        let dir = TempDir::new().unwrap();
+        let compiler = dir.path().join("esbuild");
+        let mut header = native_compiler_header();
+        #[cfg(target_os = "macos")]
+        header[4..8].fill(0);
+        #[cfg(target_os = "linux")]
+        header[18..20].fill(0);
+        #[cfg(windows)]
+        header[68..70].fill(0);
+        std::fs::write(&compiler, header).unwrap();
+        assert!(!is_native_esbuild(&compiler).unwrap());
+    }
 
     /// A full-mode access double: every base reachable except the ones named,
     /// bases served from a map, skills under one root.
@@ -2851,6 +3184,9 @@ mod tests {
             .map(|name| name.to_string())
             .collect();
         expected.push("payload/bin/biorouterd".to_string());
+        expected.push("payload/bin/biorouterd.exe".to_string());
+        expected.push("payload/bin/esbuild".to_string());
+        expected.push("payload/bin/esbuild.exe".to_string());
         assert_eq!(executable, expected);
         assert!(expected.iter().all(|rel| is_executable_export_path(rel)));
     }

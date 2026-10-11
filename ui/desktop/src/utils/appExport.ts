@@ -42,13 +42,16 @@ import {
 /**
  * Files the launcher runs, which must be executable whatever the zip recorded: a daemon on
  * Windows has no file modes to record. Mirrors `render::EXECUTABLE_EXPORT_FILES` plus a bundled
- * daemon (`export::is_executable_export_path`).
+ * daemon and native compiler (`export::is_executable_export_path`).
  */
 export const EXECUTABLE_EXPORT_PATHS: ReadonlySet<string> = new Set([
   'run.command',
   'run.sh',
   'biorouter-launch.sh',
   'payload/bin/biorouterd',
+  'payload/bin/biorouterd.exe',
+  'payload/bin/esbuild',
+  'payload/bin/esbuild.exe',
 ]);
 
 /** More entries than any export has; a zip past it is refused rather than half-written. */
