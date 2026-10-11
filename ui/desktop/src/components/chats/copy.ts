@@ -21,6 +21,21 @@ export const chatRowCopy = {
   rename: {
     inputLabel: (title: string) => `Rename chat ${title}`,
   },
+  /** Export… (`utils/exportConversation.ts`), from the sidebar and History alike. */
+  export: {
+    /** The Save window's title. */
+    dialogTitle: 'Export chat',
+    fileType: 'JSON',
+    /** The file name when the chat has none. */
+    untitled: 'Untitled chat',
+    /** Shown once the file is written, naming the file and its folder. */
+    saved: 'Chat exported',
+    savedTo: (file: string, folder: string) => `Saved "${file}" to ${folder}.`,
+    failed: "Couldn't export this chat",
+    readFailed: 'The chat could not be read for export. Nothing was downloaded.',
+    writeFailed: (folder: string) =>
+      `The file could not be written to ${folder}. Nothing was saved.`,
+  },
   deleteDialog: {
     title: 'Delete chat?',
     message: (title: string) => `Delete "${title}"? This can't be undone.`,

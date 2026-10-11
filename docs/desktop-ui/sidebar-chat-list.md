@@ -326,6 +326,14 @@ passing only the actions its chat allows. Diverge follows History's rule: not a 
 least one message. Every action keeps the request it always made, with `userActionHeaders()`, and a
 daemon refusal is shown as the daemon's own sentence.
 
+Export… (`utils/exportConversation.ts`, the one path for the sidebar and History) saves through the
+app's Save window and a write in the main process, and announces only a written file: "Chat
+exported", `Saved "X.json" to Downloads.` A cancelled Save window says nothing, and a failed write
+says the file was not saved. It used to be a browser download, which in Electron opens the same
+window but tells the page nothing, so "was downloaded" showed while the window was open and stayed
+after Cancel (vision V4-R5-2). On a `biorouter serve` page the file is a browser download, and the
+browser's own download list reports it; the page claims nothing. `utils/exportConversation.test.ts`.
+
 A choice made with the pointer does not hand focus back to the row's `⋯`, because the browser would
 draw a focus ring on a button that was clicked and `:focus-within` would pin the row's actions open.
 A close by keyboard does hand it back (`chats/menuFocusReturn.ts`).
