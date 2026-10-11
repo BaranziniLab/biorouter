@@ -12,7 +12,7 @@ import { startChatFailureNotice } from '../utils/startChatFailure';
 import { useNavigation } from '../hooks/useNavigation';
 import { formatExtensionErrorMessage } from '../utils/extensionErrorUtils';
 import { getInitialWorkingDir } from '../utils/workingDir';
-import { formatExtensionName } from './settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from './settings/extensions/extensionDisplayName';
 import { useTransientValue } from '../hooks/useTransientFlag';
 
 export interface ExtensionLoadingStatus {
@@ -105,7 +105,7 @@ function ExtensionLoadReport({
               <StatusDot status={ext.status} />
             </span>
             <div className="flex-1 min-w-0">
-              <div className="truncate text-text-default">{formatExtensionName(ext.name)}</div>
+              <div className="truncate text-text-default">{extensionDisplayName(ext.name)}</div>
               {ext.status === 'error' && ext.error && (
                 <>
                   <div className="mt-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
@@ -159,8 +159,10 @@ export function GroupedExtensionLoadingToast({
   const errorCount = extensions.filter((ext) => ext.status === 'error').length;
   const failedNames = extensions
     .filter((ext) => ext.status === 'error')
-    .map((ext) => formatExtensionName(ext.name));
-  const builtinFailureNames = builtinFailures.map(formatExtensionName);
+    .map((ext) => extensionDisplayName(ext.name));
+  // Never `map(extensionDisplayName)` bare: `map` passes the index as the second
+  // argument, which is the resolver's `registry`.
+  const builtinFailureNames = builtinFailures.map((name) => extensionDisplayName(name));
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
   // than a count (the all-success case has no meaningful denominator); the
