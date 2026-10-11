@@ -488,6 +488,20 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
   });
 
   /**
+   * V3-R3-4: a `title` attribute on the row title is turned into a tooltip by AppTooltipLayer,
+   * and the tooltip said the name the row already shows (the title was whole, not cut). The
+   * Scheduler and Skills rows show none, so the three views answered a hover differently.
+   */
+  it('puts no tooltip on the row title, as the Scheduler and Skills rows have none', async () => {
+    mocks.listSavedWorkflows.mockResolvedValueOnce([WORKFLOW]);
+    renderView();
+
+    const title = await screen.findByRole('heading', { level: 3, name: WORKFLOW.workflow.title });
+    expect(title).not.toHaveAttribute('title');
+    expect(title.closest('[data-testid="workflow-row"]')!.querySelector('h3[title]')).toBeNull();
+  });
+
+  /**
    * Two lines and two actions (spec 3.10). Line 1 is the title and its state as neutral
    * badges; line 2 the description. At rest the trailing edge shows only the modified time;
    * on hover or focus Run and `⋯` replace it. The state the two tinted buttons used to carry

@@ -800,9 +800,10 @@ export function WorkflowRow({
       >
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h3 className="min-w-0 truncate text-label text-text-default" title={title}>
-              {title}
-            </h3>
+            {/* No `title` attribute: AppTooltipLayer turns it into a tooltip that repeats the
+                title the row is already showing, and a Scheduler or Skills row shows none. The
+                full name is in the editor, one click away. */}
+            <h3 className="min-w-0 truncate text-label text-text-default">{title}</h3>
             {slashCommand && <Badge tone="neutral">/{slashCommand}</Badge>}
             {scheduleCron && cronBadge && (
               <InfoTip label={copy.scheduleBadgeLabel} help={cronSentence(scheduleCron)} asChild>
