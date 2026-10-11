@@ -297,6 +297,59 @@ export function arrangeSidebarChats(
   return groups.map((entry) => entry.group);
 }
 
+// ── Draw what can be seen ─────────────────────────────────────────────────
+
+/** Lines the list draws at first: more than a tall window shows. */
+export const SIDEBAR_RENDER_WINDOW = 60;
+/** Lines added each time the list is scrolled near its end. */
+export const SIDEBAR_RENDER_WINDOW_STEP = 120;
+
+/**
+ * The first `budget` lines of a drawn list (R-28). A line is a group's header
+ * (`headerLines` says how many a group draws: a date or folder header is one,
+ * the ungrouped list none), a row, or a folder's "Show more".
+ *
+ * Every row a view arranges used to be drawn at once, and a row is a context
+ * menu, a tooltip and a rename editor: 2,000 of them took 2 to 4 s to mount in
+ * the development build on every switch of Group by or Sort by. The whole list
+ * is still held and arranged, so the order is right; only drawing waits until
+ * the list is scrolled. `cut` says lines were left out, so the list grows its
+ * window before it asks the daemon for another page.
+ */
+export function windowSidebarRows<Entry extends { rows: readonly unknown[]; more: unknown }>(
+  entries: readonly Entry[],
+  budget: number,
+  headerLines: (entry: Entry) => number
+): { entries: Entry[]; cut: boolean } {
+  const drawn: Entry[] = [];
+  let left = budget;
+  for (const entry of entries) {
+    const header = headerLines(entry);
+    if (header + entry.rows.length === 0 && !entry.more) continue;
+    // No room left, or room for a header and none of its rows: stop before it,
+    // so the list never ends on a header that heads nothing.
+    if (left <= 0 || (entry.rows.length > 0 && left <= header)) {
+      return { entries: drawn, cut: true };
+    }
+    left -= header;
+    const rows = Math.max(0, Math.min(entry.rows.length, left));
+    left -= rows;
+    if (rows < entry.rows.length) {
+      drawn.push({ ...entry, rows: entry.rows.slice(0, rows), more: null });
+      return { entries: drawn, cut: true };
+    }
+    if (entry.more) {
+      if (left <= 0) {
+        drawn.push({ ...entry, more: null });
+        return { entries: drawn, cut: true };
+      }
+      left -= 1;
+    }
+    drawn.push(entry);
+  }
+  return { entries: drawn, cut: false };
+}
+
 // ── Never move a row under the pointer ──────────────────────────────────────
 
 /** The order the list showed when the pointer came in: groups and the ids in each. */

@@ -14,6 +14,7 @@ import {
   parseCollapsedFolders,
   readSidebarChatView,
   SIDEBAR_CHAT_VIEW_STORAGE_KEY,
+  windowSidebarRows,
   SIDEBAR_COLLAPSED_FOLDERS_MAX,
   SIDEBAR_GROUP_BY_OPTIONS,
   SIDEBAR_SORT_BY_OPTIONS,
@@ -402,5 +403,52 @@ describe('arrangeSidebarChats at scale (R-28)', () => {
     expect(ids(groupSidebarChatsByDate(MANY, timeOf, NOW))).toEqual(
       ids(groupByChatDate(MANY, timeOf, NOW))
     );
+  });
+});
+
+describe('windowSidebarRows: draw what can be seen (R-28)', () => {
+  type Entry = { key: string; header: number; rows: string[]; more: 'more' | null };
+  const entry = (key: string, header: number, rows: number, more: 'more' | null = null): Entry => ({
+    key,
+    header,
+    rows: Array.from({ length: rows }, (_, index) => `${key}${index}`),
+    more,
+  });
+  const lines = (entries: Entry[]) =>
+    entries.map((e) => `${e.key}:${e.rows.length}${e.more ? '+' : ''}`).join(' ');
+  const window = (entries: Entry[], budget: number) => {
+    const result = windowSidebarRows(entries, budget, (e) => e.header);
+    return [lines(result.entries), result.cut];
+  };
+
+  it('draws everything that fits and says nothing was cut', () => {
+    expect(window([entry('a', 1, 3), entry('b', 1, 2)], 7)).toEqual(['a:3 b:2', false]);
+    expect(window([entry('all', 0, 5)], 5)).toEqual(['all:5', false]);
+  });
+
+  it('counts headers and Show more as lines, and cuts inside a group', () => {
+    expect(window([entry('a', 1, 3), entry('b', 1, 4)], 6)).toEqual(['a:3 b:1', true]);
+    expect(window([entry('a', 1, 5, 'more'), entry('b', 1, 1)], 9)).toEqual(['a:5+ b:1', false]);
+    // Room for the next header and none of its rows: the list stops before it.
+    expect(window([entry('a', 1, 5, 'more'), entry('b', 1, 1)], 7)).toEqual(['a:5+', true]);
+    expect(window([entry('a', 1, 2), entry('b', 1, 3)], 4)).toEqual(['a:2', true]);
+    // Out of room for Show more: the group is drawn without it, and it is a cut.
+    expect(window([entry('a', 1, 5, 'more')], 6)).toEqual(['a:5', true]);
+  });
+
+  it('draws a collapsed folder header as one line', () => {
+    expect(window([entry('a', 1, 0), entry('b', 1, 0), entry('c', 1, 0)], 2)).toEqual([
+      'a:0 b:0',
+      true,
+    ]);
+  });
+
+  it('is not cut when only empty groups are left out', () => {
+    expect(window([entry('a', 0, 2), entry('b', 0, 0)], 2)).toEqual(['a:2', false]);
+  });
+
+  it('keeps the rows in the order it was given', () => {
+    const result = windowSidebarRows([entry('a', 0, 10)], 4, () => 0);
+    expect(result.entries[0].rows).toEqual(['a0', 'a1', 'a2', 'a3']);
   });
 });
