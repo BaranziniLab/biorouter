@@ -66,7 +66,7 @@ import {
   TextQuote,
   X,
 } from '../icons/app-icons';
-import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import { useTabStripOverflow, useTabStripScrolledEdges } from '../Layout/useTabStripOverflow';
 import type { PreviewPanelMode } from '../Layout/yieldLadder';
 import {
   DropdownMenu,
@@ -552,8 +552,6 @@ export default function ArtifactViewer({
   const manualRefreshRef = useRef(false);
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
-  // Which ends of the tab list are scrolled past, for the edge fade.
-  const [tabListScrolled, setTabListScrolled] = useState({ start: false, end: false });
   const lastRenderErrorKeyRef = useRef<string | null>(null);
   const trustedFrameRef = useRef<HTMLIFrameElement | null>(null);
   // A fading layer's frame is never the trusted one: render errors come only
@@ -622,6 +620,10 @@ export default function ArtifactViewer({
    * when there is no active artifact.
    */
   const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
+  // Which ends of the tab list are scrolled past, for the edge fade. The chat strip
+  // reads the same hook, so the two fades are one rule. The tablist mounts once a
+  // tab is open, after this hook; the hook follows the element the ref holds.
+  const tabListScrolled = useTabStripScrolledEdges(tabListRef);
   const hasTabs = tabState.tabs.length > 0;
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
@@ -950,30 +952,14 @@ export default function ArtifactViewer({
     revealActiveTab(prefersReducedMotion() ? 'auto' : 'smooth');
   }, [revealActiveTab, showTabOverflowMenu, tabState.activeTabId, tabState.tabs.length]);
 
+  // Keep the active tab whole when the list is resized. The edge flags are the
+  // hook's (`useTabStripScrolledEdges`); only the reveal is the panel's own.
   useEffect(() => {
     const list = tabListRef.current;
-    if (!list) return;
-    const syncScrolled = () => {
-      const start = list.scrollLeft > 1;
-      const end = list.scrollLeft + list.clientWidth < list.scrollWidth - 1;
-      setTabListScrolled((current) =>
-        current.start === start && current.end === end ? current : { start, end }
-      );
-    };
-    syncScrolled();
-    list.addEventListener('scroll', syncScrolled, { passive: true });
-    const observer =
-      typeof ResizeObserver === 'undefined'
-        ? null
-        : new ResizeObserver(() => {
-            syncScrolled();
-            revealActiveTab('auto');
-          });
-    observer?.observe(list);
-    return () => {
-      list.removeEventListener('scroll', syncScrolled);
-      observer?.disconnect();
-    };
+    if (!list || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => revealActiveTab('auto'));
+    observer.observe(list);
+    return () => observer.disconnect();
     // Re-attached when the list mounts (the panel early-returns with no tab).
   }, [revealActiveTab, hasTabs]);
 

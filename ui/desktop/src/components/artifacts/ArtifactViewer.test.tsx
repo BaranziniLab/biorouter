@@ -2652,7 +2652,7 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     };
   }
 
-  const viewer = (artifact: ArtifactSource) => (
+  const viewer = (artifact: ArtifactSource | null) => (
     <ThemeProvider>
       <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
     </ThemeProvider>
@@ -2709,6 +2709,42 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
       for (const other of items.filter((item) => item !== current[0])) {
         expect(within(other).queryByRole('img')).toBeNull();
       }
+    } finally {
+      restore();
+    }
+  });
+
+  it('fades the end it has tabs scrolled past, on a strip that mounted after the hook', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      // No artifact, so no tab and no tablist: the strip mounts on a later render,
+      // which is the case `useTabStripScrolledEdges` follows.
+      const { rerender } = render(viewer(null));
+      expect(screen.queryByRole('tablist')).toBeNull();
+      rerender(viewer(file('chart-a.html')));
+      const list = await screen.findByRole('tablist');
+      await waitFor(() => expect(list).toHaveAttribute('data-scrolled-end'));
+      expect(list).not.toHaveAttribute('data-scrolled-start');
+
+      let left = 0;
+      Object.defineProperty(list, 'scrollLeft', {
+        configurable: true,
+        get: () => left,
+        set: (value: number) => {
+          left = value;
+        },
+      });
+      left = 120;
+      fireEvent.scroll(list);
+      await waitFor(() => expect(list).toHaveAttribute('data-scrolled-start'));
+      expect(list).toHaveAttribute('data-scrolled-end');
+
+      // 600 + 300 reaches the 900 the strip holds: nothing is hidden past the end.
+      left = 600;
+      fireEvent.scroll(list);
+      await waitFor(() => expect(list).not.toHaveAttribute('data-scrolled-end'));
+      expect(list).toHaveAttribute('data-scrolled-start');
     } finally {
       restore();
     }
