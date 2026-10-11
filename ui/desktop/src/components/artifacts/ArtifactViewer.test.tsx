@@ -2124,8 +2124,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       'overflow-hidden'
     );
     // Tabs are painted by the shared `br-tab` class (styles/main.css), not by
-    // per-tab utilities: sizing, the active pill and the Safari divider all live
-    // there, so the panel can never drift from the sidebar's tabs.
+    // per-tab utilities: sizing, the hover and selected fills and the accent strip
+    // all live there, so the panel can never drift from the chat strip's tabs.
     const chartChip = chartTab.closest('[data-artifact-tab-id]');
     const summaryChip = summaryTab.closest('[data-artifact-tab-id]');
     expect(chartChip).toHaveClass('br-tab');

@@ -1628,8 +1628,9 @@ export default function ArtifactViewer({
           }}
         >
           {/* The tablist nests inside the strip for a11y, so it repeats the strip's
-            own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
-            only lands in the gap if the tabs are spaced the way the class expects. */}
+            own 3px gap. The tabs are fills now (R-27) and carry no divider between
+            them: the gap is what spaces one fill from the next, and where the drop
+            hairline (`.br-tab[data-dropbefore]::after`, at -2px) lands. */}
           <div
             ref={tabListRef}
             role="tablist"
