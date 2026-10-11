@@ -141,7 +141,13 @@ describe('CrewDialogs', () => {
     await waitFor(() => expect(search).toHaveFocus());
   });
 
-  it('opens a destructive confirmation on Cancel', async () => {
+  // The shared dialog reads the input that opened it (`ui/inputTrail`): a key open keeps Radix's
+  // first stop, a pointer open rests on the dialog box (V4-R5-1). Each case says which it models.
+  const keyOpen = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+  const pointerOpen = () => window.dispatchEvent(new Event('pointerdown'));
+
+  it('opens a destructive confirmation on Cancel from the keyboard', async () => {
+    keyOpen();
     renderWithCrew(<CrewDialogs />, {
       dialog: {
         kind: 'confirm',
@@ -150,6 +156,22 @@ describe('CrewDialogs', () => {
     });
     const cancel = await screen.findByRole('button', { name: 'Cancel' });
     await waitFor(() => expect(cancel).toHaveFocus());
+  });
+
+  it('opens a destructive confirmation on its box after a pointer press, never on the action', async () => {
+    pointerOpen();
+    renderWithCrew(<CrewDialogs />, {
+      dialog: {
+        kind: 'confirm',
+        confirm: { action: 'archive-channel', channelId: 'channel-general' },
+      },
+    });
+    const box = await screen.findByRole('alertdialog');
+    await waitFor(() => expect(box).toHaveFocus());
+    const cancel = within(box).getByRole('button', { name: 'Cancel' });
+    for (const button of within(box).getAllByRole('button')) {
+      if (button !== cancel) expect(button).not.toHaveFocus();
+    }
   });
 
   it('closes through the controller, and renders nothing for dialogs other areas own', async () => {

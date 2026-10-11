@@ -82,8 +82,16 @@ function renderSettings(
   return { ...view, onClose };
 }
 
+/**
+ * The shared dialog reads the input that opened it (`ui/inputTrail`): a key open keeps Radix's
+ * first stop (the selected tab), a pointer open rests on the dialog box (V4-R5-1). The keyboard
+ * cases below model a key open.
+ */
+const keyOpen = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+
 describe('WorkspaceSettingsDialog', () => {
   it('opens on the requested tab, titled by the workspace, with Done', async () => {
+    keyOpen();
     renderSettings({ tab: 'privacy' });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     expect(within(dialog).getByRole('tab', { name: 'Privacy' })).toHaveAttribute(
@@ -516,6 +524,7 @@ describe('WorkspaceSettingsDialog', () => {
 
   it('names its tab list and lets Shift+Tab leave it instead of looping on the tab', async () => {
     const user = userEvent.setup();
+    keyOpen();
     renderSettings({ tab: 'people' });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     expect(within(dialog).getByRole('tablist', { name: copy.tabsLabel })).toBeInTheDocument();

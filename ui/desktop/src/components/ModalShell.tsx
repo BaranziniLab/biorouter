@@ -144,10 +144,12 @@ export interface ModalShellProps {
    */
   onCloseAutoFocus?: (event: Event) => void;
   /**
-   * Radix's open-focus hook, for a dialog whose first tabbable is a poor place for focus (a form
-   * of Selects, where a closed trigger would wear the focus surface after a mouse open): call
+   * Radix's open-focus hook, for a dialog whose first tabbable is a poor place for focus even
+   * after a KEY open (a destructive button, a field that is not first): call
    * `event.preventDefault()` and focus the dialog (`event.currentTarget`) or a field yourself.
-   * `DialogContent` records the opener before calling it, so focus still returns on close.
+   * A POINTER open needs none of this: `DialogContent` already rests it on the dialog box unless
+   * the first stop is a text field (V4-R5-1). `DialogContent` records the opener before calling
+   * it, so focus still returns on close.
    */
   onOpenAutoFocus?: (event: Event) => void;
   /**

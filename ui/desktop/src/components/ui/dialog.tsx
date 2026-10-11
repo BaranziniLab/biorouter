@@ -61,6 +61,51 @@ const TEXT_ENTRY =
   'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="image"]):not([disabled]), textarea:not([disabled]), [contenteditable]:not([contenteditable="false"])';
 
 /**
+ * Whether `element` is a text field in that sense. The shared `Select` types to filter through an
+ * `<input>`, but it reads as a closed control: focused by a script after a mouse open it sat in the
+ * grey focus surface like a choice the person had just made (V3-20), so it is not a field here.
+ */
+function isTextField(element: Element): boolean {
+  return element.matches(TEXT_ENTRY) && !element.closest('.br-select');
+}
+
+/**
+ * Radix's `getComputedStyle` test for a candidate it cannot focus (its focus scope's `isHidden`):
+ * `visibility: hidden` on the node, or `display: none` on it or any ancestor inside the content.
+ */
+function isHiddenIn(node: HTMLElement, container: HTMLElement): boolean {
+  if (getComputedStyle(node).visibility === 'hidden') return true;
+  for (let current: HTMLElement | null = node; current; current = current.parentElement) {
+    if (current === container) return false;
+    if (getComputedStyle(current).display === 'none') return true;
+  }
+  return false;
+}
+
+/**
+ * The control Radix's focus scope focuses when a dialog opens and nobody places focus: the first
+ * tabbable node in document order, links left out, that can take focus. The same walk as Radix's
+ * `getTabbableCandidates` + `removeLinks` + `focusFirst`, read before Radix acts so the dialog can
+ * decide not to let it.
+ */
+function firstAutoFocusTarget(container: HTMLElement): HTMLElement | null {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, {
+    acceptNode: (node) => {
+      const element = node as HTMLElement & { disabled?: boolean; type?: string };
+      const hiddenInput = element.tagName === 'INPUT' && element.type === 'hidden';
+      if (element.disabled || element.hidden || hiddenInput) return NodeFilter.FILTER_SKIP;
+      return element.tabIndex >= 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  while (walker.nextNode()) {
+    const candidate = walker.currentNode as HTMLElement;
+    if (candidate.tagName === 'A' || isHiddenIn(candidate, container)) continue;
+    return candidate;
+  }
+  return null;
+}
+
+/**
  * Give the keyboard focus back to the control that opened a dialog or a sheet (WCAG 2.4.3; the
  * ARIA dialog pattern). Radix's modal content, when it closes, focuses its own `Trigger` and
  * nothing else: it cancels the focus scope's usual return to whatever was focused before. A
@@ -85,13 +130,19 @@ const TEXT_ENTRY =
  * focus back when the dialog is closed with the keyboard (⋯, Enter, Enter on "View info", Escape
  * lands on ⋯, not on `<body>`: V4-03); a pick made with the POINTER does not, because a
  * script-focused ⋯ would wear a keyboard ring after a mouse click (`chats/menuFocusReturn.ts`).
- * That pointer pick also gets a quiet open: after it every script focus matches `:focus-visible`
- * (Chromium decides from the menu item the pointer just picked), so the first stop of a dialog
- * with no text field (a Cancel button, a link) wore the inset ring after a mouse click (V4-04).
- * Focus goes to the dialog box instead, which draws none (`.biorouter-modal-surface:focus` in
+ *
+ * **A pointer open is a quiet open**, from a menu or not. Whether a focus a script moves matches
+ * `:focus-visible` is Chromium's call from the focus it replaces, not from the input that caused
+ * it: after a pointer pick in a menu every script focus matches (the menu item decides, V4-04),
+ * and a click on a trigger that ALREADY holds keyboard focus (Escape gave it back with a ring, then
+ * the mouse opened the dialog again) changes no focus, so the browser keeps the keyboard modality
+ * and Radix's auto-focus inherits the ring (V4-R5-1: Reset data's "Select all", Configuration's
+ * "Go to Privacy", Usage's InfoTip). So after any pointer open, unless the first stop is a text
+ * field, focus goes to the dialog box, which draws no ring (`.biorouter-modal-surface:focus` in
  * `main.css`) and is where a screen reader reads the title and the message; the next Tab reaches
- * the first control. A dialog that opens on a text field keeps it (a field is always ringed), and
- * a caller that cancels the event and places focus itself is left alone.
+ * the first control, ringed. A text field keeps focus (a field is always ringed and wants the
+ * cursor). A KEY open keeps Radix's first stop, because there the ring is the point. A caller that
+ * cancels the event and places focus itself is left alone.
  */
 export function useReturnFocusToOpener(handlers: {
   onOpenAutoFocus?: (event: Event) => void;
@@ -140,8 +191,9 @@ export function useReturnFocusToOpener(handlers: {
       const pickedByKey = lastInputWasKey();
       fromMenu.current = resolved.viaMenu ? { pickedByKey } : null;
       onOpenAutoFocus?.(event);
-      if (event.defaultPrevented || !resolved.viaMenu || pickedByKey) return;
-      if (!content || content.querySelector(TEXT_ENTRY)) return;
+      if (event.defaultPrevented || pickedByKey || !content) return;
+      const first = firstAutoFocusTarget(content);
+      if (first && isTextField(first)) return;
       event.preventDefault();
       content.focus({ preventScroll: true });
     },

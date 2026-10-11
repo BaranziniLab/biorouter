@@ -14,7 +14,8 @@
  * - **Open.** After a pointer pick every script focus matches `:focus-visible`, so the first stop of
  *   a dialog with no text field wore the inset ring after a mouse click. Focus goes to the dialog
  *   box, which draws no ring; a text field keeps focus, and a caller that places focus itself is
- *   left alone.
+ *   left alone. Any pointer open now gets the same quiet open, from a menu or not (V4-R5-1,
+ *   measured in `dialogPointerOpen.browser.test.tsx`).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -385,14 +386,16 @@ describe('a dialog opened from a menu item (V4-03, V4-04)', () => {
       }
     });
 
-    it('does not touch a dialog that no menu opened', async (ctx) => {
+    it('treats a dialog no menu opened the same way: a mouse open rests on the box (V4-R5-1)', async (ctx) => {
       if (!browser) return ctx.skip();
       const tab = await openPage();
       try {
         await tab.click('#plain');
         await tab.waitForSelector(dialog);
         await settle(tab);
-        expect((await focused(tab)).role).not.toBe('dialog');
+        const now = await focused(tab);
+        expect(now.role).toBe('dialog');
+        expect(now.outline).toBe('none');
         await tab.keyboard.press('Escape');
         await closed(tab);
         await settle(tab);

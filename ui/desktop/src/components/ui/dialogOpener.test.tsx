@@ -126,13 +126,16 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
     content.removeEventListener(event.type, hook.onCloseAutoFocus);
     return event;
   }
-  function scene(withField: boolean) {
+  /** `field`: no text field, one before the Cancel button (the first stop), or one after it. */
+  function scene(field: 'none' | 'first' | 'after') {
+    const input = '<input id="field" aria-label="Name" />';
     const host = mount(`
       <button id="trigger">More</button>
       <div role="menu" id="menu" aria-labelledby="trigger"><button role="menuitem" id="item">Info</button></div>
       <div id="content" tabindex="-1">
+        ${field === 'first' ? input : ''}
         <button id="cancel">Cancel</button>
-        ${withField ? '<input id="field" aria-label="Name" />' : ''}
+        ${field === 'after' ? input : ''}
       </div>
     `);
     return {
@@ -145,7 +148,7 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
 
   it('after a keyboard pick: leaves the open to Radix, and gives focus to the trigger on a keyboard close', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
-    const { trigger, item, content, menu } = scene(false);
+    const { trigger, item, content, menu } = scene('none');
     press();
     item.focus();
     expect(openOn(content, result.current).defaultPrevented).toBe(false);
@@ -158,7 +161,7 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
 
   it('after a pointer pick: focuses the dialog box, and gives nothing back', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
-    const { trigger, item, content, menu } = scene(false);
+    const { trigger, item, content, menu } = scene('none');
     point();
     item.focus();
     const open = openOn(content, result.current);
@@ -170,17 +173,26 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
     expect(trigger).not.toHaveFocus();
   });
 
-  it('after a pointer pick of a dialog with a text field: leaves the field to Radix', () => {
+  it('after a pointer pick of a dialog whose first stop is a text field: leaves the field to Radix', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
-    const { item, content } = scene(true);
+    const { item, content } = scene('first');
     point();
     item.focus();
     expect(openOn(content, result.current).defaultPrevented).toBe(false);
   });
 
+  it('after a pointer pick of a dialog with a text field AFTER a button: focuses the box (V4-R5-1)', () => {
+    const { result } = renderHook(() => useReturnFocusToOpener({}));
+    const { item, content } = scene('after');
+    point();
+    item.focus();
+    expect(openOn(content, result.current).defaultPrevented).toBe(true);
+    expect(content).toHaveFocus();
+  });
+
   it('after a keyboard pick closed with the pointer: gives nothing back', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
-    const { trigger, item, content, menu } = scene(false);
+    const { trigger, item, content, menu } = scene('none');
     press();
     item.focus();
     openOn(content, result.current);
@@ -199,20 +211,22 @@ describe('useReturnFocusToOpener, for a dialog a menu item opened', () => {
         },
       })
     );
-    const { item, content } = scene(false);
+    const { item, content } = scene('none');
     point();
     item.focus();
     openOn(content, result.current);
     expect(document.getElementById('cancel')).toHaveFocus();
   });
 
-  it('is unchanged for a dialog that no menu opened, whatever the modality', () => {
+  it('a dialog that no menu opened: a pointer open rests on the box, a key open is Radix’s; both give focus back (V4-R5-1)', () => {
     const { result } = renderHook(() => useReturnFocusToOpener({}));
-    const { trigger, content } = scene(false);
+    const { trigger, content } = scene('none');
     for (const input of [point, press]) {
       input();
       trigger.focus();
-      expect(openOn(content, result.current).defaultPrevented).toBe(false);
+      const open = openOn(content, result.current);
+      expect(open.defaultPrevented).toBe(input === point);
+      if (input === point) expect(content).toHaveFocus();
       trigger.blur();
       input();
       const close = closeOn(content, result.current);
