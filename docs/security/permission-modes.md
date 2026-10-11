@@ -192,7 +192,7 @@ To set the default mode, use `biorouter configure`:
    │  Biorouter mode
    │
    ◆  Which mode should Biorouter use?
-   │  ● Autonomous (Use tools and edit, create, or delete files without asking first.)
+   │  ● Autonomous (Uses tools and edits files without asking)
    │  ○ Manual
    │  ○ Smart
    │  ○ Chat only
