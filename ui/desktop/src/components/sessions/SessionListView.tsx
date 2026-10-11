@@ -1100,7 +1100,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       <ConfirmationModal
         isOpen={deleteTarget !== null}
         title={chatRowCopy.deleteDialog.title}
-        message={chatRowCopy.deleteDialog.message(deleteTarget?.name ?? '')}
+        // The name the row showed (`historyRowTitle`), so the sentence names what the person
+        // clicked and not the stored `Scheduled job: <id>` or `app:<id>` behind it.
+        message={chatRowCopy.deleteDialog.message(
+          deleteTarget ? historyRowTitle(deleteTarget) : ''
+        )}
         confirmLabel={chatRowCopy.deleteDialog.confirm}
         cancelLabel={chatRowCopy.deleteDialog.cancel}
         confirmVariant="destructive"

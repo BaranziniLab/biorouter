@@ -173,6 +173,73 @@ describe("a History row says its kind once, in the glyph's name (V1-R2-10)", () 
   });
 });
 
+describe('a scheduled run says its kind once, in the glyph (V1-R3-6)', () => {
+  const runs = () => [
+    session('r1', 'Scheduled job: daily-meditation', { session_type: 'scheduled' }),
+    session('r2', 'Scheduled job: daily-meditation', { session_type: 'scheduled' }),
+    session('u1', 'Scheduled job: a title someone typed'),
+  ];
+
+  it('shows the job id, with no "Scheduled job:" beside the clock glyph', async () => {
+    await renderHistory(runs());
+    const open = await screen.findAllByRole('button', { name: 'Open chat daily-meditation' });
+    expect(open).toHaveLength(2);
+    for (const button of open) {
+      const row = button.closest('[data-session-id]') as HTMLElement;
+      expect(within(row).getByText('daily-meditation')).toBeInTheDocument();
+      expect(row.textContent).not.toMatch(/Scheduled job/);
+      const glyph = row.querySelector('[data-chat-kind]');
+      expect(glyph?.getAttribute('data-chat-kind')).toBe('scheduled');
+      expect(glyph?.getAttribute('aria-label')).toMatch(/scheduled run/i);
+    }
+  });
+
+  it('leaves an ordinary chat a person titled the same way', async () => {
+    await renderHistory(runs());
+    expect(
+      await screen.findByRole('button', { name: 'Open chat Scheduled job: a title someone typed' })
+    ).toBeInTheDocument();
+  });
+
+  it('finds a run by the stored name or by the job id, and renames from the stored name', async () => {
+    const user = userEvent.setup();
+    await renderHistory(runs());
+    await screen.findAllByText('daily-meditation');
+    const filter = screen.getByRole('searchbox', { name: 'Search history' });
+
+    await user.type(filter, 'scheduled job: daily');
+    await vi.waitFor(() =>
+      expect(screen.queryByText('Scheduled job: a title someone typed')).toBeNull()
+    );
+    expect(screen.getAllByText('daily-meditation')).toHaveLength(2);
+
+    await user.clear(filter);
+    await user.type(filter, 'meditation');
+    await vi.waitFor(() =>
+      expect(screen.queryByText('Scheduled job: a title someone typed')).toBeNull()
+    );
+    expect(screen.getAllByText('daily-meditation')).toHaveLength(2);
+
+    // The stored name is untouched: it is what the rename field starts from.
+    await user.click(screen.getAllByRole('button', { name: 'Rename daily-meditation' })[0]);
+    expect(await screen.findByRole('textbox', { name: /chat name|name/i })).toHaveValue(
+      'Scheduled job: daily-meditation'
+    );
+  });
+
+  it('names the run by what its row showed when it asks to delete it', async () => {
+    const user = userEvent.setup();
+    await renderHistory(runs().slice(0, 1));
+    await user.click(
+      await screen.findByRole('button', { name: 'More actions for daily-meditation' })
+    );
+    await user.click(await screen.findByRole('menuitem', { name: /delete chat/i }));
+    expect(
+      await screen.findByText(`Delete "daily-meditation"? This can't be undone.`)
+    ).toBeInTheDocument();
+  });
+});
+
 describe('a row marks itself while its ⋯ menu is open (V1-R2-6)', () => {
   it('sets data-menu-open on the row for as long as the menu is open', async () => {
     const user = userEvent.setup();

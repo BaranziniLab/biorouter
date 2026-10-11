@@ -24,6 +24,13 @@ export function folderName(path: string | null | undefined): string {
 /** The daemon names a delegated run `Subagent: <label>` (`subagent_tool.rs`). */
 const SUBAGENT_NAME_PREFIX = /^Subagent:\s+/i;
 
+/**
+ * The scheduler names every run's chat `Scheduled job: <job id>` (`scheduler.rs`, when it
+ * creates the `Scheduled` session). The job id is the name the person gave the job in the
+ * Scheduler; the rest is the kind, which the clock glyph already says.
+ */
+const SCHEDULED_NAME_PREFIX = /^Scheduled job:\s+/i;
+
 /** `living-news-router` becomes `Living news router`: words, sentence case. */
 function humanizeSlug(slug: string): string {
   const words = slug.split(/[-_]+/).filter(Boolean).join(' ');
@@ -40,8 +47,14 @@ function humanizeSlug(slug: string): string {
  * - A sub-agent run is stored as `Subagent: <label>`. The robot glyph and the rail that ties
  *   it to its parent say that; the row shows the label. A name that is only the prefix is kept
  *   as it is, so a row never renders empty.
+ * - A scheduled run is stored as `Scheduled job: <job id>`. The clock glyph says "scheduled",
+ *   and a search for a job lists every run of it, so each row read "Scheduled job: <id>" ten
+ *   times over (vision V1-R3-6). The row shows the job id, as the Scheduler names the job.
+ *   Keyed on the KIND, not on the prefix alone: a chat a person happens to title "Scheduled
+ *   job: x" keeps its title, and a run the person renamed has no prefix to drop.
  *
- * Display only. The stored name is untouched, the row's filter still matches it (see
+ * Display only. The stored name is untouched (the Meditation job skips scheduled runs by that
+ * prefix, the rename field starts from it, and the row's filter still matches it, see
  * `matchesFilter`), and every other surface keeps its own spelling.
  */
 export function historyRowTitle(session: ChatKindSource): string {
@@ -57,6 +70,10 @@ export function historyRowTitle(session: ChatKindSource): string {
   if (kind === 'subagent') {
     const label = name.replace(SUBAGENT_NAME_PREFIX, '').trim();
     return label || name;
+  }
+  if (kind === 'scheduled') {
+    const job = name.replace(SCHEDULED_NAME_PREFIX, '').trim();
+    return job || name;
   }
   return name;
 }

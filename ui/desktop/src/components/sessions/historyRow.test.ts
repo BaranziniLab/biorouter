@@ -74,6 +74,42 @@ describe('historyRowTitle', () => {
   });
 });
 
+/**
+ * V1-R3-6: a scheduled run says "scheduled" in its clock glyph, so the title does not say it a
+ * second time (a search for a job listed ten rows reading "Scheduled job: daily-meditation").
+ */
+describe('historyRowTitle for a scheduled run', () => {
+  const run = { session_type: 'scheduled' };
+
+  it('shows the job id the Scheduler names the job by', () => {
+    expect(historyRowTitle({ ...run, name: 'Scheduled job: daily-meditation' })).toBe(
+      'daily-meditation'
+    );
+    expect(historyRowTitle({ ...run, name: 'scheduled job:   Weekly digest ' })).toBe(
+      'Weekly digest'
+    );
+  });
+
+  it('keeps a name that is only the prefix, so a row is never empty', () => {
+    expect(historyRowTitle({ ...run, name: 'Scheduled job:' })).toBe('Scheduled job:');
+    expect(historyRowTitle({ ...run, name: 'Scheduled job: ' })).toBe('Scheduled job: ');
+  });
+
+  it('leaves a run the person renamed, which carries no prefix', () => {
+    expect(historyRowTitle({ ...run, name: 'Morning reading list' })).toBe('Morning reading list');
+    expect(historyRowTitle({ ...run, name: 'Scheduled jobs I like' })).toBe(
+      'Scheduled jobs I like'
+    );
+  });
+
+  it('is keyed on the kind: an ordinary chat that happens to be titled so keeps its title', () => {
+    expect(historyRowTitle({ session_type: 'user', name: 'Scheduled job: notes' })).toBe(
+      'Scheduled job: notes'
+    );
+    expect(historyRowTitle({ name: 'Scheduled job: notes' })).toBe('Scheduled job: notes');
+  });
+});
+
 describe('messageCount', () => {
   it('agrees in number', () => {
     expect(messageCount(1)).toBe('1 message');
