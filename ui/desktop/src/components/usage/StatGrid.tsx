@@ -15,6 +15,11 @@ import './usage.css';
  * Three columns, two under a 480px container (a container query on the
  * frame, so the grid answers to its own width rather than the window's).
  *
+ * A tile's InfoTip opens BELOW its glyph. The grid sits right under the Home
+ * card's header row (tabs and the 1y / 30d / 7d control) and under a dialog's
+ * title, so a tip opening upward covered the range control and swallowed a
+ * click on 30d until it closed (vision V1-L9 b).
+ *
  * Motion: when `animateKey` changes (a range switch), each figure remounts
  * with a 125ms fade, and nothing counts up. The first render is at rest, so a
  * card that mounts because of navigation never fades in.
@@ -67,7 +72,7 @@ export function StatGrid({
           <div key={item.key} className="br-stat" data-testid={item.testId}>
             <dt className="br-stat-label text-supporting text-text-muted">
               <span className="br-stat-label-text">{item.label}</span>
-              {item.help ? <InfoTip label={item.label} help={item.help} /> : null}
+              {item.help ? <InfoTip label={item.label} help={item.help} side="bottom" /> : null}
             </dt>
             <dd
               key={`${animateKey ?? ''}:${item.key}`}

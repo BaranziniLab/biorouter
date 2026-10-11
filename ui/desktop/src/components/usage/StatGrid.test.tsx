@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { StatGrid, type StatItem } from './StatGrid';
 
@@ -42,6 +43,15 @@ describe('StatGrid', () => {
     );
     // Only the item that has help gets a glyph.
     expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
+  it('opens a tile InfoTip below its glyph, clear of the controls above the grid', async () => {
+    const user = userEvent.setup();
+    render(<StatGrid items={items} />);
+    await user.click(screen.getByRole('button', { name: 'About Tokens' }));
+    const content = document.querySelector('[data-slot="info-tip-content"]');
+    expect(content).not.toBeNull();
+    expect(content).toHaveAttribute('data-side', 'bottom');
   });
 
   it('draws a suffix on the figure line and a note under it', () => {
