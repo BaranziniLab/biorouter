@@ -45,6 +45,10 @@ import {
   applyHeldArrangement,
   arrangeSidebarChats,
   holdArrangement,
+  linesToDrawRow,
+  SIDEBAR_RENDER_WINDOW,
+  SIDEBAR_RENDER_WINDOW_STEP,
+  windowSidebarRows,
   tildePath,
   type HeldArrangement,
   type SidebarChatGroup,
@@ -122,6 +126,9 @@ export function chatHoverDetail(
 const chatKey = (sessionId: string) => `chat:${sessionId}`;
 const folderKey = (group: SidebarChatGroup) => `folder:${group.key}`;
 const moreKey = (group: SidebarChatGroup) => `more:${group.key}`;
+
+/** Lines a group's header draws: a date or folder header is one, the ungrouped list none. */
+const headerLines = ({ group }: { group: SidebarChatGroup }) => (group.kind === 'all' ? 0 : 1);
 
 /**
  * What a row's menu offers, decided from the chat itself, by History's rule
@@ -576,6 +583,8 @@ export default function RecentChats({
 
   // A view change re-renders the list at rest and fades it in from 0.6.
   const [viewGeneration, setViewGeneration] = useState(0);
+  // R-28: how many lines the list draws; it grows as the list is scrolled.
+  const [renderBudget, setRenderBudget] = useState(SIDEBAR_RENDER_WINDOW);
   const lastView = useRef(view);
   useEffect(() => {
     if (lastView.current.groupBy === view.groupBy && lastView.current.sortBy === view.sortBy) {
@@ -583,6 +592,7 @@ export default function RecentChats({
     }
     lastView.current = view;
     setViewGeneration((generation) => generation + 1);
+    setRenderBudget(SIDEBAR_RENDER_WINDOW);
     // A different arrangement starts from its top, not from wherever the last
     // one had been scrolled to.
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
@@ -635,15 +645,22 @@ export default function RecentChats({
     [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId]
   );
 
+  // R-28: only the first lines are drawn; the rest wait until the list is
+  // scrolled near its end. The whole list is still held and arranged.
+  const windowed = useMemo(
+    () => windowSidebarRows(shown, renderBudget, headerLines),
+    [shown, renderBudget]
+  );
+
   // One tab stop for the list (spec 3.4, F-18): ↑/↓/Home/End move between rows.
   const rowKeys = useMemo(
     () =>
-      shown.flatMap(({ group, rows, more }) => [
+      windowed.entries.flatMap(({ group, rows, more }) => [
         ...(group.kind === 'folder' ? [folderKey(group)] : []),
         ...rows.map((session) => chatKey(session.id)),
         ...(more ? [moreKey(group)] : []),
       ]),
-    [shown]
+    [windowed]
   );
   const roving = useRovingRows(rowKeys, activeSessionId ? chatKey(activeSessionId) : null);
 
@@ -666,9 +683,14 @@ export default function RecentChats({
       // Whatever started the edit (F2, ⌘⌥R, the menu), the rows hold still
       // while the person types, as they do under the pointer.
       captureHold();
+      // The editor mounts in the chat's row. ⌘⌥R names the chat you are in, and
+      // in a long list that row may lie past the lines drawn so far (R-28): draw
+      // up to it, or the list would hold still around an editor nobody can see.
+      const needed = linesToDrawRow(shown, sessionId, headerLines);
+      if (needed !== null) setRenderBudget((budget) => Math.max(budget, needed));
       setEditing({ sessionId, draft: session.name.trim() || sidebarCopy.chats.untitled });
     },
-    [sessions, captureHold]
+    [sessions, shown, captureHold]
   );
 
   // A chat deleted (here or in another window) while it is being renamed leaves
@@ -755,23 +777,29 @@ export default function RecentChats({
     }
   };
 
+  // Near the end of the list: draw more of what is held before asking the
+  // daemon for another page (R-28).
+  const windowCut = windowed.cut;
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
-      if (!hasMore || isLoadingMore || isLoadingAll) return;
       const container = event.currentTarget;
       const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (remainingScroll <= LOAD_MORE_THRESHOLD_PX) onLoadMore();
+      if (remainingScroll > LOAD_MORE_THRESHOLD_PX) return;
+      if (windowCut) setRenderBudget((budget) => budget + SIDEBAR_RENDER_WINDOW_STEP);
+      else if (hasMore && !isLoadingMore && !isLoadingAll) onLoadMore();
     },
-    [hasMore, isLoadingMore, isLoadingAll, onLoadMore]
+    [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore]
   );
 
   useEffect(() => {
     const container = scrollContainerRef.current;
-    if (!container || !hasMore || isLoadingMore || isLoadingAll || container.clientHeight === 0) {
-      return;
-    }
-    if (container.scrollHeight <= container.clientHeight) onLoadMore();
-  }, [hasMore, isLoadingMore, isLoadingAll, onLoadMore, sessions.length]);
+    if (!container || container.clientHeight === 0) return;
+    if (container.scrollHeight > container.clientHeight) return;
+    if (windowCut) setRenderBudget((budget) => budget + SIDEBAR_RENDER_WINDOW_STEP);
+    else if (hasMore && !isLoadingMore && !isLoadingAll) onLoadMore();
+    // `renderBudget` is a dependency so a very tall list that 60 lines do not
+    // fill keeps drawing until it overflows (or everything held is drawn).
+  }, [windowCut, renderBudget, hasMore, isLoadingMore, isLoadingAll, onLoadMore, sessions.length]);
 
   // The running rings pause off screen and while the window is hidden.
   useEffect(() => {
@@ -797,7 +825,7 @@ export default function RecentChats({
       document.removeEventListener('visibilitychange', onVisibility);
       observer.disconnect();
     };
-  }, [groups, runningSessionIds]);
+  }, [windowed, runningSessionIds]);
 
   const setScrollRef = (node: HTMLDivElement | null) => {
     scrollContainerRef.current = node;
@@ -891,7 +919,7 @@ export default function RecentChats({
             className="br-sidebar-chat-groups"
             data-view-changed={viewGeneration > 0 ? 'true' : undefined}
           >
-            {shown.map(({ group, collapsed, holdsActive, rows, more }) => (
+            {windowed.entries.map(({ group, collapsed, holdsActive, rows, more }) => (
               <section
                 key={group.key}
                 className="br-sidebar-group"

@@ -350,6 +350,26 @@ export function windowSidebarRows<Entry extends { rows: readonly unknown[]; more
   return { entries: drawn, cut: false };
 }
 
+/**
+ * How many lines `windowSidebarRows` must be given to draw `sessionId`'s row,
+ * or null when no row of that chat is in `entries`. A rename editor mounts in
+ * its row; a row that is not drawn has nowhere to put it (R-28).
+ */
+export function linesToDrawRow<Entry extends { rows: readonly { id: string }[]; more: unknown }>(
+  entries: readonly Entry[],
+  sessionId: string,
+  headerLines: (entry: Entry) => number
+): number | null {
+  let lines = 0;
+  for (const entry of entries) {
+    lines += headerLines(entry);
+    const index = entry.rows.findIndex((row) => row.id === sessionId);
+    if (index >= 0) return lines + index + 1;
+    lines += entry.rows.length + (entry.more ? 1 : 0);
+  }
+  return null;
+}
+
 // ── Never move a row under the pointer ──────────────────────────────────────
 
 /** The order the list showed when the pointer came in: groups and the ids in each. */

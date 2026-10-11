@@ -1,8 +1,8 @@
 # The sidebar chat list
 
 > **What this is.** How the app sidebar lists chats: the Chats header and its View options menu,
-> Group by and Sort by (nine combinations), how every chat is read when a view needs them all,
-> folder groups, the row menu, renaming a chat in place, the keyboard model, and the tests that
+> Group by and Sort by (nine combinations), how every chat is read when a view needs them all and
+> how many rows are drawn at once, folder groups, the row menu, renaming a chat in place, the keyboard model, and the tests that
 > hold each part.
 > **Status:** Current. Built in the Codex simplicity redesign (WS-SIDEBAR, October 2026).
 > **Audience:** developers working on the sidebar, the chat row menu, History or the tab strip.
@@ -50,16 +50,33 @@ reaches the others through the `storage` event.
 
 The default view keeps the lazy paging of 10 rows as the list scrolls. Any other view needs the whole
 list before it can arrange it, because the server pages in last-activity order only. So
-`useSidebarSessions({ loadAll: true })` reads pages one after another at the server's maximum of 50,
-up to 2,000 chats, and the list foot says "Loading chats…" meanwhile. **Every page request carries
-`userActionHeaders()`**: without the proof the daemon silently omits private chats, which would read
-as chats vanishing when the person changed the view.
+`useSidebarSessions({ loadAll: true })` reads the first page and then the rest in one request of up
+to 2,000 chats, which is also the daemon's page maximum (`MAX_SIDEBAR_SESSION_LIMIT` in
+`routes/session.rs`), and the list foot says "Loading chats…" meanwhile. A daemon from before that
+change answers at most 50 a page, and the same loop then reads it page by page. **Every page request
+carries `userActionHeaders()`**: without the proof the daemon silently omits private chats, which
+would read as chats vanishing when the person changed the view.
 
 The pages go into a buffer and the list changes **once**, when the last one has landed. Shown page by
 page, a list sorted by name reshuffled its top rows with every arrival, and each arrival re-rendered
 every row already held. A rename, a removal or a privacy change that lands during the read is applied
 to the buffer too, and a refresh asked for during the read runs after it. A page asks for no more
 rows than the cap leaves room for, so the read stops at 2,000 exactly.
+
+### Drawing the list
+
+The list draws the first 60 lines of the arranged list (a header, a row and a "Show more" are one
+line each) and 120 more each time it is scrolled near its end; it asks the daemon for another page
+only when everything it holds is drawn. The whole list is still held and arranged, so the order is
+right; only drawing waits. Drawing every row of a 2,000-chat view took 2 to 4 s per change of Group
+by or Sort by in the development build (R-28), because a row is a context menu, a tooltip and a
+rename editor. The arithmetic is `windowSidebarRows` in `sidebarChatView.ts`, free of React.
+
+A view change starts again from the first 60 lines. A chat past the drawn lines (the current chat,
+far down a name-sorted list) has no row until the list is scrolled to it, so the single Tab stop
+falls back to the first row, as it does when the current chat is on a page not yet read. `⌘⌥R` is
+the one entry point that cannot wait for a scroll: it draws the list up to the current chat's row
+first (`linesToDrawRow`), because the editor mounts in that row.
 
 ### Folder groups
 
@@ -140,9 +157,10 @@ tab stop, so Tab reaches them from the row.
 
 | File | Holds |
 |---|---|
-| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order |
-| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading every page with the proof, into a buffer shown once, stopping at the cap |
+| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows` |
+| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder |
+| `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |

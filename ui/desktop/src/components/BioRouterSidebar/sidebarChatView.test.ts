@@ -14,6 +14,7 @@ import {
   parseCollapsedFolders,
   readSidebarChatView,
   SIDEBAR_CHAT_VIEW_STORAGE_KEY,
+  linesToDrawRow,
   windowSidebarRows,
   SIDEBAR_COLLAPSED_FOLDERS_MAX,
   SIDEBAR_GROUP_BY_OPTIONS,
@@ -450,5 +451,19 @@ describe('windowSidebarRows: draw what can be seen (R-28)', () => {
   it('keeps the rows in the order it was given', () => {
     const result = windowSidebarRows([entry('a', 0, 10)], 4, () => 0);
     expect(result.entries[0].rows).toEqual(['a0', 'a1', 'a2', 'a3']);
+  });
+
+  it('says how many lines reach a row, so a rename can draw it', () => {
+    const entries = [entry('a', 1, 3, 'more'), entry('b', 1, 4)].map((e) => ({
+      ...e,
+      rows: e.rows.map((id) => ({ id })),
+    }));
+    const header = (e: { header: number }) => e.header;
+    // a: header (1) + a0 a1 a2 (3) + Show more (1) = 5; b: header (6), then b0..b3.
+    expect(linesToDrawRow(entries, 'a0', header)).toBe(2);
+    expect(linesToDrawRow(entries, 'b2', header)).toBe(9);
+    expect(linesToDrawRow(entries, 'nope', header)).toBeNull();
+    const drawn = windowSidebarRows(entries, linesToDrawRow(entries, 'b2', header) ?? 0, header);
+    expect(drawn.entries[drawn.entries.length - 1].rows.map((row) => row.id)).toContain('b2');
   });
 });
