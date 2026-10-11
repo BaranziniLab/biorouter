@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
+import { ModalShell } from '../ModalShell';
+import { DialogDescription } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { listSessions, type Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
@@ -198,6 +199,13 @@ async function fetchVisibleSessions(): Promise<Session[]> {
   return response.data.sessions;
 }
 
+/**
+ * The id the count sentence carries, so the dialog's `aria-describedby` can name it. Whichever of
+ * the three stand-ins renders (could not count, counting, the headline) wears it, and never two at
+ * once, so the id is unique.
+ */
+const SUMMARY_ID = 'first-run-privacy-notice-summary';
+
 export interface FirstRunPrivacyNoticeProps {
   open: boolean;
   /** Acknowledged. The caller owns remembering that it was. */
@@ -261,6 +269,13 @@ export interface FirstRunPrivacyNoticeProps {
  * reports something that has already happened to data at rest. Trapping someone
  * in it buys nothing, and a modal that cannot be closed is the surest way to
  * make the next one go unread.
+ *
+ * It is the shared dialog, not a shell of its own (R-34, first run round 1,
+ * FR-R1-14): a `ModalShell` at size `md`, pinned at the top edge with the header
+ * rule, the same anatomy as `AnnouncementModal`, the other "Got it" notice. On an
+ * upgraded install it is the first thing on screen, so it is also the first thing
+ * that shows whether the app wears one dialog or two. A presentation change
+ * only: the copy, the props, the counting and every test id are as they were.
  */
 export function FirstRunPrivacyNotice({
   open,
@@ -293,98 +308,110 @@ export function FirstRunPrivacyNotice({
   const resolved = counts ?? fetched;
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && onDismiss()}>
-      <DialogContent data-testid="first-run-privacy-notice" className="sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle>Some of your chats are now marked private</DialogTitle>
-        </DialogHeader>
+    <ModalShell
+      open={open}
+      onOpenChange={(next) => !next && onDismiss()}
+      size="md"
+      purpose="info"
+      scrollBody
+      title="Some of your chats are now marked private"
+      // The count sentence (or its counting and could-not-count stand-ins: only one renders at a
+      // time) is the dialog's description, exactly as it was when these were Radix descriptions.
+      describedBy={SUMMARY_ID}
+      footer={
+        <Button type="button" onClick={onDismiss} data-testid="notice-acknowledge">
+          Got it
+        </Button>
+      }
+    >
+      <div
+        data-testid="first-run-privacy-notice"
+        className="space-y-4 py-3 text-body text-text-default"
+      >
+        {failed && (
+          <DialogDescription
+            id={SUMMARY_ID}
+            data-testid="notice-count-error"
+            className="text-body text-text-default"
+          >
+            Biorouter could not read your chat list, so the numbers below are unavailable. Your
+            chats are unchanged by this message.
+          </DialogDescription>
+        )}
 
-        <div className="space-y-4 text-sm text-text-default">
-          {failed && (
+        {!failed && !resolved && (
+          <DialogDescription
+            id={SUMMARY_ID}
+            data-testid="notice-counting"
+            className="text-body text-text-default"
+          >
+            Counting your chats…
+          </DialogDescription>
+        )}
+
+        {!failed && resolved && (
+          <>
             <DialogDescription
-              data-testid="notice-count-error"
-              className="text-sm text-text-default"
+              id={SUMMARY_ID}
+              data-testid="notice-headline"
+              className="text-body text-text-default"
             >
-              Biorouter could not read your chat list, so the numbers below are unavailable. Your
-              chats are unchanged by this message.
+              <strong>{resolved.privateVisible}</strong> of your{' '}
+              <strong>{resolved.totalVisible}</strong> chats are now marked private, because that is
+              the model each of them was last using.
             </DialogDescription>
-          )}
 
-          {!failed && !resolved && (
-            <DialogDescription data-testid="notice-counting" className="text-sm text-text-default">
-              Counting your chats…
-            </DialogDescription>
-          )}
+            {resolved.privateByProvider.length > 0 && (
+              <div>
+                <p className="text-text-muted">Marked private by model:</p>
+                <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
+                  {resolved.privateByProvider.map(({ provider, count }) => (
+                    <li key={provider} data-provider={provider}>
+                      {providerLabel(provider)}: {count}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
-          {!failed && resolved && (
-            <>
-              <DialogDescription
-                data-testid="notice-headline"
-                className="text-sm text-text-default"
-              >
-                <strong>{resolved.privateVisible}</strong> of your{' '}
-                <strong>{resolved.totalVisible}</strong> chats are now marked private, because that
-                is the model each of them was last using.
-              </DialogDescription>
+            {resolved.unknownProviderVisible > 0 && (
+              <p data-testid="notice-unknown">
+                <strong>{resolved.unknownProviderVisible}</strong> chats record no model at all.
+                Biorouter cannot tell what those ran on, so they are left public.
+              </p>
+            )}
+          </>
+        )}
 
-              {resolved.privateByProvider.length > 0 && (
-                <div>
-                  <p className="text-text-muted">Marked private by model:</p>
-                  <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
-                    {resolved.privateByProvider.map(({ provider, count }) => (
-                      <li key={provider} data-provider={provider}>
-                        {providerLabel(provider)}: {count}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+        <p data-testid="notice-last-model-caveat">
+          Chats from before this version are marked by the model they were last using. If an older
+          chat contains work you want kept private, switch it to a private model. It will be marked
+          private from its next turn on.
+        </p>
 
-              {resolved.unknownProviderVisible > 0 && (
-                <p data-testid="notice-unknown">
-                  <strong>{resolved.unknownProviderVisible}</strong> chats record no model at all.
-                  Biorouter cannot tell what those ran on, so they are left public.
-                </p>
-              )}
-            </>
-          )}
+        <p data-testid="notice-knowledge-bases" className="text-text-muted">
+          Knowledge bases that already existed start public, whatever fed them. If one holds private
+          material you can mark it private yourself from the Knowledge view.
+        </p>
 
-          <p data-testid="notice-last-model-caveat">
-            Chats from before this version are marked by the model they were last using. If an older
-            chat contains work you want kept private, switch it to a private model. It will be
-            marked private from its next turn on.
+        {/*
+          §13.5's day-one extension disclosure. Rendered only when there is
+          something to name — a paragraph that says "no extensions are
+          affected" is noise on every machine that reads it.
+        */}
+        {publicClinicalExtensions.length > 0 && (
+          <p data-testid="notice-public-clinical-extensions" className="text-text-muted">
+            {publicClinicalExtensions.length === 1
+              ? 'One extension you have enabled is set up for clinical data and is not marked private: '
+              : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
+            <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including commercial
+            models hosted outside your institution, can still call{' '}
+            {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
+            {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
+            you know.
           </p>
-
-          <p data-testid="notice-knowledge-bases" className="text-text-muted">
-            Knowledge bases that already existed start public, whatever fed them. If one holds
-            private material you can mark it private yourself from the Knowledge view.
-          </p>
-
-          {/*
-            §13.5's day-one extension disclosure. Rendered only when there is
-            something to name — a paragraph that says "no extensions are
-            affected" is noise on every machine that reads it.
-          */}
-          {publicClinicalExtensions.length > 0 && (
-            <p data-testid="notice-public-clinical-extensions" className="text-text-muted">
-              {publicClinicalExtensions.length === 1
-                ? 'One extension you have enabled is set up for clinical data and is not marked private: '
-                : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
-              <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
-              commercial models hosted outside your institution, can still call{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
-              you know.
-            </p>
-          )}
-        </div>
-
-        <div className="flex justify-end">
-          <Button type="button" onClick={onDismiss} data-testid="notice-acknowledge">
-            Got it
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        )}
+      </div>
+    </ModalShell>
   );
 }

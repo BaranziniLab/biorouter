@@ -270,3 +270,78 @@ describe('FirstRunPrivacyNotice', () => {
     expect(screen.queryByTestId('notice-public-clinical-extensions')).toBeNull();
   });
 });
+
+/**
+ * R-34, first run round 1 (FR-R1-14). On an upgraded install the notice is the first screen, and it
+ * was the one raw `DialogContent` on the path (560px, centred, no header rule, `text-sm`) while every
+ * other first-run dialog was the shared shell. jsdom lays nothing out, so this pins only the anatomy
+ * the shell sets; `firstRunPrivacyNotice.browser.test.tsx` measures where it sits.
+ */
+describe('FirstRunPrivacyNotice is the shared dialog', () => {
+  const counts = computeNoticeCounts(FIXTURE);
+  const surface = () => document.querySelector('[data-slot="dialog-content"]') as HTMLElement;
+
+  it('is a ModalShell at size md, pinned to the top, with the header rule', () => {
+    render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={counts} />);
+    expect(surface().getAttribute('data-size')).toBe('md');
+    expect(surface().getAttribute('data-anchor')).toBe('top');
+    expect(surface().className).toContain('sm:max-w-[480px]');
+    expect(surface().className).not.toContain('sm:max-w-[560px]');
+    const header = surface().firstElementChild as HTMLElement;
+    expect(header.className).toContain('border-b');
+    expect(within(header).getByRole('heading').textContent).toBe(
+      'Some of your chats are now marked private'
+    );
+  });
+
+  it('sets its prose in the body role, not the legacy text-sm', () => {
+    render(
+      <FirstRunPrivacyNotice
+        open
+        onDismiss={vi.fn()}
+        counts={counts}
+        publicClinicalExtensions={['medcp']}
+      />
+    );
+    expect(surface().querySelector('.text-sm, .text-xs, .text-base')).toBeNull();
+    const body = screen.getByTestId('first-run-privacy-notice');
+    expect(body.className).toContain('text-body');
+    expect(screen.getByTestId('notice-headline').className).toContain('text-body');
+  });
+
+  it('keeps the count sentence as the dialog description', async () => {
+    render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={counts} />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.getAttribute('aria-describedby')).toBe(screen.getByTestId('notice-headline').id);
+    expect(dialog).toHaveAccessibleDescription(
+      screen.getByTestId('notice-headline').textContent ?? ''
+    );
+  });
+
+  it('describes the dialog by the counting and the could-not-count lines too', async () => {
+    let release: (value: unknown) => void = () => {};
+    mocks.listSessions.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.getAttribute('aria-describedby')).toBe(screen.getByTestId('notice-counting').id);
+    release(served(FIXTURE));
+    await screen.findByTestId('notice-headline');
+    expect(dialog.getAttribute('aria-describedby')).toBe(screen.getByTestId('notice-headline').id);
+  });
+
+  it('puts the acknowledgement in the footer, and the shell offers the one close control', () => {
+    render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={counts} />);
+    const footer = screen.getByTestId('notice-acknowledge').parentElement as HTMLElement;
+    expect(footer.className).toContain('justify-end');
+    expect(surface().contains(footer)).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Close' })).toHaveLength(1);
+  });
+
+  it('is dismissed by Escape, as it was', async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(<FirstRunPrivacyNotice open onDismiss={onDismiss} counts={counts} />);
+    await user.keyboard('{Escape}');
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+});
