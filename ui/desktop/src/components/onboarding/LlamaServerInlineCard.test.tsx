@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import LlamaServerInlineCard from './LlamaServerInlineCard';
+import { llamaCopy } from './copy';
+import { localModelsCopy } from '../settings/models/copy';
 import {
   llamaServerStore,
   resetLlamaServerStoreForTests,
@@ -168,7 +170,7 @@ describe('LlamaServerInlineCard', () => {
         'Gemma 4 12B · 7.6 GB · Needs download'
       );
       expect(screen.getByTestId('llamacpp-size-speed')).toHaveTextContent(
-        '7.6 GB download · Fast — dense 12B, quick to load'
+        'Fast · 7.6 GB · 128k context'
       );
     });
 
@@ -194,7 +196,95 @@ describe('LlamaServerInlineCard', () => {
   it('shows download size and expected speed for the selected model (#35)', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const info = await screen.findByTestId('llamacpp-size-speed');
-    expect(info).toHaveTextContent('9.6 GB download · Fast — ~4B active parameters');
+    // The Settings row's one facts line: the speed word, the size, the context window.
+    expect(info).toHaveTextContent('Fast · 9.6 GB · 128k context');
+  });
+
+  // Vision FR-R1-3 / FR-S-2: the default first screen printed a box of seven lines (description,
+  // size and speed, download state, fallback spec, Ollama tag, store path in mono, the fit
+  // sentence) and a warning, and pushed the panel's only action below the fold.
+  describe('says one line and keeps the rest behind Details', () => {
+    it('shows the facts line and the action, with the ids and paths closed away', async () => {
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      await screen.findByTestId('llamacpp-size-speed');
+      expect(screen.getByRole('button', { name: llamaCopy.details })).toHaveAttribute(
+        'aria-expanded',
+        'false'
+      );
+      for (const machine of [
+        'gemma4:latest',
+        'google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0',
+        '/tmp/models',
+      ]) {
+        expect(screen.queryByText(machine, { exact: false })).toBeNull();
+      }
+      expect(screen.queryByText('Laptop default')).toBeNull();
+      expect(screen.getByTestId('llamacpp-start')).toHaveTextContent(
+        llamaCopy.downloadAndStart('9.6 GB')
+      );
+      // No status at rest: the row says the server is built in.
+      expect(screen.queryByText(/no install needed/)).toBeNull();
+    });
+
+    it('opens Details on the description, the fit and the machine values in mono', async () => {
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      const details = await screen.findByTestId('llamacpp-details');
+      expect(details).toHaveTextContent('Laptop default');
+      expect(details).toHaveTextContent('Recommended for this machine.');
+      const tag = screen.getByText('gemma4:latest');
+      expect(tag).toHaveClass('font-mono');
+      expect(screen.getByText('/tmp/models')).toHaveClass('font-mono');
+      // Labels are the sans face; the old "Store:" label was mono with its value.
+      expect(screen.getByText(localModelsCopy.detail.modelStore)).not.toHaveClass('font-mono');
+    });
+  });
+
+  // Vision FR-R1-4: a model above 16 GB opened with "This model is above the 16 GB laptop tier"
+  // even on the 128 GiB machine the app recommends it for.
+  describe('warns only when this machine is short of the model', () => {
+    const roomy = () =>
+      mockLlamacppStatus.mockResolvedValue({
+        data: {
+          ...statusResponse().data,
+          catalog: [
+            catalogEntry({
+              name: 'gemma4-12b',
+              display_name: 'Gemma 4 12B',
+              recommended_gpu_memory_gib: 32,
+              is_default: true,
+            }),
+          ],
+          system: { ...statusResponse().data.system, accelerator_memory_gib: 128 },
+        },
+      });
+
+    it('says nothing on a machine that meets the recommendation', async () => {
+      roomy();
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      const facts = await screen.findByTestId('llamacpp-size-speed');
+      expect(facts).not.toHaveTextContent(localModelsCopy.largeForThisMac);
+      expect(screen.queryByText(/laptop tier/)).toBeNull();
+      expect(screen.queryByRole('status')).toBeNull();
+    });
+
+    it('says "Large for this Mac" in the facts line when the daemon says it is', async () => {
+      mockLlamacppStatus.mockResolvedValue({
+        data: {
+          ...statusResponse().data,
+          catalog: [
+            catalogEntry({
+              recommended_gpu_memory_gib: 64,
+              suitability_status: 'above_recommendation',
+            }),
+          ],
+        },
+      });
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      expect(await screen.findByTestId('llamacpp-size-speed')).toHaveTextContent(
+        localModelsCopy.largeForThisMac
+      );
+    });
   });
 
   it('restores the live progress box when remounting during an in-flight download', async () => {

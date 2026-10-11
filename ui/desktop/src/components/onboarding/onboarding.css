@@ -52,3 +52,25 @@
   gap: 6px;
   white-space: nowrap;
 }
+
+/* Llama Server's Details (`LlamaServerInlineCard`): the model's one-sentence description, then
+   label and value rows on one grid, the Settings info dialog's two columns at the supporting size.
+   No box: the panel is not one, and a box never sits in a box. */
+.br-llama-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-llama-details-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  min-width: 0;
+  margin: 0;
+}
+
+.br-llama-details-list > dd {
+  margin: 0;
+}
