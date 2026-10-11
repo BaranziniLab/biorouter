@@ -178,5 +178,35 @@ describe('UserMessage edit actions', () => {
   it('shows no chip on an ordinary same-session message', () => {
     render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
     expect(document.querySelector('[data-provenance-kind]')).toBeNull();
+    // The actions float from the bubble's column, as usual.
+    const cluster = document.querySelector('[data-message-meta="end"]');
+    expect(cluster?.parentElement).toHaveClass('br-message-actions-anchor');
+  });
+
+  it("puts the actions on the chip's line, before the chip, so a hover never covers it", () => {
+    // Vision V2-12: the cluster floats at the bubble's top right, which is
+    // where a provenance chip sits ("Spawn context" heads every subagent chat).
+    // Floating over it hid the chip and its tooltip on every hover.
+    render(
+      <UserMessage
+        message={{
+          ...message,
+          id: 'message-4',
+          metadata: {
+            userVisible: true,
+            agentVisible: true,
+            provenance: { kind: 'spawn_context', fromSessionId: 's-parent' },
+          },
+        }}
+        onMessageUpdate={vi.fn()}
+      />
+    );
+    const chip = document.querySelector('[data-provenance-kind="spawn_context"]') as HTMLElement;
+    const cluster = document.querySelector('[data-message-meta="end"]')!;
+    expect(cluster.parentElement).toHaveClass('br-message-actions-chip');
+    expect(cluster.parentElement).toContainElement(chip);
+    expect(cluster.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // One cluster, not two.
+    expect(document.querySelectorAll('[data-message-meta]')).toHaveLength(1);
   });
 });

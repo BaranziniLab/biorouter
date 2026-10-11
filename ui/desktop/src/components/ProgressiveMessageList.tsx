@@ -317,11 +317,8 @@ export default function ProgressiveMessageList({
 
         const key = rowKey(message, index);
         const live = liveRows.has(key);
-        const rowClassName = cn(
-          'relative',
-          ROW_GAP_CLASS[gaps[index] ?? 'block'],
-          live && 'br-enter'
-        );
+        const gap = gaps[index] ?? 'block';
+        const rowClassName = cn('relative', ROW_GAP_CLASS[gap], live && 'br-enter');
         // A row that is not live also holds its tool rows still: a tool row
         // rises 4px when it is appended to a live answer, and mounts at rest
         // from history, a tab switch or a reload (principle 9; WS-TOOLS reads
@@ -335,6 +332,7 @@ export default function ProgressiveMessageList({
               key={key}
               className={rowClassName}
               data-role="assistant"
+              data-gap={gap}
               data-motion-still={motionStill}
               data-testid="message-container"
             >
@@ -350,6 +348,9 @@ export default function ProgressiveMessageList({
             key={key}
             className={rowClassName}
             data-role={isUser ? 'user' : 'assistant'}
+            // The gap above the row, for the floating actions' rise
+            // (`message-meta.css`): a bubble 8px under another rises less.
+            data-gap={gap}
             data-motion-still={motionStill}
             data-testid="message-container"
           >

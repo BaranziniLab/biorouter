@@ -35,13 +35,21 @@ describe('MessageActions (the floating cluster)', () => {
     // jsdom applies no stylesheet, so the rule is read where the browser reads it.
     const rule = /\.br-message-actions \{([^}]*)\}/.exec(css)?.[1] ?? '';
     expect(rule).toContain('position: absolute;');
-    // Above an answer it rises 8px, the smallest gap an answer has, so it never
-    // lands on the block above; above the user bubble it rises 20px and ends in
-    // the bubble's top padding, clear of the words (vision V2-12).
-    expect(rule).toContain('top: -8px;');
+    // It rises 26px, so its 28px reach ends 2px into the message, above an
+    // answer's glyphs and inside the bubble's top padding: never on the words
+    // of the message it acts on (vision V2-12, re-reported in round 2 when it
+    // rose 8px over an answer's first line).
+    expect(rule).toContain('top: -26px;');
+    // A bubble 8px under another rises 18px: paddings and gap only.
     expect(
-      /\.br-message-actions-anchor > \.br-message-actions \{([^}]*)\}/.exec(css)?.[1]
-    ).toContain('top: -20px;');
+      /\[data-gap='block'\]\[data-role='user'\] \.br-message-actions-anchor > \.br-message-actions \{([^}]*)\}/.exec(
+        css
+      )?.[1]
+    ).toContain('top: -18px;');
+    // Beside a provenance chip it sits on the chip's line, to its left.
+    expect(/\.br-message-actions-chip > \.br-message-actions \{([^}]*)\}/.exec(css)?.[1]).toMatch(
+      /right: calc\(100% \+ 8px\);/
+    );
     expect(rule).toContain('opacity: 0;');
     expect(rule).toContain('box-shadow: var(--shadow-popover), var(--inset-hairline);');
     expect(rule).toContain('transition: opacity var(--dur-fast-min) var(--ease-out);');

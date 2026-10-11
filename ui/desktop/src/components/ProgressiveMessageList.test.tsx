@@ -310,6 +310,18 @@ describe('ProgressiveMessageList rhythm (spec 3.6)', () => {
     const gaps = rows(container).map((row) => row.className.match(/\bmt-\d\b/)?.[0]);
     // question, tool, (result), tool, (result), answer, follow-up
     expect(gaps).toEqual(['mt-0', 'mt-6', 'mt-0', 'mt-1', 'mt-0', 'mt-2', 'mt-6']);
+    // The row names its gap for the floating actions' rise (message-meta.css).
+    expect(rows(container).map((row) => row.dataset.gap)).toEqual([
+      'first',
+      'turn',
+      'none',
+      'tool',
+      'none',
+      'block',
+      'turn',
+    ]);
+    // The first row leaves room above it for the 26px rise.
+    expect(rows(container)[0]).toHaveClass('pt-7');
   });
 
   // Vision V2-03: the stream stores an empty text message before each of the

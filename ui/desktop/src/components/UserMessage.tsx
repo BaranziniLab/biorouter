@@ -303,6 +303,31 @@ export default function UserMessage({
         }
       : null;
 
+  // The message's floating actions. They float over the bubble's top right,
+  // or, when a provenance chip sits there, on the chip's line to its left
+  // (`message-meta.css`), so they never cover the chip.
+  const actions = (
+    <MessageActions
+      align="end"
+      timestamp={hasBeenEdited ? transcriptCopy.message.edited(timestamp) : timestamp}
+    >
+      <TranscriptIconButton
+        ref={editButtonRef}
+        onClick={handleEditClick}
+        label={transcriptCopy.message.editNamed(displayText)}
+        tip={transcriptCopy.message.edit}
+        aria-expanded={isEditing}
+        icon={<Pencil aria-hidden="true" />}
+      />
+      {/* Copy takes the whole thing, collapsed or not: the clamp is a view
+          state, never a content state. Both payloads are already safe: the
+          plain-text one is `displayText` itself, and the HTML one is cloned
+          from `contentRef`, the text div INSIDE the clipped bubble, which holds
+          every line whatever the cap above it says. */}
+      <MessageCopyLink text={displayText} contentRef={contentRef} />
+    </MessageActions>
+  );
+
   return (
     // The whole row is the actions' scope: hovering or focusing anything in it
     // shows the floating cluster over the bubble's top right. The row's own
@@ -317,7 +342,10 @@ export default function UserMessage({
             so the wrapper is only mounted when there is something to say. */}
         {provenance && (
           <div className="flex justify-end mb-1">
-            <ProvenanceChip provenance={provenance} />
+            <div className="br-message-actions-chip flex min-w-0 max-w-full items-center gap-2">
+              {!isEditing && actions}
+              <ProvenanceChip provenance={provenance} />
+            </div>
           </div>
         )}
         {isEditing ? (
@@ -405,26 +433,7 @@ export default function UserMessage({
                 cluster's right edge is the bubble's (the layout e2e measures
                 exactly that, against `data-message-meta`). */}
             <div className="br-message-actions-anchor flex flex-col max-w-[85%] w-fit min-w-0">
-              <MessageActions
-                align="end"
-                timestamp={hasBeenEdited ? transcriptCopy.message.edited(timestamp) : timestamp}
-              >
-                <TranscriptIconButton
-                  ref={editButtonRef}
-                  onClick={handleEditClick}
-                  label={transcriptCopy.message.editNamed(displayText)}
-                  tip={transcriptCopy.message.edit}
-                  aria-expanded={isEditing}
-                  icon={<Pencil aria-hidden="true" />}
-                />
-                {/* Copy takes the whole thing, collapsed or not: the clamp is
-                    a view state, never a content state. Both payloads are
-                    already safe: the plain-text one is `displayText` itself,
-                    and the HTML one is cloned from `contentRef`, the text div
-                    INSIDE the clipped bubble, which holds every line whatever
-                    the cap above it says. */}
-                <MessageCopyLink text={displayText} contentRef={contentRef} />
-              </MessageActions>
+              {!provenance && actions}
               <div className="flex flex-col min-w-0">
                 {/* The user's turn is tinted only so the eye can find the boundary
                     when scrolling. It is NOT an accent surface — a solid coral block
