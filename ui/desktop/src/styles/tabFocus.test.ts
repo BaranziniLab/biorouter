@@ -95,12 +95,14 @@ function exemptions(): string[] {
  * first two-space `}`. It is UNLAYERED and sits at the end of main.css (live QA
  * 2026-09-24, P0-5 — inside `@layer base` it lost to every unlayered
  * `outline: none`); `focusFallback.test.ts` asserts where it lives and how it
- * wins. The tests here only ask what it still REACHES.
+ * wins. The tests here only ask what it still REACHES. The LAST block with that
+ * head is the one: a primitive may adjust its own ring under the same query
+ * earlier in the file (the InfoTip's, V4-R3-1).
  */
 function osRingBlock(): string {
   const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
   const head = '@media (prefers-contrast: more), (forced-colors: active) {';
-  const start = stripped.indexOf(head);
+  const start = stripped.lastIndexOf(head);
   expect(start, 'the prefers-contrast block is unrecognisable').toBeGreaterThan(-1);
   let depth = 1;
   let i = start + head.length;

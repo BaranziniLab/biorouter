@@ -5075,6 +5075,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* InfoTip trigger: a 14px glyph in a 24×24 hit box drawn with a −5px margin, so it adds 14px
    to the line; the start margin is −1px so the glyph lands 4px after the label. */
 .br-info-tip {
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -5102,17 +5104,50 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   flex: none;
 }
 
+/* The focus mark's box: 20px, 2px inside the hit box on every side (vision V4-R3-1). The hit box
+   starts 1px before the label's end (the −1px start margin above), so an edge drawn on the hit
+   box itself lay over the label's last letter ("running", "DEFAULT MODEL"). On this box the edge
+   starts 1px after the label's advance and stays 1.7px clear of the glyph's circle, and the hit
+   box, the glyph's place and the 14px the tip adds to the line are unchanged. */
+.br-info-tip::before {
+  content: '';
+  position: absolute;
+  /* Under the glyph and under the OS ring's outline below; the button's `isolation` keeps it
+     above whatever the button sits on. */
+  z-index: -1;
+  inset: 2px;
+  border-radius: var(--radius-inner);
+  pointer-events: none;
+}
+
 .br-info-tip:hover,
 .br-info-tip[data-state='open'] {
   color: var(--text-default);
 }
 
-/* D-15: focus is a surface shift plus an inset edge, never a ring. */
+/* D-15: focus is a surface shift plus an inset edge, never a ring. Both are drawn on the 20px
+   mark, and the button itself paints neither (the base `[tabindex]`/button rule would put them on
+   the hit box). */
 .br-info-tip:focus-visible {
   outline: none;
   color: var(--text-default);
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.br-info-tip:focus-visible::before {
   background-color: var(--background-focus);
   box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The OS-requested ring (the block at the end of this file) is a 2px outline 2px OUTSIDE the hit
+   box, which covered the label's last two letters. Here it is drawn 2 to 4px inside the hit box,
+   on the same 20px edge as the quiet mark. `button.` outranks that block's selector, which ties
+   with `.br-info-tip:focus-visible` and comes later. */
+@media (prefers-contrast: more), (forced-colors: active) {
+  button.br-info-tip:focus-visible {
+    outline-offset: -4px !important;
+  }
 }
 
 /* The `asChild` form (a badge as the trigger): Crew's ClassificationBadge ring, an outline
@@ -5537,6 +5572,26 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
      reach 6px into the row's 10px block padding, so every one-line row is 40px (spec 3.13,
      WS-SETTINGS-A-1). The hit box is unchanged; only the row stops growing around it. */
   margin-block: -6px;
+}
+
+/* A SettingRow's value and control sit on the LABEL'S line, not on the row's middle (vision
+   V4-R3-5, principle 9). A status line ("Restart to apply", "Checking for updates…") grows the row
+   by one line; centred on the grown row, the switch the person had just clicked slid 8px down
+   under the pointer. Anchored to the first line, nothing in the row moves and only the space
+   below grows. A one-line row draws exactly what it drew: the control's box is the label line
+   plus the 6px it may reach into the padding on each side, its control centred in it, which is
+   the row's centre; a value's line is centred on the label's. Scoped to the component
+   (`data-slot`), so a hand-built row with a permanent second line keeps its centred control. */
+.br-setting-row[data-slot='setting-row'] > .br-setting-row-control {
+  align-self: flex-start;
+  min-block-size: calc(var(--text-label--line-height) + 12px);
+}
+
+.br-setting-row[data-slot='setting-row'] > .br-setting-row-value {
+  align-self: flex-start;
+  margin-block-start: calc(
+    (var(--text-label--line-height) - var(--text-secondary--line-height)) / 2
+  );
 }
 
 .br-setting-section-header {
