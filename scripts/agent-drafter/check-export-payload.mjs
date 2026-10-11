@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -126,9 +126,8 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const port = server.address().port;
-const root = realpathSync(
-  mkdtempSync(join(tmpdir(), "biorouter-export-payload-")),
-);
+const aliasRoot = mkdtempSync(join(tmpdir(), "biorouter-export-payload-"));
+const root = realpathSync.native(aliasRoot);
 const backends =
   process.platform === "win32" ? ["node", "ps"] : ["bash", "node"];
 if (process.env.BIOROUTER_TEST_POWERSHELL && !backends.includes("ps"))
@@ -264,7 +263,7 @@ function prepare(name) {
     state: join(
       profile,
       "config/app-launcher/payload/demo",
-      digest(Buffer.from(realpathSync(folder))),
+      digest(Buffer.from(realpathSync.native(folder))),
     ),
   };
 }
@@ -364,6 +363,31 @@ try {
     const count = calls.length;
     await execute(backend, folder, profile);
     assert.equal(calls.length, count, `${backend} replay does not import`);
+    if (
+      aliasRoot !== root &&
+      (backend !== "ps" || process.platform === "win32")
+    ) {
+      const aliasFolder = join(aliasRoot, relative(root, folder));
+      const aliasProfile = join(aliasRoot, relative(root, profile));
+      await execute(backend, aliasFolder, aliasProfile);
+      assert.equal(
+        calls.length,
+        count,
+        `${backend} an alternate spelling of the same source folder reuses knowledge receipts`,
+      );
+      console.log(`${backend}: source-folder alias reuses payload receipts`);
+      if (backend === "ps" && process.platform === "win32") {
+        await execute("node", aliasFolder, aliasProfile);
+        assert.equal(
+          calls.length,
+          count,
+          "Node reuses PowerShell knowledge receipts through the Windows short path alias",
+        );
+        console.log(
+          "Windows PowerShell and Node share payload receipts through the short path alias",
+        );
+      }
+    }
     // An installation that recopies the export's manifest must recover recipient IDs.
     write(store, sourceBefore);
     await execute(backend, folder, profile);

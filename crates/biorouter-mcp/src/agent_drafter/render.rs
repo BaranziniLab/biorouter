@@ -2637,7 +2637,7 @@ import { createInterface } from "node:readline/promises";
 
 const APP_ID = __APP_ID_JSON__;
 const PORT = Number(process.env.PORT || __DEFAULT_PORT__);
-const ROOT = realpathSync(dirname(fileURLToPath(import.meta.url)));
+const ROOT = realpathSync.native(dirname(fileURLToPath(import.meta.url)));
 const SOURCE_DIGEST = createHash("sha256").update(ROOT).digest("hex");
 const RUNTIME_EXCLUDED = new Set(__RUNTIME_EXCLUDED__);
 const runtimeName = (name) => !name.startsWith(".") && !RUNTIME_EXCLUDED.has(name);
