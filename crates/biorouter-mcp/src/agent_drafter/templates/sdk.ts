@@ -498,6 +498,13 @@ declare global {
   }
 }
 
+/**
+ * Where this page frames an Auto Visualiser figure: `/apps/<id>/figure-frame`
+ * on the page's own origin, served by the daemon under a policy of its own.
+ * Set when the client is created; `renderFigure` reads it.
+ */
+let figureFramePath = "";
+
 /** Stable per-app client id (persisted) so sessions resume across reloads. */
 function getClientId(appId: string): string {
   const key = "br.client." + appId;
@@ -811,6 +818,7 @@ export class BioRouterClient {
 
   constructor(config: AppConfig) {
     this.config = config;
+    figureFramePath = "/apps/" + encodeURIComponent(config.appId) + "/figure-frame";
     this.ui = new UiRuntime(this);
   }
 
@@ -1239,7 +1247,10 @@ export class BioRouterClient {
   async listModels(): Promise<unknown[]> {
     try {
       await this.connect();
-      const res = await fetch(`${this.httpBase()}/models`);
+      // The daemon wants the page's token here as on the socket: the cookie
+      // alone would admit any other app's page on this origin.
+      const token = this.config.wsToken ? `?token=${encodeURIComponent(this.config.wsToken)}` : "";
+      const res = await fetch(`${this.httpBase()}/models${token}`);
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data.providers) ? data.providers : [];
@@ -3895,23 +3906,62 @@ function appendLogLines(box: HTMLElement, node: LogNode, add: LogLine[]): void {
   }
 }
 
+/**
+ * An Auto Visualiser figure, in a frame of its own.
+ *
+ * ⚠ Not `srcdoc`. A `srcdoc` document inherits the policy of the page that
+ * holds it, and an app page allows no inline script (`script-src 'self'`), so
+ * every figure, which is all inline script, drew nothing, its own error card
+ * included. The frame loads the daemon's figure shell (`figure-frame`), which is
+ * served under a policy of its own; the shell says it is ready, is sent the
+ * figure, and replaces itself with it, keeping its policy. Sandboxed to scripts
+ * only, so the figure has an opaque origin: none of the app's cookies, storage
+ * or pages are reachable from it.
+ */
 function renderFigure(node: FigureNode): HTMLElement {
   const wrap = wEl("div", "br-figure");
+  if (!figureFramePath) {
+    // No client on this page, so no daemon to frame the figure from.
+    wrap.textContent = "This figure can only be shown in a running app.";
+    return wrap;
+  }
+  const html = String(node.html || "");
   const frame = document.createElement("iframe");
   frame.className = "br-figure__frame";
-  // Self-contained autovis document: sandbox to scripts only, no same-origin.
   frame.setAttribute("sandbox", "allow-scripts");
-  frame.setAttribute("srcdoc", String(node.html || ""));
+  frame.setAttribute("referrerpolicy", "no-referrer");
+  frame.setAttribute("title", node.tool ? "Figure: " + String(node.tool) : "Figure");
   frame.style.width = "100%";
   frame.style.minHeight = "360px";
   frame.style.border = "0";
   wrap.appendChild(frame);
-  // Grow to fit the autovis `ui-size-change` postMessage convention (capped).
+  let sent = false;
   const onMsg = (ev: MessageEvent) => {
-    if (!ev || (frame.contentWindow && ev.source !== frame.contentWindow)) return;
+    if (sent && !frame.isConnected) {
+      window.removeEventListener("message", onMsg);
+      return;
+    }
+    const win = frame.contentWindow;
+    if (!ev || !win || ev.source !== win) return;
     const data = ev.data;
-    if (data && data.type === "ui-size-change") {
-      const h = Number(data.height);
+    if (!data) return;
+    if (data.type === "biorouter-figure-ready") {
+      // The shell has an opaque origin, so "*" is the only target that reaches
+      // it; the figure goes to the document that just said it was ready.
+      // ⚠ Every time it says so, not once: moving a frame in the DOM reloads it
+      // (`ui_layout` moving a panel does), and the fresh shell stays empty until
+      // it is sent the figure again. A shell takes one figure per load, and the
+      // figure is the only thing sent, so answering again gives away nothing.
+      sent = true;
+      win.postMessage({ type: "biorouter-figure", html: html }, "*");
+    } else if (data.type === "ui-size-change") {
+      // Grow to fit the autovis `ui-size-change` convention (capped). ⚠ The
+      // figure sends `{ payload: { height } }` (`reportSize` in the autovis
+      // `_common.js`); a bare `height` is read too. Reading only `height`, as
+      // this did, left every figure clipped at the frame's minimum height.
+      const h = Number(
+        data.payload && data.payload.height !== undefined ? data.payload.height : data.height
+      );
       if (isFinite(h) && h > 0) {
         frame.style.height = Math.max(120, Math.min(1200, h)) + "px";
       }
@@ -3922,6 +3972,7 @@ function renderFigure(node: FigureNode): HTMLElement {
   } catch {
     /* no window (non-browser) */
   }
+  frame.setAttribute("src", figureFramePath);
   return wrap;
 }
 

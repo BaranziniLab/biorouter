@@ -346,6 +346,15 @@ const REGISTRY: &[Guard] = &[
             // handler which imported the module and never called the gate would
             // read as refs-only and stand out.
             Site {
+                file: "crates/biorouter-server/src/routes/apps.rs",
+                counts: c(0, 3, 0),
+                kind: SiteKind::Unrelated,
+                what: "the MODULE qualifier on `session_reach::HttpCaller` (twice) and \
+                       `http_caller`, for `POST /apps/{id}/export`: a full export asks \
+                       `reach_knowledge_base` of each base it would carry, and names no chat, so \
+                       it never calls this function",
+            },
+            Site {
                 file: "crates/biorouter-server/src/routes/active_work.rs",
                 counts: c(0, 3, 0),
                 kind: SiteKind::Unrelated,
@@ -615,6 +624,14 @@ const REGISTRY: &[Guard] = &[
                   operator's tier for a request carrying the served document's cookie",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/apps.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /apps/{id}/export`, whose full export carries knowledge bases out \
+                       of the machine — resolved once for the whole export, then asked of each \
+                       base",
+            },
             Site {
                 file: "crates/biorouter-server/src/routes/active_work.rs",
                 counts: c(1, 0, 0),
@@ -922,6 +939,14 @@ const REGISTRY: &[Guard] = &[
                   answered as a private one",
         status: Status::Wired,
         sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/apps.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /apps/{id}/export`: each knowledge base a full export would carry, \
+                       the decision `GET /knowledge/bases/{id}/export` gets — a base out of the \
+                       caller's reach is left out of the zip and named in its report",
+            },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
                 counts: c(4, 0, 0),

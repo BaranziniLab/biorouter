@@ -9,6 +9,7 @@ import {
   X,
 } from '../icons/app-icons';
 import { cn } from '../../utils';
+import { previewOpenTarget } from '../../utils/openInBrowser';
 
 export type EmbeddedBrowserState = {
   url: string;
@@ -319,7 +320,8 @@ export default function WebPagePreview({
         />
         <ToolbarButton
           label="Open in browser"
-          onClick={() => onOpenExternal(state?.url || url)}
+          // Not `state.url` as it stands: the page sets it (`previewOpenTarget`).
+          onClick={() => onOpenExternal(previewOpenTarget(url, state))}
           icon={<ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />}
         />
       </div>

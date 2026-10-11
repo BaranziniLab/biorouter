@@ -1,4 +1,5 @@
 import { client } from '../../api/client.gen';
+import type { AppExportResult } from '../../utils/appExportRequest';
 
 /**
  * The declared app contract (Apps SDK v2, Pillar 1) as serialized by the
@@ -43,44 +44,124 @@ export interface AppManifest {
   surface?: AppSurfaceDecl | null;
   /** Theme selection; absent when the app uses the default look. */
   theme?: AppThemeConfig | null;
-}
-
-/** What an export should carry. Mirrors `export_app`'s v2 params. */
-export type ExportMode = 'launcher' | 'full';
-
-/** Server-side payload items a full export bundles (design §3.9). */
-export interface ExportInclude {
-  knowledge_bases?: string[];
-  skills?: string[];
-  extensions?: string[];
-}
-
-export interface ExportOptions {
-  mode: ExportMode;
-  /** Bundle the platform-matching daemon binary (`bundle_daemon=current`). */
-  bundleDaemon: boolean;
-  include: ExportInclude;
+  /**
+   * Set only on a row the daemon could not read a manifest for: it lists such an
+   * app as `{ id, title: id, kind: 'static', broken: '<why>' }` so it can still
+   * be seen and deleted. Nothing else on the row is real. Older daemons leave the
+   * app out of the list instead, and never send this. Test it with
+   * `typeof app.broken === 'string'`: the reason may be empty, and null is not set.
+   */
+  broken?: string | null;
 }
 
 /**
- * Build the `GET /apps/{id}/export` URL with the v2 query params. Servers that
- * predate the params ignore unknown query strings and return the same scaffold
- * map, so this degrades gracefully to today's launcher export.
+ * Extensions that ship inside Biorouter itself, so an export never lists them: the recipient's
+ * daemon already has them. Mirrors `BUILTIN_EXTENSION_NAMES` in
+ * `crates/biorouter-mcp/src/agent_drafter/mod.rs`; a Rust test reads this file and fails when
+ * the two lists disagree. The daemon filters them out of an export either way, so a drift here
+ * only shows a row that carries nothing.
  */
-export function buildExportUrl(baseUrl: string, appId: string, options: ExportOptions): string {
-  const params = new URLSearchParams();
-  params.set('mode', options.mode);
-  params.set('bundle_daemon', options.bundleDaemon ? 'current' : 'none');
-  if (options.mode === 'full') {
-    const include: ExportInclude = {};
-    if (options.include.knowledge_bases?.length) {
-      include.knowledge_bases = options.include.knowledge_bases;
-    }
-    if (options.include.skills?.length) include.skills = options.include.skills;
-    if (options.include.extensions?.length) include.extensions = options.include.extensions;
-    if (Object.keys(include).length > 0) params.set('include', JSON.stringify(include));
+export const BUILTIN_EXTENSIONS: readonly string[] = [
+  'developer',
+  'computercontroller',
+  'webdocuments',
+  'autovisualiser',
+  'memory',
+  'agent_drafter',
+  'knowledge',
+];
+
+/**
+ * Skills that ship with Biorouter, so an export never carries them: every install seeds its own
+ * copy, and one installed over it under the seeded name could no longer be removed. Mirrors
+ * `SHIPPED_SKILL_NAMES` in `crates/biorouter-mcp/src/agent_drafter/render.rs`, which a Rust test
+ * holds to this file and to the seeder's own list. The daemon leaves them out either way.
+ */
+export const SHIPPED_SKILLS: readonly string[] = [
+  'office-word',
+  'office-powerpoint',
+  'office-excel',
+  'office-pdf',
+  'about-biorouter',
+  'develop-biorouter',
+  'develop-biorouter-extension',
+  'develop-biorouter-skill',
+  'knowledge-choose-a-format',
+  'knowledge-ingest-okf',
+  'knowledge-ingest-biookf',
+  'knowledge-lint',
+  'update-soul',
+];
+
+/** The parts of an app's agent config an export reads; `GET /apps` serves the whole manifest. */
+interface ExportReferences {
+  knowledge_base?: string | null;
+  skills?: string[];
+  extensions?: string[];
+  capabilities?: {
+    data?: { sources?: { kind?: string; ids?: string[] }[] } | null;
+    memory?: { kb?: string | null; shared_kb?: string | null } | null;
+  } | null;
+}
+
+const references = (app: AppManifest): ExportReferences =>
+  (app.agent ?? {}) as unknown as ExportReferences;
+
+/**
+ * Every knowledge base the app reaches, sorted: its agent's, each `knowledge` data source's,
+ * and its memory and shared-memory bases. Exactly what a full export carries when it is not told
+ * otherwise (`export::referenced_knowledge_bases`). The dialog used to list the agent's one base
+ * only, so the others travelled without ever being shown.
+ */
+export function referencedKnowledgeBases(app: AppManifest): string[] {
+  const agent = references(app);
+  const ids = new Set<string>();
+  const add = (id: unknown) => {
+    if (typeof id === 'string' && id.trim()) ids.add(id);
+  };
+  add(agent.knowledge_base);
+  for (const source of agent.capabilities?.data?.sources ?? []) {
+    if (source?.kind === 'knowledge') (source.ids ?? []).forEach(add);
   }
-  return `${baseUrl}/apps/${encodeURIComponent(appId)}/export?${params.toString()}`;
+  add(agent.capabilities?.memory?.kb);
+  add(agent.capabilities?.memory?.shared_kb);
+  return [...ids].sort();
+}
+
+/** The app's skills that do not ship with Biorouter, de-duplicated, in manifest order. */
+export function referencedSkills(app: AppManifest): string[] {
+  return [
+    ...new Set(
+      (references(app).skills ?? []).filter(
+        (name) => typeof name === 'string' && !SHIPPED_SKILLS.includes(name)
+      )
+    ),
+  ];
+}
+
+/** The app's extensions that do not ship with Biorouter, in manifest order. */
+export function exportableExtensions(app: AppManifest): string[] {
+  return [
+    ...new Set(
+      (references(app).extensions ?? []).filter(
+        (name) => typeof name === 'string' && !BUILTIN_EXTENSIONS.includes(name)
+      )
+    ),
+  ];
+}
+
+/** The toast after an export landed: where, and what it carries. */
+export function exportedMessage(result: Extract<AppExportResult, { status: 'exported' }>): string {
+  const { summary } = result;
+  const where = /\.zip$/.test(result.target)
+    ? `Downloaded ${result.target}.`
+    : `Exported to ${result.target}.`;
+  if (summary.mode !== 'full') return where;
+  const parts = [
+    `${summary.kbs.length} knowledge base${summary.kbs.length === 1 ? '' : 's'}`,
+    `${summary.skills.length} skill${summary.skills.length === 1 ? '' : 's'}`,
+  ];
+  return `${where} It carries ${parts.join(' and ')}.`;
 }
 
 export function configuredBaseUrl(): string {

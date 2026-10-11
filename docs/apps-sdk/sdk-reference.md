@@ -35,16 +35,82 @@ The design describes nine pillars. Most of the surface below ships as documented
 create_app  →  (edit src/main.ts + index.html)  →  build_app  →  launch_app  →  export_app
 ```
 
-1. **Create.** `create_app { title, description, archetype?, extensions?, skills?, knowledge_base?, capabilities?, … }`. Omitting `html`/`src/main.ts` seeds a working, lint-clean **archetype** starter (explorer / dashboard / workbench / wizard / canvas / chat) plus a matching declared `manifest.surface`. Default kind is `agentic`; pass `kind: "static"` for a plain page with no agent.
+1. **Create.** `create_app { title, description, archetype?, extensions?, skills?, knowledge_base?, capabilities?, … }`. Omitting `html`/`src/main.ts` seeds a working, lint-clean **archetype** starter (explorer / dashboard / workbench / wizard / canvas / chat) plus a matching declared `manifest.surface`. Default kind is `agentic`; pass `kind: "static"` for a plain page with no agent. An explicit `id` that is already taken is refused unless this chat created that app, or the call passes `replace: true` (see [deleting, re-creating and broken apps](#deleting-re-creating-and-broken-apps)).
 2. **Edit.** `update_app { id, path?, content? | old_str+new_str }`. Editing anything under `src/` marks the bundle stale. Author your UI in `src/main.ts` (which `import`s `./sdk`) and your shell in `index.html`.
 3. **Configure (optional).** `configure_app { id, system_prompt?, model?, extensions?, skills?, knowledge_base?, max_turns?, capabilities?, guardrails?, reliability?, orchestration?, output_type?, durable_session? }`.
-4. **Build.** `build_app { id }` bundles `src/main.ts → dist/app.js` with esbuild, refreshes the vendored `src/sdk.ts`, stamps `manifest.sdk_hash`, and runs the lint harness. Fix any harness **ERROR** before launch or export.
-5. **Launch.** `launch_app { id }` returns `http://<host>/apps/<id>/`. The desktop GUI auto-opens the browser; the CLI prints the URL. (`biorouter apps open <id>` does the same from a terminal.)
-6. **Export.** `export_app { id, target_dir, mode?, include?, bundle_daemon?, endpoint? }` writes a standalone, directly-runnable folder — see the [export guide](#export-guide).
+4. **Build.** `build_app { id }` bundles `src/main.ts → dist/app.js` with esbuild, refreshes the vendored `src/sdk.ts`, stamps `manifest.sdk_hash`, and runs the lint harness. Fix any harness **ERROR** before launch or export. See [building and serving](#building-and-serving) for where esbuild comes from and when an app is rebuilt on its own.
+5. **Launch.** `launch_app { id }` returns `http://<host>/apps/<id>/`. That address carries no access cookie, so it is a name for the app rather than a way in. The desktop opens it as a live preview in the chat's artifact panel, on the window's own daemon whatever port the link names (a link from an earlier run names a port that is gone), through a launch link it mints itself. Only `http://127.0.0.1:<port>/apps/<id>/`, the spelling the daemon writes, is taken for an app this way; a `localhost` link is left alone, because that is usually a web development server and the person's own project. The preview's **Open in browser** opens the app in the default browser the same way, and it is always the app the preview shows, whatever address the app's page has put in the toolbar. On Linux, a default browser packaged as a snap (stock Ubuntu's Firefox and Chromium) cannot read the page the desktop hands the link over in, so the desktop offers to copy a one-time link to paste into it instead. The CLI prints the URL, and `biorouter apps open <id>` opens the app from a terminal.
+6. **Export.** `export_app { id, target_dir, replace?, mode?, include?, bundle_daemon? }` writes a folder that runs the app on another computer; the Applications view's **Export** does the same through the daemon. See the [export guide](#export-guide).
 
 Inspect anytime with `list_apps`, `read_app`, `preview_app`; remove with `delete_app`; resize the preview card with `set_app_size`.
 
 Apps live under `~/.config/biorouter/agent_drafter/<id>/` (`manifest.json`, `index.html`, `src/main.ts`, `src/sdk.ts`, `dist/app.js`) and are served by `biorouterd` at `/apps/<id>/`, with the agent socket at `/apps/<id>/agent`.
+
+## Building and serving
+
+### Where esbuild comes from
+
+The desktop app ships a pinned esbuild (`esbuild`, or `esbuild.exe` on Windows) beside `biorouterd`, staged at package time by `ui/desktop/scripts/fetch-esbuild.js` from the official `@esbuild/<platform>-<arch>` npm package and checked against the registry's sha512 for that release. The daemon looks for esbuild in this order:
+
+1. `$BIOROUTER_ESBUILD_BIN`.
+2. Beside the running executable: the copy the desktop app ships.
+3. A source checkout's `ui/desktop/node_modules/.bin/esbuild`, found from the working directory upwards (a dev tree).
+4. `esbuild` on the daemon's `PATH`, then on the login shell's `PATH`. A daemon the desktop app starts on macOS has launchd's short `PATH`, which holds no Homebrew or nvm tools.
+5. `npx --yes esbuild@<pinned version>`, never an unpinned `esbuild`. Its npm cache is a directory the daemon makes for itself, under a random name and readable only by its own account, never a guessable path in a shared temporary folder another account could fill first.
+
+The pin lives in `ESBUILD_VERSION` in both `fetch-esbuild.js` and `agent_drafter/bundle.rs`, and a test holds the two together.
+
+### The fallback bundler
+
+When no esbuild can run (a CLI-only install with no Node, for example), a small type-stripper builds what it can prove it handles and refuses the rest with a clear message instead of producing a broken bundle. It refuses a `src/main.ts` that imports any module other than `./sdk` (also spelled `./sdk.ts` or `./sdk.js`), renames an SDK import, splits an import over several lines, uses a dynamic `import()`, re-exports another module, declares an object type after a parameter list, or has a line-start `key: Value` it cannot tell from a typed class field. `main.ts` runs in a function scope of its own inside the SDK's, so it can reuse an SDK name without a syntax error and cannot replace an SDK function. When `node` is reachable the result must pass `node --check` before it is installed.
+
+A fallback build never replaces a `dist/app.js` that esbuild (or a custom build script) produced, and it is marked as a fallback twice: in the bundle's first line and in `manifest.sdk_hash`, which reads `fallback:<fingerprint>`. A daemon that can run esbuild treats such a bundle as stale and rebuilds it properly. `build_app`, `launch_app` and `POST /apps/<id>/build` (whose answer carries `"fallback": true`) all report a fallback build as a warning.
+
+Every bundle starts with a one-line comment naming its builder, the fingerprint of the App SDK inside it, a fingerprint of the `src/` files it was built from and the Biorouter version that built it:
+
+```text
+/* biorouter-app-bundle builder=esbuild sdk=<fingerprint> src=<fingerprint> biorouter=<version> */
+```
+
+When the build kept an SDK a newer Biorouter had vendored, the line also carries `sdkv=<version>`, the version that SDK came from.
+
+### What a build writes
+
+esbuild writes into a fresh hidden directory under `dist/`, and its output is then moved into place: `dist/app.css` first, when the code imports a stylesheet (`import "./styles.css"`), then `dist/app.js`. When the code no longer imports one, a `dist/app.css` left by an earlier build is removed. The page links `dist/app.css` itself if it wants it; the daemon does not add the tag.
+
+The vendored `src/sdk.ts` is refreshed before the build when the code imports the SDK, however the import is spelled, or when the app has a `src/sdk.ts` at all. A build that installs no bundle leaves the app as it found it: when no esbuild can run, the fallback's refusals are decided before `src/sdk.ts` is touched, and a refresh made for a build that then failed is undone.
+
+### When an app is rebuilt on its own
+
+Serving `GET /apps/<id>/` and `launch_app` rebuild an app first when its bundle is stale, and so does an export of an agentic app. Any app with a `src/main.ts` is built, static or agentic. A bundle is stale when:
+
+- there is no `dist/app.js`;
+- `built_at` is unset, which `update_app` does when it edits `src/`;
+- a file under `src/` changed since the bundle was built, which catches edits made with the developer shell or text editor. The comparison is by content, against the `src=` fingerprint in the bundle's first line, so a file whose modification time is in the future does not make the app rebuild on every load; a bundle without that record (an older one, or one a custom build script wrote) is compared by modification time;
+- the fallback bundler built it and esbuild can run now;
+- it was built against a different App SDK than this daemon ships, unless the SDK it carries came from a newer Biorouter (`sdkv=`, or the builder's version when that is absent). A daemon never rebuilds an app down to its own older SDK, and when it rebuilds such an app for another reason it keeps the newer SDK and records where it came from, so two daemons of different versions serving one store no longer rebuild each app back and forth.
+
+Builds of one app are serialised: a second request waits for the first, then finds the bundle fresh. Bundles and the refreshed `src/sdk.ts` are written to a temporary file and renamed into place, so a browser never loads half a bundle. A build that failed is remembered against its inputs (the files under `src/`, the bundle and the manifest stamps), so an app whose code does not compile is not rebuilt on every page load; any edit is a new attempt.
+
+When an app that cannot run without a bundle (an agentic app, or one with a `src/main.ts`) has none and its build failed, `GET /apps/<id>/` answers `500` with a short page that shows the escaped build log and asks the person to have the agent fix the app and rebuild it. An app that still has an older bundle keeps serving it, and `launch_app` then returns the address with a warning that the browser gets the previous bundle, without the latest changes, and the build log.
+
+### Static apps and inline scripts
+
+A static app is a page written in `index.html`. Inline `<script>` blocks and `on…=` handlers (`onclick="…"`) written in that file run when the app is launched. The daemon hashes each inline script in the page it serves and names exactly those hashes in that response's `script-src`. Handlers are not hashed. The daemon moves them out of the markup instead: each handler attribute becomes `data-br-on-<event>="<nonce>.<n>"`, with a random nonce made for that one response, and one more inline script (also named by hash) holds the handlers and attaches each to the elements whose marker carries the nonce. It runs once, before the app's bundle and before any agent frame can arrive, and removes the markers as it reads them. A handler runs as a browser runs it: `this` is the element, `event` is the event, names resolve through the element, its form and the document, and `return false` cancels the event.
+
+Code inserted at runtime, a `<script>` or a handler an agent or a data binding adds later, is still blocked. `'unsafe-inline'` and `'unsafe-hashes'` are never sent. `'unsafe-hashes'` was sent until 2026-10, and it let markup injected later (an agent's `html` node, say) run any handler the author wrote, on an element the injection chose: with `onclick="br.chat(this.dataset.q)"` on the page, an injected `<img src=x data-q="…" onerror="br.chat(this.dataset.q)">` sent its own prompt with no click.
+
+What does not run: a handler inside a `<template>` (a clone cannot carry the listener, and binding clones later would bind injected markup too; wire those in code), a handler the binder script cannot hold safely (one that does not parse, or contains `</script` or `<!--`), a handler added or changed at runtime, and a `javascript:` URL in `href`, `src` or `action`, which the lint harness warns about. A static app needs `build_app` only when it has a `src/main.ts`.
+
+The served page gets `<script src="dist/app.js">` only when `dist/app.js` exists and the page does not already load it itself. Agentic apps keep their code in `src/main.ts`, because the SDK (`createApp`, `br.*`) exists only inside the bundle.
+
+Assembly is idempotent: before injecting the theme, the config island, the bundle tag, `<base>` and `data-br-pack`, the daemon removes any copy of them an earlier assembly left in the page. A store entry that an older export overwrote with an already assembled page heals on its next load.
+
+`configure_app` on a static app makes it agentic and adds whichever of `src/sdk.ts` and `src/main.ts` it lacks, leaving `index.html` and an existing `src/main.ts` alone. A blank `kind` is refused rather than read as `static`.
+
+### Checking an app in a real browser
+
+`smoke_app` runs the app in a headless browser against a mock daemon. It is optional: it needs Node.js and Playwright's Chromium on this machine and the harness script from a source checkout, which an installed Biorouter does not ship. When any of them is missing it says which, and that says nothing about the app.
 
 ## The manifest
 
@@ -177,6 +243,8 @@ These come from `manifest.rs`.
 - `ModelRoute` (at `orchestration.routes`) has optional `provider` + `model`; an absent field inherits the session's current value. Routes resolve against the *user's* configured providers only (apps never carry keys) and are subject to the provider-class rule in the [security model](#security-model).
 - Skills scoping is advisory — the named skills are surfaced to the agent, but BioRouter's skill enable/disable is global, so true per-app skill isolation is a follow-up.
 - `Capabilities.events` (agent→app lifecycle, advertised as `event:<name>`) is distinct from `surface.signals` (app→agent); the two channels never collide.
+- `app_uid` is server-managed, like `created_at`, `sdk_hash` and `session_id`: a random id minted when the app is created, and restored from disk by `update_app` whatever a rewritten manifest says. It is part of the key of the app's durable conversations (`app:<id>:<app_uid>:<client id>`), so an app deleted and re-created under the same id, or replaced through `create_app`, starts with none of the old app's conversations or shared state. An app created before the field existed has none and keeps the key `app:<id>:<client id>`, so its conversations still resume.
+- `kind` also reads `"agent"` as `"agentic"`, and writes it back as `"agentic"`.
 
 ### Theme packs
 
@@ -288,7 +356,7 @@ br.ui.apply({ cmd: "render", target: "@region:graph", body: [{ t: "network", id:
 ### `br.model` — provider routing
 
 ```ts
-br.model.list()                      // Promise<providers[]> from GET /apps/<id>/models
+br.model.list()                      // Promise<providers[]> from GET /apps/<id>/models?token=<page token>
 br.model.select(provider, model)     // live-switch the session model
 br.model.status(timeoutMs?)          // → { provider, model, ready, detail } (default 10 s)
 ```
@@ -378,7 +446,7 @@ Every agentic app is granted the `appcontrol` in-process MCP server, whose tools
 | `ui_patch_state` | Apply an RFC-6902 JSON Patch to the state doc (≤64 ops). Prefer this for nested edits. |
 | `ui_patch` | Incrementally edit the UI by node id (≤32 ops): `add` / `replace` / `set_props` / `remove`. Preserves scroll/focus/input. |
 | `ui_html` | Render **server-sanitized** rich HTML (≤64 KB). Gated by `allow_html` (default off). Scripts/styles/forms/iframes/`on*`/unsafe-URL are stripped fail-closed in `control.rs`. |
-| `ui_figure` | Render a publication-grade Auto Visualiser figure — `tool` (e.g. `render_volcano`, `render_kaplan_meier`, `render_dashboard`) + that tool's `args` — into a sandboxed iframe. |
+| `ui_figure` | Render a publication-grade Auto Visualiser figure — `tool` (e.g. `render_volcano`, `render_kaplan_meier`, `render_dashboard`) + that tool's `args` — into a sandboxed frame (see [figures in an app](#figures-in-an-app)). |
 | `ui_ask` | Render a form and **block the tool call** until the user submits; the result *is* their answers. Gated by `allow_ask`; `fields` ≤24; times out per `ask_timeout_s`. |
 | `ui_suggest` | Offer up to 5 **non-blocking** suggestion chips (next steps the user can tap or ignore) — `chips:[{label ≤80, prompt? ≤500}]`, optional `target`. Core `ui` (no capability). Unlike `ui_ask` it never blocks the turn. |
 | `app_call` | Invoke a declared `surface.actions` verb; `args` validated against its schema. Blocks up to 60 s for the app's registered handler. |
@@ -465,7 +533,7 @@ The SDK also surfaces v2 lifecycle events on `br.on(...)` when advertised: `usag
 
 ### Connect URL
 
-The SDK dials `ws[s]://<host>/apps/<appId>/agent` (or `config.endpoint`/`endpoints`), decorated with `?client_id=<id>[&token=<wsToken>]`. `client_id` is a stable per-app id in `localStorage["br.client.<appId>"]`; `token` is appended only when `config.wsToken` is set.
+The SDK dials `ws[s]://<host>/apps/<appId>/agent` (or `config.endpoint`/`endpoints`), decorated with `?client_id=<id>[&token=<wsToken>]`. `client_id` is a stable per-app id in `localStorage["br.client.<appId>"]`; `token` is appended only when `config.wsToken` is set. The same token goes on `GET /apps/<id>/models` and `GET /apps/<id>/runstate` as `?token=`, which the daemon requires there too.
 
 The `ready` frame's fields are exactly those in the table above. The client latches `capabilities`, `sessionId`, `resumed`, and the `surface`, then (if `ui` is advertised) posts its `ui_surface` report.
 
@@ -504,9 +572,44 @@ The system prompt states that everything between `<app-data>` … `</app-data>` 
 1. If an `Origin` header is present it must be the app page's own origin — the request's `Host` in scheme, host and port (`origin_matches_host`), the scheme being `https` only when a proxy in front sends `X-Forwarded-Proto: https`. A page on any other origin is refused, another loopback port included; that is the v2 design's exact-origin pinning. A non-browser client with no `Origin` passes this gate.
 2. `?token=` must equal the app's **per-app socket token** — 16 random bytes as 32 hex chars (`ws_token_for`), minted lazily into the served page, kept in memory **per daemon run** (never on disk).
 
-Before either gate, the daemon's own authentication must pass (W2-HRD-1). A browser tab cannot send the secret-key header, so an app's page, bundle, assets, model catalog, run state and socket accept instead that app's **access cookie**: `POST /apps/<id>/launch`, which needs the secret, answers a one-time link (`/apps/<id>/?t=<token>`, good once and for five minutes), and opening it sets an `HttpOnly`, `SameSite=Strict` cookie scoped to `/apps/<id>` and lands on the page. Without the cookie or the secret, every `/apps/*` request gets the same 401 whether or not the app exists. An `Origin` header is never treated as proof. On a `biorouter serve` daemon the served interface's own cookie opens its apps too. Mutating verbs (`POST /build`, `POST /vault`, `DELETE`), `GET /apps` and `GET /apps/<id>/export` still require the secret.
+Before either gate, the daemon's own authentication must pass (W2-HRD-1). A browser tab cannot send the secret-key header, so an app's page, bundle, assets, model catalog, run state and socket accept instead that app's **access cookie**: `POST /apps/<id>/launch`, which needs the secret, answers a one-time link (`/apps/<id>/?t=<token>`, good once and for five minutes), and opening it sets an `HttpOnly`, `SameSite=Strict` cookie scoped to `/apps/<id>` and lands on the page.
+
+The launch answer names the link twice. `path` is the page alone, for a caller whose browser already reaches the daemon at the caller's own address: a `biorouter serve` tab, and every client older than `url`. `url` is the same page on the daemon's own listener (`http://127.0.0.1:<port>/apps/<id>/?t=<token>`), with a daemon listening on every interface named by its loopback address (`0.0.0.0` becomes `127.0.0.1`, `[::]` becomes `[::1]`). It is left out when the daemon has published no listener. The desktop needs `url`: it reaches a shared daemon through a local proxy that admits only requests carrying the desktop's secret, and a link on the proxy's address answered the browser with an empty 403 ("Access to 127.0.0.1 was denied"). The proxy is deliberately not opened to app traffic, because it adds the daemon's secret to everything it forwards. The desktop and `biorouter apps open` send the browser to `url`, and only to a loopback `http` address on an explicit port; the desktop keeps an external backend's link on the address it was configured with, because that may be a tunnel whose far end is another machine's loopback. Without the cookie or the secret, every `/apps/*` request gets the same 401 whether or not the app exists. An `Origin` header is never treated as proof. On a `biorouter serve` daemon the served interface's own cookie opens its apps too. Mutating verbs (`POST /build`, `POST /vault`, `DELETE`), `GET /apps` and both export routes (`GET` and `POST /apps/<id>/export`) still require the secret.
 
 A page from a previous daemon run reconnects with a stale cookie and token and is refused: open the app again from Biorouter for a new link.
+
+### One origin for every app
+
+Every app is served from the daemon's one origin, and on `biorouter serve` so is the shell that holds the daemon's secret. The access cookie's `Path=/apps/<id>` decides which requests the browser attaches it to; it is not a boundary between pages of one origin, so app A's script that requests `/apps/B/...` gets B's cookie attached. Until this was closed, A could `fetch('/apps/B/')`, read B's socket token out of the page and drive B's agent, or frame B and read it through the DOM. Four rules now hold:
+
+- On a browser credential (the access cookie, a launch link, the serve interface's cookie), an app's page is served only to a document navigation: `Sec-Fetch-Mode: navigate` with `Sec-Fetch-Dest: document`. A `fetch`, an `<iframe>`, an `<object>` or a `<script src>` of the page gets the refusal page with a `403`. A request that carries no Fetch Metadata at all (anything that is not a browser) is unaffected, and so is one that carries the secret. The bundle, assets, socket and figure frame are not pages and load as before.
+- An app's page cannot be framed, and a page that opens it with `window.open`, another app's included, gets a closed handle ([the app page's own policy](#the-app-pages-own-policy)).
+- `GET /apps/<id>/runstate` and `GET /apps/<id>/models` want the page's token as `?token=` as well as the cookie, because only the app's own page holds it. A page built before the SDK sent it is rebuilt on its next load, since the SDK fingerprint changed; until then `br.model.list()` answers `[]`.
+- The serve shell is refused to anything but a navigation, cannot be framed, and severs a popup's handle with `Cross-Origin-Opener-Policy: same-origin` ([SD-14](../deployment/serve-decisions.md)).
+
+⚠ The first, second and fourth rules hold only where the browser treats the address as secure: a loopback address, `localhost` or a name under `.localhost`, or `https` through a proxy that sets `X-Forwarded-Proto`. Anywhere else a browser sends no Fetch Metadata and ignores opener policies, so every request reads as a navigation. That is the case for `biorouter serve --host 0.0.0.0` opened at its plain-HTTP LAN address, so there no app surface (page, bundle, assets, socket, models, run state, figure frame) is served on a browser credential at all: the person gets a `403` page saying apps open only on this machine or over HTTPS. The secret still opens them, and the rest of the interface works.
+
+Measured in Chrome: from one app's page, a `fetch` of another app's page, of the shell or of another app's `models` route is refused; a frame of either gets the refusal page; and a popup of either opens, but the opener's handle is closed. What is still open: a browser that does not know `noopener-allow-popups` treats it as `unsafe-none`, and there a popup of another app's page still hands its opener a readable handle; a browser that sends no Fetch Metadata at all (Safari before 16.4) is served another app's page on a `fetch`. Origin storage is shared too, so one app can read another's `localStorage` (the SDK keeps only the client id there, which opens nothing without the page token). Serving each app on an origin of its own (`http://<id>.localhost:<port>`, routed by `Host`) closes both and is the planned follow-up. Until it lands, open apps you did not build yourself in a browser profile of their own.
+
+### The app page's own policy
+
+An app's page is served with `Content-Security-Policy` `default-src 'none'; script-src 'self'; …; frame-ancestors 'none'`, plus the hashes of its own inline scripts and of the script that binds its handlers ([static apps and inline scripts](#static-apps-and-inline-scripts)). `frame-ancestors` was `'self'`, which let one app's page frame another's; nothing frames an app page on purpose, because the desktop preview loads it in a view of its own and a browser opens it in a tab. The app's `dist/` and `assets/` files keep `frame-ancestors 'self'`, so an app may frame its own static documents; they hold no socket token.
+
+The page also carries `Cross-Origin-Opener-Policy: noopener-allow-popups`. A browser that knows the value puts the page in a browsing-context group of its own whenever anything opens it, even a page of the same origin, so another app's `window.open('/apps/<id>/')` gets no handle to read it through. It is deliberately not `same-origin`, which the serve shell uses: two documents with the same value on one origin share a group, so an app could script a shell it opened. A browser that does not know the value treats it as `unsafe-none`. App pages and the build-failure page are sent with `Cache-Control: no-store`, because they carry this daemon run's socket token.
+
+### Figures in an app
+
+An Auto Visualiser figure (`ui_figure`, or a `ui://` figure a tool returns while the app's agent has `autovisualiser`) is drawn in a frame that loads `GET /apps/<id>/figure-frame`. That route serves a small shell under its own policy, the same one the desktop's artifact panel uses for figures plus `sandbox allow-scripts` and `frame-ancestors 'self'`: inline scripts run, nothing reaches the network, and the figure has an opaque origin, so it can read none of the app's cookies, storage or pages. The shell tells its parent it is ready, receives the figure's HTML by `postMessage`, and replaces itself with it. The frame then grows to the height the figure reports (`ui-size-change`, between 120 and 1200 pixels); it read a field no figure sends until 2026-10, so every figure stayed clipped at 360 pixels. The figure is sent each time the shell says it is ready, not once: a frame moved in the DOM reloads (`ui_layout` moving a panel does), and the reloaded shell stayed empty when only the first ready was answered.
+
+It used to be a `srcdoc` frame. A `srcdoc` document inherits its parent's policy, and an app page allows no inline script, so every figure drew nothing, its own error card included. A figure a tool returns in CDN mode (the desktop's default) has its library tags replaced with the vendored copies before it is sent, because the figure policy allows no remote host.
+
+The figure frame is admitted by the app's access cookie like the bundle. ⚠ The desktop's in-app preview filters its requests by path, and must allow `figure-frame` beside `models` and `runstate` for figures to draw there.
+
+### Deleting, re-creating and broken apps
+
+- `DELETE /apps/<id>`, the `delete_app` tool, `create_app` replacing an app, and a factory reset of applications all remove the folder through the store, and the daemon then forgets what it held for the app: its socket token, its access cookie and unredeemed launch links, and its vault key (`brsdk_vault_key_<id>`, removed only when present). Every agent socket the app still has open is closed, as if its page had gone away, so a running turn is cancelled: its agent's file, data and compute tools are bound to the folder's path, which the next app built under the id takes over. A page of the deleted app left open loses its connection, its token no longer opens a socket, and its cookie no longer opens anything (on `biorouter serve` the interface's own cookie still opens whatever app is built under that id next, as a fresh page with a new token). Its durable conversations stay in the session store; a new app under the same id never resumes them, because its `app_uid` differs. The id is matched exactly: on a case-insensitive disk, `Dashboard` does not delete `dashboard`.
+- `create_app` with an explicit `id` that is taken replaces the app there only when the same chat created it. An app another chat created is refused with `INVALID_PARAMS` unless the call passes `replace: true`, and replacing deletes that app, its workspace data included.
+- An app whose `manifest.json` cannot be loaded is listed instead of hidden. `GET /apps` returns it as a row with `id`, `title` (the id again), `kind: "static"` and a `broken` sentence naming the problem; `list_apps` lists it unfiltered. Such an app can be deleted and nothing else. A folder with no manifest counts as broken only after 30 seconds, because `create_app` writes the manifest just after the folder.
 
 ### Sanitization
 
@@ -553,27 +656,69 @@ An app "holds a sensitive data source" when it has an `omop`/`cdw` source **or**
 
 ## Export guide
 
-`export_app { id, target_dir, mode?, include?, bundle_daemon?, endpoint? }` writes a self-contained, directly-runnable folder. Launch harness ERRORs block export.
+An export is a folder that runs the app on another computer. There is one implementation (`crates/biorouter-mcp/src/agent_drafter/export.rs`) and three ways in:
+
+- **The `export_app` tool**: `export_app { id, target_dir, replace?, mode?, include?, bundle_daemon? }` writes the folder at `target_dir`.
+- **Applications ▸ Export** in the desktop app: the dialog asks for the mode and the payload, then a folder picker opens before anything else happens (Cancel sends nothing). The window's daemon builds the export and answers a zip, which the desktop unpacks into `<picked folder>/<app id>`.
+- **A `biorouter serve` browser**: the same dialog, without the bundled-daemon option, downloads `<app id>.zip`. Nothing is written on the server.
+
+Harness ERRORs block an export. The tool never overrides them; the desktop and the browser show the findings and offer **Export anyway**, which only a person can choose.
 
 ### Export modes
 
-- **`launcher`** (default; unknown values degrade to it) — ships only the app plus launch scripts. Runs against whatever KBs, skills, extensions and providers already exist on the target machine.
-- **`full`** — additionally stages the app's server-side payload under `payload/` and writes `export.json`. Selection is per-item: an explicit `include` (`{"knowledge_bases":[…],"skills":[…],"extensions":[…]}`) wins; an omitted key falls back to what the agent config references (KB → `agent.knowledge_base`; skills → `agent.skills`; extensions → `agent.extensions` minus built-ins). A missing KB or skill is skipped with a note, never fatal.
+- **`launcher`** (the default) carries the app and its launchers. It runs against whatever knowledge bases, skills, extensions and providers the recipient already has.
+- **`full`** also carries the app's server-side payload under `payload/` and writes `export.json`. Selection is per item, with `include: {"knowledge_bases": […], "skills": […], "extensions": […]}`. A key that is left out means everything the app references; an empty list means none. The desktop dialog always sends all three lists.
+  - Knowledge bases the app references: the agent's `knowledge_base`, the ids of every data source of kind `knowledge`, and `capabilities.memory.kb` and `shared_kb`. The dialog lists all of them.
+  - Skills: `agent.skills`, minus the skills that ship with Biorouter (`office-word`, `about-biorouter`, the knowledge skills and the others every install seeds). Extensions: `agent.extensions`, minus the built-in ones. Neither is carried or recorded, even when named explicitly: the recipient already has its own copy, and a shipped skill installed over the recipient's under the seeded name could no longer be removed. A shipped skill that was asked for is named in the report's notes.
+  - A skill or extension name must be a plain name (`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`). A path such as `../../.ssh` is refused before it is joined to anything.
+  - A skill is looked up in the skills folder (one bundle level down too) or, over HTTP, in the daemon's skill catalog. Its folder must really sit inside the root it was found in. It is copied without following any link, to a bounded depth and size.
+  - A knowledge base is carried only when the caller could open it. The tool asks the calling chat's capability; the HTTP route asks the same decision `GET /knowledge/bases/{id}/export` gets (`HttpCaller::reach_knowledge_base`), so a private base needs the desktop's proof of a person, a private stated capability, or a serve operator on a private provider. A base out of reach, a missing base and a missing skill are each left out with a note; the rest of the export still happens.
 
-### Payload layout in full mode
+`bundle_daemon` is `"none"` (the default) or `"current"`, which puts this machine's `biorouterd` under `payload/bin/` (a "fat" export). The tool reads `"all"` as `"current"` with a note; the HTTP route refuses anything else. The launchers use a bundled daemon only when `biorouterd --version` runs on the recipient's computer, so a fat export opened on another platform falls back to an installed daemon.
+
+### What a folder holds
 
 ```text
-payload/knowledge/<kb-id>.brkb      # each granted KB, exported as a .brkb bundle
-payload/skills/<name>/              # plain recursive directory copy of each skill
-payload/bin/biorouterd[.exe]        # only with bundle_daemon (fat export)
-export.json                         # audit manifest (see below)
+index.html                    # the app's entry page as it was written (manifest.entry)
+src/, assets/, other files    # every authored file, byte for byte (images, fonts, wasm)
+dist/app.js, dist/app.css     # what the build writes, for any kind of app that has it
+manifest.json                 # the app's manifest without session_id
+package.json, serve.mjs, README.md
+biorouter-launch.sh, run.command, run.sh, run.ps1, run.bat
+app-files/                    # an authored file whose name a generated file uses, if any
+payload/knowledge/<id>.brkb   # full mode: each knowledge base carried
+payload/skills/<name>/        # full mode: each skill carried
+payload/bin/biorouterd[.exe]  # bundle_daemon: "current"
+export.json                   # full mode, or a bundled daemon
 ```
 
-External extensions are recorded as **pinned registry references** in `export.json` (`{"name","source":"registry","note"}`), *not* staged as `.brxt` bundles — installed-bundle staging is out of scope in this build. Built-in extensions travel with the daemon and are never staged.
+- **The entry page is the raw one.** The daemon that serves the installed copy adds the theme, the config island with that run's socket token, and the bundle tag. An export used to ship a page assembled at export time, with a config island that had no token; the SDK read that island first, so an exported agentic app could never reach its agent.
+- **Never exported:** the app's `workspace/` folder (its runtime data), any `.vault`, `.git` or `node_modules` folder at any depth, files named like credentials (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*` and the other SSH key names, `.netrc`, `.npmrc`, `.pypirc`, `credentials`), and links. Each omission is listed in the export's report. The store refuses an app whose folder contains a link, so such an app is not exported at all until the link is removed.
+- **No chat id.** `session_id` names a chat on the author's machine. On another machine it names nothing, or an unrelated chat.
+- **The launchers are executable** (`run.command`, `run.sh`, `biorouter-launch.sh`, and a bundled daemon), in the folder the tool writes, in each zip entry's unix mode, and after the desktop unpacks the zip.
 
-`bundle_daemon` is `"none"` (default) or `"current"` (stage this platform's `biorouterd` into `payload/bin/`). `"all"` (universal) is out of scope and is treated as `"current"` with a note.
+The tool's `target_dir` must be an absolute path to a folder that does not exist or is empty, and it may not be a link. Because a model picks it, it must also be a folder of the user's own: inside the home folder or on an external drive (`/Volumes`, `/media`, `/run/media`, `/mnt`), and never inside Biorouter's configuration folder, the app store, the knowledge store, a hidden folder, an application's data folder at the top of home (`Library`, `Applications`, `AppData`, `snap`), or a folder code is imported from by name (`node_modules`, `site-packages`, `dist-packages`). Without that rule, a chat with Agent Drafter and no shell could write files into a Python package folder or `~/Library`. To export anywhere else, the person uses the Applications view, where they pick the folder themselves.
 
-`export.json` is written for full mode, or for any bundled daemon:
+`replace: true` accepts a non-empty folder only when it is an earlier export of the same app (its `manifest.json` names the app and it has `biorouter-launch.sh`) and it holds nothing the export does not write. The README invites editing an export where it is, so an earlier export that has gained a `.git`, `node_modules`, a `package-lock.json` or any other file of the user's own is refused; files a file manager leaves (`.DS_Store`, `Thumbs.db`, `desktop.ini`) do not count. The folder is built beside the target and renamed into place, so a failed export leaves nothing half-written and a replaced export keeps no stale file. The earlier export is never deleted: it is kept beside the new one as `<folder>.replaced-<date>-<time>`, and the tool's answer names it. The desktop asks before replacing a folder that already has files in it, and moves the old folder to the Trash.
+
+### The HTTP routes
+
+`POST /apps/{id}/export` takes a JSON body, every key optional:
+
+```jsonc
+{ "mode": "launcher" | "full",
+  "include": { "knowledge_bases": [], "skills": [], "extensions": [] },
+  "bundle_daemon": "none" | "current",
+  "allow_lint_errors": false }
+```
+
+It builds the export in a temporary folder of the daemon's own and answers `200 application/zip`, with every entry under one `<id>/` folder, `Content-Disposition: attachment; filename="<id>.zip"`, and the report in `X-Biorouter-Export-Report` (base64url JSON: `mode`, `files`, `bytes`, `kbs`, `skills`, `extensions`, `daemon`, `notes`, `lint_warnings`, `skipped`). A refusal carries a sentence: `400` for a request it cannot read, `404` for no such app, `409` for an app that cannot be exported as it stands, `422` for harness ERRORs (`{"error", "findings"}`), and `500` for a failure reading or writing. Both export routes require the daemon secret, whatever the method.
+
+`GET /apps/{id}/export` is kept for desktops older than `POST`: a launcher export as a JSON map of text files, `{ id, files, skipped_binary, skipped }`, with the raw entry and the manifest without `session_id`. A binary file cannot travel in that map, so it is named in `skipped_binary`. A current desktop that meets a daemon older than `POST` (it answers `405`) falls back to this route, writes the files with the launchers executable, and says that a full export needs an updated background service.
+
+### export.json
+
+`export.json` sits at the top of the folder:
 
 ```jsonc
 { "version": 1, "app": "<id>", "mode": "full|launcher",
@@ -581,26 +726,40 @@ External extensions are recorded as **pinned registry references** in `export.js
   "skills": [{ "name", "path" }],
   "extensions": [{ "name", "source": "registry", "note" }],
   "bundled_daemon": { "platform", "arch", "file", "bytes" } | null,
-  "required_credentials": [],        // currently empty — not enumerable without the registry
+  "required_credentials": [],        // currently empty: not enumerable without the registry
   "runtime_requirements": [] }
 ```
 
+External extensions are recorded as registry references, not staged as `.brxt` bundles; installed-bundle staging is out of scope in this build.
+
 ### Launchers per OS
 
-The scaffold always includes `index.html`, `src/*`, `dist/app.js` (prebuilt — no build step needed), a canonical `manifest.json`, `package.json`, `serve.mjs`, `README.md`, and the launchers:
+- **macOS**: double-click `run.command`.
+- **Linux and WSL**: `bash run.sh`.
+- **Windows**: double-click `run.bat`, which runs `run.ps1`.
+- `biorouter-launch.sh` holds the shared steps that `run.sh` and `run.command` source.
 
-- **macOS** — double-click `run.command`
-- **Linux/WSL** — `bash run.sh`
-- **Windows** — double-click `run.bat` (which runs `run.ps1`)
-- shared `biorouter-launch.sh` (sourced by `run.sh`/`run.command`)
+A launcher installs the app into the store the daemon reads, installs a full export's payload (with consent), starts or reuses a daemon, asks it for the app's one-time launch link, and opens that link in the default web browser. It also prints the link.
 
-`run.command`, `run.sh`, and `biorouter-launch.sh` are written with the exec bit. The launcher locates or installs `biorouterd`, self-installs the app into the recipient's store, starts the daemon **headlessly** (via `BIOROUTER_PORT`, not `BIOROUTER_SERVER__PORT`), verifies `GET /apps/<id>/` → 200, and opens the browser. `serve.mjs` is a loopback-only static server that also proxies `/apps/**` (including the WS upgrade) for the `npm start` / edit-`src/` path. The exported endpoint is left unset so the SDK derives it from the page origin; `.vault/` and `.git/` are always excluded.
+- **Where the store is.** The launchers resolve the configuration folder exactly as the daemon does (`paths::config_dir`): `$BIOROUTER_PATH_ROOT/config` when that is set; on macOS and Linux `$XDG_CONFIG_HOME/biorouter` when that is an absolute path, else `~/.config/biorouter`; on Windows `%APPDATA%\Block\biorouter\config`. `run.ps1` used to install under `~\.config\biorouter`, which no Windows daemon reads, so every Windows launch failed with "does not serve". A test runs the bash and Node expressions against the Rust resolver.
+- **Never over another app.** The launcher installs only the runtime files: the manifest, the entry page, `src/`, `dist/` and `assets/`. It compares the store's copy with the folder by `app_uid` (or by creation time for an app made before `app_uid` existed):
+  - a different app with this id is replaced only on an interactive yes or `BIOROUTER_EXPORT_REPLACE=1`, and is moved to `app-launcher/backups/` in the Biorouter folder, never deleted;
+  - this app changed since the export (the author kept working) is opened as it is, with a line saying how to replace it;
+  - an older copy is replaced, with a backup kept;
+  - a copy with the same `updated_at` is re-synced, which is the edit, build, re-run loop, but only while it is still what this folder was exported from or what a launcher last installed there. Anything else was changed where it is installed, and is opened as it is, with the same line about `BIOROUTER_EXPORT_REPLACE=1`.
+- **How a launcher tells an unchanged copy.** `updated_at` alone could not: only the drafter's own tools bump it, so an edit made in the installed copy with the developer shell or a text editor, or a newer Biorouter refreshing `src/sdk.ts` on a rebuild, left it equal, and the old folder's launcher reverted the edit or brought back the old SDK. So the export records one SHA-256 over the installed files a launcher replaces (the entry page, `src/`, `assets/`, and `dist/` only for an app with no `src/main.ts`; `.DS_Store` files and links left out; one `<hash> <path>` line per file, sorted by byte, then hashed), and every launcher computes the same digest over the store before it re-syncs. Each install writes the digest of what it installed to `app-launcher/installed/<id>`, so the loop keeps working after the first run. `bash run.sh` needs `sha256sum` or `shasum` for this; without either, a copy with the same `updated_at` is opened as it is. A test holds the bash and Node digests to the export's.
+- **A re-sync keeps the store's bundle.** It keeps the store's manifest, which on the author's machine still names the chat the app was built in, and that manifest's build stamp describes the store's own `dist/`. So for an app with `src/main.ts` the folder's `dist/` is not copied, and the daemon rebuilds from the synced `src/` when that changed. Copying it under the kept stamp could serve an older SDK that the stamp called current, and the daemon would never rebuild it.
+- **Payload paths are bash arrays**, so a folder unzipped under a path with a space installs the right skills. A skill already installed under the same name is moved to backups first. A skill that ships with Biorouter is never installed from a payload, even one that carries it.
+- **The daemon.** A launcher uses a daemon whose secret it knows: one it started before (port and secret kept, readable by you alone, in `app-launcher/daemon`) or one named by `BIOROUTERD_PORT` and `BIOROUTER_SERVER__SECRET_KEY`. Otherwise it starts one headlessly (via `BIOROUTER_PORT`), waits up to 60 seconds for it, and stops it before trying another port, so no daemon is left running whose secret nobody knows. The daemon's log goes to `app-launcher/logs/`, a folder only you can read.
+- **The browser.** The link is written into a page only you can read, and that page is opened in the default web browser (on macOS the `https:` handler through `open -a`, on Linux the `xdg-settings` browser through `gtk-launch`, else `xdg-open`). Handing it to `open` or `xdg-open` alone opened whatever edits `.html` files, often an editor.
+
+`serve.mjs` (`npm start`) is the editing loop. It installs the app under the same rules, starts or reuses a daemon, and proxies `/apps/**` to it, including the agent WebSocket. It serves only the app's `dist/` and `assets/` from the folder (so a rebuilt bundle shows on refresh), contained with `path.relative`, which works on Windows too. A malformed URL gets `400`. Only a `Host` of `127.0.0.1:<port>` or `localhost:<port>` is answered, which closes DNS rebinding. `/` redirects to the app's page on the daemon: only the daemon can put the run's socket token into the page. `payload/`, `export.json` and the scripts are never served.
 
 ### First-run consent
 
-A full-mode export's launcher **does** prompt for consent before installing its payload: `install_payload()` (in `biorouter-launch.sh`, generated by `render.rs`) prints the knowledge bases and skills it is about to install, then requires an interactive `y/N` confirmation. Set `BIOROUTER_EXPORT_YES=1` to skip it for CI/headless runs; a marker file makes re-runs no-ops. Launcher-mode exports carry no payload, so the step is a clean no-op there.
+A full export's launcher prompts before installing its payload: `install_payload()` lists the knowledge bases and skills it is about to install and asks `y/N`. `BIOROUTER_EXPORT_YES=1` skips the prompt for CI and headless runs, and a marker file makes re-runs no-ops. Knowledge bases are staged under `knowledge-imports/` for the Knowledge panel's importer, since the CLI has no `knowledge import` command yet. A launcher-mode export carries no payload, so the step does nothing there.
 
-What is **not** yet shipped is the richer in-SDK capability re-consent screen the design envisions (enumerating capability requests and driving credential setup). `export.json` is the machine-readable audit manifest today, and `required_credentials` / `runtime_requirements` are currently empty (they cannot be enumerated without the BAAM registry).
+The in-SDK capability re-consent screen the design describes is not built. `export.json` is the machine-readable record, and its `required_credentials` and `runtime_requirements` are empty because they cannot be enumerated without the BAAM registry.
 
 ## Test gates
 

@@ -137,7 +137,8 @@ const server = createServer(async (req, res) => {
     return;
   }
   // The SDK's model surface; keeps `listModels()` from erroring in the console.
-  if (url.endsWith("/models")) {
+  // (It carries the page token as `?token=`, as the daemon requires.)
+  if (url.split("?")[0].endsWith("/models")) {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ providers: [] }));
     return;
@@ -659,11 +660,62 @@ async function runSelftest() {
   await waitFor(() => doc.querySelector("[data-br-iid='h1'] .br-sanit") && doc.querySelector("[data-br-iid='fig1'] iframe"));
   check("html node lands its (server-sanitized) innerHTML", !!doc.querySelector("[data-br-iid='h1'] .br-sanit"));
   {
+    // Framed from the daemon's figure shell, never `srcdoc`: a srcdoc document
+    // inherits the app page's CSP, which refuses the figure's inline scripts.
+    // (jsdom runs no frame, so the ready/figure handshake is checked in a real
+    // browser, not here.)
     const fr = doc.querySelector("[data-br-iid='fig1'] iframe");
     check(
-      "figure node creates a sandboxed iframe with srcdoc",
-      !!fr && fr.getAttribute("sandbox") === "allow-scripts" && (fr.getAttribute("srcdoc") || "").indexOf("fig") >= 0,
-      fr && fr.getAttribute("sandbox")
+      "figure node frames the app's figure shell, sandboxed, without srcdoc",
+      !!fr &&
+        fr.getAttribute("sandbox") === "allow-scripts" &&
+        fr.getAttribute("src") === "/apps/" + encodeURIComponent(APP_ID) + "/figure-frame" &&
+        !fr.hasAttribute("srcdoc"),
+      fr && fr.outerHTML.slice(0, 200)
+    );
+    // A figure reports its height as `{ payload: { height } }` (`reportSize` in
+    // the autovis `_common.js`), and the frame grows to it. The SDK read a bare
+    // `height`, which no figure sends, so every figure stayed clipped at the
+    // frame's minimum (measured in Chrome).
+    const fwin = fr && fr.contentWindow;
+    if (fwin) {
+      win.dispatchEvent(
+        new win.MessageEvent("message", {
+          data: { type: "ui-size-change", payload: { height: 640 } },
+          source: fwin,
+        })
+      );
+    }
+    check(
+      "a figure's reported height grows its frame",
+      !!fwin && fr.style.height === "640px",
+      fr && `contentWindow=${!!fwin} height=${fr.style.height}`
+    );
+    // The shell is sent the figure each time it says it is ready. A frame
+    // moved in the DOM (`ui_layout` moving a panel) reloads, and the SDK used to
+    // answer only the first ready, so the reloaded shell stayed empty.
+    const posted = [];
+    if (fwin) {
+      fwin.postMessage = (message, target) => posted.push({ message, target });
+      for (let i = 0; i < 2; i++) {
+        win.dispatchEvent(
+          new win.MessageEvent("message", { data: { type: "biorouter-figure-ready" }, source: fwin })
+        );
+      }
+      // A ready from any other window is not the frame's, and is not answered.
+      win.dispatchEvent(new win.MessageEvent("message", { data: { type: "biorouter-figure-ready" }, source: win }));
+    }
+    check(
+      "a figure frame that reloads is sent its figure again",
+      posted.length === 2 &&
+        posted.every(
+          (p) =>
+            p.target === "*" &&
+            p.message &&
+            p.message.type === "biorouter-figure" &&
+            p.message.html === "<!doctype html><body>fig</body>"
+        ),
+      JSON.stringify(posted)
     );
   }
 

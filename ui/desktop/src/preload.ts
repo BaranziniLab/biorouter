@@ -1,6 +1,7 @@
 import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
+import type { AppExportRequest, AppExportResult } from './utils/appExportRequest';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -348,10 +349,18 @@ type ElectronAPI = {
   // Functions for image pasting
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string) => Promise<SaveDataUrlResponse>;
   deleteTempFile: (filePath: string) => void;
-  // Opens only after public-target validation and exact-host native confirmation.
-  openExternal: (url: string) => Promise<void>;
+  // Opens only after public-target validation and exact-host native confirmation. A link to an
+  // app on this machine is opened through a fresh launch link instead, and answers whether it
+  // opened (`utils/openInBrowser.ts`).
+  openExternal: (url: string) => Promise<{ ok: true } | { ok: false; message: string } | void>;
   /** Open a built app in the system browser; main mints and hands over its launch link. */
   openAppInBrowser: (appId: string) => Promise<void>;
+  /**
+   * Applications ▸ Export: main asks for a folder first, has this window's daemon build the
+   * export, and unpacks it there (`utils/appExport.ts`). Never rejects for an ordinary failure;
+   * the answer says what happened.
+   */
+  exportApp: (appId: string, request: AppExportRequest) => Promise<AppExportResult>;
   // Function to serve temp images
   getTempImage: (filePath: string) => Promise<string | null>;
   // Function to read temp image as raw base64 + mimeType for API use
@@ -789,11 +798,13 @@ const electronAPI: ElectronAPI = {
   deleteTempFile: (filePath: string): void => {
     ipcRenderer.send('delete-temp-file', filePath);
   },
-  openExternal: (url: string): Promise<void> => {
+  openExternal: (url: string): Promise<{ ok: true } | { ok: false; message: string } | void> => {
     return ipcRenderer.invoke('open-external', url);
   },
   openAppInBrowser: (appId: string): Promise<void> =>
     ipcRenderer.invoke('apps:open-in-browser', appId),
+  exportApp: (appId: string, request: AppExportRequest): Promise<AppExportResult> =>
+    ipcRenderer.invoke('apps:export', appId, request),
   getTempImage: (filePath: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-temp-image', filePath);
   },

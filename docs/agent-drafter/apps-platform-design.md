@@ -163,21 +163,48 @@ six above.)
 
 ## Export modes
 
-`export_app { id, target_dir, mode?, include?, bundle_daemon? }`:
+One export implementation (`agent_drafter/export.rs`) serves three doors: the
+`export_app { id, target_dir, replace?, mode?, include?, bundle_daemon? }` tool,
+which writes the folder itself; the Applications view's **Export**, where the
+person picks a folder first and the window's daemon answers a zip
+(`POST /apps/{id}/export`) that the desktop unpacks there; and a `biorouter serve`
+browser, which downloads that zip. The legacy `GET /apps/{id}/export` (a JSON map
+of text files) stays for older desktops.
 
-- **`launcher`** (default) — app + launch scripts only; runs against whatever KBs
-  / skills / extensions already exist on the target.
+- **`launcher`** (default) — the app and its launchers; runs against whatever
+  knowledge bases, skills and extensions already exist on the target.
 - **`full`** — also stages the server-side payload under `payload/`
   (`knowledge/<id>.brkb`, `skills/<name>/`) and writes `export.json`. Per-item
-  selection via `include`, else derived from the agent config.
+  selection via `include`: a missing key means everything the app references (its
+  agent's knowledge base, every `knowledge` data source and its memory bases;
+  `agent.skills` minus the skills Biorouter ships; `agent.extensions` minus
+  built-ins), and an empty list means none. Each knowledge base is carried only
+  when the caller could open it. A shipped skill is never carried, even when
+  named: the recipient seeds its own, and one installed over it could not be
+  removed.
 
 `bundle_daemon: "current"` stages this platform's `biorouterd` under
-`payload/bin/` (a "fat" export); `"all"` is out of scope and treated as
-`"current"`. External extensions are recorded as **registry references** in
-`export.json`, not staged as `.brxt` bundles (out of scope). Every export ships
-directly-runnable launchers for all three OSes (`run.command` / `run.sh` /
-`run.bat`+`run.ps1`, shared `biorouter-launch.sh`, `serve.mjs` loopback proxy) and
-a prebuilt `dist/app.js` — no build step. See the
+`payload/bin/` (a "fat" export), used by the launchers only when it runs on the
+recipient's machine. External extensions are recorded as **registry references**
+in `export.json`, not staged as `.brxt` bundles (out of scope).
+
+Every export carries the app's raw entry page (the daemon that serves the
+installed copy assembles it with that run's socket token), every authored file
+byte for byte, `dist/app.js`, a manifest without the author's chat id, and
+executable launchers for all three OSes (`run.command` / `run.sh` /
+`run.bat`+`run.ps1`, shared `biorouter-launch.sh`, the `serve.mjs` dev proxy). It
+never carries `workspace/`, a `.vault`, `.git` or `node_modules` folder, a file
+named like a credential, or a link. The launchers install into the store the
+daemon really reads on each OS and never over a different app, and they re-sync
+an installed copy only while it is what the folder was exported from or what a
+launcher last installed (a SHA-256 of the installed files the export records), so
+an edit made in place or a newer Biorouter's rebuild is never reverted.
+
+The tool writes only into a folder of the user's own (the home folder or an
+external drive, never a hidden folder, an application's data folder or a
+`node_modules`/`site-packages` folder), and `replace` keeps the earlier export
+beside the new one rather than deleting it, refusing one that has gained files
+the export does not write. See the
 [export guide](../apps-sdk/sdk-reference.md#export-guide).
 
 ## Multi-agent orchestration
@@ -225,14 +252,30 @@ biorouter apps open <id>         # ensure a daemon is up; open http://127.0.0.1:
 biorouter apps serve <id>        # ensure a daemon is up; print the URL; stay foreground if it started one
 ```
 
-Daemon management is minimal: it health-checks `BIOROUTER_PORT` (default 3000) via
-the auth-exempt `GET /status`, reuses a running daemon whose secret it knows (one
-`apps open` or `apps serve` started and recorded, or one `BIOROUTER_SERVER__SECRET_KEY`
-names), else spawns `biorouterd agent` with a secret of its own, and opens the app's
-one-time launch link, which works once and for five minutes. While `apps serve` holds
-its daemon in the foreground, an `apps open` in another terminal mints the next link;
-`serve` removes its record when it stops the daemon. In-terminal rendering of an app
-is out of scope.
+Both first use the profile's **shared daemon**, the one the desktop app and
+`biorouter crew` run, when one is running: they reach it over its private socket with
+the key its starter saved (as every `crew` command does), mint the app's launch link
+there, and send the browser to the daemon's own listener (the launch answer's `url`).
+Nothing is started for that, and `apps serve` prints the link and returns, because the
+daemon is not its to hold. They used to look only at `BIOROUTER_PORT`, so with the
+desktop open they started a second full daemon that never exited. A shared daemon they
+cannot use (started by an older Biorouter, or its key refused) is passed over with a
+line saying why.
+
+Without one, daemon management is minimal: from `BIOROUTER_PORT` (default 3000) up,
+it health-checks each port via the auth-exempt `GET /status` and takes as a Biorouter
+daemon only one that answers `ok`. A port held by anything else (a dev server whose
+catch-all answers every path) is passed over for the next, up to six ports, as the
+exported launchers do; it used to stop the command with a claim that a Biorouter
+daemon whose key it lacked held the port. It reuses a running daemon whose secret it
+knows (one `apps open` or `apps serve` started and recorded, or one
+`BIOROUTER_SERVER__SECRET_KEY` names), else spawns `biorouterd agent` with a secret of
+its own, and opens the app's one-time launch link, which works once and for five
+minutes. On Windows the daemon `apps open` leaves running gets its own process group
+and no console, so a later Ctrl-C at that prompt, or closing the window, does not stop
+it. While `apps serve` holds its daemon in the foreground, an `apps open` in another
+terminal mints the next link; `serve` removes its record when it stops the daemon.
+In-terminal rendering of an app is out of scope.
 
 ## Testing story
 
@@ -278,27 +321,111 @@ is out of scope.
   Opens the per-app WebSocket, streams events, renders markdown (headings, lists,
   code, links, **GitHub-flavoured Markdown tables**), handles multimodal image
   input, and can auto-mount a chat panel into `[data-br-chat]`.
-- **Bundler** — `bundle.rs`. Locates esbuild (`$BIOROUTER_ESBUILD_BIN` → desktop
-  `node_modules/.bin/esbuild` → PATH → `npx esbuild`); falls back to a vendored
-  type-stripper when esbuild is absent. `src/main.ts` → `dist/app.js` (IIFE).
+- **Bundler** — `bundle.rs`. Locates esbuild (`$BIOROUTER_ESBUILD_BIN` → the
+  copy the desktop app ships beside `biorouterd`, staged by
+  `ui/desktop/scripts/fetch-esbuild.js` → a checkout's
+  `ui/desktop/node_modules/.bin/esbuild` → the process and login-shell PATH →
+  `npx esbuild@<pinned version>`, with an npm cache private to the daemon).
+  When none can run, a vendored type-stripper builds the simple shapes it can
+  prove it handles and refuses the rest; its bundles are marked as fallbacks
+  and rebuilt once esbuild is available. `src/main.ts` → `dist/app.js` (IIFE)
+  and `dist/app.css` when the code imports a stylesheet, built in a staging
+  directory and moved into place, one build per app at a time. A build that
+  installs nothing leaves `src/sdk.ts` as it was. Each bundle's first line
+  names its builder, the SDK it carries and where that SDK came from, so a
+  daemon never rebuilds an app down to an older SDK. See the SDK reference's
+  "Building and serving".
 - **MCP tools** — `mod.rs`: `create_app`, `configure_app`, `update_app`,
   `build_app`, `launch_app`, `list_apps`, `read_app`, `preview_app`, `export_app`,
   `delete_app`, `set_app_size`.
 - **Server routes** — `crates/biorouter-server/src/routes/apps.rs`:
   - `GET /apps` — list manifests (JSON)
-  - `GET /apps/{id}/` — assembled index.html (theme + base href + bundle)
+  - `GET /apps/{id}/` — assembled index.html (theme + base href + bundle),
+    rebuilt first when stale. Its policy names the page's own inline scripts by
+    hash; its `on…=` handlers are moved into one more such script, bound to
+    markers carrying a nonce fresh for each response, so no `'unsafe-hashes'`
+    is sent. It forbids framing (`frame-ancestors 'none'`) and opens it in a
+    browsing-context group of its own; an app with no bundle whose build failed
+    gets a `500` page showing the build log
   - `GET /apps/{id}/dist|assets/{*path}` — bundle + assets
   - `GET /apps/{id}/agent` — **per-app agent WebSocket** (creates a session,
     applies model/extensions/skills/KB/persona, runs `agent.reply`, streams
     `message`/`thought`/`tool`/`done`/`error` frames)
-  - `POST /apps/{id}/build`, `DELETE /apps/{id}`
+  - `POST /apps/{id}/build`, `DELETE /apps/{id}` (which also deletes an app
+    `GET /apps` lists as `broken`, and makes the daemon forget the app's socket
+    token, access cookie and vault key and close its open agent sockets; the
+    same happens for the `delete_app` tool, a `create_app` replacement and a
+    factory reset, through `store::on_app_deleted`)
+  - `GET /apps/{id}/figure-frame` — the shell an Auto Visualiser figure is
+    framed in, under a policy of its own (a `srcdoc` figure inherited the app
+    page's policy and drew nothing)
+  - An app's page is served on a browser credential only to a document
+    navigation, and `runstate`/`models` want the page's token, because every app
+    shares one origin; at a plain-HTTP network address, where a browser sends no
+    Fetch Metadata, no app surface is served on a browser credential at all. See
+    the SDK reference's "One origin for every app"
   - Browser-facing GETs under `/apps` take the app's access cookie instead of the
     secret (a browser tab can't send the header). `POST /apps/{id}/launch`, with
-    the secret, answers a one-time link that sets it. Loopback is not one account,
-    so these routes are no longer exempt (W2-HRD-1).
+    the secret, answers a one-time link that sets it, as `path` and as `url` on the
+    daemon's own listener. Loopback is not one account, so these routes are no
+    longer exempt (W2-HRD-1).
 - **Frontend** — `ui/desktop/src/components/applications/ApplicationsView.tsx` +
-  an "Applications" sidebar entry under Knowledge. Lists built apps; Launch opens
-  the app URL in the default browser via the existing `openExternal` IPC.
+  an "Applications" sidebar entry under Knowledge. Lists built apps. Launch names
+  the app to the main process (`apps:open-in-browser`), which mints its launch link
+  with the secret the window was attached with, writes it into a page only this
+  account can read, and opens that page in the default web browser (the `https:`
+  handler, not whatever opens `.html` files, which is often an editor; on Windows
+  the handler's program is started with the page). A snap browser on Linux cannot
+  read that page, so the person is asked whether to copy the link instead. On a shared
+  daemon the window talks to a local proxy that refuses a browser, so the page sends
+  the browser to the daemon's own listener; a link on the proxy was the "Access to
+  127.0.0.1 was denied" Launch used to show. "Open in browser" on a live app in the
+  artifact panel goes the same way, and its failures are shown rather than logged.
+  The panel's live preview of an app (`launch_app`'s link, or any
+  `http://127.0.0.1:<port>/apps/<id>/`; not `localhost`, which is what a web
+  development server prints) is opened on the window's own daemon whatever port the
+  link names, and on a shared daemon it is minted through the proxy and shown from
+  the daemon's listener. Its **Open in browser** opens the app the preview shows,
+  never an address the app's page put in the toolbar. The preview closes when that
+  daemon is lost or replaced, and works again once Biorouter reconnects.
+- **The build chat button** (`components/applications/buildChat.ts`). A row's
+  "Open the chat where this app was built" control does not trust
+  `manifest.session_id`. After every load and Refresh, and again at the click, it
+  reads `GET /sessions/{id}?metadata_only=true` with the user's proof, once per
+  distinct chat. A 200 opens the chat, with its name in route state, when that
+  chat could have called `create_app`: it was born no later than the app and was
+  still being written to when the app was created (five minutes of clock slack at
+  each end). A chat born after the app, or one that had gone quiet before it,
+  reads as "no longer exists", because its id names a different conversation; a
+  store restored from a backup can issue an id again. That check compares the
+  manifest's own `created_at` with the chat's times, so it narrows the guess and
+  no more. It cannot tell the build chat from another chat that was active at the
+  same moment, a manifest with no `created_at` (served as 0) is not compared at
+  all, and a manifest written by hand passes whatever it says. What keeps another
+  machine's chat ids out is that exports no longer carry `session_id`
+  (`agent_drafter/export.rs`). An app installed from an export made before that
+  can still point at an unrelated local chat that was active when its author
+  built it. 404 and 400 read as deleted, 403 as "can't be opened here", and
+  anything else (no response, 5xx, 408, 429) as unknown: the control stays
+  enabled and only the click decides. A deleted row stays clickable as well,
+  because the route has also answered 404 for a store error
+  (`routes/session.rs`, `get_session`): the click asks again and opens the chat
+  if it is there. A subagent run leads to its parent conversation when the
+  parent exists and predates the run, otherwise to the run itself. The click
+  navigates only on a chat it just found, and only while its answer is still the
+  newest one for that row: a deletion broadcast or a Refresh that lands while the
+  click is checking wins, and the click says so in a toast instead. Only the
+  newest click on a view that is still open acts at all. If the user clicks
+  another row or leaves Built apps while the check is out, the answer updates the
+  row and nothing else, because `navigate` keeps working after the view
+  unmounts. The control's glyph spins while its check is out. Navigating opens a
+  tab and tabs are saved per window, so a dead id used to leave a "Could not load
+  this chat" tab that came back on every reload. A disabled control uses
+  `aria-disabled`, not `disabled`, so its tooltip still shows and it stays in the
+  tab order, and the row's metadata line says the same thing in words. A deletion
+  broadcast (`subscribeSessionRemoved`) flips matching rows at once. A row whose
+  manifest the daemon could not read (`broken` on the `GET /apps` row) shows the
+  error and offers only Delete.
 
 ### WebSocket protocol, v1 (browser ⇄ backend)
 

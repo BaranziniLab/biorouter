@@ -7,6 +7,8 @@
 
 mod common;
 
+pub use common::inline_pinned_cdn_assets;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use common::{
     check_limit, html_escape, invalid, js_data, js_value, render, Asset, MAX_LABELS, MAX_LINKS,

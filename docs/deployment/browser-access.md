@@ -180,6 +180,12 @@ started `serve`.
   here.
 - **Restrict who can reach the port.** A host firewall rule or a cloud security group scoped to the
   addresses that need it is worth more than the token alone.
+- **Apps do not open at a plain-HTTP network address.** Opened as `http://192.168.x.y:8765`, the
+  interface works, but every app answers with a page saying apps open only on this machine or over
+  HTTPS. A browser applies the protections that keep one app's script away from another app and
+  from the interface's secret only at a secure address, so the daemon does not serve apps where
+  they would not hold (see [Apps share the interface's origin](#apps-share-the-interfaces-origin)).
+  Use the SSH tunnel below, which opens Biorouter as `localhost`, or the TLS proxy above.
 
 For one person on one remote machine, the safest option is not to expose the port at all — leave
 the bind on loopback and forward it over SSH:
@@ -257,6 +263,39 @@ differs:
 | Application updates, installing the CLI, one-click dependency installs | Not available. Update by upgrading the installed packages on the serving machine. |
 | Desktop niceties — system notifications, spellcheck, dock and menu-bar icons, keeping the machine awake | Not available. |
 | Opening a chat in its own window | There is no second window. A new chat opens in the current tab; branching a session into a separate window does nothing. |
+
+### Apps share the interface's origin
+
+Every app you build is served from the same address as the interface, and the interface's page
+holds the daemon's secret. An app's code is written by the agent, so the daemon keeps that page
+away from it: the interface is served only when the browser opens it as a page, never to a
+`fetch` or a frame, it cannot be framed, and it is isolated from any page it opens or that opens
+it ([SD-14](serve-decisions.md#sd-14--the-shell-is-served-only-to-a-navigation-while-apps-share-its-origin)).
+An app's own page is served the same way and cannot be framed, its run-state and model routes want
+a token only that page holds, and a page that opens it in a popup is left without a handle on it,
+so one app's script cannot read another app's page.
+
+All of this depends on the browser treating the address as secure: `localhost` or another loopback
+address, or `https`. At a plain-HTTP network address a browser sends none of the request headers
+these checks read and ignores the opener policy, so an app's script there could read the interface
+and every other app. Apps are therefore not served at such an address at all; open them through an
+SSH tunnel or an HTTPS proxy ([What exposing the port means](#what-exposing-the-port-means)).
+
+Gaps remain even at a secure address: a browser that does not support the `noopener-allow-popups`
+opener policy (Chromium-based browsers do) lets an app read another app's page through a popup, a
+browser that sends no Fetch Metadata at all (Safari before 16.4) lets an app fetch another app's
+page or the interface, and every app shares one `localStorage`. Serving each app on its own origin
+is the planned fix. Until then, open apps you did not build yourself in a separate browser profile.
+
+Two properties of browser cookies apply here and no setting changes them. A cookie's path does not
+separate pages of one origin, which is why the rules above exist. And a cookie is not scoped by
+port: when any page in the browser sends a request to another port of `127.0.0.1`, the browser
+attaches the interface's cookie, and an app's access cookie if the path is under that app, for
+whatever listens on that port to read. On a shared machine, another account listening on a
+loopback port could collect them that way and use them until the daemon stops. App cookies change
+each time the daemon starts (and deleting an app retires its cookie), and so does the interface's
+unless you fixed its token with `--token` or `BIOROUTER_BROWSER_TOKEN`; stopping `biorouter serve`
+revokes them all.
 
 ## Troubleshooting
 

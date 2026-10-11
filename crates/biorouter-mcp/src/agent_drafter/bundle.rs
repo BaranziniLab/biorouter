@@ -2,19 +2,28 @@
 //!
 //! Apps are authored in TypeScript (`src/main.ts` importing `src/sdk.ts`) and
 //! bundled into a single browser-runnable `dist/app.js` with **esbuild**. esbuild
-//! is located via (in order): `$BIOROUTER_ESBUILD_BIN`, the desktop app's bundled
-//! `node_modules/.bin/esbuild` (dev tree), `esbuild` on `PATH`, then `npx esbuild`.
+//! is located via (in order, see [`find_esbuild`]): `$BIOROUTER_ESBUILD_BIN`, the
+//! copy the desktop app ships beside `biorouterd`, the checkout's
+//! `ui/desktop/node_modules/.bin/esbuild` (dev tree), `esbuild` on the process
+//! or login-shell `PATH`, then `npx --yes esbuild@<ESBUILD_VERSION>`.
 //!
 //! When no esbuild is available (e.g. a headless CLI install with no Node), a
-//! best-effort vendored type-stripper concatenates the sources into a runnable
-//! bundle so simple apps still work. The stripper is intentionally conservative;
-//! complex TypeScript should be built where esbuild is present.
+//! vendored type-stripper builds the simple shapes it can prove it handles and
+//! REFUSES the rest, saying so. ⚠ It is a last resort, not a second compiler: it
+//! used to accept everything, which shipped broken bundles that looked built.
+//! See [`fallback_bundle`] for what it refuses and why.
+//!
+//! Every bundle this module writes starts with a one-line banner
+//! ([`BundleBanner`]) naming the builder, the App SDK it carries and the
+//! Biorouter that built it. That is how a daemon tells a fallback bundle from a
+//! real one, and never rebuilds an app down to an older SDK.
 
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::agent_drafter::store::{ArtifactKind, Manifest};
@@ -100,6 +109,17 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             ));
             break;
         }
+    }
+    // Inline `<script>` blocks and `on*=` handlers the author wrote in
+    // index.html are allowed: the daemon pins each script by hash in the served
+    // page's policy and moves the handlers into a script it binds itself
+    // (`render::inline_script_sources`, `render::bind_inline_handlers`). A
+    // `javascript:` URL is neither, so nothing allows it and the browser
+    // refuses it, while the chat preview (which runs under a looser policy)
+    // still follows it. Warn rather than error: the rest of the page works.
+    let inline = crate::agent_drafter::render::authored_inline_code(&index);
+    if inline.javascript_urls > 0 {
+        warning(&mut out, "index.html uses a `javascript:` URL (href/src/action). The launched app blocks it, even though the chat preview may follow it. Use a <button> wired with addEventListener in src/main.ts, or an inline onclick handler, instead.");
     }
 
     // (3) Theme-adaptive text: a hardcoded text color (a hex/rgb literal in a
@@ -207,10 +227,18 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         || il.contains("br-dragitem")
         || il.contains("br-dropzone")
         || il.contains("br-tab");
+    // A static page may wire its controls in index.html itself — an inline
+    // `<script>` or an `onclick=` handler — and both run in the launched app.
+    let wired_inline = !inline.handlers.is_empty()
+        || inline
+            .scripts
+            .iter()
+            .any(|script| script.contains("addEventListener") || script.contains(".onclick"));
     if has_controls
         && !wiring.contains("addEventListener")
         && !auto_chat.may_call_agent()
         && !wiring.contains("onclick")
+        && !wired_inline
     {
         out.push(LintFinding {
             level: LintLevel::Warn,
@@ -915,15 +943,54 @@ pub fn format_lint(findings: &[LintFinding]) -> String {
 #[derive(Debug, Clone)]
 pub struct BuildReport {
     pub ok: bool,
-    /// "esbuild" or "fallback".
+    /// "esbuild", "fallback", or "none" when nothing was attempted.
     pub used: String,
     /// Combined stdout/stderr (or fallback notes).
     pub log: String,
+    /// The `manifest.sdk_hash` this build earns, `None` when it earned none.
+    ///
+    /// An esbuild bundle stamps the fingerprint of the App SDK it actually
+    /// carries; a fallback bundle stamps `fallback:<fingerprint>`, which a daemon
+    /// that can run esbuild treats as stale. ⚠ Stamping the plain fingerprint
+    /// after a fallback build is what made broken fallback bundles look fresh
+    /// forever.
+    pub stamp: Option<String>,
 }
+
+impl BuildReport {
+    fn not_built(used: &str, log: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            used: used.to_string(),
+            log: log.into(),
+            stamp: None,
+        }
+    }
+
+    /// Whether this bundle came from the type-stripper, which a caller should
+    /// report as a warning even when it succeeded.
+    pub fn is_fallback(&self) -> bool {
+        self.used == "fallback"
+    }
+}
+
+/// The esbuild release Biorouter builds apps with.
+///
+/// ⚠ Pinned in two places that never import each other: here, for the `npx`
+/// last resort, and `ESBUILD_VERSION` in `ui/desktop/scripts/fetch-esbuild.js`,
+/// which stages the binary the desktop app ships. An unpinned `npx --yes esbuild`
+/// downloaded and ran whatever the registry served that day, on a browser GET.
+/// `the_npx_pin_matches_the_shipped_binary` holds the two together.
+pub const ESBUILD_VERSION: &str = "0.27.3";
 
 static NPX_ESBUILD_LOCK: Mutex<()> = Mutex::new(());
 static NPX_ESBUILD_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 const ESBUILD_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the one login-shell `PATH` probe may take. A shell whose rc files
+/// hang must not hang every build behind it.
+const LOGIN_SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long `node --check` may take to verify a fallback bundle.
+const NODE_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn lock_npx_esbuild(program: &str) -> Option<MutexGuard<'static, ()>> {
     let is_npx = Path::new(program)
@@ -937,8 +1004,31 @@ fn lock_npx_esbuild(program: &str) -> Option<MutexGuard<'static, ()>> {
     })
 }
 
-fn npx_cache_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("biorouter-npx-cache-{}", std::process::id()))
+/// The npm cache `npx` installs esbuild into: a directory of this process's
+/// own, made once under a random name with mode 0700. `None` when it cannot be
+/// made, and then `npx` is not used at all.
+///
+/// ⚠ It was `<temp>/biorouter-npx-cache-<pid>`. On Linux `<temp>` is `/tmp`,
+/// which every account can write, and the pid is in `ps`: another user could
+/// make that directory first and plant `_npx/<hash>/node_modules/.bin/esbuild`
+/// in it (`<hash>` is a fixed function of the pinned spec), and npx ran the
+/// planted binary as this user without asking who owns the cache. A name no
+/// one can predict, made by a `mkdir` that fails on an existing entry, can only
+/// hold what this process put there. One per process, as before, so two
+/// daemons never install into one tree at once.
+fn npx_cache_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("biorouter-npx-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir().ok().map(tempfile::TempDir::keep)
+    })
+    .as_deref()
 }
 
 /// The `ui/desktop/node_modules/.bin/esbuild` of the checkout `start` sits in,
@@ -974,58 +1064,275 @@ fn esbuild_in_checkout(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Locate an esbuild executable. Returns `(program, leading_args)` so the caller
-/// can support both a direct binary and `npx esbuild`.
-fn find_esbuild() -> Option<(String, Vec<String>)> {
+/// The esbuild binary a packaged Biorouter ships in `dir` (the directory
+/// holding `biorouterd`), if it is there.
+///
+/// `ui/desktop/scripts/fetch-esbuild.js` stages it into `src/bin/`, which forge
+/// ships as `Contents/Resources/bin` (macOS) / `resources/bin` beside the daemon.
+/// Before it did, a Finder-launched daemon — launchd `PATH`, cwd `$HOME` —
+/// found no esbuild and no `npx` at all, so every app it built went through the
+/// type-stripper.
+fn esbuild_beside(dir: &Path) -> Option<PathBuf> {
+    let name = if cfg!(windows) {
+        "esbuild.exe"
+    } else {
+        "esbuild"
+    };
+    let candidate = dir.join(name);
+    candidate.is_file().then_some(candidate)
+}
+
+/// A resolved bundler invocation: the program, the arguments that go before the
+/// build's own, and the `PATH` its child needs when it was found somewhere the
+/// daemon's own `PATH` does not reach.
+#[derive(Debug, Clone)]
+pub(crate) struct EsbuildCommand {
+    program: PathBuf,
+    lead: Vec<String>,
+    child_path: Option<OsString>,
+    /// Where it was found, for the build log.
+    source: &'static str,
+}
+
+/// Locate an esbuild executable, in this order:
+///
+/// 1. `$BIOROUTER_ESBUILD_BIN` — an explicit choice always wins.
+/// 2. Beside the running executable ([`esbuild_beside`]) — what the desktop app
+///    ships, so a packaged daemon never depends on the user's machine.
+/// 3. This checkout's `ui/desktop/node_modules/.bin/esbuild` (dev tree).
+/// 4. `esbuild` on the process `PATH`, then on the login shell's.
+/// 5. `npx --yes esbuild@<ESBUILD_VERSION>` — pinned, because it downloads and
+///    runs a package from the public registry.
+pub(crate) fn find_esbuild() -> Option<EsbuildCommand> {
+    let direct = |program: PathBuf, source: &'static str| EsbuildCommand {
+        program,
+        lead: Vec::new(),
+        child_path: None,
+        source,
+    };
+    #[cfg(test)]
+    if tests_without_esbuild::active() {
+        return tests_without_esbuild::stub().map(|stub| direct(stub, "test stub"));
+    }
     if let Ok(bin) = std::env::var("BIOROUTER_ESBUILD_BIN") {
         if !bin.trim().is_empty() && Path::new(&bin).exists() {
-            return Some((bin, vec![]));
+            return Some(direct(PathBuf::from(bin), "BIOROUTER_ESBUILD_BIN"));
         }
+    }
+    if let Some(found) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(esbuild_beside)
+    {
+        return Some(direct(found, "bundled"));
     }
     // Dev tree: the install belonging to THIS checkout, found from the CWD
     // upwards because a test or the CLI may run from a subdirectory.
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(found) = esbuild_in_checkout(&cwd) {
-            return Some((found.to_string_lossy().to_string(), vec![]));
+            return Some(direct(found, "checkout"));
         }
     }
-    if which("esbuild") {
-        return Some(("esbuild".to_string(), vec![]));
+    if let Some(tool) = resolve_tool("esbuild") {
+        return Some(EsbuildCommand {
+            program: tool.path,
+            lead: Vec::new(),
+            child_path: tool.child_path,
+            source: "PATH",
+        });
     }
-    if !NPX_ESBUILD_UNAVAILABLE.load(AtomicOrdering::Acquire) && which("npx") {
-        return Some(("npx".to_string(), vec!["--yes".into(), "esbuild".into()]));
+    if !NPX_ESBUILD_UNAVAILABLE.load(AtomicOrdering::Acquire) {
+        if let Some(tool) = resolve_tool("npx") {
+            return Some(EsbuildCommand {
+                program: tool.path,
+                lead: npx_esbuild_args(),
+                child_path: tool.child_path,
+                source: "npx",
+            });
+        }
     }
     None
 }
 
-fn which(prog: &str) -> bool {
-    let Ok(path) = std::env::var("PATH") else {
-        return false;
-    };
-    for dir in std::env::split_paths(&path) {
-        let cand = dir.join(prog);
-        if cand.is_file() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            if dir.join(format!("{prog}.cmd")).is_file()
-                || dir.join(format!("{prog}.exe")).is_file()
-            {
-                return true;
-            }
-        }
-    }
-    false
+/// What goes before the build's own arguments when esbuild runs through `npx`:
+/// a pinned release, never "latest".
+fn npx_esbuild_args() -> Vec<String> {
+    vec!["--yes".into(), format!("esbuild@{ESBUILD_VERSION}")]
 }
 
-/// Build an app project rooted at `project_dir`. Expects `src/main.ts`; writes
-/// `dist/app.js`. Returns a report (never errors on a *build* failure — inspect
-/// `report.ok`); only returns `Err` for filesystem problems.
+/// A switch that makes [`find_esbuild`] find nothing on the CURRENT thread, so a
+/// test can drive the fallback path deterministically on a machine that has
+/// esbuild. Thread-local, because tests run in parallel and the others must
+/// keep finding theirs.
+#[cfg(test)]
+pub(crate) mod tests_without_esbuild {
+    use std::cell::{Cell, RefCell};
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+        static STUB: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn active() -> bool {
+        ACTIVE.with(Cell::get)
+    }
+
+    /// The stand-in [`super::find_esbuild`] returns instead, if any.
+    pub(crate) fn stub() -> Option<PathBuf> {
+        STUB.with(|s| s.borrow().clone())
+    }
+
+    /// Run `f` with no esbuild visible to this thread.
+    pub(crate) fn run<T>(f: impl FnOnce() -> T) -> T {
+        swapped(None, f)
+    }
+
+    /// Run `f` with `program` as this thread's only esbuild: a test's stub
+    /// that builds deterministically, without the machine's real one.
+    pub(crate) fn run_with_stub<T>(program: &Path, f: impl FnOnce() -> T) -> T {
+        swapped(Some(program.to_path_buf()), f)
+    }
+
+    fn swapped<T>(stub: Option<PathBuf>, f: impl FnOnce() -> T) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                ACTIVE.with(|a| a.set(false));
+                STUB.with(|s| s.borrow_mut().take());
+            }
+        }
+        ACTIVE.with(|a| a.set(true));
+        STUB.with(|s| *s.borrow_mut() = stub);
+        let _reset = Reset;
+        f()
+    }
+
+    /// A shell script that writes a fixed bundle to `--outfile=` and exits 0,
+    /// standing in for esbuild. Unix only: it is `/bin/sh`.
+    #[cfg(unix)]
+    pub(crate) fn write_stub(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("esbuild-stub");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --outfile=*) out=\"${a#--outfile=}\";; esac; done\n\
+             printf '(()=>{})();\\n' > \"$out\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+}
+
+/// Whether this process can run a real esbuild. A fallback bundle is stale only
+/// when it can: rebuilding one with the type-stripper again buys nothing.
+pub fn esbuild_available() -> bool {
+    find_esbuild().is_some()
+}
+
+/// A program found on a `PATH`, and the `PATH` its child should run with.
+pub(crate) struct ResolvedTool {
+    pub(crate) path: PathBuf,
+    /// `Some` when the program was found only on the login shell's `PATH`.
+    /// `npx` is a Node script (`#!/usr/bin/env node`), so finding it there is
+    /// no use unless its child can find `node` there too.
+    pub(crate) child_path: Option<OsString>,
+}
+
+/// Find `program` on the process `PATH`, then on the login shell's.
+///
+/// A daemon the desktop app starts inherits launchd's `PATH`
+/// (`/usr/bin:/bin:/usr/sbin:/sbin` plus the app's own `bin/`), which holds
+/// neither Homebrew's `node` nor nvm's `npx`.
+pub(crate) fn resolve_tool(program: &str) -> Option<ResolvedTool> {
+    let process_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(path) = find_in_dirs(program, &process_dirs) {
+        return Some(ResolvedTool {
+            path,
+            child_path: None,
+        });
+    }
+    let login_dirs = login_shell_path_dirs();
+    let path = find_in_dirs(program, login_dirs)?;
+    let mut dirs = process_dirs;
+    for dir in login_dirs {
+        if !dirs.contains(dir) {
+            dirs.push(dir.clone());
+        }
+    }
+    Some(ResolvedTool {
+        path,
+        child_path: std::env::join_paths(dirs).ok(),
+    })
+}
+
+fn find_in_dirs(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let names: Vec<String> = if cfg!(windows) {
+        vec![
+            format!("{program}.exe"),
+            format!("{program}.cmd"),
+            program.to_string(),
+        ]
+    } else {
+        vec![program.to_string()]
+    };
+    dirs.iter()
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The directories the user's login shell puts on `PATH`, probed once per
+/// process and empty when the probe fails or takes too long.
+///
+/// The developer extension already answers this for the shell tool
+/// ([`crate::developer::paths::get_shell_path_dirs`], which also refuses an
+/// unexpected `$SHELL` and strips the daemon's secrets from the probe), so this
+/// asks it rather than spawning a second, differently-filtered shell. That
+/// function is async and every caller here is blocking code — a
+/// `spawn_blocking` build, a plain test — so it runs on a private runtime on
+/// its own thread, which works even from inside another runtime, where a
+/// `block_on` on the calling thread would panic.
+pub(crate) fn login_shell_path_dirs() -> &'static [PathBuf] {
+    static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        std::thread::spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            runtime.block_on(async {
+                tokio::time::timeout(
+                    LOGIN_SHELL_PROBE_TIMEOUT,
+                    crate::developer::paths::get_shell_path_dirs(),
+                )
+                .await
+                .ok()?
+                .ok()
+                .cloned()
+            })
+        })
+        .join()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+    })
+}
+
 /// The App SDK an app *should* be bundling — the template compiled into this
 /// binary.
 pub fn sdk_template() -> &'static str {
     include_str!("templates/sdk.ts")
+}
+
+fn fingerprint_of(source: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut h);
+    format!("{:x}", h.finish())
 }
 
 /// A short fingerprint of the current App SDK. Stored on the manifest after a
@@ -1034,10 +1341,256 @@ pub fn sdk_template() -> &'static str {
 /// server now sends (this is how agent-driven UI reaches apps built before it
 /// existed).
 pub fn sdk_fingerprint() -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    sdk_template().hash(&mut h);
-    format!("{:x}", h.finish())
+    fingerprint_of(sdk_template())
+}
+
+/// The fingerprint of the SDK an app actually vendors (`src/sdk.ts`), `None`
+/// when it vendors none.
+pub fn vendored_sdk_fingerprint(project_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(project_dir.join("src/sdk.ts"))
+        .ok()
+        .map(|source| fingerprint_of(&source))
+}
+
+/// This binary's version, the one a bundle banner records.
+pub fn biorouter_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// `a > b` for two `major.minor.patch` versions; `false` when either does not
+/// parse, so an unreadable version never blocks a rebuild.
+pub fn version_is_newer(a: &str, b: &str) -> bool {
+    fn parse(v: &str) -> Option<(u64, u64, u64)> {
+        let core = v.trim().split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
+    }
+    matches!((parse(a), parse(b)), (Some(a), Some(b)) if a > b)
+}
+
+/// The one-line banner that opens every `dist/app.js` this module writes.
+///
+/// It is the bundle's own record of how it was made, so it travels with the
+/// file (an export, a copy) and survives an older daemon re-saving the manifest
+/// without fields it does not know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleBanner {
+    /// "esbuild" or "fallback".
+    pub builder: String,
+    /// Fingerprint of the App SDK inside, "none" for an app that bundles none.
+    pub sdk: String,
+    /// [`sources_fingerprint`] of the `src/` it was built from. `None` on a
+    /// bundle from before the field existed.
+    pub src: Option<String>,
+    /// The Biorouter version that built it.
+    pub version: String,
+    /// The Biorouter version whose App SDK it carries (`sdkv=`), when that is
+    /// not the builder's: a build that KEPT the SDK a newer Biorouter vendored.
+    /// `None` on a bundle from before the field existed; see
+    /// [`Self::sdk_version`].
+    pub sdk_version: Option<String>,
+}
+
+const BANNER_PREFIX: &str = "/* biorouter-app-bundle ";
+/// What the type-stripper wrote before banners existed. Bundles carrying it are
+/// still on users' disks — and were stamped fresh — so they are recognised.
+const LEGACY_FALLBACK_MARKER: &str = "/* Agent Drafter fallback bundle";
+
+impl BundleBanner {
+    fn line(&self) -> String {
+        let note = if self.builder == "fallback" {
+            " (Agent Drafter fallback bundle: esbuild was not available)"
+        } else {
+            ""
+        };
+        let src = self
+            .src
+            .as_deref()
+            .map(|src| format!(" src={src}"))
+            .unwrap_or_default();
+        let sdkv = self
+            .sdk_version
+            .as_deref()
+            .map(|v| format!(" sdkv={v}"))
+            .unwrap_or_default();
+        format!(
+            "{BANNER_PREFIX}builder={} sdk={}{src} biorouter={}{sdkv}{note} */\n",
+            self.builder, self.sdk, self.version
+        )
+    }
+
+    /// The Biorouter version the carried App SDK came from: `sdkv=` when the
+    /// banner has it, else the builder's version.
+    ///
+    /// ⚠ Not [`Self::version`]. When an older daemon rebuilds an app and keeps
+    /// the SDK a newer one vendored, the builder is the older daemon and the
+    /// SDK is still the newer one's. Asking the builder's version made that
+    /// older daemon see its own name on the next load, call the SDK drift, and
+    /// rebuild down to its older runtime after all — one build later.
+    pub fn sdk_version(&self) -> &str {
+        self.sdk_version.as_deref().unwrap_or(&self.version)
+    }
+
+    fn parse(first_line: &str) -> Option<Self> {
+        if first_line.starts_with(LEGACY_FALLBACK_MARKER) {
+            return Some(Self {
+                builder: "fallback".into(),
+                sdk: "unknown".into(),
+                src: None,
+                version: "0.0.0".into(),
+                sdk_version: None,
+            });
+        }
+        let rest = first_line.strip_prefix(BANNER_PREFIX)?;
+        let field = |key: &str| {
+            rest.split_whitespace()
+                .find_map(|word| word.strip_prefix(key))
+                .map(str::to_string)
+        };
+        Some(Self {
+            builder: field("builder=")?,
+            sdk: field("sdk=")?,
+            src: field("src="),
+            version: field("biorouter=")?,
+            sdk_version: field("sdkv="),
+        })
+    }
+
+    pub fn is_fallback(&self) -> bool {
+        self.builder == "fallback"
+    }
+}
+
+/// A fingerprint of everything under `project_dir/src`: each file's path and
+/// bytes (symlinks skipped, depth bounded). A bundle records the one it was
+/// built from in its banner, and is stale once its sources no longer match.
+///
+/// ⚠ By content, not modification time. A source with a FUTURE mtime (a copy
+/// from a machine with a skewed clock, an extracted archive, a `touch`) was
+/// newer than every bundle ever built from it, so the app was rebuilt on every
+/// page load. SHA-256 rather than the std hasher, whose output may change
+/// between Rust releases: this value is written to disk and read back by other
+/// builds of Biorouter.
+pub fn sources_fingerprint(project_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    /// Past this a file is fingerprinted by size and mtime, so one huge data
+    /// file in `src/` cannot make every page load slow.
+    const READ_LIMIT: u64 = 8 << 20;
+    fn walk(dir: &Path, base: &Path, depth: usize, h: &mut Sha256) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() && depth < 8 {
+                walk(&path, base, depth + 1, h);
+            } else if kind.is_file() {
+                let rel = path.strip_prefix(base).unwrap_or(&path);
+                h.update(rel.to_string_lossy().as_bytes());
+                h.update([0]);
+                let meta = entry.metadata().ok();
+                let len = meta.as_ref().map_or(0, |m| m.len());
+                h.update(len.to_le_bytes());
+                if len <= READ_LIMIT {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        h.update(&bytes);
+                    }
+                } else if let Some(mtime) = meta.and_then(|m| m.modified().ok()) {
+                    let since = mtime
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default();
+                    h.update(since.as_nanos().to_le_bytes());
+                }
+                h.update([0]);
+            }
+        }
+    }
+    let mut h = Sha256::new();
+    walk(&project_dir.join("src"), project_dir, 0, &mut h);
+    h.finalize()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The banner of the bundle at `path`, `None` when it has none (absent, or
+/// written by something else — a custom build script).
+pub fn read_bundle_banner(path: &Path) -> Option<BundleBanner> {
+    let mut head = [0u8; 256];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = String::from_utf8_lossy(&head[..n]);
+    BundleBanner::parse(head.lines().next()?)
+}
+
+/// Write `bytes` to `path` through a sibling temp file and a rename, so a
+/// reader (a browser fetching `dist/app.js`, a concurrent build) sees the old
+/// file or the new one and never a truncated one.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp = sibling_temp(path);
+    let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// A unique name beside `path`, hidden, so nothing serves or bundles it.
+fn sibling_temp(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+    ))
+}
+
+/// Whether `main` imports the App SDK, however the specifier is spelled:
+/// `"./sdk"`, `"./sdk.ts"` or `"./sdk.js"` (esbuild resolves all three to
+/// `src/sdk.ts`), in an `import … from`, a bare `import` or an `export … from`,
+/// on one line or several.
+///
+/// ⚠ It matched the literal `"./sdk"` only. An app importing `"./sdk.js"` was
+/// then never refreshed, its bundle was stamped with the CURRENT SDK it did not
+/// carry, and it kept its creation-time runtime through every upgrade; the
+/// fallback bundler left the SDK out of such an app altogether.
+fn imports_sdk(main: &str) -> bool {
+    static SDK_IMPORT: OnceLock<regex::Regex> = OnceLock::new();
+    SDK_IMPORT
+        .get_or_init(|| {
+            regex::Regex::new(r#"(?:\bfrom|\bimport)\s*["']\./sdk(?:\.ts|\.js)?["']"#)
+                .expect("static regex")
+        })
+        .is_match(main)
+}
+
+/// What a build did to `src/sdk.ts`, so a build that installs nothing can put
+/// it back.
+struct SdkRefresh {
+    /// The file's bytes before, `None` when there was no file.
+    previous: Option<Vec<u8>>,
+}
+
+impl SdkRefresh {
+    /// Put `src/sdk.ts` back as it was before the refresh.
+    fn undo(self, project_dir: &Path) -> io::Result<()> {
+        let path = project_dir.join("src/sdk.ts");
+        match self.previous {
+            Some(bytes) => write_atomic(&path, &bytes),
+            None => match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            },
+        }
+    }
 }
 
 /// Overwrite the app's vendored `src/sdk.ts` when it differs from the template.
@@ -1045,55 +1598,233 @@ pub fn sdk_fingerprint() -> String {
 /// The SDK is a *provided runtime*, not authored code: `create_app` writes it and
 /// nothing is meant to edit it. Refreshing it here means "rebuild the app" is all
 /// it takes to pick up SDK fixes, instead of a manual re-copy into every project.
-/// Returns whether it was replaced.
-fn refresh_sdk(project_dir: &Path) -> bool {
+/// Written atomically: a concurrent esbuild must never read half a file.
+/// Returns what it replaced, `None` when the file was already current.
+fn refresh_sdk(project_dir: &Path) -> io::Result<Option<SdkRefresh>> {
     let path = project_dir.join("src/sdk.ts");
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current == sdk_template() {
-        return false;
+    let previous = std::fs::read(&path).ok();
+    if previous.as_deref() == Some(sdk_template().as_bytes()) {
+        return Ok(None);
     }
-    std::fs::write(&path, sdk_template()).is_ok()
+    write_atomic(&path, sdk_template().as_bytes())?;
+    Ok(Some(SdkRefresh { previous }))
 }
 
-pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
-    let entry = project_dir.join("src/main.ts");
-    if !entry.exists() {
-        return Ok(BuildReport {
-            ok: false,
-            used: "none".into(),
-            log: "src/main.ts not found, so there is nothing to build".into(),
-        });
-    }
-    let refreshed = refresh_sdk(project_dir);
-    let dist = project_dir.join("dist");
-    std::fs::create_dir_all(&dist)?;
-    let out = dist.join("app.js");
+/// How a build should treat the app's vendored SDK.
+#[derive(Debug, Clone, Default)]
+pub struct BuildOptions {
+    /// Keep `src/sdk.ts` as it is, because the Biorouter version named here,
+    /// NEWER than this one, put it there: rebuilding the app to this binary's
+    /// SDK would be a downgrade. `None` (the default) replaces it with this
+    /// binary's SDK first. The bundle's banner records whose SDK it carries
+    /// ([`BundleBanner::sdk_version`]), so the next build, on any daemon, knows.
+    pub keep_sdk_from: Option<String>,
+}
 
-    let note = |mut report: BuildReport| {
-        if refreshed {
+/// Build an app project rooted at `project_dir`. Expects `src/main.ts`; writes
+/// `dist/app.js`, and `dist/app.css` when the code imports a stylesheet.
+/// Returns a report (never errors on a *build* failure — inspect `report.ok`);
+/// only returns `Err` for filesystem problems.
+pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
+    build_app_with(project_dir, BuildOptions::default())
+}
+
+/// [`build_app`] with explicit [`BuildOptions`].
+///
+/// A build that installs no bundle leaves the app as it found it: a refused
+/// fallback is decided before `src/sdk.ts` is touched, and a refresh made for a
+/// build that then failed is undone. ⚠ A refused fallback used to rewrite
+/// `src/sdk.ts` anyway, so the vendored SDK and the bundle still being served
+/// disagreed, on a daemon that could not rebuild either.
+pub fn build_app_with(project_dir: &Path, opts: BuildOptions) -> std::io::Result<BuildReport> {
+    let entry = project_dir.join("src/main.ts");
+    let Ok(main) = std::fs::read_to_string(&entry) else {
+        return Ok(BuildReport::not_built(
+            "none",
+            "src/main.ts not found, so there is nothing to build",
+        ));
+    };
+    let out = project_dir.join("dist/app.js");
+    let imports = imports_sdk(&main);
+    // An app that neither imports the SDK nor vendors one (a static page with
+    // its own main.ts) is not given one it never asked for. One that vendors it
+    // is kept current even when the import is spelled in a way `imports_sdk`
+    // cannot see: a refresh costs nothing, and a stale SDK stamped as the
+    // current one is exactly what the stamp exists to prevent.
+    let has_sdk = imports || project_dir.join("src/sdk.ts").is_file();
+    let esbuild = find_esbuild();
+    if esbuild.is_none() {
+        if let Some(refused) = fallback_precheck(&out, &main) {
+            return Ok(refused);
+        }
+    }
+    let refresh = match (&opts.keep_sdk_from, has_sdk) {
+        (None, true) => refresh_sdk(project_dir)?,
+        _ => None,
+    };
+    let sdk = if has_sdk {
+        vendored_sdk_fingerprint(project_dir).unwrap_or_else(|| "none".into())
+    } else {
+        "none".into()
+    };
+    let made = BundleMaking {
+        project_dir,
+        main: &main,
+        includes_sdk: imports,
+        sdk,
+        sdk_version: opts
+            .keep_sdk_from
+            .filter(|kept| kept.as_str() != biorouter_version()),
+    };
+    let built = made.build(esbuild);
+    let Some(refresh) = refresh else {
+        return built;
+    };
+    match built {
+        Ok(mut report) if report.ok => {
             report.log = format!(
                 "Refreshed src/sdk.ts to the current App SDK.\n{}",
                 report.log
             );
+            Ok(report)
         }
-        report
-    };
-
-    if let Some((program, lead)) = find_esbuild() {
-        match run_esbuild(&program, &lead, &entry, &out) {
-            // esbuild ran: surface its result either way rather than silently
-            // masking a syntax error with the weaker fallback.
-            Ok(report) => return Ok(note(report)),
-            Err(e) => {
-                // esbuild could not be spawned; fall through to the stripper.
-                let mut report = fallback_bundle(project_dir, &out)?;
-                report.log = format!("esbuild unavailable ({e}); used fallback.\n{}", report.log);
-                return Ok(note(report));
+        other => {
+            if let Err(error) = refresh.undo(project_dir) {
+                tracing::warn!(
+                    "could not restore src/sdk.ts after a build that installed nothing: {error}"
+                );
             }
+            other
         }
     }
+}
 
-    fallback_bundle(project_dir, &out).map(note)
+/// Everything one build needs to know beyond the bundler to use.
+struct BundleMaking<'a> {
+    project_dir: &'a Path,
+    main: &'a str,
+    /// Whether `main` imports the SDK, so the fallback must include it.
+    includes_sdk: bool,
+    /// Fingerprint of the vendored SDK, "none" for an app with none.
+    sdk: String,
+    /// [`BundleBanner::sdk_version`], when it is not this binary's.
+    sdk_version: Option<String>,
+}
+
+impl BundleMaking<'_> {
+    fn build(self, esbuild: Option<EsbuildCommand>) -> io::Result<BuildReport> {
+        let dist = self.project_dir.join("dist");
+        std::fs::create_dir_all(&dist)?;
+        let entry = self.project_dir.join("src/main.ts");
+        let mut unavailable = None;
+        if let Some(cmd) = esbuild {
+            // Taken before esbuild reads them: an edit made during the build
+            // then shows as a change, and the next check rebuilds.
+            let sources = sources_fingerprint(self.project_dir);
+            // esbuild writes into a directory of its own, and what it wrote is
+            // installed (banner first) by renames, or not at all.
+            let staging = Staging::new(&dist)?;
+            match run_esbuild(&cmd, &entry, &staging.0.join("app.js")) {
+                Ok(mut report) if report.ok => {
+                    let banner = BundleBanner {
+                        builder: "esbuild".into(),
+                        sdk: self.sdk.clone(),
+                        src: Some(sources),
+                        version: biorouter_version().into(),
+                        sdk_version: self.sdk_version.clone(),
+                    };
+                    install_bundle(&staging.0, &dist, &banner)?;
+                    report.stamp = Some(if self.sdk == "none" {
+                        sdk_fingerprint()
+                    } else {
+                        self.sdk
+                    });
+                    return Ok(report);
+                }
+                Ok(report) if cmd.source == "npx" && npm_could_not_fetch(&report.log) => {
+                    // npx never reached esbuild (offline, a registry outage):
+                    // that is "no esbuild here", not a compile error in the app.
+                    NPX_ESBUILD_UNAVAILABLE.store(true, AtomicOrdering::Release);
+                    unavailable = Some(format!("npx could not fetch esbuild:\n{}", report.log));
+                }
+                // esbuild ran: surface its result rather than silently masking a
+                // syntax error with the weaker fallback.
+                Ok(report) => return Ok(report),
+                Err(e) => unavailable = Some(format!("esbuild could not run ({e})")),
+            }
+        }
+        let mut report = fallback_bundle(
+            self.project_dir,
+            &dist.join("app.js"),
+            self.main,
+            self.includes_sdk,
+            self.sdk_version,
+        )?;
+        if let Some(why) = unavailable {
+            report.log = format!("{why}\n{}", report.log);
+        }
+        Ok(report)
+    }
+}
+
+/// A fresh hidden directory in `dist/` for esbuild to write into, removed when
+/// dropped.
+///
+/// ⚠ esbuild used to write `--outfile=dist/.app.js.<pid>.<n>.tmp` directly. A
+/// stylesheet the code imports is written beside the outfile with its
+/// extension swapped, so it landed in `dist/.app.js.<pid>.<n>.css`: nothing
+/// installed it as `dist/app.css`, an older `dist/app.css` was served forever,
+/// and every rebuild left another hidden stylesheet behind.
+struct Staging(PathBuf);
+
+impl Staging {
+    fn new(dist: &Path) -> io::Result<Self> {
+        let path = sibling_temp(&dist.join("build"));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Install what esbuild wrote into `staging`: `app.css` first when the build
+/// made one, else any `dist/app.css` an earlier build left is removed (the
+/// code no longer imports a stylesheet); then `app.js`, banner first, with
+/// one rename.
+fn install_bundle(staging: &Path, dist: &Path, banner: &BundleBanner) -> io::Result<()> {
+    let css = staging.join("app.css");
+    let installed_css = dist.join("app.css");
+    if css.is_file() {
+        std::fs::rename(&css, &installed_css)?;
+    } else if let Err(error) = std::fs::remove_file(&installed_css) {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(error);
+        }
+    }
+    let mut bytes = banner.line().into_bytes();
+    bytes.extend_from_slice(&std::fs::read(staging.join("app.js"))?);
+    write_atomic(&dist.join("app.js"), &bytes)
+}
+
+/// Whether an `npx` run failed in npm itself, fetching the package, rather than
+/// in esbuild. npm names its own failures with an `E…` code (`ENOTFOUND`,
+/// `EAI_AGAIN`, `E404`, …); a compile error is esbuild's `✘ [ERROR]` and must
+/// stay a build failure.
+fn npm_could_not_fetch(log: &str) -> bool {
+    [
+        "npm ERR! code E",
+        "npm error code E",
+        "ENOTFOUND",
+        "EAI_AGAIN",
+        "ECONNREFUSED",
+        "ETIMEDOUT",
+    ]
+    .iter()
+    .any(|marker| log.contains(marker))
 }
 
 /// Bundle `entry` with esbuild.
@@ -1107,13 +1838,23 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
 /// package from the public registry at build time and runs it, lifecycle
 /// scripts included. Handing a just-fetched third-party package `biorouterd`'s
 /// auth key buys nothing — a bundler needs no credential.
-fn run_esbuild(
-    program: &str,
-    lead: &[String],
-    entry: &Path,
-    out: &Path,
-) -> std::io::Result<BuildReport> {
-    run_esbuild_with_timeout(program, lead, entry, out, ESBUILD_TIMEOUT)
+fn run_esbuild(cmd: &EsbuildCommand, entry: &Path, out: &Path) -> std::io::Result<BuildReport> {
+    let program = cmd.program.to_string_lossy();
+    let mut report = run_esbuild_with_timeout(
+        &program,
+        &cmd.lead,
+        cmd.child_path.as_deref(),
+        entry,
+        out,
+        ESBUILD_TIMEOUT,
+    )?;
+    if cmd.source == "npx" {
+        report.log = format!(
+            "Built with npx esbuild@{ESBUILD_VERSION} (no bundled esbuild was found).\n{}",
+            report.log
+        );
+    }
+    Ok(report)
 }
 
 fn terminate_esbuild(child: &mut Child) {
@@ -1140,6 +1881,7 @@ fn join_output(reader: std::thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Resu
 fn run_esbuild_with_timeout(
     program: &str,
     lead: &[String],
+    child_path: Option<&OsStr>,
     entry: &Path,
     out: &Path,
     timeout: Duration,
@@ -1147,7 +1889,13 @@ fn run_esbuild_with_timeout(
     let npx_guard = lock_npx_esbuild(program);
     let mut cmd = Command::new(program);
     if npx_guard.is_some() {
-        cmd.env("npm_config_cache", npx_cache_dir());
+        // Never npm's default cache or a guessable one: see `npx_cache_dir`.
+        let cache = npx_cache_dir()
+            .ok_or_else(|| io::Error::other("could not make a private npm cache for npx"))?;
+        cmd.env("npm_config_cache", cache);
+    }
+    if let Some(path) = child_path {
+        cmd.env("PATH", path);
     }
     cmd.args(lead);
     cmd.arg(entry);
@@ -1230,31 +1978,253 @@ fn run_esbuild_with_timeout(
         ok: status.success() && out.exists(),
         used: "esbuild".into(),
         log,
+        stamp: None,
     })
 }
 
-/// Best-effort transpile without esbuild: concatenate `sdk.ts` + `main.ts`,
-/// drop module syntax, and strip the common TypeScript type constructs. Wrapped
-/// in an IIFE. Good enough for the generated starter apps; not a real compiler.
-fn fallback_bundle(project_dir: &Path, out: &Path) -> std::io::Result<BuildReport> {
+/// What every fallback refusal ends with: the way out.
+const FALLBACK_NEEDS_ESBUILD: &str = "This app needs esbuild, which was not found on this \
+     machine (the desktop app ships one; a CLI-only install can set BIOROUTER_ESBUILD_BIN or put \
+     esbuild on PATH). Until then, keep src/main.ts to single-line imports from \"./sdk\" only.";
+
+/// Why the type-stripper must not build `main`, or `None` when it can.
+///
+/// The stripper deletes `import` lines and concatenates one file, so anything
+/// that changes what an import brings in would be lost silently — it used to
+/// drop a second module's code without a word, and leave a multi-line import's
+/// tail behind as a syntax error. It also cannot tell a class field's type
+/// annotation from an object-literal property on a line of its own
+/// (`  at: Date.now(),` would become the shorthand `at,`, which PARSES and then
+/// reads an undefined variable), so it refuses that shape too.
+fn fallback_refusal(main: &str) -> Option<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    let dynamic_import = regex::Regex::new(r"\bimport\s*\(").expect("static regex");
+    if dynamic_import.is_match(main) {
+        reasons.push("src/main.ts uses a dynamic import(), which needs a real bundler".into());
+    }
+    let ambiguous = regex::Regex::new(
+        r"^\s*(?:(?:private|public|protected|readonly|static|declare|override)\s+)*[A-Za-z_$][\w$]*\??\s*:\s*(?:[A-Z]|(?:string|number|boolean|void|any|null|undefined|unknown|never|this|object)\b)",
+    )
+    .expect("static regex");
+    // `function scene(): { x: number } {` — an object type after a parameter
+    // list. The stripper removes a NAMED type after `):` but not a `{ … }` one,
+    // and the shipped canvas starter has exactly this shape.
+    let object_return_type = regex::Regex::new(r"\)\s*:\s*\{").expect("static regex");
+    let single_line_sdk_import = regex::Regex::new(
+        r#"^import\s+(?:type\s+)?(?:\{[^}]*\}\s+from\s+)?["']\./sdk(?:\.ts|\.js)?["']\s*;?\s*(?://.*)?$"#,
+    )
+    .expect("static regex");
+    let mut skipping_type_block = false;
+    let mut depth = 0i32;
+    for (n, line) in main.lines().enumerate() {
+        let t = line.trim();
+        // Interfaces and type aliases are deleted whole by `strip_module_syntax`,
+        // so their members are not ambiguous.
+        if skipping_type_block {
+            depth += count(line, '{') - count(line, '}');
+            if depth <= 0 && (t.ends_with(';') || t.ends_with('}')) {
+                skipping_type_block = false;
+            }
+            continue;
+        }
+        if t.starts_with("interface ")
+            || t.starts_with("export interface ")
+            || t.starts_with("type ")
+            || t.starts_with("export type ")
+            || t.starts_with("declare ")
+        {
+            depth = count(line, '{') - count(line, '}');
+            skipping_type_block = depth > 0 || !(t.ends_with(';') || t.ends_with('}'));
+            continue;
+        }
+        if t.starts_with("import ") || t == "import" || t.starts_with("import{") {
+            if !single_line_sdk_import.is_match(t) {
+                reasons.push(format!(
+                    "line {}: `{t}` imports something other than \"./sdk\" in one line (another module, an alias, or a multi-line import)",
+                    n + 1
+                ));
+            } else if t.contains(" as ") {
+                reasons.push(format!("line {}: `{t}` renames an SDK import", n + 1));
+            }
+            continue;
+        }
+        if t.starts_with("export ") && t.contains(" from ") {
+            reasons.push(format!("line {}: `{t}` re-exports another module", n + 1));
+            continue;
+        }
+        if object_return_type.is_match(line) {
+            reasons.push(format!(
+                "line {}: `{t}` declares an object type after a parameter list, which the fallback cannot strip",
+                n + 1
+            ));
+            continue;
+        }
+        if ambiguous.is_match(line) {
+            reasons.push(format!(
+                "line {}: `{t}` could be a typed class field or an object-literal property, which the fallback cannot tell apart",
+                n + 1
+            ));
+        }
+    }
+    if reasons.is_empty() {
+        return None;
+    }
+    reasons.truncate(8);
+    Some(format!(
+        "The fallback bundler refused to build this app, rather than build it wrong:\n  - {}\n{FALLBACK_NEEDS_ESBUILD}",
+        reasons.join("\n  - ")
+    ))
+}
+
+/// Run `node --check` on `js` when node can be found. `Ok(None)` = it parsed,
+/// `Ok(Some(err))` = it did not, `Err(())` = no node to ask.
+fn node_check(js: &str, dir: &Path) -> Result<Option<String>, ()> {
+    let node = resolve_tool("node").ok_or(())?;
+    // `.cjs`: node refuses to check a file whose extension it does not know
+    // (`.tmp`), and reads a plain `.js` as a module when a package.json above
+    // says `"type": "module"`. The bundle is a classic script either way.
+    let file = sibling_temp(&dir.join("check")).with_extension("cjs");
+    std::fs::write(&file, js).map_err(|_| ())?;
+    let mut cmd = Command::new(&node.path);
+    cmd.arg("--check").arg(&file);
+    if let Some(path) = node.child_path.as_deref() {
+        cmd.env("PATH", path);
+    }
+    super::prepare_agent_drafter_child(&mut cmd);
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    let outcome = (|| {
+        let mut child = cmd.spawn().map_err(|_| ())?;
+        let mut stderr = child.stderr.take().ok_or(())?;
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            bytes
+        });
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() < NODE_CHECK_TIMEOUT => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(());
+                }
+            }
+        };
+        let stderr = reader.join().unwrap_or_default();
+        Ok(if status.success() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&stderr).into_owned())
+        })
+    })();
+    let _ = std::fs::remove_file(&file);
+    outcome
+}
+
+/// The last resort when no esbuild can run: concatenate `sdk.ts` + `main.ts`,
+/// drop module syntax, and strip the common TypeScript type constructs. Not a
+/// compiler, and it says so — four rules keep it from doing harm:
+///
+/// 1. It refuses what it cannot build ([`fallback_refusal`]) with `ok: false`.
+/// 2. `main.ts` runs in its OWN function scope nested inside the SDK's, so it
+///    can use every SDK name but neither collide with one (`const renderChart`
+///    was a SyntaxError) nor replace one (an app's `function escapeHtml`
+///    silently swapped out the SDK's hardened escaper).
+/// 3. It never overwrites a `dist/app.js` esbuild made: a real bundle of the
+///    previous sources beats a guess at the current ones. (It used to, on a
+///    plain page view after an SDK upgrade.)
+/// 4. When `node` is reachable the result must pass `node --check`, and its
+///    stamp is `fallback:<sdk>`, never a plain fingerprint, so a daemon with
+///    esbuild rebuilds it properly.
+fn fallback_bundle(
+    project_dir: &Path,
+    out: &Path,
+    main: &str,
+    includes_sdk: bool,
+    sdk_version: Option<String>,
+) -> std::io::Result<BuildReport> {
+    if let Some(refused) = fallback_precheck(out, main) {
+        return Ok(refused);
+    }
     let src = project_dir.join("src");
-    let sdk = std::fs::read_to_string(src.join("sdk.ts")).unwrap_or_default();
-    let main = std::fs::read_to_string(src.join("main.ts"))?;
-    let mut body = String::new();
-    body.push_str(&strip_module_syntax(&sdk));
-    body.push('\n');
-    body.push_str(&strip_module_syntax(&main));
+    let (sdk_source, sdk) = if includes_sdk {
+        let source = std::fs::read_to_string(src.join("sdk.ts")).unwrap_or_default();
+        let fingerprint = fingerprint_of(&source);
+        (source, fingerprint)
+    } else {
+        (String::new(), "none".to_string())
+    };
+    let banner = BundleBanner {
+        builder: "fallback".into(),
+        sdk: sdk.clone(),
+        src: Some(sources_fingerprint(project_dir)),
+        version: biorouter_version().into(),
+        sdk_version,
+    };
     let js = format!(
-        "/* Agent Drafter fallback bundle (no esbuild present). */\n(function(){{\n{body}\n}})();\n"
+        "{}(function(){{\n{}\n;(function(){{\n{}\n}})();\n}})();\n",
+        banner.line(),
+        strip_module_syntax(&sdk_source),
+        strip_module_syntax(main)
     );
-    std::fs::write(out, js)?;
+    let verified = match node_check(&js, out.parent().unwrap_or(project_dir)) {
+        Ok(None) => "It passed `node --check`.",
+        Ok(Some(error)) => {
+            return Ok(BuildReport::not_built(
+                "fallback",
+                format!(
+                    "The fallback bundler's output does not parse, so it was not installed:\n{}\n{FALLBACK_NEEDS_ESBUILD}",
+                    error.trim()
+                ),
+            ));
+        }
+        Err(()) => "It could NOT be verified (no node on this machine), so test the app.",
+    };
+    write_atomic(out, js.as_bytes())?;
     Ok(BuildReport {
         ok: true,
         used: "fallback".into(),
-        log: "Bundled with the vendored type-stripper (esbuild not found). \
-              For full TypeScript support install esbuild or build in the desktop app."
-            .into(),
+        log: format!(
+            "WARNING: built with Biorouter's limited fallback bundler because esbuild was not \
+             found. {verified} The bundle is marked as a fallback, so a Biorouter that has \
+             esbuild rebuilds it properly."
+        ),
+        // A bundle with no SDK in it has no SDK to be out of date: stamped with
+        // the current one, as an esbuild bundle is, or an app that vendors an
+        // SDK it does not import would be "stale" on every load.
+        stamp: Some(format!(
+            "fallback:{}",
+            if sdk == "none" {
+                sdk_fingerprint()
+            } else {
+                sdk
+            }
+        )),
     })
+}
+
+/// Why the fallback would refuse to build `main` into `out`, decided without
+/// touching anything: a shape it cannot build ([`fallback_refusal`]), or a
+/// `dist/app.js` esbuild made, which it never replaces.
+fn fallback_precheck(out: &Path, main: &str) -> Option<BuildReport> {
+    if let Some(refusal) = fallback_refusal(main) {
+        return Some(BuildReport::not_built("fallback", refusal));
+    }
+    if out.exists() && !read_bundle_banner(out).is_some_and(|b| b.is_fallback()) {
+        return Some(BuildReport::not_built(
+            "fallback",
+            format!(
+                "dist/app.js was left as it is: it was built by esbuild (from earlier sources), \
+                 and the fallback bundler does not replace a real bundle with a guess.\n\
+                 {FALLBACK_NEEDS_ESBUILD}"
+            ),
+        ));
+    }
+    None
 }
 
 /// Remove `import`/`export` statements, `interface`/`type` declarations, and the
@@ -1491,6 +2461,56 @@ fn regex_lite_replace_as(line: &str) -> String {
     result
 }
 
+/// What an open bracket on the current line is, for [`strip_colon_types`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bracket {
+    Paren,
+    Square,
+    /// A `{` in expression position: an object literal, whose `key: Value`
+    /// pairs are NOT type annotations.
+    Object,
+    /// A `{` opening a block or a class body.
+    Block,
+}
+
+/// Classify a `{` from what precedes it on the line (`emitted`).
+///
+/// An object literal follows an operator, an opening bracket, a comma or a
+/// value keyword (`return {`); a block follows `)`, `=>`, `else`, a class name,
+/// `;` or nothing. The dashboard starter's `emit("x", { at: Date.now() })` was
+/// stripped to `{ at )` before this existed.
+fn classify_brace(emitted: &str) -> Bracket {
+    let before = emitted.trim_end();
+    if before.ends_with("=>") {
+        return Bracket::Block;
+    }
+    match before.chars().last() {
+        Some(
+            '=' | '(' | ',' | ':' | '[' | '?' | '!' | '&' | '|' | '+' | '-' | '*' | '%' | '<' | '>'
+            | '~' | '^',
+        ) => Bracket::Object,
+        Some(c) if c.is_alphanumeric() || c == '_' || c == '$' => {
+            let word: String = before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if matches!(
+                word.as_str(),
+                "return" | "yield" | "typeof" | "case" | "in" | "of" | "await" | "void" | "throw"
+            ) {
+                Bracket::Object
+            } else {
+                Bracket::Block
+            }
+        }
+        _ => Bracket::Block,
+    }
+}
+
 fn strip_colon_types(line: &str) -> String {
     // Only strip when a `:` is followed by a space + capitalized/primitive type
     // and not inside a string. Very conservative to avoid mangling object/CSS.
@@ -1499,6 +2519,10 @@ fn strip_colon_types(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
     let mut in_str: Option<char> = None;
+    // The brackets opened on this line and still open. Only one line is ever
+    // visible here, so a `{` opened on an earlier line is unknown — which is
+    // why `fallback_refusal` refuses the ambiguous line-start `key: Value`.
+    let mut open: Vec<Bracket> = Vec::new();
     while i < chars.len() {
         let c = chars[i];
         if let Some(q) = in_str {
@@ -1511,6 +2535,24 @@ fn strip_colon_types(line: &str) -> String {
         }
         if c == '"' || c == '\'' || c == '`' {
             in_str = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '(' => open.push(Bracket::Paren),
+            '[' => open.push(Bracket::Square),
+            '{' => open.push(classify_brace(&out)),
+            ')' | ']' | '}' => {
+                open.pop();
+            }
+            _ => {}
+        }
+        // `key: Value` inside an object literal is data. A colon right after
+        // `)` is still a return type (`{ run(): Promise<void> { … } }`), and
+        // `?:` is never valid JS, so only an identifier before it counts.
+        let after_identifier = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        if c == ':' && after_identifier && open.last() == Some(&Bracket::Object) {
             out.push(c);
             i += 1;
             continue;
@@ -1746,8 +2788,9 @@ mod tests {
         std::fs::write(src.join("main.ts"), "import { hi } from \"./sdk\";\nhi();").unwrap();
         let out = dir.path().join("dist/app.js");
         std::fs::create_dir_all(dir.path().join("dist")).unwrap();
-        let report = fallback_bundle(dir.path(), &out).unwrap();
-        assert!(report.ok);
+        let main = std::fs::read_to_string(src.join("main.ts")).unwrap();
+        let report = fallback_bundle(dir.path(), &out, &main, true, None).unwrap();
+        assert!(report.ok, "{}", report.log);
         let js = std::fs::read_to_string(&out).unwrap();
         assert!(js.contains("function hi()"));
         assert!(js.trim_start().starts_with("/*"));
@@ -1759,6 +2802,635 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let report = build_app(dir.path()).unwrap();
         assert!(!report.ok);
+    }
+
+    /// Every spelling esbuild resolves to `src/sdk.ts` counts as importing it.
+    #[test]
+    fn an_sdk_import_is_recognised_however_it_is_spelled() {
+        for main in [
+            "import { createApp } from \"./sdk\";",
+            "import { createApp } from './sdk.js';",
+            "import { createApp } from \"./sdk.ts\"",
+            "import {\n  createApp,\n  type App,\n} from \"./sdk.js\";",
+            "import \"./sdk\";",
+            "export * from './sdk';",
+            "import{createApp}from\"./sdk\"",
+        ] {
+            assert!(imports_sdk(main), "{main}");
+        }
+        for main in [
+            "import { x } from \"./sdkx\";",
+            "import { x } from \"./sdk/extra\";",
+            "import { x } from \"../sdk\";",
+            "const path = \"./sdk\";",
+            "document.title = 'no imports';",
+        ] {
+            assert!(!imports_sdk(main), "{main}");
+        }
+    }
+
+    /// ⚠ A build that installs no bundle used to leave `src/sdk.ts` rewritten
+    /// anyway, so the vendored SDK and the bundle still being served disagreed.
+    /// A refused fallback now decides before touching it, and a refresh made
+    /// for a build that then failed is undone.
+    #[test]
+    fn a_build_that_installs_nothing_leaves_the_vendored_sdk_alone() {
+        let older = "export function createApp() { return 1; }\n";
+        let main = "import { createApp } from \"./sdk\";\ncreateApp();\n";
+        tests_without_esbuild::run(|| {
+            // An esbuild bundle, which the fallback never replaces.
+            let dir = project(Some(older), main);
+            let bundle =
+                "/* biorouter-app-bundle builder=esbuild sdk=0 biorouter=1.0.0 */\n(()=>{})();\n";
+            std::fs::write(dir.path().join("dist/app.js"), bundle).unwrap();
+            let report = build_app(dir.path()).unwrap();
+            assert!(!report.ok, "{}", report.log);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("src/sdk.ts")).unwrap(),
+                older
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap(),
+                bundle
+            );
+
+            // A shape the fallback refuses, with no bundle at all.
+            let dir = project(
+                Some(older),
+                &format!("import {{ x }} from \"./x\";\n{main}"),
+            );
+            assert!(!build_app(dir.path()).unwrap().ok);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("src/sdk.ts")).unwrap(),
+                older
+            );
+        });
+
+        // esbuild ran and failed: the refresh it was given is put back.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let stubs = TempDir::new().unwrap();
+            let failing = stubs.path().join("esbuild-fails");
+            std::fs::write(&failing, "#!/bin/sh\necho 'x [ERROR] nope' >&2\nexit 1\n").unwrap();
+            std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let dir = project(Some(older), main);
+            let report =
+                tests_without_esbuild::run_with_stub(&failing, || build_app(dir.path()).unwrap());
+            assert!(!report.ok && report.log.contains("nope"), "{}", report.log);
+            assert!(!report.log.contains("Refreshed"), "{}", report.log);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("src/sdk.ts")).unwrap(),
+                older
+            );
+
+            // The same build succeeding keeps the refresh.
+            let stub = tests_without_esbuild::write_stub(stubs.path());
+            let report =
+                tests_without_esbuild::run_with_stub(&stub, || build_app(dir.path()).unwrap());
+            assert!(
+                report.ok && report.log.contains("Refreshed src/sdk.ts"),
+                "{}",
+                report.log
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("src/sdk.ts")).unwrap(),
+                sdk_template()
+            );
+        }
+    }
+
+    /// ⚠ Only the literal `"./sdk"` used to count. An app importing
+    /// `"./sdk.js"` was never refreshed and was stamped with the current SDK it
+    /// did not carry, so it kept its creation-time runtime through every
+    /// upgrade; the fallback left the SDK out of a `"./sdk.ts"` app altogether.
+    #[test]
+    fn an_sdk_import_with_an_extension_is_refreshed_stamped_and_bundled() {
+        let older = "export function createApp() { return 1; }\n";
+        #[cfg(unix)]
+        {
+            let stubs = TempDir::new().unwrap();
+            let stub = tests_without_esbuild::write_stub(stubs.path());
+            let dir = project(
+                Some(older),
+                "import { createApp } from \"./sdk.js\";\ncreateApp();\n",
+            );
+            let report =
+                tests_without_esbuild::run_with_stub(&stub, || build_app(dir.path()).unwrap());
+            assert!(report.ok, "{}", report.log);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("src/sdk.ts")).unwrap(),
+                sdk_template(),
+                "refreshed"
+            );
+            assert_eq!(report.stamp.as_deref(), Some(sdk_fingerprint().as_str()));
+            let banner = read_bundle_banner(&dir.path().join("dist/app.js")).unwrap();
+            assert_eq!(banner.sdk, sdk_fingerprint());
+        }
+
+        let dir = project(
+            Some(sdk_template()),
+            "import { createApp } from \"./sdk.ts\";\ncreateApp({ autoChat: false });\n",
+        );
+        let report = tests_without_esbuild::run(|| build_app(dir.path()).unwrap());
+        assert!(report.ok, "{}", report.log);
+        let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+        assert!(
+            js.contains("function createApp"),
+            "the SDK is in the bundle"
+        );
+        assert_eq!(
+            report.stamp,
+            Some(format!("fallback:{}", sdk_fingerprint()))
+        );
+    }
+
+    /// A fallback bundle of code that carries no SDK has no SDK to be out of
+    /// date, so it is stamped with the current one, as an esbuild bundle is.
+    /// Otherwise an app that vendors an SDK it does not import is "stale" on
+    /// every page load.
+    #[test]
+    fn a_fallback_bundle_without_the_sdk_is_stamped_current() {
+        let dir = project(Some(sdk_template()), "document.title = \"plain\";\n");
+        let report = tests_without_esbuild::run(|| build_app(dir.path()).unwrap());
+        assert!(report.ok, "{}", report.log);
+        assert_eq!(
+            report.stamp,
+            Some(format!("fallback:{}", sdk_fingerprint()))
+        );
+        let banner = read_bundle_banner(&dir.path().join("dist/app.js")).unwrap();
+        assert_eq!(banner.sdk, "none", "the banner says what is really inside");
+    }
+
+    /// What esbuild writes is installed by name: `app.css` beside `app.js` when
+    /// the code imports a stylesheet, and a stale `app.css` goes when it no
+    /// longer does.
+    #[test]
+    fn install_bundle_installs_the_stylesheet_and_removes_a_stale_one() {
+        let dir = TempDir::new().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let banner = BundleBanner {
+            builder: "esbuild".into(),
+            sdk: "none".into(),
+            src: None,
+            version: "1.0.0".into(),
+            sdk_version: None,
+        };
+        let staging = Staging::new(&dist).unwrap();
+        std::fs::write(staging.0.join("app.js"), "one();\n").unwrap();
+        std::fs::write(staging.0.join("app.css"), "main{color:red}\n").unwrap();
+        install_bundle(&staging.0, &dist, &banner).unwrap();
+        let staged_at = staging.0.clone();
+        drop(staging);
+        assert!(!staged_at.exists(), "the staging directory is removed");
+        assert_eq!(
+            std::fs::read_to_string(dist.join("app.css")).unwrap(),
+            "main{color:red}\n"
+        );
+        let js = std::fs::read_to_string(dist.join("app.js")).unwrap();
+        assert!(
+            js.starts_with(BANNER_PREFIX) && js.ends_with("one();\n"),
+            "{js}"
+        );
+
+        let staging = Staging::new(&dist).unwrap();
+        std::fs::write(staging.0.join("app.js"), "two();\n").unwrap();
+        install_bundle(&staging.0, &dist, &banner).unwrap();
+        drop(staging);
+        assert!(
+            !dist.join("app.css").exists(),
+            "a stale stylesheet is removed"
+        );
+        let names: Vec<String> = std::fs::read_dir(&dist)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["app.js".to_string()]);
+    }
+
+    /// ⚠ esbuild used to write straight to a hidden temp outfile, and it puts
+    /// an imported stylesheet beside the outfile with the extension swapped, so
+    /// `dist/app.css` was never written and hidden `.css` files piled up. Needs
+    /// a local esbuild (never npx: a test does not download).
+    #[test]
+    fn an_imported_stylesheet_reaches_dist_app_css() {
+        if find_esbuild().is_none_or(|cmd| cmd.source == "npx") {
+            eprintln!("skipped: no local esbuild");
+            return;
+        }
+        let dir = project(None, "import \"./styles.css\";\nconsole.log(1);\n");
+        std::fs::write(dir.path().join("src/styles.css"), "main { color: red; }\n").unwrap();
+        let report = build_app(dir.path()).unwrap();
+        assert!(report.ok, "{}", report.log);
+        let css = std::fs::read_to_string(dir.path().join("dist/app.css")).unwrap();
+        assert!(css.contains("color: red"), "{css}");
+        let hidden = |dir: &TempDir| -> Vec<String> {
+            std::fs::read_dir(dir.path().join("dist"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with('.'))
+                .collect()
+        };
+        assert_eq!(hidden(&dir), Vec::<String>::new());
+
+        std::fs::write(dir.path().join("src/main.ts"), "console.log(2);\n").unwrap();
+        let report = build_app(dir.path()).unwrap();
+        assert!(report.ok, "{}", report.log);
+        assert!(!dir.path().join("dist/app.css").exists());
+        assert_eq!(hidden(&dir), Vec::<String>::new());
+    }
+
+    /// ⚠ The npx cache was `<temp>/biorouter-npx-cache-<pid>`: in a shared
+    /// `/tmp` another account could make it first and plant the esbuild npx
+    /// would run. It is now a fresh directory of this process's own.
+    #[test]
+    fn the_npx_cache_is_private_to_this_process() {
+        let dir = npx_cache_dir().expect("a private cache directory");
+        assert_eq!(npx_cache_dir(), Some(dir), "made once per process");
+        assert!(dir.is_dir());
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("biorouter-npx-"), "{name}");
+        assert_ne!(
+            name,
+            format!("biorouter-npx-cache-{}", std::process::id()),
+            "not a name another account can predict"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let meta = std::fs::metadata(dir).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+            assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+        }
+    }
+
+    /// An app project in a temp dir: `src/sdk.ts` (when given) and `src/main.ts`.
+    fn project(sdk: Option<&str>, main: &str) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        if let Some(sdk) = sdk {
+            std::fs::write(src.join("sdk.ts"), sdk).unwrap();
+        }
+        std::fs::write(src.join("main.ts"), main).unwrap();
+        std::fs::create_dir_all(dir.path().join("dist")).unwrap();
+        dir
+    }
+
+    fn fallback_of(dir: &TempDir) -> BuildReport {
+        let main = std::fs::read_to_string(dir.path().join("src/main.ts")).unwrap();
+        let uses_sdk = imports_sdk(&main);
+        fallback_bundle(
+            dir.path(),
+            &dir.path().join("dist/app.js"),
+            &main,
+            uses_sdk,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// `node --check` on `js`, or `None` when this machine has no node.
+    fn node_parses(js: &str) -> Option<Result<(), String>> {
+        let node = resolve_tool("node")?;
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("bundle.js");
+        std::fs::write(&file, js).unwrap();
+        let out = std::process::Command::new(&node.path)
+            .arg("--check")
+            .arg(&file)
+            .output()
+            .ok()?;
+        Some(if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        })
+    }
+
+    /// The type-stripper concatenates one file and deletes `import` lines, so a
+    /// second module's code used to vanish without a word, and a multi-line
+    /// import left its tail behind as a syntax error. It now refuses each
+    /// shape, says which line, and writes nothing.
+    #[test]
+    fn fallback_refuses_local_imports() {
+        let cases = [
+            (
+                "import { createApp } from \"./sdk\";\nimport { helper } from \"./util\";\ncreateApp();\n",
+                "./util",
+            ),
+            (
+                "import {\n  createApp,\n} from \"./sdk\";\ncreateApp();\n",
+                "line 1",
+            ),
+            (
+                "import { createApp } from \"./sdk\";\nconst m = await import(\"./lazy\");\n",
+                "dynamic import()",
+            ),
+            (
+                "import { createApp as make } from \"./sdk\";\nmake();\n",
+                "renames an SDK import",
+            ),
+            ("export { x } from \"./other\";\n", "line 1"),
+            (
+                "function scene(): { x: number } {\n  return { x: 1 };\n}\n",
+                "object type after a parameter list",
+            ),
+        ];
+        for (main, expect) in cases {
+            let dir = project(Some("export function createApp() {}\n"), main);
+            let report = fallback_of(&dir);
+            assert!(!report.ok, "refused: {main}");
+            assert_eq!(report.used, "fallback");
+            assert!(report.stamp.is_none(), "a refusal earns no stamp");
+            assert!(report.log.contains(expect), "{main}\n---\n{}", report.log);
+            assert!(
+                report.log.contains("esbuild"),
+                "says the way out: {}",
+                report.log
+            );
+            assert!(!dir.path().join("dist/app.js").exists(), "{main}");
+        }
+    }
+
+    /// `main.ts` runs in a scope of its own inside the SDK's: it may reuse an
+    /// SDK name (`const renderChart` beside the SDK's `function renderChart`
+    /// was a SyntaxError) and cannot replace one (an app's `escapeHtml`
+    /// silently swapped out the SDK's hardened escaper, by hoisting).
+    #[test]
+    fn fallback_isolates_main_scope() {
+        let sdk = "export function escapeHtml(s: string): string { return \"sdk:\" + s; }\n\
+                   export function renderChart() { return 1; }\n\
+                   export function report() { globalThis.escaped = escapeHtml(\"x\"); }\n";
+        let main = "import { report } from \"./sdk\";\n\
+                    const renderChart = 2;\n\
+                    function escapeHtml(s: string): string { return \"app:\" + s; }\n\
+                    report();\n\
+                    globalThis.appChart = renderChart + escapeHtml(\"y\").length;\n";
+        let dir = project(Some(sdk), main);
+        let report = fallback_of(&dir);
+        assert!(report.ok, "{}", report.log);
+        let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+        // Structure: banner, the SDK's function, then main nested in its own.
+        let sdk_at = js.find("function renderChart()").unwrap();
+        let nested_at = js.find(";(function(){").unwrap();
+        let main_at = js.find("const renderChart = 2").unwrap();
+        assert!(sdk_at < nested_at && nested_at < main_at, "{js}");
+        if let Some(parsed) = node_parses(&js) {
+            parsed.expect("the fallback bundle parses");
+            let node = resolve_tool("node").unwrap();
+            let file = dir.path().join("dist/app.js");
+            let out = std::process::Command::new(&node.path)
+                .arg("-e")
+                .arg(format!(
+                    "require({:?}); console.log(globalThis.escaped, globalThis.appChart)",
+                    file.to_string_lossy()
+                ))
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                "sdk:x 7",
+                "the SDK keeps its own escapeHtml: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// A fallback build never replaces a bundle esbuild (or anything else) made:
+    /// a real bundle of the previous sources beats a guess at the current ones.
+    /// It does replace an earlier FALLBACK bundle, which is no better than it.
+    #[test]
+    fn a_fallback_never_overwrites_an_esbuild_bundle() {
+        let main = "import { createApp } from \"./sdk\";\ncreateApp();\n";
+        let sdk = "export function createApp() {}\n";
+        for (existing, replaced) in [
+            (
+                "/* biorouter-app-bundle builder=esbuild sdk=abc biorouter=1.92.1 */\n(()=>{})();\n",
+                false,
+            ),
+            ("(()=>{ /* a custom build.mjs */ })();\n", false),
+            (
+                "/* biorouter-app-bundle builder=fallback sdk=abc biorouter=1.92.1 */\n(function(){})();\n",
+                true,
+            ),
+            (
+                "/* Agent Drafter fallback bundle (no esbuild present). */\n(function(){})();\n",
+                true,
+            ),
+        ] {
+            let dir = project(Some(sdk), main);
+            let out = dir.path().join("dist/app.js");
+            std::fs::write(&out, existing).unwrap();
+            let report = fallback_of(&dir);
+            let now = std::fs::read_to_string(&out).unwrap();
+            if replaced {
+                assert!(report.ok, "{}", report.log);
+                assert_ne!(now, existing);
+            } else {
+                assert!(!report.ok, "{existing}");
+                assert!(report.log.contains("left as it is"), "{}", report.log);
+                assert_eq!(now, existing, "byte-identical");
+            }
+        }
+    }
+
+    /// A fallback bundle is stamped `fallback:<sdk>`, never the bare
+    /// fingerprint that made broken fallback bundles look fresh forever, and
+    /// its banner says what built it.
+    #[test]
+    fn a_fallback_build_is_marked_as_one() {
+        let sdk = sdk_template();
+        let dir = project(Some(sdk), include_str!("templates/main.ts"));
+        let report = tests_without_esbuild::run(|| build_app(dir.path()).unwrap());
+        assert!(report.ok, "{}", report.log);
+        assert!(report.is_fallback());
+        assert_eq!(
+            report.stamp,
+            Some(format!("fallback:{}", sdk_fingerprint()))
+        );
+        assert!(report.log.contains("WARNING"), "{}", report.log);
+        let banner = read_bundle_banner(&dir.path().join("dist/app.js")).unwrap();
+        assert!(banner.is_fallback());
+        assert_eq!(banner.sdk, sdk_fingerprint());
+        assert_eq!(banner.version, biorouter_version());
+    }
+
+    /// Every starter Biorouter ships either builds with the fallback into code
+    /// that parses, or is refused with a reason. ⚠ The dashboard starter's
+    /// `emit("refresh_requested", { at: Date.now() })` was stripped to
+    /// `{ at )`, and two of one user's apps shipped exactly that bundle.
+    #[test]
+    fn every_shipped_starter_builds_with_the_fallback_or_is_refused() {
+        let starters = [
+            ("main.ts", include_str!("templates/main.ts")),
+            ("canvas", include_str!("templates/starters/canvas/main.ts")),
+            (
+                "dashboard",
+                include_str!("templates/starters/dashboard/main.ts"),
+            ),
+            (
+                "explorer",
+                include_str!("templates/starters/explorer/main.ts"),
+            ),
+            ("wizard", include_str!("templates/starters/wizard/main.ts")),
+            (
+                "workbench",
+                include_str!("templates/starters/workbench/main.ts"),
+            ),
+        ];
+        for (name, main) in starters {
+            let dir = project(Some(sdk_template()), main);
+            let report = fallback_of(&dir);
+            if !report.ok {
+                // Refused up front, or caught by `node --check` before it was
+                // installed: either way nothing broken was written.
+                assert!(
+                    report.log.contains("refused") || report.log.contains("does not parse"),
+                    "{name}: {}",
+                    report.log
+                );
+                assert!(!dir.path().join("dist/app.js").exists(), "{name}");
+                continue;
+            }
+            let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+            if let Some(parsed) = node_parses(&js) {
+                parsed
+                    .unwrap_or_else(|e| panic!("{name}: the fallback bundle does not parse:\n{e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn strip_colon_types_keeps_object_literal_values_mid_expression() {
+        let line = "    br.signals.emit(\"refresh_requested\", { at: Date.now() });";
+        assert_eq!(strip_colon_types(line), line);
+        let ret = "  return { label: String(x), n: Number(y) };";
+        assert_eq!(strip_colon_types(ret), ret);
+        // A return type after a parameter list is still a type.
+        let method = strip_colon_types("  run(a: string): Promise<void> {");
+        assert!(
+            !method.contains("string") && !method.contains("Promise"),
+            "{method}"
+        );
+        assert!(
+            method.starts_with("  run(a") && method.ends_with('{'),
+            "{method}"
+        );
+    }
+
+    /// The banner is the bundle's own record of what built it, read back from
+    /// the file; a bundle from before banners is recognised as a fallback only
+    /// by the marker the stripper used to write.
+    #[test]
+    fn a_bundle_banner_round_trips_and_legacy_fallbacks_are_recognised() {
+        let mut banner = BundleBanner {
+            builder: "esbuild".into(),
+            sdk: "1a2b".into(),
+            src: Some("0123456789abcdef".into()),
+            version: "1.92.1".into(),
+            sdk_version: Some("1.93.0".into()),
+        };
+        assert_eq!(
+            BundleBanner::parse(banner.line().trim_end()),
+            Some(banner.clone())
+        );
+        assert_eq!(
+            banner.sdk_version(),
+            "1.93.0",
+            "a kept SDK names its own version"
+        );
+        // A banner from before `sdkv=` existed: the SDK is the builder's.
+        banner.sdk_version = None;
+        assert_eq!(
+            BundleBanner::parse(banner.line().trim_end()),
+            Some(banner.clone())
+        );
+        assert_eq!(banner.sdk_version(), "1.92.1");
+        // A banner from before `src=` existed still reads, with no sources.
+        banner.src = None;
+        assert_eq!(BundleBanner::parse(banner.line().trim_end()), Some(banner));
+        // `sdkv=` is not mistaken for `sdk=`, whichever comes first.
+        let parsed = BundleBanner::parse(
+            "/* biorouter-app-bundle builder=esbuild sdkv=2.0.0 sdk=ff biorouter=1.0.0 */",
+        )
+        .unwrap();
+        assert_eq!((parsed.sdk.as_str(), parsed.sdk_version()), ("ff", "2.0.0"));
+        let legacy =
+            BundleBanner::parse("/* Agent Drafter fallback bundle (no esbuild present). */")
+                .unwrap();
+        assert!(legacy.is_fallback());
+        assert_eq!(BundleBanner::parse("(()=>{})();"), None);
+        assert_eq!(BundleBanner::parse("/* some other comment */"), None);
+
+        assert!(version_is_newer("1.93.0", "1.92.9"));
+        assert!(version_is_newer("2.0.0-beta.1", "1.99.99"));
+        assert!(!version_is_newer("1.92.1", "1.92.1"));
+        assert!(!version_is_newer("1.9.0", "1.10.0"));
+        assert!(
+            !version_is_newer("garbage", "1.0.0"),
+            "unreadable never blocks"
+        );
+    }
+
+    /// The packaged app ships esbuild beside `biorouterd`, and that copy is
+    /// found by name in the executable's directory.
+    #[test]
+    fn esbuild_is_found_beside_the_executable() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(esbuild_beside(dir.path()), None);
+        let name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        // The other platform's name is not this platform's binary.
+        let other = if cfg!(windows) {
+            "esbuild"
+        } else {
+            "esbuild.exe"
+        };
+        std::fs::write(dir.path().join(other), b"x").unwrap();
+        assert_eq!(esbuild_beside(dir.path()), None);
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+        assert_eq!(esbuild_beside(dir.path()), Some(dir.path().join(name)));
+        // A directory by that name is not a binary.
+        let as_dir = TempDir::new().unwrap();
+        std::fs::create_dir(as_dir.path().join(name)).unwrap();
+        assert_eq!(esbuild_beside(as_dir.path()), None);
+    }
+
+    /// The `npx` last resort downloads and runs a registry package, so it names
+    /// the exact release the desktop app ships (`fetch-esbuild.js`), never
+    /// whatever "latest" is that day.
+    #[test]
+    fn the_npx_pin_matches_the_shipped_binary() {
+        assert_eq!(npx_esbuild_args(), ["--yes", "esbuild@0.27.3"]);
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/desktop/scripts/fetch-esbuild.js");
+        let js = std::fs::read_to_string(&script).expect("fetch-esbuild.js");
+        let pinned = regex::Regex::new(r"const ESBUILD_VERSION = '([^']+)';")
+            .unwrap()
+            .captures(&js)
+            .expect("fetch-esbuild.js pins ESBUILD_VERSION")[1]
+            .to_string();
+        assert_eq!(pinned, ESBUILD_VERSION);
+    }
+
+    /// npm's own fetch failures mean "no esbuild here"; esbuild's compile
+    /// errors stay build failures.
+    #[test]
+    fn an_npm_fetch_failure_is_told_apart_from_a_compile_error() {
+        assert!(npm_could_not_fetch(
+            "npm error code ENOTFOUND\nnpm error network"
+        ));
+        assert!(npm_could_not_fetch("npm ERR! code E404"));
+        assert!(!npm_could_not_fetch(
+            "✘ [ERROR] Could not resolve \"./util\"\n    src/main.ts:2:23:"
+        ));
     }
 
     #[test]
@@ -2065,6 +3737,7 @@ mod tests {
                     let result = run_esbuild_with_timeout(
                         shim.to_str().unwrap(),
                         &args,
+                        None,
                         &entry,
                         &out,
                         TIMEOUT,
@@ -2207,6 +3880,37 @@ br.run("go", "#missing");
 
         assert!(!formatted.contains("src/main.ts must"), "{formatted}");
         assert!(!formatted.contains("ERROR"), "{formatted}");
+    }
+
+    /// A static page's own inline script and `onclick=` run in the launched app
+    /// (hash-pinned), so they count as wiring; a `javascript:` URL does not run
+    /// there and is warned about, never refused.
+    #[test]
+    fn lint_counts_inline_wiring_and_warns_on_javascript_urls() {
+        let manifest = r#"{"id":"s","title":"S","description":"","kind":"static","entry":"index.html","created_at":0,"updated_at":0}"#;
+        let wired = lint_with(
+            r#"<main class="br-container"><button class="br-btn" onclick="go()">Go</button>
+               <div id="out" class="br-output"></div>
+               <script>function go() { document.getElementById("out").textContent = "1"; }</script></main>"#,
+            "",
+            Some(manifest),
+        );
+        assert!(!wired.contains("won't do anything"), "{wired}");
+        assert!(!wired.contains("javascript:"), "{wired}");
+
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<main class="br-container"><a class="br-btn" href="javascript:go()">Go</a></main>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("manifest.json"), manifest).unwrap();
+        let findings = lint_app(dir.path());
+        let url = findings
+            .iter()
+            .find(|f| f.msg.contains("javascript:"))
+            .expect("a javascript: URL is reported");
+        assert_eq!(url.level, LintLevel::Warn);
     }
 
     /// H6: a hardcoded text color won't adapt to the theme and can go invisible.
@@ -2870,12 +4574,11 @@ document.getElementById("edit")!.addEventListener("click", () => {
         #[test]
         #[ignore]
         fn leak_probe_prints_esbuild_child_env() {
-            let (program, lead) = find_esbuild().expect("BIOROUTER_ESBUILD_BIN shim");
+            let cmd = find_esbuild().expect("BIOROUTER_ESBUILD_BIN shim");
             let work = TempDir::new().unwrap();
             let entry = work.path().join("main.ts");
             std::fs::write(&entry, "const x: number = 1;\n").unwrap();
-            let report =
-                run_esbuild(&program, &lead, &entry, &work.path().join("app.js")).expect("spawn");
+            let report = run_esbuild(&cmd, &entry, &work.path().join("app.js")).expect("spawn");
             let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
             // Report BioRouter's namespace, the variables the parent injected,
             // and any line carrying the canary under *any* key. Everything else
