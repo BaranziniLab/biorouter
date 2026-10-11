@@ -7548,7 +7548,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Session summaries per page (default 10, clamped to 1..=50)",
+            "description": "Session summaries per page (default 10, clamped to 1..=2000)",
             "required": false,
             "schema": {
               "type": "integer",

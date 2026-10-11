@@ -10940,7 +10940,7 @@ export type ListSidebarSessionsData = {
     path?: never;
     query?: {
         /**
-         * Session summaries per page (default 10, clamped to 1..=50)
+         * Session summaries per page (default 10, clamped to 1..=2000)
          */
         limit?: number | null;
         /**

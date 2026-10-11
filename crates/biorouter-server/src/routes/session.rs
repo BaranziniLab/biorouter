@@ -41,7 +41,16 @@ pub struct SessionListResponse {
 }
 
 const DEFAULT_SIDEBAR_SESSION_LIMIT: u32 = 10;
-const MAX_SIDEBAR_SESSION_LIMIT: u32 = 50;
+/// The most rows one sidebar page may carry: the renderer's whole-list cap, so a
+/// view that arranges every chat (sorted by name, grouped by folder) reads them
+/// in ONE request (R-28). It was 50, which made that read 40 sequential
+/// requests: 3.0 s against an idle debug daemon on a copy of a real store
+/// (2,000 of its 5,542 listed chats). One request of 2,000 now takes 0.2 s.
+///
+/// Not a privacy knob. Every row a page carries passed the same SQL predicate,
+/// and a caller paging at 50 reaches the same rows 40 requests later; what the
+/// bound still does is keep one request's work and payload finite.
+const MAX_SIDEBAR_SESSION_LIMIT: u32 = 2_000;
 
 /// Issue #56 DR-19. What both copy handlers say when the SOURCE chat is private
 /// and the request carried no proof it came from the person at the keyboard.
@@ -427,7 +436,7 @@ async fn list_sessions(
     get,
     path = "/sessions/sidebar",
     params(
-        ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=50)"),
+        ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=2000)"),
         ("cursor" = Option<String>, Query, description = "The previous page's `next_cursor`, passed back unchanged. Omit for the first page; an unrecognised value is answered 400"),
         ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
@@ -2488,6 +2497,36 @@ pub(crate) mod diverge_tests {
                 assert!(
                     session["message_count"].as_i64().unwrap_or_default() >= 1,
                     "/sessions/sidebar {label} listed an empty session: {session:?}"
+                );
+            }
+        }
+    }
+
+    /// R-28: one sidebar page may carry the renderer's whole list, so a view
+    /// that arranges every chat reads it in one request rather than forty. The
+    /// limit still clamps, at [`MAX_SIDEBAR_SESSION_LIMIT`]. Read-only against
+    /// the real database like its neighbour, so each length check only binds
+    /// when the store holds more rows than the page asked for.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_sidebar_page_may_carry_the_whole_list() {
+        let state = AppState::new().await.unwrap();
+        for (asked, carried) in [
+            (60, 60),
+            (MAX_SIDEBAR_SESSION_LIMIT + 500, MAX_SIDEBAR_SESSION_LIMIT),
+        ] {
+            let (status, body) =
+                get_sidebar_sessions(state.clone(), &format!("?limit={asked}")).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "limit={asked}");
+            let rows = body["sessions"].as_array().expect("sessions array").len();
+            assert!(
+                rows <= carried as usize,
+                "limit={asked} carried {rows} rows"
+            );
+            if body["has_more"] == serde_json::Value::Bool(true) {
+                assert_eq!(
+                    rows, carried as usize,
+                    "limit={asked} was clamped below {carried}"
                 );
             }
         }

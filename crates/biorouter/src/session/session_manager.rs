@@ -7466,29 +7466,54 @@ impl SessionStorage {
             .await
     }
 
-    async fn list_session_summaries(
-        &self,
-        limit: u32,
-        offset: u32,
+    /// The SQL behind both summary listings: one projection, one set of filters,
+    /// and only the paging differs (`page` is the `LIMIT`/`OFFSET` tail, or the
+    /// keyset predicate plus `LIMIT`).
+    ///
+    /// ⚠ **Shaped for the planner, and measured (R-28, 2026-10-10).** This used to
+    /// `JOIN messages … GROUP BY s.id` and count with `COUNT(m.id)`. That shape
+    /// has to visit every message of every listed chat and sort the whole grouped
+    /// set before `LIMIT` can apply, so a ten-row page cost what the whole list
+    /// cost: 74 ms on a copy of a real store (10,656 chats, 48,252 messages), and
+    /// a non-default sidebar view, which reads every chat, paid it once per page.
+    /// Now:
+    ///
+    /// * "has a message" is an `EXISTS` probe and the count a correlated
+    ///   `COUNT(*)`, both answered from the `idx_messages_session` covering index
+    ///   and only for the rows that survive the other filters, so the page stops
+    ///   reading as soon as it has `LIMIT` rows;
+    /// * the type filter is written `+s.session_type`. The unary plus is SQLite's
+    ///   documented way to keep a term from choosing an index: without it the
+    ///   planner reads every row of the type through `idx_sessions_type` and
+    ///   sorts them all, where it should walk `idx_sessions_updated` in the
+    ///   order the page is sorted in and stop at the limit.
+    ///   `the_summary_listing_walks_the_updated_index` pins that plan.
+    ///
+    /// Same rows, same order, same counts as the join: `COUNT(m.id)` ignored the
+    /// NULL a LEFT JOIN produced, and the correlated count is 0 for a chat with
+    /// no message. Measured on that copy: a ten-row page 74 ms → 3 ms, the whole
+    /// 2,000-row list 34 ms → 10 ms, byte-identical results.
+    fn summary_listing_sql(
         include_subagents: bool,
         include_empty: bool,
-    ) -> Result<Vec<SessionSummary>> {
+        filters: &str,
+        page: &str,
+    ) -> String {
         let type_filter = if include_subagents {
             "('user', 'scheduled', 'sub_agent')"
         } else {
             "('user', 'scheduled')"
         };
-        // The sidebar deliberately hides message-less sessions (an INNER JOIN on
-        // `messages`) so "Untitled chat" placeholders never appear in History.
-        // `workspace_list` needs the opposite: a session `workspace_open` just
-        // created has no message yet and must still be listable. `COUNT(m.id)`
-        // ignores NULLs, so the LEFT JOIN still yields 0.
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
+        // The sidebar deliberately hides message-less sessions so "Untitled
+        // chat" placeholders never appear in History. `workspace_list` needs the
+        // opposite: a session `workspace_open` just created has no message yet
+        // and must still be listable.
+        let non_empty = if include_empty {
+            ""
         } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
         };
-        let query = format!(
+        format!(
             r#"
             SELECT s.id,
                    s.working_dir,
@@ -7496,19 +7521,31 @@ impl SessionStorage {
                    s.user_set_name,
                    s.created_at,
                    s.updated_at,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
                    s.parent_session_id,
                    s.session_type,
                    s.diverged_from,
                    s.privacy_tier,
-                   COUNT(m.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
             FROM sessions s
-            {join}
-            WHERE s.session_type IN {type_filter}
-            GROUP BY s.id
+            WHERE +s.session_type IN {type_filter}
+            {non_empty}
+            {filters}
             ORDER BY s.updated_at DESC, s.id ASC
-            LIMIT ? OFFSET ?
+            {page}
             "#
-        );
+        )
+    }
+
+    async fn list_session_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
+    ) -> Result<Vec<SessionSummary>> {
+        let query =
+            Self::summary_listing_sql(include_subagents, include_empty, "", "LIMIT ? OFFSET ?");
 
         let pool = self.pool().await?;
         sqlx::query_as::<_, SessionSummary>(&query)
@@ -7549,18 +7586,6 @@ impl SessionStorage {
         public_only: bool,
         excluded_ids: &[String],
     ) -> Result<Vec<SidebarRow>> {
-        let type_filter = if include_subagents {
-            "('user', 'scheduled', 'sub_agent')"
-        } else {
-            "('user', 'scheduled')"
-        };
-        // See [`Self::list_session_summaries`] for why the sidebar and
-        // `workspace_list` want opposite joins here.
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
-        } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
-        };
         let tier_filter = if public_only {
             "AND s.privacy_tier = 'public'"
         } else {
@@ -7572,31 +7597,11 @@ impl SessionStorage {
         } else {
             ""
         };
-        let query = format!(
-            r#"
-            SELECT s.id,
-                   s.working_dir,
-                   COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
-                   s.user_set_name,
-                   s.created_at,
-                   s.updated_at,
-                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
-                   s.parent_session_id,
-                   s.session_type,
-                   s.diverged_from,
-                   s.privacy_tier,
-                   COUNT(m.id) AS message_count
-            FROM sessions s
-            {join}
-            WHERE s.session_type IN {type_filter}
-            {tier_filter}
-            AND s.id NOT IN (SELECT value FROM json_each(?))
-            {keyset}
-            GROUP BY s.id
-            ORDER BY s.updated_at DESC, s.id ASC
-            LIMIT ?
-            "#
+        let filters = format!(
+            "{tier_filter}\n            AND s.id NOT IN (SELECT value FROM json_each(?))\n            {keyset}"
         );
+        let query =
+            Self::summary_listing_sql(include_subagents, include_empty, &filters, "LIMIT ?");
 
         let mut q =
             sqlx::query_as::<_, SidebarRow>(&query).bind(serde_json::to_string(excluded_ids)?);
@@ -13564,6 +13569,74 @@ mod tests {
                     !public_only,
                     "public_only={public_only} handled the private chat {id} wrongly"
                 );
+            }
+        }
+    }
+
+    /// R-28: every shape of the summary listing walks `idx_sessions_updated` in
+    /// the page's own order and stops at its limit. The planner's other choice,
+    /// reading every listed chat through `idx_sessions_type` and sorting them
+    /// all, made a ten-row page cost as much as the whole list (74 ms on a copy
+    /// of a real store), and a non-default sidebar view paid that once per page.
+    /// See [`SessionStorage::summary_listing_sql`].
+    #[tokio::test]
+    async fn the_summary_listing_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        seed_session_with_messages(&sm, 1).await;
+        let pool = sm.storage.pool().await.unwrap();
+
+        for include_subagents in [false, true] {
+            for include_empty in [false, true] {
+                for (filters, binds) in [
+                    ("", 0),
+                    (
+                        "AND s.privacy_tier = 'public' \
+                         AND s.id NOT IN (SELECT value FROM json_each(?)) \
+                         AND (CAST(s.updated_at AS TEXT) < ? \
+                           OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))",
+                        4,
+                    ),
+                ] {
+                    let sql = SessionStorage::summary_listing_sql(
+                        include_subagents,
+                        include_empty,
+                        filters,
+                        "LIMIT ?",
+                    );
+                    let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                    let mut query = sqlx::query(&explain);
+                    if binds == 4 {
+                        query = query
+                            .bind("[]")
+                            .bind("2026-01-01 00:00:00")
+                            .bind("2026-01-01 00:00:00")
+                            .bind("x");
+                    }
+                    let plan: Vec<String> = query
+                        .bind(10_i64)
+                        .fetch_all(pool)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                        .collect();
+                    let shape = format!(
+                        "include_subagents={include_subagents} include_empty={include_empty} \
+                         filters={binds}: {plan:?}"
+                    );
+                    assert!(
+                        plan.iter()
+                            .any(|step| step.contains("idx_sessions_updated")),
+                        "the listing no longer walks idx_sessions_updated ({shape})"
+                    );
+                    assert!(
+                        !plan
+                            .iter()
+                            .any(|step| step == "USE TEMP B-TREE FOR ORDER BY"),
+                        "the listing sorts every row before its LIMIT ({shape})"
+                    );
+                }
             }
         }
     }
