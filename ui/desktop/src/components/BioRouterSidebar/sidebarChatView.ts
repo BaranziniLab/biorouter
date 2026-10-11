@@ -1,5 +1,5 @@
 import type { SessionSummary } from '../../api';
-import { groupByChatDate } from '../../utils/chatDateBuckets';
+import { chatDateBucket, type ChatDateBucket } from '../../utils/chatDateBuckets';
 import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { isCrewTask } from '../chats/chatKind';
 
@@ -67,27 +67,79 @@ export function createdTime(session: SessionSummary): number {
 
 const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
-/** A to Z, numbers in numeric order, case ignored; default names ("New chat") last. */
-function compareByName(left: SessionSummary, right: SessionSummary): number {
-  const leftDefault = isDefaultSessionName(left.name?.trim());
-  const rightDefault = isDefaultSessionName(right.name?.trim());
-  if (leftDefault !== rightDefault) return leftDefault ? 1 : -1;
-  return (
-    NAME_COLLATOR.compare(left.name ?? '', right.name ?? '') || left.id.localeCompare(right.id)
-  );
-}
-
-function compareBy(sortBy: SidebarSortBy): (left: SessionSummary, right: SessionSummary) => number {
-  if (sortBy === 'name') return compareByName;
-  const time = sortBy === 'created' ? createdTime : activityTime;
-  return (left, right) => time(right) - time(left) || left.id.localeCompare(right.id);
-}
-
+/**
+ * Sorted, with each row's sort key read ONCE (R-28). The comparator used to
+ * parse both rows' timestamps on every comparison, about 44,000 `Date.parse`
+ * calls to sort 2,000 chats, which every view switch paid again.
+ */
 export function sortSidebarChats(
   sessions: readonly SessionSummary[],
   sortBy: SidebarSortBy
 ): SessionSummary[] {
-  return [...sessions].sort(compareBy(sortBy));
+  if (sortBy === 'name') {
+    const keyed = sessions.map((session) => ({
+      session,
+      isDefault: isDefaultSessionName(session.name?.trim()),
+      name: session.name ?? '',
+    }));
+    // A to Z, numbers in numeric order, case ignored; default names ("New chat") last.
+    keyed.sort((left, right) => {
+      if (left.isDefault !== right.isDefault) return left.isDefault ? 1 : -1;
+      return (
+        NAME_COLLATOR.compare(left.name, right.name) ||
+        left.session.id.localeCompare(right.session.id)
+      );
+    });
+    return keyed.map((entry) => entry.session);
+  }
+  const time = sortBy === 'created' ? createdTime : activityTime;
+  const keyed = sessions.map((session) => ({ session, time: time(session) }));
+  keyed.sort(
+    (left, right) => right.time - left.time || left.session.id.localeCompare(right.session.id)
+  );
+  return keyed.map((entry) => entry.session);
+}
+
+/**
+ * `groupByChatDate`'s buckets, asked once per calendar day instead of once
+ * per chat (R-28). A month bucket's label comes from a new
+ * `Intl.DateTimeFormat`, which made date grouping 2,000 chats cost 55 ms;
+ * the bucket depends only on the local calendar day (and `now`), so a sorted
+ * list asks for a handful. Same groups, labels and order as `groupByChatDate`,
+ * which a test pins.
+ */
+export function groupSidebarChatsByDate(
+  sorted: readonly SessionSummary[],
+  timeOf: (session: SessionSummary) => number,
+  now: number
+): Array<{ key: string; label: string; items: SessionSummary[] }> {
+  const bucketByDay = new Map<number, ChatDateBucket>();
+  const groups = new Map<
+    string,
+    { key: string; label: string; rank: number; items: SessionSummary[] }
+  >();
+  for (const session of sorted) {
+    const time = timeOf(session);
+    const date = new Date(time);
+    const day = date.getFullYear() * 10_000 + date.getMonth() * 100 + date.getDate();
+    let bucket = bucketByDay.get(day);
+    if (!bucket) {
+      bucket = chatDateBucket(time, now);
+      bucketByDay.set(day, bucket);
+    }
+    const existing = groups.get(bucket.key);
+    if (existing) existing.items.push(session);
+    else
+      groups.set(bucket.key, {
+        key: bucket.key,
+        label: bucket.label,
+        rank: bucket.rank,
+        items: [session],
+      });
+  }
+  return [...groups.values()]
+    .sort((left, right) => left.rank - right.rank)
+    .map(({ key, label, items }) => ({ key, label, items }));
 }
 
 // ── Folders ───────────────────────────────────────────────────────────────
@@ -200,9 +252,9 @@ export function arrangeSidebarChats(
     return sorted.length ? [{ key: 'all', kind: 'all', label: '', sessions: sorted }] : [];
   }
 
+  const timeOf = view.sortBy === 'created' ? createdTime : activityTime;
   if (view.groupBy === 'date') {
-    const timeOf = view.sortBy === 'created' ? createdTime : activityTime;
-    return groupByChatDate(sorted, timeOf, now).map((group) => ({
+    return groupSidebarChatsByDate(sorted, timeOf, now).map((group) => ({
       key: group.key,
       kind: 'date' as const,
       label: group.label,
@@ -210,29 +262,39 @@ export function arrangeSidebarChats(
     }));
   }
 
-  const byFolder = new Map<string, SessionSummary[]>();
+  const byFolder = new Map<string, { sessions: SessionSummary[]; latest: number }>();
   for (const session of sorted) {
     const folder = normalizeFolder(session.working_dir);
-    byFolder.set(folder, [...(byFolder.get(folder) ?? []), session]);
+    const time = timeOf(session);
+    const existing = byFolder.get(folder);
+    if (existing) {
+      existing.sessions.push(session);
+      if (time > existing.latest) existing.latest = time;
+    } else {
+      byFolder.set(folder, { sessions: [session], latest: time });
+    }
   }
   const labels = folderLabels([...byFolder.keys()], options.homeDir);
-  const groups: SidebarChatGroup[] = [...byFolder.entries()].map(([folder, members]) => ({
-    key: `folder:${folder}`,
-    kind: 'folder',
-    label: labels.get(folder) ?? folder,
-    path: folder ? tildePath(folder, options.homeDir) : undefined,
-    workingDir: folder || undefined,
-    isCrew: Boolean(folder) && isCrewTaskFolder(folder),
-    sessions: members,
+  const groups = [...byFolder.entries()].map(([folder, { sessions: members, latest }]) => ({
+    latest,
+    group: {
+      key: `folder:${folder}`,
+      kind: 'folder' as const,
+      label: labels.get(folder) ?? folder,
+      path: folder ? tildePath(folder, options.homeDir) : undefined,
+      workingDir: folder || undefined,
+      isCrew: Boolean(folder) && isCrewTaskFolder(folder),
+      sessions: members,
+    } satisfies SidebarChatGroup,
   }));
 
-  const latest = (group: SidebarChatGroup) =>
-    Math.max(...group.sessions.map(view.sortBy === 'created' ? createdTime : activityTime));
-  return groups.sort((left, right) =>
+  groups.sort((left, right) =>
     view.sortBy === 'name'
-      ? NAME_COLLATOR.compare(left.label, right.label) || left.key.localeCompare(right.key)
-      : latest(right) - latest(left) || left.key.localeCompare(right.key)
+      ? NAME_COLLATOR.compare(left.group.label, right.group.label) ||
+        left.group.key.localeCompare(right.group.key)
+      : right.latest - left.latest || left.group.key.localeCompare(right.group.key)
   );
+  return groups.map((entry) => entry.group);
 }
 
 // ── Never move a row under the pointer ──────────────────────────────────────

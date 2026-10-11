@@ -8,7 +8,9 @@ import {
   clampSidebarChatView,
   DEFAULT_SIDEBAR_CHAT_VIEW,
   folderLabels,
+  groupSidebarChatsByDate,
   holdArrangement,
+  normalizeFolder,
   parseCollapsedFolders,
   readSidebarChatView,
   SIDEBAR_CHAT_VIEW_STORAGE_KEY,
@@ -19,6 +21,8 @@ import {
   type SidebarChatView,
 } from './sidebarChatView';
 import { useSidebarChatView } from './useSidebarChatView';
+import { groupByChatDate } from '../../utils/chatDateBuckets';
+import { isDefaultSessionName } from '../../utils/sessionNameSync';
 
 const NOW = new Date(2026, 9, 9, 12, 0, 0).getTime();
 const day = (back: number, hour = 12, minute = 0) =>
@@ -289,5 +293,114 @@ describe('applyHeldArrangement: never move a row under the pointer', () => {
     const fresh = chat('z', 'Brand new', { updated_at: day(0, 11, 59) });
     const shown = applyHeldArrangement(held, arranged([fresh, ...CHATS]));
     expect(shown.flatMap((group) => group.sessions).map((s) => s.id)).not.toContain('z');
+  });
+});
+
+/**
+ * R-28. The arrangement reads each row's sort key once, buckets dates once per
+ * calendar day and groups folders in one pass. These pin it to the arrangement
+ * it replaced, written out here as it was, over a few thousand generated chats
+ * that tie, collide, carry default names and bad timestamps.
+ */
+describe('arrangeSidebarChats at scale (R-28)', () => {
+  // A small deterministic generator, so a failure names a reproducible list.
+  function generated(count: number): SessionSummary[] {
+    let seed = 7;
+    const next = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed / 2_147_483_648;
+    };
+    const names = ['Chart 9', 'Chart 10', 'alpha', 'Alpha', 'New chat', '', 'zebra', 'Écrit'];
+    const folders = ['/Users/wgu', '/Users/wgu/gptr', '/Users/wgu/a/gptr', '/tmp/x/', ''];
+    return Array.from({ length: count }, (_, index) => {
+      // Mostly the last 400 days, some in the future, a few unreadable.
+      const pick = next();
+      const updated =
+        pick < 0.02
+          ? 'not a date'
+          : new Date(
+              NOW -
+                Math.floor(next() * 400) * 86_400_000 +
+                (pick < 0.05 ? 3_600_000 * 30 : -Math.floor(next() * 86_400_000))
+            ).toISOString();
+      const created = new Date(NOW - Math.floor(next() * 500) * 86_400_000).toISOString();
+      return chat(
+        `s${index % 997}-${index}`,
+        `${names[index % names.length]}${index % 3 ? '' : ` ${index % 13}`}`,
+        {
+          updated_at: index % 11 === 0 ? created : updated,
+          created_at: created,
+          working_dir: `${folders[index % folders.length]}${index % 7 === 0 ? `/p${index % 4}` : ''}`,
+        }
+      );
+    });
+  }
+
+  // The arrangement as it stood before R-28.
+  function reference(sessions: readonly SessionSummary[], view: SidebarChatView) {
+    const parse = (value: string | null | undefined) => {
+      const parsed = value ? Date.parse(value) : Number.NaN;
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+    const activity = (s: SessionSummary) => parse(s.updated_at) || parse(s.created_at);
+    const created = (s: SessionSummary) => parse(s.created_at) || parse(s.updated_at);
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const byName = (l: SessionSummary, r: SessionSummary) => {
+      const ld = isDefaultSessionName(l.name?.trim());
+      const rd = isDefaultSessionName(r.name?.trim());
+      if (ld !== rd) return ld ? 1 : -1;
+      return collator.compare(l.name ?? '', r.name ?? '') || l.id.localeCompare(r.id);
+    };
+    const time = view.sortBy === 'created' ? created : activity;
+    const sorted = [...sessions].sort(
+      view.sortBy === 'name' ? byName : (l, r) => time(r) - time(l) || l.id.localeCompare(r.id)
+    );
+    if (view.groupBy === 'none') return [['', sorted.map((s) => s.id)]];
+    if (view.groupBy === 'date') {
+      return groupByChatDate(sorted, time, NOW).map((g) => [g.label, g.items.map((s) => s.id)]);
+    }
+    const byFolder = new Map<string, SessionSummary[]>();
+    for (const session of sorted) {
+      const folder = normalizeFolder(session.working_dir);
+      byFolder.set(folder, [...(byFolder.get(folder) ?? []), session]);
+    }
+    const labels = folderLabels([...byFolder.keys()], HOME);
+    const groups = [...byFolder.entries()].map(([folder, members]) => ({
+      key: `folder:${folder}`,
+      label: labels.get(folder) ?? folder,
+      members,
+    }));
+    const latest = (g: { members: SessionSummary[] }) => Math.max(...g.members.map(time));
+    groups.sort((l, r) =>
+      view.sortBy === 'name'
+        ? collator.compare(l.label, r.label) || l.key.localeCompare(r.key)
+        : latest(r) - latest(l) || l.key.localeCompare(r.key)
+    );
+    return groups.map((g) => [g.label, g.members.map((s) => s.id)]);
+  }
+
+  const MANY = generated(3_000);
+
+  for (const groupBy of SIDEBAR_GROUP_BY_OPTIONS) {
+    for (const sortBy of SIDEBAR_SORT_BY_OPTIONS) {
+      it(`${groupBy} × ${sortBy} matches the arrangement it replaced`, () => {
+        const view = { groupBy, sortBy };
+        const arranged = arrangeSidebarChats(MANY, view, NOW, { homeDir: HOME }).map((group) => [
+          group.label,
+          group.sessions.map((session) => session.id),
+        ]);
+        expect(arranged).toEqual(reference(MANY, view));
+      });
+    }
+  }
+
+  it('buckets dates exactly as groupByChatDate does', () => {
+    const times = MANY.map((session) => Date.parse(session.updated_at) || 0);
+    const timeOf = (session: SessionSummary) => times[MANY.indexOf(session)];
+    const ids = (groups: Array<{ key: string; label: string; items: SessionSummary[] }>) =>
+      groups.map((group) => [group.key, group.label, group.items.map((session) => session.id)]);
+    expect(ids(groupSidebarChatsByDate(MANY, timeOf, NOW))).toEqual(
+      ids(groupByChatDate(MANY, timeOf, NOW))
+    );
   });
 });

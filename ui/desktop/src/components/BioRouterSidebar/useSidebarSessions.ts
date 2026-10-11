@@ -10,9 +10,13 @@ import {
 } from '../../utils/sessionRowSync';
 
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
-/** The server's page maximum (`routes/session.rs` clamps `limit` to 1..=50). */
+/** A non-default view's first page and its head refreshes. */
 export const SIDEBAR_SESSION_FULL_PAGE_SIZE = 50;
-/** How many chats a non-default view reads at most: 40 requests at the full page size. */
+/**
+ * How many chats a non-default view reads at most. It is also the server's page
+ * maximum (`MAX_SIDEBAR_SESSION_LIMIT` in `routes/session.rs`), so the rest of
+ * the list arrives in ONE request (R-28).
+ */
 export const SIDEBAR_SESSION_LOAD_ALL_CAP = 2_000;
 
 export interface SidebarSessionsOptions {
@@ -20,8 +24,12 @@ export interface SidebarSessionsOptions {
    * Read every chat, not just the pages scrolled into view. The server pages in
    * `updated_at` order only, so any view that sorts by name or creation, or
    * groups by folder, must hold the whole list before it arranges it: over the
-   * first 10 rows it would be wrong in a way nobody could see. Pages are read one
-   * after another at the server's maximum, up to {@link SIDEBAR_SESSION_LOAD_ALL_CAP}.
+   * first 10 rows it would be wrong in a way nobody could see. After the first
+   * page, the rest is asked for in ONE request of up to
+   * {@link SIDEBAR_SESSION_LOAD_ALL_CAP} rows (R-28). It was 40 requests of 50,
+   * one after another: 3.0 s for 2,000 chats against an idle debug daemon, where
+   * one request takes 0.2 s. A daemon from before that change still clamps the
+   * page to 50, and the same loop then reads it page by page as before.
    *
    * ⚠ The pages are read into a buffer and shown ONCE, when the last has landed
    * (vision V1-H2). Published page by page, a name-sorted list reshuffled its top
@@ -257,11 +265,12 @@ export default function useSidebarSessions(
     void loadPage(false);
   }, [loadPage]);
 
-  // `loadAll`: one page after another until the server has no more or the cap
-  // is reached, read into a buffer and shown once (see `loadAll`). Sequential by
-  // construction: a page's cursor names the last row of the page before it. A
-  // page never asks for more rows than the cap leaves room for, so the read
-  // stops at the cap rather than a page past it (V1-L9).
+  // `loadAll`: the rest of the list, read into a buffer and shown once (see
+  // `loadAll`). Each request asks for everything the cap leaves room for, so a
+  // current daemon answers in one; a page that comes back short of that with
+  // more to come (an older daemon's 50-row maximum) is followed by the next,
+  // from its cursor, until the server has no more or the cap is reached. The
+  // read never asks past the cap (V1-L9).
   const drainAllPages = useCallback(async () => {
     if (loadingRef.current || !hasMoreRef.current) return;
     loadingRef.current = true;
@@ -280,7 +289,7 @@ export default function useSidebarSessions(
         // With the user's proof on every page, as `loadPage` sends it.
         const response = await listSidebarSessions<true>({
           query: {
-            limit: Math.min(SIDEBAR_SESSION_FULL_PAGE_SIZE, room),
+            limit: room,
             ...(cursor ? { cursor } : {}),
           },
           headers: await userActionHeaders(),

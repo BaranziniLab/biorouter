@@ -320,12 +320,38 @@ describe('a declassified chat is re-marked in the sidebar without a reload', () 
 
 /**
  * Spec 3.4 "Paging". Any view but the default sorts or groups the WHOLE list,
- * so the hook reads every page, at the server's maximum, one after another,
- * and every page carries the user's proof: without it the daemon silently
- * drops private rows, which would read as chats vanishing on a view change.
+ * so the hook reads it all: the first page, then the rest in one request of
+ * everything the cap leaves room for (R-28), and every page carries the user's
+ * proof: without it the daemon silently drops private rows, which would read as
+ * chats vanishing on a view change.
  */
 describe('loadAll pages through every chat', () => {
-  it('reads every page at limit 50 with the proof, then stops', async () => {
+  it('asks for the rest of the list in one request after the first page (R-28)', async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, index) => makeSummary(from + index));
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({
+        data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' },
+      })
+      .mockResolvedValueOnce({
+        data: { sessions: page(50, 1_200), has_more: false, next_cursor: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1_250));
+    await waitFor(() => expect(result.current.isLoadingAll).toBe(false));
+    expect(mocks.listSidebarSessions.mock.calls.map(([request]) => request)).toEqual([
+      { query: { limit: 50 }, headers: { 'X-User-Action': 'test-proof' }, throwOnError: true },
+      {
+        query: { limit: SIDEBAR_SESSION_LOAD_ALL_CAP - 50, cursor: 'c2' },
+        headers: { 'X-User-Action': 'test-proof' },
+        throwOnError: true,
+      },
+    ]);
+  });
+
+  it('follows an older daemon that answers 50 rows a page, with the proof, then stops', async () => {
     const page = (from: number, count: number) =>
       Array.from({ length: count }, (_, index) => makeSummary(from + index));
     mocks.listSidebarSessions
@@ -344,15 +370,17 @@ describe('loadAll pages through every chat', () => {
     await waitFor(() => expect(result.current.sessions).toHaveLength(107));
     await waitFor(() => expect(result.current.isLoadingAll).toBe(false));
     expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3);
+    // Each request asks for all the room the cap leaves; the short answer is
+    // what makes the loop ask again, from the cursor that answer carried.
     expect(mocks.listSidebarSessions.mock.calls.map(([request]) => request)).toEqual([
       { query: { limit: 50 }, headers: { 'X-User-Action': 'test-proof' }, throwOnError: true },
       {
-        query: { limit: 50, cursor: 'c2' },
+        query: { limit: SIDEBAR_SESSION_LOAD_ALL_CAP - 50, cursor: 'c2' },
         headers: { 'X-User-Action': 'test-proof' },
         throwOnError: true,
       },
       {
-        query: { limit: 50, cursor: 'c3' },
+        query: { limit: SIDEBAR_SESSION_LOAD_ALL_CAP - 100, cursor: 'c3' },
         headers: { 'X-User-Action': 'test-proof' },
         throwOnError: true,
       },
@@ -399,7 +427,7 @@ describe('loadAll pages through every chat', () => {
     rerender({ loadAll: true });
     await waitFor(() => expect(result.current.sessions).toHaveLength(11));
     expect(mocks.listSidebarSessions).toHaveBeenNthCalledWith(2, {
-      query: { limit: 50, cursor: 'c2' },
+      query: { limit: SIDEBAR_SESSION_LOAD_ALL_CAP - 10, cursor: 'c2' },
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
@@ -528,8 +556,9 @@ describe('loadAll shows the whole list at once', () => {
     let served = 0;
     mocks.listSidebarSessions.mockImplementation(
       async ({ query }: { query: { limit: number; cursor?: string } }) => {
-        // The head is a short page, so pages of 50 would land 20 rows past the cap.
-        const count = query.cursor ? query.limit : 30;
+        // An older daemon: at most 50 a page, whatever was asked. The head is a
+        // short page, so pages of 50 would land 20 rows past the cap.
+        const count = query.cursor ? Math.min(query.limit, 50) : 30;
         const sessions = page(served, count);
         served += count;
         return { data: { sessions, has_more: true, next_cursor: `c${served}` } };
@@ -543,6 +572,32 @@ describe('loadAll shows the whole list at once', () => {
       ([request]) => (request as { query: { limit: number } }).query.limit
     );
     expect(limits[limits.length - 1]).toBe(20);
-    expect(limits.slice(1, -1).every((limit) => limit === 50)).toBe(true);
+    // Every request after the head asks for exactly the room left under the cap.
+    expect(limits.slice(1)).toEqual(
+      Array.from(
+        { length: limits.length - 1 },
+        (_, index) => SIDEBAR_SESSION_LOAD_ALL_CAP - 30 - 50 * index
+      )
+    );
+  });
+
+  it('reads a full list from a current daemon in two requests, the cap exactly', async () => {
+    mocks.listSidebarSessions.mockImplementation(
+      async ({ query }: { query: { limit: number; cursor?: string } }) => {
+        const from = query.cursor ? 50 : 0;
+        return {
+          data: {
+            sessions: page(from, query.limit),
+            has_more: true,
+            next_cursor: `c${from + query.limit}`,
+          },
+        };
+      }
+    );
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(result.current.isLoadingAll).toBe(false));
+    expect(result.current.sessions).toHaveLength(SIDEBAR_SESSION_LOAD_ALL_CAP);
+    expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2);
   });
 });
