@@ -1,5 +1,6 @@
 import {
   CodingAgentBody,
+  CodingAgentProvenance,
   StatusPill,
   pillFor,
   useCodingAgents,
@@ -59,6 +60,7 @@ export default function CodingAgentSetupRecovery({
       ) : (
         <>
           <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+          <CodingAgentProvenance agent={agent} />
           <CodingAgentBody
             agent={agent}
             controls={controls}

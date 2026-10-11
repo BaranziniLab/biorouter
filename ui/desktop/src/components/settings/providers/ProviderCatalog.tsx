@@ -54,10 +54,15 @@ import {
   CodingAgentLoadError,
   CodingAgentProvenance,
   StatusPill,
+  isCodingAgentProviderId,
   pillFor,
   useCodingAgents,
 } from '../../onboarding/codingAgentControls';
-import type { CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
+import {
+  AGENT_SUBSCRIPTION,
+  type CodingAgentAvailability,
+} from '../../onboarding/codingAgentStatus';
+import { agentCopy } from '../../onboarding/copy';
 
 export type ProviderCatalogMode = 'settings' | 'onboarding';
 
@@ -666,9 +671,14 @@ export default function ProviderCatalog({
               <StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>
             ) : undefined
           }
+          summary={
+            isCodingAgentProviderId(provider.name)
+              ? agentCopy.rowSummary(AGENT_SUBSCRIPTION[provider.name])
+              : undefined
+          }
         >
           {agent ? (
-            <div className="space-y-2">
+            <div className="space-y-3">
               <CodingAgentProvenance agent={agent} />
               <CodingAgentBody agent={agent} controls={agentControls} />
             </div>

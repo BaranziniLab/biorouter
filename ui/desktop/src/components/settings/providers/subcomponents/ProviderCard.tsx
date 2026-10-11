@@ -22,6 +22,11 @@ type ProviderCardProps = {
   onToggle?: () => void;
   /** A live status line beside the name (the coding agents' auth pill). */
   statusSlot?: React.ReactNode;
+  /**
+   * The row's second line, when the daemon's description is a sentence too long for one (the
+   * coding agents'). The description stays the line's tooltip.
+   */
+  summary?: string;
   children?: React.ReactNode;
 };
 
@@ -63,6 +68,7 @@ export const ProviderCard = function ProviderCard({
   expanded = false,
   onToggle,
   statusSlot,
+  summary,
   children,
 }: ProviderCardProps) {
   const providerMetadata: ProviderMetadata | null = provider?.metadata || null;
@@ -100,7 +106,7 @@ export const ProviderCard = function ProviderCard({
               data-testid={`provider-description-${slug}`}
               className="-mx-1 -my-0.5 cursor-default truncate rounded-element px-1 py-0.5 text-supporting text-text-muted biorouter-focus-surface"
             >
-              <InlineCodeText text={metadata.description} />
+              {summary ?? <InlineCodeText text={metadata.description} />}
             </p>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-72 text-wrap">

@@ -65,3 +65,39 @@ export const institutionalCopy = {
   refused: (said: string) => `Could not connect: ${said}`,
   refusedPlain: 'Could not connect with these credentials.',
 } as const;
+
+/**
+ * The coding agents' rows and panels (`codingAgentControls`). Each state says one instruction and
+ * keeps its reason in an InfoTip beside it (vision FR-S-3); the command a person runs is a copy
+ * field; errors and the pill stay visible.
+ */
+export const agentCopy = {
+  /** The row's second line, in place of the daemon's long sentence. */
+  rowSummary: (plan: string) => `Your ${plan} subscription · no API key`,
+  notInstalled: 'Run this in a terminal, then choose Check again.',
+  notInstalledTipLabel: 'installing',
+  notInstalledTip: (key: string) =>
+    `Installed somewhere unusual (nvm, volta, bun, asdf)? Set ${key} to its full path in Settings instead.`,
+  signedOut: "Sign in with your subscription in a terminal, then choose I've signed in.",
+  signedOutTipLabel: 'signing in',
+  signedOutTip:
+    'Biorouter does not perform the sign-in. The credential stays between you and the vendor and never passes through Biorouter.',
+  /** Signed in with an API key: not a fault, so an instruction with two ways out. */
+  apiKeyLead: 'Sign in with your subscription, or use the metered',
+  apiKeyTail: 'provider under API providers.',
+  apiKeyTipLabel: 'API key sign-in',
+  apiKeyTip:
+    'With an API key a run would bill per token, and this provider removes API credentials from the environment it starts, so it cannot run this way.',
+  indeterminate: 'Biorouter could not tell whether this CLI is usable.',
+  checkAgain: 'Check again',
+  signedIn: "I've signed in",
+  checking: 'Checking…',
+  openTerminal: 'Open a terminal here',
+  hideTerminal: 'Hide terminal',
+  use: (name: string) => `Use ${name}`,
+  connecting: 'Connecting…',
+  retryConfiguration: 'Retry configuration',
+  checkingConfiguration: 'Checking configuration…',
+  couldNotCheck: 'Could not check',
+  tryAgain: 'Try again',
+} as const;

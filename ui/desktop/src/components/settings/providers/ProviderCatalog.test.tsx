@@ -9,6 +9,7 @@ import ProviderCatalog, {
 } from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
 import { catalogCopy, customProviderCopy, providerPageCopy } from './copy';
+import { agentCopy } from '../../onboarding/copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import type { CodingAgentAuth, CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
 
@@ -616,14 +617,28 @@ describe('ProviderCatalog — AI agents', () => {
   });
 
   it('draws the daemon’s backticked command as inline code, not with the marks', async () => {
-    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
-    const row = provider('claude_code', {}, 'Claude Code');
+    const row = provider('anthropic', {}, 'Anthropic');
     row.metadata.description = 'Uses your own installed `claude` command-line app.';
     render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
     clickTab('commercial');
-    const description = await screen.findByTestId('provider-description-claude_code');
+    const description = await screen.findByTestId('provider-description-anthropic');
     expect(description).toHaveTextContent('Uses your own installed claude command-line app.');
     expect(description.querySelector('code')).toHaveTextContent('claude');
+  });
+
+  // FR-R1-8: the daemon's sentence ("Uses the Claude subscription you are already signed in to,
+  // through your own installed `claude` command. No API key. Requires …") was cut mid-word, with a
+  // mono command inside a sans sentence. The row says the plan in one short line; the sentence is
+  // its tooltip.
+  it('gives an agent row a short line of its own, with the daemon’s sentence in its tooltip', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
+    const row = provider('claude_code', {}, 'Claude Code');
+    row.metadata.description = 'Uses the Claude subscription, through your own `claude` command.';
+    render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+    clickTab('commercial');
+    const line = await screen.findByTestId('provider-description-claude_code');
+    expect(line).toHaveTextContent(agentCopy.rowSummary('Claude'));
+    expect(line.querySelector('code')).toBeNull();
   });
 
   it('puts the disclosure chevron after the name, so every title starts on one x', async () => {

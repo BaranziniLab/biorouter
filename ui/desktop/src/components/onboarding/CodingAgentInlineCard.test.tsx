@@ -6,6 +6,7 @@ import CodingAgentInlineCard, {
   CODING_AGENT_TERMINAL_RESERVE_PX,
 } from './CodingAgentInlineCard';
 import { CODING_AGENT_CHECK_FAILED } from './codingAgentControls';
+import { agentCopy } from './copy';
 import type { CodingAgentAuth, CodingAgentAvailability } from './codingAgentStatus';
 
 const mockFetchStatus = vi.fn();
@@ -233,9 +234,11 @@ describe('CodingAgentInlineCard', () => {
       // Reads as a billing mismatch, not an error: no "not installed"/"failed"
       // framing, and the info dot rather than the warning one.
       expect(await screen.findByText('Signed in with an API key')).toBeInTheDocument();
-      expect(screen.getByText(/The CLI works/)).toBeInTheDocument();
-      expect(screen.getByText(/bill per token/)).toBeInTheDocument();
-      expect(screen.getByText(/removes API credentials from the environment/)).toBeInTheDocument();
+      // One instruction, with the reason in its InfoTip (FR-S-3): reachable without a hover.
+      expect(screen.getByText(agentCopy.apiKeyLead, { exact: false })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `About ${agentCopy.apiKeyTipLabel}` })
+      ).toHaveAccessibleDescription(agentCopy.apiKeyTip);
 
       // Way out 1: sign in with the subscription.
       expect(screen.getByText('claude auth login')).toBeInTheDocument();
