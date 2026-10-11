@@ -193,6 +193,13 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 
 /* ── Type ───────────────────────────────────────────────── */
+/* A line of facts joined by middots (the hero meta). On a phone the lead fact
+   takes the first line and its middot goes, so no line ends on a separator. */
+.meta-lead { white-space: nowrap; }
+@media (max-width: 560px) {
+  .meta-lead { display: block; }
+  .meta-lead + .meta-sep { display: none; }
+}
 .eyebrow { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--subtle); margin: 0 0 16px; }
 .display {
   font-size: var(--fs-display);
@@ -275,7 +282,16 @@ pre.code {
    that shows a command or a file name as plain text clears the chip itself. */
 :not(pre) > code { font-size: var(--fs-sm); color: var(--ink); background: var(--wash); padding: 1px 5px; border-radius: var(--r-inner); overflow-wrap: break-word; }
 td code, th code { font-size: var(--fs-xs); }
-.copy-btn { border: 0; background: none; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; padding: 6px 0; white-space: nowrap; transition: color var(--dur-fast) var(--ease); }
+/* A text button with the small-control height: the click target is 32px tall
+   although only its word shows. The negative margin gives the extra height
+   back, so a row of text holds the same line it did before. */
+.copy-btn {
+  display: inline-flex; align-items: center; min-height: var(--h-control);
+  margin: calc((var(--lh-sm) - var(--h-control)) / 2) 0;
+  border: 0; background: none; font-size: var(--fs-sm); line-height: var(--lh-sm);
+  color: var(--muted); cursor: pointer; padding: 0; white-space: nowrap;
+  transition: color var(--dur-fast) var(--ease);
+}
 .copy-btn:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 
 /* Tables in the Biorouter style: hairlines, no fills, a quiet header. */
