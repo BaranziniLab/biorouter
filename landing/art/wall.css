@@ -93,9 +93,13 @@
 }
 .art-wall .wall-tool > .wall-i { margin-top: calc((var(--wall-l-tool) - 14px) / 2); color: var(--subtle); }
 .art-wall .wall-tx { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0; }
-.art-wall .wall-tt { min-width: 0; text-wrap: balance; }
+/* The title is one line and never wraps, as the app's tool row is (ToolCallWithResponse): a
+   title the chat is too narrow for ends in an ellipsis and the row's chevron stays after it,
+   outside the clipped text. Only the affiliation badge may drop to a second line. */
+.art-wall .wall-tt { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.art-wall .wall-ttx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The row's own chevron (ChevronRight at 60%), as the app and the Biomed tile draw it. */
-.art-wall .wall-tchev { display: inline-block; vertical-align: middle; margin: -2px 0 0 3px; opacity: 0.6; }
+.art-wall .wall-tchev { flex: none; margin: -2px 0 0 3px; opacity: 0.6; }
 .art-wall .wall-aff {
   display: inline-flex; align-items: center; gap: 4px; flex: none;
   height: 20px; padding: 0 6px; border-radius: var(--r-inner);

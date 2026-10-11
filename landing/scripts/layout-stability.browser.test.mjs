@@ -8,7 +8,10 @@
 //      model's name: it truncates it inside the chip (ComposerChips). The mock used to give the
 //      name up first in a narrow chat, leaving a lone padlock that reads as a lock button. Now
 //      the chip keeps the name and ellipsizes it, and the public chat's tool row names its
-//      extension in every spelling, as the private one does.
+//      extension in every spelling, as the private one does. A tool row is one line, as the
+//      app's is (ToolCallWithResponse): a title the chat is too narrow for ends in an ellipsis
+//      with the row's chevron after it, instead of wrapping to a lone "Ran" over a second line
+//      (vision round 3, V5-R3-1).
 //   2. Opening a BAAM row makes it taller (its description unclamps). The row's GitHub link,
 //      download button and chevron used to be centred on the row, so they slid down from under
 //      the pointer, and the chevron just pressed was not where a second press would land.
@@ -104,9 +107,39 @@ if (!existsSync(PLAYWRIGHT)) {
         const cn = pane.querySelector('.wall-cn');
         const send = pane.querySelector('.wall-send');
         const tool = pane.querySelector('.wall-m-tool');
+        // The clipped title span (an older tree has the words straight in .wall-tt: measure that).
+        const ttx = tool.querySelector('.wall-ttx') || tool.querySelector('.wall-tt');
         const toolText = shown(tool)
-          ? Array.from(tool.querySelectorAll('.wall-tt > span')).find((s) => getComputedStyle(s).display !== 'none')?.textContent ?? ''
+          ? Array.from(ttx.children).find((s) => getComputedStyle(s).display !== 'none' && s.textContent.trim())?.textContent ?? ''
           : null;
+        // The tool row's title: one line box, the chevron after it, an ellipsis where it is cut.
+        let toolRow = null;
+        if (shown(tool)) {
+          const tt = tool.querySelector('.wall-tt');
+          const chev = tool.querySelector('.wall-tchev');
+          const lineHeight = parseFloat(getComputedStyle(tool).lineHeight);
+          const tr = tool.getBoundingClientRect();
+          const xr = ttx.getBoundingClientRect();
+          const cr = chev.getBoundingClientRect();
+          const pr = pane.getBoundingClientRect();
+          const text = document.createRange();
+          text.selectNodeContents(ttx);
+          toolRow = {
+            lineHeight,
+            rowHeight: tr.height,
+            titleHeight: tt.getBoundingClientRect().height,
+            textLineBoxes: new Set(Array.from(text.getClientRects()).map((q) => Math.round(q.top))).size,
+            whiteSpace: getComputedStyle(ttx).whiteSpace,
+            ellipsis: getComputedStyle(ttx).textOverflow,
+            cut: ttx.scrollWidth > ttx.clientWidth + 1,
+            chevronShown: shown(chev) && cr.width > 0,
+            chevronAfterText: cr.left >= xr.right - 0.5,
+            chevronOnTextLine: Math.abs(cr.top + cr.height / 2 - (xr.top + xr.height / 2)) <= 3,
+            chevronInPane: cr.right <= pr.right + 0.5,
+            rowInPane: tr.left >= pr.left - 0.5 && tr.right <= pr.right + 0.5,
+            hasBadge: !!tool.querySelector('.wall-aff') && shown(tool.querySelector('.wall-aff')),
+          };
+        }
         return {
           barOverflows: bar.scrollWidth > bar.clientWidth + 1,
           chipShown: shown(chip),
@@ -117,6 +150,7 @@ if (!existsSync(PLAYWRIGHT)) {
           ellipsis: getComputedStyle(cn).textOverflow,
           chipInsideBar: shown(chip) && chip.getBoundingClientRect().right <= send.getBoundingClientRect().left + 1,
           toolText,
+          toolRow,
         };
       };
       return { priv: side('priv'), pub: side('pub') };
@@ -166,6 +200,45 @@ if (!existsSync(PLAYWRIGHT)) {
       await close();
     });
   }
+
+  // A tool row never wraps its title: one line box at every width, as the app's row is. Where the
+  // chat is too narrow for the words they end in an ellipsis and the chevron stays after them, on
+  // the same line, inside the pane. (Before V5-R3-1 the public row at 390px read "Ran" alone on a
+  // line over "LiteratureAgent >", a 40px row beside the private chat's 20px.)
+  for (const width of [1440, 1024, 768, 640, 560, 480, 414, 390, 375, 360, 340, 320]) {
+    test(`the wall's tool rows are one line, truncating where they must, at ${width}px`, async () => {
+      const { page, close } = await open('index.html', width);
+      await page.locator('[data-art="wall"]').first().scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      const w = await wall(page);
+      for (const side of ['priv', 'pub']) {
+        const row = w[side].toolRow;
+        if (!row) continue; // a chat with no room for its tool row leaves it out; the page still shows the other
+        assert.ok(row.titleHeight <= row.lineHeight + 1, `${side}: the title is ${row.titleHeight}px tall, more than one ${row.lineHeight}px line`);
+        assert.equal(row.textLineBoxes, 1, `${side}: the title's words sit on ${row.textLineBoxes} lines`);
+        assert.equal(row.whiteSpace, 'nowrap', `${side}: the title may not wrap`);
+        assert.equal(row.ellipsis, 'ellipsis', `${side}: a title that does not fit must end in an ellipsis, like the app's row`);
+        assert.ok(row.chevronShown && row.chevronAfterText && row.chevronOnTextLine, `${side}: the row's chevron must follow the title on its line`);
+        assert.ok(row.chevronInPane && row.rowInPane, `${side}: the row leaves its chat`);
+        // Without the affiliation badge the whole row is the title: one line, whatever the width.
+        if (!row.hasBadge) assert.ok(row.rowHeight <= row.lineHeight + 1, `${side}: the row is ${row.rowHeight}px, ${(row.rowHeight / row.lineHeight).toFixed(1)} lines`);
+      }
+      assert.ok(w.pub.toolRow, 'the public chat keeps its tool row (it has no badge to wrap, so it always fits as one truncated line)');
+      await close();
+    });
+  }
+
+  test("the wall's public tool row is a single line at 390px, not a 'Ran' over 'LiteratureAgent'", async () => {
+    const { page, close } = await open('index.html', 390);
+    await page.locator('[data-art="wall"]').first().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    const { pub, priv } = await wall(page);
+    assert.ok(pub.toolRow.cut, 'the full name does not fit the 390px chat, so the title is cut');
+    assert.ok(pub.toolRow.rowHeight <= pub.toolRow.lineHeight + 1);
+    // Both chats' titles share one height: the private chat's badge wraps below, the title does not.
+    assert.equal(Math.round(pub.toolRow.titleHeight), Math.round(priv.toolRow.titleHeight));
+    await close();
+  });
 
   /* ── 2. A BAAM row's controls stay put when it opens ─────────────────── */
 

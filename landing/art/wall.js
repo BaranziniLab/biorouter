@@ -95,7 +95,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('How many patients with type 2 diabetes take a statin?', 'How many T2D patients take a statin?', 0, 'T2D patients on a statin?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + icon('right', 'wall-tchev') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt"><span class="wall-ttx">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + '</span>' + icon('right', 'wall-tchev') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
           '<p class="wall-bot wall-m-bot">412 patients match.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
@@ -121,7 +121,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.', 0, 'Statins and cognition?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran LiteratureAgent', 'Ran LiteratureAgent · PubMed search') + icon('right', 'wall-tchev') + '</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt"><span class="wall-ttx">' + say('Ran LiteratureAgent', 'Ran LiteratureAgent', 'Ran LiteratureAgent · PubMed search') + '</span>' + icon('right', 'wall-tchev') + '</span></span></p>' +
           '<p class="wall-bot wall-m-bot">23 trials since 2020.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
