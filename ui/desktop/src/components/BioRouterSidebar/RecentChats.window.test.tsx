@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -130,6 +130,74 @@ describe('the chat list draws what can be seen (R-28)', () => {
       </SidebarProvider>
     );
     expect(drawnRows()).toBe(SIDEBAR_RENDER_WINDOW);
+  });
+});
+
+/**
+ * Vision V1-R2-1. Ten rows filled the short list of the overlay sidebar at 1100×760. Widened to
+ * the docked sidebar (or with Components collapsed) the same ten rows sat in a 433px box with
+ * nothing to scroll, so no scroll event ever asked for the next page and every other chat was
+ * out of reach of the sidebar. The fill check now runs again when the list's box changes.
+ */
+describe('a list whose box grows fills the room it gained', () => {
+  type ObserverCallback = ConstructorParameters<typeof ResizeObserver>[0];
+  type Observed = { callback: ObserverCallback; targets: Element[] };
+  let observers: Observed[] = [];
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        private entry: Observed;
+        constructor(callback: ObserverCallback) {
+          this.entry = { callback, targets: [] };
+          observers.push(this.entry);
+        }
+        observe(target: Element) {
+          this.entry.targets.push(target);
+        }
+        unobserve() {}
+        disconnect() {
+          this.entry.targets = [];
+        }
+      }
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** jsdom has no layout: set the box, then report it as a ResizeObserver would. */
+  function resize(container: HTMLElement, clientHeight: number, scrollHeight: number) {
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: clientHeight });
+    Object.defineProperty(container, 'scrollHeight', { configurable: true, value: scrollHeight });
+    act(() => {
+      for (const { callback, targets } of observers) {
+        if (targets.includes(container)) callback([], {} as ResizeObserver);
+      }
+    });
+  }
+
+  it('asks for the next page when the list grows past the rows it holds', () => {
+    const onLoadMore = vi.fn();
+    // The default view's first page: ten rows, more to come.
+    renderList({
+      sessions: MANY.slice(0, 10),
+      hasMore: true,
+      onLoadMore,
+      view: { groupBy: 'date', sortBy: 'activity' },
+    });
+    const container = screen.getByTestId('recent-chat-scroll');
+
+    // Ten 28px rows and a bucket label overflow a short overlay list: nothing to ask for.
+    resize(container, 240, 320);
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    // The window widens: the same rows now leave room below them.
+    resize(container, 433, 320);
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 });
 

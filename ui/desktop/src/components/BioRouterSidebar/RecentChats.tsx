@@ -801,6 +801,21 @@ export default function RecentChats({
     [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore]
   );
 
+  // The list's own height, so the fill check below runs again when its box
+  // changes (vision V1-R2-1). A list that ten rows filled in the short overlay
+  // sidebar has room to spare once the window widens into the docked one, or
+  // Components collapses, or Chats opens: nothing then scrolls, so no scroll
+  // event would ever ask for the next page, and every chat past the first ten
+  // was out of reach of the sidebar.
+  const [listHeight, setListHeight] = useState(0);
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setListHeight(container.clientHeight));
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container || container.clientHeight === 0) return;
@@ -808,8 +823,18 @@ export default function RecentChats({
     if (windowCut) setRenderBudget((budget) => budget + SIDEBAR_RENDER_WINDOW_STEP);
     else if (hasMore && !isLoadingMore && !isLoadingAll) onLoadMore();
     // `renderBudget` is a dependency so a very tall list that 60 lines do not
-    // fill keeps drawing until it overflows (or everything held is drawn).
-  }, [windowCut, renderBudget, hasMore, isLoadingMore, isLoadingAll, onLoadMore, sessions.length]);
+    // fill keeps drawing until it overflows (or everything held is drawn), and
+    // `listHeight` so a list whose box grew fills the room it gained.
+  }, [
+    windowCut,
+    renderBudget,
+    hasMore,
+    isLoadingMore,
+    isLoadingAll,
+    onLoadMore,
+    sessions.length,
+    listHeight,
+  ]);
 
   // The running rings pause off screen and while the window is hidden.
   useEffect(() => {
