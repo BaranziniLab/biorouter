@@ -181,6 +181,9 @@ describe('ConnectionSettingsDialog', () => {
   it('asks for the typed workspace name before saving Private as Public, and Cancel sends nothing', async () => {
     const { crew } = renderSettings();
     fireEvent.click(await screen.findByRole('radio', { name: /^Public/ }));
+    // Save pressed with a key: the typed confirmation then opens on Cancel (a pointer press rests it
+    // on its box instead, V3-R6-2; `ui/DangerousConfirmDialog.test.tsx` covers both).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
     save();
 
     const confirm = await screen.findByRole('alertdialog', {

@@ -14,6 +14,11 @@
  *
  * `DIALOG_SOURCE=<file>` bundles another `ui/dialog.tsx` in place of this one (its imports still
  * resolve from `components/ui`), so the cases can be run against an older version.
+ *
+ * `DangerousConfirmDialog` places focus itself, so the shared rule never reaches it: after a pointer
+ * pick of "Make public…" from the Knowledge tier menu its Cancel wore the inset ring (vision round
+ * 6, V3-R6-2). Its cases open it from a menu pick and from a plain click, with the mouse and with
+ * the keys. `DANGEROUS_SOURCE=<file>` swaps that component the same way.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -39,6 +44,8 @@ const PAGE_CSS = `
   body { margin: 0; font: 14px sans-serif; }
   *:focus-visible { outline: 2px solid red; }
   [data-slot=dialog-content], [data-slot=sheet-content] { position: fixed; top: 40px; left: 40%; width: 420px; background: #fff; }
+  [role=menuitem] { display: block; padding: 6px 12px; outline: none; }
+  [role=menu] { background: #fff; border: 1px solid #ccc; }
 `;
 
 const ENTRY = `
@@ -47,8 +54,10 @@ import { createRoot } from 'react-dom/client';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { ModalShell } from '../ModalShell';
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from './sheet';
+import { DangerousConfirmDialog } from './DangerousConfirmDialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './dropdown-menu';
 
-type Kind = null | 'reset' | 'form' | 'late-field' | 'select' | 'sheet';
+type Kind = null | 'reset' | 'form' | 'late-field' | 'select' | 'sheet' | 'danger';
 
 /** Reset data's body: a toggle that reads "Select all" until something is chosen, then "Clear". */
 function ResetBody() {
@@ -72,6 +81,15 @@ function App() {
       <button id="open-late" type="button" onClick={() => setKind('late-field')}>Late field</button>
       <button id="open-select" type="button" onClick={() => setKind('select')}>Schedule</button>
       <button id="open-sheet" type="button" onClick={() => setKind('sheet')}>Sheet</button>
+      <button id="open-danger" type="button" onClick={() => setKind('danger')}>Make public plain</button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button id="tier-chip" type="button" aria-label="Private">Private</button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem data-testid="item-make-public" onSelect={() => setKind('danger')}>Make public…</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <DialogPrimitive.Root>
         <DialogPrimitive.Trigger id="open-raw">Raw reset</DialogPrimitive.Trigger>
@@ -100,6 +118,15 @@ function App() {
         footer={<button id="select-ok" type="button" onClick={close}>Save</button>}>
         <div className="br-select"><input id="select-input" aria-label="Every" role="combobox" /></div>
       </ModalShell>
+      {/* KbTierControl's shape: a description, a preview with no controls, the typed phrase. */}
+      {kind === 'danger' && (
+        <DangerousConfirmDialog open title='Make "Soul" public?'
+          description="Every model will be able to read it. This cannot be undone."
+          phrase="soul" fieldLabel="Type this knowledge base's ID to confirm"
+          confirmLabel="Make public" onConfirm={close} onCancel={close}>
+          <div><p>Soul</p><p>soul</p></div>
+        </DangerousConfirmDialog>
+      )}
       <Sheet open={kind === 'sheet'} onOpenChange={change}>
         <SheetContent>
           <SheetTitle>Sheet</SheetTitle>
@@ -113,26 +140,28 @@ function App() {
 createRoot(document.getElementById('root')!).render(<App />);
 `;
 
-/** `DIALOG_SOURCE` swaps the shared dialog for another file, resolved as if it sat here. */
-function dialogSource(): Plugin[] {
-  const alternate = process.env.DIALOG_SOURCE;
-  if (!alternate) return [];
-  return [
-    {
-      name: 'dialog-source',
+/**
+ * `DIALOG_SOURCE` swaps the shared dialog, and `DANGEROUS_SOURCE` the typed confirmation, for
+ * another file, resolved as if it sat here.
+ */
+function sourceSwaps(): Plugin[] {
+  const swaps: Array<[string, RegExp, string | undefined]> = [
+    ['dialog-source', /^\.\/(ui\/)?dialog$/, process.env.DIALOG_SOURCE],
+    ['dangerous-source', /^\.\/DangerousConfirmDialog$/, process.env.DANGEROUS_SOURCE],
+  ];
+  return swaps
+    .filter((swap): swap is [string, RegExp, string] => Boolean(swap[2]))
+    .map(([name, filter, alternate]) => ({
+      name,
       setup(context) {
-        context.onResolve({ filter: /^\.\/(ui\/)?dialog$/ }, () => ({
-          path: alternate,
-          namespace: 'dialog-source',
-        }));
-        context.onLoad({ filter: /.*/, namespace: 'dialog-source' }, () => ({
+        context.onResolve({ filter }, () => ({ path: alternate, namespace: name }));
+        context.onLoad({ filter: /.*/, namespace: name }, () => ({
           contents: readFileSync(alternate, 'utf8'),
           loader: 'tsx',
           resolveDir: here,
         }));
       },
-    },
-  ];
+    }));
 }
 
 const launchChromium = async (): Promise<Browser | null> => {
@@ -174,7 +203,7 @@ describe('a dialog opened with the pointer (V4-R5-1)', () => {
       platform: 'browser',
       define: { 'process.env.NODE_ENV': '"production"' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
-      plugins: dialogSource(),
+      plugins: sourceSwaps(),
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
@@ -358,5 +387,98 @@ describe('a dialog opened with the pointer (V4-R5-1)', () => {
     } finally {
       await tab.close();
     }
+  });
+  describe('the typed confirmation (DangerousConfirmDialog, V3-R6-2)', () => {
+    /** The tier chip with the mouse, then "Make public…" with the mouse. */
+    async function mousePick(tab: Page) {
+      await tab.click('#tier-chip');
+      await tab.click('[data-testid=item-make-public]');
+      await tab.waitForSelector(dialog);
+      await settle(tab);
+    }
+
+    /** What holds focus, named the way a person reads it: the field, or a button's label. */
+    const focusName = (tab: Page) =>
+      tab.evaluate(() => {
+        const el = document.activeElement as HTMLElement;
+        return el.tagName === 'INPUT' ? 'field' : (el.textContent ?? '').trim();
+      });
+
+    it('rests on its box after a mouse pick from a menu: no ring, nothing with an action focused', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openPage();
+      try {
+        await mousePick(tab);
+        const now = await focused(tab);
+        expect(now.role, 'the dialog box holds focus').toBe('dialog');
+        expect(now.outline, 'the box draws no ring').toBe('none');
+        expect(now.ringedInside, 'no control in the dialog matches :focus-visible').toEqual([]);
+        // The next Tab reaches the phrase field, ringed, and then Cancel: never the action first.
+        await tab.keyboard.press('Tab');
+        expect(await focusName(tab)).toBe('field');
+        expect((await focused(tab)).focusVisible).toBe(true);
+        await tab.keyboard.press('Tab');
+        expect(await focusName(tab)).toBe('Cancel');
+        expect((await focused(tab)).focusVisible).toBe(true);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('rests on its box after a plain mouse click, and after a reopen that follows Escape', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openPage();
+      try {
+        await tab.click('#open-danger');
+        await tab.waitForSelector(dialog);
+        await settle(tab);
+        const first = await focused(tab);
+        expect(first.role).toBe('dialog');
+        expect(first.ringedInside).toEqual([]);
+        await tab.keyboard.press('Escape');
+        await tab.waitForSelector(dialog, { state: 'detached' });
+        await settle(tab);
+        expect((await focused(tab)).id, 'Escape gives focus back to the opener').toBe(
+          'open-danger'
+        );
+        await tab.click('#open-danger');
+        await tab.waitForSelector(dialog);
+        await settle(tab);
+        const again = await focused(tab);
+        expect(again.role).toBe('dialog');
+        expect(again.ringedInside).toEqual([]);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('puts focus on Cancel, ringed, after a key pick from the menu and after a key open', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openPage();
+      try {
+        await tab.focus('#tier-chip');
+        await tab.keyboard.press('Enter');
+        const item = tab.locator('[data-testid=item-make-public]');
+        await item.waitFor();
+        await item.focus();
+        await tab.keyboard.press('Enter');
+        await tab.waitForSelector(dialog);
+        await settle(tab);
+        expect(await focusName(tab)).toBe('Cancel');
+        expect((await focused(tab)).focusVisible).toBe(true);
+        await tab.keyboard.press('Escape');
+        await tab.waitForSelector(dialog, { state: 'detached' });
+        await settle(tab);
+
+        await tab.focus('#open-danger');
+        await tab.keyboard.press('Enter');
+        await tab.waitForSelector(dialog);
+        await settle(tab);
+        expect(await focusName(tab)).toBe('Cancel');
+        expect((await focused(tab)).focusVisible).toBe(true);
+      } finally {
+        await tab.close();
+      }
+    });
   });
 });

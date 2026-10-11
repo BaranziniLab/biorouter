@@ -24,8 +24,14 @@ function renderConfirm(confirm: ConfirmIntent, options: Parameters<typeof render
 
 afterEach(() => vi.clearAllMocks());
 
+// The typed confirmation reads the input that opened it (`ui/inputTrail`): a key open puts focus on
+// Cancel, any other open rests on the dialog box (V3-R6-2). Each focus case says which it models.
+const keyOpen = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+const pointerOpen = () => window.dispatchEvent(new Event('pointerdown'));
+
 describe('CrewConfirmation', () => {
   it('removes a person only when their username is typed exactly, case included', async () => {
+    keyOpen();
     const { crew, onClose } = renderConfirm({ action: 'remove-person', principalId: bob.id });
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
@@ -59,6 +65,18 @@ describe('CrewConfirmation', () => {
       { mutation: true }
     );
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('opens a typed confirmation on its box after a pointer press, never on Cancel or the action', async () => {
+    pointerOpen();
+    renderConfirm({ action: 'remove-person', principalId: bob.id });
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
+    });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    for (const button of within(dialog).getAllByRole('button')) {
+      expect(button).not.toHaveFocus();
+    }
   });
 
   it('never confirms on Enter in the typed field', async () => {
