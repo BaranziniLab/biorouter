@@ -46,7 +46,6 @@ function record(q) { window.__hits.push(q); document.getElementById('out').textC
 <template id="template"><button onclick="${handler}" data-q="template">Template</button></template>
 </body></html>`;
 mkdirSync(appDir, { recursive: true });
-mkdirSync(join(sandbox, "home"), { recursive: true });
 writeFileSync(
   join(appDir, "manifest.json"),
   JSON.stringify({
@@ -66,14 +65,12 @@ await new Promise((done) => portProbe.close(done));
 const origin = `http://127.0.0.1:${port}`;
 const childEnv = {
   PATH: process.env.PATH,
-  HOME: join(sandbox, "home"),
-  USERPROFILE: join(sandbox, "home"),
   BIOROUTER_PATH_ROOT: sandbox,
   BIOROUTER_HOST: "127.0.0.1",
   BIOROUTER_PORT: String(port),
   BIOROUTER_SERVER__SECRET_KEY: secret,
 };
-for (const name of ["SystemRoot", "TMPDIR", "TEMP", "TMP", "LANG"]) {
+for (const name of ["HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP", "TMP", "LANG"]) {
   if (process.env[name]) childEnv[name] = process.env[name];
 }
 const daemon = spawn(daemonBin, ["agent"], {
