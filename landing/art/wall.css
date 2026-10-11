@@ -117,11 +117,13 @@
 /* Composer: one card holding the prose line and, under it, the controls row
    the app draws: [+] [Tools N]  ·  [model] (Send). The + glyph hangs back onto
    the card's text edge. wall.js drops the row's parts, in order, from a chat
-   too narrow to hold them (the wall-bs steps below). */
+   too narrow to hold them (the wall-bs steps below). The card is the page
+   ground with the app's resting hairline (owner message 17, R-32); the idle
+   Send in it rests on the subtle fill. */
 .art-wall .wall-comp { flex: none; margin-top: auto; }
 .art-wall .wall-card {
   padding: 9px 6px 6px 12px;
-  background: var(--fill); border: 1px solid transparent; border-radius: var(--r-container);
+  background: var(--paper); border: 1px solid var(--line-composer); border-radius: var(--r-container);
 }
 .art-wall .wall-ph {
   display: block; font-size: 13px; line-height: 20px; color: var(--muted);
@@ -144,7 +146,7 @@
   flex: none; margin-left: 2px;
   width: var(--wall-bar); height: var(--wall-bar); border-radius: var(--r-element);
   display: grid; place-items: center;
-  background: var(--paper); color: var(--muted);
+  background: var(--fill); color: var(--muted);
 }
 /* The model's name is the chip's whole point, so it is never hidden while it
    can show part of itself: the app truncates it inside the chip (max width,

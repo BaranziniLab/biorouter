@@ -99,13 +99,13 @@
 /* ── The composer ───────────────────────────────────────── */
 .art-skills .sk-composer {
   position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
-  background: var(--fill);
-  border: 1px solid transparent; border-radius: var(--r-container);
+  background: var(--paper);
+  border: 1px solid var(--line-composer); border-radius: var(--r-container);
   padding: 6px 6px 6px 12px;
   transition: border-color var(--dur-menu) var(--ease);
 }
-/* The app's focus edge (--border-accent): the card rests on the subtle fill
-   with a transparent edge, and the edge turns accent while the command is
+/* The app's focus edge (--border-accent): the card rests on the page ground
+   with its hairline (R-32), and the edge turns accent while the command is
    typed. */
 .art-skills.is-edge .sk-composer { border-color: var(--coral); }
 
@@ -149,7 +149,7 @@
 .art-skills .sk-send {
   display: grid; place-items: center; flex: none;
   width: 32px; height: 32px; border-radius: var(--r-element);
-  background: var(--paper); color: var(--faint);
+  background: var(--fill); color: var(--faint);
   transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-skills .sk-send-ic { width: 16px; height: 16px; }

@@ -49,6 +49,16 @@ const TOUCH_44 = /menu-btn|avatar/;
 // floating surfaces the animations show (a menu, a picker, a dialog keep a hairline and a
 // shadow), the schedule's ring marker, and Crew's own recipes, which the app has not converted.
 const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-/;
+// The composer cards the animations draw are the one box the fill rule does not reach (owner message
+// 17, R-32): the page ground with the app's resting hairline, --border-subtle at 60%, which the site
+// writes as --line-composer. A card that goes back to the subtle fill with a transparent edge is the
+// drift this names. The hairline's colour is a token of its own, so DRAWN_EDGE does not read it as
+// an outline.
+const COMPOSER_CARDS = {
+  'art/hub.css': '.art-hub .hub-card',
+  'art/wall.css': '.art-wall .wall-card',
+  'art/skills.css': '.art-skills .sk-composer',
+};
 const DRAWN_EDGE = /^[\d.]+px (solid|dashed|dotted) (var\(--(line|line-2|line-input|coral|coral-bar|ink|navy|danger)\)|#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i;
 
 /** Every violation in a { file: css } map, as strings naming file, selector and why. */
@@ -56,7 +66,25 @@ export function violations(files) {
   const found = [];
   for (const [file, css] of Object.entries(files)) {
     const art = file.startsWith('art/');
+    // A later rule may restate only the card's padding (a container query), so each declaration that
+    // IS written is checked, and the file must write both somewhere.
+    const card = COMPOSER_CARDS[file];
+    const seen = new Set();
     for (const { selector, body } of rules(css)) {
+      if (card && selector === card) {
+        for (const [prop, value] of decls(body)) {
+          if (prop === 'background') {
+            seen.add(prop);
+            if (value !== 'var(--paper)') found.push(`${file}: ${selector} { background: ${value} }: the composer card is the page ground (R-32)`);
+          }
+          if (prop === 'border') {
+            seen.add(prop);
+            if (value !== '1px solid var(--line-composer)') {
+              found.push(`${file}: ${selector} { border: ${value} }: the composer card rests on the app's hairline, --line-composer (R-32)`);
+            }
+          }
+        }
+      }
       // A box that paints its own outline: a full border in a visible colour together with a radius.
       const all = decls(body);
       const edge = all.find(([p, v]) => p === 'border' && DRAWN_EDGE.test(v));
@@ -100,6 +128,11 @@ export function violations(files) {
         }
       }
     }
+    if (card) {
+      for (const prop of ['background', 'border']) {
+        if (!seen.has(prop)) found.push(`${file}: ${card} writes no ${prop}: the composer card is the page ground with the app's hairline (R-32)`);
+      }
+    }
   }
   return found;
 }
@@ -130,6 +163,9 @@ const mutants = {
   'an outlined button': ['baam.css', (s) => s + '\n.brxt-chip { border: 1px solid var(--line-2); border-radius: var(--r-element); }'],
   'a dashed empty box': ['art/apps.css', (s) => s + '\n[data-art="apps"] .apps-empty { border: 1px dashed var(--line-2); border-radius: var(--r-element); }'],
   'a ring drawn as a shadow': ['art/skills.css', (s) => s + '\n.art-skills .sk-sel { box-shadow: inset 0 0 0 1px var(--line); }'],
+  'the hub composer card back on the fill': ['art/hub.css', (s) => s.replace('background: var(--paper);\n  border: 1px solid var(--line-composer)', 'background: var(--fill);\n  border: 1px solid transparent')],
+  'the wall composer card back on the fill': ['art/wall.css', (s) => s.replace('background: var(--paper); border: 1px solid var(--line-composer)', 'background: var(--fill); border: 1px solid transparent')],
+  'the skills composer card with a harder line': ['art/skills.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
   'a drawn edge on the art frame': ['site.css', (s) => s + '\n.art { border: 1px solid var(--line); border-radius: var(--r-surface); }'],
 };
 for (const [name, [file, edit]] of Object.entries(mutants)) {

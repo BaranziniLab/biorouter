@@ -24,6 +24,7 @@
   --line: #e4e4e0;         /* --border-subtle, the hairline */
   --line-2: #d2d2cd;       /* --border-strong */
   --line-input: #c9c9c3;
+  --line-composer: rgba(228, 228, 224, 0.6); /* --border-subtle at 60%: the composer card's resting hairline (R-32) */
 
   /* Ink */
   --ink: #2a2520;          /* --text-default, warm ink */

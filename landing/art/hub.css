@@ -4,10 +4,13 @@
    model from the composer's model chip; a coral pulse carries the turn through
    Biorouter to that row. Geometry is set by art/hub.js; this file holds the
    look. Every rule is scoped to the artifact.
-   Fills before lines (owner message 13): the composer card and the mark's tile
-   are the subtle fill with a transparent 1px edge, so nothing moves; the idle
-   Send rests on the page ground (a fill never sits on a fill); the chip's menu
-   is a floating surface and keeps its hairline with a shadow. */
+   Fills before lines (owner message 13): the mark's tile is the subtle fill
+   with a transparent 1px edge, so nothing moves; the chip's menu is a floating
+   surface and keeps its hairline with a shadow. The composer card is the one
+   box the fill rule does not reach (owner message 17, R-32): it is the page
+   ground with the app's resting hairline, and its edge turns coral while the
+   prompt types, as the app's does while the box has focus. What sits in it, the
+   idle Send, rests on the subtle fill as it does on any page ground. */
 
 .art-hub .hub {
   position: absolute; inset: 0;
@@ -62,10 +65,15 @@
 .art-hub .hub-card {
   position: absolute;
   display: flex; flex-direction: column;
-  background: var(--fill);
-  border: 1px solid transparent; border-radius: var(--r-container);
+  background: var(--paper);
+  border: 1px solid var(--line-composer); border-radius: var(--r-container);
   padding: 4px 6px 6px 14px;
+  transition: border-color var(--dur-menu) var(--ease);
 }
+/* The app's focus edge (:has(textarea:focus), --border-accent): the same 1px
+   border turns accent while the prompt types. The caret is on for exactly that
+   stretch of the run. */
+.art-hub .hub-card:has(.hub-caret.on) { border-color: var(--coral); }
 .art-hub .hub-input {
   position: relative; flex: none; min-width: 0;
   font-size: 14px; line-height: 20px; padding: 6px 0;
@@ -81,7 +89,7 @@
 .art-hub .hub-send {
   flex: none; width: 32px; height: 32px; margin-left: 2px; border-radius: var(--r-element);
   display: grid; place-items: center;
-  background: var(--paper); color: var(--muted);
+  background: var(--fill); color: var(--muted);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-hub .hub-send svg { width: 16px; height: 16px; }
