@@ -386,6 +386,54 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       };
     });
 
+  /**
+   * Focus moves a tick after the DOM does: Radix mounts the dialog and moves focus inside it from
+   * an effect, and on close its FocusScope restores focus in a `setTimeout(0)` once the dialog has
+   * unmounted. Playwright's `waitFor` sees the node arrive or leave and returns at once, so a
+   * `document.activeElement` read straight after it can land before the move and see the page's
+   * fallback element (measured under load: the page's own first block, "Default model"). So focus
+   * is waited FOR, never sampled once.
+   *
+   * `focusReaches` waits (up to FOCUS_WAIT_MS) until the focused element carries `label`, and
+   * `focusIsOnInfoBody` until the dialog's body holds it. Neither throws on a timeout and neither
+   * asserts: the caller's own `expect` still reads `focusOf` afterwards, so a focus that never
+   * arrives fails there with the element that really held it, not with a bare timeout.
+   */
+  const FOCUS_WAIT_MS = 10_000;
+  const focusReaches = (tab: Page, label: string) =>
+    tab
+      .waitForFunction(
+        (want) => document.activeElement?.getAttribute('aria-label') === want,
+        label,
+        {
+          timeout: FOCUS_WAIT_MS,
+        }
+      )
+      .catch(() => undefined);
+  const focusIsOnInfoBody = (tab: Page) =>
+    tab
+      .waitForFunction(
+        () => document.activeElement?.classList.contains('br-local-info-body'),
+        null,
+        {
+          timeout: FOCUS_WAIT_MS,
+        }
+      )
+      .catch(() => undefined);
+  /**
+   * For the case where focus must END on `<body>`, which no condition can wait for: `<body>` is also
+   * what it reads before the restore runs, so a single read would pass whether or not a restore
+   * then moves it. This returns only after Radix's `setTimeout(0)` has fired (a timer queued two
+   * frames later runs behind it), so the read that follows sees where focus really settled.
+   */
+  const pastFocusRestore = (tab: Page) =>
+    tab.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(done, 0)))
+        )
+    );
+
   it('opens a model’s info from its ⋯ by keyboard and gives focus back to that ⋯ on Escape (V4-03)', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
@@ -398,6 +446,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       await tab.getByRole('dialog').waitFor();
       await tab.keyboard.press('Escape');
       await tab.getByRole('dialog').waitFor({ state: 'detached' });
+      await focusReaches(tab, 'More actions for Gemma 4 E4B');
       const after = await focusOf(tab);
       // Not <body>: a keyboard user keeps their place in the list.
       expect(after.label).toBe('More actions for Gemma 4 E4B');
@@ -414,6 +463,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       await tab.locator('[data-testid="local-model-gemma4"]').click({ button: 'right' });
       await tab.getByRole('menuitem', { name: 'View info' }).click();
       await tab.getByRole('dialog').waitFor();
+      await focusIsOnInfoBody(tab);
       const opened = await focusOf(tab);
       // Chromium gives `:focus-visible` to every script focus after this menu path (measured:
       // the dialog box, the Close button and a bare div all match), so the control it used to land
@@ -424,6 +474,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       // The footer's Close (the dialog's own × shares the name and comes last).
       await tab.getByRole('button', { name: 'Close', exact: true }).first().click();
       await tab.getByRole('dialog').waitFor({ state: 'detached' });
+      await pastFocusRestore(tab);
       const closed = await focusOf(tab);
       // Closed with the pointer: no control is given focus (and so none wears a ring).
       expect(closed.tag).toBe('BODY');
