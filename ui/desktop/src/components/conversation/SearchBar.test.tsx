@@ -16,12 +16,14 @@ describe('SearchBar', () => {
     const surface = screen.getByTestId('conversation-search-bar');
 
     // A floating search surface: the container radius (12px; 16px is the
-    // preview sheet's alone), the chat measure as its ceiling, --shadow-popover,
+    // preview sheet's alone), the chat measure as its ceiling, the one
+    // floating-surface recipe (hairline + --shadow-popover, lifted in dark),
     // and an opaque fill (no backdrop blur).
     expect(surface).toHaveClass('max-w-measure-chat');
     expect(surface).toHaveClass('rounded-container');
     expect(surface).not.toHaveClass('rounded-2xl');
-    expect(surface).toHaveClass('shadow-popover');
+    expect(surface).toHaveClass('biorouter-popover-surface');
+    expect(surface).toHaveClass('bg-background-default');
     expect(surface).not.toHaveClass('backdrop-blur-md');
     // The overlay class positions it (styles/search.css); nothing sticky.
     const overlay = surface.parentElement as HTMLElement;

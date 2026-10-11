@@ -17,6 +17,17 @@ describe('NotificationContent (shared layout primitive)', () => {
     expect(classes).not.toContain('px-3');
   });
 
+  it('draws the toast as the one floating-surface recipe, never an in-page fill', () => {
+    // A toast floats: hairline and shadow from `.biorouter-popover-surface` (lifted
+    // in dark), on the page ground. R-27 keeps lines on floating surfaces.
+    const classes = TOAST_SURFACE_CLASS_NAME.split(/\s+/);
+    expect(classes).toEqual(
+      expect.arrayContaining(['biorouter-popover-surface', 'bg-background-default'])
+    );
+    expect(classes).not.toContain('bg-background-fill');
+    expect(classes).not.toContain('border-border-subtle');
+  });
+
   it('renders the title and message together', () => {
     render(<NotificationContent status="success" title="Model changed" message="Now using Opus" />);
     expect(screen.getByText('Model changed')).toBeInTheDocument();
@@ -144,10 +155,11 @@ describe('NotificationContent (shared layout primitive)', () => {
         );
         const dismiss = screen.getByRole('button', { name: /dismiss/i });
 
-        // §4.2 compact close: 20px ghost, rounded-sm, right-2.5, 14px icon.
+        // §4.2 compact close: 20px ghost, the 4px inner radius (`rounded-inner`;
+        // `rounded-sm` is its deprecated alias), right-2.5, 14px icon.
         expect(dismiss.className).toContain('h-5');
         expect(dismiss.className).toContain('w-5');
-        expect(dismiss.className).toContain('rounded-sm');
+        expect(dismiss.className).toContain('rounded-inner');
         expect(dismiss.className).toContain('right-2.5');
         expect(dismiss.querySelector('svg')!.getAttribute('class')).toContain('h-3.5');
 
@@ -206,7 +218,12 @@ describe('NotificationSurface (inline banner shell)', () => {
     );
     const surface = container.querySelector('[data-testid="notification-surface"]')!;
     // The card ground stays neutral; no status fill leaks onto the whole surface.
-    expect(surface.className).toContain('bg-background-default');
+    // In place that neutral ground is the subtle fill with a transparent edge and
+    // no outline (R-27), and it steps a control inside back to the page ground.
+    expect(surface.className).toContain('bg-background-fill');
+    expect(surface.className).toContain('border-transparent');
+    expect(surface.className).not.toContain('border-border-subtle');
+    expect(surface.className).toContain('br-fill-surface');
     expect(surface.className).not.toContain('bg-background-danger');
     // The status hue lives on the chip.
     expect(container.querySelector('[data-status="error"]')).toBeInTheDocument();
@@ -232,8 +249,13 @@ describe('NotificationSurface (inline banner shell)', () => {
     const { container, rerender } = render(<NotificationSurface status="info" title="x" />);
     let surface = container.querySelector('[data-testid="notification-surface"]')!;
     expect(surface.className).not.toContain('shadow-popover');
+    expect(surface.className).not.toContain('biorouter-popover-surface');
     rerender(<NotificationSurface status="info" title="x" elevated />);
     surface = container.querySelector('[data-testid="notification-surface"]')!;
+    // Floating: the one floating-surface recipe on the page ground, not the fill.
     expect(surface.className).toContain('shadow-popover');
+    expect(surface.className).toContain('biorouter-popover-surface');
+    expect(surface.className).toContain('bg-background-default');
+    expect(surface.className).not.toContain('bg-background-fill');
   });
 });

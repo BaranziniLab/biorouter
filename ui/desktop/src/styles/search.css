@@ -145,9 +145,12 @@
   display: none;
 }
 
-/* "Aa" while match-case is on: the pressed fill, never the accent. */
+/* "Aa" while match-case is on: the pressed fill, never the accent. The fill
+   step (R-27), as the band's pressed toggles take it; inside the bar's dark
+   floating ground it is re-pointed one step deeper, where `--background-medium`
+   equalled that ground and the "on" state vanished. */
 .br-find-case[aria-pressed='true'] {
-  background-color: var(--background-medium);
+  background-color: var(--background-fill-strong);
   color: var(--text-default);
 }
 

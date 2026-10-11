@@ -279,10 +279,15 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       data-has-note={belowMinimum ? 'true' : undefined}
       onAnimationEnd={handleAnimationEnd}
     >
+      {/* The one floating-surface recipe (`.biorouter-popover-surface`): the
+          hairline and `--shadow-popover`, and in dark the lifted ground and the
+          firmer edge every menu takes, so the bar is not a #1b1b19 box told
+          apart from the dark transcript by its hairline alone (R-27 keeps
+          lines on floating surfaces; V1-M5 lifted them). */}
       <div
         data-testid="conversation-search-bar"
         role="search"
-        className="br-find-bar flex w-full max-w-measure-chat flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
+        className="br-find-bar biorouter-popover-surface flex w-full max-w-measure-chat flex-col overflow-hidden rounded-container bg-background-default"
       >
         <div className="br-find-row">
           <SearchIcon aria-hidden="true" className="br-find-icon" />

@@ -101,13 +101,14 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
   };
 
   // Simple message alert → shared NotificationSurface: neutral surface, tinted
-  // status chip, top-aligned icon. Rendered full-bleed (no border/radius) so it
-  // sits flush in the alert popover's stacked tiles.
+  // status chip, top-aligned icon. Rendered full-bleed (no border/radius) and on
+  // the popover's own ground, not the banner's fill, so it sits flush in the
+  // alert popover's stacked tiles (a fill there would be a box in a box).
   if (!alert.progress) {
     return (
       <NotificationSurface
         status={ALERT_STATUS[alert.type]}
-        className={cn('rounded-none border-0 px-3 py-3', className)}
+        className={cn('rounded-none border-0 bg-background-default px-3 py-3', className)}
         message={<span className="whitespace-pre-line">{alert.message}</span>}
         actions={
           alert.action ? (

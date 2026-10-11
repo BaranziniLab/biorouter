@@ -41,10 +41,13 @@ export type NotificationStatus = 'success' | 'error' | 'warning' | 'info' | 'loa
 // `pr-12` reserves the close gutter ONCE (react-toastify always renders its ×, whose
 // 20px/right-2.5/top-14px geometry lives in main.css `.Toastify__close-button`), so no
 // caller adds padding and no content can slide under the ×. See §4.2's compact rule.
+// A toast floats, so it is the one floating-surface recipe (`.biorouter-popover-surface`):
+// the hairline and `--shadow-popover`, and in dark the lifted ground and firmer edge every
+// menu takes (R-27 keeps lines on floating surfaces; V1-M5 lifted them in dark). A
+// "View details" button inside rests as the popover's quiet well.
 export const TOAST_SURFACE_CLASS_NAME = `relative mb-3 pl-3 pr-12 py-2.5 rounded-container w-full min-w-0
   flex items-start overflow-hidden cursor-pointer
-  text-text-default bg-background-default
-  border border-border-subtle shadow-popover`;
+  text-text-default biorouter-popover-surface bg-background-default`;
 
 // `loading` draws the one Spinner (spec 2.6) instead of a static glyph.
 const STATUS_ICON: Record<
@@ -66,7 +69,10 @@ const CHIP_TINT: Record<NotificationStatus, string> = {
   error: 'bg-background-danger/10 dark:bg-background-danger/20 text-text-danger',
   warning: 'bg-background-warning/10 dark:bg-background-warning/20 text-text-warning',
   info: 'bg-background-info/10 dark:bg-background-info/20 text-text-info',
-  loading: 'bg-background-medium text-text-muted',
+  // The neutral counterpart of the tints above: ink at 10%, so it reads on the
+  // toast, on a lifted dark toast and on a filled banner alike (a fixed
+  // `--background-medium` equalled the lifted dark ground).
+  loading: 'bg-overlay-pressed text-text-muted',
 };
 
 export interface NotificationContentProps {
@@ -163,9 +169,14 @@ export interface NotificationSurfaceProps extends NotificationContentProps {
 }
 
 /**
- * Inline banner shell: the neutral card (border + radius + optional elevation)
- * around {@link NotificationContent}, with an optional dismiss control that
- * lives inside the once-reserved gutter.
+ * Inline banner shell: the neutral card around {@link NotificationContent}, with
+ * an optional dismiss control that lives inside the once-reserved gutter.
+ *
+ * In place it is a subtle fill with no outline (R-27, a note): `--background-fill`
+ * with the 1px border kept TRANSPARENT, so forced colours still draw its edge
+ * and nothing moves, and `.br-fill-surface`, so a button inside rests on the
+ * page ground. Elevated it floats, and takes the floating-surface recipe
+ * (hairline and shadow, lifted in dark) on the page ground instead.
  */
 export function NotificationSurface({
   onClose,
@@ -180,8 +191,10 @@ export function NotificationSurface({
       data-testid="notification-surface"
       role={role}
       className={cn(
-        'relative rounded-container border border-border-subtle bg-background-default p-3',
-        elevated && 'shadow-popover',
+        'relative rounded-container p-3',
+        elevated
+          ? 'biorouter-popover-surface shadow-popover bg-background-default'
+          : 'br-fill-surface border border-transparent bg-background-fill',
         onClose && 'pr-10',
         className
       )}
@@ -201,7 +214,7 @@ export function NotificationSurface({
           // pads 10px instead of 12px. Change the container padding and this must
           // move with it — `dismiss control shares the chip's centre line` in the
           // tests is what catches it.
-          className="absolute right-2.5 top-4 inline-flex h-5 w-5 items-center justify-center rounded-sm text-text-subtle transition-colors hover:bg-background-medium hover:text-text-default"
+          className="absolute right-2.5 top-4 inline-flex h-5 w-5 items-center justify-center rounded-inner text-text-subtle transition-colors hover:bg-overlay-hover hover:text-text-default"
         >
           <X className="h-3.5 w-3.5" />
         </button>
