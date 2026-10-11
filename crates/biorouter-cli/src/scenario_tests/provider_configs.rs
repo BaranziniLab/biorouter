@@ -82,7 +82,7 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
             Some("No keys available"),
         ),
         ProviderConfig::simple_skip("litellm", "gpt-4o", Some("No keys available")),
-        ProviderConfig::simple_skip("ollama", "qwen3", Some("Ollama not supported")),
+        ProviderConfig::simple_skip("ollama", "qwen3.8:27b", Some("Ollama not supported")),
         ProviderConfig::simple_skip(
             "sagemaker_tgi",
             "meta-llama/Llama-2-7b-chat-hf",
