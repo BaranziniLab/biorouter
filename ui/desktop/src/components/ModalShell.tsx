@@ -138,6 +138,13 @@ export interface ModalShellProps {
    */
   onCloseAutoFocus?: (event: Event) => void;
   /**
+   * Radix's open-focus hook, for a dialog whose first tabbable is a poor place for focus (a form
+   * of Selects, where a closed trigger would wear the focus surface after a mouse open): call
+   * `event.preventDefault()` and focus the dialog (`event.currentTarget`) or a field yourself.
+   * `DialogContent` records the opener before calling it, so focus still returns on close.
+   */
+  onOpenAutoFocus?: (event: Event) => void;
+  /**
    * The id of the body node that describes the dialog, for a dialog whose body is a message rather
    * than a form (QA Q2-28). Used only without a `subtitle`, which is the description when present.
    */
@@ -164,6 +171,7 @@ export function ModalShell({
   bodyClassName,
   anchor,
   onCloseAutoFocus,
+  onOpenAutoFocus,
   describedBy,
   headerRule,
 }: ModalShellProps) {
@@ -191,6 +199,7 @@ export function ModalShell({
         // subtitle we opt out explicitly rather than leave a console warning.
         {...(subtitle ? {} : { 'aria-describedby': bodyDescribes ? describedBy : undefined })}
         {...(closeAutoFocus ? { onCloseAutoFocus: closeAutoFocus } : {})}
+        {...(onOpenAutoFocus ? { onOpenAutoFocus } : {})}
         data-anchor={placement === 'top' ? 'top' : undefined}
         data-size={size}
         style={placement === 'top' ? MODAL_ANCHOR_TOP_STYLE : undefined}

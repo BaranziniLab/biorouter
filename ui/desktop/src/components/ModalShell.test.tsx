@@ -347,3 +347,29 @@ describe('ModalShell — the anchor axis', () => {
     expect(surface()).not.toHaveAttribute('data-anchor');
   });
 });
+
+describe('ModalShell — where focus lands on open (WS-VIEWS-A-4, V3-20)', () => {
+  it('hands Radix’s open-focus hook to the caller, so a form of Selects can focus the dialog', () => {
+    const onOpenAutoFocus = vi.fn((event: Event) => {
+      event.preventDefault();
+      (event.currentTarget as HTMLElement).focus();
+    });
+    render(
+      <ModalShell open onOpenChange={vi.fn()} title="Schedule" onOpenAutoFocus={onOpenAutoFocus}>
+        <button type="button">Every day</button>
+      </ModalShell>
+    );
+    expect(onOpenAutoFocus).toHaveBeenCalledTimes(1);
+    expect(surface()).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Every day' })).not.toHaveFocus();
+  });
+
+  it('leaves Radix’s first-tabbable focus alone without one', () => {
+    render(
+      <ModalShell open onOpenChange={vi.fn()} title="Schedule">
+        <button type="button">Every day</button>
+      </ModalShell>
+    );
+    expect(screen.getByRole('button', { name: 'Every day' })).toHaveFocus();
+  });
+});
