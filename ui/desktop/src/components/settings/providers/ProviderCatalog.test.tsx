@@ -696,29 +696,52 @@ describe('ProviderCatalog — modes', () => {
   });
 
   /**
-   * ⚠ The institutional setup form is offered only where it configures one of
-   * that section's own providers. A form written for UCSF's Versa endpoints
-   * under another institution's heading would ask for the wrong credentials and
-   * bind the wrong gateway.
+   * ⚠ The institutional setup form is offered only by a row it sets up. A form written for UCSF's
+   * Versa endpoints opened from another institution's gateway would ask for the wrong credentials
+   * and bind the wrong gateway.
+   *
+   * FR-R1-6 / FR-S-6: the ROW is the selector. The tab used to list the two Versa rows (which
+   * opened the Configure dialog) and under them a second form with its own gateway switch.
    */
-  it('offers the institutional setup form only under an institution it configures', () => {
+  it('opens a Versa row into its own gateway form in place, with no second form below the rows', () => {
     const { unmount } = render(
       <ProviderCatalog
-        providers={[provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF })]}
+        providers={[
+          provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF, is_configured: false }),
+          provider('versa_bedrock', {
+            ...PRIVATE_REMOTE,
+            institutions: UCSF,
+            is_configured: false,
+          }),
+        ]}
         mode="onboarding"
         configuredProvider={null}
       />
     );
     clickTab('institutional');
-    expect(screen.getByLabelText('UCSF-hosted provider')).toBeInTheDocument();
+    // Nothing is open, and there is no form below the rows.
+    expect(screen.queryByLabelText('API key')).toBeNull();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-versa_bedrock'));
+    const panel = screen.getByTestId('provider-row-panel-versa_bedrock');
+    expect(within(panel).getByLabelText('Access key ID')).toBeInTheDocument();
+    expect(within(panel).queryByRole('radiogroup')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-versa_azure'));
+    expect(
+      within(screen.getByTestId('provider-row-panel-versa_azure')).getByLabelText('API key')
+    ).toBeInTheDocument();
     unmount();
 
+    // Another institution's gateway opens nothing of UCSF's.
     render(
       <ProviderCatalog
         providers={[
           provider('someone_elses_gateway', {
             ...PRIVATE_REMOTE,
             institutions: [{ id: 'elsewhere', display_name: 'Elsewhere University' }],
+            is_configured: false,
           }),
         ]}
         mode="onboarding"
@@ -727,7 +750,22 @@ describe('ProviderCatalog — modes', () => {
     );
     clickTab('institutional');
     expect(screen.getByText('Elsewhere University')).toBeInTheDocument();
-    expect(screen.queryByLabelText('UCSF-hosted provider')).toBeNull();
+    expect(screen.queryByTestId('provider-row-toggle-someone_elses_gateway')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
+  });
+
+  it('chooses a configured Versa gateway on a click, as any configured row is', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF })]}
+        mode="onboarding"
+        configuredProvider={null}
+      />
+    );
+    clickTab('institutional');
+    expect(screen.queryByTestId('provider-row-toggle-versa_azure')).toBeNull();
+    fireEvent.click(screen.getByTestId('provider-card-versa_azure'));
+    expect(screen.getByTestId('switch-model-modal')).toBeInTheDocument();
   });
 
   it('puts the paste-a-key detector at the top of the API section in onboarding only', () => {

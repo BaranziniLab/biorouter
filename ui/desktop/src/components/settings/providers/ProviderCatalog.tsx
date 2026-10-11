@@ -44,7 +44,7 @@ import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import LlamaServerInlineCard from '../../onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from '../../onboarding/OllamaInlineCard';
 import InstitutionalSetupCard, {
-  INSTITUTIONAL_SETUP_PROVIDER_IDS,
+  INSTITUTIONAL_SETUP_FLAVOR,
 } from '../../onboarding/InstitutionalSetupCard';
 import CommercialSetupCard, {
   type DetectedProviderSetup,
@@ -166,10 +166,10 @@ export const AGENT_PROBE_WAIT_MS = 2500;
 /**
  * The provider ids that open a bespoke first-run setup panel, and which one.
  *
- * ⚠ Wiring, not taxonomy — see the class note above. `institutional` is handled
- * per *section* rather than per row, because that card configures a family of
- * gateways behind its own flavour toggle and would otherwise be rendered twice
- * inside one institution.
+ * ⚠ Wiring, not taxonomy — see the class note above. The institutional gateways
+ * open their form through `INSTITUTIONAL_SETUP_FLAVOR` (the form's own table of the
+ * rows it sets up), and only while they are not set up: a configured gateway's row
+ * is chosen on a click, as any configured row is.
  */
 const ONBOARDING_SETUP: Record<string, 'llamacpp' | 'ollama'> = {
   llamacpp: 'llamacpp',
@@ -588,6 +588,19 @@ export default function ProviderCatalog({
   /** The first-run setup panel a row opens, or `null` when it has none. */
   const setupPanelFor = (provider: ProviderDetails): React.ReactNode => {
     if (!isOnboarding) return null;
+    // The row is the selector (FR-R1-6): an institutional gateway that is not set up opens its own
+    // form in place, for its own gateway, instead of a dialog beside a second form below the rows.
+    const gateway = INSTITUTIONAL_SETUP_FLAVOR[provider.name];
+    if (gateway && !provider.is_configured) {
+      return (
+        <InstitutionalSetupCard
+          chrome="bare"
+          flavor={gateway}
+          onSuccess={handleProviderReady}
+          onStartTesting={onStartTesting}
+        />
+      );
+    }
     switch (ONBOARDING_SETUP[provider.name]) {
       case 'llamacpp':
         return <LlamaServerInlineCard chrome="bare" onSuccess={handleLocalComplete} />;
@@ -670,19 +683,6 @@ export default function ProviderCatalog({
 
   const renderSection = (group: OrderedProviderGroup, section: OrderedProviderSection) => {
     const isApiSection = group.key === 'commercial' && section.key === 'api';
-    const isInstitutionSection =
-      group.key === 'institutional' &&
-      section.key !== 'unaffiliated' &&
-      section.providers.length > 0;
-    // Only offer the institutional setup form where it actually configures one of
-    // the section's providers — derived from that card's own declaration, so a
-    // second institution's gateways never get a form written for someone else's.
-    const hostsInstitutionalSetup =
-      isOnboarding &&
-      isInstitutionSection &&
-      section.providers.some((provider) =>
-        INSTITUTIONAL_SETUP_PROVIDER_IDS.includes(provider.name)
-      );
 
     const rows = (
       <>
@@ -724,15 +724,6 @@ export default function ProviderCatalog({
           </SettingSection>
         ) : (
           <div className="biorouter-settings-list">{rows}</div>
-        )}
-        {hostsInstitutionalSetup && (
-          <div className="br-provider-inset mt-6">
-            <InstitutionalSetupCard
-              chrome="bare"
-              onSuccess={handleProviderReady}
-              onStartTesting={onStartTesting}
-            />
-          </div>
         )}
       </div>
     );

@@ -3,23 +3,24 @@ import { useConfig } from '../ConfigContext';
 import { checkProvider } from '../../api';
 import { checkCandidateCredentials } from '../settings/providers/modal/subcomponents/handlers/DefaultSubmitHandler';
 import { Button } from '../ui/button';
-import { ArrowRight } from '../icons/app-icons';
 import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
-import { SegmentedControl } from '../ui/segmented-control';
 import { Spinner } from '../ui/spinner';
+import { institutionalCopy } from './copy';
 
 interface InstitutionalSetupCardProps {
+  /** Which gateway the row that opened this form is. */
+  flavor: VersaFlavor;
   onSuccess: (provider: string) => void;
   onStartTesting?: () => void;
   /** See `OnboardingCardShell`. Defaults to the standalone card. */
   chrome?: OnboardingCardChrome;
 }
 
-type VersaFlavor = 'azure' | 'bedrock';
+export type VersaFlavor = 'azure' | 'bedrock';
 
 // Versa Bedrock's own keys, the only ones `versa_bedrock.rs` reads. This card
 // used to write `AWS_ENDPOINT_URL_BEDROCK` and `AWS_REGION`, which belong to the
@@ -43,31 +44,36 @@ const VERSA_AZURE_DEFAULTS = {
   VERSA_AZURE_API_VERSION: '2025-01-01-preview',
 };
 
-const TABS: { id: VersaFlavor; label: string }[] = [
-  { id: 'azure', label: 'Azure OpenAI (GPT)' },
-  { id: 'bedrock', label: 'Bedrock (Claude)' },
-];
-
 /**
- * The providers this card configures — one per flavour of its own toggle, and
- * the `BIOROUTER_PROVIDER` value each branch of `handleSubmit` writes.
+ * The rows this form sets up, and which gateway each one is: the `BIOROUTER_PROVIDER` value each
+ * branch of `handleSubmit` writes.
  *
- * ⚠ Exported so the provider catalog can ask *this card* which rows it covers,
- * rather than keeping a second table mapping an institution to a setup form.
- * The catalog groups by institution from the daemon's affiliation payload; an
- * institution whose gateways are not in this list simply gets no bespoke form,
- * which is the correct outcome — a form written for UCSF's Versa endpoints must
- * not be offered under another institution's heading.
+ * ⚠ Exported so the provider catalog can ask *this form* which rows open it, rather than keeping
+ * a second table mapping an institution to a setup form. The catalog groups by institution from
+ * the daemon's affiliation payload; a gateway not in this table simply opens no bespoke form, which
+ * is the correct outcome: a form written for UCSF's Versa endpoints must not be offered for another
+ * institution's gateway.
+ *
+ * The ROW is the selector (vision FR-R1-6 / FR-S-6). The Institutional tab used to list "Versa
+ * API Azure" and "Versa API Bedrock" as rows that opened the Configure dialog, and under them a
+ * second, unheaded form whose segmented control chose between the same two: two paths, on two
+ * surfaces, for one setup. Each row now opens this form in place, for its own gateway.
  */
-export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = ['versa_azure', 'versa_bedrock'];
+export const INSTITUTIONAL_SETUP_FLAVOR: Readonly<Record<string, VersaFlavor>> = {
+  versa_azure: 'azure',
+  versa_bedrock: 'bedrock',
+};
+export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = Object.keys(
+  INSTITUTIONAL_SETUP_FLAVOR
+);
 
 export default function InstitutionalSetupCard({
+  flavor,
   onSuccess,
   onStartTesting,
   chrome = 'card',
 }: InstitutionalSetupCardProps) {
   const { upsert } = useConfig();
-  const [flavor, setFlavor] = useState<VersaFlavor>('azure');
   const [bedrockAccessKey, setBedrockAccessKey] = useState('');
   const [bedrockSecretKey, setBedrockSecretKey] = useState('');
   const [azureApiKey, setAzureApiKey] = useState('');
@@ -130,7 +136,7 @@ export default function InstitutionalSetupCard({
       // is the sentence that says what is wrong.
       const said =
         e instanceof Error ? e.message : typeof e === 'string' && e.trim() ? e.trim() : null;
-      setError(said ? `Could not connect: ${said}` : 'Could not connect with these credentials.');
+      setError(said ? institutionalCopy.refused(said) : institutionalCopy.refusedPlain);
     } finally {
       setIsLoading(false);
     }
@@ -145,21 +151,8 @@ export default function InstitutionalSetupCard({
       title="UCSF-hosted models"
       description="Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates."
     >
-      {/* Which gateway: one value of two, so the shared segmented control, not a tablist. */}
-      <div className="mb-4">
-        <SegmentedControl
-          aria-label="UCSF-hosted provider"
-          options={TABS.map((tab) => ({ value: tab.id, label: tab.label }))}
-          value={flavor}
-          onValueChange={(next) => {
-            setFlavor(next);
-            setError(null);
-          }}
-        />
-      </div>
-
       {flavor === 'azure' ? (
-        <Field id="versa-azure-api-key" label="API key">
+        <Field id="versa-azure-api-key" label={institutionalCopy.apiKey}>
           <Input
             type="password"
             value={azureApiKey}
@@ -172,7 +165,7 @@ export default function InstitutionalSetupCard({
         </Field>
       ) : (
         <div className="flex flex-col gap-3">
-          <Field id="versa-bedrock-access-key" label="Access key ID">
+          <Field id="versa-bedrock-access-key" label={institutionalCopy.accessKeyId}>
             <Input
               type="password"
               value={bedrockAccessKey}
@@ -180,7 +173,7 @@ export default function InstitutionalSetupCard({
               disabled={isLoading}
             />
           </Field>
-          <Field id="versa-bedrock-secret-key" label="Secret access key">
+          <Field id="versa-bedrock-secret-key" label={institutionalCopy.secretAccessKey}>
             <Input
               type="password"
               value={bedrockSecretKey}
@@ -197,8 +190,10 @@ export default function InstitutionalSetupCard({
       {/* The two overrides most people never touch. The config key each one writes is machine
           text, so it sits behind the label's InfoTip rather than being the label. */}
       <Disclosure
-        label="Advanced"
-        summary={flavor === 'azure' ? 'Endpoint, API version' : 'Endpoint, region'}
+        label={institutionalCopy.advanced}
+        summary={
+          flavor === 'azure' ? institutionalCopy.azureSummary : institutionalCopy.bedrockSummary
+        }
         open={advancedOpen}
         onOpenChange={setAdvancedOpen}
         className="mt-3"
@@ -208,8 +203,8 @@ export default function InstitutionalSetupCard({
             <>
               <Field
                 id="versa-azure-endpoint"
-                label="Endpoint"
-                info="Saved as VERSA_AZURE_ENDPOINT."
+                label={institutionalCopy.endpoint}
+                info={institutionalCopy.savedAs('VERSA_AZURE_ENDPOINT')}
               >
                 <Input
                   type="text"
@@ -220,8 +215,8 @@ export default function InstitutionalSetupCard({
               </Field>
               <Field
                 id="versa-azure-api-version"
-                label="API version"
-                info="Saved as VERSA_AZURE_API_VERSION."
+                label={institutionalCopy.apiVersion}
+                info={institutionalCopy.savedAs('VERSA_AZURE_API_VERSION')}
               >
                 <Input
                   type="text"
@@ -235,8 +230,8 @@ export default function InstitutionalSetupCard({
             <>
               <Field
                 id="versa-bedrock-endpoint"
-                label="Endpoint"
-                info="Saved as VERSA_BEDROCK_ENDPOINT."
+                label={institutionalCopy.endpoint}
+                info={institutionalCopy.savedAs('VERSA_BEDROCK_ENDPOINT')}
               >
                 <Input
                   type="text"
@@ -245,7 +240,11 @@ export default function InstitutionalSetupCard({
                   disabled={isLoading}
                 />
               </Field>
-              <Field id="versa-bedrock-region" label="Region" info="Saved as VERSA_BEDROCK_REGION.">
+              <Field
+                id="versa-bedrock-region"
+                label={institutionalCopy.region}
+                info={institutionalCopy.savedAs('VERSA_BEDROCK_REGION')}
+              >
                 <Input
                   type="text"
                   value={bedrockRegion}
@@ -258,15 +257,17 @@ export default function InstitutionalSetupCard({
         </div>
       </Disclosure>
 
-      <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
-        <Button onClick={handleSubmit} disabled={!canSubmit} size="lg" className="w-full sm:w-auto">
+      {/* One verb, on the 32px rung, and it keeps its words while it works: a bare spinner left
+          the button with no name and half its width (FR-S-6, FR-R1-11). */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button onClick={handleSubmit} disabled={!canSubmit} data-testid="institutional-connect">
           {isLoading ? (
-            <Spinner />
-          ) : (
             <>
-              Connect to {flavor === 'azure' ? 'Versa Azure OpenAI' : 'Versa Bedrock'}
-              <ArrowRight className="w-4 h-4" />
+              <Spinner size={14} />
+              {institutionalCopy.connecting}
             </>
+          ) : (
+            institutionalCopy.connect
           )}
         </Button>
       </div>

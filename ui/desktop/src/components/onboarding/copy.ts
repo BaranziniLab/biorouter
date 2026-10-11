@@ -45,3 +45,23 @@ export const llamaCopy = {
   /** The Details rows the Settings info dialog does not have; the rest share its labels. */
   download: 'Download',
 } as const;
+
+/** The institutional gateway form a Versa row opens in place (`InstitutionalSetupCard`). */
+export const institutionalCopy = {
+  apiKey: 'API key',
+  accessKeyId: 'Access key ID',
+  secretAccessKey: 'Secret access key',
+  advanced: 'Advanced',
+  azureSummary: 'Endpoint, API version',
+  bedrockSummary: 'Endpoint, region',
+  endpoint: 'Endpoint',
+  apiVersion: 'API version',
+  region: 'Region',
+  /** A field's InfoTip: the config key it writes is machine text, so it is the tip, not the label. */
+  savedAs: (key: string) => `Saved as ${key}.`,
+  connect: 'Connect',
+  connecting: 'Connecting…',
+  /** The daemon's refusal is the sentence that says what is wrong, so it is shown as it came. */
+  refused: (said: string) => `Could not connect: ${said}`,
+  refusedPlain: 'Could not connect with these credentials.',
+} as const;
