@@ -28,8 +28,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as themeTokens from '../../../scripts/lib/theme-tokens.mjs';
 import type { Graph, GraphNode } from '../../api/types.gen';
 import { Sparkles } from '../icons/app-icons';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { EmptyState } from '../ui/empty-state';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { ChangeKindChip } from './changelog/ChangeKindChip';
 import { Dropzone } from './IngestPanel/Dropzone';
 import { PasteTextBox } from './IngestPanel/PasteTextBox';
 import { GraphFacetStrip } from './graph/GraphFacetStrip';
@@ -76,6 +79,7 @@ function tokenCss(mode: Mode): string {
     .join('\n  ');
   return `:root {
   ${decls}
+  --overlay-hover: color-mix(in oklab, var(--text-default) 5%, transparent);
   --overlay-selected: color-mix(in oklab, var(--text-default) 14%, transparent);
   --overlay-selected-hover: color-mix(in oklab, var(--text-default) 19%, transparent);
   --radius-element: 8px; --radius-container: 12px; --radius-inner: 4px;
@@ -122,6 +126,13 @@ function ruleCss(): string {
     // The shared recessed ground (control, hover and track grounds on the strong steps) that the
     // pane header and the graph canvas carry; Knowledge has no recessed rule of its own.
     block('.br-ground-recessed {'),
+    // The shared washed row (WS-PRIMITIVES, "rows"): the hover wash and the privacy pill's step to
+    // the strong fill, which the Knowledge chip rule below has to come after and beat.
+    cut('/* @ws WS-PRIMITIVES begin: rows */', '/* @ws WS-PRIMITIVES end: rows */'),
+    cut(
+      '/* @ws WS-KNOWLEDGE begin: washed-row chips */',
+      '/* @ws WS-KNOWLEDGE end: washed-row chips */'
+    ),
   ].join('\n');
 }
 
@@ -151,6 +162,10 @@ svg { width: 16px; height: 16px; flex: none; }
 .border { border: 1px solid; } .border-transparent { border-color: transparent; }
 .border-b { border-bottom: 1px solid; } .border-border-subtle { border-color: var(--border-subtle); }
 .bg-background-fill { background-color: var(--background-fill); }
+.bg-background-fill-strong { background-color: var(--background-fill-strong); }
+.bg-background-muted { background-color: var(--background-muted); }
+.rounded-inner { border-radius: var(--radius-inner); } .h-5 { height: 20px; } .px-1\\.5 { padding-inline: 6px; }
+.text-text-muted { color: var(--text-muted); } .text-text-default { color: var(--text-default); }
 .bg-sidebar { background-color: var(--sidebar); }
 }
 .biorouter-focus-surface:focus-visible { background-color: var(--background-focus); }
@@ -224,12 +239,39 @@ function documentFor(mode: Mode): string {
       </div>
     </div>
   );
+  // The two lists whose chips step back on a washed row: a manager row (the chip line, Primary and
+  // the Private pill) and a change log entry (the kind chip; a flag keeps its tint).
+  const row = 'biorouter-list-row flex items-center gap-2 px-3';
+  const rows = renderToStaticMarkup(
+    <div id="rows" style={{ width: 420, background: 'var(--background-default)' }}>
+      <div id="row-manager" className={row} style={{ height: 40 }}>
+        <div className="br-wash-chips flex items-center gap-2">
+          <div>Soul</div>
+          <Badge id="chip-format">OKF</Badge>
+          <PrivacyBadge tier="private" enforcementOff={false} />
+        </div>
+        <Badge id="chip-primary" className="br-wash-chip">
+          Primary
+        </Badge>
+        <button id="row-btn" type="button">
+          Open
+        </button>
+      </div>
+      <div id="row-change" className={row} style={{ height: 40 }}>
+        <ChangeKindChip kind="manual" />
+      </div>
+      <div id="row-flag" className={row} style={{ height: 40 }}>
+        <ChangeKindChip kind="flag" />
+      </div>
+    </div>
+  );
   return `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${tokenCss(mode)}\n${UTILITIES}\n${ruleCss()}</style></head><body>
     ${rail}
     <div id="strip-rest" style="margin-top:12px;background:var(--background-default)">${stripMarkup(false)}</div>
     <div id="strip-on" style="margin-top:12px;background:var(--background-default)">${stripMarkup(true)}</div>
     <div id="header" style="margin-top:12px;width:340px">${header}</div>
     <div style="margin-top:12px">${canvas}</div>
+    <div style="margin-top:12px">${rows}</div>
   </body></html>`;
 }
 
@@ -402,6 +444,48 @@ describe.each(Object.keys(MODES) as Mode[])('the Knowledge surfaces are fills (%
     // It is a step off the canvas it sits on, which the rest fill is not (1.00:1).
     const canvas = await look(page, '#canvas');
     expect(tile.bg).not.toBe(canvas.bg);
+  });
+
+  it('steps a chip back to the page ground while its row is washed, and only then (V3-R2-5)', async (ctx) => {
+    if (!page) return ctx.skip();
+    const format = '#chip-format';
+    const pill = '#row-manager [data-testid="privacy-badge"]';
+    const primary = '#chip-primary';
+    const kind = '#row-change [data-testid="change-kind-chip"]';
+    const bg = async (sel: string) => (await look(page!, sel)).bg;
+    const strong = rgb(hex('--background-fill-strong'));
+    const pageGround = rgb(hex('--background-default'));
+
+    // At rest the neutral chips are on the strong fill and the Private pill on its muted one.
+    await page.mouse.move(0, 0);
+    for (const sel of [format, primary, kind]) expect(await bg(sel), `${sel} at rest`).toBe(strong);
+    expect(await bg(pill), 'the pill at rest').toBe(rgb(hex('--background-muted')));
+
+    // Under the pointer the row is a wash, a fill, so every chip in it rests on the page ground:
+    // the Private pill too (the shared rows block would have left it on the strong fill).
+    await page.hover('#row-manager');
+    for (const sel of [format, pill, primary]) {
+      expect(await bg(sel), `${sel} on a hovered manager row`).toBe(pageGround);
+    }
+    // The row the pointer left has let go.
+    expect(await bg(kind)).toBe(strong);
+    await page.hover('#row-change');
+    expect(await bg(kind), 'the kind chip on a hovered entry').toBe(pageGround);
+    expect(await bg(format)).toBe(strong);
+
+    // Keyboard focus on a control in the row washes it the same way (the shared rows' own states).
+    await page.mouse.move(0, 0);
+    await page.keyboard.press('Shift');
+    await page.focus('#row-btn');
+    expect(await bg(format), 'a row holding keyboard focus').toBe(pageGround);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    expect(await bg(format)).toBe(strong);
+
+    // A tinted chip (a flag is a problem marker) is left alone: it carries no step-back class.
+    const flagClass = await page.evaluate(
+      () => document.querySelector('#row-flag [data-testid="change-kind-chip"]')!.className
+    );
+    expect(flagClass).not.toContain('br-wash-chip');
   });
 
   it('keeps the edge in forced colours, where the fill is repainted', async (ctx) => {

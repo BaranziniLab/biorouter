@@ -174,6 +174,79 @@ describe('an engaged filter stays legible and a step off a resting one', () => {
 });
 
 /**
+ * A chip on a washed row (vision round 2, V3-R2-5). The neutral Badge rests on the strong fill, and
+ * a hovered list row is the page ink at 5%, so under the pointer the change log's kind chip and the
+ * manager's Built-in, format, Private and Primary chips lost their boxes. R-27 usage rule 3 (a fill
+ * never sits on a fill) says where they go: the page ground.
+ */
+describe('a chip on a washed row steps back to the page ground', () => {
+  const WASHED = ':is(:hover, :focus-visible, :has(:focus-visible))';
+  const SELECTOR = `.biorouter-list-row${WASHED} :is(.br-wash-chip, .br-wash-chips > span)`;
+
+  it('names the chip, in the same three states the shared rows wash in', () => {
+    expect(rule(SELECTOR)['background-color']).toBe('var(--background-default)');
+    // The shared rows block washes (and steps its controls back) in exactly these states; this
+    // rule must not wash earlier or later than the row does.
+    expect(stripComments(CSS)).toContain(`.biorouter-list-row${WASHED},`);
+  });
+
+  it('is unlayered, so it beats the Badge utility and the privacy pill rule', () => {
+    const at = CSS.indexOf('@ws WS-KNOWLEDGE begin: washed-row chips');
+    expect(at).toBeGreaterThan(0);
+    // Not inside an @layer: the only `@layer` blocks before it close before it, which is what
+    // keeps `bg-background-fill-strong` (a utilities-layer class) under this rule.
+    const before = stripComments(CSS.slice(0, at));
+    let depth = 0;
+    for (const ch of before) {
+      if (ch === '{') depth += 1;
+      if (ch === '}') depth -= 1;
+    }
+    expect(depth, 'the rule sits at the top level of the stylesheet').toBe(0);
+    // And it comes after the privacy pill's washed-row rule, which has the same specificity.
+    expect(at).toBeGreaterThan(
+      CSS.indexOf(
+        '.biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)) .br-privacy-pill'
+      )
+    );
+  });
+
+  it('is carried by the kind chip, the Primary badge and the manager chip line', () => {
+    const root = join(__dirname, '../components/knowledge');
+    expect(readFileSync(join(root, 'changelog/ChangeKindChip.tsx'), 'utf8')).toContain(
+      "'br-wash-chip'"
+    );
+    const manager = readFileSync(join(root, 'KBSelector/KBManagerDialog.tsx'), 'utf8');
+    expect(manager).toMatch(/<Badge className="br-wash-chip">/);
+    expect(manager).toMatch(/className="br-wash-chips flex items-center gap-2"/);
+  });
+
+  it.each(Object.entries(scopes))(
+    '%s: the page ground is a more visible box than the strong fill on the wash',
+    (name, scope) => {
+      const hex = (token: string) => {
+        const value = tokens.resolveHex(token, scope);
+        expect(value, `${name}: ${token} is a hex`).toBeTruthy();
+        return value!;
+      };
+      const page = hex('--background-default');
+      // `--overlay-hover` is the default ink at 5% over the row's ground (the page, in a dialog or
+      // a drawer).
+      const wash = tokens.blend(hex('--text-default'), 0.05, page);
+      const strong = tokens.contrast(hex('--background-fill-strong'), wash);
+      const chip = tokens.contrast(page, wash);
+      expect(chip, `${name}: page ground vs wash`).toBeGreaterThan(strong);
+      // As visible a box as a resting fill is on the page, the step every fill in the app is
+      // drawn at (1.09:1 in light), so a chip under the pointer is no fainter than at rest.
+      expect(chip, `${name}: the same step as a resting fill on the page`).toBeGreaterThanOrEqual(
+        tokens.contrast(hex('--background-fill'), page) - 0.01
+      );
+      // The chip's ink is read on the page ground, as it is everywhere else.
+      expect(tokens.contrast(hex('--text-muted'), page)).toBeGreaterThanOrEqual(4.5);
+    }
+  );
+});
+
+/**
  * Every edge the Knowledge components draw in a colour, by file. A line stays only where it is
  * structural (a band's or strip's bottom edge, the footer rule over a scrolling body, a pane
  * divider, a menu's separator) or the hairline of a floating surface (the node and edge cards,

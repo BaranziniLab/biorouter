@@ -4522,6 +4522,28 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-KNOWLEDGE end: pane header */
 
+/* @ws WS-KNOWLEDGE begin: washed-row chips */
+/* A CHIP ON A WASHED ROW STEPS BACK TO THE PAGE GROUND (R-27 usage rule 3: a fill never sits on a
+   fill; vision round 2, V3-R2-5). The neutral `Badge` rests on `--background-fill-strong`, and a
+   hovered list row is the page ink at 5%, which composites to within 1.09:1 of it in both modes:
+   the kind chip in the change log and the Built-in, format and Primary badges in the base manager
+   lost their boxes under the pointer and read as bare ink. The shared rows block (WS-PRIMITIVES,
+   "rows") already steps a row's controls back this way through `--br-control-ground`; the badge
+   is not a control and reads no such variable, so this names it for the two Knowledge lists.
+   `.br-wash-chip` is a chip that is itself the node (the kind chip, Primary); `.br-wash-chips`
+   holds a row's chips as its direct spans, because `BuiltInBadge` and `PrivacyBadge` take no
+   class of this list's. The `.br-privacy-pill` rule of the rows block paints the same selector
+   depth, so the `>` span here keeps the Private pill beside Built-in on one ground.
+   Stop-gap: the neutral Badge on ANY washed row has this ratio (request WS-PRIMITIVES/
+   WS-KNOWLEDGE-3); when the badge reads a ground variable in the shared rows block, delete this
+   block and the two class names. Same states as the shared rows: pointer, keyboard focus on the
+   row or inside it. */
+.biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible))
+  :is(.br-wash-chip, .br-wash-chips > span) {
+  background-color: var(--background-default);
+}
+/* @ws WS-KNOWLEDGE end: washed-row chips */
+
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
     display: none;
