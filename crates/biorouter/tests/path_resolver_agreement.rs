@@ -325,7 +325,21 @@ fn the_rewrite_covers_the_files_the_stores_really_use() {
         .map(|(path, _)| path)
         .collect();
     with_path_root(Some(&root_str), || {
+        // The permission store keeps its file name to itself, so saving an
+        // empty one is how to learn where it lives.
+        biorouter::permission::permission_store::ToolPermissionStore::new()
+            .save()
+            .unwrap();
+        let permissions = Paths::config_dir()
+            .join("permissions")
+            .join("tool_permissions.json");
+        assert!(
+            permissions.is_file(),
+            "the permission store no longer saves to {}",
+            permissions.display()
+        );
         for owned in [
+            permissions,
             Paths::config_dir().join(biorouter::config::base::CONFIG_YAML_NAME),
             biorouter::privacy::provenance::provenance_path(),
             biorouter::scheduler::get_default_scheduler_storage_path().unwrap(),

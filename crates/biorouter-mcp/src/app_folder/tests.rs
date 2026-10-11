@@ -666,6 +666,254 @@ fn a_canonical_path_through_a_link_in_the_base_is_rewritten() {
     );
 }
 
+/// A path right after an escaped character. JSON writes a line break as `\n`
+/// and a tab as `\t`, and the text matcher used to read the letter after the
+/// backslash, so it saw `n` glued to the path where the parse sees a line
+/// break: the two disagreed and the whole document was refused, its extension
+/// paths with it. Every escape now reads as the character it spells.
+#[test]
+fn a_path_right_after_an_escaped_character_is_rewritten() {
+    let rw = windows_rewrite();
+    for before in [
+        "\n", "\t", "\r", "\u{8}", "\u{c}", "\u{1}", "\u{1b}", "\"", "\\", "/",
+    ] {
+        let doc = serde_json::json!({
+            "prompt": format!("run{before}{}", legacy(r"\config\extensions\x")),
+            "dir": legacy(r"\config"),
+        });
+        for text in [
+            serde_json::to_string(&doc).unwrap(),
+            serde_json::to_string_pretty(&doc).unwrap(),
+        ] {
+            let rewritten = rw
+                .rewrite_document(&text, Format::Json)
+                .unwrap_or_else(|why| panic!("{before:?}: {why}\n{text}"))
+                .expect("changed");
+            let parsed: serde_json::Value = serde_json::from_str(&rewritten).unwrap();
+            assert_eq!(
+                parsed["prompt"],
+                format!("run{before}{}", current(r"\config\extensions\x"))
+            );
+            assert_eq!(parsed["dir"], current(r"\config"));
+        }
+    }
+
+    // Escapes a person may write by hand: `\u000a` is a line break too, and a
+    // surrogate pair is one character that is not a letter.
+    let escaped_root = legacy(r"\config").replace('\\', r"\\");
+    for before in [r"\u000a", r"\u0009", r"\ud83d\ude00", r"\/"] {
+        let text = format!("{{\"p\": \"run{before}{escaped_root}\"}}");
+        let rewritten = rw
+            .rewrite_document(&text, Format::Json)
+            .unwrap_or_else(|why| panic!("{before}: {why}"))
+            .expect("changed");
+        assert_eq!(
+            rewritten,
+            text.replace(LEGACY_APP_AUTHOR, APP_AUTHOR),
+            "{before}"
+        );
+    }
+
+    // The same in a double-quoted YAML scalar, the one YAML style with escapes.
+    for before in [r"\n", r"\t", r"\x09", r"\u000a", r"\N", r"\_"] {
+        let text = format!(
+            "prompt: \"run{before}{escaped_root}\"\nplain: {}\n",
+            legacy("")
+        );
+        let rewritten = rw
+            .rewrite_document(&text, Format::Yaml)
+            .unwrap_or_else(|why| panic!("{before}: {why}"))
+            .expect("changed");
+        assert_eq!(
+            rewritten,
+            text.replace(LEGACY_APP_AUTHOR, APP_AUTHOR),
+            "{before}"
+        );
+    }
+}
+
+/// The other side of the same rule: where the parse sees a letter or digit
+/// glued to the path, or no path at all, the text must not see one either, or
+/// the document is refused for nothing.
+#[test]
+fn an_escape_that_spells_a_letter_or_splits_a_path_is_no_path() {
+    let rw = windows_rewrite();
+    let escaped_root = legacy(r"\config").replace('\\', r"\\");
+    for text in [
+        // A backslash and then the letter n, glued to the path.
+        format!("{{\"p\": \"run\\\\n{escaped_root}\"}}"),
+        // An escaped letter right before it.
+        format!("{{\"p\": \"run\\u0041{escaped_root}\"}}"),
+        // An escaped digit right after it: the folder is `<app>2`.
+        format!("{{\"p\": \"{}\\u0032\"}}", legacy("").replace('\\', r"\\")),
+    ] {
+        assert_eq!(rw.rewrite_document(&text, Format::Json), Ok(None), "{text}");
+    }
+
+    // A root on a drive whose letter is also an escape letter: in `\n:\...`
+    // the `n` belongs to the escape (a line break), so no path starts there.
+    let on_n = RootRewrite::new(&AppRoot::under(Path::new(r"N:\Ana")));
+    let text = format!("{{\"p\": \"\\n:\\\\Ana\\\\{LEGACY_APP_AUTHOR}\\\\{APP_NAME}\\\\config\"}}");
+    assert_eq!(on_n.rewrite_document(&text, Format::Json), Ok(None));
+    // The same drive spelled out is still found.
+    let text =
+        format!("{{\"p\": \"\\nN:\\\\Ana\\\\{LEGACY_APP_AUTHOR}\\\\{APP_NAME}\\\\config\"}}");
+    assert_eq!(
+        on_n.rewrite_document(&text, Format::Json),
+        Ok(Some(text.replace(LEGACY_APP_AUTHOR, APP_AUTHOR)))
+    );
+}
+
+/// A redirected profile's share path in a plain YAML scalar, which is how
+/// `config.yaml` stores an extension argument: its leading `\\` is two
+/// separators, not one escaped one. The text matcher read it only the
+/// escaped way, so the parse rewrote the path and the text did not, and
+/// every extension in `config.yaml` kept the old folder.
+#[test]
+fn a_share_path_in_a_plain_yaml_scalar_is_rewritten() {
+    let base = Path::new(r"\\fs1\home$\ana\AppData\Roaming");
+    let rw = RootRewrite::new(&AppRoot::under(base));
+    let old = format!(
+        r"{}\{LEGACY_APP_AUTHOR}\{APP_NAME}\config\extensions\x",
+        base.display()
+    );
+    let new = format!(
+        r"{}\{APP_AUTHOR}\{APP_NAME}\config\extensions\x",
+        base.display()
+    );
+    let text = format!(
+        "extensions:\n  x:\n    args:\n    - --directory\n    - {old}\n    - '{old}'\n    - \"{}\"\n",
+        old.replace('\\', r"\\")
+    );
+    let rewritten = rw
+        .rewrite_document(&text, Format::Yaml)
+        .unwrap()
+        .expect("changed");
+    assert_eq!(rewritten, text.replace(LEGACY_APP_AUTHOR, APP_AUTHOR));
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&rewritten).unwrap();
+    for index in 1..4 {
+        assert_eq!(
+            parsed["extensions"]["x"]["args"][index].as_str(),
+            Some(new.as_str())
+        );
+    }
+}
+
+/// Which author name the canonical spelling writes: the disk's, when the
+/// current folder's canonical path differs from [`APP_AUTHOR`] in case alone.
+#[test]
+fn the_canonical_spelling_writes_the_author_folder_as_the_disk_spells_it() {
+    let base = Path::new("roaming");
+    let lower = APP_AUTHOR.to_lowercase();
+    assert_eq!(
+        rewrite::author_on_disk(&base.join(&lower).join(APP_NAME), base).as_deref(),
+        Some(lower.as_str())
+    );
+    assert_eq!(
+        rewrite::author_on_disk(&base.join(APP_AUTHOR).join(APP_NAME), base).as_deref(),
+        Some(APP_AUTHOR)
+    );
+    for other in [
+        base.join("Elsewhere").join(APP_NAME),
+        Path::new("other-base").join(&lower).join(APP_NAME),
+        base.join(&lower).join(APP_NAME.to_uppercase()),
+        base.join(&lower),
+    ] {
+        assert_eq!(
+            rewrite::author_on_disk(&other, base),
+            None,
+            "{}",
+            other.display()
+        );
+    }
+
+    // Each spelling writes its own author.
+    let plain = Path::new(r"C:\Users\Ana\AppData\Roaming");
+    let canonical = Path::new(r"\\?\C:\Users\Ana\AppData\Roaming");
+    let rw = RootRewrite::with_authors([
+        (&AppRoot::under(plain), APP_AUTHOR),
+        (&AppRoot::under(canonical), lower.as_str()),
+    ]);
+    assert_eq!(
+        rw.rewrite_str(&format!(
+            r"{}\{LEGACY_APP_AUTHOR}\{APP_NAME}\config",
+            canonical.display()
+        )),
+        Some(format!(
+            r"{}\{lower}\{APP_NAME}\config",
+            canonical.display()
+        ))
+    );
+    assert_eq!(
+        rw.rewrite_str(&format!(
+            r"{}\{LEGACY_APP_AUTHOR}\{APP_NAME}\config",
+            plain.display()
+        )),
+        Some(format!(
+            r"{}\{APP_AUTHOR}\{APP_NAME}\config",
+            plain.display()
+        ))
+    );
+}
+
+/// An author folder that already existed in another case, made by another
+/// tool. Windows (and a default macOS disk) puts the moved tree inside it, so
+/// `fs::canonicalize` of the config dir names it as the disk spells it, and
+/// `daemon_runtime::profile_record` compares the stored config dir with that,
+/// byte for byte: written as [`APP_AUTHOR`], the Crew vault would refuse to
+/// unlock. On a disk that tells case apart the move makes its own folder and
+/// both spellings are [`APP_AUTHOR`], which the same assertions hold for.
+#[test]
+fn a_canonical_path_names_an_author_folder_of_another_case_as_the_disk_does() {
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let lower = APP_AUTHOR.to_lowercase();
+    fs::create_dir_all(roaming.path().join(&lower).join("another-tool")).unwrap();
+    let root = AppRoot::under(roaming.path());
+    let config = root.legacy.join("config");
+    fs::create_dir_all(config.join("extensions")).unwrap();
+    let stored = fs::canonicalize(&config).unwrap();
+    fs::write(
+        config.join("daemon-profile.json"),
+        serde_json::to_string(
+            &serde_json::json!({"version": 1, "profile_id": "p", "config_dir": stored}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        config.join("config.yaml"),
+        format!("x: {}\n", config.join("extensions").display()),
+    )
+    .unwrap();
+
+    let report = move_for_process(
+        None,
+        || Some((roaming.path().to_path_buf(), local.path().to_path_buf())),
+        &ops(false),
+    );
+    assert_eq!(report.roaming.as_ref().unwrap().outcome.token(), "moved");
+    let rewrite = report.rewrite.expect("the move left a marker to finish");
+    assert!(rewrite.failed.is_empty() && rewrite.unverified.is_empty());
+    assert_eq!(rewrite.files_rewritten.len(), 2);
+
+    let current_config = root.current.join("config");
+    let profile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(current_config.join("daemon-profile.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        profile["config_dir"].as_str().map(PathBuf::from),
+        Some(fs::canonicalize(&current_config).unwrap()),
+        "what profile_record compares the stored dir with"
+    );
+    assert_eq!(
+        fs::read_to_string(current_config.join("config.yaml")).unwrap(),
+        format!("x: {}\n", current_config.join("extensions").display()),
+        "a path spelled as Paths builds it says {APP_AUTHOR}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The stores, end to end.
 
@@ -737,6 +985,41 @@ async fn read_sessions(path: &Path) -> Vec<(String, String, String, Option<Strin
         .collect()
 }
 
+/// Every string in a JSON or YAML file (keys included), as its parser reads it.
+fn strings_in(path: &Path) -> Vec<String> {
+    fn json(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => out.push(text.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|item| json(item, out)),
+            serde_json::Value::Object(map) => map.iter().for_each(|(key, item)| {
+                out.push(key.clone());
+                json(item, out);
+            }),
+            _ => {}
+        }
+    }
+    fn yaml(value: &serde_yaml::Value, out: &mut Vec<String>) {
+        match value {
+            serde_yaml::Value::String(text) => out.push(text.clone()),
+            serde_yaml::Value::Sequence(items) => items.iter().for_each(|item| yaml(item, out)),
+            serde_yaml::Value::Mapping(map) => map.iter().for_each(|(key, item)| {
+                yaml(key, out);
+                yaml(item, out);
+            }),
+            serde_yaml::Value::Tagged(tagged) => yaml(&tagged.value, out),
+            _ => {}
+        }
+    }
+    let text = fs::read_to_string(path).unwrap();
+    let mut out = Vec::new();
+    if path.extension().is_some_and(|ext| ext == "yaml") {
+        yaml(&serde_yaml::from_str(&text).unwrap(), &mut out);
+    } else {
+        json(&serde_json::from_str(&text).unwrap(), &mut out);
+    }
+    out
+}
+
 /// Every store the rewrite covers, written the way its owner writes it, under
 /// a real moved folder; plus the things it must leave alone.
 #[test]
@@ -784,6 +1067,42 @@ fn a_finished_move_points_every_store_at_the_current_folder() {
             serde_json::json!({"scopes": {"a": {"session_store": format!("{old}/data/sessions")}}}),
         ),
     );
+    // As `ToolPermissionStore::save` writes it: a directory grant holds its
+    // canonical directory, a command prefix grant its tokens, and the display
+    // text of an exact grant may put a line break right before a path.
+    fs::create_dir_all(ext(&old)).unwrap();
+    let granted_dir = fs::canonicalize(ext(&old)).unwrap();
+    write(
+        config.join("permissions").join("tool_permissions.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "permissions": {"developer__shell:abc": [{
+                "tool_name": "developer__shell",
+                "allowed": true,
+                "context_hash": "abc",
+                "readable_context": format!("cd x\n{}", ext(&old)),
+                "timestamp": 1,
+                "expiry": null,
+            }]},
+            "scoped": [
+                {
+                    "tool_name": "developer__text_editor",
+                    "scope": {"kind": "directory", "dir": granted_dir},
+                    "allowed": true,
+                    "timestamp": 1,
+                    "expiry": null,
+                },
+                {
+                    "tool_name": "developer__shell",
+                    "scope": {"kind": "command_prefix", "tokens": [format!("{}/.venv/bin/python", ext(&old)), "-m"]},
+                    "allowed": true,
+                    "timestamp": 1,
+                    "expiry": null,
+                },
+            ],
+            "version": 2,
+        }))
+        .unwrap(),
+    );
     write(
         data.join("schedule.json"),
         json(
@@ -824,7 +1143,7 @@ fn a_finished_move_points_every_store_at_the_current_folder() {
     assert!(!root.current.join(MOVE_MARKER).exists());
     assert_eq!(
         report.files_rewritten.len(),
-        8,
+        9,
         "{:?}",
         report.files_rewritten
     );
@@ -850,14 +1169,36 @@ fn a_finished_move_points_every_store_at_the_current_folder() {
         (data.join("schedule.json"), 1),
         (data.join("scheduled_workflows").join("j.yaml"), 1),
     ] {
-        let body = read(path.clone());
-        assert_eq!(body.matches(&new).count(), expected, "{}", path.display());
+        // Counted on the parsed strings: JSON doubles every backslash in a
+        // Windows path, so the file's text never holds the path as written.
+        let strings = strings_in(&path);
+        let found: usize = strings.iter().map(|s| s.matches(&new).count()).sum();
+        assert_eq!(found, expected, "{}", path.display());
         assert!(
-            !body.contains(&old),
+            !strings.iter().any(|s| s.contains(&old)),
             "{} still names the old root",
             path.display()
         );
     }
+    let permissions: serde_json::Value = serde_json::from_str(&read(
+        config.join("permissions").join("tool_permissions.json"),
+    ))
+    .unwrap();
+    assert_eq!(
+        permissions["permissions"]["developer__shell:abc"][0]["readable_context"],
+        format!("cd x\n{}", ext(&new))
+    );
+    assert_eq!(
+        permissions["scoped"][0]["scope"]["dir"]
+            .as_str()
+            .map(PathBuf::from),
+        Some(fs::canonicalize(ext(&new)).unwrap()),
+        "a directory grant is compared with canonical paths, component by component"
+    );
+    assert_eq!(
+        permissions["scoped"][1]["scope"]["tokens"],
+        serde_json::json!([format!("{}/.venv/bin/python", ext(&new)), "-m"])
+    );
     assert_eq!(
         read(config.join("config.yaml.bak")),
         config_yaml,
@@ -872,7 +1213,11 @@ fn a_finished_move_points_every_store_at_the_current_folder() {
         &root.current.join("data/sessions/sessions.db"),
     ));
     assert_eq!(sessions[0].1, format!("{new}/data/crew/tasks"));
-    assert!(sessions[0].2.contains(&ext(&new)) && !sessions[0].2.contains(&old));
+    let snapshot: serde_json::Value = serde_json::from_str(&sessions[0].2).unwrap();
+    assert_eq!(
+        snapshot["enabled_extensions.v0"]["extensions"][0]["args"][2],
+        ext(&new)
+    );
     assert_eq!(
         sessions[0].4, "2026-01-01",
         "the chat list order must not move"
