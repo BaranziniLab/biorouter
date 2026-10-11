@@ -66,7 +66,7 @@ export const transcriptCopy = {
     notAnsweredHelp: 'The turn ended before the agent read this message.',
   },
 
-  /** Fenced code blocks and tables in markdown. */
+  /** Fenced code blocks, tables and task lists in markdown. */
   code: {
     /** The language label when a fence names none. */
     plain: 'text',
@@ -87,6 +87,9 @@ export const transcriptCopy = {
     imageUnavailable: 'Image unavailable',
     imageUnavailableNamed: (alt: string) => `Image unavailable: ${alt}`,
     loadingImage: 'Loading image',
+    /** A markdown task list item's spoken state (`- [x]`, `- [ ]`). */
+    taskDone: 'Done',
+    taskOpen: 'Not done',
   },
 
   /** Inline images in messages. */

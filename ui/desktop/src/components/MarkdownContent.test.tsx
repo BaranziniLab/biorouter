@@ -588,6 +588,33 @@ console.log('Hello, World!');
       });
     });
 
+    // Vision V2-06 (checklist 6): a GFM task list draws the summary rail's
+    // glyphs, never a native checkbox, and says its state.
+    it('draws a task list with the rail glyphs and no native checkbox', async () => {
+      const content = `- [x] Understand the request
+- [ ] Build a reusable cohort
+  - [x] Nested and done`;
+
+      const { container } = render(<MarkdownContent content={content} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Understand the request')).toBeInTheDocument();
+      });
+      expect(container.querySelector('input')).toBeNull();
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      expect(screen.getAllByRole('img', { name: transcriptCopy.code.taskDone })).toHaveLength(2);
+      expect(screen.getAllByRole('img', { name: transcriptCopy.code.taskOpen })).toHaveLength(1);
+
+      const boxes = Array.from(container.querySelectorAll('.br-md-task'));
+      expect(boxes).toHaveLength(3);
+      expect(boxes.map((box) => box.hasAttribute('data-checked'))).toEqual([true, false, true]);
+      // Each glyph sits in its own task item (the gutter rule keys on it).
+      for (const box of boxes) {
+        expect(box.closest('li')?.classList.contains('task-list-item')).toBe(true);
+        expect(box.querySelector('svg')).not.toBeNull();
+      }
+    });
+
     it('renders links with correct attributes', async () => {
       const content = '[Visit Block](https://block.dev)';
 

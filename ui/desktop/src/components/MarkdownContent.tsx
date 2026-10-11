@@ -26,7 +26,14 @@ import {
   CODE_LINE_HEIGHT,
   codeThemesByFamily,
 } from '../styles/codeTheme';
-import { AlertTriangle, Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
+import {
+  AlertTriangle,
+  Check,
+  CircleIcon,
+  Copy,
+  Image as ImageIcon,
+  Play,
+} from './icons/app-icons';
 import { TranscriptIconButton } from './transcript/TranscriptIconButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { scrollRegionProps, useOverflowsSideways } from './transcript/useOverflowsSideways';
@@ -882,6 +889,29 @@ function MarkdownParagraphSlot({ node: _node, ...props }: SlotProps<'p'>) {
   );
 }
 
+/**
+ * A GFM task box (`- [x] done`, `- [ ] open`) as the summary rail draws the same
+ * state: a 14px check for done and a 14px circle for open, both in muted ink,
+ * hanging in the list's bullet gutter (`.br-md-task`, main.css). Never the
+ * native `<input type="checkbox" disabled>` remark-gfm emits, a grey square
+ * that no other control in the app looks like (vision V2-06, checklist 6).
+ * The state is spoken, since a glyph is not words.
+ */
+function MarkdownInputSlot({ node: _node, type, checked, ...props }: SlotProps<'input'>) {
+  if (type !== 'checkbox') return <input type={type} checked={checked} {...props} />;
+  const Glyph = checked ? Check : CircleIcon;
+  return (
+    <span
+      role="img"
+      aria-label={checked ? transcriptCopy.code.taskDone : transcriptCopy.code.taskOpen}
+      className="br-md-task"
+      data-checked={checked ? '' : undefined}
+    >
+      <Glyph aria-hidden="true" />
+    </span>
+  );
+}
+
 function MarkdownListItem({ children, node: _node, ...props }: SlotProps<'li'>) {
   const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
   return (
@@ -946,6 +976,7 @@ const MARKDOWN_COMPONENTS: Components = {
   code: MarkdownCodeSlot,
   p: MarkdownParagraphSlot,
   li: MarkdownListItem,
+  input: MarkdownInputSlot,
   table: MarkdownTable,
   td: MarkdownTableCell,
   th: MarkdownTableHeader,

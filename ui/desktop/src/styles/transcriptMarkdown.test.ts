@@ -97,6 +97,22 @@ describe('markdown type', () => {
   it('keeps a table cell a plain cell: no bold first column', () => {
     expect(css).not.toMatch(/td:first-child\s*\{[^}]*font-weight:\s*600/);
   });
+
+  // Vision V2-06: a task item drops its bullet and hangs the rail's 14px glyph
+  // in the gutter (14px glyph + 6px gap = 20px), so its text keeps the edge of
+  // the lists around it; the glyph is muted ink, never the accent.
+  it('hangs a task glyph in the bullet gutter, muted, at 14px', () => {
+    const markdown = block('markdown');
+    expect(markdown).toContain('.biorouter-markdown.prose li.task-list-item');
+    expect(ruleBody('.biorouter-markdown.prose li.task-list-item')).toContain('list-style: none;');
+    const glyph = ruleBody('.biorouter-markdown .br-md-task');
+    expect(glyph).toContain('width: 14px;');
+    expect(glyph).toContain('margin-right: 6px;');
+    expect(glyph).toContain('margin-left: -20px;');
+    expect(glyph).toContain('color: var(--text-muted);');
+    expect(glyph).toContain('height: var(--text-prose--line-height);');
+    expect(ruleBody('.biorouter-markdown .br-md-task > svg')).toContain('width: 14px;');
+  });
 });
 
 describe("Crew's code block and table, promoted", () => {
