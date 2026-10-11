@@ -3960,6 +3960,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
   content: none;
 }
+
+/* Forced colours repaint every background as Canvas, so the hover wash that told a row from
+   its neighbour is gone, and so is every other fill. The line comes back there (a border, which
+   forced colours still draw), as every filled box keeps its transparent edge drawn in the
+   system ink. The shared `:last-child` rule, later in the file at the same specificity, still
+   leaves the last row without one. */
+@media (forced-colors: active) {
+  .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
+    content: '';
+  }
+}
 /* @ws WS-VIEWS-A end: flat rows */
 
 .biorouter-page-block {

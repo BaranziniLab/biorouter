@@ -144,8 +144,9 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
     await browser?.close();
   }, 120_000);
 
-  async function open(mode: 'light' | 'dark', sheet = css): Promise<Page> {
+  async function open(mode: 'light' | 'dark', sheet = css, forcedColors = false): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 760, height: 900 } });
+    if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     await tab.setContent(
       `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${sheet}</style></head>` +
         `<body style="margin:0;background:var(--background-canvas)"><div id="root"></div></body></html>`
@@ -257,6 +258,36 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
         await afterContent(bare, '#flat-1'),
         'without the rule the flat list draws its hairline again'
       ).toBe('""');
+    } finally {
+      await bare.close();
+    }
+  }, 120_000);
+
+  it('gives a flat list its hairline back under forced colours, where the hover wash and every fill are gone', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light', css, true);
+    try {
+      expect(await afterContent(tab, '#flat-1')).toBe('""');
+      expect(await afterContent(tab, '#flat-2')).toBe('""');
+      // The shared last-child rule still leaves the last row without one.
+      expect(await afterContent(tab, '#flat-3')).toBe('none');
+    } finally {
+      await tab.close();
+    }
+
+    const bare = await open(
+      'light',
+      without(
+        /@media \(forced-colors: active\) \{\s*\.br-rows-flat[^}]*\}\s*\}/,
+        /content:\s*(?:""|'');/
+      ),
+      true
+    );
+    try {
+      expect(
+        await afterContent(bare, '#flat-1'),
+        'without the rule a forced-colours list has no separator at all'
+      ).toBe('none');
     } finally {
       await bare.close();
     }
