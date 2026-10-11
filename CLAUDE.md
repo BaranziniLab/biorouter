@@ -83,9 +83,10 @@ changes.
 
 ⚠ **The retired-name guard** (`scripts/check-no-goose-block.sh`, R-31) fails
 when any tracked file's text **or path** names the former upstream project or
-its publisher. `NOTICE` is the only file allowed to, because it keeps the
-license attribution verbatim (owner ruling, 2026-10-11; `LICENSE` no longer
-carries a publisher copyright line). It reads the tracked tree through
+its publisher. `NOTICE` is the only file allowed to (apart from the guard itself,
+which has to spell what it looks for), because it keeps the license attribution
+verbatim (owner ruling, 2026-10-11; `LICENSE` no longer carries a publisher
+copyright line). It reads the tracked tree through
 `git grep -I`, so ignored build output and binary files never trip it, and it
 matches the publisher only by its company name, possessive, logo file names and
 repository URLs, never the ordinary word "block". It runs in
@@ -316,7 +317,7 @@ is not dead code.
 - **`components/`** — 75+ modular React UI components
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
-- **`components/knowledge/`** — The Knowledge route, under the sidebar's
+- **`components/knowledge/`**: the Knowledge route, under the sidebar's
   Components disclosure (between Skills and Built apps). Provides KB selector
   with cmd-K-style palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
@@ -836,8 +837,8 @@ Key invariants, each learned from a real bug:
   The two fill neutrals of the 2026-10 redesign are the exception that IS
   enforced: `--background-fill` and `--background-fill-strong` (with
   `--border-control` and `--control-track-off`) are `STRUCTURAL_TOKENS` in
-  `scripts/lib/theme-contract.mjs`, declared as a hex once per mode in the base
-  block and nowhere in a family, which `styles/themeNeutrals.test.ts` asserts;
+  `ui/desktop/scripts/lib/theme-contract.mjs`, declared as a hex once per mode in
+  the base block and nowhere in a family, which `styles/themeNeutrals.test.ts` asserts;
   the only other declaration is the dark popover's re-pointing (see "Fills
   before lines" below). Since the redesign every family's `sidebar-icon` is its
   muted label ink (it was the accent in Alma Mater and Roche Limit, the full ink
@@ -1069,8 +1070,9 @@ value's *location* is as load-bearing as the number.
   `.biorouter-composer-card:has(textarea:focus)` in `main.css`, unlayered so it
   beats the card's border utility, and never a Tailwind `has-[...]` variant at
   the call site. The working sweep rides the same border
-  (`.biorouter-composer-card[data-working='true']`). Crew's composer shares the
-  class and both edges.
+  (`.biorouter-composer-card[data-working='true']`). Crew's composer writes the
+  same class and the same resting pair, so it shares the hairline and the focus
+  edge; only `ChatInput` sets `data-working`, so the sweep is the chat's alone.
   - ⚠ **The reason generalises far past the composer: a newly written Tailwind
     class can silently fail to generate.** Under `BIOROUTER_NO_HMR` the renderer
     runs `watch: { ignored: ['**'] }` (`vite.renderer.config.mts`), which is the
@@ -1117,9 +1119,10 @@ value's *location* is as load-bearing as the number.
   hand-drawn glyphs under the same contract (`ChatBubble`, `CrewChat`, `Agent`,
   `KnowledgeGraph`, `Skill`, `Copilot`). `ENTITY_ICONS` (`icons/entity-icons.ts`)
   gives each entity one glyph (workflow, knowledge, extension, skill,
-  application, schedule, crew, agent, chat, model, folder), and the chat kinds and
-  tool rows read theirs from it. Chat kinds are `chats/chatKind.ts` (chat, Crew
-  task, branch, sub-agent, app, scheduled run, terminal, and a workflow run that
+  application, schedule, crew, agent, chat, model, folder). Tool rows read their
+  family glyphs from it (`utils/toolGlyph.ts`), and the chat kinds import the same
+  glyphs by name, which `chatKind.test.ts` asserts. Chat kinds are
+  `chats/chatKind.ts` (chat, Crew task, branch, sub-agent, app, scheduled run, terminal, and a workflow run that
   stays dormant until the listing carries an `origin`), drawn by `ChatKindIcon`.
   ⚠ **Private is a shape, not a tint**: kind and privacy are separate axes composed
   by `chatIconFor`, and `withPrivateBadge` puts a lock badge on any kind's glyph,

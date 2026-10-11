@@ -9,8 +9,8 @@ redesigned. Come here to see what was asked, how the work is split, and where it
 
 | Document | What it covers |
 |----------|----------------|
-| [Requirements and plan](requirements-and-plan.md) | The owner's requirements as items R-01 to R-31, the owner decisions, the constraints, the phases and the workstreams. Current. |
-| [Implementation spec](implementation-spec.md) | Principles, tokens, control specs, one section per workstream with file ownership and acceptance checks, sequencing, verification and the owner decisions (sections 8 to 10). Current. |
+| [Requirements and plan](requirements-and-plan.md) | The owner's requirements as items R-01 to R-33, the owner decisions, the constraints, the phases and the workstreams. Current. |
+| [Implementation spec](implementation-spec.md) | Principles, tokens, control specs, one section per workstream with file ownership and acceptance checks, sequencing, verification and the owner decisions (sections 8 to 11). Current. |
 | [Handoff](handoff.md) | Where the work stands, what is left in order, the human review list, how to resume, and the traps the run hit. Current. |
 | [Progress](progress.md) | The live status of every phase and requirement, and a dated log. Current; updated as work lands. |
 

@@ -38,19 +38,19 @@ spec's tables are authoritative where this summary is shorter.
 | WS-SUMMARY | `BaseChat.tsx`, `ChatSummary.tsx`, `components/summary/**`, rail hooks, `Layout/yieldLadder.ts` | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-TRANSCRIPT | messages, markdown, activity, `subagent/**` | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-TOOLS | tool call rows and cards, `tool-call.css` | `TranscriptRow` | Implemented and reviewed; no open high or medium after vision round 4 |
-| WS-COMPOSER | `ChatInput.tsx`, `MessageQueue.tsx`, `MentionPopover.tsx`, `Hub.tsx` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
+| WS-COMPOSER | `ChatInput.tsx`, `MessageQueue.tsx`, `MentionPopover.tsx`, `Hub.tsx` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5, and R-32 a vision check |
 | WS-PICKERS | `bottom_menu/**`, `ContextWindowIndicator.tsx`, `ModelsBottomBar.tsx`, `CopilotControl.tsx` | `ToolsChip`, `ModelEffortChip`, `ComposerFooter` | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
 | WS-PREVIEW | `artifacts/**`, `.artifact-harness/**` | `sideWidth` on the panel controller | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-USAGE | `sessions/{SessionsInsights,UsageHeatmap,HomeUsageCard}.tsx`, `components/usage/**`, `settings/usage/**` | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-VIEWS-A | `Layout/{PageHeader,MainPanelLayout,ReadableContent,AppLayout}.tsx`, `workflows/**`, `schedule/**`, `applications/**` | `PageHeader` band API | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
 | WS-EXTENSIONS | `extensions/**`, `settings/extensions/**`, install modals | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-SKILLS | `skills/**`, `baam/**` | `MarketplaceDialog` | Implemented and reviewed; no open high or medium after vision round 4 |
-| WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | Implemented and reviewed; no open high or medium after vision round 4 |
+| WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | Implemented and reviewed; no open high or medium after vision round 4; R-33 awaits a vision check |
 | WS-SETTINGS-A | `SettingsView.tsx`, `settings/{app,chat,mode,permission,response_styles}/**`, theme selectors | section ids for deep links | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
 | WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Copilot setup | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-MOTION | `chatGroups/**`, find in chat, `App.tsx`, `toasts.tsx`, `alerts/**`, `main.ts` window regions, terminal dock | none | Implemented and reviewed; no open high or medium after vision round 4 |
-| WS-LANDING | `landing/**`, `docs/website/**` | none | Implemented and reviewed; no open high or medium after vision round 3 (round 4 did not review the site) |
+| WS-LANDING | `landing/**`, `docs/website/**` | none | Implemented and reviewed; no open high or medium after vision round 3 (round 4 did not review the site); the R-32 mockup cards are not reviewed yet |
 | WS-PERF | the sidebar's listing path: `BioRouterSidebar/{useSidebarSessions.ts,sidebarChatView.ts}` helpers, the session listing route in `crates/biorouter-server/src/routes/session.rs` and its queries in `crates/biorouter/src/session/session_manager.rs` | none | Implemented and reviewed; a round 4 medium fix awaits vision round 5 |
 | WS-ACTIVITY | `crates/biorouter/src/session/activity.rs` and the opening doors that enter its scope (agent routes, apps route, CLI session builder, ACP server) | none | Implemented and reviewed; no open high or medium after vision round 4 |
 | WS-BRAND | the R-29 and R-31 removals across the tree, `scripts/check-no-goose-block.sh`, `crates/biorouter-mcp/src/app_folder/`, `utils/appFolder.ts` | none | Implemented and reviewed; no open high or medium after vision round 4 on macOS; the Windows folder move has not run on Windows |
@@ -63,7 +63,7 @@ spec's tables are authoritative where this summary is shorter.
 | R-01 | Simplicity, Codex inspiration, Biorouter identity kept | all | Implemented; vision round 5 pending (it spans every surface; round 4 left six medium findings, all fixed since) |
 | R-02 | Remove unnecessary text and instructions | all | Done |
 | R-03 | Hover and focus help instead of paragraphs | WS-PRIMITIVES, all | Done |
-| R-04 | Website font family, few sizes and weights | WS-TOKENS | Done (round 4 type probes: sans 12, 13 and 14, mono 12 and 13) |
+| R-04 | Website font family, few sizes and weights | WS-TOKENS | Done (round 4 type probes found only the scale's sizes: sans 12, 13, 14, 17 and 24, mono 12 and 13) |
 | R-05 | Compact sidebar | WS-SIDEBAR | Done (round 4: row density exact at 216, 288 and 360px) |
 | R-06 | Sidebar group by and sort by | WS-SIDEBAR | Implemented; vision round 5 pending (V1-R2-2: view switch speed) |
 | R-07 | Right click rename and actions | WS-SIDEBAR | Implemented; vision round 5 pending (V1-R2-2: the row menu on a long drawn list) |
@@ -91,6 +91,8 @@ spec's tables are authoritative where this summary is shorter.
 | R-29 | The wordmark is the logo; unreferenced logo images deleted | WS-BRAND | Done |
 | R-30 | Opening a chat is not activity | WS-ACTIVITY, WS-SIDEBAR | Done (rounds 2 to 4: opening moved nothing; a rename and a sent message moved the chat at once) |
 | R-31 | The retired upstream and its publisher named nowhere but NOTICE | WS-BRAND | Done on macOS (the repo guard passes; rounds 2 to 4 found no mention); the Windows folder move has not run on Windows |
+| R-32 | The composer card on the page ground with its hairline, not filled | WS-COMPOSER, WS-LANDING | Implemented (`d3be11a4b`, `a5fa59b6f`, `a5cd7046c`); vision check pending |
+| R-33 | The Knowledge drop zone big again | WS-KNOWLEDGE | Implemented (`5055fe64d`); vision check pending |
 
 ## Log
 
@@ -217,6 +219,10 @@ spec's tables are authoritative where this summary is shorter.
   as CI sets it.
 - Vision rounds 5 and 6 started. The docs pass put the last two spec wordings in (3.4, the moves
   that are not held; 3.6, the message actions' 26px rise) and added R-29 to R-31 to these records.
+- Owner message 17 added R-32 (the composer card goes back to the page ground with its hairline)
+  and R-33 (the Knowledge drop zone is big again); coordinator ruling 20 records it, and spec
+  section 11 holds it. Both landed the same morning (`d3be11a4b`, `a5fa59b6f`, `a5cd7046c`,
+  `5055fe64d`) and wait for the vision loop to confirm them.
 
 ## Related documentation
 

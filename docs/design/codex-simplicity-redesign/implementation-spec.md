@@ -5,7 +5,7 @@
 > acceptance checks, sequencing, verification and the owner decisions. Synthesized on 2026-10-09
 > from the owner's requirements, three research reports and fifteen audits, then checked by a
 > critic pass (section 7) and by the coordinator (section 8). The owner's later rulings are in
-> sections 9 and 10.
+> sections 9 to 11.
 > **Status:** Current. Implemented; vision rounds 5 and 6 running; see [progress.md](progress.md).
 > **Audience:** implementation agents (one per workstream), the coordinator and the vision
 > reviewer.
@@ -22,7 +22,7 @@ selector. Inputs live in `/Users/wgu/biorouter-runs/redesign-2026-10-09/{researc
 This spec cites them as `[codex-ui]`, `[shell-sidebar]` and so on.
 
 **The in-repo record.** The owner's requirements are also restated in the repo as `R-01` to
-`R-31` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
+`R-33` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
 `progress.md` beside it. R-24 makes keeping both current a requirement, and that plan says "the
 final file ownership is recorded in progress.md". The coordinator owns
 `docs/design/codex-simplicity-redesign/**`: it copies section 3.17 (with the section 3.19 splits)
@@ -57,6 +57,7 @@ message names the R-IDs it serves.
 | M13 / R-25, R-26, R-27 Tools switcher at the bottom, Effort slider, fills over lines | 9 |
 | M14 / R-28 fast sidebar reordering | 3.4 paging; the measurements in [progress.md](progress.md) |
 | M15, M16 / R-29, R-30, R-31 the wordmark, opening is not activity, the retired names | 10 |
+| M17 / R-32, R-33 the composer card on the page ground, the big Knowledge drop zone | 11 |
 
 ---
 
@@ -1711,7 +1712,8 @@ reads with one voice.
     over its last 40px while more lies right (each row's filler cell draws the fade; a mask on the
     scroller would fade the vertical scrollbar).
   - **Notebook:**
-    - It opens at the paper inset, 16px, plus its first heading's margin (40px to the heading).
+    - Its first cell opens 16px under the preview bar, plus its first heading's own margin, so an
+      `h1` sits 40px under the bar (24px of heading margin).
     - The DataFrame sandbox CSS copies the `.br-md-table` values (it renders in a sandbox, so the
       class cannot reach it): 12/600 muted header on `--background-muted`, no bold index, hairlines.
     - Image outputs get radius 10 plus a `0 0 0 1px var(--border-subtle)` ring.
@@ -3281,6 +3283,7 @@ they differ.
     search inputs, text fields and selects: filled at rest with no outline; focus keeps the
     existing treatment (D-15, the accent edge); forced colours keep borders.
   - The composer card: the subtle fill with no resting outline; the coral focus edge stays.
+    **Superseded by R-32** (section 11): the card is the page ground with its resting hairline.
   - Row lists drop the hairlines between rows where spacing and the hover fill already separate
     them.
   - Lines stay where they are structural (the 44px band edge, pane dividers, resize handles, table
@@ -3333,6 +3336,28 @@ They supersede any earlier section where they differ. The requirements are R-29 
     name back; `just check-everything` and the `guards` job in `rust.yml` run it.
   - Owner: WS-BRAND.
 
+## 11. Owner message 17 (2026-10-11, binding)
+
+The owner took two surfaces partly back to their earlier design and asked for the rest of the
+redesign to continue. Coordinator ruling 20 records it. These supersede R-27, section 9 and vision
+finding V3-12 for these two surfaces only.
+
+- **R-32 The composer card is the page ground.** In a chat and on Home, the card is
+  `bg-background-default border border-border-subtle/60` (`composer/composerCard.ts`), the resting
+  hairline it had before R-27, with no grey fill and no `.br-fill-surface`, so what sits in it rests
+  as on any page ground. The coral focus edge and the working sweep turn that same border, as
+  before. Everything else about the composer (the rows, the chips, the Tools popover, the Effort
+  slider, the footer) stays. Crew's composer already wrote the same pair. The website's composer
+  mockups follow with a `--line-composer` token in `landing/site.css`. Owners: WS-COMPOSER and
+  WS-LANDING (`d3be11a4b`, `a5fa59b6f`, `a5cd7046c`). Coordinator ruling 21 extends the rule to
+  the in-place message edit card in `UserMessage.tsx`, which is a composer too (owner
+  WS-TRANSCRIPT).
+- **R-33 The Knowledge drop zone is big again.** `.br-knowledge-dropzone` fills the Sources rail's
+  free height (`flex: 1 1 0%`, `min-height: 240px`) like the side panel it was before V3-12, and
+  gives that room back to the paste box, the staged list and the digest progress as they appear.
+  The redesign's skin stays (the fill, the drag edge, the rail as the drop target).
+  `knowledgeBand.browser.test.tsx` measures it in Chromium. Owner: WS-KNOWLEDGE (`5055fe64d`).
+
 ## Related documentation
 
 - `/Users/wgu/biorouter-runs/redesign-2026-10-09/REQUIREMENTS.md`
@@ -3342,5 +3367,5 @@ They supersede any earlier section where they differ. The requirements are R-29 
   "Artifact side panel")
 - `docs/desktop-ui/{settings-visual-vocabulary,summary-and-figures-qa,artifact-display-surfaces}.md`,
   `docs/desktop-ui/preview-panel/narrow-panes.md`, `docs/security/privacy-tiers.md` §13.5
-- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-31, the
+- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-33, the
   live tracker), and [handoff.md](handoff.md) (what is left)
