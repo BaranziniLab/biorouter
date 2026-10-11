@@ -46,6 +46,13 @@ the two lists drew them differently (vision V1-R2-8). `sortByActivity` in
 `components/sessions/sessionGrouping.ts` sorts History by last activity, then id ascending, and a
 test pins it to `sortSidebarChats(…, 'activity')`.
 
+History groups its rows through `groupSessionsByDate` in `utils/dateUtils.ts`, which asks
+`chatDateBucket` once per local calendar day instead of once per chat. A day older than 30 builds an
+`Intl.DateTimeFormat` for its month name (about 25 µs), and a store of 5,500 chats has about 4,700
+such rows: 115 ms of the 310 ms History took to draw its first row after the list landed, measured
+in Chromium over the real component (vision V1-R3-2). A test holds the result equal to
+`groupByChatDate` over random instants and counts the formatters built.
+
 The view is stored in `biorouter:sidebar-chat-view` as `{"v":1,"groupBy":"date","sortBy":"activity"}`.
 It is clamped field by field on read, every storage access is wrapped, and a change in one window
 reaches the others through the `storage` event.

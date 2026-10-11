@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../api';
+import { groupByChatDate } from './chatDateBuckets';
 import { formatChatDay, formatChatTimestamp, groupSessionsByDate } from './dateUtils';
 
 const NOW = new Date(2026, 9, 9, 15, 0, 0).getTime(); // 9 Oct 2026, 15:00 local
@@ -59,6 +60,81 @@ describe('groupSessionsByDate', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].key).toBe('week');
     expect(groups[0].sessions.map((s) => s.id)).toEqual(['x', 'y', 'z']);
+  });
+
+  /**
+   * A store of 5,500 chats, most of them older than 30 days (vision V1-R3-2). Seeded, so a
+   * failure reproduces; instants straddle midnight, the DST changes, the year line, the
+   * future, and values that are not dates.
+   */
+  function manyChats(count: number): Session[] {
+    let seed = 20261011;
+    const random = () => {
+      seed = (seed * 1_664_525 + 1_013_904_223) % 4_294_967_296;
+      return seed / 4_294_967_296;
+    };
+    return Array.from({ length: count }, (_, index) => {
+      const roll = random();
+      if (roll < 0.01) return { ...session(`bad-${index}`, new Date(NOW)), updated_at: 'never' };
+      const hoursAgo = roll < 0.15 ? random() * 24 * 30 : 24 * 30 + random() * 24 * 450;
+      const instant = new Date(NOW - hoursAgo * 3_600_000 + (roll > 0.995 ? 6 * 3_600_000 : 0));
+      return session(`chat-${index}`, instant);
+    });
+  }
+
+  it('draws the same groups as the sidebar helper, whatever the instants', () => {
+    const chats = manyChats(3000);
+    // The date the grouping reads, then the dates a day on either side of "now".
+    for (const now of [NOW, NOW + 20 * 3_600_000, new Date(2026, 2, 8, 2, 30).getTime()]) {
+      const expected = groupByChatDate(chats, (chat) => chat.updated_at, now).map(
+        ({ key, label, items }) => ({ key, label, sessions: items })
+      );
+      expect(groupSessionsByDate(chats, now)).toEqual(expected);
+    }
+  });
+
+  it('asks for a date label once per calendar day, not once per chat', () => {
+    // `chatDateBucket` builds an Intl.DateTimeFormat for every day older than 30; per chat
+    // that was 115 ms of the time History took to draw 5,500 rows.
+    const chats = manyChats(5500);
+    const days = new Set(
+      chats.map((chat) => {
+        const date = new Date(chat.updated_at);
+        return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+      })
+    );
+    // Counted by a subclass: a spy on the constructor would not build the formatter.
+    const Real = Intl.DateTimeFormat;
+    let constructed = 0;
+    class Counting extends Real {
+      constructor(...args: ConstructorParameters<typeof Real>) {
+        super(...args);
+        constructed += 1;
+      }
+    }
+    Intl.DateTimeFormat = Counting as typeof Intl.DateTimeFormat;
+    try {
+      groupSessionsByDate(chats, NOW);
+    } finally {
+      Intl.DateTimeFormat = Real;
+    }
+    expect(constructed).toBeLessThanOrEqual(days.size);
+    expect(constructed).toBeLessThan(chats.length / 5);
+  });
+
+  it('puts every unreadable date in one Older group, last', () => {
+    const groups = groupSessionsByDate(
+      [
+        { ...session('a', new Date(NOW)), updated_at: '' },
+        session('b', new Date(2026, 9, 9, 9)),
+        { ...session('c', new Date(NOW)), updated_at: 'sometime' },
+      ],
+      NOW
+    );
+    expect(groups.map((group) => [group.label, group.sessions.map((s) => s.id)])).toEqual([
+      ['Today', ['b']],
+      ['Older', ['a', 'c']],
+    ]);
   });
 });
 
