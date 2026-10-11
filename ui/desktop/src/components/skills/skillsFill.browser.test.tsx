@@ -434,6 +434,15 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
       // A transparent border is drawn in the system ink there, and a `border-0` would not be.
       expect(zone.edgeWidth).toBe('1px');
       expect(zone.edge).not.toBe('rgba(0, 0, 0, 0)');
+      // The held-over state cannot lean on a box-shadow there (forced colours drop it), so the
+      // edge itself changes: dashed, in a colour, at the same 1px so nothing moves.
+      expect(zone.edgeStyle).toBe('solid');
+      await tab.dispatchEvent('.br-skill-dropzone', 'dragover');
+      await tab.waitForTimeout(150);
+      const held = await style(tab, '.br-skill-dropzone');
+      expect(held.edgeStyle).toBe('dashed');
+      expect(held.edgeWidth).toBe('1px');
+      expect(held.size).toEqual(zone.size);
     } finally {
       await tab.close();
     }

@@ -78,6 +78,17 @@
   color: var(--text-default);
 }
 
+/* Forced colours drop every box-shadow and repaint every fill as Canvas, so the held-over state
+   (a firmer ground and an inset ring) would show nothing. The edge is the one thing they keep: it
+   goes dashed, in the system highlight, which also says "drop here" without colour. Keyboard focus
+   is the global OS-requested ring (main.css, the last block). */
+@media (forced-colors: active) {
+  .br-skill-dropzone[data-state='dragging'] {
+    border-style: dashed;
+    border-color: Highlight;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .br-skill-dropzone,
   .br-skill-drop-plate {
