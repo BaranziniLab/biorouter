@@ -326,6 +326,17 @@ button.br-footline__item:disabled {
   height: var(--icon-chip);
 }
 
+/* The context ring's arc sweeps for a live update in the same chat only. A reading
+   that arrives with the chat (an open, a tab switch) or after a model change lands
+   at rest: `ContextWindowIndicator` marks that render `data-motion-still`. */
+.br-footline__ring-arc {
+  transition: stroke-dashoffset var(--dur-med-min) var(--ease-out);
+}
+
+.br-footline__ring-arc[data-motion-still] {
+  transition-duration: 0ms;
+}
+
 /* A folder name, never a path: the path is in the tooltip. */
 .br-footline__name {
   min-width: 0;
@@ -354,7 +365,8 @@ button.br-footline__item:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .br-picker-chip,
   .br-picker-chip__chevron,
-  .br-footline__item {
+  .br-footline__item,
+  .br-footline__ring-arc {
     transition: none;
   }
 }

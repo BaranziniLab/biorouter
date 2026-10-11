@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import type React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
@@ -261,5 +262,68 @@ describe('with no model bound', () => {
     expect(
       screen.getByRole('button', { name: '100% context left · 0 of 128k' })
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * V2-R3-5. The arc sweeps (250ms) only for a live update in the same chat. A
+ * reading that arrives with the chat (the count and the window land about a
+ * second after the composer mounts on an open or a tab switch), a change of
+ * chat, and the window re-read after a model change all land at rest: the render
+ * that moves the arc carries `data-motion-still`, which `pickers.css` turns into
+ * a 0ms transition. Chromium proves the transition itself in
+ * `bottom_menu/contextRingMotion.browser.test.tsx`.
+ */
+describe('the ring arc moves only for a live update in the same chat (V2-R3-5)', () => {
+  const ring = (props: Partial<React.ComponentProps<typeof ContextWindowIndicator>>) => (
+    <ContextWindowIndicator
+      sessionId="chat-a"
+      totalTokens={10_000}
+      tokenLimit={128_000}
+      isTokenLimitLoaded
+      onCompact={vi.fn()}
+      {...props}
+    />
+  );
+  const arc = () => screen.getByTestId('context-ring-arc');
+
+  it('draws its first reading at rest', () => {
+    render(ring({}));
+    expect(arc()).toHaveClass('br-footline__ring-arc');
+    // A new element has nothing to transition from; no flag needed.
+    expect(arc()).not.toHaveAttribute('data-motion-still');
+  });
+
+  it('lands the token count that arrives after an open at rest', () => {
+    const { rerender } = render(ring({ totalTokens: undefined }));
+    rerender(ring({ totalTokens: 92_000 }));
+    expect(arc()).toHaveAttribute('data-motion-still');
+  });
+
+  it('lands the window that arrives after the count at rest', () => {
+    const { rerender } = render(ring({ totalTokens: 92_000, isTokenLimitLoaded: false }));
+    rerender(ring({ totalTokens: 92_000, tokenLimit: 400_000, isTokenLimitLoaded: true }));
+    expect(arc()).toHaveAttribute('data-motion-still');
+  });
+
+  it('lands another chat’s reading at rest when the composer changes chat', () => {
+    const { rerender } = render(ring({ totalTokens: 10_000 }));
+    rerender(ring({ sessionId: 'chat-b', totalTokens: 92_000 }));
+    expect(arc()).toHaveAttribute('data-motion-still');
+  });
+
+  it('sweeps for a live update in the same chat', () => {
+    const { rerender } = render(ring({ totalTokens: 10_000 }));
+    rerender(ring({ totalTokens: 30_000 }));
+    expect(arc()).not.toHaveAttribute('data-motion-still');
+  });
+
+  it('releases the flag after the still frame, so the next live update sweeps', async () => {
+    const { rerender } = render(ring({ totalTokens: undefined }));
+    rerender(ring({ totalTokens: 92_000 }));
+    expect(arc()).toHaveAttribute('data-motion-still');
+    await waitFor(() => expect(arc()).not.toHaveAttribute('data-motion-still'));
+    rerender(ring({ totalTokens: 100_000 }));
+    expect(arc()).not.toHaveAttribute('data-motion-still');
   });
 });

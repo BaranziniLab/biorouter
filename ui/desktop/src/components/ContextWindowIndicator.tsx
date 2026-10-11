@@ -326,6 +326,11 @@ function fmt(n: number): string {
 
 interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
   /**
+   * The chat this ring reports on. A change of chat is never a live update: the
+   * ring shows the new chat's value at rest instead of sweeping to it.
+   */
+  sessionId?: string | null;
+  /**
    * Print "N% left" beside the ring once less than half the window remains
    * (spec 3.7). Above half the ring says enough on its own, and a figure that
    * reads "100%" beside a fresh chat says nothing at all.
@@ -344,9 +349,64 @@ export const CONTEXT_FIGURE_BELOW_PCT = 50;
 const RING_RADIUS = 6;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
+/**
+ * Whether the arc lands at rest in this render (spec 2.6: a value that loads
+ * asynchronously does not animate; checklist 12: nothing replays on a tab switch).
+ *
+ * The arc sweeps (`.br-footline__ring-arc`, 250ms) only for a LIVE update: a new
+ * value in the same chat, where the render before it already showed a loaded
+ * reading (a known window and a token count). Everything else snaps: the chat's
+ * first reading after it opens or its tab is switched to (the count and the
+ * window both arrive about a second after the composer mounts, and the arc used
+ * to sweep from the empty ring to them), a change of chat under the same
+ * composer, and the window re-read after a model change.
+ *
+ * Derived DURING the render that moves the arc, never in an effect after it: the
+ * Switch's rule (V4-01), because a transition the browser has started ignores a
+ * later `transition-duration: 0ms`. Released two frames later, so at least one
+ * frame is styled with the flag.
+ */
+function useArcStill(
+  sessionId: string | null | undefined,
+  offset: number | null,
+  loaded: boolean
+): boolean {
+  const [shown, setShown] = useState({ sessionId, offset, loaded });
+  const [still, setStill] = useState(0);
+
+  if (shown.sessionId !== sessionId || shown.offset !== offset || shown.loaded !== loaded) {
+    setShown({ sessionId, offset, loaded });
+    if (shown.offset !== offset) {
+      const live =
+        shown.sessionId === sessionId &&
+        shown.loaded &&
+        loaded &&
+        shown.offset !== null &&
+        offset !== null;
+      // A fresh token per change restarts the release.
+      setStill(live ? 0 : still + 1);
+    }
+  }
+
+  useEffect(() => {
+    if (!still) return;
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => setStill(0));
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+    };
+  }, [still]);
+
+  return still > 0;
+}
+
 /** The footer's context readout: a ring that opens the gauge (threshold and
  * Compact) in a popover. One line of tooltip, "72% context left · 92k of 128k". */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
+  sessionId,
   totalTokens,
   tokenLimit,
   isTokenLimitLoaded,
@@ -355,18 +415,23 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
-  if (!isTokenLimitLoaded && !current) return null;
   const total = tokenLimit || 0;
   // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
   // with none there is no number to report: it once read "128k of 128k tokens
   // remaining" during onboarding beside a chip that said no model was chosen.
   // Asserted on the LIMIT rather than only on the loaded flag, because a lookup
   // that finished and found nothing is exactly the case being guarded.
-  if (total <= 0) return null;
+  const drawn = (isTokenLimitLoaded || current > 0) && total > 0;
   const remainingTokens = Math.max(total - current, 0);
-  const remainingRatio = Math.max(0, Math.min(1, remainingTokens / total));
+  const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 1;
   const remainingPct = Math.round(remainingRatio * 100);
   const strokeOffset = RING_CIRCUMFERENCE * (1 - remainingRatio);
+  const arcStill = useArcStill(
+    sessionId,
+    drawn ? strokeOffset : null,
+    isTokenLimitLoaded && totalTokens !== undefined
+  );
+  if (!drawn) return null;
   const summary = FOOTER_COPY.contextTooltip(remainingPct, fmt(current), fmt(total));
   const showFigure = showRemainingPercent && remainingPct < CONTEXT_FIGURE_BELOW_PCT;
   return (
@@ -400,7 +465,9 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   strokeLinecap="round"
                   strokeDasharray={RING_CIRCUMFERENCE}
                   strokeDashoffset={strokeOffset}
-                  className="transition-[stroke-dashoffset] duration-[var(--dur-med-min)] ease-[var(--ease-out)]"
+                  className="br-footline__ring-arc"
+                  data-testid="context-ring-arc"
+                  data-motion-still={arcStill ? '' : undefined}
                   transform="rotate(-90 8 8)"
                 />
               </svg>

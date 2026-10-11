@@ -94,4 +94,13 @@ describe('ComposerFooter (spec 3.7)', () => {
     await settle();
     expect(container.querySelector('.font-mono')).toBeNull();
   });
+
+  // V2-R3-5: the ring knows its chat, so another chat's reading under the same
+  // footer lands at rest instead of sweeping from this chat's arc.
+  it('hands the ring its chat, so a change of chat does not sweep the arc', async () => {
+    const { rerender } = render(<ComposerFooter {...BASE} totalTokens={10_000} />);
+    await settle();
+    rerender(<ComposerFooter {...BASE} sessionId="chat-2" totalTokens={92_000} />);
+    expect(screen.getByTestId('context-ring-arc')).toHaveAttribute('data-motion-still');
+  });
 });

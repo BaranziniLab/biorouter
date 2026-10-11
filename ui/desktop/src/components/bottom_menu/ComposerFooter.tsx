@@ -73,6 +73,7 @@ export function ComposerFooter({
       {inChat && (
         <div className="br-footline__side" data-side="end">
           <ContextWindowIndicator
+            sessionId={sessionId}
             totalTokens={totalTokens}
             tokenLimit={tokenLimit}
             isTokenLimitLoaded={isTokenLimitLoaded}
