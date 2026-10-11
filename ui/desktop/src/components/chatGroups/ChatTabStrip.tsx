@@ -172,6 +172,16 @@ function measureTabOffsets(strip: HTMLElement): Map<string, number> {
   return offsets;
 }
 
+/**
+ * What a reveal of the active tab depends on: which tab it is, where it sits in
+ * the strip's scroll coordinates and how wide it is, and how wide the strip is.
+ * None of it moves when the strip is scrolled, so equal keys mean a reveal now
+ * would only undo the person's scroll.
+ */
+function revealedAt(strip: HTMLElement, tab: HTMLElement): string {
+  return `${tab.dataset.tabId}|${tab.offsetLeft}|${tab.offsetWidth}|${strip.clientWidth}`;
+}
+
 /** True when a tab title matches the overflow menu's filter (case-insensitive substring). */
 export function tabMatchesFilter(title: string, filter: string): boolean {
   const needle = filter.trim().toLocaleLowerCase();
@@ -481,6 +491,9 @@ export function ChatTabStrip({
     if (strip) releaseSettledEntrances(strip);
   }, [activeTabId]);
 
+  // Where the active tab was when it was last revealed (see revealedAt).
+  const revealedAtRef = useRef<string | null>(null);
+
   const revealActiveTab = useCallback(() => {
     const strip = stripRef.current;
     const tab = activeTabRef.current;
@@ -491,13 +504,26 @@ export function ChatTabStrip({
     // offsetLeft is unaffected by the reorder/selection animation transforms.
     const left = tab.offsetLeft;
     const right = left + tab.offsetWidth;
+    revealedAtRef.current = revealedAt(strip, tab);
     if (left < strip.scrollLeft) strip.scrollLeft = left;
     else if (right > strip.scrollLeft + available) strip.scrollLeft = right - available;
   }, []);
 
-  // Also runs after the overflow button appears or a title changes its width.
+  // A render reveals the active tab only when something that should move the
+  // strip has moved since the last reveal: another tab became active, a tab
+  // opened, closed, moved or was renamed before it or it was renamed itself, or
+  // the strip changed width (the ▾ appearing narrows it). It must NOT reveal on
+  // every render. The person's own scroll re-renders the strip (the edge fade's
+  // flags flip, useTabStripScrolledEdges), and a reveal there pulled every scroll
+  // back to the active tab within a frame: the strip could not be scrolled, and a
+  // strip 34px too wide shook between its two ends (vision V1-R5-1). A parent
+  // re-render (a reply streaming, a running dot) would snap it back the same way.
+  // The geometry is the test rather than a list of props, because it is what the
+  // reveal reads: a strip scrolled by hand moves none of it.
   useLayoutEffect(() => {
-    revealActiveTab();
+    const strip = stripRef.current;
+    const tab = activeTabRef.current;
+    if (strip && tab && revealedAt(strip, tab) !== revealedAtRef.current) revealActiveTab();
     if (activeTabId && consumeTabKeyboardFocus(activeTabId)) {
       activeTabRef.current
         ?.querySelector<HTMLButtonElement>('[role="tab"]')

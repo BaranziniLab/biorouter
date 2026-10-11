@@ -138,6 +138,68 @@ describe('the complete active tab is brought into view', () => {
     );
   });
 
+  // Vision V1-R5-1: the strip's own scroll re-renders it (the edge fade's flags
+  // flip), and a reveal on that render pulled every scroll back to the active tab.
+  describe('a scroll the person made holds', () => {
+    function scrollable(container: HTMLElement) {
+      const strip = geometry(container);
+      Object.defineProperty(strip, 'scrollWidth', { configurable: true, value: 357 });
+      resize();
+      expect(strip.scrollLeft).toBe(205);
+      return strip;
+    }
+    function scrollTo(strip: HTMLElement, left: number) {
+      act(() => {
+        strip.scrollLeft = left;
+        fireEvent.scroll(strip);
+      });
+    }
+
+    it('through the re-render its own scroll causes', () => {
+      const { container } = renderStrip();
+      const strip = scrollable(container);
+      expect(strip.hasAttribute('data-scrolled-start')).toBe(true);
+      scrollTo(strip, 0);
+      // The edge flags flipped, so the strip did re-render...
+      expect(strip.hasAttribute('data-scrolled-start')).toBe(false);
+      expect(strip.hasAttribute('data-scrolled-end')).toBe(true);
+      // ...and the scroll is where the person left it.
+      expect(strip.scrollLeft).toBe(0);
+      scrollTo(strip, 100);
+      expect(strip.scrollLeft).toBe(100);
+    });
+
+    it('through a parent re-render that moves no tab', () => {
+      const { container, rerender, props } = renderStrip();
+      const strip = scrollable(container);
+      scrollTo(strip, 0);
+      rerender(<ChatTabStrip {...props} runningSessionIds={['s1']} />);
+      rerender(<ChatTabStrip {...props} runningSessionIds={[]} />);
+      expect(strip.scrollLeft).toBe(0);
+    });
+
+    it('until something moves the active tab or the strip', () => {
+      const { container, rerender, props } = renderStrip();
+      const strip = scrollable(container);
+      scrollTo(strip, 0);
+      // A rename before the active tab moves it: revealed again.
+      const active = container.querySelector<HTMLElement>('[data-tab-id="tab-3"]')!;
+      Object.defineProperty(active, 'offsetLeft', { configurable: true, value: 260 });
+      rerender(
+        <ChatTabStrip
+          {...props}
+          tabs={[TABS[0], { ...TABS[1], title: 'Variant calls, chromosome 7' }, TABS[2]]}
+        />
+      );
+      expect(strip.scrollLeft).toBe(225);
+      // The strip narrowing (the ▾ appearing) reveals it too.
+      scrollTo(strip, 0);
+      Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 140 });
+      resize();
+      expect(strip.scrollLeft).toBe(245);
+    });
+  });
+
   it('does not scroll the page or chat transcript to reveal a tab', () => {
     const spy = vi.spyOn(Element.prototype, 'scrollIntoView');
     const { container } = renderStrip();
