@@ -38,7 +38,7 @@ describe('shortCron', () => {
 
 describe('cronSentence', () => {
   it('says the whole rule, dropping the seconds field', () => {
-    expect(cronSentence('0 0 14 * * *')).toBe('At 02:00 PM');
+    expect(cronSentence('0 0 14 * * *')).toBe('Every day at 2:00 PM');
     expect(cronSentence('0 0 9 * * 1')).toMatch(/Monday/);
   });
 

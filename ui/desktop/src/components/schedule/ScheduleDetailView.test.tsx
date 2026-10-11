@@ -46,6 +46,8 @@ vi.mock('../ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
+const SCHEDULE_CSS = readFileSync(join(__dirname, 'schedule.css'), 'utf8');
+
 const schedule = {
   id: 'daily-meditation',
   source: '/tmp/daily-meditation.yaml',
@@ -270,7 +272,7 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     expect(CODE).toMatch(/<MainPanelLayout\b[^>]*>/);
   });
 
-  it('renders the facts by name as definition rows, one hairline list', async () => {
+  it('renders the facts by name as a static list of definition rows', async () => {
     renderDetails();
 
     for (const label of ['Runs', 'Workflow', 'Last run']) {
@@ -280,10 +282,93 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     // workflow is its file name, the full path one hover away.
     expect(screen.queryByText('Cron')).toBeNull();
     expect(screen.queryByText('Id')).toBeNull();
-    const workflowRow = screen.getByText('Workflow').closest('.biorouter-settings-row');
+    const workflowRow = screen.getByText('Workflow').closest('.br-schedule-fact');
     expect(workflowRow).not.toBeNull();
     expect(workflowRow).toHaveTextContent('daily-meditation.yaml');
     expect(workflowRow).not.toHaveTextContent('/tmp/');
+    // The cron reads as a phrase with its frequency, never "At 03:00 AM" (V3-15).
+    expect(screen.getByText('Every day at 3:00 AM')).toBeInTheDocument();
+  });
+
+  /**
+   * V3-14. A fact is not a control: it took the shared settings row's hover wash although a
+   * press did nothing. The facts are `.br-schedule-fact`, which has no hover and no focus edge.
+   */
+  it('draws the facts without a row’s hover and focus recipe', async () => {
+    renderDetails();
+
+    await screen.findByText('Workflow');
+    const facts = document.querySelector('.br-schedule-facts');
+    expect(facts).not.toBeNull();
+    expect(facts!.querySelectorAll('.br-schedule-fact').length).toBeGreaterThanOrEqual(3);
+    expect(facts!.querySelector('.biorouter-settings-row, .biorouter-list-row')).toBeNull();
+    // The css the class is drawn from names no hover (jsdom has no :hover, so the source it is).
+    expect(SCHEDULE_CSS).not.toMatch(/\.br-schedule-fact[^{]*:(hover|focus)/);
+  });
+
+  /** V3-13. The section label sits on the rows' own content edge, 12px in. */
+  it('insets the Recent runs label to the run rows’ content edge', async () => {
+    mocks.getScheduleSessions.mockResolvedValue([
+      { id: 'run-1', name: 'Scheduled job: daily-meditation', createdAt: '2026-06-17T10:00:00Z' },
+    ]);
+    renderDetails();
+
+    const label = await screen.findByRole('heading', { level: 2, name: 'Recent runs' });
+    expect(label.parentElement).toHaveClass('br-schedule-section-label');
+    expect(SCHEDULE_CSS).toMatch(/\.br-schedule-section-label\s*\{[^}]*padding-inline:\s*12px/);
+  });
+
+  /**
+   * V3-14. Every run of a schedule is named "Scheduled job: {id}" by the daemon, so ten rows
+   * repeated one primary line and hid the date on the second. A run is told apart by when it
+   * ran: the date leads, the counts follow.
+   */
+  describe('a run row', () => {
+    const generic = 'Scheduled job: daily-meditation';
+
+    it('leads with when the run ran when its name only names the schedule', async () => {
+      mocks.getScheduleSessions.mockResolvedValue([
+        {
+          id: 'run-1',
+          name: generic,
+          createdAt: '2026-06-17T10:00:00Z',
+          messageCount: 48,
+          totalTokens: 400418,
+        },
+        { id: 'run-2', name: generic, createdAt: '2026-06-16T10:00:00Z', messageCount: 30 },
+      ]);
+      renderDetails();
+
+      const rows = await screen.findAllByRole('button', { name: /^Open run / });
+      expect(rows).toHaveLength(2);
+      // The schedule's name is not repeated down the list…
+      expect(screen.queryByText(generic)).toBeNull();
+      // …line 1 is the date and time, line 2 the counts (no date repeated there).
+      const first = rows[0];
+      const lines = first.querySelectorAll('.block');
+      expect(lines[0].textContent).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2} [AP]M$/);
+      expect(lines[1].textContent).toMatch(/^48 messages/);
+      expect(lines[1].textContent).not.toMatch(/[AP]M/);
+      // …and the buttons are told apart by that date, not by one repeated name.
+      expect(rows[0].getAttribute('aria-label')).not.toBe(rows[1].getAttribute('aria-label'));
+    });
+
+    it('keeps a name of its own as line 1 and moves the time to line 2', async () => {
+      mocks.getScheduleSessions.mockResolvedValue([
+        {
+          id: 'run-1',
+          name: 'Cohort pull for Dr. Lee',
+          createdAt: '2026-06-17T10:00:00Z',
+          messageCount: 4,
+        },
+      ]);
+      renderDetails();
+
+      const row = await screen.findByRole('button', { name: 'Open run Cohort pull for Dr. Lee' });
+      const lines = row.querySelectorAll('.block');
+      expect(lines[0]).toHaveTextContent('Cohort pull for Dr. Lee');
+      expect(lines[1].textContent).toMatch(/[AP]M · 4 messages$/);
+    });
   });
 
   it('puts back, the name and the status in the band, with Run now as its one accent', async () => {

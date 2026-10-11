@@ -1,0 +1,42 @@
+/*
+ * The Scheduler's own surface rules (spec 3.10, global rules: CSS that serves one surface lives
+ * next to its component). Authored rather than written as Tailwind strings, because a newly
+ * written utility can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md).
+ */
+
+/* The detail view's facts (Runs, Workflow, Last run, ...): a STATIC list. They are not controls,
+   so they take none of a row's affordances (no hover wash, no focus edge); the shared
+   `.biorouter-settings-row` they used to wear paints both, and a wash on something that does not
+   respond is a lie (vision round 1, V3-14). Spacing separates them, as it does every row list
+   under the fill rule (R-27): no hairline between rows. 40px (`--row-height`) with the
+   `(40 - 20) / 2 = 10px` that centres a 20px line, and the same 12px inset as a row's content, so
+   the facts, the section label under them and the run rows share one left edge (V3-13). */
+.br-schedule-facts {
+  display: flex;
+  flex-direction: column;
+}
+
+.br-schedule-fact {
+  display: flex;
+  min-width: 0;
+  min-height: var(--row-height);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 10px 12px;
+}
+
+/* A section label over a list of rows sits on the rows' own content edge: rows carry 12px of
+   inset inside their hover wash, and the label has no wash to carry it. */
+.br-schedule-section-label {
+  padding-inline: 12px;
+}
+
+/* A paused schedule's dot. The primitive's `idle` fill is `--background-strong`, which is 1.3:1
+   on the page and reads as a rendering speck rather than a state (V3-16). `--border-control` is
+   the app's own 3:1 neutral (spec 2.3). Scoped to this class, and written at (0,3,0) so it
+   outranks the primitive's (0,2,0) whichever stylesheet loads last. */
+.biorouter-status-dot.br-schedule-dot[data-tone='idle'] {
+  --status-dot-fill: var(--border-control);
+}

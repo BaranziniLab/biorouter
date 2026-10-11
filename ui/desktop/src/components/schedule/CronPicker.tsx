@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import cronstrue from 'cronstrue';
 import { ScheduledJob } from '../../schedule';
 import { errorMessage } from '../../utils/conversionUtils';
 import { Select } from '../ui/Select';
+import { cronPhraseOrThrow } from './cronPhrase';
 
 type Period = 'minute' | 'hour' | 'day' | 'week' | 'month' | 'year';
 
@@ -258,9 +258,8 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
     }
     onChange(cron);
     if (cron) {
-      const cronWithoutSeconds = cron.split(' ').slice(1).join(' ');
       try {
-        setReadableCron(cronstrue.toString(cronWithoutSeconds));
+        setReadableCron(cronPhraseOrThrow(cron));
         setCronError(null);
         isValid(true);
       } catch (e) {

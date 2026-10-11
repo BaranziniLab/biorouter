@@ -1,8 +1,9 @@
-import cronstrue from 'cronstrue';
 import { ScheduledJob } from '../../schedule';
 import { cn } from '../../utils';
 import { StatusDot, type StatusDotTone } from '../ui/status-dot';
 import { scheduleCopy } from './copy';
+import { cronPhrase } from './cronPhrase';
+import './schedule.css';
 
 /**
  * The daemon answers "run now" with this sentinel instead of a session id when the run was
@@ -16,18 +17,12 @@ export const runStoppedWhileStarting = (sessionId: string): boolean =>
   sessionId === RUN_STOPPED_SENTINEL;
 
 /**
- * The cron expression as a sentence, with the expression itself as the
- * fallback. One definition, because the list row and the detail header both
- * print it and a schedule that reads "At 03:00 AM" on one screen and
- * `0 0 3 * * *` on the other is two answers to one question.
+ * The cron expression as a phrase ("Every day at 3:00 AM"), with the expression itself as the
+ * fallback. One definition (`cronPhrase.ts`), because the list row, the detail facts, the
+ * schedule dialogs and a workflow's schedule badge all print it, and a schedule that reads "At
+ * 03:00 AM" on one screen and "Every day at 3:00 AM" on the next is two answers to one question.
  */
-export function readableCronOf(cron: string): string {
-  try {
-    return cronstrue.toString(cron);
-  } catch {
-    return cron;
-  }
-}
+export const readableCronOf = cronPhrase;
 
 /**
  * A schedule's states, in the one vocabulary both Scheduler surfaces read.
@@ -75,7 +70,7 @@ export function scheduleState(job: ScheduledJob): {
  */
 export function ScheduleStatusDot({ job, className }: { job: ScheduledJob; className?: string }) {
   const { tone, live } = scheduleState(job);
-  return <StatusDot tone={tone} live={live} className={className} />;
+  return <StatusDot tone={tone} live={live} className={cn('br-schedule-dot', className)} />;
 }
 
 /**

@@ -1,16 +1,17 @@
-import cronstrue from 'cronstrue';
+import { cronPhrase } from '../schedule/cronPhrase';
 
 /**
  * A workflow's schedule as a badge ("Daily 2 PM"), and as a sentence for the badge's help
- * ("At 02:00 PM, every day"). Spec 3.10: line 1 of a Workflows row carries "a short cron";
+ * ("Every day at 2:00 PM"). Spec 3.10: line 1 of a Workflows row carries "a short cron";
  * the full rule is one hover or Tab away, never a second line.
  *
  * The daemon writes six fields (seconds first, `CronPicker`'s output); a five-field rule is
  * read the same way with the seconds taken as 0. Anything this does not recognise reads
  * "Scheduled", and the sentence still says exactly when.
  *
- * English on purpose: the sentence beside it comes from `cronstrue`, which is English, and a
- * badge that disagreed with its own help in language would be two answers to one question.
+ * English on purpose: the sentence beside it comes from `cronPhrase` (the Scheduler's own), which
+ * is English, and a badge that disagreed with its own help in language would be two answers to
+ * one question.
  */
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -110,11 +111,4 @@ export function shortCron(cron: string | null | undefined): string | null {
 }
 
 /** The whole rule as a sentence, for the badge's help. The expression itself if unreadable. */
-export function cronSentence(cron: string): string {
-  const parts = fields(cron);
-  try {
-    return cronstrue.toString(parts ? parts.slice(1).join(' ') : cron);
-  } catch {
-    return cron;
-  }
-}
+export const cronSentence = cronPhrase;

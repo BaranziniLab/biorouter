@@ -41,6 +41,7 @@ import { getSession, Session, type SessionClassification } from '../../api';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { userActionHeaders } from '../../utils/userAction';
 import { DELETE_SCHEDULE_MESSAGE, scheduleCopy } from './copy';
+import './schedule.css';
 
 const copy = scheduleCopy.detail;
 
@@ -72,12 +73,12 @@ interface ScheduleDetailViewProps {
 
 /**
  * A fact row: the label on the left, the fact on its trailing edge (astryx §4.5's definition
- * row, on the shared 40px `.biorouter-settings-row`). Names, never ids (principle 10): a path or
- * a raw cron is one hover away in `tooltip`, never on the row.
+ * row). Names, never ids (principle 10): a path or a raw cron is one hover away in `tooltip`,
+ * never on the row.
  *
- * ⚠ The rows must be DIRECT children of `.biorouter-settings-list`, so this component returns
- * the row itself and never a wrapper: `.biorouter-settings-row:last-child` is relative to a
- * row's own parent, and a per-row wrapper makes every row a `:last-child`.
+ * A fact is not a control, so it is `.br-schedule-fact` (`schedule.css`), not the shared
+ * `.biorouter-settings-row`: that recipe paints a hover wash and a focus edge, and the facts do
+ * nothing when pressed (V3-14).
  */
 function DefinitionRow({
   label,
@@ -101,7 +102,7 @@ function DefinitionRow({
     </span>
   );
   return (
-    <div className="biorouter-settings-row flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2.5">
+    <div className="br-schedule-fact">
       <span className="text-body text-text-muted">{label}</span>
       {tooltip ? (
         <Tooltip>
@@ -116,10 +117,18 @@ function DefinitionRow({
 }
 
 /**
- * One past run, as a two-line hairline row: the run's name, then "{when} · {n} messages ·
- * {tokens} tokens" in the sans face with tabular figures (spec 3.10: run rows are sans
- * tabular). The working directory is a path, so it is not a row line (principle 10); the
- * opened transcript shows it.
+ * The name the daemon gives every run of a schedule ("Scheduled job: {id}"). It names the
+ * schedule, not the run, so ten runs of one schedule would repeat it ten times down the list.
+ */
+const isGenericRunName = (name: string) => !name || /^Scheduled job:/i.test(name);
+
+/**
+ * One past run, as a two-line hairline row. A run is told apart by WHEN it ran, so line 1 is
+ * the date and time ("Jun 17, 3:00 AM") and line 2 is "{n} messages · {tokens} tokens", in the
+ * sans face with tabular figures (spec 3.10: run rows are sans tabular; V3-14). A run that has
+ * a name of its own (renamed, or titled by the model) keeps it as line 1 and gives the time to
+ * line 2. The working directory is a path, so it is not a row line (principle 10); the opened
+ * transcript shows it.
  *
  * ⚠ **`tier` comes from the session-list cache, because this row's own endpoint carries none.**
  * `GET /schedule/{id}/sessions` returns `SessionDisplayInfo`, which has no `privacy_tier`, and
@@ -146,8 +155,10 @@ function RunRow({
     total_tokens: session.totalTokens,
   });
   const when = formatRunTime(session.createdAt);
+  const ownName = isGenericRunName(session.name) ? null : session.name;
+  const title = ownName ?? when ?? session.name;
   const meta: React.ReactNode[] = [];
-  if (when) meta.push(<span key="when">{when}</span>);
+  if (ownName && when) meta.push(<span key="when">{when}</span>);
   if (session.messageCount !== undefined) {
     meta.push(<span key="messages">{copy.messages(session.messageCount)}</span>);
   }
@@ -165,7 +176,7 @@ function RunRow({
         type="button"
         onClick={onOpen}
         className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        aria-label={copy.openRun(session.name || session.id)}
+        aria-label={copy.openRun(title || session.id)}
       >
         <ChatKindIcon
           session={{ name: session.name, session_type: 'scheduled' }}
@@ -173,8 +184,8 @@ function RunRow({
           className="h-4 w-4 shrink-0"
         />
         <span className="min-w-0 flex-1">
-          <span className="block min-w-0 truncate text-label">
-            {session.name || <span className="font-mono text-code">{session.id}</span>}
+          <span className="block min-w-0 truncate text-label tabular-nums">
+            {title || <span className="font-mono text-code">{session.id}</span>}
           </span>
           {meta.length > 0 && (
             <span className="block truncate text-supporting text-text-muted tabular-nums">
@@ -543,12 +554,12 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
             <ScrollArea className="h-full">
               <div className="pb-6">
                 {isLoadingSchedule && !scheduleDetails && (
-                  <div className="biorouter-settings-list" aria-hidden>
-                    <div className="biorouter-settings-row flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="br-schedule-facts" aria-hidden>
+                    <div className="br-schedule-fact">
                       <Skeleton className="h-4 w-24" />
                       <Skeleton className="h-4 w-40" />
                     </div>
-                    <div className="biorouter-settings-row flex items-center justify-between gap-3 px-3 py-2.5">
+                    <div className="br-schedule-fact">
                       <Skeleton className="h-4 w-24" />
                       <Skeleton className="h-4 w-56" />
                     </div>
@@ -560,7 +571,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                   </Note>
                 )}
                 {scheduleDetails && (
-                  <div className="biorouter-settings-list">
+                  <div className="br-schedule-facts">
                     <DefinitionRow
                       label={copy.runs}
                       tooltip={<span className="font-mono">{scheduleDetails.cron}</span>}
@@ -601,8 +612,8 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     )}
                     {running && (
                       // The 28px button rides a negative hit-box margin so the row keeps the
-                      // one 40px rhythm (`px-3 py-2.5`, settings vocabulary V2).
-                      <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
+                      // one 40px rhythm (`.br-schedule-fact`, settings vocabulary V2).
+                      <div className="br-schedule-fact">
                         <span className="text-body text-text-muted">
                           {scheduleCopy.status.running}
                         </span>
@@ -621,7 +632,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                 )}
 
                 <div className="biorouter-settings-section">
-                  <div className="biorouter-settings-section-header">
+                  <div className="biorouter-settings-section-header br-schedule-section-label">
                     <h2 className="text-caps text-text-muted">{copy.recentRuns}</h2>
                   </div>
                   {isLoadingSessions && sessions.length === 0 && (
