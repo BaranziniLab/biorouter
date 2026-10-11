@@ -20016,3 +20016,387 @@ mod session_id_uniqueness_tests {
         );
     }
 }
+
+/// R-30: opening a chat is not activity in it; renaming it and running a turn
+/// in it are.
+///
+/// `updated_at` is the activity time every list sorts by (the sidebar's "Last
+/// activity", History, `GET /sessions`, `biorouter session list`). These pin,
+/// write by write, which ones move it: the three setup writes an opening path
+/// makes stay put inside [`crate::session::activity::opening`], and nothing
+/// else is affected by that scope.
+///
+/// Every row is back-dated to a fixed past second first, because
+/// `datetime('now')` has one-second resolution: without that, a write that
+/// stamps in the same second as the row's creation reads as "unchanged" and a
+/// test that should fail on the old code passes.
+#[cfg(test)]
+mod opening_is_not_activity_tests {
+    use super::*;
+    use crate::conversation::message::Message;
+    use crate::privacy::SessionClassification;
+    use crate::session::activity::opening;
+    use tempfile::TempDir;
+
+    const OLDEST: &str = "2001-01-01 00:00:00";
+    const MIDDLE: &str = "2002-02-02 00:00:00";
+    const NEWEST: &str = "2003-03-03 00:00:00";
+
+    async fn store() -> (TempDir, SessionManager) {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        (dir, sm)
+    }
+
+    /// A chat with one message (so every listing shows it), back-dated to `at`.
+    async fn chat(sm: &SessionManager, name: &str, at: &str) -> String {
+        let s = sm
+            .create_session(PathBuf::from("/tmp/r30"), name.into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        backdate(sm, &s.id, at).await;
+        s.id
+    }
+
+    /// A chat with no message (a working-directory write applies only there).
+    async fn empty_chat(sm: &SessionManager, at: &str) -> String {
+        let s = sm
+            .create_session(PathBuf::from("/tmp/r30"), "empty".into(), SessionType::User)
+            .await
+            .unwrap();
+        backdate(sm, &s.id, at).await;
+        s.id
+    }
+
+    async fn backdate(sm: &SessionManager, id: &str, at: &str) {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// The column exactly as stored, so a test compares the stored text rather
+    /// than a parse of it.
+    async fn stored_updated_at(sm: &SessionManager, id: &str) -> String {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT CAST(updated_at AS TEXT) FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// `GET /sessions` and `biorouter session list` order.
+    async fn history_order(sm: &SessionManager) -> Vec<String> {
+        sm.list_sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// `GET /sessions/sidebar` order: the keyset page, walked to the end two
+    /// rows at a time so the continuation predicate is exercised as well.
+    async fn sidebar_order(sm: &SessionManager) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut after: Option<SidebarCursor> = None;
+        loop {
+            let page = sm
+                .list_session_summaries_page(2, after.as_ref(), false, false, false)
+                .await
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().map(|row| row.cursor.clone());
+            ids.extend(page.into_iter().map(|row| row.summary.id));
+        }
+        ids
+    }
+
+    async fn bind(sm: &SessionManager, id: &str, provider: &str) -> BindOutcome {
+        sm.storage()
+            .bind_provider_if_allowed(id, provider, r#"{"model_name":"m"}"#, false)
+            .await
+            .unwrap()
+    }
+
+    async fn save_roster(sm: &SessionManager, id: &str) -> Option<serde_json::Value> {
+        sm.update_extension_state(id, "enabled_extensions", "v0", |_| {
+            Ok(serde_json::json!({ "extensions": [] }))
+        })
+        .await
+        .unwrap()
+    }
+
+    // ── the provider bind ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_provider_bind_while_opening_lands_but_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        let outcome = opening(bind(&sm, &id, "anthropic")).await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.provider_name.as_deref(),
+            Some("anthropic"),
+            "the scope changes the timestamp only: the bind itself must land"
+        );
+        assert_eq!(
+            stored_updated_at(&sm, &id).await,
+            OLDEST,
+            "restoring a chat's model while opening it is not activity in it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_bind_outside_any_opening_still_stamps() {
+        // The default, and the premise the test above needs: the same bind with
+        // no scope does move the row, so "unchanged" there is the scope's doing.
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        assert!(matches!(
+            bind(&sm, &id, "anthropic").await,
+            BindOutcome::Bound
+        ));
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    #[tokio::test]
+    async fn opening_does_not_loosen_gate_a_or_hide_a_missing_row() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "private", OLDEST).await;
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        // A public model on a private chat is still refused inside the scope,
+        // and the refusal writes nothing.
+        let refused = opening(bind(&sm, &id, "anthropic")).await;
+        assert!(matches!(refused, BindOutcome::RefusedByPrivacy));
+        assert_eq!(
+            sm.get_session(&id, false).await.unwrap().provider_name,
+            None
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+
+        // ...and an id that names no row is still told apart from a refusal.
+        let missing = opening(bind(&sm, "no-such-session", "anthropic")).await;
+        assert!(matches!(missing, BindOutcome::NoSuchSession));
+    }
+
+    // ── the extension-data write ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_extension_save_while_opening_writes_the_value_but_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        let stored = opening(save_roster(&sm, &id)).await;
+
+        assert_eq!(stored, Some(serde_json::json!({ "extensions": [] })));
+        assert_eq!(
+            sm.get_extension_state(&id, "enabled_extensions", "v0")
+                .await
+                .unwrap(),
+            Some(serde_json::json!({ "extensions": [] })),
+            "the scope changes the timestamp only: the roster must be saved"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+
+        // The lock-taking first statement still reports the row, so a missing
+        // session is still `None` rather than a silent success.
+        assert_eq!(opening(save_roster(&sm, "no-such-session")).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_extension_save_outside_any_opening_still_stamps() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        save_roster(&sm, &id).await;
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    // ── the empty-chat working-directory write ─────────────────────────────
+
+    #[tokio::test]
+    async fn a_working_dir_write_while_opening_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let empty = empty_chat(&sm, OLDEST).await;
+        let full = chat(&sm, "full", OLDEST).await;
+
+        let outcome = opening(sm.try_update_working_dir_if_empty(&empty, "/tmp/r30-next".into()))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, WorkingDirUpdate::Updated));
+        assert_eq!(
+            sm.get_session(&empty, false).await.unwrap().working_dir,
+            PathBuf::from("/tmp/r30-next")
+        );
+        assert_eq!(stored_updated_at(&sm, &empty).await, OLDEST);
+
+        // The emptiness guard is untouched by the scope.
+        let refused = opening(sm.try_update_working_dir_if_empty(&full, "/tmp/elsewhere".into()))
+            .await
+            .unwrap();
+        assert!(matches!(refused, WorkingDirUpdate::RefusedNotEmpty));
+    }
+
+    #[tokio::test]
+    async fn a_working_dir_write_outside_any_opening_still_stamps() {
+        let (_dir, sm) = store().await;
+        let empty = empty_chat(&sm, OLDEST).await;
+
+        sm.try_update_working_dir_if_empty(&empty, "/tmp/r30-next".into())
+            .await
+            .unwrap();
+
+        assert_ne!(stored_updated_at(&sm, &empty).await, OLDEST);
+    }
+
+    // ── what the scope must NOT reach ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_rename_is_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        opening(sm.update(&id).user_provided_name("Renamed").apply())
+            .await
+            .unwrap();
+
+        assert_ne!(
+            stored_updated_at(&sm, &id).await,
+            OLDEST,
+            "a rename is activity (R-30), whatever scope it runs in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_is_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        opening(sm.add_message(&id, &Message::user().with_text("again")))
+            .await
+            .unwrap();
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    // ── an extension_data-only update (an app's goal guardrail on connect) ──
+
+    #[tokio::test]
+    async fn an_extension_data_only_update_while_opening_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+        let mut data = sm.get_session(&id, false).await.unwrap().extension_data;
+        data.set_extension_state("goal", "v0", serde_json::json!({ "condition": "done" }));
+
+        opening(sm.update(&id).extension_data(data).apply())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.get_extension_state(&id, "goal", "v0").await.unwrap(),
+            Some(serde_json::json!({ "condition": "done" })),
+            "the scope changes the timestamp only: the data must land"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    #[tokio::test]
+    async fn an_extension_data_update_outside_opening_or_with_a_name_still_stamps() {
+        let (_dir, sm) = store().await;
+        let plain = chat(&sm, "plain", OLDEST).await;
+        let named = chat(&sm, "named", OLDEST).await;
+
+        // No scope: the pre-R-30 behaviour.
+        let data = sm.get_session(&plain, false).await.unwrap().extension_data;
+        sm.update(&plain)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        assert_ne!(stored_updated_at(&sm, &plain).await, OLDEST);
+
+        // Inside a scope, but the update also renames: a rename is activity.
+        let data = sm.get_session(&named, false).await.unwrap().extension_data;
+        opening(
+            sm.update(&named)
+                .extension_data(data)
+                .user_provided_name("Renamed")
+                .apply(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(stored_updated_at(&sm, &named).await, OLDEST);
+    }
+
+    // ── the order every list shows ─────────────────────────────────────────
+
+    /// The owner's case end to end at the store: three chats, the oldest is
+    /// opened (its model restored and its roster saved, as the CLI and a cold
+    /// desktop agent do) and keeps its place in History and in the sidebar's
+    /// keyset pages; then it is renamed and heads both.
+    #[tokio::test]
+    async fn opening_keeps_a_chat_in_place_and_renaming_moves_it_to_the_top() {
+        let (_dir, sm) = store().await;
+        let oldest = chat(&sm, "oldest", OLDEST).await;
+        let middle = chat(&sm, "middle", MIDDLE).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+        let expected = vec![newest.clone(), middle.clone(), oldest.clone()];
+        assert_eq!(history_order(&sm).await, expected, "premise");
+        assert_eq!(sidebar_order(&sm).await, expected, "premise");
+
+        opening(async {
+            assert!(matches!(
+                bind(&sm, &oldest, "anthropic").await,
+                BindOutcome::Bound
+            ));
+            save_roster(&sm, &oldest).await;
+        })
+        .await;
+
+        assert_eq!(history_order(&sm).await, expected, "History after an open");
+        assert_eq!(sidebar_order(&sm).await, expected, "sidebar after an open");
+        assert_eq!(stored_updated_at(&sm, &oldest).await, OLDEST);
+
+        sm.update(&oldest)
+            .user_provided_name("Renamed")
+            .apply()
+            .await
+            .unwrap();
+
+        let renamed_first = vec![oldest.clone(), newest.clone(), middle.clone()];
+        assert_eq!(
+            history_order(&sm).await,
+            renamed_first,
+            "History after a rename"
+        );
+        assert_eq!(
+            sidebar_order(&sm).await,
+            renamed_first,
+            "sidebar after a rename"
+        );
+    }
+}

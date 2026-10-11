@@ -310,3 +310,173 @@ async fn session_remove_under_a_pipe_needs_yes_and_then_reaches_every_row_kind()
     }
     assert!(exists(&data, &chat).await, "only the named rows go");
 }
+
+/// R-30: resuming a chat in the terminal is opening it, not activity in it.
+///
+/// `biorouter session --resume` binds the model the chat records and saves the
+/// extension roster it loaded, and both writes used to stamp `updated_at`, so a
+/// resume moved the chat to the top of `session list` (and of the desktop's
+/// lists, which read the same store). Measured before the fix, 2026-10-11:
+/// index 115 to 0 in `session list`, even for a resume the person then
+/// cancelled at the missing-extension prompt, because the bind runs before it.
+///
+/// Three resumes of the older of two chats, each against a fresh copy of the
+/// same store: one that continues (stdin closed, so the interactive loop ends
+/// at once), one cancelled at the missing-extension prompt, and one where the
+/// person typed a different `--model`. The first two must leave the chat where
+/// it was. The third is a model switch, which still moves it, and it is what
+/// proves the run reached the bind at all: without it "unchanged" could mean
+/// the CLI never got that far.
+#[tokio::test]
+async fn resuming_a_chat_in_the_terminal_does_not_move_it_but_switching_its_model_does() {
+    use biorouter::model::ModelConfig;
+
+    const MODEL: &str = "claude-sonnet-4-5";
+
+    /// Two chats, the older one recording `anthropic` and `roster` as its
+    /// extensions, each written in a second of its own (`datetime('now')` has
+    /// one-second resolution). Returns (older, newer).
+    async fn seed(data: &Path, roster: serde_json::Value) -> (String, String) {
+        let sm = SessionManager::new(data.to_path_buf());
+        let older = sm
+            .create_session(data.to_path_buf(), "Older chat".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&older.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        sm.update(&older.id)
+            .provider_name("anthropic")
+            .model_config(ModelConfig::new(MODEL).unwrap())
+            .apply()
+            .await
+            .unwrap();
+        sm.update_extension_state(&older.id, "enabled_extensions", "v0", move |_| Ok(roster))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let newer = sm
+            .create_session(data.to_path_buf(), "Newer chat".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&newer.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        // The resume below runs in a later second than anything seeded, so a
+        // stamp cannot hide inside a second the rows already hold.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        sm.close().await;
+        (older.id, newer.id)
+    }
+
+    async fn updated_at(data: &Path, id: &str) -> chrono::DateTime<chrono::Utc> {
+        let sm = SessionManager::new(data.to_path_buf());
+        let at = sm.get_session(id, false).await.unwrap().updated_at;
+        sm.close().await;
+        at
+    }
+
+    /// The ids `biorouter session list --format json` prints, in its order.
+    fn listed(sandbox: &Sandbox) -> Vec<String> {
+        let out = sandbox.run(&["session", "list", "--format", "json"], "");
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {}", text(&out.stdout)));
+        rows.iter()
+            .filter_map(|row| row["id"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// `biorouter session --resume --session-id <id> [extra…]` with a
+    /// placeholder key: constructing the provider opens no connection, and
+    /// nothing here sends a message.
+    fn resume(sandbox: &Sandbox, id: &str, extra: &[&str]) -> Output {
+        let mut args = vec!["session", "--resume", "--session-id", id];
+        args.extend_from_slice(extra);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_biorouter"))
+            .args(&args)
+            .env("HOME", &sandbox.home)
+            .env("XDG_CONFIG_HOME", sandbox.home.join(".config"))
+            .env("BIOROUTER_PATH_ROOT", &sandbox.root)
+            .env("BIOROUTER_DISABLE_KEYRING", "true")
+            .env("ANTHROPIC_API_KEY", "placeholder-never-sent")
+            .env_remove("BIOROUTER_PROVIDER")
+            .env_remove("BIOROUTER_MODEL")
+            .env_remove("BIOROUTER_SERVER__SECRET_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the biorouter binary");
+        drop(child.stdin.take());
+        child.wait_with_output().unwrap()
+    }
+
+    let cases: [(&str, serde_json::Value, &[&str], bool); 3] = [
+        (
+            "a resume that continues",
+            serde_json::json!({ "extensions": [] }),
+            &[],
+            false,
+        ),
+        (
+            "a resume cancelled at the missing-extension prompt",
+            serde_json::json!({ "extensions": [{
+                "type": "stdio",
+                "name": "r30-extension-that-is-not-installed",
+                "cmd": "r30-extension-that-is-not-installed",
+                "args": [],
+                "description": "named by the chat, installed nowhere",
+            }] }),
+            &[],
+            false,
+        ),
+        (
+            "a resume that switches the model",
+            serde_json::json!({ "extensions": [] }),
+            &["--model", "claude-opus-4-1"],
+            true,
+        ),
+    ];
+    for (case, roster, extra, moves) in cases {
+        let sandbox = Sandbox::new();
+        std::fs::write(
+            sandbox.config_yaml(),
+            format!("BIOROUTER_PROVIDER: anthropic\nBIOROUTER_MODEL: {MODEL}\n"),
+        )
+        .unwrap();
+        let data = sandbox.root.join("data");
+        let (older, newer) = seed(&data, roster).await;
+        let before = updated_at(&data, &older).await;
+        assert_eq!(
+            listed(&sandbox),
+            [newer.clone(), older.clone()],
+            "{case}: premise"
+        );
+
+        let out = resume(&sandbox, &older, extra);
+        let stderr = text(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{case}: {}{stderr}",
+            text(&out.stdout)
+        );
+        assert!(
+            !stderr.contains("Failed to initialize agent"),
+            "{case}: {stderr}"
+        );
+
+        let after = updated_at(&data, &older).await;
+        if moves {
+            assert!(after > before, "{case}: a model switch moves the chat");
+            assert_eq!(listed(&sandbox), [older.clone(), newer.clone()], "{case}");
+        } else {
+            assert_eq!(
+                after, before,
+                "{case}: opening a chat is not activity (R-30)"
+            );
+            assert_eq!(listed(&sandbox), [newer.clone(), older.clone()], "{case}");
+        }
+    }
+}

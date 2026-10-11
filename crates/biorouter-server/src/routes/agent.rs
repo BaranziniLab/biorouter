@@ -6925,3 +6925,347 @@ mod knowledge_selection_tests {
         }
     }
 }
+
+/// R-30 at the HTTP surface: opening a chat the way the desktop does it moves it
+/// nowhere; renaming it moves it to the top.
+///
+/// The calls are the desktop's own, in its order (`chatStreamStore`'s
+/// `loadSession` + `ensureAgentLoaded`, measured against a live daemon on
+/// 2026-10-11): `POST /agent/resume` without the model, `POST /agent/resume`
+/// with it, `POST /agent/update_from_session`, then `GET /sessions/{id}`, all
+/// carrying the user-action proof the desktop sends. The agent is made cold
+/// first, because that is the case that wrote: the first open after a daemon
+/// start, or after the 100-agent cache evicted the chat, rebinds the model the
+/// row records, and that bind stamped `updated_at`.
+///
+/// The shared test store holds other tests' chats too, so every comparison is
+/// between the chats this test seeded only.
+#[cfg(test)]
+mod opening_is_not_activity_route_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::config::with_config_overrides;
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use serial_test::serial;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    /// Placeholder credentials for the two providers the fixtures record.
+    /// Constructing a provider opens no connection, and nothing here runs a
+    /// turn.
+    fn placeholder_credentials() -> HashMap<String, String> {
+        use biorouter::providers::versa_azure as versa;
+        HashMap::from([
+            ("ANTHROPIC_API_KEY".into(), "placeholder-never-sent".into()),
+            (
+                "VERSA_AZURE_API_KEY".into(),
+                "placeholder-never-sent".into(),
+            ),
+            (
+                "VERSA_AZURE_ENDPOINT".into(),
+                versa::VERSA_AZURE_ENDPOINT.into(),
+            ),
+            (
+                "VERSA_AZURE_DEPLOYMENT_NAME".into(),
+                versa::deployment_for_model(versa::VERSA_AZURE_DEFAULT_MODEL)
+                    .expect("the default model has a deployment")
+                    .into(),
+            ),
+            (
+                "VERSA_AZURE_API_VERSION".into(),
+                versa::VERSA_AZURE_API_VERSION.into(),
+            ),
+        ])
+    }
+
+    /// Deletes the seeded rows however the test ends.
+    struct Seeded {
+        state: Arc<AppState>,
+        ids: Vec<String>,
+    }
+
+    impl Drop for Seeded {
+        fn drop(&mut self) {
+            let state = Arc::clone(&self.state);
+            let ids = std::mem::take(&mut self.ids);
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    for id in ids {
+                        let _ = state.agent_manager.remove_session(&id).await;
+                        let _ = state.session_manager().delete_session(&id).await;
+                    }
+                })
+            });
+        }
+    }
+
+    /// A chat with one message that records `provider`, optionally private,
+    /// with no live agent.
+    ///
+    /// Each one is written in a second of its own (the sleep): `updated_at` is
+    /// `datetime('now')`, one-second resolution, so two chats seeded in the
+    /// same second tie and a stamp in that second reads as no change. The
+    /// store's pool is not reachable from this crate, so the rows cannot be
+    /// back-dated the way the store's own tests do it.
+    async fn seed_chat(
+        state: &Arc<AppState>,
+        seeded: &mut Seeded,
+        provider: &str,
+        model: &str,
+        private: bool,
+    ) -> String {
+        let sm = state.session_manager();
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/biorouter-r30-route"),
+                format!("R-30 opening fixture ({provider})"),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        seeded.ids.push(session.id.clone());
+        sm.add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let mut update = sm
+            .update(&session.id)
+            .provider_name(provider)
+            .model_config(ModelConfig::new(model).unwrap());
+        if private {
+            update = update.raise_privacy(SessionClassification::Private, "turn:versa_azure");
+        }
+        update.apply().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        // Session ids are reissued: never inherit an agent an earlier test left,
+        // and start cold, which is the case that used to write.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        session.id
+    }
+
+    async fn updated_at(state: &Arc<AppState>, id: &str) -> chrono::DateTime<chrono::Utc> {
+        state
+            .session_manager()
+            .get_session(id, false)
+            .await
+            .unwrap()
+            .updated_at
+    }
+
+    /// One request through the agent and session routers together, carrying
+    /// the desktop's proof.
+    async fn call(
+        state: &Arc<AppState>,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("X-User-Action", TEST_USER_ACTION_KEY);
+        let body = match body {
+            Some(json) => {
+                request = request.header("content-type", "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
+        let app =
+            routes(Arc::clone(state)).merge(crate::routes::session::routes(Arc::clone(state)));
+        let response = with_config_overrides(
+            placeholder_credentials(),
+            app.oneshot(request.body(body).unwrap()),
+        )
+        .await
+        .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// Open `id` exactly as the desktop does.
+    async fn open_like_the_desktop(state: &Arc<AppState>, id: &str) {
+        let (status, _) = call(
+            state,
+            "POST",
+            "/agent/resume",
+            Some(serde_json::json!({ "session_id": id, "load_model_and_extensions": false })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "resume without the model");
+
+        let (status, body) = call(
+            state,
+            "POST",
+            "/agent/resume",
+            Some(serde_json::json!({ "session_id": id, "load_model_and_extensions": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "resume with the model: {body}");
+        assert!(
+            body.get("initialization_error").is_none_or(|e| e.is_null()),
+            "the restore must succeed, or this test measures nothing: {body}"
+        );
+        let agent = state
+            .peek_agent(id)
+            .await
+            .expect("resume caches the chat's agent");
+        assert!(
+            agent.provider().await.is_ok(),
+            "the cold agent must have had its model restored"
+        );
+
+        let (status, body) = call(
+            state,
+            "POST",
+            "/agent/update_from_session",
+            Some(serde_json::json!({ "session_id": id })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "update_from_session: {body}");
+
+        let (status, _) = call(state, "GET", &format!("/sessions/{id}"), None).await;
+        assert_eq!(status, StatusCode::OK, "the transcript read");
+    }
+
+    /// The seeded ids in the order `GET /sessions` (History, the CLI's list)
+    /// returns them.
+    async fn history_order(state: &Arc<AppState>, ids: &[String]) -> Vec<String> {
+        let (status, body) = call(state, "GET", "/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["id"].as_str())
+            .filter(|id| ids.iter().any(|seeded| seeded == id))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The seeded ids in the order `GET /sessions/sidebar` returns them, walked
+    /// page by page with the route's own continuation value.
+    async fn sidebar_order(state: &Arc<AppState>, ids: &[String]) -> Vec<String> {
+        let mut order = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = match &cursor {
+                // URL-safe base64 (`encode_sidebar_cursor`), so it goes in as is.
+                Some(c) => format!("/sessions/sidebar?limit=500&cursor={c}"),
+                None => "/sessions/sidebar?limit=500".to_string(),
+            };
+            let (status, body) = call(state, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            order.extend(
+                body["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|s| s["id"].as_str())
+                    .filter(|id| ids.iter().any(|seeded| seeded == id))
+                    .map(str::to_string),
+            );
+            match body["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_string()),
+                None => break,
+            }
+        }
+        order
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn opening_a_public_or_private_chat_keeps_its_place_and_renaming_moves_it() {
+        install_test_user_action_key();
+        assert!(biorouter::privacy::privacy_tiers_enabled());
+        let state = AppState::new().await.unwrap();
+        let mut seeded = Seeded {
+            state: Arc::clone(&state),
+            ids: Vec::new(),
+        };
+        use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
+        let public = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let private = seed_chat(
+            &state,
+            &mut seeded,
+            "versa_azure",
+            VERSA_AZURE_DEFAULT_MODEL,
+            true,
+        )
+        .await;
+        let newest = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let ids = seeded.ids.clone();
+        let expected = vec![newest.clone(), private.clone(), public.clone()];
+        let public_before = updated_at(&state, &public).await;
+        let private_before = updated_at(&state, &private).await;
+        assert_eq!(history_order(&state, &ids).await, expected, "premise");
+        assert_eq!(sidebar_order(&state, &ids).await, expected, "premise");
+
+        // ── Open both older chats, cold, the way the desktop does. ───────────
+        open_like_the_desktop(&state, &public).await;
+        open_like_the_desktop(&state, &private).await;
+
+        assert_eq!(
+            updated_at(&state, &public).await,
+            public_before,
+            "opening a public chat is not activity in it (R-30)"
+        );
+        assert_eq!(
+            updated_at(&state, &private).await,
+            private_before,
+            "opening a private chat is not activity in it (R-30)"
+        );
+        assert_eq!(
+            history_order(&state, &ids).await,
+            expected,
+            "History moved a chat that was only opened"
+        );
+        assert_eq!(
+            sidebar_order(&state, &ids).await,
+            expected,
+            "the sidebar moved a chat that was only opened"
+        );
+
+        // A second open, now warm, writes nothing either.
+        open_like_the_desktop(&state, &public).await;
+        assert_eq!(updated_at(&state, &public).await, public_before);
+
+        // ── Renaming IS activity: the oldest chat goes to the top. ───────────
+        let (status, body) = call(
+            &state,
+            "PUT",
+            &format!("/sessions/{public}/name"),
+            Some(serde_json::json!({ "name": "R-30 renamed (test fixture)" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename: {body}");
+        let renamed_first = vec![public.clone(), newest.clone(), private.clone()];
+        assert_eq!(history_order(&state, &ids).await, renamed_first);
+        assert_eq!(sidebar_order(&state, &ids).await, renamed_first);
+
+        // ...and so is renaming the private chat, with the proof. A second of
+        // its own, or the two renames tie and `GET /sessions` has no tiebreak.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "PUT",
+            &format!("/sessions/{private}/name"),
+            Some(serde_json::json!({ "name": "R-30 renamed private (test fixture)" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![private.clone(), public.clone(), newest.clone()]
+        );
+    }
+}

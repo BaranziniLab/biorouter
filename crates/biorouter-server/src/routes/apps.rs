@@ -12633,3 +12633,126 @@ mod app_decision_tests {
         ));
     }
 }
+
+/// R-30: connecting to an app is opening its chat, not activity in it.
+///
+/// `configure_agent` runs on every page connect and binds the app's model
+/// (`configure_main_provider`). That bind stamped `updated_at`, so every reload
+/// of an app moved its chat to the top of every list sorted by activity. Each
+/// connect here uses a fresh agent over the same store: a reload after a daemon
+/// restart, which is the case that reached the bind with nothing bound.
+#[cfg(test)]
+mod opening_is_not_activity_app_tests {
+    use super::configure_agent;
+    use biorouter::agents::{Agent, AgentConfig as BrAgentConfig};
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::config::with_config_overrides;
+    use biorouter::config::BioRouterMode;
+    use biorouter::conversation::message::Message;
+    use biorouter::session::session_manager::SessionType;
+    use biorouter::session::SessionManager;
+    use biorouter_mcp::agent_drafter::control::UiBridge;
+    use biorouter_mcp::agent_drafter::store::{
+        AgentConfig, ArtifactKind, Manifest, ModelSelection,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn manifest() -> Manifest {
+        Manifest {
+            id: "r30app".to_string(),
+            title: "R-30 App".to_string(),
+            description: String::new(),
+            kind: ArtifactKind::Agentic,
+            entry: "index.html".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            agent: Some(AgentConfig {
+                model: Some(ModelSelection {
+                    provider: Some("anthropic".to_string()),
+                    model: Some("claude-sonnet-4-5".to_string()),
+                    settings: None,
+                }),
+                ..Default::default()
+            }),
+            width: None,
+            height: None,
+            built_at: None,
+            sdk_hash: None,
+            session_id: None,
+            surface: Default::default(),
+            theme: Default::default(),
+        }
+    }
+
+    /// A placeholder key: constructing the provider opens no connection, and
+    /// nothing here runs a turn.
+    fn placeholder_key() -> HashMap<String, String> {
+        HashMap::from([("ANTHROPIC_API_KEY".into(), "placeholder-never-sent".into())])
+    }
+
+    fn fresh_agent(sm: &Arc<SessionManager>, dir: &std::path::Path) -> Agent {
+        Agent::with_config(BrAgentConfig::new(
+            Arc::clone(sm),
+            Arc::new(PermissionManager::new(dir.to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ))
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn connecting_to_an_app_binds_its_model_without_moving_its_chat() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let session = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "app:r30app".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        sm.add_message(&session, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        // `datetime('now')` has one-second resolution: connect in a later
+        // second, so a stamp cannot hide in the second the row was written in.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let before = sm.get_session(&session, false).await.unwrap().updated_at;
+
+        for connect in ["first connect", "a reload after a restart"] {
+            let agent = fresh_agent(&sm, dir.path());
+            with_config_overrides(
+                placeholder_key(),
+                configure_agent(
+                    &agent,
+                    &state,
+                    &session,
+                    &manifest(),
+                    &UiBridge::new(),
+                    false,
+                ),
+            )
+            .await;
+
+            assert_eq!(
+                agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok(),
+                Some("anthropic".to_string()),
+                "{connect}: premise, the connect bound the app's model"
+            );
+            let row = sm.get_session(&session, false).await.unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("anthropic"), "{connect}");
+            assert_eq!(
+                row.updated_at, before,
+                "{connect}: connecting to an app is not activity in its chat (R-30)"
+            );
+        }
+    }
+}
