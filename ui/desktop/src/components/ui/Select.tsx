@@ -61,6 +61,19 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
 // DialogContent — this tier is exactly what stops the menu painting under them.
 const MENU_Z = 500;
 
+/**
+ * The trigger's motion, the <Input> field's own list on the motion tokens (spec 2.6): colour,
+ * background and border over `--dur-fast` on `--ease-out`. It is set in `styles` and not left to
+ * the class, because react-select's base control style (emitted even when `unstyled`) carries an
+ * unlayered Emotion `transition: all 100ms` that beat the authored
+ * `transition-[color,background-color,border-color]`: the trigger animated EVERY property over an
+ * off-token 100ms (first run, FR-R3-5). The indicators' base `color 150ms` is restated the same way.
+ */
+const SELECT_CONTROL_TRANSITION = ['color', 'background-color', 'border-color']
+  .map((property) => `${property} var(--dur-fast) var(--ease-out)`)
+  .join(', ');
+const SELECT_INDICATOR_TRANSITION = 'color var(--dur-fast) var(--ease-out)';
+
 /** The hook on every shared Select's container, for the Escape claim below. */
 const SELECT_CONTAINER_CLASS_NAME = 'br-select';
 
@@ -181,7 +194,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         placeholder: () => 'text-text-muted',
         singleValue: () => 'text-text-default',
         input: () => 'text-text-default',
-        dropdownIndicator: () => 'text-text-muted transition-transform',
+        dropdownIndicator: () => 'text-text-muted',
         // `unstyled` leaves the clear mark with no padding; 4px each side keeps a 24px target
         // beside the chevron, and it warms to the default ink under the pointer like a ghost icon.
         clearIndicator: () => 'cursor-pointer px-1 text-text-muted hover:text-text-default',
@@ -262,12 +275,17 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         control: (base, state) => ({
           ...base,
           minHeight: 0,
+          transition: SELECT_CONTROL_TRANSITION,
           borderColor: state.isFocused ? 'var(--border-focus)' : 'transparent',
           backgroundColor: 'var(--br-control-ground, var(--background-fill))',
           ...(state.isFocused || state.isDisabled
             ? {}
             : { '&:hover': { backgroundColor: 'var(--background-fill-strong)' } }),
         }),
+        // The chevron never moves, so its only motion is colour; the clear mark warms under the
+        // pointer. Both on the tokens, over react-select's base `color 150ms`.
+        dropdownIndicator: (base) => ({ ...base, transition: SELECT_INDICATOR_TRANSITION }),
+        clearIndicator: (base) => ({ ...base, transition: SELECT_INDICATOR_TRANSITION }),
         menu: (base) => ({ ...base, pointerEvents: 'auto', zIndex: MENU_Z }),
         // The same tier, carried out to a portalled menu. react-select's own
         // `menuPortal` default is `zIndex: 1`, which at `document.body` sits
