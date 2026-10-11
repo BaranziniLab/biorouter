@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -43,11 +44,12 @@ import { sidebarCopy } from './copy';
 import SidebarViewMenu from './SidebarViewMenu';
 import {
   applyHeldArrangement,
-  arrangeSidebarChats,
+  arrangeSidebarChatsCached,
   holdArrangement,
   linesToDrawRow,
   SIDEBAR_RENDER_WINDOW,
   SIDEBAR_RENDER_WINDOW_STEP,
+  sidebarRenderWindow,
   windowSidebarRows,
   tildePath,
   type HeldArrangement,
@@ -149,6 +151,45 @@ export function canDivergeChat(session: SessionSummary): boolean {
   return chatKindOf(session) !== 'subagent' && session.message_count > 0;
 }
 
+/**
+ * A function that keeps one identity for the component's whole life and always
+ * calls the latest `handler`, so a memoized row is not re-rendered just because
+ * its parent made a new closure. Only for event handlers: it reads the handler
+ * the last commit installed.
+ */
+function useStableHandler<Args extends unknown[], Result>(
+  handler: (...args: Args) => Result
+): (...args: Args) => Result {
+  const latest = useRef(handler);
+  useLayoutEffect(() => {
+    latest.current = handler;
+  });
+  return useCallback((...args: Args) => latest.current(...args), []);
+}
+
+/**
+ * What a row or folder header shows only on request (a hover card, a button's
+ * label, a menu) is built the first time it opens, then kept, so it still
+ * closes with its own exit animation (R-28, vision V1-R2-2). Radix mounts
+ * nothing for a closed tooltip or menu, but its elements were still created on
+ * every render of every line drawn: a chat row's two menus of ten items each
+ * are more elements than the row, and a view switch draws 60 lines.
+ */
+function useBuiltOnOpen<Part extends string>(): [
+  ReadonlySet<Part>,
+  (part: Part) => (open: boolean) => void,
+] {
+  const [built, setBuilt] = useState<ReadonlySet<Part>>(() => new Set());
+  const buildOnOpen = useCallback(
+    (part: Part) => (open: boolean) => {
+      if (!open) return;
+      setBuilt((current) => (current.has(part) ? current : new Set(current).add(part)));
+    },
+    []
+  );
+  return [built, buildOnOpen];
+}
+
 // ── One chat row ──────────────────────────────────────────────────────────
 
 interface RecentChatRowProps {
@@ -175,13 +216,19 @@ interface RecentChatRowProps {
   onRequestDelete: (session: SessionSummary) => void;
   onDiverge: (sessionId: string) => void;
   /** Set while this row is being renamed: the row turns into its editor. */
-  editing: { draft: string } | null;
+  editingDraft: string | null;
   onDraftChange: (draft: string) => void;
-  onCommitRename: (value: string) => void;
-  onCancelRename: () => void;
+  onCommitRename: (sessionId: string, value: string) => void;
+  onCancelRename: (sessionId: string) => void;
 }
 
-function RecentChatRow({
+/*
+ * Memoized (R-28, vision V1-R2-2): every handler the list passes is stable and
+ * every other prop is the row's own data, so a list re-render (the pointer
+ * entering it, a keystroke in another row's rename, a chat starting to run)
+ * re-renders only the rows whose own props changed, not every drawn row.
+ */
+const RecentChatRow = memo(function RecentChatRow({
   session,
   isActive,
   isRunning,
@@ -193,7 +240,7 @@ function RecentChatRow({
   onStartRename,
   onRequestDelete,
   onDiverge,
-  editing,
+  editingDraft,
   onDraftChange,
   onCommitRename,
   onCancelRename,
@@ -212,6 +259,8 @@ function RecentChatRow({
   useEffect(() => {
     if (!listShown) setCardOpen(false);
   }, [listShown]);
+  // The hover card, the ⋯ label and the two menus are built when first shown.
+  const [built, buildOnOpen] = useBuiltOnOpen<'card' | 'moreLabel' | 'contextMenu' | 'dropdown'>();
   // Rename was chosen in a menu: start editing once the menu has let go of
   // focus, or it would hand focus back to this row over the new input.
   const renameAfterMenu = useRef(false);
@@ -244,7 +293,7 @@ function RecentChatRow({
     onStartRename(session.id);
   };
 
-  if (editing) {
+  if (editingDraft !== null) {
     return (
       <li className="br-chat-row-item" data-row-item="">
         <div className="br-nav-row br-chat-row" data-editing="true" data-row={key}>
@@ -256,10 +305,10 @@ function RecentChatRow({
           />
           <ChatRowRenameInput
             title={title}
-            value={editing.draft}
+            value={editingDraft}
             onChange={onDraftChange}
-            onCommit={onCommitRename}
-            onCancel={onCancelRename}
+            onCommit={(value) => onCommitRename(session.id, value)}
+            onCancel={() => onCancelRename(session.id)}
           />
           <span className="br-chat-row-trailing" aria-hidden="true" />
         </div>
@@ -284,7 +333,12 @@ function RecentChatRow({
 
   return (
     <li className="br-chat-row-item" data-row-item="" data-menu-open={menuOpen || undefined}>
-      <ContextMenu onOpenChange={setMenuOpen}>
+      <ContextMenu
+        onOpenChange={(open) => {
+          buildOnOpen('contextMenu')(open);
+          setMenuOpen(open);
+        }}
+      >
         <Tooltip
           delayDuration={CHAT_HOVER_CARD_DELAY_MS}
           open={cardOpen && listShown}
@@ -292,6 +346,7 @@ function RecentChatRow({
             if (open && labelRef.current) {
               setTitleIsCut(labelRef.current.scrollWidth > labelRef.current.clientWidth);
             }
+            buildOnOpen('card')(open);
             setCardOpen(open);
           }}
         >
@@ -345,27 +400,36 @@ function RecentChatRow({
               12 messages` stays one line (V1-M6); a long title clamps to two.
               `hideWhenDetached`: a row scrolled out of the list takes its card
               with it rather than leaving it pinned to the list's edge. */}
-          <TooltipContent
-            side="right"
-            align="start"
-            sideOffset={CHAT_HOVER_CARD_OFFSET}
-            hideWhenDetached
-            className="px-2 py-1.5 font-normal"
-          >
-            <div data-testid={`recent-chat-summary-${session.id}`}>
-              {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
-              <p>{chatHoverDetail(session, homeDir)}</p>
-            </div>
-          </TooltipContent>
+          {built.has('card') ? (
+            <TooltipContent
+              side="right"
+              align="start"
+              sideOffset={CHAT_HOVER_CARD_OFFSET}
+              hideWhenDetached
+              className="px-2 py-1.5 font-normal"
+            >
+              <div data-testid={`recent-chat-summary-${session.id}`}>
+                {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
+                <p>{chatHoverDetail(session, homeDir)}</p>
+              </div>
+            </TooltipContent>
+          ) : null}
         </Tooltip>
-        <ChatRowContextMenuContent
-          target={target}
-          {...handlers}
-          onCloseAutoFocus={onMenuCloseAutoFocus}
-        />
+        {built.has('contextMenu') ? (
+          <ChatRowContextMenuContent
+            target={target}
+            {...handlers}
+            onCloseAutoFocus={onMenuCloseAutoFocus}
+          />
+        ) : null}
       </ContextMenu>
-      <DropdownMenu onOpenChange={setMenuOpen}>
-        <Tooltip>
+      <DropdownMenu
+        onOpenChange={(open) => {
+          buildOnOpen('dropdown')(open);
+          setMenuOpen(open);
+        }}
+      >
+        <Tooltip onOpenChange={buildOnOpen('moreLabel')}>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
               <Button
@@ -383,17 +447,21 @@ function RecentChatRow({
               </Button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
-          <TooltipContent>{sidebarCopy.chats.moreActions(title)}</TooltipContent>
+          {built.has('moreLabel') ? (
+            <TooltipContent>{sidebarCopy.chats.moreActions(title)}</TooltipContent>
+          ) : null}
         </Tooltip>
-        <ChatRowDropdownMenuContent
-          target={target}
-          {...handlers}
-          onCloseAutoFocus={onMenuCloseAutoFocus}
-        />
+        {built.has('dropdown') ? (
+          <ChatRowDropdownMenuContent
+            target={target}
+            {...handlers}
+            onCloseAutoFocus={onMenuCloseAutoFocus}
+          />
+        ) : null}
       </DropdownMenu>
     </li>
   );
-}
+});
 
 // ── A folder group's header ───────────────────────────────────────────────
 
@@ -408,6 +476,8 @@ interface FolderHeaderProps {
 function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: FolderHeaderProps) {
   const key = folderKey(group);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The path tooltip, the two button labels and the menu are built when first shown.
+  const [built, buildOnOpen] = useBuiltOnOpen<'path' | 'newChatLabel' | 'moreLabel' | 'menu'>();
   const canStartChat =
     !group.isCrew && Boolean(group.workingDir) && Boolean(window.electron?.createChatWindow);
   // The path tooltip opens beside the header's toggle, whose right edge is where
@@ -441,7 +511,7 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
       data-menu-open={menuOpen || undefined}
       data-testid={`sidebar-folder-${group.key}`}
     >
-      <Tooltip delayDuration={CHAT_HOVER_CARD_DELAY_MS}>
+      <Tooltip delayDuration={CHAT_HOVER_CARD_DELAY_MS} onOpenChange={buildOnOpen('path')}>
         <TooltipTrigger asChild>
           <button
             type="button"
@@ -457,7 +527,7 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
             <span className="br-nav-row-label">{group.label}</span>
           </button>
         </TooltipTrigger>
-        {group.path ? (
+        {group.path && built.has('path') ? (
           <TooltipContent side="right" sideOffset={pathTooltipOffset}>
             {group.path}
           </TooltipContent>
@@ -465,7 +535,7 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
       </Tooltip>
       <div className="br-sidebar-actions">
         {canStartChat ? (
-          <Tooltip>
+          <Tooltip onOpenChange={buildOnOpen('newChatLabel')}>
             <TooltipTrigger asChild>
               <Button
                 type="button"
@@ -481,12 +551,19 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
                 <Plus className="size-4" aria-hidden />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{sidebarCopy.folder.newChat(group.label)}</TooltipContent>
+            {built.has('newChatLabel') ? (
+              <TooltipContent>{sidebarCopy.folder.newChat(group.label)}</TooltipContent>
+            ) : null}
           </Tooltip>
         ) : null}
         {group.workingDir ? (
-          <DropdownMenu onOpenChange={setMenuOpen}>
-            <Tooltip>
+          <DropdownMenu
+            onOpenChange={(open) => {
+              buildOnOpen('menu')(open);
+              setMenuOpen(open);
+            }}
+          >
+            <Tooltip onOpenChange={buildOnOpen('moreLabel')}>
               <TooltipTrigger asChild>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -503,17 +580,21 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent>{sidebarCopy.folder.moreActions(group.label)}</TooltipContent>
+              {built.has('moreLabel') ? (
+                <TooltipContent>{sidebarCopy.folder.moreActions(group.label)}</TooltipContent>
+              ) : null}
             </Tooltip>
-            <DropdownMenuContent
-              align="end"
-              className="w-56"
-              onCloseAutoFocus={keepFocusOffAfterPointerClose}
-            >
-              <DropdownMenuItem onSelect={() => void copyPath()}>
-                {sidebarCopy.folder.copyPath}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
+            {built.has('menu') ? (
+              <DropdownMenuContent
+                align="end"
+                className="w-56"
+                onCloseAutoFocus={keepFocusOffAfterPointerClose}
+              >
+                <DropdownMenuItem onSelect={() => void copyPath()}>
+                  {sidebarCopy.folder.copyPath}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            ) : null}
           </DropdownMenu>
         ) : null}
       </div>
@@ -575,8 +656,9 @@ export default function RecentChats({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const { diverge } = useDiverge();
 
+  // Kept per view while this list is held: switching back is a lookup (R-28).
   const arranged = useMemo(
-    () => arrangeSidebarChats(sessions, view, Date.now(), { homeDir }),
+    () => arrangeSidebarChatsCached(sessions, view, Date.now(), { homeDir }),
     [sessions, view, homeDir]
   );
 
@@ -624,22 +706,44 @@ export default function RecentChats({
     setHeld({ arrangement: holdArrangement(arranged, view), complete: listComplete });
   }, [holding, heldApplies, arranged, view, listComplete]);
 
-  // A view change re-renders the list at rest and fades it in from 0.6.
-  const [viewGeneration, setViewGeneration] = useState(0);
-  // R-28: how many lines the list draws; it grows as the list is scrolled.
-  const [renderBudget, setRenderBudget] = useState(SIDEBAR_RENDER_WINDOW);
-  const lastView = useRef(view);
-  useEffect(() => {
-    if (lastView.current.groupBy === view.groupBy && lastView.current.sortBy === view.sortBy) {
-      return;
+  // The list's own height (a ResizeObserver below keeps it): how many lines a
+  // view draws at first, and when the fill check runs again.
+  const [listHeight, setListHeight] = useState(0);
+
+  // A view change re-renders the list at rest and fades it in from 0.6, and
+  // draws again from the first lines (R-28: `renderBudget` is how many lines
+  // the list draws; it grows as the list is scrolled), only as many as the
+  // list shows plus an overscan. Both are decided while the new view RENDERS
+  // (vision V1-R2-2). Set from an effect, they landed one commit late: the new
+  // order was first drawn under the old key and the old budget, then every row
+  // was mounted a second time under the new key, so a switch paid for its rows
+  // twice (and once more for every line scrolled into view before it).
+  const viewKey = `${view.groupBy}/${view.sortBy}`;
+  const [drawn, setDrawn] = useState({ viewKey, generation: 0, budget: SIDEBAR_RENDER_WINDOW });
+  if (drawn.viewKey !== viewKey) {
+    setDrawn({
+      viewKey,
+      generation: drawn.generation + 1,
+      budget: sidebarRenderWindow(listHeight),
+    });
+  }
+  const viewGeneration = drawn.generation;
+  const renderBudget = drawn.budget;
+  const setRenderBudget = useCallback(
+    (next: number | ((budget: number) => number)) =>
+      setDrawn((current) => {
+        const budget = typeof next === 'function' ? next(current.budget) : next;
+        return budget === current.budget ? current : { ...current, budget };
+      }),
+    []
+  );
+  // A different arrangement starts from its top, not from wherever the last
+  // one had been scrolled to.
+  useLayoutEffect(() => {
+    if (viewGeneration > 0 && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
     }
-    lastView.current = view;
-    setViewGeneration((generation) => generation + 1);
-    setRenderBudget(SIDEBAR_RENDER_WINDOW);
-    // A different arrangement starts from its top, not from wherever the last
-    // one had been scrolled to.
-    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
-  }, [view]);
+  }, [viewGeneration]);
 
   const [collapsedFolders, , setFolderCollapsed] = useCollapsedFolders();
   const [expandedFolders, setExpandedFolders] = useState<ReadonlySet<string>>(new Set());
@@ -732,7 +836,7 @@ export default function RecentChats({
       if (needed !== null) setRenderBudget((budget) => Math.max(budget, needed));
       setEditing({ sessionId, draft: session.name.trim() || sidebarCopy.chats.untitled });
     },
-    [sessions, shown]
+    [sessions, shown, setRenderBudget]
   );
 
   // A chat deleted (here or in another window) while it is being renamed leaves
@@ -743,10 +847,10 @@ export default function RecentChats({
     }
   }, [editing, sessions]);
 
-  const finishRename = (sessionId: string) => {
+  const finishRename = useCallback((sessionId: string) => {
     focusAfterEdit.current = sessionId;
     setEditing(null);
-  };
+  }, []);
 
   // Ruling 16 (R-30): a person's own rename moves its chat AT ONCE, with the
   // pointer still over the list (vision V1-R2-4). The hold is there so a row
@@ -816,7 +920,7 @@ export default function RecentChats({
     const focused = document.activeElement;
     if (!focused || focused === document.body) row.focus({ preventScroll: true });
     scrollRowIntoView(container, row);
-  }, [reveal, windowed, shown, renderBudget]);
+  }, [reveal, windowed, shown, renderBudget, setRenderBudget]);
 
   // ⌘⌥R (Ctrl+Alt+R) renames the chat you are in, when its row is listed.
   useEffect(() => {
@@ -877,7 +981,7 @@ export default function RecentChats({
       if (windowCut) setRenderBudget((budget) => budget + SIDEBAR_RENDER_WINDOW_STEP);
       else if (hasMore && !isLoadingMore && !isLoadingAll) onLoadMore();
     },
-    [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore]
+    [windowCut, hasMore, isLoadingMore, isLoadingAll, onLoadMore, setRenderBudget]
   );
 
   // The list's own height, so the fill check below runs again when its box
@@ -886,7 +990,6 @@ export default function RecentChats({
   // Components collapses, or Chats opens: nothing then scrolls, so no scroll
   // event would ever ask for the next page, and every chat past the first ten
   // was out of reach of the sidebar.
-  const [listHeight, setListHeight] = useState(0);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return;
@@ -913,6 +1016,7 @@ export default function RecentChats({
     onLoadMore,
     sessions.length,
     listHeight,
+    setRenderBudget,
   ]);
 
   // The running rings pause off screen and while the window is hidden.
@@ -946,6 +1050,18 @@ export default function RecentChats({
     roving.containerRef.current = node;
   };
 
+  // The rows are memoized, so what the list hands them must keep its identity
+  // across renders (R-28): `onOpen` arrives as a new closure on every render of
+  // the sidebar, and the rename handlers read the latest list.
+  const openChat = useStableHandler(onOpen);
+  const startRenameRow = useStableHandler(startRename);
+  const commitRenameRow = useStableHandler(commitRename);
+  const divergeRow = useCallback((sessionId: string) => void diverge(sessionId), [diverge]);
+  const changeDraft = useCallback(
+    (draft: string) => setEditing((current) => (current ? { ...current, draft } : current)),
+    []
+  );
+
   const rowProps = (session: SessionSummary) => ({
     session,
     isActive: activeSessionId === session.id,
@@ -954,15 +1070,14 @@ export default function RecentChats({
     listShown: isExpanded && sidebarOpen,
     tabIndex: roving.tabIndexFor(chatKey(session.id)),
     onRowFocus: roving.onRowFocus,
-    onOpen,
-    onStartRename: startRename,
+    onOpen: openChat,
+    onStartRename: startRenameRow,
     onRequestDelete: setPendingDelete,
-    onDiverge: (sessionId: string) => void diverge(sessionId),
-    editing: editing?.sessionId === session.id ? { draft: editing.draft } : null,
-    onDraftChange: (draft: string) =>
-      setEditing((current) => (current ? { ...current, draft } : current)),
-    onCommitRename: (value: string) => commitRename(session.id, value),
-    onCancelRename: () => finishRename(session.id),
+    onDiverge: divergeRow,
+    editingDraft: editing?.sessionId === session.id ? editing.draft : null,
+    onDraftChange: changeDraft,
+    onCommitRename: commitRenameRow,
+    onCancelRename: finishRename,
   });
 
   const pendingTitle = pendingDelete ? pendingDelete.name.trim() || sidebarCopy.chats.untitled : '';

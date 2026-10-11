@@ -136,14 +136,25 @@ moves the chat at once; opening a chat moves no row).
 
 ### Drawing the list
 
-The list draws the first 60 lines of the arranged list (a header, a row and a "Show more" are one
-line each) and 120 more each time it is scrolled near its end; it asks the daemon for another page
-only when everything it holds is drawn. The whole list is still held and arranged, so the order is
-right; only drawing waits. Drawing every row of a 2,000-chat view took 2 to 4 s per change of Group
-by or Sort by in the development build (R-28), because a row is a context menu, a tooltip and a
-rename editor. The arithmetic is `windowSidebarRows` in `sidebarChatView.ts`, free of React.
+The list draws as many lines as it shows plus 12 (`sidebarRenderWindow`, at most 60, and 60 before
+the list has been measured; a header, a row and a "Show more" are one line each) and 120 more each
+time it is scrolled near its end; it asks the daemon for another page only when everything it holds
+is drawn. The whole list is still held and arranged, so the order is right; only drawing waits.
+Drawing every row of a 2,000-chat view took 2 to 4 s per change of Group by or Sort by in the
+development build (R-28), because a row is a context menu, a tooltip and a rename editor. The
+arithmetic is `windowSidebarRows` in `sidebarChatView.ts`, free of React.
 
-A view change starts again from the first 60 lines. A chat past the drawn lines (the current chat,
+A view switch costs what it mounts, so it mounts little (vision V1-R2-2: 300 to 370 ms in the
+development app). The switch is decided while the new view renders, so each drawn row mounts once.
+When it was set from an effect, the new order mounted under the old key first and then again under
+the new one. A row builds its hover card, its ⋯ label and its two menus the first time each opens,
+and a folder header its tooltips and menu; Radix mounts nothing for a closed one, but their elements
+were created on every render of every row. Rows are memoized with stable handlers, so the pointer
+entering the list or a keystroke in a rename re-renders no other row. Each view's arrangement is
+kept for as long as the list of chats is the same array (`arrangeSidebarChatsCached`, keyed by the
+view, the home folder and the calendar day), so switching back is a lookup.
+
+A view change starts again from the first lines. A chat past the drawn lines (the current chat,
 far down a name-sorted list) has no row until the list is scrolled to it, so the single Tab stop
 falls back to the first row, as it does when the current chat is on a page not yet read. `⌘⌥R` is
 the one entry point that cannot wait for a scroll: it draws the list up to the current chat's row
@@ -300,6 +311,7 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; the head re-read on a new open chat, on focus and on a meta change |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; the hold during a read giving way to the complete list when it lands, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
+| `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
