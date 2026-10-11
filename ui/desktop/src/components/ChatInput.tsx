@@ -479,6 +479,8 @@ export default function ChatInput({
       : globalSupportedInputMimeTypes;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
+  // Counts window lookups so only the newest one may settle (see loadProviderDetails).
+  const tokenLimitRequestRef = useRef(0);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
@@ -1349,6 +1351,18 @@ export default function ChatInput({
 
   // Load providers and get current model's token limit
   const loadProviderDetails = async () => {
+    // Only the newest lookup may settle the window. The composer mounts before
+    // the chat's row names its binding (run 1 measures the app's selected
+    // model, run 2 the chat's pinned one), and a person can change model twice
+    // quickly; an older run that finishes later is about a model this chat is
+    // no longer bound to, and the footer ring draws whatever window is marked
+    // loaded.
+    const request = ++tokenLimitRequestRef.current;
+    const settle = (limit: number, loaded: boolean) => {
+      if (request !== tokenLimitRequestRef.current) return;
+      setTokenLimit(limit);
+      setIsTokenLimitLoaded(loaded);
+    };
     try {
       // Reset token limit loaded state
       setIsTokenLimitLoaded(false);
@@ -1371,8 +1385,7 @@ export default function ChatInput({
         // chip correctly saying no model was chosen — a precise figure for a
         // model that does not exist. Zero is what the gauge renders its empty
         // state from.
-        setTokenLimit(0);
-        setIsTokenLimitLoaded(false);
+        settle(0, false);
         return;
       }
 
@@ -1386,8 +1399,7 @@ export default function ChatInput({
           const status = await llamacppStatus();
           const ctx = status.data?.sidecar?.context_size;
           if (typeof ctx === 'number' && ctx > 0) {
-            setTokenLimit(ctx);
-            setIsTokenLimitLoaded(true);
+            settle(ctx, true);
             return;
           }
         } catch (e) {
@@ -1399,8 +1411,7 @@ export default function ChatInput({
       const predefinedModels = getPredefinedModelsFromEnv();
       const predefinedModel = predefinedModels.find((m) => m.name === model);
       if (predefinedModel?.context_limit) {
-        setTokenLimit(predefinedModel.context_limit);
-        setIsTokenLimitLoaded(true);
+        settle(predefinedModel.context_limit, true);
         return;
       }
 
@@ -1412,8 +1423,7 @@ export default function ChatInput({
         // Find the model's token limit from the backend response
         const modelConfig = currentProvider.metadata.known_models.find((m) => m.name === model);
         if (modelConfig?.context_limit) {
-          setTokenLimit(modelConfig.context_limit);
-          setIsTokenLimitLoaded(true);
+          settle(modelConfig.context_limit, true);
           return;
         }
       }
@@ -1422,19 +1432,16 @@ export default function ChatInput({
       const modelLimit = await getModelLimits();
       const fallbackLimit = findModelLimit(model as string, modelLimit);
       if (fallbackLimit !== null) {
-        setTokenLimit(fallbackLimit);
-        setIsTokenLimitLoaded(true);
+        settle(fallbackLimit, true);
         return;
       }
 
       // If no match found, use the default model limit
-      setTokenLimit(TOKEN_LIMIT_DEFAULT);
-      setIsTokenLimitLoaded(true);
+      settle(TOKEN_LIMIT_DEFAULT, true);
     } catch (err) {
       console.error('Error loading providers or token limit:', err);
       // Set default limit on error
-      setTokenLimit(TOKEN_LIMIT_DEFAULT);
-      setIsTokenLimitLoaded(true);
+      settle(TOKEN_LIMIT_DEFAULT, true);
     }
   };
 
