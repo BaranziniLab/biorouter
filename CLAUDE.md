@@ -631,7 +631,14 @@ was removed to make it true:
   portals its count and actions into it (`PreviewBarMeta` / `PreviewBarActions`), and a layer
   that is fading out is wrapped in `PreviewBarGate` so it puts nothing into the bar. A tab that
   has been seen never shows a loading state again (`previewCacheRef`); a first load shows
-  nothing for 200ms, then `PreviewSkeleton`'s three lines.
+  nothing for 200ms, then `PreviewSkeleton`'s three lines. A `ui://` artifact's meta is its
+  transcript card's own word (Figure, Report, App; `artifactCardKind`), so the two never name
+  one thing differently. In the header, a file gets a `⋯` menu (Quote selection, Send a region to
+  the chat, Reveal in Finder); a figure, report, app or page would get a menu of one, so "Send a
+  region to the chat" is a Camera icon button in the menu's place (pressed while a region is
+  being picked, and a second press cancels). The one-item menu stays only where the action cannot
+  work, a `biorouter serve` browser (SD-8), because its visible reason is what says why. The tab
+  strip's edge fade is 32px.
 - **How each kind renders:** HTML → sandboxed `srcdoc` iframe; images → inline;
   directories → `DirectoryTreePreview`, a left rail holding a filter box and an
   expandable `role="tree"` (branch chip and per-entry status dots on a
