@@ -2142,10 +2142,21 @@ visible step in dark. On the dark canvas the transcript paints, the fill is 1.18
   between the bordered and the filled look, and forced colours draw a transparent border in the system ink.
 - On a recessed ground (the sidebar, `--background-muted`), rest on `--background-fill-strong`: the rest fill
   equals the muted value there (1.00:1, and 1.03:1 on the sidebar), the strong step is 1.10:1 and 1.12:1 off
-  them.
+  them. Put `.br-ground-recessed` on the ground itself (today the sidebar, first run, the Knowledge graph
+  canvas and pane header, and the page band) and the shared primitives on it take the strong step with no
+  class of their own; a filled button there hovers one deeper, on `--background-strong`.
 - A box never sits inside a box, so a fill never sits on a fill. A control inside a filled card (a field or
   a secondary button in an approval card) rests on `--background-default`, one step back toward the page, and
-  hovers on `--background-fill-strong`.
+  hovers on `--background-fill-strong`. `Card`, every `Note`, a dialog's inner panel and row, and a washed
+  list or settings row do this for their children already; a caller's own filled box adds `.br-fill-surface`.
+- Three private variables carry what a ground asks of the primitives on it: `--br-control-ground` (where a
+  field, the Select trigger, a secondary button, a `CopyField` or an empty-state tile rests),
+  `--br-control-hover` (where a filled button goes under the pointer) and `--br-track-ground` (the segmented
+  track and a neutral progress track, one step deeper than the ground, so a white thumb stays visible). They
+  are set by the grounds above, never at a call site, and are not shared tokens: the fills stay declared once
+  per mode. The table is in `docs/desktop-ui/shared-controls.md` ("Fills before lines").
+- A row list that reads apart by air and the hover wash drops its hairlines with `.br-rows-flat` on its shell;
+  forced colours draw the divider again, because they repaint the wash as Canvas.
 - A dark popover re-points `--background-default` to `--background-medium`, which equals the dark strong step;
   a field there rests on the fill as a quiet well, 1.13:1 below the popover ground, and
   `.dark .biorouter-popover-surface` re-points `--background-fill-strong` to `#1b1b19` so the hover step goes

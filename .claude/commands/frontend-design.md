@@ -55,12 +55,15 @@ Families are generated from `ui/desktop/themes/*.theme.mjs` by `npm run themes`.
 Fills come before lines (design.md 9.11). Write `bg-background-fill border border-transparent`, and
 `hover:bg-background-fill-strong` where it responds to the pointer: keep the 1px border transparent,
 never `border-0`, so nothing moves and forced colours still draw the edge. On the sidebar or a muted
-ground, rest on `bg-background-fill-strong`. A control inside a filled card rests on
-`bg-background-default`. Inside a dark popover the fill is a well under the lifted ground, its hover
+ground, rest on `bg-background-fill-strong`: put `.br-ground-recessed` on that ground and the shared
+controls on it follow. A control inside a filled card rests on `bg-background-default`; `Card`, `Note`
+and dialog panels do it for their children, and a filled box of your own adds `.br-fill-surface`.
+Inside a dark popover the fill is a well under the lifted ground, its hover
 step and the off switch track go deeper; the tokens re-point themselves, so write nothing special. Lines stay only on structural
 edges (the band edge, pane dividers, resize handles, rules inside a filled table) and on floating
 surfaces, which keep a hairline and a shadow.
-Row lists drop the hairline between rows when spacing and the hover fill separate them. Hairlines are
+Row lists drop the hairline between rows when spacing and the hover fill separate them
+(`.br-rows-flat` on the list's shell). Hairlines are
 straight: no `border-bottom` on a rounded row. Crew keeps its own recipes.
 
 | Token | Use |
