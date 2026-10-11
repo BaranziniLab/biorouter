@@ -22,7 +22,6 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use etcetera::AppStrategy;
 use serde::{Deserialize, Serialize};
 
 /// Cap on retained snapshots per file. Bounds RAM and the persisted JSON so a
@@ -157,9 +156,9 @@ fn undo_base_dir() -> Option<PathBuf> {
     if let Ok(root) = std::env::var("BIOROUTER_PATH_ROOT") {
         return Some(PathBuf::from(root).join("config").join("developer_undo"));
     }
-    etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
+    crate::paths::platform_dirs()
         .ok()
-        .map(|s| s.in_config_dir("developer_undo"))
+        .map(|dirs| dirs.config.join("developer_undo"))
 }
 
 /// A stable hash of the (canonicalized when possible) working directory, so

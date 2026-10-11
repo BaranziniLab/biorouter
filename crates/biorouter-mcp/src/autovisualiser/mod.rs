@@ -695,12 +695,11 @@ impl ServerHandler for AutoVisualiserRouter {
 #[tool_router(router = tool_router)]
 impl AutoVisualiserRouter {
     pub fn new() -> Self {
-        use etcetera::{choose_app_strategy, AppStrategy};
         // - macOS/Linux: ~/.cache/biorouter/autovisualiser/
-        // - Windows:     ~\AppData\Local\BaranziniLab\Biorouter\cache\autovisualiser\
-        let cache_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
+        // - Windows:     %LOCALAPPDATA%\UCSF\biorouter\cache\autovisualiser\
+        let cache_dir = crate::paths::platform_dirs()
             .unwrap()
-            .cache_dir()
+            .cache
             .join("autovisualiser");
         let _ = std::fs::create_dir_all(&cache_dir);
 

@@ -546,11 +546,10 @@ pub fn debug_dump(name: &str, html: &str) {
     if !enabled {
         return;
     }
-    let Ok(strategy) = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone()) else {
+    let Ok(dirs) = crate::paths::platform_dirs() else {
         return;
     };
-    use etcetera::AppStrategy;
-    let dir = strategy.cache_dir().join("autovisualiser");
+    let dir = dirs.cache.join("autovisualiser");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }

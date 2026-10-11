@@ -1,0 +1,88 @@
+{
+  "about": "The Windows app-folder rule (R-31), as one table both implementations run: crates/biorouter-mcp/src/app_folder/tests.rs and ui/desktop/src/utils/appFolder.test.ts. Each case builds `before` under an empty temporary base directory, runs the move once per entry of `runs` (writing the move marker, as for the roaming folder), and expects that outcome from each run, then the folder named by `resolves`, then every `exists` path present and every `absent` path missing. Path tokens: `current` is <base>/<APP_AUTHOR>/<APP_NAME>, `legacy` is <base>/<LEGACY_APP_AUTHOR>/<APP_NAME>, `currentParent` and `legacyParent` are their author folders, `lookalike` is <base>/<LEGACY_APP_AUTHOR>2/<APP_NAME>, and `marker` is the move marker's file name. A trailing slash in `before` makes an empty directory instead of a file. `renameFails` makes every rename attempt fail, as a file held open by another process does on Windows.",
+  "cases": [
+    {
+      "name": "a fresh install starts in the current folder and creates nothing yet",
+      "before": [],
+      "runs": ["fresh", "fresh"],
+      "resolves": "current",
+      "exists": [],
+      "absent": ["current", "legacy", "currentParent", "legacyParent"]
+    },
+    {
+      "name": "the legacy folder alone is moved whole, marker inside, and its emptied author folder removed",
+      "before": [
+        "legacy/config/config.yaml",
+        "legacy/data/sessions/sessions.db",
+        "legacy/data/logs/server/server.log"
+      ],
+      "runs": ["moved", "already-moved"],
+      "resolves": "current",
+      "exists": [
+        "current/config/config.yaml",
+        "current/data/sessions/sessions.db",
+        "current/data/logs/server/server.log",
+        "current/marker"
+      ],
+      "absent": ["legacy", "legacyParent"]
+    },
+    {
+      "name": "an author folder that also holds another app keeps it, and is not removed",
+      "before": ["legacy/config/config.yaml", "legacyParent/other-app/settings.json"],
+      "runs": ["moved"],
+      "resolves": "current",
+      "exists": ["current/config/config.yaml", "legacyParent/other-app/settings.json"],
+      "absent": ["legacy"]
+    },
+    {
+      "name": "the current folder alone is used as it is",
+      "before": ["current/config/config.yaml"],
+      "runs": ["already-moved"],
+      "resolves": "current",
+      "exists": ["current/config/config.yaml"],
+      "absent": ["legacy", "current/marker"]
+    },
+    {
+      "name": "when both exist the current folder wins and the legacy one is left untouched",
+      "before": ["legacy/config/config.yaml", "current/config/config.yaml"],
+      "runs": ["both-exist", "both-exist"],
+      "resolves": "current",
+      "exists": ["legacy/config/config.yaml", "current/config/config.yaml"],
+      "absent": ["legacy/marker", "current/marker"]
+    },
+    {
+      "name": "an empty legacy author folder an interrupted run left behind is tidied",
+      "before": ["current/config/config.yaml", "legacyParent/"],
+      "runs": ["already-moved"],
+      "resolves": "current",
+      "exists": ["current/config/config.yaml"],
+      "absent": ["legacyParent"]
+    },
+    {
+      "name": "a folder whose author only starts like the legacy one is never touched",
+      "before": ["lookalike/config/config.yaml"],
+      "runs": ["fresh"],
+      "resolves": "current",
+      "exists": ["lookalike/config/config.yaml"],
+      "absent": ["current", "currentParent"]
+    },
+    {
+      "name": "a refused rename keeps the legacy folder in use, with its marker for the next attempt",
+      "before": ["legacy/config/config.yaml"],
+      "renameFails": true,
+      "runs": ["move-failed", "move-failed"],
+      "resolves": "legacy",
+      "exists": ["legacy/config/config.yaml", "legacy/marker"],
+      "absent": ["current", "currentParent"]
+    },
+    {
+      "name": "a refused rename never removes a current author folder it did not create",
+      "before": ["legacy/config/config.yaml", "currentParent/other-app/settings.json"],
+      "renameFails": true,
+      "runs": ["move-failed"],
+      "resolves": "legacy",
+      "exists": ["legacy/config/config.yaml", "currentParent/other-app/settings.json"],
+      "absent": ["current"]
+    }
+  ]
+}

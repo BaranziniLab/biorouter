@@ -1,4 +1,3 @@
-use etcetera::{choose_app_strategy, AppStrategy};
 use reqwest::{Client, Url};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -310,8 +309,8 @@ impl Default for WebDocumentsServer {
 #[tool_router(router = tool_router)]
 impl WebDocumentsServer {
     pub fn new() -> Self {
-        let cache_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|strategy| strategy.in_cache_dir("computer_controller"))
+        let cache_dir = crate::paths::platform_dirs()
+            .map(|dirs| dirs.cache.join("computer_controller"))
             .unwrap_or_else(|_| std::env::temp_dir().join("biorouter-webdocuments"));
         let _ = fs::create_dir_all(&cache_dir);
         Self {

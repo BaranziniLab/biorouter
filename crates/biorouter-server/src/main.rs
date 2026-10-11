@@ -98,6 +98,10 @@ async fn async_main() -> anyhow::Result<()> {
     biorouter_mcp::run_shell_sandbox_helper_if_invoked();
     tune_allocator();
     let cli = Cli::parse();
+    // R-31: on Windows, move the app folder out of the one earlier releases
+    // used before logging creates its first directory there. Reported once
+    // logging is up (`report_once` beside each `setup_logging`).
+    biorouter_mcp::app_folder::ensure_moved();
 
     match cli.command {
         Commands::Agent { exit_with_parent } => {
@@ -105,6 +109,7 @@ async fn async_main() -> anyhow::Result<()> {
         }
         Commands::Mcp { server } => {
             logging::setup_logging(Some(&format!("mcp-{}", server.name())))?;
+            biorouter_mcp::app_folder::report_once();
             match server {
                 McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,
                 McpCommand::ComputerController => serve(ComputerControllerServer::new()).await?,

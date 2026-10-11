@@ -352,6 +352,7 @@ fn response_compression() -> CompressionLayer<impl Predicate> {
 
 pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
+    biorouter_mcp::app_folder::report_once();
 
     // Opt-in: only `biorouter serve` passes the flag. See `watch_parent`.
     let orphaned = match exit_with_parent {

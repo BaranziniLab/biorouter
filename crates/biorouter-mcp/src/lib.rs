@@ -3,14 +3,19 @@ use once_cell::sync::Lazy;
 use rmcp::{ServerHandler, ServiceExt};
 use std::collections::HashMap;
 
+/// The one `AppStrategyArgs` in the workspace. On Windows its author and app
+/// name are the folder `%APPDATA%\UCSF\biorouter`; XDG ignores the author.
+/// `biorouter::config::Paths` resolves through this crate too (via
+/// [`paths::platform_dirs`]), so there is no second tuple to drift.
 pub static APP_STRATEGY: Lazy<AppStrategyArgs> = Lazy::new(|| AppStrategyArgs {
     top_level_domain: "edu".to_string(),
-    author: "Block".to_string(),
-    app_name: "biorouter".to_string(),
+    author: app_folder::APP_AUTHOR.to_string(),
+    app_name: app_folder::APP_NAME.to_string(),
 });
 
 pub mod active_work;
 pub mod agent_drafter;
+pub mod app_folder;
 pub mod autovisualiser;
 pub mod compute_server;
 pub mod computer_use;

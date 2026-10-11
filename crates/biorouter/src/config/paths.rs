@@ -1,4 +1,3 @@
-use etcetera::{choose_app_strategy, AppStrategy, AppStrategyArgs};
 use std::path::PathBuf;
 
 pub struct Paths;
@@ -23,17 +22,16 @@ impl Paths {
                 DirType::State => base.join("state"),
             }
         } else {
-            let strategy = choose_app_strategy(AppStrategyArgs {
-                top_level_domain: "edu".to_string(),
-                author: "Block".to_string(),
-                app_name: "biorouter".to_string(),
-            })
-            .expect("biorouter requires a home dir");
+            // The one app-strategy tuple lives in `biorouter-mcp`, and so does
+            // the Windows move out of the folder earlier releases used (R-31):
+            // `platform_dirs` runs it once per process before answering.
+            let dirs =
+                biorouter_mcp::paths::platform_dirs().expect("biorouter requires a home dir");
 
             match dir_type {
-                DirType::Config => strategy.config_dir(),
-                DirType::Data => strategy.data_dir(),
-                DirType::State => strategy.state_dir().unwrap_or(strategy.data_dir()),
+                DirType::Config => dirs.config,
+                DirType::Data => dirs.data,
+                DirType::State => dirs.state.unwrap_or(dirs.data),
             }
         }
     }
