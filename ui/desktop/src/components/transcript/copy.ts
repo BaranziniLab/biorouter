@@ -129,6 +129,8 @@ export const transcriptCopy = {
   /** The subagent line at the top of a delegated subagent's chat. */
   subagent: {
     of: 'Subagent of',
+    /** The parent link's words when the parent's row holds no name or cannot be read. */
+    parentFallback: 'another chat',
     context: 'Context',
     stop: 'Stop',
     stopLabel: 'Stop subagent',

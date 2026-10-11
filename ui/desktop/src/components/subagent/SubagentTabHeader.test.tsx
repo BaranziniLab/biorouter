@@ -1,6 +1,28 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { Session } from '../../api';
+
+const mocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  getCachedSessionList: vi.fn((): Session[] | null => null),
+}));
+
+vi.mock('../../api', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, getSession: mocks.getSession };
+});
+vi.mock('../../utils/sessionListCache', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, getCachedSessionList: mocks.getCachedSessionList };
+});
+vi.mock('../../utils/userAction', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }) };
+});
+
 import { SubagentTabHeader } from './SubagentTabHeader';
+import { announceSessionName } from '../../utils/sessionNameSync';
 import { GUARDRAIL_FRAME_CLOSE, GUARDRAIL_FRAME_OPEN } from '../../utils/guardrailFrame';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_STOP_NEEDS_DESKTOP_HELP } from './subagentReadOnly';
@@ -132,10 +154,107 @@ describe('SubagentTabHeader', () => {
     expect(props.onOpenParent).toHaveBeenCalledOnce();
   });
 
-  it('falls back to the parent session id when the parent has no name yet', () => {
-    render(<SubagentTabHeader {...props} parentSessionName={undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'parent-1' }));
-    expect(props.onOpenParent).toHaveBeenCalledOnce();
+  it('reads nothing when the caller already names the parent', () => {
+    render(<SubagentTabHeader {...props} />);
+    expect(mocks.getSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Vision V2-R2-2: the line read "Subagent of 20260828_5" while the parent was
+   * "Creating exposome_studies knowledge base". BaseChat passes no name, and the
+   * link fell back to the id. Principle 10: a name on the line, the id only in
+   * its tooltip.
+   */
+  describe('names the parent itself when no name is passed (V2-R2-2)', () => {
+    const PARENT_NAME = 'Creating exposome_studies knowledge base';
+    const unnamed = { ...props, parentSessionName: undefined };
+    const line = () => screen.getByTestId('subagent-header-child-1');
+
+    beforeEach(() => {
+      mocks.getSession.mockReset();
+      mocks.getCachedSessionList.mockReset();
+      mocks.getCachedSessionList.mockReturnValue(null);
+    });
+
+    it("reads the parent's row (metadata only, with the proof) and links its name", async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: PARENT_NAME });
+      expect(line()).toHaveTextContent(`${copy.of}${PARENT_NAME}`);
+      expect(line()).not.toHaveTextContent('parent-1');
+      expect(mocks.getSession).toHaveBeenCalledOnce();
+      expect(mocks.getSession).toHaveBeenCalledWith({
+        path: { session_id: 'parent-1' },
+        query: { metadata_only: true },
+        headers: { 'X-User-Action': 'test-key' },
+      });
+      fireEvent.click(link);
+      expect(props.onOpenParent).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the id in the link tooltip', async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: PARENT_NAME });
+      await userEvent.setup().tab();
+      expect(link).toHaveFocus();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('parent-1');
+    });
+
+    it('takes the name from the chat list when it holds the parent, with no read', () => {
+      mocks.getCachedSessionList.mockReturnValue([
+        { id: 'parent-1', name: PARENT_NAME } as Session,
+      ]);
+      render(<SubagentTabHeader {...unnamed} />);
+      expect(screen.getByRole('button', { name: PARENT_NAME })).toBeInTheDocument();
+      expect(mocks.getSession).not.toHaveBeenCalled();
+    });
+
+    it('shows no stand-in while the read is out, and never the id', () => {
+      mocks.getSession.mockReturnValue(new Promise(() => {}));
+      render(<SubagentTabHeader {...unnamed} />);
+      expect(screen.queryByText(copy.of)).toBeNull();
+      expect(line()).not.toHaveTextContent('parent-1');
+      // The rest of the line is already there.
+      expect(screen.getByText('2 extensions')).toBeInTheDocument();
+    });
+
+    it('says "another chat" when the row cannot be read, still linking the parent', async () => {
+      mocks.getSession.mockRejectedValue(new Error('403'));
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: copy.parentFallback });
+      expect(line()).not.toHaveTextContent('parent-1');
+      fireEvent.click(link);
+      expect(props.onOpenParent).toHaveBeenCalledOnce();
+    });
+
+    it('follows a rename of the parent', async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      await screen.findByRole('button', { name: PARENT_NAME });
+      act(() =>
+        announceSessionName({
+          sessionId: 'parent-1',
+          name: 'Exposome studies',
+          userSetName: true,
+          origin: 'user',
+        })
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Exposome studies' })).toBeInTheDocument()
+      );
+    });
+
+    it("never shows a previous parent's name on a rebound line", async () => {
+      mocks.getSession.mockImplementation(async ({ path }: { path: { session_id: string } }) => ({
+        data: { id: path.session_id, name: `Name of ${path.session_id}` },
+      }));
+      const { rerender } = render(<SubagentTabHeader {...unnamed} />);
+      await screen.findByRole('button', { name: 'Name of parent-1' });
+      mocks.getSession.mockReturnValue(new Promise(() => {}));
+      rerender(<SubagentTabHeader {...unnamed} parentSessionId="parent-2" />);
+      expect(screen.queryByRole('button', { name: 'Name of parent-1' })).toBeNull();
+    });
   });
 
   it('offers no spawn-context disclosure when there is no record to disclose', () => {

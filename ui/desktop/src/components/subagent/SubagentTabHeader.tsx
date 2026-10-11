@@ -21,6 +21,7 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { InfoTip } from '../ui/info-tip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { ChevronRight } from '../icons/app-icons';
 import { transcriptCopy } from '../transcript/copy';
 import { unwrapGuardrailFrame } from '../../utils/guardrailFrame';
@@ -29,6 +30,7 @@ import {
   SUBAGENT_STOP_NEEDS_DESKTOP_HELP,
   subagentTabReadOnlyReason,
 } from './subagentReadOnly';
+import { useParentChatName } from './useParentChatName';
 
 const copy = transcriptCopy.subagent;
 
@@ -72,6 +74,16 @@ export function SubagentTabHeader({
   const [expanded, setExpanded] = useState(false);
   const spawnContextId = `subagent-spawn-context-${sessionId}`;
   const stopUnavailable = subagentTabReadOnlyReason();
+  // ⚠ The parent is named by its NAME, never its id (principle 10, vision
+  // V2-R2-2): the line read "Subagent of 20260828_5" because no caller passed
+  // a name and the link fell back to the id. A caller may still pass one; when
+  // none comes, the line looks it up itself. Until the lookup answers, the
+  // link waits rather than showing a stand-in that then changes under the
+  // reader; when it answers without a name, the link says "another chat". The
+  // id stays reachable in the link's tooltip.
+  const lookup = useParentChatName(parentSessionName ? undefined : parentSessionId);
+  const parentLabel =
+    parentSessionName ?? lookup.name ?? (lookup.settled ? copy.parentFallback : undefined);
   return (
     <Collapsible
       open={expanded && !!spawnContext}
@@ -97,18 +109,26 @@ export function SubagentTabHeader({
         data-testid={`subagent-header-${sessionId}`}
       >
         {/* The tab strip already badges this tab as a subagent; this line says
-            whose. The parent's name is the link back to it. */}
-        <span className="flex min-w-0 items-center gap-1">
-          <span className="flex-none">{copy.of}</span>
-          <Button
-            type="button"
-            variant="link"
-            className="h-auto min-w-0 truncate px-0 text-secondary"
-            onClick={onOpenParent}
-          >
-            {parentSessionName ?? parentSessionId}
-          </Button>
-        </span>
+            whose. The parent's name is the link back to it, and its tooltip
+            holds the parent's id, the one place the id is shown. */}
+        {parentLabel !== undefined && (
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="flex-none">{copy.of}</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="link"
+                  className="h-auto min-w-0 truncate px-0 text-secondary"
+                  onClick={onOpenParent}
+                >
+                  {parentLabel}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="font-mono">{parentSessionId}</TooltipContent>
+            </Tooltip>
+          </span>
+        )}
         {extensions.length > 0 && (
           <GrantCount label={copy.extensions(extensions.length)} names={extensions} />
         )}
