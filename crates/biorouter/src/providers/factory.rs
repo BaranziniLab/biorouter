@@ -561,7 +561,7 @@ pub(crate) mod tests {
             ),
             (
                 "ollama",
-                "Local: `self_hosted_affiliation` on the resolved OLLAMA_HOST",
+                "Local: `self_hosted_affiliation` on the resolved OLLAMA_HOST, or none for an Ollama cloud model",
             ),
             (
                 "versa_azure",
@@ -647,7 +647,7 @@ pub(crate) mod tests {
             ),
             (
                 "ollama",
-                "private: a self-hosted server on this machine; an OLLAMA_HOST off it demotes the instance",
+                "private: a self-hosted server on this machine; an OLLAMA_HOST off it, or an Ollama cloud model, demotes the instance",
             ),
             (
                 "versa_azure",

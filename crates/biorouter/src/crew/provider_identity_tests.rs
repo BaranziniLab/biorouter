@@ -119,9 +119,9 @@ impl Device {
 
 #[tokio::test]
 async fn a_llama_server_grant_holds_once_the_server_reports_its_real_window() {
-    // `gemma4-12b` is the model a 64 GiB Mac is offered first; the model table gives it
-    // 262k, and the sidecar allocates half that.
-    let llama = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4-12b"));
+    // `qwen3.8-27b` is the model every machine is offered first; the model table gives it
+    // 262k, and the sidecar allocates half that (128k at 48 GiB and up).
+    let llama = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("qwen3.8-27b"));
     let device = Device::new(&llama).await;
     let before = llama.get_model_config().context_limit;
     let whole_binding = legacy_provider_binding(&llama);
@@ -142,7 +142,7 @@ async fn a_llama_server_grant_holds_once_the_server_reports_its_real_window() {
         .expect("the grant still binds the same model on the same server");
 
     // Another model on the same server is another boundary.
-    let other = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4"));
+    let other = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4-31b"));
     let refused = device.check(&other).await.unwrap_err();
     assert_eq!(refused.to_string(), REBOUND);
     // W2-DMN-10: a deliberate refusal a route answers as 409 `crew_model_fixed`, never the
@@ -229,7 +229,7 @@ async fn quick_and_deep_turns_keep_the_grants_model_boundary() {
 /// granted a moment before it, and it still refuses any other.
 #[tokio::test]
 async fn a_grant_recorded_under_the_whole_binding_still_binds() {
-    let llama = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4-12b"));
+    let llama = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("qwen3.8-27b"));
     let device = Device::new(&llama).await;
     device
         .crew
@@ -241,7 +241,7 @@ async fn a_grant_recorded_under_the_whole_binding_still_binds() {
         .unwrap()
         .provider_binding = legacy_provider_binding(&llama);
     device.check(&llama).await.unwrap();
-    let other = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4"));
+    let other = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4-31b"));
     assert_eq!(device.check(&other).await.unwrap_err().to_string(), REBOUND);
 }
 
@@ -249,9 +249,9 @@ async fn a_grant_recorded_under_the_whole_binding_still_binds() {
 /// it, and each thing that decides where the context goes does.
 #[test]
 fn the_identity_moves_only_with_what_decides_where_the_context_goes() {
-    let base = || LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4-12b"));
+    let base = || LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("qwen3.8-27b"));
     let identity = provider_binding(&base());
-    let mut per_turn = ModelConfig::new_or_fail("gemma4-12b");
+    let mut per_turn = ModelConfig::new_or_fail("qwen3.8-27b");
     per_turn.context_limit = Some(8_192);
     per_turn.temperature = Some(0.2);
     per_turn.max_tokens = Some(512);
@@ -261,12 +261,12 @@ fn the_identity_moves_only_with_what_decides_where_the_context_goes() {
         identity
     );
 
-    let mut fast = ModelConfig::new_or_fail("gemma4-12b");
-    fast.fast_model = Some("gemma4".into());
-    let mut toolshim = ModelConfig::new_or_fail("gemma4-12b");
+    let mut fast = ModelConfig::new_or_fail("qwen3.8-27b");
+    fast.fast_model = Some("gemma4-31b".into());
+    let mut toolshim = ModelConfig::new_or_fail("qwen3.8-27b");
     toolshim.toolshim = true;
-    toolshim.toolshim_model = Some("qwen3.6".into());
-    for boundary in [ModelConfig::new_or_fail("gemma4"), fast, toolshim] {
+    toolshim.toolshim_model = Some("qwen3.8:27b".into());
+    for boundary in [ModelConfig::new_or_fail("gemma4-31b"), fast, toolshim] {
         assert_ne!(
             provider_binding(&LlamaCppProvider::managed_for_test(boundary.clone())),
             identity,

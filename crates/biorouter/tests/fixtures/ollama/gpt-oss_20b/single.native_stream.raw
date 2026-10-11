@@ -1,0 +1,14 @@
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.76061Z","message":{"role":"assistant","content":"","thinking":"We"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.779426Z","message":{"role":"assistant","content":"","thinking":" need"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.800129Z","message":{"role":"assistant","content":"","thinking":" to"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.822036Z","message":{"role":"assistant","content":"","thinking":" list"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.843053Z","message":{"role":"assistant","content":"","thinking":" files"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.865603Z","message":{"role":"assistant","content":"","thinking":" in"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.886345Z","message":{"role":"assistant","content":"","thinking":" /"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.906571Z","message":{"role":"assistant","content":"","thinking":"tmp"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.926007Z","message":{"role":"assistant","content":"","thinking":"."},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.945927Z","message":{"role":"assistant","content":"","thinking":" Use"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.964839Z","message":{"role":"assistant","content":"","thinking":" shell"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:02.984121Z","message":{"role":"assistant","content":"","thinking":" tool"},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:03.004235Z","message":{"role":"assistant","content":"","thinking":"."},"done":false}
+{"model":"gpt-oss:20b","created_at":"2026-10-10T18:50:03.577557Z","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_ill25vo2","function":{"index":0,"name":"developer__shell","arguments":{"command":"ls -la /tmp"}}}]},"done":true,"done_reason":"stop","total_duration":1460419917,"load_duration":16924334,"prompt_eval_count":391,"prompt_eval_cached_count":0,"prompt_eval_duration":567069000,"eval_count":43,"eval_duration":868891000}

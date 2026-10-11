@@ -1,0 +1,33 @@
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.110448Z","message":{"role":"assistant","content":"I"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.143674Z","message":{"role":"assistant","content":" will"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.18298Z","message":{"role":"assistant","content":" list"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.215656Z","message":{"role":"assistant","content":" the"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.252219Z","message":{"role":"assistant","content":" files"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.289071Z","message":{"role":"assistant","content":" in"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.326565Z","message":{"role":"assistant","content":" /"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.360441Z","message":{"role":"assistant","content":"tmp"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.385093Z","message":{"role":"assistant","content":" using"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.449992Z","message":{"role":"assistant","content":" the"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.495265Z","message":{"role":"assistant","content":" shell"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.547783Z","message":{"role":"assistant","content":" tool"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.606109Z","message":{"role":"assistant","content":".\n\n"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.664246Z","message":{"role":"assistant","content":"{\""},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.703132Z","message":{"role":"assistant","content":"name"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.757549Z","message":{"role":"assistant","content":"\":"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.819041Z","message":{"role":"assistant","content":" \""},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.862248Z","message":{"role":"assistant","content":"developer"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.917288Z","message":{"role":"assistant","content":"__"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:05.973645Z","message":{"role":"assistant","content":"shell"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.039946Z","message":{"role":"assistant","content":"\","},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.074996Z","message":{"role":"assistant","content":" \""},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.147154Z","message":{"role":"assistant","content":"parameters"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.213242Z","message":{"role":"assistant","content":"\":"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.255258Z","message":{"role":"assistant","content":" {\""},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.307958Z","message":{"role":"assistant","content":"command"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.363899Z","message":{"role":"assistant","content":"\":"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.428751Z","message":{"role":"assistant","content":" \""},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.470308Z","message":{"role":"assistant","content":"ls"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.522619Z","message":{"role":"assistant","content":" /"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.579747Z","message":{"role":"assistant","content":"tmp"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.617242Z","message":{"role":"assistant","content":"\"}}"},"done":false}
+{"model":"llama3.1:8b","created_at":"2026-10-10T18:49:06.668959Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":1691044375,"load_duration":6810500,"prompt_eval_count":889,"prompt_eval_cached_count":858,"prompt_eval_duration":121581000,"eval_count":33,"eval_duration":1559198000}

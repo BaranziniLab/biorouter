@@ -1200,7 +1200,13 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
         main_calls: AtomicUsize::new(0),
         overflow_on: Vec::new(),
         window: Duration::from_millis(400),
-        context_limit: 100,
+        // Not a tiny window: the compaction check distrusts a reported usage
+        // below the fewest tokens the request can occupy, and skips compaction
+        // when the system prompt and tools ALONE are over the threshold
+        // (`context_mgmt::check_if_compaction_needed`). A 100-token window with
+        // 95 reported was both, so this turn never compacted and the test
+        // stopped at its "proved nothing" guard.
+        context_limit: 100_000,
         session_id: OnceLock::new(),
         payloads: Mutex::new(Vec::new()),
     });
@@ -1224,6 +1230,11 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
         .update_provider(Arc::clone(&provider) as Arc<dyn Provider>, &session.id)
         .await
         .unwrap();
+    // A short system prompt, so the seeded history is a real share of the
+    // request and compacting it can bring the request under the threshold.
+    agent
+        .override_system_prompt("You are a test agent.".to_string())
+        .await;
 
     // Enough history, and a live gauge close enough to the limit, that
     // `reply()` auto-compacts before its first model call.
@@ -1236,7 +1247,7 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
             .unwrap();
     }
     sm.update(&session.id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(95_000))
         .apply()
         .await
         .unwrap();

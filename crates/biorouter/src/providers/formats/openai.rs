@@ -69,6 +69,27 @@ struct Delta {
     /// DeepSeek/Moonshot-style thinking deltas (a plain string), distinct
     /// from OpenRouter's structured `reasoning_details` blocks above.
     reasoning_content: Option<String>,
+    /// The same thinking under the name Ollama's `/v1` (and newer vLLM) use:
+    /// measured on Ollama 0.40.2, every thinking chunk is
+    /// `{"content":"","reasoning":"…"}` and `reasoning_content` never appears.
+    ///
+    /// ⚠ A separate field, NOT `#[serde(alias = "reasoning")]` on the one
+    /// above: an alias makes a chunk carrying BOTH names a duplicate-field
+    /// error, which fails the whole stream as an invalid chunk. `Value` rather
+    /// than `String` for the same reason — a host that sends an object here
+    /// must not fail a chunk this decoder only ever reads strings from.
+    reasoning: Option<Value>,
+}
+
+impl Delta {
+    /// This delta's thinking text under either name; `reasoning_content` wins
+    /// when a host sends both.
+    fn reasoning_text(&self) -> Option<&str> {
+        self.reasoning_content
+            .as_deref()
+            .or_else(|| self.reasoning.as_ref().and_then(Value::as_str))
+            .filter(|text| !text.is_empty())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -85,6 +106,64 @@ struct StreamingChunk {
     id: Option<String>,
     usage: Option<Value>,
     model: Option<String>,
+    /// llama-server's prefill progress (`return_progress: true`), carrying
+    /// `{"total","cache","processed","time_ms"}`. It carries no text and no
+    /// usage, so it is consumed here and never yielded — a 40k-token local
+    /// prefill sends dozens of them.
+    prompt_progress: Option<Value>,
+}
+
+impl Delta {
+    /// A delta that says nothing: no text, no thinking, no tool call. A bare
+    /// `role` does not count — b11429 stamps `"role":"assistant"` on frames
+    /// that carry nothing else.
+    fn is_empty(&self) -> bool {
+        self.content.as_deref().is_none_or(str::is_empty)
+            && self.tool_calls.as_ref().is_none_or(Vec::is_empty)
+            && self.reasoning_details.as_ref().is_none_or(Vec::is_empty)
+            && self.reasoning_text().is_none()
+    }
+}
+
+impl StreamingChunk {
+    /// A llama-server prefill-progress frame and nothing else.
+    ///
+    /// ⚠ Not "`choices` is empty". The pinned b11429 sends every progress
+    /// frame as `{"choices":[{"index":0,"finish_reason":null,"delta":
+    /// {"role":"assistant","content":null}}],…,"prompt_progress":{…}}` (recorded
+    /// in `llamacpp.rs`'s `b11429_progress_frames_decode_to_nothing`), so the
+    /// earlier `choices.is_empty()` test never matched a real frame. Those
+    /// frames still decoded to nothing — by luck, through the generic path's
+    /// "no text, no usage" fall-through — but they also set the reply's id
+    /// from a frame that is not part of the reply, and this branch was dead.
+    fn is_progress_only(&self) -> bool {
+        self.prompt_progress.as_ref().is_some_and(|p| !p.is_null())
+            && self.usage.is_none()
+            && self
+                .choices
+                .iter()
+                .all(|choice| choice.finish_reason.is_none() && choice.delta.is_empty())
+    }
+}
+
+/// A llama-server overflow reported INSIDE a stream, as the context-length
+/// error the agent's compaction ladder recovers from. Built from the two
+/// numbers only, so — like every other in-stream error here — nothing the
+/// provider wrote is echoed.
+fn in_stream_context_overflow(error: &Value) -> Option<ProviderError> {
+    if error.get("type").and_then(Value::as_str) != Some("exceed_context_size_error") {
+        return None;
+    }
+    let prompt = error.get("n_prompt_tokens").and_then(Value::as_u64);
+    let window = error.get("n_ctx").and_then(Value::as_u64);
+    Some(ProviderError::ContextLengthExceeded(
+        match (prompt, window) {
+            (Some(prompt), Some(window)) => {
+                crate::providers::utils::context_overflow_message(prompt, window)
+            }
+            _ => "the request exceeds the available context size".to_string(),
+        },
+    ))
 }
 
 fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
@@ -95,7 +174,16 @@ fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
             error.column()
         )
     })?;
-    if value.get("error").is_some_and(|error| !error.is_null()) {
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        if let Some(overflow) = in_stream_context_overflow(error) {
+            return Err(overflow.into());
+        }
+        if error.get("code").and_then(Value::as_u64) == Some(500)
+            && error.get("type").and_then(Value::as_str) == Some("server_error")
+            && error.get("message").and_then(Value::as_str) == Some("Compute error.")
+        {
+            return Err(ProviderError::ServerError("Compute error.".into()).into());
+        }
         return Err(ProviderError::RequestFailed(
             "Provider reported an error while streaming. Contact your provider administrator."
                 .into(),
@@ -148,6 +236,14 @@ fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
                 choice["delta"] = json!({});
             }
         }
+    }
+    // A prefill-progress frame is a frame with nothing to decode, whichever way
+    // a build spells "no choices"; reading a missing `choices` as `[]` only for
+    // it keeps every other choice-less frame the hard error it was.
+    if value.get("prompt_progress").is_some_and(|p| !p.is_null())
+        && value.get("choices").is_none_or(Value::is_null)
+    {
+        value["choices"] = json!([]);
     }
     // Serde's type errors can echo provider-controlled strings, including prompt
     // data. Do not include the raw payload or deserializer message in UI errors.
@@ -465,11 +561,14 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
     // errors without it mid tool-loop) can restore it via
     // `add_reasoning_content_to_request`; for everyone else it is an inert
     // extra key. Mirrors `formats::openrouter::response_to_message`.
-    if let Some(reasoning) = original
-        .get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    // Ollama's `/v1` names the same field `message.reasoning` (measured,
+    // 0.40.2), so it is read as the fallback.
+    if let Some(reasoning) = ["reasoning_content", "reasoning"].iter().find_map(|key| {
+        original
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    }) {
         for item in &mut content {
             if let MessageContent::ToolRequest(req) = item {
                 let mut meta = req.metadata.clone().unwrap_or_default();
@@ -605,9 +704,11 @@ pub fn add_reasoning_content_to_request(
 /// (so [`Usage::billed_total`] is a plain sum), we subtract the cached count
 /// back out of `input_tokens` and record it in `cache_read_input_tokens`.
 /// OpenAI has no separate cache-write step, so `cache_creation` stays `None`.
-/// `total_tokens` (prompt + completion) is unchanged. Providers that omit
-/// `cached_tokens` (Ollama, most local servers) get `input_tokens = prompt`
-/// and no cache buckets.
+/// `total_tokens` (prompt + completion) is unchanged. A host that omits
+/// `cached_tokens` gets `input_tokens = prompt` and no cache buckets. (This
+/// once named Ollama as such a host. It is not: Ollama 0.40.2's `/v1` sends
+/// `prompt_tokens_details.cached_tokens` — measured, OLL-22 — and a bug
+/// report's `cache_read_input_tokens: 4` was Ollama's kept prompt prefix.)
 pub fn get_usage(usage: &Value) -> Usage {
     let prompt_tokens = usage
         .get("prompt_tokens")
@@ -697,9 +798,105 @@ fn strip_data_prefix(line: &str) -> Option<&str> {
     line.strip_prefix("data:").map(|s| s.trim())
 }
 
-#[allow(clippy::too_many_lines)]
+/// Whether the streaming decoder shows a host's plain-string thinking
+/// (`reasoning_content` / `reasoning`) as a [`MessageContent::Thinking`] block,
+/// or only captures it onto tool-request metadata for replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningDisplay {
+    /// Capture only — what every provider gets from
+    /// [`response_to_streaming_message`].
+    CaptureOnly,
+    /// Capture, and also yield the thinking as unsigned `Thinking` blocks while
+    /// it streams: batched (see [`THINKING_FLUSH_INTERVAL`]), each batch under
+    /// the reply's id, and the rest of a phase flushed before the answer or the
+    /// tool call it led to.
+    Surface,
+}
+
+/// How often streamed thinking is handed on while a reasoning phase lasts.
+///
+/// Measured before this existed (llama-server b11429, 2026-10-10): the whole
+/// phase left this decoder as one block when it ENDED — 4.3 s into a 4.4 s
+/// Qwen3.8 turn, 16.0 s into a 16 s Gemma 4 turn. The same values as the
+/// native Ollama decoder's (`formats::ollama`), so both local providers hand
+/// thinking on at the same cadence.
+///
+/// ⚠ This is the PROVIDER's cadence, not what a person sees. No client merges
+/// same-id thinking items yet — the desktop renders none and restarts its
+/// elapsed timer on every message, the CLI hides its spinner on every message —
+/// so the agent's stream wrapper holds the batches and shows one block per
+/// phase when it ends (`agents::reply_parts::HeldThinking`). That hold is the
+/// one thing to delete once the clients accumulate; this decoder needs no
+/// change for the batches to become live progress.
+pub(crate) const THINKING_FLUSH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(250);
+/// …or as soon as this many bytes of thinking are waiting, whichever is first.
+pub(crate) const THINKING_FLUSH_CHARS: usize = 400;
+
+/// Whether `pending` thinking should be handed on now rather than held for the
+/// end of its phase.
+fn thinking_flush_due(pending: &str, last_flush: std::time::Instant) -> bool {
+    !pending.is_empty()
+        && (pending.len() >= THINKING_FLUSH_CHARS
+            || last_flush.elapsed() >= THINKING_FLUSH_INTERVAL)
+}
+
+/// One unsigned thinking block for everything `pending` holds, emptying it.
+///
+/// Batched rather than one block per delta, deliberately: a per-token block
+/// would push thousands of one-word messages through the agent's stream for one
+/// phase. (`Conversation::push` merges same-id TEXT deltas but appends every
+/// other content item, and the CLI prints a "Thinking:" header per block, so
+/// none of them may reach a client unmerged; see [`THINKING_FLUSH_INTERVAL`].)
+fn take_thinking(pending: &mut String, id: Option<&String>) -> Option<Message> {
+    if pending.is_empty() {
+        return None;
+    }
+    let mut message = Message::new(
+        Role::Assistant,
+        chrono::Utc::now().timestamp(),
+        vec![MessageContent::thinking(std::mem::take(pending), "")],
+    );
+    if let Some(id) = id {
+        message = message.with_id(id.clone());
+    }
+    Some(message)
+}
+
 pub fn response_to_streaming_message<S>(
+    stream: S,
+) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    decode_streaming_message(stream, ReasoningDisplay::CaptureOnly)
+}
+
+/// [`response_to_streaming_message`], plus the host's thinking shown as an
+/// unsigned [`MessageContent::Thinking`] block before the answer (or before
+/// the tool call) it led to.
+///
+/// Opt-in per provider, not the default, because a formatter that REPLAYS
+/// thinking would send these back: Databricks' turns an unsigned `Thinking`
+/// into a `reasoning` item, and this decoder serves Databricks too. It is
+/// safe for a provider whose own request formatter drops `Thinking` (this
+/// module's `format_messages` does) — the local OpenAI-compatible servers,
+/// where minutes of thinking used to be invisible (OLL-07).
+pub fn response_to_streaming_message_showing_reasoning<S>(
+    stream: S,
+) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    decode_streaming_message(stream, ReasoningDisplay::Surface)
+}
+
+/// The decoder behind both entry points above, for a caller that picks the
+/// display at run time (`utils::stream_openai_compat_showing_reasoning`).
+#[allow(clippy::too_many_lines)]
+pub(crate) fn decode_streaming_message<S>(
     mut stream: S,
+    reasoning_display: ReasoningDisplay,
 ) -> impl Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
@@ -711,12 +908,20 @@ where
     /// at all until generation finishes.
     const PENDING_ARGS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
     const PENDING_ARGS_CHARS: usize = 200;
+    let surface_reasoning = reasoning_display == ReasoningDisplay::Surface;
 
     try_stream! {
         use futures::StreamExt;
 
         let mut accumulated_reasoning: Vec<Value> = Vec::new();
         let mut accumulated_reasoning_content = String::new();
+        // Thinking not yet shown (Surface only). Handed on in batches while
+        // it streams, and whatever is left just before the first visible
+        // output it preceded, or at the end of a stream that never produced
+        // one.
+        let mut pending_thinking = String::new();
+        let mut last_thinking_flush = std::time::Instant::now();
+        let mut last_chunk_id: Option<String> = None;
         // Track the most recent finish_reason across chunks. MiMo (and other
         // OpenAI-compatible hosts) send finish_reason in one chunk and the usage
         // in a later `choices: []` chunk, so we remember it and attach it to the
@@ -739,15 +944,43 @@ where
             let chunk = parse_streaming_chunk(line
                 .ok_or_else(|| anyhow!("unexpected stream format"))?)?;
 
+            if chunk.is_progress_only() {
+                // Metadata only (token counts, never text), so loggable.
+                if let Some(progress) = &chunk.prompt_progress {
+                    let processed = progress.get("processed").and_then(|v| v.as_u64());
+                    let total = progress.get("total").and_then(|v| v.as_u64());
+                    tracing::debug!(?processed, ?total, "llama-server prompt progress");
+                }
+                continue;
+            }
+            if let Some(id) = &chunk.id {
+                last_chunk_id = Some(id.clone());
+            }
+
             if !chunk.choices.is_empty() {
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
                     accumulated_reasoning.extend(details.iter().cloned());
                 }
-                if let Some(reasoning) = &chunk.choices[0].delta.reasoning_content {
+                if let Some(reasoning) = chunk.choices[0].delta.reasoning_text() {
                     accumulated_reasoning_content.push_str(reasoning);
+                    if surface_reasoning {
+                        pending_thinking.push_str(reasoning);
+                    }
                 }
                 if let Some(reason) = &chunk.choices[0].finish_reason {
                     last_finish_reason = Some(reason.clone());
+                }
+            }
+
+            // Live thinking: a batch is handed on while the phase is still
+            // running. Taken here, before this chunk's own text or tool call
+            // is yielded below, so a batch never lands after the output it led
+            // to.
+            if surface_reasoning && thinking_flush_due(&pending_thinking, last_thinking_flush) {
+                let id = chunk.id.as_ref().or(last_chunk_id.as_ref());
+                if let Some(thinking) = take_thinking(&mut pending_thinking, id) {
+                    last_thinking_flush = std::time::Instant::now();
+                    yield (Some(thinking), None, None);
                 }
             }
 
@@ -765,6 +998,10 @@ where
             if chunk.choices.is_empty() {
                 yield (None, usage, None)
             } else if chunk.choices[0].delta.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty()) {
+                // The thinking that led to this call, shown before its card.
+                if let Some(thinking) = take_thinking(&mut pending_thinking, chunk.id.as_ref()) {
+                    yield (Some(thinking), None, None);
+                }
                 let mut tool_call_data: std::collections::HashMap<i32, (String, String, String)> = std::collections::HashMap::new();
                 let mut tool_usage = usage;
                 let mut tool_model = chunk.model.clone();
@@ -822,8 +1059,11 @@ where
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
                                         accumulated_reasoning.extend(details.iter().cloned());
                                     }
-                                    if let Some(reasoning) = &tool_chunk.choices[0].delta.reasoning_content {
+                                    if let Some(reasoning) = tool_chunk.choices[0].delta.reasoning_text() {
                                         accumulated_reasoning_content.push_str(reasoning);
+                                        if surface_reasoning {
+                                            pending_thinking.push_str(reasoning);
+                                        }
                                     }
                                     if let Some(reason) = &tool_chunk.choices[0].finish_reason {
                                         last_finish_reason = Some(reason.clone());
@@ -970,6 +1210,11 @@ where
                     }
                 }
 
+                // Thinking interleaved with the call's argument deltas (Kimi).
+                if let Some(thinking) = take_thinking(&mut pending_thinking, chunk.id.as_ref()) {
+                    yield (Some(thinking), None, None);
+                }
+
                 let mut msg = Message::new(
                     Role::Assistant,
                     chrono::Utc::now().timestamp(),
@@ -989,8 +1234,15 @@ where
                 if terminal_seen {
                     break 'outer;
                 }
-            } else if chunk.choices[0].delta.content.is_some() {
-                let text = chunk.choices[0].delta.content.as_ref().unwrap();
+            } else if let Some(text) = chunk.choices[0]
+                .delta
+                .content
+                .as_ref()
+                .filter(|text| !text.is_empty())
+            {
+                if let Some(thinking) = take_thinking(&mut pending_thinking, chunk.id.as_ref()) {
+                    yield (Some(thinking), None, None);
+                }
                 let mut msg = Message::new(
                     Role::Assistant,
                     chrono::Utc::now().timestamp(),
@@ -1008,8 +1260,19 @@ where
                     None,
                 )
             } else if usage.is_some() {
+                // Includes an EMPTY content delta that carries usage. The empty
+                // delta itself is dropped: Ollama's `/v1` sends
+                // `{"content":"","reasoning":"…"}` for every thinking token —
+                // 283 of them in one measured turn — and each used to become an
+                // empty assistant message flowing through the agent loop and UI.
                 yield (None, usage, None)
             }
+        }
+
+        // A stream that ended while still thinking (reasoning only, or cut
+        // off): show what it thought rather than dropping it.
+        if let Some(thinking) = take_thinking(&mut pending_thinking, last_chunk_id.as_ref()) {
+            yield (Some(thinking), None, None);
         }
     }
 }
@@ -1346,6 +1609,408 @@ data: [DONE]
 
         assert_eq!(captured.as_deref(), Some("Let me check the files."));
         Ok(())
+    }
+
+    type DecodedItem = crate::providers::base::ProviderStreamItem;
+
+    /// Run SSE `lines` through the capture-only or the showing decoder.
+    async fn decode_lines(lines: &str, show_reasoning: bool) -> anyhow::Result<Vec<DecodedItem>> {
+        let owned: Vec<anyhow::Result<String>> = lines.lines().map(|l| Ok(l.to_string())).collect();
+        let mut out = Vec::new();
+        if show_reasoning {
+            let stream = response_to_streaming_message_showing_reasoning(tokio_stream::iter(owned));
+            pin!(stream);
+            while let Some(item) = stream.next().await {
+                out.push(item?);
+            }
+        } else {
+            let stream = response_to_streaming_message(tokio_stream::iter(owned));
+            pin!(stream);
+            while let Some(item) = stream.next().await {
+                out.push(item?);
+            }
+        }
+        Ok(out)
+    }
+
+    fn decoded_messages(items: &[DecodedItem]) -> Vec<&Message> {
+        items.iter().filter_map(|(m, _, _)| m.as_ref()).collect()
+    }
+
+    /// Live thinking: a long reasoning phase is handed on WHILE it streams, in
+    /// batches under the reply's id, not as one block when it ends. Driven
+    /// through a channel so the stream is provably still open when the batch
+    /// arrives — before, nothing came out until the answer's first token.
+    #[tokio::test]
+    async fn thinking_streams_in_batches_while_the_phase_is_still_running() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<anyhow::Result<String>>();
+        let stream = response_to_streaming_message_showing_reasoning(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(rx),
+        );
+        pin!(stream);
+        let frame = |delta: Value| {
+            Ok(format!(
+                "data: {}",
+                json!({"id":"r1","model":"qwen3.8-27b","object":"chat.completion.chunk",
+                       "choices":[{"index":0,"delta":delta,"finish_reason":null}]})
+            ))
+        };
+        let next_thinking =
+            |item: Option<anyhow::Result<DecodedItem>>| -> (String, Option<String>) {
+                let (message, _, _) = item.expect("the stream is open").expect("decodes");
+                let message = message.expect("a message");
+                let [MessageContent::Thinking(t)] = message.content.as_slice() else {
+                    panic!("expected one thinking block: {message:?}");
+                };
+                assert!(t.signature.is_empty(), "local thinking is unsigned");
+                (t.thinking.clone(), message.id.clone())
+            };
+        let wait = std::time::Duration::from_secs(5);
+
+        // A batch's worth by size: handed on at once.
+        let long = "x".repeat(THINKING_FLUSH_CHARS + 10);
+        tx.send(frame(json!({"reasoning_content": long}))).unwrap();
+        let (first, id) = next_thinking(tokio::time::timeout(wait, stream.next()).await.unwrap());
+        assert_eq!(first, long);
+        assert_eq!(id.as_deref(), Some("r1"), "batches carry the reply's id");
+
+        // A little, read at once: under the interval, nothing is handed on
+        // yet (the stream is polled so the decoder sees the frame now, not
+        // after the sleep below).
+        tx.send(frame(json!({"reasoning_content": "still "})))
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), stream.next())
+                .await
+                .is_err(),
+            "a small batch waits for the interval"
+        );
+        // More after the interval: handed on by time, with what waited.
+        tokio::time::sleep(THINKING_FLUSH_INTERVAL).await;
+        tx.send(frame(json!({"reasoning_content": "going"})))
+            .unwrap();
+        let (second, _) = next_thinking(tokio::time::timeout(wait, stream.next()).await.unwrap());
+        assert_eq!(second, "still going");
+
+        // The answer, then the end: thinking is never answer text.
+        tx.send(frame(json!({"content": "Five"}))).unwrap();
+        drop(tx);
+        let rest: Vec<_> = stream.collect().await;
+        let texts: Vec<String> = rest
+            .iter()
+            .filter_map(|item| item.as_ref().unwrap().0.as_ref())
+            .map(Message::as_concat_text)
+            .collect();
+        assert_eq!(texts, vec!["Five"], "{rest:?}");
+    }
+
+    /// The capture-only decoder (every provider that does not opt in) still
+    /// shows no thinking at all, batched or not.
+    #[tokio::test]
+    async fn capture_only_decoding_never_batches_thinking_out() -> anyhow::Result<()> {
+        let long = "y".repeat(THINKING_FLUSH_CHARS * 3);
+        let lines = format!(
+            "data: {}\ndata: {}\ndata: [DONE]\n",
+            json!({"id":"r","model":"m","choices":[{"index":0,"delta":{"reasoning_content":long}}]}),
+            json!({"id":"r","model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]})
+        );
+        let items = decode_lines(&lines, false).await?;
+        assert!(decoded_messages(&items).iter().all(|m| m
+            .content
+            .iter()
+            .all(|c| !matches!(c, MessageContent::Thinking(_)))));
+        Ok(())
+    }
+
+    /// Ollama 0.40.2 `/v1`, verbatim shape (qwen3.8:27b, thinking on): every
+    /// thinking token is `{"content":"","reasoning":"…"}`, the answer follows,
+    /// and the usage arrives in a `choices: []` frame of its own.
+    const OLLAMA_V1_THINKING_THEN_ANSWER: &str = r#"
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"The user "},"finish_reason":null}]}
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"wants a number."},"finish_reason":null}]}
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":"Five"},"finish_reason":null}]}
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"qwen3.8:27b","choices":[],"usage":{"prompt_tokens":31052,"completion_tokens":40,"total_tokens":31092,"prompt_tokens_details":{"cached_tokens":24575}}}
+data: [DONE]
+"#;
+
+    /// OLL-07: the empty-content thinking deltas used to become one empty
+    /// assistant message each. The capture-only decoder (every provider's
+    /// default) now yields only the answer, shows no thinking, and keeps the
+    /// usage frame.
+    #[tokio::test]
+    async fn empty_content_deltas_are_not_yielded_as_messages() -> anyhow::Result<()> {
+        let items = decode_lines(OLLAMA_V1_THINKING_THEN_ANSWER, false).await?;
+        let messages = decoded_messages(&items);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0].as_concat_text(), "Five");
+        assert!(messages[0]
+            .content
+            .iter()
+            .all(|c| !matches!(c, MessageContent::Thinking(_))));
+        let usage = items
+            .iter()
+            .find_map(|(_, u, _)| u.as_ref())
+            .expect("the usage frame survives");
+        assert_eq!(usage.usage.cache_read_input_tokens, Some(24575));
+        assert_eq!(usage.finish_reason.as_deref(), Some("stop"));
+        Ok(())
+    }
+
+    /// OLL-07, the opt-in half: the same stream shows its thinking as ONE
+    /// unsigned block, under the stream's id, before the answer — so the
+    /// agent's same-id merge folds both into one assistant message.
+    #[tokio::test]
+    async fn showing_decoder_surfaces_ollama_reasoning_once_before_the_answer() -> anyhow::Result<()>
+    {
+        let items = decode_lines(OLLAMA_V1_THINKING_THEN_ANSWER, true).await?;
+        let messages = decoded_messages(&items);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        let MessageContent::Thinking(thinking) = &messages[0].content[0] else {
+            panic!("thinking first: {:?}", messages[0]);
+        };
+        assert_eq!(thinking.thinking, "The user wants a number.");
+        assert_eq!(thinking.signature, "", "unsigned: never on the signed path");
+        assert_eq!(messages[0].id.as_deref(), Some("chatcmpl-1"));
+        assert_eq!(messages[1].as_concat_text(), "Five");
+        assert_eq!(messages[1].id.as_deref(), Some("chatcmpl-1"));
+
+        let mut merged = crate::conversation::Conversation::empty();
+        for message in messages {
+            merged.push(message.clone());
+        }
+        assert_eq!(merged.len(), 1, "one assistant message after the merge");
+        Ok(())
+    }
+
+    /// A stream that never got past thinking still shows it, as one block.
+    #[tokio::test]
+    async fn showing_decoder_flushes_reasoning_only_streams_at_the_end() -> anyhow::Result<()> {
+        let lines = r#"
+data: {"id":"r","model":"qwen3.8:27b","choices":[{"index":0,"delta":{"content":"","reasoning":"Still "},"finish_reason":null}]}
+data: {"id":"r","model":"qwen3.8:27b","choices":[{"index":0,"delta":{"content":"","reasoning":"thinking"},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+data: [DONE]
+"#;
+        let items = decode_lines(lines, true).await?;
+        let messages = decoded_messages(&items);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(matches!(
+            &messages[0].content[..],
+            [MessageContent::Thinking(t)] if t.thinking == "Still thinking"
+        ));
+        assert!(messages[0].as_concat_text().is_empty());
+        Ok(())
+    }
+
+    /// Ollama's `/v1` tool call (one delta, arguments as a string,
+    /// `finish_reason: tool_calls`) after `reasoning` deltas: the thinking is
+    /// captured onto the request exactly as `reasoning_content` is, and the
+    /// showing decoder puts it before the call, not inside it.
+    #[tokio::test]
+    async fn ollama_reasoning_field_is_captured_like_reasoning_content() -> anyhow::Result<()> {
+        let lines = r#"
+data: {"id":"t","model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"Read the file."},"finish_reason":null}]}
+data: {"id":"t","model":"qwen3.8:27b","choices":[{"index":0,"delta":{"role":"assistant","content":"","tool_calls":[{"id":"call_l0usk884","index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/notes.txt\"}"}}]},"finish_reason":"tool_calls"}]}
+data: [DONE]
+"#;
+        for show in [false, true] {
+            let items = decode_lines(lines, show).await?;
+            let messages = decoded_messages(&items);
+            let request = messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|c| match c {
+                    MessageContent::ToolRequest(req) => Some(req),
+                    _ => None,
+                })
+                .expect("the tool call is decoded");
+            assert_eq!(
+                request
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get(REASONING_CONTENT_KEY))
+                    .and_then(Value::as_str),
+                Some("Read the file."),
+                "show: {show}"
+            );
+            let thinking_blocks = messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter(|c| matches!(c, MessageContent::Thinking(_)))
+                .count();
+            assert_eq!(thinking_blocks, usize::from(show), "show: {show}");
+            if show {
+                assert!(matches!(
+                    messages[0].content[0],
+                    MessageContent::Thinking(_)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// A host that sends BOTH names must not fail the chunk (a serde alias
+    /// would have made it a duplicate-field error); `reasoning_content` wins.
+    #[tokio::test]
+    async fn a_delta_with_both_reasoning_names_decodes() -> anyhow::Result<()> {
+        let lines = r#"
+data: {"id":"b","model":"m","choices":[{"index":0,"delta":{"reasoning_content":"primary","reasoning":"secondary"},"finish_reason":null}]}
+data: {"id":"b","model":"m","choices":[{"index":0,"delta":{"reasoning":{"structured":true}},"finish_reason":null}]}
+data: {"id":"b","model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}
+data: [DONE]
+"#;
+        let items = decode_lines(lines, true).await?;
+        let messages = decoded_messages(&items);
+        assert!(matches!(
+            &messages[0].content[..],
+            [MessageContent::Thinking(t)] if t.thinking == "primary"
+        ));
+        assert_eq!(messages[1].as_concat_text(), "ok");
+        Ok(())
+    }
+
+    /// `message.reasoning` on a non-streaming Ollama `/v1` reply is captured
+    /// like `message.reasoning_content`.
+    #[test]
+    fn response_to_message_captures_ollama_reasoning_field() -> anyhow::Result<()> {
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": "List first.",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}
+                    }]
+                }
+            }]
+        });
+        let message = response_to_message(&response)?;
+        let req = message
+            .content
+            .iter()
+            .find_map(|c| match c {
+                MessageContent::ToolRequest(req) => Some(req),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            req.metadata
+                .as_ref()
+                .and_then(|m| m.get(REASONING_CONTENT_KEY))
+                .and_then(Value::as_str),
+            Some("List first.")
+        );
+        Ok(())
+    }
+
+    /// LC-8: llama-server's `return_progress` frames are consumed silently;
+    /// they used to be a decode error or an empty yield. The first line is the
+    /// shape the pinned b11429 really sends (one choice, an empty delta that
+    /// names only the role); the next two are the `choices: []` and
+    /// no-`choices` spellings other builds use.
+    #[tokio::test]
+    async fn llama_server_prompt_progress_frames_are_tolerated() -> anyhow::Result<()> {
+        let lines = r#"
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"created":1,"id":"p","model":"qwen3.8-27b","object":"chat.completion.chunk","prompt_progress":{"total":31000,"cache":0,"processed":4096,"time_ms":2050}}
+data: {"choices":[],"created":1,"id":"p","model":"qwen3.8-27b","object":"chat.completion.chunk","prompt_progress":{"total":31000,"cache":0,"processed":8192,"time_ms":4100}}
+data: {"created":1,"id":"p","model":"qwen3.8-27b","object":"chat.completion.chunk","prompt_progress":{"total":31000,"cache":0,"processed":31000,"time_ms":15500}}
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Done"},"finish_reason":"stop"}],"id":"p","model":"qwen3.8-27b"}
+data: [DONE]
+"#;
+        let items = decode_lines(lines, false).await?;
+        assert_eq!(items.len(), 1, "progress frames yield nothing: {items:?}");
+        assert_eq!(
+            items[0].0.as_ref().map(Message::as_concat_text).as_deref(),
+            Some("Done")
+        );
+
+        // Only a progress frame may omit `choices`: anything else still fails.
+        let error = decode_lines(r#"data: {"id":"x","model":"m"}"#, false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid chunk shape"), "{error}");
+        Ok(())
+    }
+
+    /// The predicate itself, against the frame b11429 really sends. The old
+    /// `choices.is_empty()` test answered `false` here, so this branch never
+    /// ran for the pinned server. A progress frame that also carries text, a
+    /// tool call, thinking, a finish reason or usage is NOT progress-only: it
+    /// must reach the decoder.
+    #[test]
+    fn a_b11429_progress_frame_is_progress_only_and_nothing_else_is() {
+        let real = r#"{"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":null}}],"model":"qwen3.8-27b","object":"chat.completion.chunk","prompt_progress":{"total":1939,"cache":0,"processed":1423,"time_ms":4291}}"#;
+        assert!(parse_streaming_chunk(real).unwrap().is_progress_only());
+        for not_only in [
+            r#"{"choices":[{"index":0,"delta":{"content":"x"}}],"prompt_progress":{"total":1}}"#,
+            r#"{"choices":[{"index":0,"delta":{"reasoning_content":"x"}}],"prompt_progress":{"total":1}}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"f","arguments":""}}]}}],"prompt_progress":{"total":1}}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"prompt_progress":{"total":1}}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":1},"prompt_progress":{"total":1}}"#,
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":null}}]}"#,
+        ] {
+            assert!(
+                !parse_streaming_chunk(not_only).unwrap().is_progress_only(),
+                "{not_only}"
+            );
+        }
+    }
+
+    /// An overflow reported inside a stream reaches the compaction ladder as a
+    /// context-length error built from its numbers — and, like every in-stream
+    /// error, never echoes what the provider wrote.
+    #[tokio::test]
+    async fn in_stream_llama_server_overflow_is_a_context_length_error() {
+        let lines = r#"data: {"error":{"code":400,"message":"SECRET_PROVIDER_PAYLOAD request (23101 tokens) exceeds the available context size (8192 tokens)","type":"exceed_context_size_error","n_prompt_tokens":23101,"n_ctx":8192}}"#;
+        let error = decode_lines(lines, false).await.unwrap_err();
+        let provider_error = error.downcast_ref::<ProviderError>().unwrap();
+        let ProviderError::ContextLengthExceeded(detail) = provider_error else {
+            panic!("{provider_error:?}");
+        };
+        assert!(!detail.contains("SECRET_PROVIDER_PAYLOAD"));
+        assert_eq!(
+            crate::providers::utils::context_overflow_sizes(detail),
+            Some((23101, 8192))
+        );
+
+        // The KV-collision 500 stays the generic in-stream error.
+        let lines = r#"data: {"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}"#;
+        let error = decode_lines(lines, false).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::RequestFailed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_stream_compute_failure_keeps_only_the_known_marker() {
+        let lines = r#"data: {"error":{"code":500,"message":"Compute error.","type":"server_error","details":"SECRET_PROVIDER_PAYLOAD"}}"#;
+        let error = decode_lines(lines, false).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<ProviderError>(),
+            Some(ProviderError::ServerError(message)) if message == "Compute error."
+        ));
+        assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+
+        for payload in [
+            json!({"code": 400, "type": "server_error", "message": "Compute error."}),
+            json!({"code": 500, "type": "invalid_request_error", "message": "Compute error."}),
+            json!({"code": 500, "type": "server_error", "message": "Compute error. SECRET_PROVIDER_PAYLOAD"}),
+            json!({"code": 500, "type": "server_error", "message": "Context size has been exceeded."}),
+            json!({"message": "SECRET_PROVIDER_PAYLOAD"}),
+        ] {
+            let lines = format!("data: {}", json!({"error": payload}));
+            let error = decode_lines(&lines, false).await.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<ProviderError>(),
+                Some(ProviderError::RequestFailed(message))
+                    if message == "Provider reported an error while streaming. Contact your provider administrator."
+            ));
+            assert!(!error.to_string().contains("SECRET_PROVIDER_PAYLOAD"));
+        }
     }
 
     #[test]

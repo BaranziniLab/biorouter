@@ -1,0 +1,1 @@
+{"error":"an error was encountered while running the model: error: task id = 0, error: request (13099 tokens) exceeds the available context size (2048 tokens), try increasing it\nerror: task id = 3, error: request (13099 tokens) exceeds the available context size (2048 tokens), try increasing it\nGGML_ASSERT(buffer) failed"}

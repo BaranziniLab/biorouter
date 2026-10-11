@@ -2566,12 +2566,58 @@ async fn persist_iteration_messages(
 ) -> Result<Vec<Message>> {
     let mut messages_to_add = remint_duplicate_message_ids(messages_to_add).into_messages();
     for msg in &mut messages_to_add {
+        coalesce_unsigned_thinking(msg);
+    }
+    for msg in &mut messages_to_add {
         let effective_uid = session_manager.add_message(session_id, msg).await?;
         if msg.id.as_deref() != Some(effective_uid.as_str()) {
             msg.id = Some(effective_uid);
         }
     }
     Ok(messages_to_add)
+}
+
+/// Join runs of adjacent UNSIGNED thinking blocks in one message into one block.
+///
+/// The local providers stream thinking as it is produced — the native Ollama
+/// decoder and the OpenAI-compatible one (llama-server) each hand on a batch
+/// every 250 ms (`formats::openai::THINKING_FLUSH_INTERVAL`), Codex one item
+/// per reasoning delta — and `Conversation::push` merges same-id TEXT deltas
+/// but appends every other item. The stream wrapper already joins each phase
+/// into one block before the loop sees it (`reply_parts::HeldThinking`); this
+/// is the store's own guarantee, for a phase that reached the loop in more than
+/// one piece anyway (split by a usage-only item, or once that hold is lifted
+/// for clients that merge live thinking). Joined here, once per iteration, the
+/// stored row holds one block per reasoning phase.
+///
+/// Signed blocks are never touched: a signature covers exactly one block's
+/// text (Anthropic, Bedrock), and two signed blocks are two blocks. A signed
+/// block also ends a run, so unsigned text is never merged across it, and
+/// thinking separated by text or a tool call stays separate (interleaved
+/// reasoning).
+fn coalesce_unsigned_thinking(message: &mut Message) {
+    fn unsigned(content: &MessageContent) -> bool {
+        matches!(content, MessageContent::Thinking(thinking) if thinking.signature.is_empty())
+    }
+    if message
+        .content
+        .windows(2)
+        .all(|pair| !(unsigned(&pair[0]) && unsigned(&pair[1])))
+    {
+        return;
+    }
+    let mut merged: Vec<MessageContent> = Vec::with_capacity(message.content.len());
+    for content in std::mem::take(&mut message.content) {
+        match (merged.last_mut(), content) {
+            (Some(MessageContent::Thinking(previous)), MessageContent::Thinking(next))
+                if previous.signature.is_empty() && next.signature.is_empty() =>
+            {
+                previous.thinking.push_str(&next.thinking);
+            }
+            (_, content) => merged.push(content),
+        }
+    }
+    message.content = merged;
 }
 
 /// The message one queued soft interrupt becomes.
@@ -4389,8 +4435,12 @@ async fn run_background_compaction(
     session_config: SessionConfig,
     working_dir: std::path::PathBuf,
     threshold: f64,
+    fixed_prompt: Option<(String, Vec<Tool>)>,
 ) {
     let session_id = session_config.id.clone();
+    let fixed_prompt = fixed_prompt
+        .as_ref()
+        .map(|(system_prompt, tools)| (system_prompt.as_str(), tools.as_slice()));
     let crew_admission = match crate::crew::manager() {
         Ok(crew) => {
             if crew.is_scoped_session(&session_id).await {
@@ -4404,8 +4454,14 @@ async fn run_background_compaction(
                 // under budget, and a finished task's grant then answered it. The threshold is
                 // read from this device's own store and sends nothing anywhere;
                 // `run_eager_compaction` checks it again before the model call.
-                if !compaction_due(provider.as_ref(), &session_manager, &session_id, threshold)
-                    .await
+                if !compaction_due(
+                    provider.as_ref(),
+                    &session_manager,
+                    &session_id,
+                    threshold,
+                    fixed_prompt,
+                )
+                .await
                 {
                     return;
                 }
@@ -4441,6 +4497,7 @@ async fn run_background_compaction(
         session_manager,
         session_config,
         threshold,
+        fixed_prompt,
         on_before_compact,
     )
     .await
@@ -4464,13 +4521,16 @@ async fn run_background_compaction(
 }
 
 /// Whether `session_id`'s stored conversation is over the eager-compaction `threshold`, by the
-/// same check [`crate::context_mgmt::run_eager_compaction`] makes. A store that cannot be read
-/// says yes, so the compaction runs as it would have and reports the failure itself.
+/// same check [`crate::context_mgmt::run_eager_compaction`] makes — with the same
+/// `fixed_prompt`, or the two could disagree about a window the prompt alone fills. A store
+/// that cannot be read says yes, so the compaction runs as it would have and reports the
+/// failure itself.
 async fn compaction_due(
     provider: &dyn Provider,
     session_manager: &SessionManager,
     session_id: &str,
     threshold: f64,
+    fixed_prompt: Option<(&str, &[Tool])>,
 ) -> bool {
     let Ok(session) = session_manager.get_session(session_id, true).await else {
         return true;
@@ -4484,7 +4544,7 @@ async fn compaction_due(
         &conversation,
         Some(threshold),
         &session,
-        None,
+        fixed_prompt,
     )
     .await
     .unwrap_or(true)
@@ -7322,10 +7382,18 @@ impl Agent {
     ///
     /// Idempotent per session: a second call while a compaction is in flight for
     /// the same session is a no-op, so the loop can call this freely.
+    ///
+    /// `fixed_prompt` is the system prompt and tool schemas the turn was sent
+    /// with. The background check needs them for the same two reasons the
+    /// turn-start check does — a provider-reported total is judged against a
+    /// floor that includes them, and a window they alone fill is never compacted
+    /// — and this runs after every turn, so without them a 32k local window
+    /// under the ~31k bootstrap had each exchange summarised away as it ended.
     pub(super) fn maybe_spawn_eager_compaction(
         &self,
         session_config: &SessionConfig,
         working_dir: &std::path::Path,
+        fixed_prompt: Option<(&str, &[Tool])>,
     ) {
         if !crate::context_mgmt::eager_compaction_enabled() {
             return;
@@ -7389,6 +7457,9 @@ impl Agent {
             .get_param::<f64>("BIOROUTER_AUTO_COMPACT_THRESHOLD")
             .unwrap_or(DEFAULT_COMPACTION_THRESHOLD);
         let session_id = session_config.id.clone();
+        // Owned only now, past every early return: a skipped spawn copies nothing.
+        let fixed_prompt =
+            fixed_prompt.map(|(system_prompt, tools)| (system_prompt.to_string(), tools.to_vec()));
 
         tokio::spawn(async move {
             // Remove the in-flight marker no matter how the task exits.
@@ -7404,6 +7475,7 @@ impl Agent {
                 session_config,
                 working_dir,
                 threshold,
+                fixed_prompt,
             )
             .await;
         });
@@ -10101,7 +10173,29 @@ impl Agent {
         // tool schemas or it undercounts badly. Assemble them only when needed —
         // the happy path reads session.total_tokens and shouldn't pay for
         // tool/prompt assembly here (the reply loop re-does it anyway).
-        let cold_path_tools_and_prompt = if session.total_tokens.is_none() {
+        //
+        // A model on THIS machine pays it every turn: its server's usage is the
+        // one that can be truncated (Ollama's `/v1` reported 2046 tokens for a
+        // 31k-token prompt it had cut), and the check only catches that against
+        // a floor that includes the system prompt and tools. They are also what
+        // lets it see a window the prompt ALONE fills (a 32k local window under a
+        // ~31k bootstrap), where compacting every turn would only summarise each
+        // exchange away. A prefill there takes tens of seconds, so assembling
+        // the prompt once more is noise.
+        //
+        // ⚠ And EVERY provider pays it before a compaction actually runs. The
+        // background check after each turn (`maybe_spawn_eager_compaction`)
+        // always has the fixed prompt, so it skips a window the prompt alone
+        // fills; this check, run without it, did not, and compacted in the
+        // FOREGROUND at the start of every turn instead — on a LAN Ollama, an
+        // external llama-server or any cloud model whose prompt and tools fill
+        // the threshold (31,052 of 32,768 read "94.8%, compact"). The two checks
+        // now see the same inputs whenever the answer would be "compact", and a
+        // turn that stays under the threshold still assembles nothing.
+        let usage_may_be_truncated =
+            crate::providers::utils::runs_on_this_machine(self.provider().await?.as_ref());
+        let cold_path_tools_and_prompt = if session.total_tokens.is_none() || usage_may_be_truncated
+        {
             Some(
                 self.prepare_tools_and_prompt(&session_config.id, &session.working_dir)
                     .await?,
@@ -10110,7 +10204,7 @@ impl Agent {
             None
         };
 
-        let needs_auto_compact = check_if_compaction_needed(
+        let mut needs_auto_compact = check_if_compaction_needed(
             self.provider().await?.as_ref(),
             &conversation,
             None,
@@ -10122,6 +10216,19 @@ impl Agent {
                 }),
         )
         .await?;
+        if needs_auto_compact && cold_path_tools_and_prompt.is_none() {
+            let (tools, _toolshim, system_prompt) = self
+                .prepare_tools_and_prompt(&session_config.id, &session.working_dir)
+                .await?;
+            needs_auto_compact = check_if_compaction_needed(
+                self.provider().await?.as_ref(),
+                &conversation,
+                None,
+                &session,
+                Some((system_prompt.as_str(), tools.as_slice())),
+            )
+            .await?;
+        }
 
         let conversation_to_compact = stored_conversation.clone();
 
@@ -11398,7 +11505,21 @@ impl Agent {
                     )
                     .await
                     {
-                        ProviderWake::Cancelled | ProviderWake::Item(None) => break,
+                        ProviderWake::Cancelled => break,
+                        ProviderWake::Item(None) => {
+                            // The request ran to its end without overflowing, so
+                            // it fit: an overflow later in this turn is a new
+                            // one and starts the compaction ladder again. Reset
+                            // HERE, at the end of a whole request, and never on
+                            // a streamed item — a local server streams thinking
+                            // (and Ollama's prompt-size check fails the reply)
+                            // BEFORE an overflow is known, so a per-item reset
+                            // put every overflow back on rung 1 and the ladder
+                            // never ran out: measured, 11+ compactions in 26
+                            // minutes against Ollama with no end in sight.
+                            compaction_attempts = 0;
+                            break;
+                        }
                         ProviderWake::ElicitationReady => {
                             for msg in self.drain_elicitation_messages(&session_config.id).await {
                                 yield AgentEvent::Message(msg);
@@ -11506,7 +11627,6 @@ impl Agent {
                                 continue;
                             }
 
-                            compaction_attempts = 0;
                             // BR-66: the provider is answering again; whatever blip
                             // was retried before is over.
                             mistakes.observe_provider_success();
@@ -12240,7 +12360,7 @@ impl Agent {
                                 }
                             }
                         }
-                        Err(ProviderError::ContextLengthExceeded(_)) => {
+                        Err(ProviderError::ContextLengthExceeded(detail)) => {
                             if signed_replay_context.is_some() {
                                 signed_replay_invalidated_this_iteration = true;
                                 let terminal = "This chat exceeded the model context window after signed reasoning had been recorded. BioRouter cannot compact or rewrite the authenticated history safely, so it stopped without retrying the model. Start a new chat with the relevant context.".to_string();
@@ -12253,6 +12373,29 @@ impl Agent {
                                 ));
                                 break;
                             }
+
+                            // LC-1: an overflow the system prompt and tools cause on
+                            // their own. Compaction shrinks only the conversation, so
+                            // the ladder below would spend four summarisation calls —
+                            // minutes each on a local model, every one overflowing
+                            // again — and then tell the user to shorten a message
+                            // that was never the problem. Decided only when the
+                            // server named both sizes (llama-server, Ollama native);
+                            // any other overflow keeps the ladder.
+                            if let Some(notice) = crate::context_mgmt::overflow_beyond_compaction(
+                                &detail,
+                                &system_prompt,
+                                &tools,
+                                conversation_with_moim.messages(),
+                            ) {
+                                warn!(
+                                    provider = reply_provider.get_name(),
+                                    "Context overflow caused by the system prompt and tools alone; \
+                                     not compacting"
+                                );
+                                yield AgentEvent::Message(inline_notice(notice));
+                                break;
+                            }
                             compaction_attempts += 1;
 
                             // BR-13: progressive context-overflow fallback. Instead of a
@@ -12260,8 +12403,10 @@ impl Agent {
                             // more aggressive compaction strategy (keep-window ->
                             // shrink-window -> summarize-all -> drop-oldest); only once the
                             // ladder is exhausted do we surface the "still exceeded" error.
-                            // `compaction_attempts` resets to 0 on the next successful
-                            // provider response, so a later overflow restarts the ladder.
+                            // `compaction_attempts` resets to 0 when a request next runs
+                            // to its end (`ProviderWake::Item(None)` above), so a later
+                            // overflow restarts the ladder — but a reply that streams
+                            // and THEN overflows does not.
                             let Some(recovery) = overflow_recovery_for_attempt(compaction_attempts) else {
                                 error!("Context limit exceeded after progressive compaction fallbacks - prompt too large");
                                 yield AgentEvent::Message(
@@ -12997,7 +13142,11 @@ impl Agent {
             // rename below, this tail runs only when the consumer drains the stream
             // to completion — an early cancel just defers compaction to that
             // synchronous fallback, which is harmless.
-            self.maybe_spawn_eager_compaction(&session_config, &working_dir);
+            self.maybe_spawn_eager_compaction(
+                &session_config,
+                &working_dir,
+                Some((system_prompt.as_str(), tools.as_slice())),
+            );
 
             // NOTE: LLM-driven session rename is intentionally NOT triggered here.
             // This code sits after the last `yield` of a lazy `async_stream`, so it
@@ -15016,6 +15165,74 @@ mod tests {
             fixed.messages()[2].content[0],
             MessageContent::ToolRequest(_)
         ));
+    }
+
+    /// Live local thinking arrives as many unsigned batches under one reply id,
+    /// and `Conversation::push` appends each as its own block. The stored row
+    /// must hold ONE block per phase, with every batch's text in order — and a
+    /// signed block, or thinking that text separates, must stay as it was.
+    #[tokio::test]
+    async fn a_streamed_thinking_phase_is_stored_as_one_block() {
+        let data = tempfile::TempDir::new().unwrap();
+        let store = SessionManager::new(data.path().to_path_buf());
+        let session = store
+            .create_session(data.path().to_path_buf(), "chat".into(), SessionType::User)
+            .await
+            .unwrap();
+        let mut batch = Conversation::default();
+        for delta in ["Let me ", "count ", "the notes."] {
+            batch.push(Message::assistant().with_id("r1").with_thinking(delta, ""));
+        }
+        batch.push(Message::assistant().with_id("r1").with_text("Five"));
+        batch.push(
+            Message::assistant()
+                .with_id("r1")
+                .with_thinking("and then ", ""),
+        );
+        batch.push(Message::assistant().with_id("r1").with_thinking("more", ""));
+        // A signed block is a block of its own, and ends an unsigned run.
+        batch.push(
+            Message::assistant()
+                .with_id("r1")
+                .with_thinking("signed", "sig"),
+        );
+        batch.push(
+            Message::assistant()
+                .with_id("r1")
+                .with_thinking("after", ""),
+        );
+        assert_eq!(batch.len(), 1, "one reply, one row");
+        assert_eq!(
+            batch.messages()[0].content.len(),
+            8,
+            "push appends each batch"
+        );
+
+        let stored = persist_iteration_messages(&store, &session.id, batch)
+            .await
+            .unwrap();
+        let reread = store.get_session(&session.id, true).await.unwrap();
+        for message in [&stored[0], &reread.conversation.unwrap().messages()[0]] {
+            let shape: Vec<(String, String)> = message
+                .content
+                .iter()
+                .map(|content| match content {
+                    MessageContent::Thinking(t) => (t.thinking.clone(), t.signature.clone()),
+                    MessageContent::Text(t) => (format!("text:{}", t.text), String::new()),
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                shape,
+                vec![
+                    ("Let me count the notes.".to_string(), String::new()),
+                    ("text:Five".to_string(), String::new()),
+                    ("and then more".to_string(), String::new()),
+                    ("signed".to_string(), "sig".to_string()),
+                    ("after".to_string(), String::new()),
+                ]
+            );
+        }
     }
 
     /// A batch with distinct (or absent) ids passes through byte-identical:
@@ -23131,7 +23348,7 @@ mod gate_b_turn_tests {
         // is not decoration — it is what stops the refusal assertion below from
         // passing vacuously on a machine where `BIOROUTER_EAGER_COMPACT=false`,
         // because a disabled feature returns before the marker is ever set.
-        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."), None);
         assert!(
             eager_compaction_in_flight(&agent, &s.id),
             "eager compaction did not spawn for the PERMITTED case, so the \
@@ -23142,7 +23359,7 @@ mod gate_b_turn_tests {
         // Refused: a public provider swapped in behind Gate B's back — the LRU
         // rehydration residual, arriving between two turns.
         *agent.provider.lock().await = Some(public_provider());
-        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."), None);
         assert!(
             !eager_compaction_in_flight(&agent, &s.id),
             "a public provider was handed a private transcript to summarise in \
@@ -24135,16 +24352,16 @@ mod crew_compaction_order_tests {
             .apply()
             .await
             .unwrap();
-        assert!(!compaction_due(&provider, &store, &session.id, 0.8).await);
+        assert!(!compaction_due(&provider, &store, &session.id, 0.8, None).await);
         store
             .update(&session.id)
             .total_tokens(Some(i32::try_from(limit).unwrap_or(i32::MAX)))
             .apply()
             .await
             .unwrap();
-        assert!(compaction_due(&provider, &store, &session.id, 0.8).await);
+        assert!(compaction_due(&provider, &store, &session.id, 0.8, None).await);
         // Compaction switched off is never due.
-        assert!(!compaction_due(&provider, &store, &session.id, 0.0).await);
+        assert!(!compaction_due(&provider, &store, &session.id, 0.0, None).await);
     }
 
     /// W2-DMN-14: in the background compaction, a Crew chat's threshold check comes before
@@ -24163,5 +24380,515 @@ mod crew_compaction_order_tests {
             .expect("the Crew admission");
         let compacted = body.find("run_eager_compaction(").expect("the compaction");
         assert!(due < admitted && admitted < compacted, "{body}");
+    }
+}
+
+#[cfg(test)]
+mod fixed_prompt_compaction_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A local server whose window cannot hold BioRouter's instructions and
+    /// tools: every request overflows, and the error names both sizes, as
+    /// llama-server's and Ollama native's typed overflow do. Counts every call,
+    /// summarisation included.
+    struct OverflowingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for OverflowingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "overflowing",
+                "Overflowing",
+                "",
+                "overflow-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "overflowing"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::ContextLengthExceeded(
+                crate::providers::utils::context_overflow_message(31_052, 4096),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("overflow-model")
+        }
+    }
+
+    /// LC-1: an overflow the fixed prompt causes ends the turn on the FIRST
+    /// overflow, with the one sentence that names the window and the two real
+    /// fixes. Before, the reply loop walked the whole four-rung compaction
+    /// ladder — a summarisation call per rung, minutes each on a local model,
+    /// each overflowing again — and then told the user to shorten a message
+    /// that was never the problem.
+    #[tokio::test]
+    async fn an_overflow_the_fixed_prompt_causes_is_not_compacted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "overflow".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(OverflowingProvider {
+                    calls: Arc::clone(&calls),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(4),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let mut stream = agent
+            .reply(Message::user().with_text("count the urine"), config, None)
+            .await
+            .unwrap();
+        // Text and notices alike: the turn's notices are system notifications,
+        // which `as_concat_text` leaves out.
+        let mut said = Vec::new();
+        while let Some(event) = stream.next().await {
+            if let Ok(AgentEvent::Message(message)) = event {
+                for content in &message.content {
+                    match content {
+                        MessageContent::Text(text) => said.push(text.text.clone()),
+                        MessageContent::SystemNotification(notice) => said.push(notice.msg.clone()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        drop(stream);
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "only the turn's own request reaches the model; no summarisation call: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|text| text.contains("Compacting")),
+            "{said:?}"
+        );
+        let notice = said
+            .iter()
+            .find(|text| text.contains("4096 tokens"))
+            .unwrap_or_else(|| panic!("the window is named: {said:?}"));
+        assert!(notice.contains("Turn off some extensions"), "{notice}");
+        assert!(
+            !said.iter().any(|text| text.contains("shorter message")),
+            "{said:?}"
+        );
+    }
+
+    /// A local server that answers, and reports what a 32k window under the
+    /// ~31k-token bootstrap really reports: 31,052 of 32,768 tokens used.
+    struct NearlyFullProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for NearlyFullProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "nearly_full",
+                "Nearly full",
+                "",
+                "nearly-full-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "nearly_full"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("There are three samples."),
+                ProviderUsage::new(
+                    "nearly-full-model".to_string(),
+                    crate::providers::base::Usage::new(Some(31_000), Some(52), Some(31_052)),
+                ),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("nearly-full-model").with_context_limit(Some(32_768))
+        }
+    }
+
+    /// The background half of the fixed-prompt skip, through the real turn
+    /// tail. Eager compaction runs after every turn by default, and it used to
+    /// check the threshold WITHOUT the system prompt and tools, so a window the
+    /// prompt alone nearly fills read "95%, compact" after every exchange and
+    /// summarised it away on the one-slot local server. The turn's own prompt
+    /// is now handed to it, and the exchange is left alone — and the next
+    /// turn's synchronous check, which runs without the prompt for a provider
+    /// not on this machine, must reach the same answer before it compacts.
+    #[tokio::test]
+    async fn eager_compaction_after_a_turn_sees_the_fixed_prompt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "eager".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(NearlyFullProvider {
+                    calls: Arc::clone(&calls),
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(4),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let mut stream = agent
+            .reply(
+                Message::user().with_text("count the urine"),
+                config.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        drop(stream);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the turn itself");
+
+        // The tail registered a background compaction: without this the test
+        // would pass vacuously wherever `BIOROUTER_EAGER_COMPACT=false`.
+        let in_flight = |agent: &Agent| {
+            agent
+                .eager_compactions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&session.id)
+        };
+        assert!(
+            in_flight(&agent),
+            "the turn tail spawned no eager compaction"
+        );
+        for _ in 0..500 {
+            if !in_flight(&agent) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!in_flight(&agent), "the background compaction never ended");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the background check summarised an exchange compaction cannot help"
+        );
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            stored.messages().iter().all(|m| m.is_agent_visible()),
+            "the exchange must not be summarised away"
+        );
+
+        // The NEXT turn's start must agree with the background check. It used
+        // to run without the fixed prompt for any provider not on this machine
+        // (this one is Public), read the stored 31,052 of 32,768 as "94.8%,
+        // compact", and summarise the exchange in the FOREGROUND before the
+        // turn — every turn, which is what the background skip exists to stop.
+        let mut stream = agent
+            .reply(Message::user().with_text("and the next one?"), config, None)
+            .await
+            .unwrap();
+        let mut said = Vec::new();
+        while let Some(event) = stream.next().await {
+            if let Ok(AgentEvent::Message(message)) = event {
+                for content in &message.content {
+                    match content {
+                        MessageContent::Text(text) => said.push(text.text.clone()),
+                        MessageContent::SystemNotification(notice) => said.push(notice.msg.clone()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        drop(stream);
+        assert!(
+            !said.iter().any(|text| text.contains("auto-compact")),
+            "the second turn compacted at its start: {said:?}"
+        );
+        for _ in 0..500 {
+            if !in_flight(&agent) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "two turns, two requests, and no summarisation call: {said:?}"
+        );
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            stored.messages().iter().all(|m| m.is_agent_visible()),
+            "neither exchange may be summarised away"
+        );
+    }
+
+    /// A local server that streams some thinking and THEN overflows, with an
+    /// error that names no sizes — the shape of Ollama's prompt-size check,
+    /// which can only fail a reply once its usage arrives. The summarisation
+    /// calls succeed, so every compaction "works" and the next request
+    /// overflows again. After `answer_after` overflowing requests it answers,
+    /// so a regression ends instead of hanging the test.
+    struct StreamsThenOverflowsProvider {
+        requests: Arc<AtomicUsize>,
+        summaries: Arc<AtomicUsize>,
+        answer_after: usize,
+    }
+
+    #[async_trait]
+    impl Provider for StreamsThenOverflowsProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "streams_then_overflows",
+                "Streams then overflows",
+                "",
+                "overflow-later-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "streams_then_overflows"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.summaries.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("Summary: the user asked for a count."),
+                ProviderUsage::new(
+                    "overflow-later-model".to_string(),
+                    crate::providers::base::Usage::new(Some(100), Some(10), Some(110)),
+                ),
+            ))
+        }
+
+        async fn stream(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<crate::providers::base::MessageStream, ProviderError> {
+            let request = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+            let id = format!("reply-{request}");
+            if request > self.answer_after {
+                let answer = Message::assistant().with_id(id).with_text("Five.");
+                let usage = ProviderUsage::new(
+                    "overflow-later-model".to_string(),
+                    crate::providers::base::Usage::new(Some(100), Some(2), Some(102)),
+                );
+                return Ok(Box::pin(futures::stream::iter(vec![Ok((
+                    Some(answer),
+                    Some(usage),
+                    None,
+                ))])));
+            }
+            let thinking = Message::assistant()
+                .with_id(id)
+                .with_thinking("Let me look at the notes.", "");
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok((Some(thinking), None, None)),
+                Err(ProviderError::ContextLengthExceeded(
+                    "the request exceeds the available context size".to_string(),
+                )),
+            ])))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("overflow-later-model")
+        }
+    }
+
+    /// The compaction ladder runs out even when every overflowing reply
+    /// streamed something first. The attempt counter used to reset on every
+    /// streamed item, so a reply that streamed thinking and then overflowed put
+    /// the ladder back on rung 1 each time and it never ended — measured on
+    /// Ollama as 11+ compactions over 26 minutes. Four rungs, four summaries,
+    /// then the "still exceeded" stop.
+    #[tokio::test]
+    async fn the_compaction_ladder_ends_when_each_overflow_streamed_first() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                std::path::PathBuf::from("."),
+                "overflow-later".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let summaries = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(StreamsThenOverflowsProvider {
+                    requests: Arc::clone(&requests),
+                    summaries: Arc::clone(&summaries),
+                    answer_after: 12,
+                }),
+                &session.id,
+            )
+            .await
+            .unwrap();
+
+        let config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(30),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let mut stream = agent
+            .reply(Message::user().with_text("count the urine"), config, None)
+            .await
+            .unwrap();
+        let mut said = Vec::new();
+        while let Some(event) = stream.next().await {
+            if let Ok(AgentEvent::Message(message)) = event {
+                for content in &message.content {
+                    match content {
+                        MessageContent::Text(text) => said.push(text.text.clone()),
+                        MessageContent::SystemNotification(notice) => said.push(notice.msg.clone()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        drop(stream);
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            5,
+            "one request per rung plus the one that finds the ladder spent: {said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|text| text.contains("Context limit still exceeded")),
+            "{said:?}"
+        );
+        assert!(!said.iter().any(|text| text == "Five."), "{said:?}");
     }
 }

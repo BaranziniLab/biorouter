@@ -281,6 +281,13 @@ fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
 /// per model and is rejected until then (Anthropic platform-availability
 /// table, 2026-09-25), so stripping is the only request that works for every
 /// account. Every other model replays its reasoning exactly as before.
+///
+/// A Claude model never gets an UNSIGNED reasoning block either. Those are
+/// another provider's thinking — a local Ollama or Llama Server model earlier
+/// in the chat stores what it showed with an empty signature — and
+/// [`to_bedrock_message_content`] would send one as `ReasoningText` with no
+/// signature, which Claude refuses. Other Bedrock models (DeepSeek-R1,
+/// gpt-oss) produce unsigned reasoning of their own and keep replaying it.
 pub fn to_bedrock_messages(
     model_name: &str,
     messages: &[Message],
@@ -288,6 +295,13 @@ pub fn to_bedrock_messages(
     let visible = messages.iter().filter(|m| m.is_agent_visible());
     if super::anthropic::uses_preserved_thinking(model_name) {
         super::anthropic::without_replayed_thinking(visible)
+            .iter()
+            .map(to_bedrock_message)
+            .collect()
+    } else if super::anthropic::requires_signed_thinking(model_name)
+        && messages.iter().any(super::anthropic::has_unsigned_thinking)
+    {
+        super::anthropic::without_unsigned_thinking(visible)
             .iter()
             .map(to_bedrock_message)
             .collect()
@@ -3185,6 +3199,48 @@ mod tests {
             .flat_map(|message| message.content())
             .filter(|block| matches!(block, bedrock::ContentBlock::ReasoningContent(_)))
             .count()
+    }
+
+    /// Claude on Bedrock never receives an UNSIGNED reasoning block — another
+    /// provider's thinking, stored by a local model earlier in the chat — as
+    /// `ReasoningText` without a signature, which Claude refuses. Its own
+    /// signed reasoning still replays, and a model that produces unsigned
+    /// reasoning itself (DeepSeek-R1) keeps replaying all of it.
+    #[test]
+    fn to_bedrock_messages_drops_unsigned_reasoning_only_for_claude() {
+        let history = vec![
+            Message::user().with_text("first"),
+            Message::assistant().with_thinking("local only", ""),
+            Message::assistant()
+                .with_thinking("local", "")
+                .with_text("answer"),
+            Message::user().with_text("second"),
+            Message::assistant()
+                .with_thinking("claude", "sig-1")
+                .with_text("answer two"),
+            Message::user().with_text("third"),
+        ];
+        for model in [
+            "us.anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-opus-5",
+        ] {
+            let sent = to_bedrock_messages(model, &history).unwrap();
+            assert_eq!(reasoning_blocks(&sent), 1, "{model}: only the signed block");
+            let roles: Vec<_> = sent.iter().map(|m| m.role().clone()).collect();
+            assert_eq!(
+                roles,
+                [
+                    bedrock::ConversationRole::User,
+                    bedrock::ConversationRole::Assistant,
+                    bedrock::ConversationRole::User,
+                    bedrock::ConversationRole::Assistant,
+                    bedrock::ConversationRole::User,
+                ],
+                "{model}: the reasoning-only row is gone and the roles alternate"
+            );
+        }
+        let sent = to_bedrock_messages("deepseek.r1-v1:0", &history).unwrap();
+        assert_eq!(reasoning_blocks(&sent), 3, "unchanged off Claude");
     }
 
     /// Preserved-thinking models (Opus 5.5, Fable 5.1) bind a reasoning block

@@ -268,6 +268,10 @@ fn infer_type(schema: &Value) -> Option<String> {
 }
 
 fn extract_type_from_schema(schema: &Value) -> Option<String> {
+    if let Some(value) = schema.get("const").and_then(Value::as_str) {
+        return Some(Value::String(value.to_string()).to_string());
+    }
+
     // enum array (github-mcp style)
     if let Some(arr) = schema.get("enum").and_then(|e| e.as_array()) {
         let vals: Vec<_> = arr.iter().filter_map(|v| v.as_str()).collect();
@@ -276,14 +280,13 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
         }
     }
 
-    // oneOf with const (schemars enums)
     if let Some(arr) = schema.get("oneOf").and_then(|o| o.as_array()) {
-        let vals: Vec<_> = arr
+        let types = arr
             .iter()
-            .filter_map(|v| v.get("const")?.as_str())
-            .collect();
-        if !vals.is_empty() {
-            return Some(quote_join(&vals));
+            .map(extract_type_from_schema)
+            .collect::<Option<Vec<_>>>()?;
+        if !types.is_empty() {
+            return Some(types.join(" | "));
         }
     }
 
@@ -297,10 +300,10 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
             return extract_type_from_schema(non_null[0]).or_else(|| infer_type(non_null[0]));
         }
         if non_null.len() > 1 {
-            let types: Vec<_> = non_null
+            let types = non_null
                 .iter()
-                .filter_map(|v| extract_type_from_schema(v).or_else(|| infer_type(v)))
-                .collect();
+                .map(|v| extract_type_from_schema(v).or_else(|| infer_type(v)))
+                .collect::<Option<Vec<_>>>()?;
             if !types.is_empty() {
                 return Some(types.join(" | "));
             }
@@ -316,6 +319,8 @@ fn extract_type_from_schema(schema: &Value) -> Option<String> {
                 .unwrap_or_else(|| "any".to_string());
             Some(if item_type == "any" {
                 "array".into()
+            } else if item_type.contains(" | ") {
+                format!("({item_type})[]")
             } else {
                 format!("{item_type}[]")
             })
@@ -368,6 +373,11 @@ struct ToolInfo {
     description: String,
     params: Vec<(String, String, bool)>,
     return_type: String,
+    /// Each parameter's own description, by name. Read only to explain a
+    /// failed call (`member_call_hints`): `developer__text_editor` documents
+    /// its `command` values there ("Allowed options are: `view`, `write`, …")
+    /// rather than as a schema `enum`.
+    param_docs: BTreeMap<String, String>,
 }
 
 impl ToolInfo {
@@ -389,6 +399,15 @@ impl ToolInfo {
                     .unwrap_or_else(|| "any".to_string());
                 let required = schema.required.contains(name);
                 (name.clone(), ty, required)
+            })
+            .collect();
+
+        let param_docs = schema
+            .properties
+            .iter()
+            .filter_map(|(name, property)| {
+                let doc = property.get("description")?.as_str()?;
+                Some((name.clone(), doc.to_string()))
             })
             .collect();
 
@@ -414,6 +433,7 @@ impl ToolInfo {
                 .unwrap_or_default(),
             params,
             return_type,
+            param_docs,
         })
     }
 
@@ -792,6 +812,307 @@ fn annotate_opaque_js_error(message: &str) -> String {
     } else {
         message.to_string()
     }
+}
+
+/// [`annotate_opaque_js_error`], plus — when the script calls a METHOD on a tool
+/// or a module that has no such member — a sentence naming that call and the
+/// call that works.
+///
+/// Measured (2026-10-10, Gemma 4 31B on Ollama and on Llama Server, the
+/// factorial task): the model wrote `text_editor.write({file, file_text})` and
+/// then `shell.shell({command})`, got the generic "Something you called is not
+/// a function" every time, and repeated the call until the tool-loop guard
+/// stopped the turn. The model had read the export as a namespace of
+/// sub-commands; the generic hint names no callee, so nothing told it that
+/// `text_editor` IS the function and `write` is a value of its `command`
+/// argument. Each hint here is a statement about the script, not a guess about
+/// which call threw: a property the tool function or the module does not have
+/// is `undefined`, so calling it cannot work wherever it runs.
+fn annotate_js_error_for_script(code: &str, tools: &[ToolInfo], message: &str) -> String {
+    if !message.contains(BOA_NOT_CALLABLE) {
+        return message.to_string();
+    }
+    let hints = member_call_hints(code, tools);
+    if hints.is_empty() {
+        annotate_opaque_js_error(message)
+    } else {
+        format!("{message}. {}", hints.join(" "))
+    }
+}
+
+/// What a name the script imported is bound to.
+enum ScriptBinding<'a> {
+    /// A tool's function (`import { shell } from "developer"`).
+    Tool(&'a ToolInfo),
+    /// A module's namespace (`import * as dev from "developer"`, or the
+    /// server-name export `import { developer } from "developer"`).
+    Module(&'a str),
+}
+
+/// The names the script's `import` statements bind, each with what it names.
+/// A specifier that names nothing the module exports is left out: the loader
+/// already refuses those with its own message.
+fn script_bindings<'a>(code: &str, tools: &'a [ToolInfo]) -> BTreeMap<String, ScriptBinding<'a>> {
+    static NAMED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static STAR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let named = NAMED.get_or_init(|| {
+        Regex::new(r#"import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']"#)
+            .expect("static regex compiles")
+    });
+    let star = STAR.get_or_init(|| {
+        Regex::new(r#"import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*["']([^"']+)["']"#)
+            .expect("static regex compiles")
+    });
+    let tool = |server: &str, name: &str| {
+        tools
+            .iter()
+            .find(|t| t.server_name == server && t.tool_name == name)
+    };
+    let mut bindings = BTreeMap::new();
+    for caps in named.captures_iter(code) {
+        let server = &caps[2];
+        for spec in caps[1].split(',') {
+            let mut words = spec.split_whitespace();
+            let Some(name) = words.next() else { continue };
+            let local = match (words.next(), words.next()) {
+                (Some("as"), Some(alias)) => alias,
+                _ => name,
+            };
+            // A tool named like its server (`chatrecall`) is ONE callable
+            // export carrying its siblings; it is read as the module, so a
+            // sibling call through it is not flagged.
+            if let Some(server_tools) = tools.iter().find(|t| t.server_name == server) {
+                if name == server {
+                    bindings.insert(
+                        local.to_string(),
+                        ScriptBinding::Module(server_tools.server_name.as_str()),
+                    );
+                    continue;
+                }
+            }
+            if let Some(info) = tool(server, name) {
+                bindings.insert(local.to_string(), ScriptBinding::Tool(info));
+            }
+        }
+    }
+    for caps in star.captures_iter(code) {
+        if let Some(info) = tools.iter().find(|t| t.server_name == caps[2]) {
+            bindings.insert(
+                caps[1].to_string(),
+                ScriptBinding::Module(info.server_name.as_str()),
+            );
+        }
+    }
+    bindings
+}
+
+/// The values a parameter is documented to take: the quoted literals of its
+/// schema type (`"view" | "write"`), else the backticked words of its
+/// description.
+fn documented_values(info: &ToolInfo, param: &str, ty: &str) -> Vec<String> {
+    static QUOTED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static TICKED: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r#""([^"]+)""#).expect("static regex compiles"));
+    let ticked =
+        TICKED.get_or_init(|| Regex::new(r"`([A-Za-z_][\w-]*)`").expect("static regex compiles"));
+    let from_type: Vec<String> = quoted.captures_iter(ty).map(|c| c[1].to_string()).collect();
+    if !from_type.is_empty() {
+        return from_type;
+    }
+    info.param_docs
+        .get(param)
+        .map(|doc| {
+            ticked
+                .captures_iter(doc)
+                .map(|c| c[1].to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The REQUIRED parameter of `info` that documents `member` as one of its
+/// values — `command` for `text_editor` and `write`. Only a required one: an
+/// optional parameter's description mentions words in backticks for all sorts
+/// of reasons (`shell`'s `working_directory` names `cd` and `command`), and it
+/// is the required selector a sub-command call was reaching for.
+fn selector_for<'a>(info: &'a ToolInfo, member: &str) -> Option<&'a str> {
+    info.params
+        .iter()
+        .find(|(name, ty, required)| {
+            *required
+                && documented_values(info, name, ty)
+                    .iter()
+                    .any(|v| v == member)
+        })
+        .map(|(name, _, _)| name.as_str())
+}
+
+/// The call that does what `callee.member(…)` was reaching for, written the
+/// way the model will copy it: `text_editor({command: "write", path,
+/// file_text})`. When one of the tool's parameters documents `member` as a
+/// value, it is passed there, and every parameter whose description names
+/// `member` (`file_text`: "Required for `write` command.") is listed beside
+/// the required ones.
+fn call_shape(callee: &str, info: &ToolInfo, member: &str) -> String {
+    let selector = selector_for(info, member);
+    let tick = format!("`{member}`");
+    let mut fields: Vec<String> = Vec::new();
+    if let Some(selector) = selector {
+        fields.push(format!("{selector}: \"{member}\""));
+    }
+    // Required arguments first, then the ones this sub-command needs.
+    let others = info
+        .params
+        .iter()
+        .filter(|(name, _, _)| Some(name.as_str()) != selector);
+    for (name, _, required) in others.clone() {
+        if *required {
+            fields.push(name.clone());
+        }
+    }
+    if selector.is_some() {
+        for (name, _, required) in others {
+            if !*required
+                && info
+                    .param_docs
+                    .get(name)
+                    .is_some_and(|doc| doc.contains(&tick))
+            {
+                fields.push(name.clone());
+            }
+        }
+    }
+    format!("{callee}({{{}}})", fields.join(", "))
+}
+
+/// The "`server`" module's tool `name`, if `tools` has one.
+fn server_tool<'a>(tools: &'a [ToolInfo], server: &str, name: &str) -> Option<&'a ToolInfo> {
+    tools
+        .iter()
+        .find(|t| t.server_name == server && t.tool_name == name)
+}
+
+/// Why `callee.member(…)` cannot work when `callee` is the tool `info` itself:
+/// a function with no methods. `member` is either a sibling tool of the same
+/// module (import it) or a value of this tool's own arguments (pass it).
+fn tool_member_hint(callee: &str, info: &ToolInfo, member: &str, tools: &[ToolInfo]) -> String {
+    // `shell.shell(…)` names the tool itself, not a sibling.
+    if let Some(sibling) = server_tool(tools, &info.server_name, member)
+        .filter(|sibling| sibling.tool_name != info.tool_name)
+    {
+        return format!(
+            "`{callee}.{member}(…)` cannot work: `{callee}` is the \"{server}\" tool \
+             `{tool}` itself, a function with no methods, and `{member}` is a separate tool \
+             of the same module. Import it and call it directly: \
+             import {{ {member} }} from \"{server}\"; {shape}.",
+            server = info.server_name,
+            tool = info.tool_name,
+            shape = call_shape(member, sibling, member),
+        );
+    }
+    format!(
+        "`{callee}.{member}(…)` cannot work: `{callee}` is the \"{server}\" tool `{tool}` \
+         itself, a function with no methods, so `{callee}.{member}` is undefined. Call the \
+         tool directly, with an object of its arguments: {shape}. Its full signature: \
+         {signature}.",
+        server = info.server_name,
+        tool = info.tool_name,
+        shape = call_shape(callee, info, member),
+        signature = info.to_signature(),
+    )
+}
+
+/// Why `first.second(…)` cannot work when `first` is the module "`server`" and
+/// it has no tool `second`; `None` when it has one.
+fn module_member_hint(
+    first: &str,
+    second: &str,
+    server: &str,
+    tools: &[ToolInfo],
+) -> Option<String> {
+    if server_tool(tools, server, second).is_some() {
+        return None;
+    }
+    let names: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.server_name == server)
+        .map(|t| t.tool_name.as_str())
+        .collect();
+    // A sub-command the model hoisted to the module (`developer.write(…)`):
+    // name the tool that takes it.
+    let owner = tools
+        .iter()
+        .filter(|t| t.server_name == server)
+        .find(|t| selector_for(t, second).is_some());
+    Some(match owner {
+        Some(owner) => format!(
+            "`{first}.{second}(…)` cannot work: module \"{server}\" has no tool \
+             `{second}`; `{second}` is a value of the `{tool}` tool's arguments. \
+             Call: {shape}.",
+            tool = owner.tool_name,
+            shape = call_shape(&format!("{first}.{}", owner.tool_name), owner, second),
+        ),
+        None => format!(
+            "`{first}.{second}(…)` cannot work: module \"{server}\" has no tool \
+             `{second}`. Its tools: {}.",
+            names.join(", ")
+        ),
+    })
+}
+
+/// One sentence per `x.member(…)` / `x.tool.member(…)` call in `code` that can
+/// never work, at most three.
+fn member_call_hints(code: &str, tools: &[ToolInfo]) -> Vec<String> {
+    static CALL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let call = CALL.get_or_init(|| {
+        Regex::new(
+            r"([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)(?:\s*\.\s*([A-Za-z_$][\w$]*))?\s*\(",
+        )
+        .expect("static regex compiles")
+    });
+    // What every function has, so `shell.call(…)` is not flagged.
+    const FUNCTION_MEMBERS: [&str; 4] = ["call", "apply", "bind", "toString"];
+    let bindings = script_bindings(code, tools);
+    if bindings.is_empty() {
+        return Vec::new();
+    }
+    let mut hints: Vec<String> = Vec::new();
+    for caps in call.captures_iter(code) {
+        let whole = caps.get(0).expect("group 0 always matches");
+        // `a.b.c(` read from `b`: a property chain, not a name the script bound.
+        if code
+            .get(..whole.start())
+            .is_some_and(|before| before.trim_end().ends_with('.'))
+        {
+            continue;
+        }
+        let first = &caps[1];
+        let second = &caps[2];
+        let third = caps.get(3).map(|m| m.as_str());
+        let hint = match (bindings.get(first), third) {
+            (Some(ScriptBinding::Tool(info)), None) if !FUNCTION_MEMBERS.contains(&second) => {
+                Some(tool_member_hint(first, info, second, tools))
+            }
+            (Some(ScriptBinding::Module(server)), None) => {
+                module_member_hint(first, second, server, tools)
+            }
+            (Some(ScriptBinding::Module(server)), Some(member)) => {
+                server_tool(tools, server, second)
+                    .filter(|_| !FUNCTION_MEMBERS.contains(&member))
+                    .map(|info| tool_member_hint(&format!("{first}.{second}"), info, member, tools))
+            }
+            _ => None,
+        };
+        if let Some(hint) = hint {
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+        if hints.len() == 3 {
+            break;
+        }
+    }
+    hints
 }
 
 /// Bash/zsh parameter-expansion shapes (`${!v}`, `${#arr}`, `${VAR:-default}`,
@@ -1253,7 +1574,7 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<String, String>
         }
         PromiseState::Rejected(err) => Err(format!(
             "Module error: {}",
-            annotate_opaque_js_error(&err.display().to_string())
+            annotate_js_error_for_script(code, tools, &err.display().to_string())
         )),
         PromiseState::Pending => Err("Module evaluation did not complete".to_string()),
     }
@@ -2135,6 +2456,7 @@ impl CodeExecutionClient {
                     description: String::new(),
                     params: Vec::new(),
                     return_type: String::new(),
+                    param_docs: BTreeMap::new(),
                 };
                 (module_search_match_score(&probe, matcher) > 0).then(|| (*full_name).to_string())
             })
@@ -4236,6 +4558,7 @@ mod tests {
             description: "Execute shell commands".to_string(),
             params: vec![("command".to_string(), "string".to_string(), true)],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         // Nothing in the catalogue matches, and the thing the caller wanted can
@@ -4326,6 +4649,7 @@ mod tests {
                 description: "Execute shell commands".to_string(),
                 params: vec![("command".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "developer".to_string(),
@@ -4334,6 +4658,7 @@ mod tests {
                 description: "Edit text files".to_string(),
                 params: vec![("path".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "git".to_string(),
@@ -4342,6 +4667,7 @@ mod tests {
                 description: "Commit changes to git".to_string(),
                 params: vec![("message".to_string(), "string".to_string(), true)],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4421,6 +4747,7 @@ mod tests {
             description: "Search past chat or load session summaries".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         let result = CodeExecutionClient::handle_search(
@@ -4492,6 +4819,7 @@ mod tests {
                     ("url".to_string(), "string".to_string(), true),
                 ],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "cdwagent".to_string(),
@@ -4500,6 +4828,7 @@ mod tests {
                 description: "Search clinical notes".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "webdocuments".to_string(),
@@ -4508,6 +4837,7 @@ mod tests {
                 description: "Read and write spreadsheets".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4578,6 +4908,7 @@ mod tests {
             description: "\n    Fetch URLs for web and API research.\n    More detail.".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         };
 
         assert!(tool
@@ -4595,6 +4926,7 @@ mod tests {
                 description: "Execute shell commands".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
             ToolInfo {
                 server_name: "developer".to_string(),
@@ -4603,6 +4935,7 @@ mod tests {
                 description: "Edit text files".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             },
         ];
 
@@ -4728,6 +5061,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn knowledge_raw_source_signature_preserves_discriminated_input() {
+        use biorouter_mcp::knowledge::server::AddRawSourceParams;
+
+        let input_schema = serde_json::to_value(schema_for!(AddRawSourceParams))
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        let tool = McpTool::new(
+            "knowledge__kb_add_raw_source".to_string(),
+            "Add a raw source (URL or pasted text).".to_string(),
+            input_schema,
+        );
+        let info = ToolInfo::from_mcp_tool(&tool).unwrap();
+        let source_type =
+            "{ kind: \"url\", url: string } | { kind: \"text\", text: string, title?: string }";
+        assert_eq!(
+            info.to_signature(),
+            format!(
+                "knowledge[\"kb_add_raw_source\"]({{kb_id: string, source: {source_type}, txn?: string}}): string - Add a raw source (URL or pasted text)."
+            )
+        );
+        let discovery = render_module_search_results(&[(1, &info)], 1);
+        assert!(discovery.contains(&format!("source: {source_type}")));
+        assert!(!discovery.contains("source: any"));
+    }
+
+    #[test_case("oneOf"; "object oneOf")]
+    #[test_case("anyOf"; "object anyOf")]
+    fn structured_schema_union_preserves_discriminants(composition: &str) {
+        let branches = serde_json::json!([
+            {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "text" },
+                    "text": { "type": "string" }
+                },
+                "required": ["kind", "text"]
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "const": "url" },
+                    "url": { "type": "string" }
+                },
+                "required": ["kind", "url"]
+            }
+        ]);
+        let mut schema = serde_json::Map::new();
+        schema.insert(composition.to_string(), branches);
+        let schema = Value::Object(schema);
+        let expected = "{ kind: \"text\", text: string } | { kind: \"url\", url: string }";
+        assert_eq!(extract_type_from_schema(&schema).as_deref(), Some(expected));
+        assert_eq!(
+            extract_type_from_schema(&serde_json::json!({
+                "type": "array",
+                "items": schema
+            })),
+            Some(format!("({expected})[]"))
+        );
+    }
+
+    #[test]
+    fn discriminant_string_literals_keep_json_escaping() {
+        assert_eq!(
+            extract_type_from_schema(&serde_json::json!({
+                "type": "string",
+                "const": "quoted \"value\""
+            })),
+            Some("\"quoted \\\"value\\\"\"".to_string())
+        );
+    }
+
+    #[test_case("oneOf"; "object oneOf")]
+    #[test_case("anyOf"; "object anyOf")]
+    fn structured_schema_union_does_not_drop_unresolved_alternatives(composition: &str) {
+        let mut schema = serde_json::Map::new();
+        schema.insert(
+            composition.to_string(),
+            serde_json::json!([{ "$ref": "#/$defs/unresolved" }, { "type": "string" }]),
+        );
+        assert_eq!(extract_type_from_schema(&Value::Object(schema)), None);
+    }
+
     fn eval_with_tools(code: &str, tools: &[(&str, &str)]) -> String {
         let mut ctx = Context::default();
         for &(name, response) in tools {
@@ -4770,6 +5188,7 @@ mod tests {
                 description: "A tool".to_string(),
                 params: vec![],
                 return_type: "string".to_string(),
+                param_docs: BTreeMap::new(),
             })
             .collect()
     }
@@ -4897,6 +5316,133 @@ mod tests {
                 && error.contains("imported module member")
                 && error.contains("One possible cause is a tool result"),
             "the hint must offer checks and possibilities without inventing one cause: {error}"
+        );
+    }
+
+    /// The developer tools exactly as the model sees them: built from the
+    /// shipped parameter structs, so the docs the hint reads (`command`'s
+    /// "Allowed options are: `view`, `write`, …", `file_text`'s "Required for
+    /// `write` command.") are the real ones.
+    fn real_developer_tools() -> Vec<ToolInfo> {
+        use biorouter_mcp::developer::rmcp_developer::{ShellParams, TextEditorParams};
+        let tool = |name: &str, schema: schemars::Schema| {
+            let input_schema = serde_json::to_value(schema)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
+            ToolInfo::from_mcp_tool(&McpTool {
+                name: name.to_string().into(),
+                title: None,
+                description: Some("A developer tool".into()),
+                input_schema: Arc::new(input_schema),
+                output_schema: None,
+                annotations: None,
+                icons: None,
+                meta: None,
+            })
+            .unwrap()
+        };
+        vec![
+            tool("developer__text_editor", schema_for!(TextEditorParams)),
+            tool("developer__shell", schema_for!(ShellParams)),
+        ]
+    }
+
+    fn not_callable_error(code: &str) -> String {
+        let tools = real_developer_tools();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let error = run_js_module(code, &tools, tx).expect_err("the call cannot work");
+        assert!(error.contains(BOA_NOT_CALLABLE), "{error}");
+        error
+    }
+
+    /// Gemma 4 31B's two scripts from the factorial task, which it repeated
+    /// until the tool-loop guard ended the turn. The error now names the
+    /// member that is not callable and gives the call that works, in the
+    /// shape the model copies.
+    #[test]
+    fn a_method_called_on_a_tool_names_the_member_and_the_working_call() {
+        let error = not_callable_error(
+            "import { text_editor } from \"developer\";\n\
+             const code = `print(1)`;\n\
+             text_editor.write({ file: \"factorial.py\", file_text: code });",
+        );
+        assert!(
+            error.contains("`text_editor.write(…)` cannot work"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+        assert!(
+            !error.contains("One possible cause is a tool result"),
+            "the specific diagnosis replaces the generic one: {error}"
+        );
+
+        let error = not_callable_error(
+            "import { shell } from \"developer\";\n\
+             shell.shell({ command: \"python3 factorial.py 20\" });",
+        );
+        assert!(error.contains("`shell.shell(…)` cannot work"), "{error}");
+        assert!(
+            error.contains("is the \"developer\" tool `shell` itself"),
+            "{error}"
+        );
+        assert!(error.contains("shell({command})"), "{error}");
+    }
+
+    /// The same mistake through the other import forms, and the sub-command
+    /// hoisted to the module itself.
+    #[test]
+    fn a_member_call_is_explained_through_every_import_form() {
+        let error = not_callable_error(
+            "import * as dev from \"developer\";\n\
+             dev.text_editor.write({ path: \"a.py\", file_text: \"x\" });",
+        );
+        assert!(
+            error.contains("`dev.text_editor.write(…)` cannot work"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"dev.text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+
+        let error = not_callable_error(
+            "import { text_editor as te } from \"developer\";\n\
+             te.view({ path: \"a.py\" });",
+        );
+        assert!(error.contains(r#"te({command: "view", path})"#), "{error}");
+
+        let error = not_callable_error(
+            "import { developer } from \"developer\";\n\
+             developer.write({ path: \"a.py\", file_text: \"x\" });",
+        );
+        assert!(
+            error.contains("module \"developer\" has no tool `write`"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r#"developer.text_editor({command: "write", path, file_text})"#),
+            "{error}"
+        );
+
+        let error = not_callable_error(
+            "import * as dev from \"developer\";\n\
+             dev.read_file({ path: \"a.py\" });",
+        );
+        assert!(error.contains("Its tools: text_editor, shell"), "{error}");
+
+        // A sibling tool reached through another tool's name.
+        let error = not_callable_error(
+            "import { text_editor } from \"developer\";\n\
+             text_editor.shell({ command: \"ls\" });",
+        );
+        assert!(
+            error.contains(r#"import { shell } from "developer"; shell({command})"#),
+            "{error}"
         );
     }
 
@@ -5329,6 +5875,7 @@ record_result([
             description: "Get a value".to_string(),
             params: vec![],
             return_type: "string".to_string(),
+            param_docs: BTreeMap::new(),
         }];
 
         let (tx, _rx) = mpsc::unbounded_channel();

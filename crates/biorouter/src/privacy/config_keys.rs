@@ -37,42 +37,34 @@ pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
     // `ollama`/`llamacpp` across the tier boundary in both directions.
     "OLLAMA_HOST",
     "LLAMACPP_EXTERNAL_HOST",
+    // The other half of `/agent/start`'s bind. Not a capability key until
+    // 2026-10: no `tier()` read the model name, so it was classified in the
+    // NOT list below (the 2026-09-12 review's Finding 2, which had found it in
+    // neither). `ollama`'s `tier()` now does — a cloud tag
+    // (`gpt-oss:120b-cloud`) is Public even through a loopback `OLLAMA_HOST`,
+    // because Ollama forwards the conversation to ollama.com — so with
+    // `BIOROUTER_PROVIDER=ollama` this key moves the default across the tier
+    // boundary in both directions, exactly as `OLLAMA_HOST` does: a local tag
+    // to a cloud one sends every new chat off the machine, a cloud tag to a
+    // local one is a raise. Left ungated, a caller holding only the daemon
+    // secret could do with this key what `BIOROUTER_PROVIDER` and
+    // `OLLAMA_HOST` refuse it.
+    //
+    // The cost the old row warned of — every model switch becomes a user act —
+    // is what the renderer already pays: `ConfigContext`'s `upsert`/`remove`
+    // are its only paths to these routes and send the proof on every call, and
+    // `/config/set_provider` (the usual switch) already required it.
+    //
+    // Read through the `config_value!` macro (base.rs), like `BIOROUTER_PROVIDER`,
+    // so the literal never appears in a `get_param(` call and the scan below
+    // cannot see it. Seeded, and the test ties the seed to the `tier()` read
+    // that justifies it.
+    "BIOROUTER_MODEL",
 ];
 
 /// Every other key the tier-input files read, each with the reason it does not
 /// determine capability. A key must be in exactly one of these two lists.
 pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
-    // The other half of `/agent/start`'s bind, and the 2026-09-12 review's
-    // Finding 2: it was in NEITHER list, so any caller holding only the daemon
-    // secret could write it without proof, on every daemon including the
-    // desktop's. Classified rather than guarded, because the classification is
-    // what the guard would have to be justified by, and it comes out the other
-    // way: no `tier()` implementation reads the model name. All five tier-input
-    // providers were checked — both Versa modules resolve
-    // `ucsf_gateway_tier(endpoint)`, `ollama` and `llamacpp` resolve
-    // `self_hosted_tier(base_url)`, and `LeadWorkerProvider` takes the `least` of
-    // its two halves — and a model name is a *string*, so it cannot smuggle a
-    // persisted provider binding either: those live in
-    // `ModelConfig::request_params`, which `ModelConfig::new` leaves empty.
-    //
-    // What an unproven write to it DOES permit is an integrity and availability
-    // problem, recorded so nobody mistakes it for nothing:
-    // every new chat starts on a model the operator did not choose (a cheaper or
-    // weaker one, or a different Versa deployment inside the same private
-    // gateway), or on none at all, because `configured_new_session_provider`
-    // requires both halves and answers `400` when only one is set. Neither moves
-    // a tier. ⚠ **On SD-12's keyless path it is nevertheless pinned to the launch
-    // configuration** (`biorouter_server::launch::pinned_config_keys`) — not
-    // because it decides capability, but because the exemption there is for the
-    // operator's own declaration and this is half of it.
-    //
-    // Read through the `config_value!` macro (base.rs), like `BIOROUTER_PROVIDER`,
-    // so the literal never appears in a `get_param(` call and the scan below
-    // cannot see it. Seeded, and the test asserts the seed survives.
-    (
-        "BIOROUTER_MODEL",
-        "names which model runs, never which tier: no `tier()` reads the model name",
-    ),
     ("BIOROUTER_CONTEXT_LIMIT", "token budget, not a tier input"),
     (
         "BIOROUTER_LEAD_TURNS",
@@ -82,6 +74,13 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     ("BIOROUTER_LEAD_FALLBACK_TURNS", "handoff policy"),
     ("BIOROUTER_WORKER_CONTEXT_LIMIT", "token budget"),
     ("OLLAMA_TIMEOUT", "transport timeout"),
+    // The native `/api/chat` request's options (2026-10). Each is sent to the
+    // server `OLLAMA_HOST` already names, so none moves a request off this
+    // machine: the window the model gets, how long that server keeps it
+    // loaded, and whether it reasons before answering.
+    ("OLLAMA_NUM_CTX", "token budget, sent as options.num_ctx"),
+    ("OLLAMA_KEEP_ALIVE", "model residency on the same server"),
+    ("OLLAMA_THINK", "reasoning control, sent to the same server"),
     ("LLAMACPP_TIMEOUT", "transport timeout"),
     ("LLAMACPP_STARTUP_TIMEOUT", "sidecar readiness deadline"),
     ("LLAMACPP_CONTEXT_SIZE", "token budget"),
@@ -259,10 +258,15 @@ mod tests {
         // of the two lists. Adding a config read to any of them fails this test
         // until someone decides whether it determines capability. That is the
         // checkable list: it does not depend on anyone remembering a rule.
-        let scanned = scan_get_param_keys(); // 23 today
+        // 26 measured 2026-10-10: Ollama's three native-API options joined.
+        // `LLAMACPP_ENABLE_THINKING` is NOT among them any more — its one read
+        // moved into `llamacpp_sidecar.rs`, which is not a tier-input file
+        // (the key is a sampling option either way; see its row in
+        // `destination_keys.rs`).
+        let scanned = scan_get_param_keys();
         assert_eq!(
             scanned.len(),
-            23,
+            26,
             "the tier-input files' config surface changed: {scanned:?}"
         );
         for key in &scanned {
@@ -280,21 +284,17 @@ mod tests {
         // and the scan cannot see it. It is seeded, and this asserts the seed
         // survives.
         assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
-        assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
-        // The same, for the other half of `/agent/start`'s bind. Seeded into the
-        // NOT list by the 2026-09-12 review's Finding 2, which found it in
-        // neither — see its row for why the classification comes out that way.
+        assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 6);
+        // The same, for the other half of `/agent/start`'s bind, which the scan
+        // cannot see either. Its seed is tied to its reason by
+        // `the_model_key_is_a_capability_key_exactly_while_a_tier_reads_the_model`.
         assert!(
-            NOT_CAPABILITY_CONFIG_KEYS
-                .iter()
-                .any(|(key, _why)| *key == "BIOROUTER_MODEL"),
-            "BIOROUTER_MODEL is unclassified again: it is half of the bind /agent/start performs, \
-             so leaving it out of both lists is how it went unreviewed the first time"
-        );
-        assert!(
-            !is_capability_key("BIOROUTER_MODEL"),
-            "BIOROUTER_MODEL was made a capability key; no `tier()` reads the model name, so this \
-             would make every model switch a user act without protecting a tier"
+            CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_MODEL")
+                ^ NOT_CAPABILITY_CONFIG_KEYS
+                    .iter()
+                    .any(|(key, _why)| *key == "BIOROUTER_MODEL"),
+            "BIOROUTER_MODEL is unclassified (or in both lists): it is half of the bind \
+             /agent/start performs, so leaving it out is how it went unreviewed the first time"
         );
 
         // …and the other way round: every classified key is still READ by a
@@ -317,6 +317,50 @@ mod tests {
                 "{key} is classified but no tier-input file reads it; delete its row"
             );
         }
+    }
+
+    /// The `tier()` bodies of the tier-input files that mention the bound
+    /// model's name. Read from source because the model name never passes
+    /// through `get_param`, so the key scan above cannot see this dependency.
+    fn tier_bodies_reading_the_model_name() -> Vec<&'static str> {
+        tier_input_sources()
+            .filter(|(_path, src)| {
+                src.split("fn tier(&self) -> ProviderTier {")
+                    .skip(1)
+                    .any(|rest| {
+                        // The body runs to the method's closing brace at the
+                        // trait-impl indent.
+                        let body = rest.split("\n    }\n").next().unwrap_or(rest);
+                        body.contains("model_name")
+                    })
+            })
+            .map(|(path, _src)| path)
+            .collect()
+    }
+
+    /// Review of 2026-10-10: the model key was classified NOT capability on the
+    /// ground that "no `tier()` reads the model name", and `ollama`'s `tier()`
+    /// had since started to (a cloud tag is Public through a loopback host), so
+    /// an unproven `/config/upsert` could move every new chat between a local
+    /// model and ollama.com. The classification now follows the read, both
+    /// ways: if no `tier()` reads the name any more, this fails and asks for the
+    /// key to be reconsidered rather than left gated for a reason that is gone.
+    #[test]
+    fn the_model_key_is_a_capability_key_exactly_while_a_tier_reads_the_model() {
+        let readers = tier_bodies_reading_the_model_name();
+        assert_eq!(
+            readers,
+            vec!["providers/ollama.rs"],
+            "the set of `tier()` implementations that mention the model name changed; re-decide \
+             BIOROUTER_MODEL's classification (a helper the body calls with no visible \
+             `model_name` still counts as a read: check `serves_remotely` before deciding)"
+        );
+        assert_eq!(
+            is_capability_key("BIOROUTER_MODEL"),
+            !readers.is_empty(),
+            "BIOROUTER_MODEL must be a capability key exactly while a `tier()` reads the model \
+             name ({readers:?})"
+        );
     }
 
     #[test]

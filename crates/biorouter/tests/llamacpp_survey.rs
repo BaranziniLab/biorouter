@@ -1,11 +1,12 @@
 //! Comprehensive live survey of EVERY curated Llama Server model.
 //!
-//! Unlike `llamacpp_integration.rs` (one tiny model, hard assertions), this is
+//! Unlike `llamacpp_integration.rs` (one selected model, hard assertions), this is
 //! a *survey*: it walks the whole `MODEL_CATALOG`, downloads/loads each model
 //! through the real Biorouter provider + managed sidecar, and runs a battery of
 //! capability / correctness / speed / robustness checks, writing an
 //! incrementally-updated markdown report. Individual model failures are
-//! recorded, never panicked on, so one bad model never aborts the run.
+//! recorded so one bad model never aborts the battery. After the final report
+//! is saved, any failed check fails the Rust test.
 //!
 //! ```sh
 //! BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server \
@@ -17,20 +18,24 @@
 //!                            (default: every catalog entry, in order)
 //!   LLAMACPP_SURVEY_OUT      report path (default: ~/Desktop/llamacpp-survey-report.md)
 //!
-//! First run of each model includes a multi-GB Hugging Face download.
+//! First run of each model includes a multi-GB Hugging Face download (~19 GB
+//! for Qwen3.8 27B, ~18 GB for Gemma 4 31B) unless the file is already in the
+//! shared model store.
 
 use std::time::{Duration, Instant};
 
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
-use biorouter::providers::base::Provider;
-use biorouter::providers::llamacpp::{resolve_model_source, LlamaCppProvider, MODEL_CATALOG};
+use biorouter::providers::base::{Provider, Usage};
+use biorouter::providers::llamacpp::{
+    resolve_model_source, CatalogEntry, LlamaCppProvider, MODEL_CATALOG,
+};
 use biorouter::providers::llamacpp_sidecar::{global, SidecarState};
 use futures::StreamExt;
 use rmcp::{model::Tool, object};
 
 // Generous so large models on a slow link still finish DOWNLOADING within the
-// window (the xet CDN here ranges from ~0.6 to ~20 MB/s; the 26B is ~16.9 GB).
+// window (the xet CDN here ranges from ~0.6 to ~40 MB/s; each model is ~18-19 GB).
 // llama.cpp resumes partial downloads across restarts, so a kill/restart never
 // loses progress. Override with LLAMACPP_SURVEY_READY_SECS.
 fn ready_timeout() -> Duration {
@@ -75,16 +80,64 @@ struct ModelReport {
     display_name: String,
     hf_spec: String,
     download_size: String,
-    context_limit: usize,
+    native_context_limit: usize,
+    allocated_context_limit: Option<usize>,
     /// Download + load time to first Ready.
     load_secs: Option<f64>,
     availability: Check,
     correctness: Check,
     thinking_off: Check,
     tool_calling: Check,
+    /// A structured tool call from a ~30k-token prompt, the size of
+    /// Biorouter's real first turn, with its prefill rate.
+    bootstrap: Check,
     streaming: Check,
     speed_toks_per_sec: Option<f64>,
     speed: Check,
+}
+
+impl ModelReport {
+    fn failed_checks(&self) -> Vec<String> {
+        [
+            ("availability", &self.availability),
+            ("correctness", &self.correctness),
+            ("thinking-off", &self.thinking_off),
+            ("tool calling", &self.tool_calling),
+            ("bootstrap", &self.bootstrap),
+            ("streaming", &self.streaming),
+            ("speed", &self.speed),
+        ]
+        .into_iter()
+        .filter(|(_, check)| !check.pass)
+        .map(|(label, check)| format!("{}: {label}: {}", self.name, check.detail))
+        .collect()
+    }
+}
+
+fn prompt_tokens(usage: &Usage) -> i32 {
+    usage.input_tokens.unwrap_or(0) + usage.cache_read_input_tokens.unwrap_or(0)
+}
+
+fn has_paris_weather_request(message: &Message) -> bool {
+    message.content.iter().any(|content| {
+        let MessageContent::ToolRequest(request) = content else {
+            return false;
+        };
+        request.tool_call.as_ref().is_ok_and(|call| {
+            call.name == "get_weather"
+                && call
+                    .arguments
+                    .as_ref()
+                    .and_then(|arguments| arguments.get("location"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|location| {
+                        let city = location.split(',').next().unwrap_or_default().trim();
+                        ["Paris", "Paris France", "Paris FR"]
+                            .iter()
+                            .any(|paris| city.eq_ignore_ascii_case(paris))
+                    })
+        })
+    })
 }
 
 fn weather_tool() -> Tool {
@@ -156,20 +209,52 @@ async fn run_battery(report: &mut ModelReport) {
         .await
     {
         Ok((message, _)) => {
-            let has_tool = message
-                .content
-                .iter()
-                .any(|c| matches!(c, MessageContent::ToolRequest(_)));
-            report.tool_calling = if has_tool {
-                Check::ok("emitted get_weather tool request")
+            report.tool_calling = if has_paris_weather_request(&message) {
+                Check::ok("emitted a valid get_weather tool request for Paris")
             } else {
                 Check::fail(format!(
-                    "no tool call; said: {:?}",
+                    "no valid get_weather call for Paris; said: {:?}",
                     truncate(&message.as_concat_text(), 80)
                 ))
             };
         }
         Err(e) => report.tool_calling = Check::fail(format!("error: {e}")),
+    }
+
+    // 3b. Bootstrap-sized prompt: the model must still make a STRUCTURED call
+    //     from the end of a ~30k-token prompt (a truncated prompt is what made
+    //     models write tool calls as JSON text), and this times its prefill.
+    let system = format!(
+        "You are an AI agent. Always use the provided tools to answer questions.\n\n{}",
+        "The clinic's supply tracker records each delivery with a batch number, the \
+         receiving nurse, the storage room and the expiry date. Items below their reorder \
+         threshold are flagged in the weekly summary. "
+            .repeat(560)
+    );
+    let msgs = vec![Message::user()
+        .with_text("What is the weather in Paris? Use the get_weather tool to find out.")];
+    let t0 = Instant::now();
+    match provider.complete(&system, &msgs, &[weather_tool()]).await {
+        Ok((message, usage)) => {
+            let secs = t0.elapsed().as_secs_f64();
+            let input = prompt_tokens(&usage.usage);
+            report.bootstrap = if input <= 25_000 {
+                Check::fail(format!(
+                    "the prompt was only {input} tokens; expected more than 25000"
+                ))
+            } else if has_paris_weather_request(&message) {
+                Check::ok(format!(
+                    "{input} prompt tokens in {secs:.1}s (~{:.0} tok/s prefill)",
+                    input as f64 / secs
+                ))
+            } else {
+                Check::fail(format!(
+                    "{input} prompt tokens, no valid get_weather call for Paris; said: {:?}",
+                    truncate(&message.as_concat_text(), 80)
+                ))
+            };
+        }
+        Err(e) => report.bootstrap = Check::fail(format!("error: {e}")),
     }
 
     // 4. Streaming.
@@ -244,28 +329,45 @@ fn report_path() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join("Desktop/llamacpp-survey-report.md")
 }
 
-fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
+fn write_report(reports: &[ModelReport], in_progress: Option<&str>, selected_count: usize) {
     let mut md = String::new();
     md.push_str("# Llama Server: Embedded llama.cpp Model Survey\n\n");
     md.push_str(
         "Engine: Biorouter managed `llama-server` sidecar (build pinned). \
-         Host: Apple M4 Max / 128 GB. Each model tested through the real \
-         `LlamaCppProvider` (thinking-off, q8_0 KV, 32k ctx).\n\n",
+         Each model tested through the real `LlamaCppProvider` (thinking off, \
+         q8_0 KV, one slot, the memory-tiered 64k/128k window).\n\n",
     );
     if let Some(m) = in_progress {
         md.push_str(&format!("> ⏳ Currently testing: **{m}** …\n\n"));
+    } else {
+        let failed_checks: Vec<_> = reports
+            .iter()
+            .flat_map(ModelReport::failed_checks)
+            .collect();
+        let result = if reports.len() < selected_count {
+            "IN PROGRESS"
+        } else if !reports.is_empty() && failed_checks.is_empty() {
+            "PASS"
+        } else {
+            "FAIL"
+        };
+        md.push_str(&format!(
+            "Overall result: **{result}** ({} of {selected_count} selected model(s), {} failed checks).\n\n",
+            reports.len(),
+            failed_checks.len()
+        ));
     }
 
     md.push_str("## Summary\n\n");
     md.push_str(
-        "| Model | Size | Load(s) | Avail | Correct | Think-off | Tools | Stream | tok/s |\n",
+        "| Model | Size | Load(s) | Avail | Correct | Think-off | Tools | 30k-prompt tools | Stream | tok/s |\n",
     );
     md.push_str(
-        "|-------|------|--------:|:-----:|:-------:|:---------:|:-----:|:------:|------:|\n",
+        "|-------|------|--------:|:-----:|:-------:|:---------:|:-----:|:----------------:|:------:|------:|\n",
     );
     for r in reports {
         md.push_str(&format!(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             r.name,
             r.download_size,
             r.load_secs
@@ -275,6 +377,7 @@ fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
             r.correctness.mark(),
             r.thinking_off.mark(),
             r.tool_calling.mark(),
+            r.bootstrap.mark(),
             r.streaming.mark(),
             r.speed_toks_per_sec
                 .map(|t| format!("{t:.1}"))
@@ -286,8 +389,13 @@ fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
     for r in reports {
         md.push_str(&format!("### {} (`{}`)\n\n", r.display_name, r.name));
         md.push_str(&format!(
-            "- HF spec: `{}`, {}, ctx {}\n",
-            r.hf_spec, r.download_size, r.context_limit
+            "- HF spec: `{}`, {}, native context {}, allocated context {}\n",
+            r.hf_spec,
+            r.download_size,
+            r.native_context_limit,
+            r.allocated_context_limit
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "not reported".into())
         ));
         if let Some(s) = r.load_secs {
             md.push_str(&format!("- Load to Ready: {s:.1}s\n"));
@@ -313,6 +421,11 @@ fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
             r.tool_calling.detail
         ));
         md.push_str(&format!(
+            "- {} Tool call from a ~30k-token prompt: {}\n",
+            r.bootstrap.mark(),
+            r.bootstrap.detail
+        ));
+        md.push_str(&format!(
             "- {} Streaming: {}\n",
             r.streaming.mark(),
             r.streaming.detail
@@ -325,32 +438,50 @@ fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
     }
 
     let path = report_path();
-    if let Err(e) = std::fs::write(&path, md) {
-        eprintln!("failed to write report to {}: {e}", path.display());
-    }
+    std::fs::write(&path, md)
+        .unwrap_or_else(|error| panic!("failed to write report to {}: {error}", path.display()));
 }
 
-#[tokio::test]
-#[ignore = "downloads and loads every catalog model (~41 GB); run explicitly"]
-async fn survey_all_models() {
-    let filter: Option<Vec<String>> = std::env::var("LLAMACPP_SURVEY_MODELS").ok().map(|s| {
-        s.split(',')
-            .map(|x| x.trim().to_string())
-            .filter(|x| !x.is_empty())
-            .collect()
-    });
-
-    // When a filter is given, honor its ORDER (so callers can put a cached or
-    // small model first); otherwise walk the catalog in its natural order.
-    let entries: Vec<_> = match &filter {
+fn selected_models(filter: Option<&str>) -> Vec<&'static CatalogEntry> {
+    let entries: Vec<_> = match filter {
         Some(names) => names
-            .iter()
-            .filter_map(|n| MODEL_CATALOG.iter().find(|e| e.name == n.as_str()))
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| {
+                MODEL_CATALOG
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .unwrap_or_else(|| panic!("unknown LLAMACPP_SURVEY_MODELS model: {name:?}"))
+            })
             .collect(),
         None => MODEL_CATALOG.iter().collect(),
     };
+    assert!(
+        !entries.is_empty(),
+        "LLAMACPP_SURVEY_MODELS must select at least one model"
+    );
+    entries
+}
 
-    println!("Surveying {} model(s)", entries.len());
+#[test]
+#[should_panic(expected = "LLAMACPP_SURVEY_MODELS must select at least one model")]
+fn empty_model_selection_is_rejected() {
+    selected_models(Some(" , , "));
+}
+
+#[test]
+#[should_panic(expected = "unknown LLAMACPP_SURVEY_MODELS model")]
+fn unknown_model_selection_is_rejected() {
+    selected_models(Some("qwen3.8-27b, nonexistent-test-model"));
+}
+
+#[tokio::test]
+#[ignore = "downloads and loads every catalog model (~37 GB); run explicitly"]
+async fn survey_all_models() {
+    let entries = selected_models(std::env::var("LLAMACPP_SURVEY_MODELS").ok().as_deref());
+    let selected_count = entries.len();
+    println!("Surveying {selected_count} model(s)");
     let mut reports: Vec<ModelReport> = Vec::new();
 
     for entry in entries {
@@ -359,7 +490,7 @@ async fn survey_all_models() {
             display_name: entry.display_name.to_string(),
             hf_spec: entry.hf_spec.to_string(),
             download_size: entry.download_size.to_string(),
-            context_limit: entry.context_limit,
+            native_context_limit: entry.context_limit,
             ..Default::default()
         };
         println!(
@@ -370,14 +501,14 @@ async fn survey_all_models() {
         // Push a placeholder so the in-progress report shows this model.
         reports.push(std::mem::take(&mut report));
         let idx = reports.len() - 1;
-        write_report(&reports, Some(entry.name));
+        write_report(&reports, Some(entry.name), selected_count);
 
         // 1. Availability: ensure + wait_ready, timing the download+load.
         let source = match resolve_model_source(entry.name) {
             Ok(s) => s,
             Err(e) => {
                 reports[idx].availability = Check::fail(format!("resolve_model_source: {e}"));
-                write_report(&reports, None);
+                write_report(&reports, None, selected_count);
                 continue;
             }
         };
@@ -389,6 +520,7 @@ async fn survey_all_models() {
                     reports[idx].load_secs = Some(load);
                     let st = global().status().await;
                     if st.state == SidecarState::Ready {
+                        reports[idx].allocated_context_limit = st.context_size;
                         reports[idx].availability = Check::ok(format!("Ready in {load:.1}s"));
                         println!("  ready in {load:.1}s; running battery…");
                         run_battery(&mut reports[idx]).await;
@@ -405,24 +537,143 @@ async fn survey_all_models() {
         // Free the multi-GB model from RAM before the next one.
         global().stop().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
-        write_report(&reports, None);
+        write_report(&reports, None, selected_count);
         println!("  done: {}", summarize(&reports[idx]));
     }
 
-    write_report(&reports, None);
+    write_report(&reports, None, selected_count);
     println!("\nReport written to {}", report_path().display());
+    let failures: Vec<_> = reports
+        .iter()
+        .flat_map(ModelReport::failed_checks)
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} survey check(s) failed; report saved at {}:\n{}",
+        failures.len(),
+        report_path().display(),
+        failures.join("\n")
+    );
+    println!(
+        "All {} model(s) passed all seven survey checks.",
+        reports.len()
+    );
 }
 
 fn summarize(r: &ModelReport) -> String {
     format!(
-        "avail={} correct={} think-off={} tools={} stream={} speed={}",
+        "avail={} correct={} think-off={} tools={} bootstrap={} stream={} speed={}",
         r.availability.mark(),
         r.correctness.mark(),
         r.thinking_off.mark(),
         r.tool_calling.mark(),
+        r.bootstrap.mark(),
         r.streaming.mark(),
         r.speed_toks_per_sec
             .map(|t| format!("{t:.1}t/s"))
             .unwrap_or_else(|| "—".into()),
     )
+}
+
+#[test]
+fn weather_request_requires_a_valid_call_for_paris() {
+    let call = |name: &str, location: serde_json::Value| {
+        Message::assistant().with_tool_request(
+            "weather",
+            Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                name: name.to_string().into(),
+                arguments: Some(object!({ "location": location })),
+                meta: None,
+            }),
+        )
+    };
+    for location in [
+        "Paris",
+        " Paris, France ",
+        "PARIS FRANCE",
+        "Paris, Île-de-France",
+    ] {
+        assert!(has_paris_weather_request(&call(
+            "get_weather",
+            location.into()
+        )));
+    }
+    for location in ["London", "Parish", "London and Paris"] {
+        assert!(!has_paris_weather_request(&call(
+            "get_weather",
+            location.into()
+        )));
+    }
+    assert!(!has_paris_weather_request(&call(
+        "another_tool",
+        "Paris".into()
+    )));
+    assert!(!has_paris_weather_request(&call("get_weather", 42.into())));
+    let missing = Message::assistant().with_tool_request(
+        "weather",
+        Ok(rmcp::model::CallToolRequestParams {
+            task: None,
+            name: "get_weather".into(),
+            arguments: None,
+            meta: None,
+        }),
+    );
+    assert!(!has_paris_weather_request(&missing));
+    let invalid = Message::assistant().with_tool_request(
+        "weather",
+        Err(rmcp::model::ErrorData::internal_error(
+            "invalid tool call",
+            None,
+        )),
+    );
+    assert!(!has_paris_weather_request(&invalid));
+    assert!(!has_paris_weather_request(&Message::assistant().with_text(
+        r#"{"name":"get_weather","arguments":{"location":"Paris"}}"#,
+    )));
+}
+
+#[test]
+fn prompt_count_includes_cached_input_tokens() {
+    let usage = Usage {
+        input_tokens: Some(1_000),
+        cache_read_input_tokens: Some(30_000),
+        output_tokens: Some(50),
+        ..Usage::default()
+    };
+    assert_eq!(prompt_tokens(&usage), 31_000);
+    assert!(prompt_tokens(&usage) > 25_000);
+    assert_eq!(prompt_tokens(&Usage::default()), 0);
+}
+
+#[test]
+fn every_reported_check_is_required_for_survey_success() {
+    fn passed_report() -> ModelReport {
+        ModelReport {
+            name: "fixture".into(),
+            availability: Check::ok("ready"),
+            correctness: Check::ok("pong"),
+            thinking_off: Check::ok("answer"),
+            tool_calling: Check::ok("valid weather call"),
+            bootstrap: Check::ok("31000 prompt tokens"),
+            streaming: Check::ok("multiple chunks"),
+            speed: Check::ok("tokens reported"),
+            ..ModelReport::default()
+        }
+    }
+    assert!(passed_report().failed_checks().is_empty());
+    let failures: [fn(&mut ModelReport); 7] = [
+        |report| report.availability = Check::fail("not ready"),
+        |report| report.correctness = Check::fail("wrong answer"),
+        |report| report.thinking_off = Check::fail("empty answer"),
+        |report| report.tool_calling = Check::fail("wrong tool"),
+        |report| report.bootstrap = Check::fail("prompt too small"),
+        |report| report.streaming = Check::fail("truncated stream"),
+        |report| report.speed = Check::fail("no usage"),
+    ];
+    for fail_one in failures {
+        let mut report = passed_report();
+        fail_one(&mut report);
+        assert_eq!(report.failed_checks().len(), 1);
+    }
 }

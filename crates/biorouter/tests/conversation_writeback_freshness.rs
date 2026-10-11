@@ -38,6 +38,22 @@ const GOOD_SUMMARY: &str = "## User Intent\nThe user asked for a plot.\n\
 /// The one user message text every test seeds the turn with.
 const USER_PROMPT: &str = "Plot the data";
 
+/// The window the auto-compaction tests run in, and a reported usage over its
+/// threshold: together they force the synchronous auto-compaction at the top
+/// of `reply()`.
+///
+/// ⚠ Not a tiny window any more. The check distrusts a reported usage below the
+/// fewest tokens the request can possibly occupy, system prompt and tools
+/// included, and skips compaction when the system prompt and tools ALONE are
+/// over the threshold, since summarising the conversation cannot help then
+/// (`context_mgmt::check_if_compaction_needed`). The 100-token window with 95
+/// reported that these tests used was both, so every auto-compaction they
+/// drove was skipped. The harness's short system prompt keeps the seeded
+/// conversation a real share of the request (measured: 4.9 KB of prompt and
+/// tools beside 2.5 KB of conversation, 62,931 of the 95,000 tokens).
+const AUTO_COMPACT_WINDOW: usize = 100_000;
+const AUTO_COMPACT_USAGE: i32 = 95_000;
+
 /// A mock provider that can (a) append a foreign message to the session from
 /// inside a completion — the deterministic stand-in for a concurrent appender
 /// such as BR-71's note tool or `biorouter term log` — and (b) fail a given
@@ -412,6 +428,12 @@ async fn harness(build: impl FnOnce(RaceProvider) -> RaceProvider) -> (Harness, 
         .update_provider(provider.clone() as Arc<dyn Provider>, &session.id)
         .await
         .unwrap();
+    // A short system prompt, so the few-message conversations the
+    // auto-compaction tests seed are a real share of their request: see
+    // [`AUTO_COMPACT_WINDOW`].
+    agent
+        .override_system_prompt("You are a test agent.".to_string())
+        .await;
 
     // The session store lives under data_dir for the life of the agent.
     std::mem::forget(data_dir);
@@ -669,9 +691,9 @@ async fn a_second_overflow_in_one_turn_still_persists() {
 /// persist — i.e. its freshness basis is captured AFTER that rewrite.
 #[tokio::test(flavor = "multi_thread")]
 async fn overflow_recovery_persists_on_a_turn_that_also_auto_compacted() {
-    // A tiny context limit plus a live gauge over it forces the synchronous
-    // auto-compaction at the top of reply().
-    let (h, provider) = harness(|p| p.overflow_on(&[0]).context_limit(100)).await;
+    // A live gauge over the threshold forces the synchronous auto-compaction
+    // at the top of reply().
+    let (h, provider) = harness(|p| p.overflow_on(&[0]).context_limit(AUTO_COMPACT_WINDOW)).await;
 
     for i in 0..6 {
         h.session_manager
@@ -688,7 +710,7 @@ async fn overflow_recovery_persists_on_a_turn_that_also_auto_compacted() {
     }
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
@@ -720,7 +742,7 @@ async fn overflow_recovery_persists_on_a_turn_that_also_auto_compacted() {
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_compaction_preserves_a_concurrent_note() {
     let (h, provider) = harness(|p| {
-        p.context_limit(100)
+        p.context_limit(AUTO_COMPACT_WINDOW)
             .note_during_summarization(0, "NOTE: use the 2024 cohort")
     })
     .await;
@@ -740,7 +762,7 @@ async fn auto_compaction_preserves_a_concurrent_note() {
     }
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
@@ -768,7 +790,7 @@ async fn auto_compaction_preserves_a_concurrent_note() {
 /// Anti-false-conflict twin for the auto-compaction site.
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_compaction_still_persists_with_no_concurrent_writer() {
-    let (h, provider) = harness(|p| p.context_limit(100)).await;
+    let (h, provider) = harness(|p| p.context_limit(AUTO_COMPACT_WINDOW)).await;
 
     for i in 0..6 {
         h.session_manager
@@ -785,7 +807,7 @@ async fn auto_compaction_still_persists_with_no_concurrent_writer() {
     }
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
@@ -807,7 +829,11 @@ async fn auto_compaction_still_persists_with_no_concurrent_writer() {
 /// the model's context this turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_compaction_stale_continues_the_turn_uncompacted() {
-    let (h, provider) = harness(|p| p.context_limit(100).rewrite_during_summarization(0)).await;
+    let (h, provider) = harness(|p| {
+        p.context_limit(AUTO_COMPACT_WINDOW)
+            .rewrite_during_summarization(0)
+    })
+    .await;
 
     for i in 0..6 {
         h.session_manager
@@ -824,7 +850,7 @@ async fn auto_compaction_stale_continues_the_turn_uncompacted() {
     }
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
@@ -1233,7 +1259,7 @@ async fn a_pinned_note_survives_both_the_writeback_and_a_later_compaction() {
 async fn auto_compaction_keeps_a_pinned_message() {
     const NOTE: &str = "NOTE: the cohort is 2019, not 2024";
 
-    let (h, provider) = harness(|p| p.context_limit(100)).await;
+    let (h, provider) = harness(|p| p.context_limit(AUTO_COMPACT_WINDOW)).await;
 
     h.session_manager
         .add_message(&h.session_id, &Message::user().with_text(NOTE).pinned())
@@ -1254,7 +1280,7 @@ async fn auto_compaction_keeps_a_pinned_message() {
     }
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
@@ -1554,11 +1580,11 @@ async fn overflow_recovery_preserves_a_note_appended_between_the_auto_compaction
 
     // Small context limit + a live gauge over it => `reply()` auto-compacts
     // before the loop; `overflow_on(&[0])` then forces a second, in-loop swap.
-    let (h, provider) = harness(|p| p.overflow_on(&[0]).context_limit(100)).await;
+    let (h, provider) = harness(|p| p.overflow_on(&[0]).context_limit(AUTO_COMPACT_WINDOW)).await;
     seed_history(&h, 6).await;
     h.session_manager
         .update(&h.session_id)
-        .total_tokens(Some(95))
+        .total_tokens(Some(AUTO_COMPACT_USAGE))
         .apply()
         .await
         .unwrap();
