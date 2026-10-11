@@ -385,6 +385,43 @@ describe('the document tabs are fills, not lines (R-27)', () => {
     }
   });
 
+  it('rings the whole tab for keyboard focus, clear of its accent strip, and never after a click', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const page = await open(mode);
+      try {
+        const ring = (id: string) =>
+          page.evaluate((s) => {
+            const pill = getComputedStyle(document.getElementById(s)!);
+            const button = getComputedStyle(document.querySelector(`#${s} > [role='tab']`)!);
+            return {
+              pill: [pill.outlineStyle, pill.outlineWidth, pill.outlineOffset],
+              button: button.outlineStyle,
+            };
+          }, id);
+        await page.keyboard.press('Tab');
+        expect(
+          await page.evaluate(() => document.activeElement?.closest('.br-tab')?.id),
+          'Tab reaches the first tab’s label button'
+        ).toBe('chat-active');
+        const focused = await ring('chat-active');
+        // The ring is on the pill, 4px in: the strip is the pill's bottom 2px.
+        expect(focused.pill, `${mode} keyboard focus rings the pill`).toEqual([
+          'solid',
+          '2px',
+          '-4px',
+        ]);
+        expect(focused.button, `${mode} the label button draws no ring of its own`).toBe('none');
+        await page.click('#chat-idle > [role="tab"]');
+        await page.waitForTimeout(100);
+        expect((await ring('chat-idle')).pill[0], `${mode} no ring after a click`).toBe('none');
+        expect((await ring('chat-active')).pill[0]).toBe('none');
+      } finally {
+        await page.close();
+      }
+    }
+  });
+
   it('draws every tab’s edge in forced colours and the selected one in Highlight, at the same size', async (ctx) => {
     if (!browser) return ctx.skip();
     const rest = await open('light');

@@ -3308,6 +3308,25 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-MOTION end: tab fill ladder */
 
+/* @ws WS-MOTION begin: tab focus ring */
+/* Keyboard focus rings the whole tab, 2px inside its 8px corner. The focusable
+   is the label button INSIDE the pill: it starts after the tab's padding and
+   stops before its close control, so the base rule's inset outline on it ran
+   through the chat glyph and the ellipsis (measured in Chromium). The ring
+   moves to the pill and the button draws none. It sits 4px in, not 2: the
+   selected tab's accent strip is the bottom 2px of the pill, and a ring on the
+   pill's edge covered it. Never after a mouse click: the ring hangs on
+   `:focus-visible`, the browser's keyboard verdict. */
+.br-tab:has(> [role='tab']:focus-visible) {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -4px;
+}
+
+.br-tab > [role='tab']:focus-visible {
+  outline: none;
+}
+/* @ws WS-MOTION end: tab focus ring */
+
 .br-tab[data-active='true'] {
   /* Longhand color + image, NOT the `background` shorthand: the stripe is the
      #37 accent strip (see the header note), drawn as a straight 2px gradient
@@ -3681,6 +3700,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 @media (forced-colors: active) {
   .br-tab[data-active='true'] {
     border-color: Highlight;
+  }
+
+  /* The pill's keyboard ring, in the colour every other focus ring takes there. */
+  .br-tab:has(> [role='tab']:focus-visible) {
+    outline-color: Highlight;
   }
 }
 /* @ws WS-MOTION end: tab forced colours */
@@ -4316,7 +4340,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    `PrivacyBadge`, the app's one tier mark; the button around it is
    transparent, so the focus is an outline outside the chip, as the InfoTip's
    `asChild` form draws it: the badge's opaque fill would cover the D-15 focus
-   surface. Hover and an open menu take a step of neutral ground. */
+   surface. Hover and an open menu take the strong ground (R-27): a Public badge
+   rests on the strong fill, and the old medium step equalled it (1.0:1 in dark),
+   so a hover on it could not be seen. */
 .br-knowledge-tier {
   display: inline-flex;
   flex-shrink: 0;
@@ -4339,7 +4365,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 .br-knowledge-tier:hover [data-testid='privacy-badge'],
 .br-knowledge-tier[data-state='open'] [data-testid='privacy-badge'] {
-  background-color: var(--background-medium);
+  background-color: var(--background-strong);
 }
 
 .br-knowledge-tier:disabled {
