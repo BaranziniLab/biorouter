@@ -196,13 +196,13 @@ executable launchers for all three OSes (`run.command` / `run.sh` /
 never carries `workspace/`, a `.vault`, `.git` or `node_modules` folder, a file
 named like a credential, or a link. The launchers install into the store the
 daemon really reads on each OS and never over a different app, and they re-sync
-an installed copy only while it is what the folder was exported from or what a
-launcher last installed (a SHA-256 of the installed files the export records), so
-an edit made in place or a newer Biorouter's rebuild is never reverted.
+an installed copy only while it is what the folder was exported from or what this
+same export folder last installed (a SHA-256 of authored runtime files, with the
+daemon's SDK and bundle omitted), so independent installed edits are preserved
+and the recipient's refreshed SDK survives subsequent source edits.
 
-The tool writes only into a folder of the user's own (the home folder or an
-external drive, never a hidden folder, an application's data folder or a
-`node_modules`/`site-packages` folder), and `replace` keeps the earlier export
+The tool writes only below Desktop, Documents or Downloads, never inside a
+hidden folder or a `node_modules`/`site-packages` folder, and `replace` keeps the earlier export
 beside the new one rather than deleting it, refusing one that has gained files
 the export does not write. See the
 [export guide](../apps-sdk/sdk-reference.md#export-guide).

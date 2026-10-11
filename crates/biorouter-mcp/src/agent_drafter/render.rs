@@ -1148,19 +1148,19 @@ pub const SHIPPED_SKILL_NAMES: &[&str] = &[
     "knowledge-ingest-biookf",
     "knowledge-lint",
     "update-soul",
+    "knowledge-bases",
 ];
 
 /// What the store's copy of an app held when an export was made of it, as one
-/// SHA-256: the files a launcher installs over (the entry page, `src/`,
-/// `assets/`, and `dist/` only for an app with no `src/main.ts`, whose bundle
-/// the daemon derives), each hashed, one `"<hash> <path>\n"` line per file,
+/// SHA-256: authored runtime files, excluding the daemon's SDK and bundle for
+/// an app with `src/main.ts`, each hashed, one `"<hash> <path>\n"` line per file,
 /// lines sorted by byte, and that text hashed. `.DS_Store` files and links are
 /// left out. `None` when a file cannot be read.
 ///
 /// The launchers compute exactly this over the store before they re-sync it
 /// (`runtime_digest` in `biorouter-launch.sh`, `Get-RuntimeDigest` in run.ps1,
 /// `runtimeDigest` in serve.mjs), and re-sync only a store that still matches
-/// what this folder was exported from or what a launcher last installed.
+/// what this folder was exported from or what this same export folder installed.
 /// ⚠ `updated_at` alone could not say: only the drafter's own tools bump it,
 /// so an edit made with the developer shell or text editor, or a newer
 /// Biorouter refreshing `src/sdk.ts` on a rebuild, left it equal, and running
@@ -1190,18 +1190,25 @@ pub fn runtime_digest(app_dir: &std::path::Path, entry: &str) -> Option<String> 
         std::fs::symlink_metadata(app_dir.join(rel)).is_ok_and(|meta| meta.file_type().is_file())
     };
     let mut files = BTreeSet::new();
+    let built_from_source = regular("src/main.ts");
+    for item in std::fs::read_dir(app_dir).ok()? {
+        let item = item.ok()?;
+        let name = item.file_name().to_string_lossy().to_string();
+        if !is_runtime_top_level(&name) || (name == "dist" && built_from_source) {
+            continue;
+        }
+        let kind = item.file_type().ok()?;
+        if kind.is_dir() {
+            walk(app_dir, &name, &mut files).ok()?;
+        } else if kind.is_file() {
+            files.insert(name);
+        }
+    }
     if regular(entry) {
         files.insert(entry.to_string());
     }
-    let built_from_source = regular("src/main.ts");
-    for sub in ["src", "assets", "dist"] {
-        if sub == "dist" && built_from_source {
-            continue;
-        }
-        let is_dir = std::fs::symlink_metadata(app_dir.join(sub)).is_ok_and(|meta| meta.is_dir());
-        if is_dir {
-            walk(app_dir, sub, &mut files).ok()?;
-        }
+    if built_from_source {
+        files.remove("src/sdk.ts");
     }
     let mut lines = Vec::with_capacity(files.len());
     for rel in files {
@@ -1211,6 +1218,24 @@ pub fn runtime_digest(app_dir: &std::path::Path, entry: &str) -> Option<String> 
     }
     lines.sort();
     Some(hex(&Sha256::digest(lines.concat().as_bytes())))
+}
+
+fn is_runtime_top_level(name: &str) -> bool {
+    !name.starts_with('.')
+        && !GENERATED_EXPORT_FILES.contains(&name)
+        && !RESERVED_EXPORT_DIRS.contains(&name)
+        && !matches!(name, "workspace" | "node_modules")
+}
+
+fn runtime_exclusions_json() -> String {
+    serde_json::to_string(
+        &GENERATED_EXPORT_FILES
+            .iter()
+            .chain(RESERVED_EXPORT_DIRS)
+            .chain(&["workspace", "node_modules"])
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_default()
 }
 
 /// The launchers, dev server, README and package.json every export writes,
@@ -1286,6 +1311,7 @@ const LAUNCHER_LIB_TEMPLATE: &str = r##"#!/usr/bin/env bash
 # Sourced by run.sh / run.command; also usable on its own.
 APP_ID="__APP_ID__"
 DIR="${DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+DIR="$(cd "$DIR" && pwd -P)" || exit 1
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -1434,6 +1460,14 @@ sha256_stdin() {
   else return 1
   fi
 }
+SOURCE_DIGEST="$(printf '%s' "$DIR" | sha256_stdin)" || SOURCE_DIGEST=""
+
+runtime_top_level() {
+  case "$1" in
+    .* | manifest.json | package.json | serve.mjs | README.md | biorouter-launch.sh | run.command | run.sh | run.ps1 | run.bat | export.json | payload | app-files | workspace | node_modules) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 # One SHA-256 over the files an install replaces in the app folder $1: the
 # entry page, src/, assets/, and dist/ only for an app with no src/main.ts
@@ -1449,11 +1483,16 @@ runtime_digest() (
   printf '' | sha256_stdin >/dev/null || exit 1
   {
     if [ -f "$ENTRY" ] && [ ! -L "$ENTRY" ]; then printf '%s\n' "$ENTRY"; fi
-    for sub in src assets dist; do
-      if [ "$sub" = dist ] && [ -f src/main.ts ] && [ ! -L src/main.ts ]; then continue; fi
-      if [ -d "$sub" ] && [ ! -L "$sub" ]; then find "$sub" -type f ! -name .DS_Store; fi
+    for path in *; do
+      runtime_top_level "$path" || continue
+      if [ "$path" = dist ] && [ -f src/main.ts ] && [ ! -L src/main.ts ]; then continue; fi
+      if [ -L "$path" ]; then continue
+      elif [ -d "$path" ]; then find "$path" -type f ! -name .DS_Store
+      elif [ -f "$path" ]; then printf '%s\n' "$path"
+      fi
     done
   } | LC_ALL=C sort -u | while IFS= read -r f; do
+    if [ "$f" = src/sdk.ts ] && [ -f src/main.ts ] && [ ! -L src/main.ts ]; then continue; fi
     printf '%s %s\n' "$(sha256_stdin < "$f")" "$f"
   done | LC_ALL=C sort | sha256_stdin
 )
@@ -1464,16 +1503,20 @@ store_unchanged() {
   current="$(runtime_digest "$STORE")" || current=""
   [ -n "$current" ] || return 1
   [ "$current" = "$EXPORT_DIGEST" ] && return 0
+  recorded_source=""
   recorded=""
-  if [ -f "$INSTALLED_RECORD" ]; then read -r recorded < "$INSTALLED_RECORD" || true; fi
-  [ -n "$recorded" ] && [ "$current" = "$recorded" ]
+  if [ -f "$INSTALLED_RECORD" ]; then
+    { read -r recorded_source; read -r recorded; } < "$INSTALLED_RECORD" || true
+  fi
+  [ -n "$SOURCE_DIGEST" ] && [ "$SOURCE_DIGEST" = "$recorded_source" ] \
+    && [ -n "$recorded" ] && [ "$current" = "$recorded" ]
 }
 
 record_install() {
   digest="$(runtime_digest "$STORE")" || digest=""
   ( umask 077; mkdir -p "$(dirname "$INSTALLED_RECORD")" ) 2>/dev/null || return 0
   if [ -n "$digest" ]; then
-    printf '%s\n' "$digest" > "$INSTALLED_RECORD.$$" && mv -f "$INSTALLED_RECORD.$$" "$INSTALLED_RECORD" \
+    printf '%s\n%s\n' "$SOURCE_DIGEST" "$digest" > "$INSTALLED_RECORD.$$" && mv -f "$INSTALLED_RECORD.$$" "$INSTALLED_RECORD" \
       || rm -f "$INSTALLED_RECORD.$$" "$INSTALLED_RECORD"
   else
     rm -f "$INSTALLED_RECORD"
@@ -1485,20 +1528,25 @@ copy_runtime() {
   mkdir -p "$STORE" "$(dirname "$STORE/$ENTRY")" || die "could not create $STORE"
   cp "$DIR/$ENTRY" "$STORE/.entry.$$" && mv -f "$STORE/.entry.$$" "$STORE/$ENTRY" \
     || die "could not install $ENTRY"
-  for sub in src dist assets; do
-    [ -d "$DIR/$sub" ] || continue
+  while IFS= read -r sub; do
+    runtime_top_level "$sub" || continue
+    [ "$sub" = "$ENTRY" ] && continue
     # The store keeps its manifest, whose build stamp describes ITS bundle. So
     # an app the daemon builds keeps its own dist/, and the daemon rebuilds it
     # from the src/ synced here when that changed. A copied dist/ under the kept
     # stamp could carry an older SDK that the stamp says is current, and would
     # then be served for good.
     if [ "$sub" = dist ] && [ "$1" != 1 ] && [ -f "$DIR/src/main.ts" ]; then continue; fi
+    if [ ! -e "$DIR/$sub" ]; then rm -rf "$STORE/$sub"; continue; fi
     rm -rf "$STORE/.$sub.new.$$" "$STORE/.$sub.old.$$"
     cp -R "$DIR/$sub" "$STORE/.$sub.new.$$" || die "could not install $sub/"
+    if [ "$sub" = src ] && [ "$1" != 1 ] && [ -f "$DIR/src/main.ts" ] && [ -f "$STORE/src/sdk.ts" ]; then
+      cp "$STORE/src/sdk.ts" "$STORE/.$sub.new.$$/sdk.ts" || die "could not keep the daemon's SDK"
+    fi
     if [ -e "$STORE/$sub" ]; then mv "$STORE/$sub" "$STORE/.$sub.old.$$"; fi
     mv "$STORE/.$sub.new.$$" "$STORE/$sub" || die "could not install $sub/"
     rm -rf "$STORE/.$sub.old.$$"
-  done
+  done < <(for path in "$DIR"/* "$STORE"/*; do [ -e "$path" ] && basename "$path"; done | LC_ALL=C sort -u)
   # The manifest last: it is what makes the daemon see the app.
   if [ "$1" = 1 ]; then
     cp "$DIR/manifest.json" "$STORE/.manifest.json.$$" && mv -f "$STORE/.manifest.json.$$" "$STORE/manifest.json" \
@@ -1508,8 +1556,11 @@ copy_runtime() {
 
 backup_runtime() {
   backup="$(backup_dir)" || die "could not create a backup folder in $LAUNCHER_HOME/backups"
-  for item in manifest.json "$ENTRY" src dist assets; do
-    [ -e "$STORE/$item" ] && cp -R "$STORE/$item" "$backup/"
+  cp "$STORE/manifest.json" "$backup/" || die "could not back up manifest.json"
+  for path in "$STORE"/*; do
+    item="$(basename "$path")"
+    runtime_top_level "$item" || continue
+    [ -e "$path" ] && cp -R "$path" "$backup/"
   done
   echo "Kept a copy of the installed '$APP_ID' in $backup"
 }
@@ -1769,7 +1820,7 @@ install_payload() {
       case "$name" in '' | .* | *[!A-Za-z0-9._-]*) continue ;; esac
       # A skill Biorouter ships is seeded by your own install; one copied over
       # it could no longer be removed. Exports leave them out; so does this.
-      case "$name" in
+      case "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" in
         __SHIPPED_SKILLS__) echo "  (skipping skill $name: it ships with Biorouter)"; continue ;;
       esac
       if [ -d "$d" ] && [ ! -L "$d" ]; then skills+=("$d"); nskill=$((nskill + 1)); fi
@@ -1871,6 +1922,10 @@ fn run_ps1(id: &str, export_digest: &str) -> String {
         .replace("__APP_ID__", id)
         .replace("__EXPORT_DIGEST__", export_digest)
         .replace("__SHIPPED_SKILLS__", &shipped.join(", "))
+        .replace(
+            "__RUNTIME_EXCLUDED__",
+            runtime_exclusions_json().trim_matches(['[', ']']),
+        )
 }
 
 const RUN_PS1_TEMPLATE: &str = r##"#Requires -Version 5.0
@@ -1954,9 +2009,10 @@ function New-Backup {
 
 function Backup-Runtime([string]$Entry) {
   $backup = New-Backup
-  foreach ($item in @("manifest.json", $Entry, "src", "dist", "assets")) {
-    $p = Join-Path $Store $item
-    if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $backup -Recurse -Force }
+  foreach ($item in (Get-ChildItem -LiteralPath $Store -Force)) {
+    if ($item.Name -eq "manifest.json" -or (Test-RuntimeName $item.Name)) {
+      Copy-Item -LiteralPath $item.FullName -Destination $backup -Recurse -Force
+    }
   }
   Write-Host "Kept a copy of the installed '$AppId' in $backup"
 }
@@ -1967,6 +2023,13 @@ function Backup-Runtime([string]$Entry) {
 # tools bump it.
 $ExportDigest = "__EXPORT_DIGEST__"
 $InstalledRecord = Join-Path $LauncherHome "installed\$AppId"
+$sourceSha = [Security.Cryptography.SHA256]::Create()
+$SourceDigest = (($sourceSha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Dir)) | ForEach-Object { $_.ToString("x2") }) -join "")
+$RuntimeExcluded = @(__RUNTIME_EXCLUDED__)
+
+function Test-RuntimeName([string]$Name) {
+  return (-not $Name.StartsWith('.') -and $RuntimeExcluded -notcontains $Name)
+}
 
 # One SHA-256 over the files an install replaces in app folder $Root: the entry
 # page, src\, assets\, and dist\ only for an app with no src\main.ts. One
@@ -1982,21 +2045,33 @@ function Get-RuntimeDigest([string]$Root, [string]$Entry) {
     if ((& $plain $entryItem) -and -not $entryItem.PSIsContainer) { [void]$files.Add(($Entry -replace '\\', '/')) }
     $mainItem = Get-Item -LiteralPath (Join-Path $Root "src\main.ts") -Force -ErrorAction SilentlyContinue
     $builtFromSource = (& $plain $mainItem) -and -not $mainItem.PSIsContainer
-    foreach ($sub in @("src", "assets", "dist")) {
+    foreach ($item in (Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop)) {
+      $sub = $item.Name
+      if (-not (Test-RuntimeName $sub)) { continue }
       if ($sub -eq "dist" -and $builtFromSource) { continue }
-      $dirItem = Get-Item -LiteralPath (Join-Path $Root $sub) -Force -ErrorAction SilentlyContinue
-      if (-not (& $plain $dirItem) -or -not $dirItem.PSIsContainer) { continue }
-      Get-ChildItem -LiteralPath $dirItem.FullName -Recurse -File -Force -ErrorAction Stop |
+      if (-not (& $plain $item)) { continue }
+      if (-not $item.PSIsContainer) { [void]$files.Add($sub); continue }
+      Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Force -ErrorAction Stop |
         Where-Object { (& $plain $_) -and $_.Name -ne ".DS_Store" } |
         ForEach-Object { [void]$files.Add(($_.FullName.Substring($base.Length + 1) -replace '\\', '/')) }
     }
+    if ($builtFromSource) { [void]$files.Remove("src/sdk.ts") }
     $lines = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rel in $files) {
       $hash = (Get-FileHash -LiteralPath (Join-Path $Root $rel) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
       $lines.Add("$hash $rel`n")
     }
     $sorted = $lines.ToArray()
-    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+    $utf8Order = [Collections.Generic.Comparer[string]]::Create({
+      param($left, $right)
+      $a = [Text.Encoding]::UTF8.GetBytes($left)
+      $b = [Text.Encoding]::UTF8.GetBytes($right)
+      for ($i = 0; $i -lt [Math]::Min($a.Length, $b.Length); $i++) {
+        if ($a[$i] -ne $b[$i]) { return $a[$i].CompareTo($b[$i]) }
+      }
+      return $a.Length.CompareTo($b.Length)
+    })
+    [Array]::Sort($sorted, $utf8Order)
     $sha = [Security.Cryptography.SHA256]::Create()
     $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($sorted -join "")))
     return (($digest | ForEach-Object { $_.ToString("x2") }) -join "")
@@ -2010,8 +2085,8 @@ function Test-StoreUnchanged([string]$Entry) {
   if (-not $current) { return $false }
   if ($current -eq $ExportDigest) { return $true }
   if (Test-Path -LiteralPath $InstalledRecord) {
-    $recorded = (Get-Content -LiteralPath $InstalledRecord -TotalCount 1 -ErrorAction SilentlyContinue)
-    if ($recorded -and ([string]$recorded).Trim() -eq $current) { return $true }
+    $recorded = @(Get-Content -LiteralPath $InstalledRecord -TotalCount 2 -ErrorAction SilentlyContinue)
+    if ($recorded.Count -eq 2 -and $recorded[0] -eq $SourceDigest -and $recorded[1] -eq $current) { return $true }
   }
   return $false
 }
@@ -2020,7 +2095,7 @@ function Write-InstallRecord([string]$Entry) {
   try {
     $digest = Get-RuntimeDigest $Store $Entry
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $InstalledRecord) | Out-Null
-    if ($digest) { Set-Content -LiteralPath $InstalledRecord -Value $digest -Encoding ASCII }
+    if ($digest) { Set-Content -LiteralPath $InstalledRecord -Value @($SourceDigest, $digest) -Encoding ASCII }
     elseif (Test-Path -LiteralPath $InstalledRecord) { Remove-Item -LiteralPath $InstalledRecord -Force }
   } catch { }
 }
@@ -2080,16 +2155,25 @@ function Install-App {
   $entryDst = Join-Path $Store $entry
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entryDst) | Out-Null
   Copy-Item -LiteralPath $entrySrc -Destination $entryDst -Force
-  foreach ($sub in @("src", "dist", "assets")) {
+  $runtimeNames = @((Get-ChildItem -LiteralPath $Dir -Force).Name) + @((Get-ChildItem -LiteralPath $Store -Force).Name)
+  foreach ($sub in ($runtimeNames | Sort-Object -Unique)) {
+    if (-not (Test-RuntimeName $sub) -or $sub -eq $entry) { continue }
     $src = Join-Path $Dir $sub
     # A kept store manifest's build stamp describes the store's own bundle, so
     # an app the daemon builds keeps its dist\ and is rebuilt from src\.
     if ($sub -eq "dist" -and -not $withManifest -and (Test-Path -LiteralPath (Join-Path $Dir "src\main.ts"))) { continue }
+    $dst = Join-Path $Store $sub
+    if (-not (Test-Path -LiteralPath $src)) {
+      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+      continue
+    }
     if (Test-Path -LiteralPath $src) {
-      $dst = Join-Path $Store $sub
       $fresh = Join-Path $Store ".$sub.new"
       if (Test-Path -LiteralPath $fresh) { Remove-Item -LiteralPath $fresh -Recurse -Force }
       Copy-Item -LiteralPath $src -Destination $fresh -Recurse -Force
+      if ($sub -eq "src" -and -not $withManifest -and (Test-Path -LiteralPath (Join-Path $Dir "src\main.ts")) -and (Test-Path -LiteralPath (Join-Path $Store "src\sdk.ts"))) {
+        Copy-Item -LiteralPath (Join-Path $Store "src\sdk.ts") -Destination (Join-Path $fresh "sdk.ts") -Force
+      }
       if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
       Move-Item -LiteralPath $fresh -Destination $dst
     }
@@ -2305,14 +2389,14 @@ fn run_bat() -> String {
 /// origin and no port is ever hard-coded.
 ///
 /// The page itself is always the DAEMON's (only the daemon can put this run's
-/// socket token into it), so `/` redirects there. The app's own `dist/` and
-/// `assets/` come from this folder, so a rebuilt bundle shows up on refresh.
-/// Nothing else in the folder is served (never `payload/`, `export.json` or the
-/// scripts), and only to a `Host` of this server's own loopback address, which
+/// socket token into it), so `/` redirects there. Refresh safely installs
+/// authored edits and the daemon serves every runtime file with its own
+/// authorization and headers. Only this server's loopback `Host` is allowed, which
 /// closes DNS rebinding.
 fn serve_mjs(id: &str, default_port: u16, export_digest: &str) -> String {
     SERVE_MJS_TEMPLATE
         .replace("__EXPORT_DIGEST__", export_digest)
+        .replace("__RUNTIME_EXCLUDED__", &runtime_exclusions_json())
         .replace(
             "__APP_ID_JSON__",
             &serde_json::to_string(id).unwrap_or_else(|_| "\"app\"".to_string()),
@@ -2331,20 +2415,23 @@ const SERVE_MJS_TEMPLATE: &str = r##"// Dev server for the exported Biorouter ap
 // socket token into the page), through this server: /apps/** is proxied to the
 // daemon, including the agent WebSocket at /apps/<id>/agent, so the page and its
 // agent share an origin and no port is ever hard-coded. The app's dist/ and
-// assets/ come from this folder instead, so `npm run build` shows on refresh.
+// authored files are safely installed on refresh and served by the daemon.
 import { createServer, request as httpRequest } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rename, mkdir, cp, rm, access } from "node:fs/promises";
-import { readdirSync, statSync, lstatSync, readFileSync, constants } from "node:fs";
+import { readdirSync, lstatSync, readFileSync, realpathSync, constants } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
-import { extname, resolve, join, dirname, relative, isAbsolute, win32, posix } from "node:path";
+import { join, dirname, isAbsolute, win32, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 
 const APP_ID = __APP_ID_JSON__;
 const PORT = Number(process.env.PORT || __DEFAULT_PORT__);
-const ROOT = dirname(fileURLToPath(import.meta.url));
+const ROOT = realpathSync(dirname(fileURLToPath(import.meta.url)));
+const SOURCE_DIGEST = createHash("sha256").update(ROOT).digest("hex");
+const RUNTIME_EXCLUDED = new Set(__RUNTIME_EXCLUDED__);
+const runtimeName = (name) => !name.startsWith(".") && !RUNTIME_EXCLUDED.has(name);
 
 // biorouter:config-dir:start
 /**
@@ -2376,17 +2463,10 @@ const LAUNCHER_HOME = join(CFG, "app-launcher");
 // BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
 const LAUNCHER_STATE = join(LAUNCHER_HOME, "daemon");
 const APP_PREFIX = `/apps/${APP_ID}/`;
-const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8", ".json": "application/json", ".svg": "image/svg+xml",
-  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-  ".webp": "image/webp", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
-  ".wasm": "application/wasm", ".map": "application/json" };
-
 const exists = (p) => access(p, constants.F_OK).then(() => true, () => false);
 const readManifest = (p) => readFile(p, "utf8").then((t) => JSON.parse(t), () => null);
 
 let ENTRY = "index.html";
-let installedFromHere = false;
 
 // What the store's copy held when this folder was exported, and where each
 // install records what it put there. Equal updated_at values do not mean an
@@ -2405,6 +2485,7 @@ const INSTALLED_RECORD = join(LAUNCHER_HOME, "installed", APP_ID);
  */
 function runtimeDigest(root, entry) {
   try {
+    const excluded = new Set(__RUNTIME_EXCLUDED__);
     const kind = (rel) => {
       try {
         return lstatSync(join(root, ...rel.split("/")));
@@ -2422,10 +2503,14 @@ function runtimeDigest(root, entry) {
       }
     };
     const builtFromSource = kind("src/main.ts")?.isFile();
-    for (const sub of ["src", "assets", "dist"]) {
+    for (const item of readdirSync(root, { withFileTypes: true })) {
+      const sub = item.name;
+      if (sub.startsWith(".") || excluded.has(sub)) continue;
       if (sub === "dist" && builtFromSource) continue;
-      if (kind(sub)?.isDirectory()) walk(sub);
+      if (item.isDirectory()) walk(sub);
+      else if (item.isFile()) files.add(sub);
     }
+    if (builtFromSource) files.delete("src/sdk.ts");
     const lines = [...files].map((rel) => {
       const hash = createHash("sha256").update(readFileSync(join(root, ...rel.split("/")))).digest("hex");
       return Buffer.from(`${hash} ${rel}\n`);
@@ -2443,8 +2528,8 @@ async function storeUnchanged() {
   const current = runtimeDigest(STORE, ENTRY);
   if (!current) return false;
   if (current === EXPORT_DIGEST) return true;
-  const recorded = await readFile(INSTALLED_RECORD, "utf8").then((t) => t.trim(), () => "");
-  return recorded !== "" && recorded === current;
+  const recorded = await readFile(INSTALLED_RECORD, "utf8").then((t) => t.trim().split(/\r?\n/), () => []);
+  return recorded.length === 2 && recorded[0] === SOURCE_DIGEST && recorded[1] === current;
 }
 
 async function recordInstall() {
@@ -2453,7 +2538,7 @@ async function recordInstall() {
     await mkdir(dirname(INSTALLED_RECORD), { recursive: true, mode: 0o700 });
     if (digest) {
       const tmp = `${INSTALLED_RECORD}.${process.pid}`;
-      await writeFile(tmp, `${digest}\n`);
+      await writeFile(tmp, `${SOURCE_DIGEST}\n${digest}\n`);
       await rename(tmp, INSTALLED_RECORD);
     } else {
       await rm(INSTALLED_RECORD, { force: true });
@@ -2490,7 +2575,8 @@ async function backupDir() {
 
 async function backupRuntime() {
   const backup = await backupDir();
-  for (const item of ["manifest.json", ENTRY, "src", "dist", "assets"]) {
+  for (const item of readdirSync(STORE)) {
+    if (item !== "manifest.json" && !runtimeName(item)) continue;
     const from = join(STORE, item);
     if (await exists(from)) await cp(from, join(backup, item), { recursive: true });
   }
@@ -2502,15 +2588,23 @@ async function copyRuntime(withManifest) {
   const entryTmp = join(STORE, `.entry.${process.pid}`);
   await cp(join(ROOT, ENTRY), entryTmp);
   await rename(entryTmp, join(STORE, ENTRY));
-  for (const sub of ["src", "dist", "assets"]) {
-    if (!(await exists(join(ROOT, sub)))) continue;
+  const runtimeNames = new Set([...readdirSync(ROOT), ...readdirSync(STORE)]);
+  for (const sub of runtimeNames) {
+    if (!runtimeName(sub) || sub === ENTRY) continue;
     // A kept store manifest's build stamp describes the store's own bundle, so
     // an app the daemon builds keeps its dist/ and is rebuilt from src/.
     if (sub === "dist" && !withManifest && (await exists(join(ROOT, "src", "main.ts")))) continue;
+    if (!(await exists(join(ROOT, sub)))) {
+      await rm(join(STORE, sub), { recursive: true, force: true });
+      continue;
+    }
     const fresh = join(STORE, `.${sub}.new.${process.pid}`);
     const old = join(STORE, `.${sub}.old.${process.pid}`);
     await rm(fresh, { recursive: true, force: true });
     await cp(join(ROOT, sub), fresh, { recursive: true });
+    if (sub === "src" && !withManifest && (await exists(join(ROOT, "src", "main.ts"))) && (await exists(join(STORE, "src", "sdk.ts")))) {
+      await cp(join(STORE, "src", "sdk.ts"), join(fresh, "sdk.ts"));
+    }
     if (await exists(join(STORE, sub))) await rename(join(STORE, sub), old);
     await rename(fresh, join(STORE, sub));
     await rm(old, { recursive: true, force: true });
@@ -2569,7 +2663,6 @@ async function installApp() {
   }
   await copyRuntime(withManifest);
   await recordInstall();
-  installedFromHere = true;
 }
 
 /** A bundled daemon is used only when it runs on this machine. */
@@ -2755,29 +2848,11 @@ function proxyHttp(req, res) {
   req.pipe(up);
 }
 
-/** One file of this folder's `sub` (dist or assets), contained to it on every platform. */
-async function serveFromFolder(res, sub, rest) {
-  let name;
-  try { name = decodeURIComponent(rest); } catch { res.writeHead(400); res.end("Bad request"); return; }
-  const base = join(ROOT, sub);
-  const file = resolve(base, name);
-  const rel = relative(base, file);
-  if (!rel || name.includes("\0") || rel.startsWith("..") || isAbsolute(rel)) {
-    res.writeHead(403); res.end("Forbidden"); return;
-  }
-  try {
-    const body = await readFile(file);
-    res.writeHead(200, { "Content-Type": MIME[extname(file).toLowerCase()] || "application/octet-stream" });
-    res.end(body);
-  } catch {
-    res.writeHead(404); res.end("Not found");
-  }
-}
-
 let boundPort = PORT;
 // Only this server's own loopback address. A page on any other site whose name
 // someone points at 127.0.0.1 (DNS rebinding) sends its own Host, and is refused.
 const ownHost = (host) => host === `127.0.0.1:${boundPort}` || host === `localhost:${boundPort}`;
+let refreshInstall = Promise.resolve();
 
 const server = createServer(async (req, res) => {
   if (!ownHost(req.headers.host || "")) { res.writeHead(421); res.end("Misdirected request"); return; }
@@ -2788,19 +2863,12 @@ const server = createServer(async (req, res) => {
   if (url === "/" || url === "/index.html") {
     res.writeHead(302, { Location: APP_PREFIX }); res.end(); return;
   }
-  if (installedFromHere && req.method === "GET") {
-    for (const sub of ["dist", "assets"]) {
-      const prefix = `${APP_PREFIX}${sub}/`;
-      if (url.startsWith(prefix)) return serveFromFolder(res, sub, url.slice(prefix.length));
+  if (req.method === "GET" && url === APP_PREFIX) {
+    try {
+      refreshInstall = refreshInstall.catch(() => {}).then(() => installApp());
+      await refreshInstall;
     }
-    // An edited page shows on refresh too.
-    if (url === APP_PREFIX) {
-      try {
-        const tmp = join(STORE, `.entry.${process.pid}`);
-        await cp(join(ROOT, ENTRY), tmp);
-        await rename(tmp, join(STORE, ENTRY));
-      } catch { /* the installed page is served as it is */ }
-    }
+    catch { res.writeHead(500); res.end("Could not refresh the exported app"); return; }
   }
   if (url === "/apps" || url.startsWith("/apps/")) return proxyHttp(req, res);
   res.writeHead(404); res.end("Not found");
@@ -3769,16 +3837,14 @@ if (late.listeners.click) throw new Error("bound twice");
         // Only its own loopback Host, on pages and sockets alike (DNS rebinding).
         assert!(serve.contains("if (!ownHost(req.headers.host || \"\")) { res.writeHead(421)"));
         assert!(serve.contains("if (!ownHost(req.headers.host || \"\")) { socket.destroy()"));
-        // Of the folder, only the app's dist/ and assets/, contained with
-        // path.relative (a "/" prefix test 403s every file on Windows), and a
-        // malformed escape is a 400, not a crash.
-        assert!(serve.contains(r#"for (const sub of ["dist", "assets"])"#));
-        assert!(serve.contains("const rel = relative(base, file);"));
         assert!(
-            serve.contains("try { name = decodeURIComponent(rest); } catch { res.writeHead(400)")
+            !serve.contains("serveFromFolder"),
+            "all app files need the daemon's authorization"
         );
-        assert!(!serve.contains("startsWith(ROOT + \"/\")"));
-        assert!(!serve.contains("readFile(join(ROOT, \"payload"));
+        assert!(
+            serve.contains("refreshInstall.catch(() => {}).then(() => installApp())"),
+            "refresh must recheck preservation"
+        );
         // The page is the daemon's, so `/` goes there rather than to a page with
         // no socket token. Not to the one-time link: any local account could
         // fetch `/` and redeem it first.
@@ -4390,7 +4456,6 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
     /// An app folder holding every case the digest has a rule for: an entry
     /// in a subfolder, a path with a space, a binary file, a `.DS_Store`, and a
     /// `dist/` that counts only without `src/main.ts`.
-    #[cfg(unix)]
     fn digest_fixture(dir: &Path, with_main: bool) {
         let write = |rel: &str, bytes: &[u8]| {
             let path = dir.join(rel);
@@ -4400,6 +4465,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         write("pages/index.html", b"<html>entry</html>");
         write("src/sdk.ts", b"// sdk");
         write("src/deep/a b.ts", b"export const x = 1;\n");
+        write("styles.css", b"body { color: navy; }");
+        write("scripts/chart.js", b"draw();");
+        write("assets/\u{10000}.txt", b"same content");
+        write("assets/\u{e000}.txt", b"same content");
         write("assets/logo.png", &[0x89, b'P', b'N', b'G', 0x00, 0xFF]);
         write("assets/.DS_Store", b"finder");
         write("dist/app.js", b"// bundle");
@@ -4528,14 +4597,52 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let ps1 = file(&files, "run.ps1");
         for rule in [
             "function Get-RuntimeDigest",
-            r#"foreach ($sub in @("src", "assets", "dist"))"#,
+            "foreach ($item in (Get-ChildItem -LiteralPath $Root",
             r#"if ($sub -eq "dist" -and $builtFromSource) { continue }"#,
             r#"$_.Name -ne ".DS_Store""#,
             r#"$lines.Add("$hash $rel`n")"#,
-            "[Array]::Sort($sorted, [StringComparer]::Ordinal)",
+            "[Array]::Sort($sorted, $utf8Order)",
+            "[Text.Encoding]::UTF8.GetBytes($left)",
             "Write-InstallRecord $entry",
         ] {
             assert!(ps1.contains(rule), "run.ps1 lacks {rule}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_runtime_digest_matches_utf8_order_for_unicode_names() {
+        let root = tempfile::tempdir().unwrap();
+        for with_main in [true, false] {
+            let folder = root.path().join(format!("app-{with_main}"));
+            digest_fixture(&folder, with_main);
+            let expected = runtime_digest(&folder, "pages/index.html").unwrap();
+            let launcher = run_ps1("demo", "");
+            let (definitions, _) = launcher.split_once("\nInstall-App\n").unwrap();
+            let probe = folder.join(".digest-probe.ps1");
+            std::fs::write(
+                &probe,
+                format!("{definitions}\nGet-RuntimeDigest $Dir 'pages/index.html'\n"),
+            )
+            .unwrap();
+            let out = std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(&probe)
+                .env("BIOROUTER_PATH_ROOT", root.path().join("recipient"))
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
         }
     }
 
@@ -4620,7 +4727,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         write(&store.join("src/sdk.ts"), "// sdk n+1");
         write(&store.join("dist/app.js"), "// bundle of v1 on sdk n+1");
         let said = install(&[]);
-        assert!(said.contains("changed where it is installed"), "{said}");
+        assert!(
+            !said.contains("changed where it is installed"),
+            "SDK refresh is derived: {said}"
+        );
         assert_eq!(read(&store.join("src/sdk.ts")), "// sdk n+1");
         assert_eq!(
             read(&store.join("dist/app.js")),
@@ -4630,9 +4740,13 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         // Asked to, it replaces the installed copy and keeps a backup of it,
         // but still keeps the store's manifest (the author's chat link) and
         // so its bundle: the daemon rebuilds from the src/ installed here.
+        write(
+            &store.join("src/main.ts"),
+            "// edited in the installed copy",
+        );
         let said = install(&[("BIOROUTER_EXPORT_REPLACE", "1")]);
         assert!(said.contains("Kept a copy"), "{said}");
-        assert_eq!(read(&store.join("src/sdk.ts")), "// sdk n");
+        assert_eq!(read(&store.join("src/sdk.ts")), "// sdk n+1");
         assert_eq!(
             read(&store.join("dist/app.js")),
             "// bundle of v1 on sdk n+1"
@@ -4668,6 +4782,119 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         write(&folder.join("dist/app.js"), "// hand-written");
         assert!(!install(&[]).contains("changed where"));
         assert_eq!(read(&store.join("dist/app.js")), "// hand-written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recipient_install_preserves_edits_and_syncs_all_authored_runtime_files() {
+        use std::process::Command;
+        let root = tempfile::tempdir().unwrap();
+        let bash = find_usable_bash(root.path()).expect("a usable bash");
+        let node = find_command("node", root.path());
+        for backend in ["bash", "node"] {
+            if backend == "node" && node.is_none() {
+                continue;
+            }
+            let base = root.path().join(backend);
+            let folder = base.join("export-a");
+            let recipient = base.join("recipient");
+            let store = recipient.join("config/agent_drafter/demo");
+            std::fs::create_dir_all(&folder).unwrap();
+            export_folder(&folder, "uid-1", 100, 200);
+            let write = |dir: &Path, rel: &str, value: &str| {
+                let path = dir.join(rel);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, value).unwrap();
+            };
+            let read = |rel: &str| std::fs::read_to_string(store.join(rel)).unwrap();
+            write(&folder, "src/sdk.ts", "// exported SDK");
+            write(&folder, "dist/app.js", "// exported bundle");
+            write(&folder, "styles.css", "body { color: navy; }");
+            write(&folder, "scripts/chart.js", "draw();");
+            let install = |dir: &Path, replace: bool| {
+                let mut command = if backend == "bash" {
+                    let mut command = Command::new(&bash);
+                    command
+                        .arg("-c")
+                        .arg("set -euo pipefail\n. \"$DIR/biorouter-launch.sh\"\ninstall_app");
+                    command
+                } else {
+                    let serve = serve_mjs("demo", 8787, "");
+                    let (prefix, _) = serve.split_once("\nlet daemonPort;").unwrap();
+                    let probe = dir.join(".install-probe.mjs");
+                    std::fs::write(&probe, format!("{prefix}\nawait installApp();\n")).unwrap();
+                    let mut command = Command::new(node.as_ref().unwrap());
+                    command.arg(probe);
+                    command
+                };
+                command
+                    .current_dir(dir)
+                    .env("DIR", dir)
+                    .env("BIOROUTER_PATH_ROOT", &recipient);
+                if replace {
+                    command.env("BIOROUTER_EXPORT_REPLACE", "1");
+                } else {
+                    command.env_remove("BIOROUTER_EXPORT_REPLACE");
+                }
+                let out = command.output().unwrap();
+                assert!(
+                    out.status.success(),
+                    "{backend}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                String::from_utf8_lossy(&out.stdout).to_string()
+            };
+            install(&folder, false);
+            assert_eq!(read("styles.css"), "body { color: navy; }", "{backend}");
+            assert_eq!(read("scripts/chart.js"), "draw();", "{backend}");
+            write(&store, "src/sdk.ts", "// recipient SDK refresh");
+            write(&store, "dist/app.js", "// recipient rebuilt bundle");
+            write(&folder, "src/main.ts", "// export edited again");
+            assert!(
+                !install(&folder, false).contains("changed where"),
+                "{backend}"
+            );
+            assert_eq!(read("src/main.ts"), "// export edited again", "{backend}");
+            assert_eq!(read("src/sdk.ts"), "// recipient SDK refresh", "{backend}");
+            assert_eq!(
+                read("dist/app.js"),
+                "// recipient rebuilt bundle",
+                "{backend}"
+            );
+
+            // A record written by a different export folder is never permission
+            // for this older folder to overwrite what that one installed.
+            let other = base.join("export-b");
+            std::fs::create_dir_all(&other).unwrap();
+            export_folder(&other, "uid-1", 100, 200);
+            write(&other, "src/main.ts", "// other export's edit");
+            install(&other, true);
+            assert!(
+                install(&folder, false).contains("changed where"),
+                "{backend}"
+            );
+            assert_eq!(read("src/main.ts"), "// other export's edit", "{backend}");
+            install(&folder, true);
+
+            // Removing a whole authored subtree in the export removes its
+            // unchanged installed copy, including source that would rebuild.
+            std::fs::remove_dir_all(folder.join("src")).unwrap();
+            std::fs::remove_dir_all(folder.join("assets")).unwrap();
+            install(&folder, false);
+            assert!(!store.join("src").exists(), "{backend}");
+            assert!(!store.join("assets").exists(), "{backend}");
+            assert_eq!(read("dist/app.js"), "// exported bundle", "{backend}");
+            write(&store, "scripts/chart.js", "independent installed edit");
+            assert!(
+                install(&folder, false).contains("changed where"),
+                "{backend}"
+            );
+            assert_eq!(
+                read("scripts/chart.js"),
+                "independent installed edit",
+                "{backend}"
+            );
+        }
     }
 
     /// A full export used to carry a skill Biorouter ships (`office-word`), and
@@ -4923,10 +5150,9 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
     }
 
     /// `serve.mjs` run for real, against a stand-in daemon: it answers only its
-    /// own loopback `Host`, serves nothing of the folder but the app's `dist/`
-    /// and `assets/` (never `export.json` or `payload/`), keeps a path that
-    /// climbs out of `dist/` in, answers a malformed escape `400` instead of
-    /// crashing, and sends `/` to the daemon's page rather than to a page with
+    /// own loopback `Host`, proxies app files through daemon authorization
+    /// (never serving `export.json` or `payload/` itself), retains daemon
+    /// response policies, and sends `/` to the daemon's page rather than to a page with
     /// no socket token. The string checks above say the code is there; this
     /// says it works.
     #[cfg(unix)]
@@ -4956,6 +5182,7 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let folder = dir.path().join("My Apps").join("demo");
         let root = dir.path().join("root");
         std::fs::create_dir_all(folder.join("dist")).unwrap();
+        std::fs::create_dir_all(folder.join("src")).unwrap();
         std::fs::create_dir_all(folder.join("payload")).unwrap();
         std::fs::create_dir_all(&root).unwrap();
         let m = manifest(ArtifactKind::Agentic);
@@ -4965,6 +5192,8 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         std::fs::write(folder.join("manifest.json"), exported_manifest_json(&m)).unwrap();
         std::fs::write(folder.join("index.html"), "<html><body>raw</body></html>").unwrap();
         std::fs::write(folder.join("dist/app.js"), "console.log('bundle');").unwrap();
+        std::fs::write(folder.join("src/main.ts"), "// main").unwrap();
+        std::fs::write(folder.join("src/sdk.ts"), "// sdk").unwrap();
         std::fs::write(folder.join("export.json"), "{\"secret\":true}").unwrap();
         std::fs::write(folder.join("payload/notes.txt"), "payload").unwrap();
 
@@ -4981,6 +5210,15 @@ require("node:fs").writeFileSync({pid:?}, String(process.pid));
 setTimeout(() => process.exit(0), 120000).unref();
 const secret = process.env.BIOROUTER_SERVER__SECRET_KEY;
 http.createServer((req, res) => {{
+  if (req.method === "GET" && req.url.startsWith("/apps/demo/")) {{
+    if (req.headers.cookie !== "app=allowed") {{ res.writeHead(401); return res.end(); }}
+    res.setHeader("x-daemon-served", "yes");
+    if (req.url.includes("%E0")) {{ res.writeHead(400); return res.end(); }}
+    if (req.url.includes("..%2f")) {{ res.writeHead(403); return res.end(); }}
+    const file = req.url === "/apps/demo/" ? "index.html" : req.url === "/apps/demo/dist/app.js" ? "dist/app.js" : null;
+    if (!file) {{ res.writeHead(404); return res.end(); }}
+    return res.end(require("node:fs").readFileSync(require("node:path").join(process.env.BIOROUTER_PATH_ROOT, "config/agent_drafter/demo", file)));
+  }}
   if (req.headers["x-secret-key"] !== secret) {{ res.writeHead(401); return res.end(); }}
   if (req.url === "/apps") return res.end("[]");
   if (req.method === "POST" && req.url === "/apps/demo/launch") {{
@@ -5038,11 +5276,16 @@ http.createServer((req, res) => {{
             panic!("serve.mjs did not come up:\n{err}");
         };
 
-        let get = |path: &str, host: &str| -> (u16, String) {
+        let get = |path: &str, host: &str, authorized: bool| -> (u16, String) {
             let mut stream = std::net::TcpStream::connect(("127.0.0.1", serve_port)).unwrap();
+            let cookie = if authorized {
+                "Cookie: app=allowed\r\n"
+            } else {
+                ""
+            };
             write!(
                 stream,
-                "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+                "GET {path} HTTP/1.1\r\nHost: {host}\r\n{cookie}Connection: close\r\n\r\n"
             )
             .unwrap();
             let mut answer = String::new();
@@ -5055,22 +5298,40 @@ http.createServer((req, res) => {{
             (status, answer)
         };
         let own = format!("127.0.0.1:{serve_port}");
+        let installed = root.join("config/agent_drafter/demo");
+        std::fs::write(
+            installed.join("dist/app.js"),
+            "console.log('rebuilt by daemon');",
+        )
+        .unwrap();
+        std::fs::write(
+            installed.join("index.html"),
+            "<html>independent installed edit</html>",
+        )
+        .unwrap();
         let results = [
-            get("/", &own),
-            get("/apps/demo/dist/app.js", &own),
-            get("/apps/demo/dist/%E0%A4%A", &own),
-            get("/apps/demo/dist/..%2f..%2fexport.json", &own),
-            get("/export.json", &own),
-            get("/payload/notes.txt", &own),
+            get("/", &own, true),
+            get("/apps/demo/dist/app.js", &own, true),
+            get("/apps/demo/dist/%E0%A4%A", &own, true),
+            get("/apps/demo/dist/..%2f..%2fexport.json", &own, true),
+            get("/export.json", &own, true),
+            get("/payload/notes.txt", &own, true),
             get(
                 "/apps/demo/dist/app.js",
                 &format!("rebound.example:{serve_port}"),
+                true,
             ),
-            get("/apps/demo/dist/app.js", &format!("localhost:{serve_port}")),
+            get(
+                "/apps/demo/dist/app.js",
+                &format!("localhost:{serve_port}"),
+                true,
+            ),
+            get("/apps/demo/dist/app.js", &own, false),
+            get("/apps/demo/", &own, true),
         ];
         stop(&mut serve);
 
-        let [root_page, bundle, malformed, climbing, export_json, payload, rebound, localhost] =
+        let [root_page, bundle, malformed, climbing, export_json, payload, rebound, localhost, unauthorized, page] =
             results;
         assert_eq!(root_page.0, 302, "{}", root_page.1);
         assert!(
@@ -5083,17 +5344,24 @@ http.createServer((req, res) => {{
             "the one-time link is never handed to `/`"
         );
         assert_eq!(bundle.0, 200, "{}", bundle.1);
-        assert!(bundle.1.contains("console.log('bundle');"), "{}", bundle.1);
+        assert!(
+            bundle.1.contains("console.log('rebuilt by daemon');"),
+            "{}",
+            bundle.1
+        );
+        assert!(bundle.1.contains("x-daemon-served: yes"), "{}", bundle.1);
         assert_eq!(malformed.0, 400, "{}", malformed.1);
         assert_eq!(climbing.0, 403, "{}", climbing.1);
         assert_eq!(export_json.0, 404, "{}", export_json.1);
         assert_eq!(payload.0, 404, "{}", payload.1);
         assert_eq!(rebound.0, 421, "{}", rebound.1);
         assert_eq!(localhost.0, 200, "{}", localhost.1);
-        // It installed the raw page into the store the daemon reads.
+        assert_eq!(unauthorized.0, 401, "{}", unauthorized.1);
+        assert_eq!(page.0, 200, "{}", page.1);
+        assert!(page.1.contains("independent installed edit"), "{}", page.1);
         assert_eq!(
             std::fs::read_to_string(root.join("config/agent_drafter/demo/index.html")).unwrap(),
-            "<html><body>raw</body></html>"
+            "<html>independent installed edit</html>"
         );
     }
 }

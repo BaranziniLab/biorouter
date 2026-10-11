@@ -186,7 +186,9 @@ pub trait PayloadAccess {
     /// ([`render::SHIPPED_SKILL_NAMES`]). The HTTP door asks the seeder's own
     /// list instead, which a test holds equal to this one.
     fn is_shipped_skill(&self, name: &str) -> bool {
-        render::SHIPPED_SKILL_NAMES.contains(&name)
+        render::SHIPPED_SKILL_NAMES
+            .iter()
+            .any(|shipped| shipped.eq_ignore_ascii_case(name))
     }
 }
 
@@ -522,9 +524,9 @@ pub fn export_to_staging(
 ///
 /// The target is refused unless it is absolute, outside the Biorouter config
 /// folder, the app store and the knowledge store, and a folder of the person's
-/// own ([`placement_refusal`]: in the home folder or on an external drive, never
-/// hidden, never an application's data folder or a folder code is imported
-/// from); and unless it does not exist, or is empty. With `replace`, a
+/// own ([`placement_refusal`]: below Desktop, Documents or Downloads, never
+/// hidden or a folder code is imported from); and unless it does not exist,
+/// or is empty. With `replace`, a
 /// non-empty target is accepted only when it is an earlier export of this same
 /// app (its `manifest.json` names `id` and it has `biorouter-launch.sh`) that
 /// holds nothing the export does not write ([`foreign_entries`]).
@@ -1197,28 +1199,17 @@ fn validate_target(
     }
 }
 
-/// Top-level folders of a home directory where applications keep their data
-/// and settings rather than a person's files (macOS, Windows, Ubuntu's snaps).
-const APP_DATA_HOME_DIRS: &[&str] = &[
-    "Library",
-    "Applications",
-    "AppData",
-    "Application Data",
-    "Local Settings",
-    "snap",
-];
+/// Content roots a model may choose for an export. The desktop folder picker
+/// is the person's choice and is not subject to this tool-only allow list.
+const EXPORT_CONTENT_DIRS: &[&str] = &["Desktop", "Documents", "Downloads"];
 
 /// Folders code is loaded from by name, wherever they sit: a new package in
 /// one is imported by whatever asks for that name.
 const CODE_LOAD_DIRS: &[&str] = &["node_modules", "site-packages", "dist-packages"];
 
-/// Where removable and network drives are mounted.
-const VOLUME_ROOTS: &[&str] = &["/Volumes", "/media", "/run/media", "/mnt"];
-
 /// Why a model may not export to `resolved` (already resolved through any
-/// link), or `None` when it may: a folder of the person's own, in their home
-/// folder or on an external drive, never a hidden folder, never an
-/// application's data folder, never a folder code is imported from. The rest
+/// link), or `None` when it may: below Desktop, Documents or Downloads, never
+/// a hidden folder or a folder code is imported from. The rest
 /// of the sentence after "target_dir <path> ".
 ///
 /// ⚠ This is the `export_app` tool's rule only. A chat with Agent Drafter and
@@ -1239,26 +1230,18 @@ fn placement_refusal(
         _ => false,
     };
     let hidden = |component: &Component| matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'));
-    let rest: Vec<Component> = if let Some(rest) =
-        home.and_then(|home| resolved.strip_prefix(home).ok())
-    {
-        let rest: Vec<Component> = rest.components().collect();
-        if rest.is_empty() {
-            return Some("is your home folder itself; name a new folder inside it.".to_string());
-        }
-        if named(&rest[0], APP_DATA_HOME_DIRS) {
-            return Some(
-                "is inside a folder where applications keep their data; export somewhere \
-                 else, such as your Desktop or Documents."
-                    .to_string(),
-            );
-        }
-        rest
-    } else if let Some(rest) = VOLUME_ROOTS
+    let content_roots: Vec<PathBuf> = home
+        .into_iter()
+        .flat_map(|home| EXPORT_CONTENT_DIRS.iter().map(move |name| home.join(name)))
+        .map(|root| resolve_existing_prefix(&root))
+        .collect();
+    let rest: Vec<Component> = if let Some(rest) = content_roots
         .iter()
         .find_map(|root| resolved.strip_prefix(root).ok())
-        .filter(|rest| rest.components().count() >= 2)
     {
+        if rest.as_os_str().is_empty() {
+            return Some("is a content folder itself; name a new folder inside it.".to_string());
+        }
         rest.components().collect()
     } else if let Some(rest) = test_roots
         .iter()
@@ -1271,8 +1254,8 @@ fn placement_refusal(
             .then(|| "is inside a folder code is imported from.".to_string());
     } else {
         return Some(
-            "is outside your home folder. Export into a folder of your own, such as your \
-             Desktop or Documents; to put an app anywhere else, use Export in Biorouter's \
+            "is outside the export locations allowed for the tool. Export into a new folder \
+             in Desktop, Documents or Downloads; to put an app anywhere else, use Export in Biorouter's \
              Applications view, where you pick the folder."
                 .to_string(),
         );
@@ -1309,7 +1292,7 @@ fn foreign_entries(earlier: &Path, app_dir: &Path) -> Vec<String> {
             entries
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().to_string())
-                .filter(|name| name != "workspace"),
+                .filter(|name| !matches!(name.as_str(), "workspace" | ".git" | "node_modules")),
         );
     }
     let mut foreign: Vec<String> = std::fs::read_dir(earlier)
@@ -2201,13 +2184,22 @@ mod tests {
         agent_with_payload(&f, "demo");
         let store = f.store();
         let mut manifest = store.load_manifest("demo").unwrap();
-        manifest.agent.as_mut().unwrap().skills = vec!["ggplot".into(), "office-word".into()];
+        manifest.agent.as_mut().unwrap().skills = vec![
+            "ggplot".into(),
+            "office-word".into(),
+            "knowledge-bases".into(),
+        ];
         store.save_manifest(&manifest).unwrap();
         let seeded = f.access.skills_root.join("office-word");
         std::fs::create_dir_all(&seeded).unwrap();
         std::fs::write(seeded.join("SKILL.md"), "---\nname: office-word\n---\n").unwrap();
 
-        for skills in [None, Some(vec!["office-word".to_string()])] {
+        for skills in [
+            None,
+            Some(vec!["office-word".to_string()]),
+            Some(vec!["Office-Word".to_string()]),
+            Some(vec!["knowledge-bases".to_string()]),
+        ] {
             let report = f
                 .export(
                     "demo",
@@ -2225,12 +2217,14 @@ mod tests {
                 !report.skills.contains(&"office-word".to_string()),
                 "{skills:?}"
             );
-            assert!(!out(&report).join("payload/skills/office-word").exists());
+            for name in ["office-word", "Office-Word", "knowledge-bases"] {
+                assert!(!out(&report).join(format!("payload/skills/{name}")).exists());
+            }
             assert!(
                 report
                     .notes
                     .iter()
-                    .any(|note| note.contains("'office-word' ships with Biorouter")),
+                    .any(|note| note.contains("ships with Biorouter")),
                 "{:?}",
                 report.notes
             );
@@ -2273,6 +2267,10 @@ mod tests {
         let (_, rest) = soul
             .split_once("pub const SOUL_SKILL_DIR: &str = \"")
             .expect("SOUL_SKILL_DIR is still there");
+        seeded.push(rest.split('"').next().unwrap().to_string());
+        let (_, rest) = seeder
+            .split_once("pub const KNOWLEDGE_BUNDLE: &str = \"")
+            .expect("KNOWLEDGE_BUNDLE is still there");
         seeded.push(rest.split('"').next().unwrap().to_string());
         assert!(seeded.len() > 10, "{seeded:?}");
         assert_eq!(seeded, render::SHIPPED_SKILL_NAMES);
@@ -2626,43 +2624,54 @@ mod tests {
         for allowed in [
             "/home/u/Desktop/my-app",
             "/home/u/Documents/apps/my-app",
-            "/home/u/code/project/exports/my-app",
-            "/Volumes/USB Stick/my-app",
-            "/media/u/usb/my-app",
+            "/home/u/Downloads/my-app",
             "/tmp/T/.tmpAbC/work/my-app",
         ] {
             assert_eq!(verdict(allowed), None, "{allowed}");
         }
         for (refused, because) in [
-            ("/home/u", "home folder itself"),
-            ("/home/u/.config/biorouter-ish", "hidden"),
+            ("/home/u", "outside the export locations"),
+            ("/home/u/Desktop", "content folder itself"),
+            (
+                "/home/u/code/project/exports/my-app",
+                "outside the export locations",
+            ),
+            ("/Volumes/USB Stick/my-app", "outside the export locations"),
+            ("/media/u/usb/my-app", "outside the export locations"),
+            (
+                "/home/u/.config/biorouter-ish",
+                "outside the export locations",
+            ),
             ("/home/u/Desktop/.secret/my-app", "hidden"),
             (
                 "/home/u/Library/LaunchAgents/my-app",
-                "applications keep their data",
+                "outside the export locations",
             ),
-            ("/home/u/library/my-app", "applications keep their data"),
+            ("/home/u/library/my-app", "outside the export locations"),
             (
                 "/home/u/AppData/Roaming/x/my-app",
-                "applications keep their data",
+                "outside the export locations",
             ),
             (
                 "/home/u/snap/firefox/my-app",
-                "applications keep their data",
+                "outside the export locations",
             ),
-            ("/home/u/code/project/node_modules/my-app", "imported from"),
             (
-                "/home/u/py/lib/python3.12/site-packages/my-app",
+                "/home/u/Documents/project/node_modules/my-app",
+                "imported from",
+            ),
+            (
+                "/home/u/Documents/py/lib/python3.12/site-packages/my-app",
                 "imported from",
             ),
             (
                 "/opt/homebrew/lib/python3.12/site-packages/my-app",
-                "outside your home",
+                "outside the export locations",
             ),
-            ("/usr/local/my-app", "outside your home"),
-            ("/etc/my-app", "outside your home"),
-            ("/Volumes/USB", "outside your home"),
-            ("/tmp/other/my-app", "outside your home"),
+            ("/usr/local/my-app", "outside the export locations"),
+            ("/etc/my-app", "outside the export locations"),
+            ("/Volumes/USB", "outside the export locations"),
+            ("/tmp/other/my-app", "outside the export locations"),
             ("/tmp/T/.tmpAbC/node_modules/my-app", "imported from"),
         ] {
             let why = verdict(refused).unwrap_or_else(|| panic!("{refused} was allowed"));
@@ -2670,6 +2679,21 @@ mod tests {
         }
         // No home at all: only the drives and the test folders remain.
         assert!(placement_refusal(Path::new("/home/u/Desktop/x"), None, &tests).is_some());
+    }
+
+    #[test]
+    fn source_project_metadata_does_not_permit_replacing_an_edited_export() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("app");
+        let earlier = root.path().join("earlier");
+        for dir in [&app, &earlier] {
+            std::fs::create_dir_all(dir.join(".git")).unwrap();
+            std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        }
+        assert_eq!(
+            foreign_entries(&earlier, &app),
+            vec![".git", "node_modules"]
+        );
     }
 
     #[cfg(unix)]

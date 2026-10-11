@@ -858,10 +858,9 @@ pub struct ExportAppParams {
     /// Absolute path of a NEW (or empty) folder to export into, such as
     /// `/Users/you/Desktop/my-app`. Created if missing. A folder that already
     /// holds files is refused unless `replace` is true and it is an earlier
-    /// export of this same app. Only a folder of the user's own, in their home
-    /// folder or on an external drive: never inside Biorouter's own settings,
-    /// the app store, the knowledge store, a hidden folder, an application's
-    /// data folder (`~/Library`, `AppData`) or a folder code is imported from
+    /// export of this same app. Only below the user's Desktop, Documents or Downloads:
+    /// never inside Biorouter's own settings, the app store, the knowledge
+    /// store, a hidden folder or a folder code is imported from
     /// (`node_modules`, `site-packages`).
     pub target_dir: String,
     /// Replace an earlier export of this same app at `target_dir`. The new
@@ -3226,8 +3225,8 @@ impl AgentDrafterServer {
                        the local Biorouter store (never over a different app), starts or reuses a \
                        `biorouterd`, and opens it, with no npm install and no build step \
                        (`dist/app.js` ships prebuilt). `target_dir` must be an absolute path to a \
-                       new or empty folder of the user's own (for example on the Desktop or in \
-                       Documents); pass `replace: true` only to replace an earlier export of this \
+                       new or empty folder below the user's Desktop, Documents or Downloads; \
+                       pass `replace: true` only to replace an earlier export of this \
                        same app, which is then kept beside the new one. `npm start` additionally \
                        serves the app and proxies the agent, for editing `src/`."
     )]
