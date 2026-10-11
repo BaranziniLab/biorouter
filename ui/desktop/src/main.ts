@@ -1303,6 +1303,10 @@ let appConfig = {
   BIOROUTER_PREDEFINED_MODELS: predefinedModels,
   BIOROUTER_API_HOST: 'http://127.0.0.1',
   BIOROUTER_WORKING_DIR: '',
+  // The person's home folder, so the renderer can write a path as `~/…` (the sidebar's hover card
+  // and folder groups, the terminal dock's working directory). Display only: nothing reads it
+  // to decide what a chat may touch.
+  BIOROUTER_HOME_DIR: os.homedir(),
   BIOROUTER_DEV_PROFILE_NAME: process.env.BIOROUTER_DEV_PROFILE_NAME || '',
   BIOROUTER_DEV_PROFILE_ROOT: process.env.BIOROUTER_DEV_PROFILE_ROOT || '',
   // If BIOROUTER_ALLOWLIST_WARNING env var is not set, defaults to false (strict blocking mode)
