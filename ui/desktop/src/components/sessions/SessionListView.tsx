@@ -54,7 +54,6 @@ import { formatExtensionName } from '../settings/extensions/subcomponents/Extens
 import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ModalShell } from '../ModalShell';
-import { Badge } from '../ui/badge';
 import { EmptyState } from '../ui/empty-state';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { chatKindOf } from '../chats/chatKind';
@@ -70,7 +69,7 @@ import {
 import { renameSessionOptimistically, SESSION_NAME_MAX_LENGTH } from '../../utils/sessionNameSync';
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
-import { folderName } from './historyRow';
+import { folderName, historyRowTitle } from './historyRow';
 import { applyHeldHistory, holdHistory, type HeldHistory } from './historyHold';
 import {
   BILLED_TOKENS_EXACT,
@@ -100,7 +99,6 @@ import {
   SAVE,
   SHOW_SUBAGENT_RUNS,
   START_A_CHAT,
-  SUBAGENT_BADGE,
   TRY_AGAIN,
   branchedFrom,
   historySearchPlaceholder,
@@ -425,6 +423,7 @@ const HistoryRow = React.memo(function HistoryRow({
   );
   const billedTokenEstimate = billedSessionTokenEstimate(session);
   const folder = folderName(session.working_dir);
+  const title = historyRowTitle(session);
   const parentName = session.diverged_from
     ? (sessionNameById.get(session.diverged_from) ?? session.diverged_from)
     : null;
@@ -450,13 +449,14 @@ const HistoryRow = React.memo(function HistoryRow({
             type="button"
             onClick={open}
             className="br-history-row-open"
-            aria-label={openChatLabel(session.name)}
+            aria-label={openChatLabel(title)}
           >
+            {/* The kind is the glyph's to say, once (V1-R2-10): a sub-agent run has no
+                "Subagent" badge and no "Subagent:" in its title, and an app chat reads as
+                the app's name, not `app:<id>`. The glyph carries the kind in its
+                accessible name. */}
             <span className="flex min-w-0 items-center gap-2">
-              <span className="text-label truncate">{session.name}</span>
-              {session.session_type === 'sub_agent' && (
-                <Badge data-testid="subagent-badge">{SUBAGENT_BADGE}</Badge>
-              )}
+              <span className="text-label truncate">{title}</span>
             </span>
             {/* One muted line: when, then where (by name; the path is in the
                 tooltip and in the filter, never on the row). A diverged chat
@@ -555,7 +555,7 @@ const HistoryRow = React.memo(function HistoryRow({
             >
               <IconAction
                 icon={Pencil}
-                label={renameLabel(session.name)}
+                label={renameLabel(title)}
                 tooltip={RENAME}
                 onSelect={() => onRename(session)}
               />
@@ -567,7 +567,7 @@ const HistoryRow = React.memo(function HistoryRow({
                         type="button"
                         variant="ghost"
                         shape="round"
-                        aria-label={moreActionsLabel(session.name)}
+                        aria-label={moreActionsLabel(title)}
                         data-row-action=""
                         onClick={(event) => event.stopPropagation()}
                       >
@@ -588,9 +588,13 @@ const HistoryRow = React.memo(function HistoryRow({
   );
 });
 
+// The stored name AND the title the row shows: "living news" finds the chat drawn as
+// "Living news router" (stored `app:living-news-router`), and "subagent" still finds a run
+// whose row no longer says it.
 function matchesFilter(session: Session, needle: string): boolean {
   return (
     session.name.toLowerCase().includes(needle) ||
+    historyRowTitle(session).toLowerCase().includes(needle) ||
     session.id.toLowerCase().includes(needle) ||
     session.working_dir.toLowerCase().includes(needle)
   );
@@ -645,9 +649,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const filteredSessions = useMemo(
     () =>
       debouncedFilter
-        ? visibleSessions.filter((session) => matchesFilter(session, debouncedFilter))
-        : visibleSessions,
-    [visibleSessions, debouncedFilter]
+        ? orderedSessions.filter((session) => matchesFilter(session, debouncedFilter))
+        : orderedSessions,
+    [orderedSessions, debouncedFilter]
   );
 
   // Parent grouping runs BEFORE date bucketing. Buckets key on `updated_at`,

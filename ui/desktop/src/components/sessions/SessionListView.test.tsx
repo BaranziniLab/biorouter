@@ -403,20 +403,21 @@ describe('SessionListView row actions', () => {
       )
     );
     // Nested, not merely present: the child sits inside the indented block
-    // (`.br-history-children`) and carries the badge, so the row reads as belonging to 'Parent'. The
-    // wait is for the refetch the toggle kicked off; re-querying inside it
+    // (`.br-history-children`) and wears the sub-agent glyph, so the row reads as belonging to
+    // 'Parent'. The wait is for the refetch the toggle kicked off; re-querying inside it
     // keeps the assertion reading the tree as it stands on each attempt.
     await waitFor(() => {
       const childRow = screen.getByText('Subagent task').closest('.br-history-children');
       expect(childRow).not.toBeNull();
-      // The badge belongs to the row, not above it: a bare inline span placed
-      // before a block-level row inside a flex column renders on its own line.
-      expect(
-        screen
-          .getByText('Subagent task')
-          .closest('.biorouter-list-row')
-          ?.querySelector('[data-testid="subagent-badge"]')
-      ).not.toBeNull();
+      // The kind is said once, by the glyph (V1-R2-10): the row carries it in the glyph's name
+      // and draws no "Subagent" badge beside the title.
+      const glyph = screen
+        .getByText('Subagent task')
+        .closest('.biorouter-list-row')
+        ?.querySelector('[data-chat-kind]');
+      expect(glyph?.getAttribute('data-chat-kind')).toBe('subagent');
+      expect(glyph?.getAttribute('aria-label')).toMatch(/sub-agent/i);
+      expect(screen.queryByTestId('subagent-badge')).toBeNull();
     });
   });
 
@@ -465,7 +466,7 @@ describe('SessionListView row actions', () => {
     expect(screen.queryByText(/July 10/)).not.toBeInTheDocument();
   });
 
-  it('badges a subagent run whose parent is not in the list', async () => {
+  it('marks a subagent run whose parent is not in the list by its glyph', async () => {
     mocks.listSessions.mockResolvedValue({
       data: {
         sessions: [
@@ -486,16 +487,17 @@ describe('SessionListView row actions', () => {
     );
     fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
 
-    // An orphan stays top-level so it is still reachable — but unbadged it is
-    // an unexplained bare row, which is the same confusion in another form.
+    // An orphan stays top-level so it is still reachable, and with no parent row to nest under
+    // it is the sub-agent glyph alone that says what it is (a badge would say it twice).
     await waitFor(() =>
       expect(
         screen
           .getByText('Orphan run')
           .closest('.biorouter-list-row')
-          ?.querySelector('[data-testid="subagent-badge"]')
+          ?.querySelector('[data-chat-kind="subagent"]')
       ).not.toBeNull()
     );
+    expect(screen.queryByTestId('subagent-badge')).toBeNull();
   });
 
   // BR-71: `showSubagents` is per-component but the session cache it reads is

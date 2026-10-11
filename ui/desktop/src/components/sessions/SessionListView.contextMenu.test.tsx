@@ -226,15 +226,16 @@ describe('History row menus', () => {
       },
     });
     await renderHistory();
-    // The subagent row is only fetched and shown once the toggle is on.
+    // The subagent row is only fetched and shown once the toggle is on. Its row shows the label
+    // without the stored "Subagent: " prefix (the glyph says it, V1-R2-10).
     fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
-    await screen.findByText('Subagent: Word research');
+    await screen.findByText('Word research');
 
     for (const [label, id, keys] of [
       ['Excel research', '20260823_2', FULL_MENU],
       ['Nightly QC', '20260823_3', FULL_MENU],
       ['Branch of Excel', '20260823_4', FULL_MENU],
-      ['Subagent: Word research', '20260823_5', FULL_MENU.filter((key) => key !== 'diverge')],
+      ['Word research', '20260823_5', FULL_MENU.filter((key) => key !== 'diverge')],
     ] as const) {
       fireEvent.contextMenu(screen.getByText(label));
       await screen.findAllByRole('menuitem');

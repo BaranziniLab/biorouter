@@ -133,7 +133,7 @@ Two consequences worth stating plainly:
 `parent_session_id` and `diverged_from` are siblings, not synonyms: the first records a
 **delegation** (an agent spawned this), the second a **user fork** (a person branched this),
 paired with `branch_point_msg_uid` for the exact message the branch was taken at. A row can
-carry either, and they are rendered differently — a "Subagent" badge versus "branched from …".
+carry either, and they are rendered differently — a sub-agent glyph versus "branched from …".
 
 ## How each surface reads the contract
 
@@ -141,7 +141,7 @@ carry either, and they are rendered differently — a "Subagent" badge versus "b
 |---|---|
 | History nesting | `session_type === 'sub_agent'` **and** a `parent_session_id` resolving to a top-level row (`ui/desktop/src/components/sessions/sessionGrouping.ts`) |
 | History "Show subagent runs" toggle | Whether `sub_agent` rows are fetched at all, then `withoutSubagents` at every read of the shared cache |
-| The "Subagent" badge on a History row | The row's own `session_type`, so an unnested child is still labelled |
+| The sub-agent mark on a History row | The row's kind glyph (`chatKind.ts`), which reads `session_type` and `parent_session_id`, so an unnested child is still marked. There is no separate "Subagent" badge, and `historyRowTitle` drops the stored `Subagent: ` prefix from the title the row shows (the stored name is unchanged and still searchable) |
 | Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` (and, for a Crew task, `origin` then `working_dir`) over the title |
 | `workspace_list` | `parent_session_id` and `only_subagents` as independent filters |
 | CLI | `crates/biorouter-cli/src/commands/session_grouping.rs`, the same two fields |

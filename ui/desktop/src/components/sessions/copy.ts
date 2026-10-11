@@ -42,7 +42,6 @@ export const RENAME = 'Rename';
 export const renameLabel = (name: string) => `Rename ${name}`;
 export const MORE_ACTIONS = 'More actions';
 export const moreActionsLabel = (name: string) => `More actions for ${name}`;
-export const SUBAGENT_BADGE = 'Subagent';
 export const branchedFrom = (name: string) => `Branched from ${name}`;
 
 export const MESSAGES_STAT = 'Messages';
