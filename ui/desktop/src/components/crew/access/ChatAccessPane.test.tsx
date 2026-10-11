@@ -931,9 +931,10 @@ describe('chat access: a finished task', () => {
   it('says so in the pane too, and offers no Allow', async () => {
     installDaemon(mocks, { grants: () => [grantRow({ kind: 'task', expired: true })] });
     function PaneOnly() {
-      const { channel, openPane, ui } = useCrew();
+      const { channel, messagesLoaded, openPane, ui } = useCrew();
       return (
         <div>
+          {messagesLoaded && channel ? <p data-testid="observed-channel">{channel.id}</p> : null}
           {channel ? (
             <button
               type="button"
@@ -951,6 +952,8 @@ describe('chat access: a finished task', () => {
       );
     }
     renderWithController(PaneOnly);
+    // Channel selection resets its panes before the first messages frame settles the view.
+    expect(await screen.findByTestId('observed-channel')).toHaveTextContent('channel-1');
     fireEvent.click(await screen.findByRole('button', { name: 'Open access' }));
     const paneNode = await screen.findByTestId('pane');
     expect(await within(paneNode).findByText(accessCopy.paneTaskFinished)).toBeInTheDocument();
