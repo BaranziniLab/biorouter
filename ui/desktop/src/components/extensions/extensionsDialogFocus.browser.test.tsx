@@ -162,7 +162,13 @@ describe('keyboard focus returns to Add after a dialog closes (V3-R3-2)', () => 
 
   async function open(script: string): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1100, height: 760 } });
-    await tab.setContent(`<!doctype html><html><body><div id="root"></div></body></html>`);
+    // Just enough stylesheet for a press to land where a person's would: a scrim over the window
+    // and a dialog box on top of it. Nothing here is under test, only where things sit.
+    await tab.setContent(`<!doctype html><html><head><style>
+      [data-slot="dialog-overlay"] { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.3); }
+      [role="dialog"] { position: fixed; top: 120px; left: 50%; z-index: 50; width: 640px; transform: translateX(-50%); background: #fff; }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    </style></head><body><div id="root"></div></body></html>`);
     await tab.evaluate((registry) => {
       (window as unknown as { electron: unknown }).electron = {
         platform: 'darwin',
@@ -272,11 +278,9 @@ describe('keyboard focus returns to Add after a dialog closes (V3-R3-2)', () => 
     const tab = await open(fixed);
     try {
       await pickByKeyboard(tab, EXTENSIONS_COPY.browse);
-      // A press on the scrim dismisses an `info` dialog. The page has no stylesheet here, so the
-      // dialog's box sits at y 186 to 386 and the window corner is the scrim. The press is held
-      // for a few ms, as a hand does: Radix dismisses on pointer-up after a pointer-down.
-      await tab.mouse.click(2, 2, { delay: 20 });
-      await tab.getByRole('dialog').waitFor({ state: 'detached', timeout: 5000 });
+      // A press on the scrim dismisses an `info` dialog; the window corner is the scrim.
+      await tab.mouse.click(5, 5);
+      await tab.getByRole('dialog').waitFor({ state: 'detached' });
       await tab.waitForTimeout(150);
       expect((await focused(tab)).tag).toBe('BODY');
     } finally {
