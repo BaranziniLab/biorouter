@@ -1,14 +1,21 @@
-import type * as React from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './dialog';
+import * as React from 'react';
+import { ModalShell } from '../ModalShell';
 import { Button } from './button';
+import { uiCopy } from './copy';
 
+/**
+ * A yes-or-no confirmation: a title, one message, Cancel and the action.
+ *
+ * It is a `ModalShell` at size `sm`, so it has the one dialog anatomy every other dialog has
+ * (vision round 1, V4-10 and V1-L5): pinned at the top edge, the header rule, 16px insets and the
+ * footer row. It used to be a raw `DialogContent` (425px, centred, 24px insets), so "Delete
+ * chat?" from the sidebar sat in the middle of the window while History's "Rename chat" from the
+ * same row menu sat at the top.
+ *
+ * The message is the dialog's description (`describedBy`), in body text, not a 12px subtitle.
+ * While `isSubmitting` the dialog must be answered (`purpose="required"`): no ×, no Escape, no
+ * backdrop, so a dismissal cannot orphan the running action.
+ */
 export function ConfirmationModal({
   isOpen,
   title,
@@ -37,25 +44,33 @@ export function ConfirmationModal({
    */
   children?: React.ReactNode;
 }) {
+  const messageId = React.useId();
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && onCancel()}>
-      <DialogContent dismissible={!isSubmitting} className="sm:max-w-[425px]">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{message}</DialogDescription>
-        </DialogHeader>
-
-        {children}
-
-        <DialogFooter className="pt-2">
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isSubmitting) onCancel();
+      }}
+      size="sm"
+      purpose={isSubmitting ? 'required' : 'info'}
+      title={title}
+      describedBy={messageId}
+      bodyClassName="flex flex-col gap-3"
+      footer={
+        <>
           <Button variant="secondary" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
           <Button variant={confirmVariant} onClick={onConfirm} disabled={isSubmitting}>
-            {isSubmitting ? 'Processing…' : confirmLabel}
+            {isSubmitting ? uiCopy.processing : confirmLabel}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <p id={messageId} className="text-body text-text-muted">
+        {message}
+      </p>
+      {children}
+    </ModalShell>
   );
 }

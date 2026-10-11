@@ -36,6 +36,8 @@ export const uiCopy = {
     `${label} · ${mac ? '⌘F' : 'Ctrl+F'}`,
   /** A spinner's default spoken name, when it carries one. */
   loading: 'Loading…',
+  /** A confirmation's button while the action it confirms is running. */
+  processing: 'Processing…',
   /** The badge on something that ships with the app. */
   builtIn: 'Built-in',
   /** That badge's default help, read from its InfoTip. */
