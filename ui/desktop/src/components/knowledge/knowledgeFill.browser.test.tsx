@@ -27,7 +27,9 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as themeTokens from '../../../scripts/lib/theme-tokens.mjs';
 import type { Graph, GraphNode } from '../../api/types.gen';
+import { Sparkles } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { EmptyState } from '../ui/empty-state';
 import { Dropzone } from './IngestPanel/Dropzone';
 import { PasteTextBox } from './IngestPanel/PasteTextBox';
 import { GraphFacetStrip } from './graph/GraphFacetStrip';
@@ -208,6 +210,7 @@ function documentFor(mode: Mode): string {
       <Button id="retry" variant="secondary">
         Try again
       </Button>
+      <EmptyState icon={Sparkles} title="Nothing digested yet" description="Stage a source." />
       <div
         id="card"
         className="br-fill-surface rounded-container border border-transparent bg-background-fill p-3"
@@ -388,6 +391,15 @@ describe.each(Object.keys(MODES) as Mode[])('the Knowledge surfaces are fills (%
     // A button inside a filled card on the same ground still rests one ground back.
     const inner = await look(page, '#inner');
     expect(inner.bg).toBe(rgb(hex('--background-default')));
+  });
+
+  it('draws an empty state’s mark tile on the strong fill there, where the rest fill is invisible', async (ctx) => {
+    if (!page) return ctx.skip();
+    const tile = await look(page, '#canvas section > div');
+    expect(tile.bg).toBe(rgb(hex('--background-fill-strong')));
+    // It is a step off the canvas it sits on, which the rest fill is not (1.00:1).
+    const canvas = await look(page, '#canvas');
+    expect(tile.bg).not.toBe(canvas.bg);
   });
 
   it('keeps the edge in forced colours, where the fill is repainted', async (ctx) => {

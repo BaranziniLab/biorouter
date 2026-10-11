@@ -131,7 +131,7 @@ function ExternalToken({ text, href }: { text: string; href: string }) {
 function FrontmatterRowView({ row }: { row: FrontmatterRow }) {
   return (
     <div className="br-inspector-row">
-      <span className="text-caps text-text-muted">{row.label}</span>
+      <span className="text-supporting text-text-muted">{row.label}</span>
       <div className="min-w-0 text-body text-text-default">
         {row.value.kind === 'text' && <span className="break-words">{row.value.text}</span>}
 
@@ -311,7 +311,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
                   </div>
                 ) : (
                   <div className="overflow-hidden rounded-element bg-background-fill">
-                    <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-supporting text-text-muted">
                       <FileCode2 className="h-icon-chip w-icon-chip" aria-hidden="true" />
                       Unparsed frontmatter
                     </div>

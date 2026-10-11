@@ -185,7 +185,7 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
                 <button
                   type="button"
                   onClick={() => toggleFamily(family.members)}
-                  className="flex items-center gap-2 self-start rounded-inner text-caps leading-none text-text-muted"
+                  className="flex items-center gap-2 self-start rounded-inner text-supporting text-text-muted"
                 >
                   {family.name}
                 </button>
@@ -242,7 +242,7 @@ function LegendSection({
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   return (
-    <section className="px-3 py-2">
+    <section className="px-4 py-2">
       <div className="mb-1 flex items-center gap-1">
         <button
           type="button"
