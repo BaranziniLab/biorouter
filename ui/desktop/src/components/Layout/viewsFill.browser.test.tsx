@@ -64,7 +64,12 @@ function App() {
       <div id="band">
         <PageHeader
           title="Workflows"
-          actions={<FilterInput value={query} onValueChange={setQuery} label="Filter workflows" />}
+          actions={
+            <>
+              <FilterInput value={query} onValueChange={setQuery} label="Filter workflows" />
+              <Button id="band-button" variant="secondary" size="sm">Sort</Button>
+            </>
+          }
         />
       </div>
       <div style={{ padding: '8px 24px 0' }}>
@@ -211,6 +216,17 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
         expect(await ground(tab, '#band .br-filter-input-field'), `${mode} hover`).toBe(strong);
         // A band that did not set the ground would rest on the fill, 1.03:1 off its own paint.
         expect(strong).not.toBe(fill);
+        // A filled BUTTON has no label to protect, so it hovers one fill deeper: with the rest on
+        // the strong fill it would otherwise answer the pointer with nothing.
+        expect(await ground(tab, '#band-button'), `${mode} button rests on the strong fill`).toBe(
+          strong
+        );
+        await tab.hover('#band-button');
+        await tab.waitForTimeout(250);
+        expect(await ground(tab, '#band-button'), `${mode} button hover`).toBe(
+          await paint(tab, 'var(--background-strong)')
+        );
+        await tab.mouse.move(700, 800);
         await shot(tab, mode);
       } finally {
         await tab.close();
@@ -228,6 +244,24 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
       ).toBe(await paint(bare, 'var(--background-fill)'));
     } finally {
       await bare.close();
+    }
+
+    const flat = await open(
+      'light',
+      without(
+        /\.biorouter-page-header\[data-band\] \.br-fill-hover:hover,\s*\.biorouter-page-header\[data-band\] \.br-fill-hover:active \{[^}]*\}/,
+        /\n\s*background-color:[^;]*;/
+      )
+    );
+    try {
+      await flat.hover('#band-button');
+      await flat.waitForTimeout(250);
+      expect(
+        await ground(flat, '#band-button'),
+        'without the rule a band button hovers on its own rest colour'
+      ).toBe(await paint(flat, 'var(--background-fill-strong)'));
+    } finally {
+      await flat.close();
     }
   }, 120_000);
 

@@ -3882,6 +3882,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   --br-control-ground: var(--background-fill-strong);
 }
 
+/* A FILLED BUTTON on the band (a secondary or outline one: no view puts one there today)
+   would rest on the strong fill and hover on the same value, so it would answer the pointer
+   with nothing. It hovers one fill deeper instead, as Knowledge's recessed headers do
+   (`@ws WS-KNOWLEDGE begin: recessed ground`). Only a button: its label is `--text-default`
+   and clears 4.5:1 on the deeper step, which a field's placeholder does not (above). Unlayered,
+   so it beats the layered `.br-fill-hover:hover`. */
+.biorouter-page-header[data-band] .br-fill-hover:hover,
+.biorouter-page-header[data-band] .br-fill-hover:active {
+  background-color: var(--background-strong);
+}
+
 .biorouter-page-header-bar {
   display: flex;
   flex: 1 1 auto;
