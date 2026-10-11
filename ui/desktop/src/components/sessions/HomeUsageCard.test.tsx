@@ -274,6 +274,24 @@ describe('HomeUsageCard', () => {
     expect(screen.getByText('More')).toBeInTheDocument();
   });
 
+  it('leads every streak footnote with the 12px ring glyph, hidden from assistive tech', () => {
+    const lead = () => screen.getByTestId('home-usage-streak').firstElementChild;
+    const { unmount } = render(<HomeUsageCard window={windowOf()} />);
+    // Running: the cells' own ring, the key to them.
+    expect(lead()).toHaveAttribute('data-streak', 'true');
+    expect(lead()).toHaveAttribute('aria-hidden', 'true');
+    expect(lead()?.tagName).toBe('I');
+    unmount();
+
+    // None running: still led by the ring, muted, and the words are the longest only.
+    render(<HomeUsageCard window={windowOf({ currentStreak: 0, longestStreak: 16 })} />);
+    expect(lead()).toHaveAttribute('data-streak', 'past');
+    expect(lead()).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByTestId('home-usage-streak')).toHaveTextContent('Longest streak 16 days');
+    // The glyph adds no words to the accessible text.
+    expect(screen.getByTestId('home-usage-streak').textContent).toBe('Longest streak 16 days');
+  });
+
   it('drops the streak words when there has never been one', () => {
     render(<HomeUsageCard window={windowOf({ currentStreak: 0, longestStreak: 0 })} />);
     expect(screen.queryByTestId('home-usage-streak')).toBeNull();

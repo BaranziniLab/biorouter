@@ -239,9 +239,19 @@ export function HeatmapLegend() {
   );
 }
 
-/** The 12px ringed square that marks the current streak, as the footnote's glyph. */
-export function StreakGlyph() {
-  return <i aria-hidden="true" className="biorouter-heatmap-swatch bg-heat-0" data-streak="true" />;
+/**
+ * The 12px ringed square that leads the footnote's streak words. While a streak is
+ * running its ring is the cells' own ink (the key to them); with none running there
+ * are no ringed cells to point at, so the ring goes muted and means "streak" only.
+ */
+export function StreakGlyph({ running = true }: { running?: boolean }) {
+  return (
+    <i
+      aria-hidden="true"
+      className="biorouter-heatmap-swatch bg-heat-0"
+      data-streak={running ? 'true' : 'past'}
+    />
+  );
 }
 
 /**

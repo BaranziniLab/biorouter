@@ -8250,6 +8250,12 @@ code [class~='token'] {
   box-shadow: inset 0 0 0 1.5px var(--text-default);
 }
 
+/* No streak is running, so no cell is ringed: the footnote's glyph keeps its
+   ring (it still leads the words) in the muted ink of the line it sits on. */
+.biorouter-heatmap-swatch[data-streak='past'] {
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+
 /* The first heatmap a session shows reveals column by column (`--heat-delay`
    is `col * 8 + row * 12` ms, set inline only then). `backwards` holds the
    first frame through the delay and lets go at the end, so the hover scale

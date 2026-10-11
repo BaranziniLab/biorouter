@@ -29,7 +29,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ActivityWindow } from '../../api';
-import { UsageHeatmap } from '../sessions/UsageHeatmap';
+import { StreakGlyph, UsageHeatmap } from '../sessions/UsageHeatmap';
 import { StatGrid, type StatItem } from './StatGrid';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -134,9 +134,19 @@ const TILES: StatItem[] = [
 ];
 
 /** The card's markup: its classes, a stand-in head, and the real grid and heatmap. */
-function cardHtml(width: number, { surface = true } = {}): string {
+function cardHtml(
+  width: number,
+  { surface = true, streak = null as null | 'running' | 'past' } = {}
+): string {
   const tiles = renderToStaticMarkup(<StatGrid items={TILES} />);
   const heatmap = renderToStaticMarkup(<UsageHeatmap window={YEAR} />);
+  // The footnote's left side is the real glyph and the card's own `.br-usage-streak` wrapper
+  // when a case asks for it; otherwise a stand-in word.
+  const left = streak
+    ? `<span class="br-usage-streak" id="streak">${renderToStaticMarkup(
+        <StreakGlyph running={streak === 'running'} />
+      )}<span id="streak-words">${streak === 'running' ? '3 day streak · longest 16 days' : 'Longest streak 16 days'}</span></span>`
+    : '<span>3 day streak</span>';
   return `
     <section class="br-usage-card${surface ? ' br-fill-surface' : ''}" id="card" style="width:${width}px">
       <div class="br-usage-card-head" id="head">
@@ -150,7 +160,7 @@ function cardHtml(width: number, { surface = true } = {}): string {
       <div class="br-usage-card-body" id="body">
         <div class="br-usage-panels" id="panels">${tiles}</div>
         <div class="br-usage-card-heatmap">${heatmap}</div>
-        <div class="br-usage-card-foot text-supporting" id="foot"><span>3 day streak</span><span>Less More</span></div>
+        <div class="br-usage-card-foot text-supporting" id="foot">${left}<span>Less More</span></div>
       </div>
     </section>`;
 }
@@ -418,6 +428,63 @@ describe('Home usage card in a real layout engine', () => {
       } finally {
         await tab.close();
       }
+    }
+  });
+
+  it('leads the footnote with a 12px ring: ink while a streak runs, muted when none does', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const measured = {} as Record<'running' | 'past', Record<string, unknown>>;
+      for (const streak of ['running', 'past'] as const) {
+        const tab = await open(760, { html: cardHtml(760, { streak }) });
+        try {
+          measured[streak] = await tab.evaluate((dark) => {
+            document.documentElement.classList.toggle('dark', dark);
+            const glyph = document.querySelector('#streak > i') as HTMLElement;
+            const words = document.getElementById('streak-words')!.getBoundingClientRect();
+            const g = glyph.getBoundingClientRect();
+            return {
+              first: glyph === document.getElementById('streak')!.firstElementChild,
+              width: g.width,
+              height: g.height,
+              centre: g.top + g.height / 2,
+              wordsCentre: words.top + words.height / 2,
+              gap: words.left - g.right,
+              ring: getComputedStyle(glyph).boxShadow,
+              ink: getComputedStyle(document.body).getPropertyValue('--text-default').trim(),
+              muted: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(),
+              foot: document.getElementById('foot')!.getBoundingClientRect().height,
+            };
+          }, mode === 'dark');
+        } finally {
+          await tab.close();
+        }
+      }
+      for (const streak of ['running', 'past'] as const) {
+        const m = measured[streak] as Record<string, number | boolean | string>;
+        // Led by the glyph, 12px square, centred on the words, 6px before them, in a 16px line.
+        expect(m.first).toBe(true);
+        expect(m.width).toBe(12);
+        expect(m.height).toBe(12);
+        expect(Math.abs((m.centre as number) - (m.wordsCentre as number))).toBeLessThanOrEqual(0.5);
+        expect(m.gap).toBe(6);
+        expect(m.foot).toBe(16);
+        // A 1.5px inset ring, and no other shadow.
+        expect(m.ring).toMatch(/inset/);
+        expect(m.ring).toMatch(/1\.5px/);
+      }
+      // Running: the cells' ink. None running: the muted ink, which is not the cells'.
+      const ringColour = (streak: 'running' | 'past') =>
+        (measured[streak].ring as string).match(/rgb\([^)]*\)/)![0];
+      expect(ringColour('running')).not.toBe(ringColour('past'));
+      const hex = (colour: string) =>
+        '#' +
+        (colour.match(/\d+/g) ?? [])
+          .slice(0, 3)
+          .map((n) => Number(n).toString(16).padStart(2, '0'))
+          .join('');
+      expect(hex(ringColour('running'))).toBe(measured.running.ink);
+      expect(hex(ringColour('past'))).toBe(measured.past.muted);
     }
   });
 

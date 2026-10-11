@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ActivityWindow } from '../../api';
@@ -349,6 +351,25 @@ describe('legend and streak glyph', () => {
     const { container } = render(<StreakGlyph />);
     expect(container.firstElementChild).toHaveAttribute('data-streak', 'true');
     expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('keeps the ring with no streak running, but in the muted ink, never the cells', () => {
+    const { container } = render(<StreakGlyph running={false} />);
+    expect(container.firstElementChild).toHaveAttribute('data-streak', 'past');
+    expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+    // The `true` marker is what the grid's cells carry; a glyph that took it with no
+    // ringed cell on screen would point at marks that are not there.
+    expect(container.querySelector('[data-streak="true"]')).toBeNull();
+  });
+
+  it('draws the muted ring from the muted ink, in main.css', () => {
+    const css = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+    const rule = css.match(/\.biorouter-heatmap-swatch\[data-streak='past'\]\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/box-shadow:\s*inset 0 0 0 1\.5px var\(--text-muted\)/);
+    // And the running ring stays in ink, on cells and glyph alike.
+    expect(css).toMatch(
+      /\.biorouter-heatmap-cell\[data-streak='true'\],\s*\.biorouter-heatmap-swatch\[data-streak='true'\]\s*\{[^}]*var\(--text-default\)/
+    );
   });
 });
 

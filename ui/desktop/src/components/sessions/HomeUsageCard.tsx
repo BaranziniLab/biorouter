@@ -292,7 +292,7 @@ function UsageFootnote({ activity }: { activity: ActivityWindow }) {
     <div className="br-usage-card-foot text-supporting text-text-muted">
       {streak ? (
         <span className="br-usage-streak" data-testid="home-usage-streak">
-          {activity.currentStreak > 0 ? <StreakGlyph /> : null}
+          <StreakGlyph running={activity.currentStreak > 0} />
           <span>{streak}</span>
         </span>
       ) : (
