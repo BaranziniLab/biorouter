@@ -101,7 +101,7 @@ use std::path::{Path, PathBuf};
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::{header, HeaderMap, Response, StatusCode},
+    http::{header, HeaderMap, Response, StatusCode, Uri},
     response::IntoResponse,
     routing::get,
     Router,
@@ -256,6 +256,7 @@ async fn index(
     State(ui): State<WebUi>,
     headers: HeaderMap,
     Query(query): Query<IndexQuery>,
+    uri: Uri,
 ) -> Response<Body> {
     // The shell carries the daemon secret and is the same origin as every
     // Agent Drafter app this daemon serves, whose code an agent wrote. Its
@@ -267,8 +268,7 @@ async fn index(
     // the other half, and `docs/deployment/serve-decisions.md` SD-14.
     // An old app tab can remain open across an update. Refusing new app pages
     // alone therefore cannot keep the secret out of an HTTP LAN fetch.
-    if !biorouter_server::auth::reached_over_a_secure_context(&headers, &axum::http::Uri::default())
-    {
+    if !biorouter_server::auth::reached_over_a_secure_context(&headers, &uri) {
         return insecure_address();
     }
     if !biorouter_server::auth::is_document_navigation(&headers) {
@@ -503,7 +503,13 @@ mod tests {
     #[tokio::test]
     async fn the_shell_is_never_cached() {
         let ui = ui_with(None);
-        let res = index(State(ui), HeaderMap::new(), Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            HeaderMap::new(),
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(
             res.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -524,6 +530,7 @@ mod tests {
             Query(IndexQuery {
                 t: Some("tok".into()),
             }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -584,12 +591,19 @@ mod tests {
             Query(IndexQuery {
                 t: Some("wrong".into()),
             }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
         // And with no credential at all.
-        let res = index(State(ui), HeaderMap::new(), Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            HeaderMap::new(),
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -608,6 +622,7 @@ mod tests {
                 Query(IndexQuery {
                     t: Some("tok".into()),
                 }),
+                Uri::default(),
             )
             .await;
             assert_eq!(
@@ -632,7 +647,13 @@ mod tests {
         let ui = ui_with(Some("tok"));
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, "biorouter_session=tok".parse().unwrap());
-        let res = index(State(ui), headers, Query(IndexQuery { t: None })).await;
+        let res = index(
+            State(ui),
+            headers,
+            Query(IndexQuery { t: None }),
+            Uri::default(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK);
     }
 
@@ -672,6 +693,7 @@ mod tests {
                     Query(IndexQuery {
                         t: token.map(str::to_owned),
                     }),
+                    Uri::default(),
                 )
                 .await;
                 assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -700,6 +722,7 @@ mod tests {
                 Query(IndexQuery {
                     t: token.map(str::to_owned),
                 }),
+                Uri::default(),
             )
             .await;
             assert_eq!(res.status(), StatusCode::OK);
@@ -708,6 +731,18 @@ mod tests {
                 token.is_some()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn authority_without_a_host_header_still_checks_the_shell_address() {
+        let res = index(
+            State(ui_with(Some("tok"))),
+            cookie_request(None, None),
+            Query(IndexQuery { t: None }),
+            "http://192.168.1.5:8765/".parse().unwrap(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     /// The shell carries the daemon secret and shares its origin with every
@@ -731,6 +766,7 @@ mod tests {
                 State(ui.clone()),
                 cookie_request(mode, dest),
                 Query(IndexQuery { t: None }),
+                Uri::default(),
             )
             .await;
             assert_eq!(res.status(), StatusCode::FORBIDDEN, "{mode:?} {dest:?}");
@@ -749,6 +785,7 @@ mod tests {
             Query(IndexQuery {
                 t: Some("tok".into()),
             }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -760,6 +797,7 @@ mod tests {
                 State(ui.clone()),
                 cookie_request(mode, dest),
                 Query(IndexQuery { t: None }),
+                Uri::default(),
             )
             .await;
             assert_eq!(res.status(), StatusCode::OK, "{mode:?} {dest:?}");
@@ -779,6 +817,7 @@ mod tests {
             State(ui_with(Some("tok"))),
             cookie_request(Some("navigate"), Some("document")),
             Query(IndexQuery { t: None }),
+            Uri::default(),
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);

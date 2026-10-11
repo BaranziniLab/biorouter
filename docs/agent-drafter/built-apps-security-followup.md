@@ -25,6 +25,14 @@ The build lane also identified SDK `br.run` tool/error strings being interpolate
 Both now pass through `escapeHtml`. The SDK harness includes malicious `<img onerror>` strings
 and proves no element is injected while the literal message remains visible.
 
+Independent desktop review found a second reconnect race inside `UiBridge::detach`: the old
+connection checked its atomic generation before locking the sender, so a new attach could install
+its channel in between and then lose that channel and its parked asks. Attach and detach now hold
+one generation mutex throughout their sender/reset/cancellation work. A deterministic concurrent
+regression parks detach at the sender lock while another thread reattaches, then proves the new
+channel and its UI request remain live. The shell also uses the real request URI when checking
+HTTP/2 authority-only requests; a network authority cannot be mistaken for an absent browser host.
+
 ## Verification
 
 - `git diff --check`: passed.
@@ -42,6 +50,7 @@ cargo test -p biorouter-server --lib auth::
 cargo test -p biorouter-server --lib routes::web_ui::
 cargo test -p biorouter-server --lib routes::reset::
 cargo test -p biorouter-mcp --lib agent_drafter::store::
+cargo test -p biorouter-mcp --lib agent_drafter::control::
 ```
 
 The integration gate must include the full clippy/test checks and real-app preview/figure/socket
