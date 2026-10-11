@@ -42,7 +42,6 @@ vi.mock('../../ConfigContext', () => ({
   }),
 }));
 vi.mock('../../settings/extensions/subcomponents/ExtensionList', () => ({
-  formatExtensionName: (name: string) => name,
   isBuiltInExtension: () => false,
 }));
 vi.mock('../../../api', () => ({ getSessionExtensions: mocks.getSessionExtensions }));
@@ -82,7 +81,7 @@ function renderMenu(grants: unknown[], lookUp = true) {
 }
 
 async function openMenu() {
-  return screen.findByRole('option', { name: /crew/ });
+  return screen.findByRole('option', { name: /^Crew/ });
 }
 
 describe('the Crew row of a chat’s extension menu', () => {
