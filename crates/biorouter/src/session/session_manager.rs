@@ -3785,6 +3785,16 @@ impl SessionStorage {
     /// opening it, not activity in it. The choice is a bound parameter for the
     /// same reason as the privacy toggle above: it must not change which
     /// statement runs.
+    ///
+    /// Outside a scope the bind stamps only when it changes what the row
+    /// records: another `provider_name`, or another `model_name` inside
+    /// `model_config_json` (coordinator ruling 16). Re-binding the model a chat
+    /// already records is not a change to it, whoever asks: a person picking the
+    /// same model again, or a `--shared-daemon` resume that names it. The
+    /// comparison is in the `CASE`, against the row as it was before this
+    /// statement (SQLite evaluates every `SET` expression on the old row), so it
+    /// adds no read and no second statement. A stored config that is not JSON
+    /// reads as recording no model, so the bind still lands and stamps.
     pub(crate) async fn bind_provider_if_allowed(
         &self,
         session_id: &str,
@@ -3806,11 +3816,27 @@ impl SessionStorage {
         // call and has no admitted capability to inherit.
         let admits_anything = incoming_is_private || !crate::privacy::privacy_tiers_enabled();
         let is_activity = crate::session::activity::setup_write_is_activity();
+        let incoming_model = serde_json::from_str::<serde_json::Value>(model_config_json)
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("model_name")
+                    .and_then(|name| name.as_str())
+                    .map(str::to_owned)
+            });
         let write = sqlx::query(
             r#"
             UPDATE sessions
                SET provider_name = ?, model_config_json = ?,
-                   updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END
+                   updated_at = CASE
+                       WHEN ? = 1
+                        AND (provider_name IS NOT ?
+                             OR (CASE WHEN json_valid(model_config_json)
+                                      THEN json_extract(model_config_json, '$.model_name')
+                                 END) IS NOT ?)
+                       THEN datetime('now')
+                       ELSE updated_at
+                   END
              WHERE id = ?
                AND (privacy_tier = 'public' OR ? = 1)
             "#,
@@ -3818,6 +3844,8 @@ impl SessionStorage {
         .bind(provider_name)
         .bind(model_config_json)
         .bind(i64::from(is_activity))
+        .bind(provider_name)
+        .bind(incoming_model)
         .bind(session_id)
         .bind(i64::from(admits_anything));
         // ⚠ The last statement before the write, and test-only. Read the ⚠ in
@@ -6296,7 +6324,9 @@ impl SessionStorage {
         // It also keeps `updated_at` moving, exactly as the
         // `update(id).extension_data(..)` path this replaces did, EXCEPT inside
         // `session::activity::opening` (R-30): saving the roster a chat was
-        // opened with is setup, not activity. The statement stays a write either
+        // opened with is setup, not activity. The same holds inside
+        // `session::activity::housekeeping`, where an extension uninstall prunes
+        // every saved roster (ruling 16). The statement stays a write either
         // way. SQLite counts a matched row as changed even when the value it
         // assigns is the one already there, so `SET updated_at = updated_at`
         // still takes the write lock and still reports the one row the
@@ -20024,7 +20054,11 @@ mod session_id_uniqueness_tests {
 /// activity", History, `GET /sessions`, `biorouter session list`). These pin,
 /// write by write, which ones move it: the three setup writes an opening path
 /// makes stay put inside [`crate::session::activity::opening`], and nothing
-/// else is affected by that scope.
+/// else is affected by that scope. Coordinator ruling 16's additions follow at
+/// the end: a bind of the model a chat already records stamps nowhere, the
+/// housekeeping scope behaves like the opening one, and the writes behind the
+/// deliberate changes (a model switch, the composer toggles,
+/// `workspace_set_tools`, a Crew grant) stamp.
 ///
 /// Every row is back-dated to a fixed past second first, because
 /// `datetime('now')` has one-second resolution: without that, a write that
@@ -20552,5 +20586,230 @@ mod opening_is_not_activity_tests {
             OLDEST,
             "a token-count update"
         );
+    }
+
+    // ── what ruling 16 adds: no-op rebinds, housekeeping, deliberate changes ─
+
+    async fn bind_model(
+        sm: &SessionManager,
+        id: &str,
+        provider: &str,
+        config: &str,
+    ) -> BindOutcome {
+        sm.storage()
+            .bind_provider_if_allowed(id, provider, config, false)
+            .await
+            .unwrap()
+    }
+
+    /// A chat that records `anthropic` / `claude-sonnet-4-5`, back-dated.
+    async fn chat_on_a_model(sm: &SessionManager, name: &str, at: &str) -> String {
+        let id = chat(sm, name, at).await;
+        assert!(matches!(
+            bind_model(
+                sm,
+                &id,
+                "anthropic",
+                r#"{"model_name":"claude-sonnet-4-5"}"#
+            )
+            .await,
+            BindOutcome::Bound
+        ));
+        backdate(sm, &id, at).await;
+        id
+    }
+
+    /// Ruling 16: re-binding the model a chat already records is not activity,
+    /// with or without a scope. This is the bind a `--shared-daemon` resume
+    /// makes when it names the chat's own `--provider`/`--model`
+    /// (`POST /agent/update_provider`), and the one a person makes by picking
+    /// the model the chat is already on. The rest of the config may differ (a
+    /// context window read back from the server); the bind still lands.
+    #[tokio::test]
+    async fn rebinding_the_model_a_chat_records_is_not_activity_outside_any_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat_on_a_model(&sm, "a", OLDEST).await;
+        let newer = chat(&sm, "newer", MIDDLE).await;
+
+        let outcome = bind_model(
+            &sm,
+            &id,
+            "anthropic",
+            r#"{"model_name":"claude-sonnet-4-5","context_limit":200000}"#,
+        )
+        .await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let pool = sm.storage().pool().await.unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT model_config_json FROM sessions WHERE id = ?")
+                .bind(&id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(
+            stored.contains("200000"),
+            "the rule changes the timestamp only: the bind itself must land ({stored})"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+        assert_eq!(history_order(&sm).await, [newer.clone(), id.clone()]);
+        assert_eq!(sidebar_order(&sm).await, [newer, id]);
+    }
+
+    /// The other half of ruling 16: an explicit switch to another model, or to
+    /// another provider, is a deliberate change to the chat and moves it.
+    #[tokio::test]
+    async fn switching_a_chat_to_another_model_or_provider_is_activity() {
+        let (_dir, sm) = store().await;
+        let model = chat_on_a_model(&sm, "model", OLDEST).await;
+        let provider = chat_on_a_model(&sm, "provider", OLDEST).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        bind_model(
+            &sm,
+            &model,
+            "anthropic",
+            r#"{"model_name":"claude-opus-4-1"}"#,
+        )
+        .await;
+        assert_ne!(
+            stored_updated_at(&sm, &model).await,
+            OLDEST,
+            "another model on the same provider"
+        );
+        assert_eq!(history_order(&sm).await[0], model);
+
+        bind_model(
+            &sm,
+            &provider,
+            "openai",
+            r#"{"model_name":"claude-sonnet-4-5"}"#,
+        )
+        .await;
+        assert_ne!(
+            stored_updated_at(&sm, &provider).await,
+            OLDEST,
+            "another provider with the same model name"
+        );
+        assert!(history_order(&sm).await.ends_with(&[newest]));
+    }
+
+    /// A stored config that is not JSON (an import from an older build, a hand
+    /// edit) reads as recording no model: the bind still lands, and stamps.
+    #[tokio::test]
+    async fn a_bind_over_a_model_config_that_is_not_json_lands_and_stamps() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET provider_name = 'anthropic', model_config_json = 'not json' \
+             WHERE id = ?",
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        let outcome = bind_model(
+            &sm,
+            &id,
+            "anthropic",
+            r#"{"model_name":"claude-sonnet-4-5"}"#,
+        )
+        .await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    /// Uninstalling an extension prunes it from every saved roster that names
+    /// it, inside [`crate::session::activity::housekeeping`]: the value is
+    /// written and no chat moves (ruling 16).
+    #[tokio::test]
+    async fn a_housekeeping_roster_save_writes_the_value_but_leaves_updated_at_alone() {
+        use crate::session::activity::housekeeping;
+        let (_dir, sm) = store().await;
+        let first = chat(&sm, "first", OLDEST).await;
+        let second = chat(&sm, "second", MIDDLE).await;
+        let expected = vec![second.clone(), first.clone()];
+
+        for id in [&first, &second] {
+            assert!(housekeeping(save_roster(&sm, id)).await.is_some());
+        }
+
+        for id in [&first, &second] {
+            assert_eq!(
+                sm.get_extension_state(id, "enabled_extensions", "v0")
+                    .await
+                    .unwrap(),
+                Some(serde_json::json!({ "extensions": [] })),
+                "the scope changes the timestamp only: the roster must be saved"
+            );
+        }
+        assert_eq!(stored_updated_at(&sm, &first).await, OLDEST);
+        assert_eq!(stored_updated_at(&sm, &second).await, MIDDLE);
+        assert_eq!(history_order(&sm).await, expected);
+        assert_eq!(sidebar_order(&sm).await, expected);
+    }
+
+    /// Ruling 16's deliberate changes, through the writes their doors make,
+    /// none of which runs inside a scope (the door census in
+    /// `session::activity` pins that):
+    /// * a skill toggled from the composer (`POST /skills/session`) or by
+    ///   `workspace_set_tools`: `session_skills::apply`;
+    /// * an extension `workspace_set_tools` adds to a chat that is not open:
+    ///   `session_extensions::apply_saved_roster_delta`;
+    /// * a composer extension toggle and a Crew grant save the live roster
+    ///   (`Agent::persist_extension_state`), which stamps even when the roster
+    ///   it saves is the one the chat already holds.
+    #[tokio::test]
+    async fn composer_toggles_workspace_set_tools_and_a_crew_grant_write_as_activity() {
+        let (_dir, sm) = store().await;
+        let skills = chat(&sm, "skills", OLDEST).await;
+        let tools = chat(&sm, "tools", OLDEST).await;
+        let roster = chat(&sm, "roster", OLDEST).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        crate::agents::session_skills::apply(&sm, &skills, &["r30-skill".to_owned()], &[])
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &skills).await,
+            OLDEST,
+            "a skill toggle"
+        );
+
+        let todo = crate::agents::ExtensionConfig::Platform {
+            name: "todo".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        crate::agents::session_extensions::apply_saved_roster_delta(
+            &sm,
+            &tools,
+            std::slice::from_ref(&todo),
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &tools).await,
+            OLDEST,
+            "workspace_set_tools adding an extension"
+        );
+
+        save_roster(&sm, &roster).await;
+        backdate(&sm, &roster, OLDEST).await;
+        save_roster(&sm, &roster).await;
+        assert_ne!(
+            stored_updated_at(&sm, &roster).await,
+            OLDEST,
+            "saving the roster the chat already holds"
+        );
+
+        let order = history_order(&sm).await;
+        assert_eq!(order.last(), Some(&newest), "all three moved above it");
     }
 }

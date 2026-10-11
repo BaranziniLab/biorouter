@@ -1720,6 +1720,11 @@ fn revalidate_approved_extension_removal(
 /// pruning is cleanup of dangling references, so a partial sweep leaves exactly
 /// the state that existed before the tool was written, not a half-removed
 /// extension. What could not be pruned is reported rather than swallowed.
+///
+/// No chat moves under "Last activity" for it (R-30, coordinator ruling 16):
+/// the uninstall is something the person did to the machine, not to any of the
+/// chats it sweeps, so every write runs inside
+/// [`crate::session::activity::housekeeping`] and leaves `updated_at` alone.
 async fn prune_extension_from_sessions(
     session_manager: &Arc<crate::session::SessionManager>,
     extension_name: &str,
@@ -1756,14 +1761,14 @@ async fn prune_extension_from_sessions(
             });
         // The `LIKE` is a prefilter over one JSON column shared by every
         // per-session extension, so most candidates hold no roster entry at
-        // all. Skipping them is not an optimization: `update_extension_state`
-        // always writes, and a write bumps `updated_at`, which would reorder
-        // the History sidebar for every session that merely quoted the name.
+        // all. Skipping them keeps the sweep from rewriting rows it has no
+        // reason to touch: `update_extension_state` always writes, even inside
+        // the housekeeping scope below, which only spares `updated_at`.
         if !holds_it {
             continue;
         }
-        let result = session_manager
-            .update_extension_state(
+        let result =
+            crate::session::activity::housekeeping(session_manager.update_extension_state(
                 &session_id,
                 EnabledExtensionsState::EXTENSION_NAME,
                 EnabledExtensionsState::VERSION,
@@ -1777,7 +1782,7 @@ async fn prune_extension_from_sessions(
                     state.extensions.retain(|config| config.key() != config_key);
                     state.to_value()
                 },
-            )
+            ))
             .await;
         match result {
             Ok(Some(_)) => updated += 1,
@@ -4465,6 +4470,10 @@ mod tests {
             .await
             .expect("the fixture roster is stored")
             .expect("the fixture session exists");
+        // A past second, so a stamp by the prune cannot read as "unchanged"
+        // (`datetime('now')` has one-second resolution).
+        let backdated = "2001-01-01 00:00:00";
+        set_updated_at(&session_manager, &roster_session, backdated).await;
 
         let result = run_approved_uninstall(
             Arc::new(client),
@@ -4477,6 +4486,12 @@ mod tests {
         let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
         assert_eq!(report["state"], "removed");
         assert_eq!(report["sessionsUpdated"], 1);
+        assert_eq!(
+            stored_updated_at(&session_manager, &roster_session).await,
+            backdated,
+            "uninstalling an extension is housekeeping on the machine, not activity in every \
+             chat that held it (R-30, ruling 16)"
+        );
 
         let remaining = session_manager
             .get_extension_state(
@@ -4495,6 +4510,159 @@ mod tests {
                 .all(|config| config.key() != fixture.config_key),
             "a removed extension must not survive in a stored session roster"
         );
+    }
+
+    async fn set_updated_at(
+        session_manager: &crate::session::SessionManager,
+        session_id: &str,
+        at: &str,
+    ) {
+        let pool = session_manager.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn stored_updated_at(
+        session_manager: &crate::session::SessionManager,
+        session_id: &str,
+    ) -> String {
+        let pool = session_manager.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT CAST(updated_at AS TEXT) FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// R-30, ruling 16: the prune sweeps every chat that held the extension,
+    /// and none of them moves under "Last activity". Two chats hold it and a
+    /// third only quotes its name (the `LIKE` prefilter's false positive); all
+    /// three keep their time and their order, and only the two rosters change.
+    #[tokio::test]
+    async fn pruning_an_uninstalled_extension_moves_no_chat() {
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+        use crate::session::session_manager::SessionType;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let pruned = ExtensionConfig::Platform {
+            name: "r30prunedext".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        let kept = ExtensionConfig::Platform {
+            name: "todo".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        let mut ids = Vec::new();
+        for (index, (name, roster)) in [
+            ("holds it, oldest", vec![pruned.clone(), kept.clone()]),
+            ("quotes its name only", vec![kept.clone()]),
+            ("holds it, newest", vec![pruned.clone()]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let session = session_manager
+                .create_session(
+                    PathBuf::from("/tmp/r30-prune"),
+                    name.to_owned(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            session_manager
+                .add_message(
+                    &session.id,
+                    &crate::conversation::message::Message::user().with_text("hello"),
+                )
+                .await
+                .unwrap();
+            let stored = EnabledExtensionsState::new(roster).to_value().unwrap();
+            session_manager
+                .update_extension_state(
+                    &session.id,
+                    EnabledExtensionsState::EXTENSION_NAME,
+                    EnabledExtensionsState::VERSION,
+                    |_| Ok(stored),
+                )
+                .await
+                .unwrap();
+            if index == 1 {
+                // The prefilter's false positive: the name appears in another
+                // per-session extension's state, not in the roster.
+                session_manager
+                    .update_extension_state(&session.id, "todo", "v0", |_| {
+                        Ok(serde_json::json!({ "content": "remember r30prunedext" }))
+                    })
+                    .await
+                    .unwrap();
+            }
+            set_updated_at(
+                &session_manager,
+                &session.id,
+                &format!("200{index}-01-01 00:00:00"),
+            )
+            .await;
+            ids.push(session.id);
+        }
+        let order = || async {
+            session_manager
+                .list_sessions()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>()
+        };
+        let before = order().await;
+        assert_eq!(
+            before,
+            [ids[2].clone(), ids[1].clone(), ids[0].clone()],
+            "premise"
+        );
+
+        let (updated, problems) =
+            prune_extension_from_sessions(&session_manager, "r30prunedext", &pruned.key()).await;
+
+        assert_eq!(updated, 2, "{problems:?}");
+        assert!(problems.is_empty(), "{problems:?}");
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(
+                stored_updated_at(&session_manager, id).await,
+                format!("200{index}-01-01 00:00:00"),
+                "chat {index} moved under Last activity because an extension was uninstalled"
+            );
+            let roster = session_manager
+                .get_extension_state(
+                    id,
+                    EnabledExtensionsState::EXTENSION_NAME,
+                    EnabledExtensionsState::VERSION,
+                )
+                .await
+                .unwrap()
+                .and_then(|value| serde_json::from_value::<EnabledExtensionsState>(value).ok())
+                .unwrap();
+            assert!(
+                roster
+                    .extensions
+                    .iter()
+                    .all(|config| config.key() != pruned.key()),
+                "the prune itself must still land in chat {index}"
+            );
+        }
+        assert_eq!(order().await, before);
     }
 
     #[tokio::test]

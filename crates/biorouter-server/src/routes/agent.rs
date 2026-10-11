@@ -7282,4 +7282,127 @@ mod opening_is_not_activity_route_tests {
             vec![private.clone(), public.clone(), newest.clone()]
         );
     }
+
+    /// Coordinator ruling 16 at the routes. Re-binding the model a chat
+    /// records is not activity; a deliberate change made to the chat is.
+    ///
+    /// * `POST /agent/update_provider` naming the chat's own provider and
+    ///   model, which is the call `biorouter session --shared-daemon --resume`
+    ///   makes when the person repeats `--provider`/`--model`: no move.
+    /// * The same route naming another model (the model picker's switch):
+    ///   the chat moves to the top.
+    /// * `POST /agent/add_extension` and `POST /agent/remove_extension` (the
+    ///   composer's extension toggle): each moves its chat to the top.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_same_model_rebind_keeps_a_chats_place_and_a_switch_or_a_toggle_moves_it() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let mut seeded = Seeded {
+            state: Arc::clone(&state),
+            ids: Vec::new(),
+        };
+        let switched =
+            seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let toggled = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let newest = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let ids = seeded.ids.clone();
+        let expected = vec![newest.clone(), toggled.clone(), switched.clone()];
+        assert_eq!(history_order(&state, &ids).await, expected, "premise");
+        open_like_the_desktop(&state, &switched).await;
+        open_like_the_desktop(&state, &toggled).await;
+        let before = updated_at(&state, &switched).await;
+
+        // ── The model the chat records, named again: not a change. ─────────
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/update_provider",
+            Some(serde_json::json!({
+                "session_id": switched,
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "same-model bind: {body}");
+        assert_eq!(
+            updated_at(&state, &switched).await,
+            before,
+            "re-binding the model a chat records is not activity in it (ruling 16)"
+        );
+        assert_eq!(history_order(&state, &ids).await, expected);
+        assert_eq!(sidebar_order(&state, &ids).await, expected);
+
+        // ── An explicit switch to another model is activity. ───────────────
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/update_provider",
+            Some(serde_json::json!({
+                "session_id": switched,
+                "provider": "anthropic",
+                "model": "claude-opus-4-1",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "model switch: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![switched.clone(), newest.clone(), toggled.clone()],
+            "a model switch moves its chat to the top"
+        );
+
+        // ── The composer's extension toggle is activity, on and off. ───────
+        let todo = serde_json::json!({
+            "type": "platform",
+            "name": "todo",
+            "description": "",
+            "bundled": null,
+            "available_tools": [],
+        });
+        // A second of its own each time, or two moves tie (`datetime('now')`).
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/add_extension",
+            Some(serde_json::json!({ "session_id": toggled, "config": todo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add_extension: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![toggled.clone(), switched.clone(), newest.clone()],
+            "turning an extension on moves its chat to the top"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/add_extension",
+            Some(serde_json::json!({ "session_id": switched, "config": todo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add_extension: {body}");
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/remove_extension",
+            Some(serde_json::json!({ "session_id": toggled, "name": "todo" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "remove_extension: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![toggled.clone(), switched.clone(), newest.clone()],
+            "turning an extension off moves its chat to the top"
+        );
+        assert_eq!(
+            sidebar_order(&state, &ids).await,
+            vec![toggled, switched, newest]
+        );
+    }
 }

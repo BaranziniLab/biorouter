@@ -72,17 +72,30 @@ and when the session-meta channel reports a row rewritten by something else. The
 added because opening a chat used to raise its `updated_at` on the daemon and announce nothing: the
 sidebar kept a chat under September while History, fetched fresh, listed it under Today (round 1,
 V1-M8). Opening no longer moves a chat (see below), so after an open these re-reads find the same
-order; they still pick up a turn or a rename made somewhere else. A burst of these is one request
-(the 250 ms debounce), and the rows apply under the pointer hold, so a refresh never moves a row
-beneath a hovering pointer.
+order, and the list moves no row for the open itself; they still pick up a turn, or a rename from
+the terminal, made somewhere else. A burst of these is one request (the 250 ms debounce), and the
+rows apply under the pointer hold, so a refresh never moves a row beneath a hovering pointer.
+
+A rename made in this app does not wait for any of them. Once the daemon has saved the name,
+`renameSession` announces it on the name channel with `activityAt`, and every window moves the chat
+at once: the sidebar raises the row's `updated_at`, so it sorts to the top under Last activity, and
+the shared list cache behind History and Home recents lifts the row the same way. A chat the sidebar
+has not read yet is brought in by a head re-read, and a page already in flight when the rename
+lands does not put the row back (`applyNamesDuringLoad`). The rename route answers with no body, so
+the time is the renderer's clock until the next re-read carries the daemon's own.
 
 ### What moves a chat
 
-Last activity is the daemon's `updated_at`, and since R-30 it moves only when something happens in
-the chat: a message is stored, a turn runs (its token accounting stamps as it goes), the
-conversation is compacted, edited or rewound, or the person renames the chat. Opening a chat is not
-activity. Resuming it, restoring the model it records on a cold agent, reloading and saving its
-extensions, and applying a working directory to an empty chat leave `updated_at` alone, from the
+Last activity is the daemon's `updated_at`. Since R-30 it moves when something is done to the
+chat, and coordinator ruling 16 lists what counts: a message is stored or a turn runs (its token
+accounting stamps as it goes), the conversation is compacted, edited or rewound, or the person
+renames the chat, switches it to a model it does not already record, toggles its extensions or
+skills from its composer, aims `workspace_set_tools` at it, or grants Crew access on it. Picking a
+folder for an empty chat in the desktop is a change to that chat as well, and stamps it.
+
+Opening a chat is not activity, and neither is any side effect of opening it. Resuming it,
+restoring the model it records on a cold agent, reloading and saving its extensions, and ACP
+applying the client's directory to an empty chat while it loads leave `updated_at` alone, from the
 desktop, a browser, `biorouter session --resume` and ACP. Those doors run their work inside
 `biorouter::session::activity::opening`, and only the setup writes read that scope (the provider
 bind, the extension-data writes, the empty-chat working-directory write), so a rename or a message
@@ -91,14 +104,31 @@ model and re-installs its goal inside the scope. Closing or reloading the page s
 shared state only when that state holds a change not yet saved (`save_ui_state` in
 `routes/apps.rs`). The page's own state writes and a turn's are activity and move the chat when they
 are saved; the declared initial state is never saved on its own, and a close after a saved change
-does not move the chat again. A model the person picks in the model picker, or with
-`--provider`/`--model` on a CLI resume, still moves it, as it did before. The tests: the store's
-`opening_is_not_activity_tests` (`session/session_manager.rs`), the cold restore in
-`agents/agent.rs`, `opening_is_not_activity_route_tests` (`routes/agent.rs`, the desktop's own calls
-on a public and a private chat, then a rename), `opening_is_not_activity_app_tests`
-(`routes/apps.rs`, the connect, and pages loaded and closed over the real socket), the resume cases
-in `biorouter-cli/tests/non_interactive.rs` and `test_acp_load_session_is_not_activity` in
-`biorouter-acp/tests/server_test.rs`.
+does not move the chat again.
+
+Two more things leave a chat in place. Re-binding the model a chat already records is not a change
+to it, whoever asks: the provider bind stamps only when the provider or the `model_name` differs
+from what the row records (`bind_provider_if_allowed`). So picking the same model again, a
+`--shared-daemon` resume that names the chat's own `--provider` and `--model`, and a local CLI
+resume that types the recorded model all keep its place, while a different model moves it. And
+housekeeping on the machine that touches many chats at once is not activity in any of them:
+uninstalling an extension prunes it from every saved roster inside
+`biorouter::session::activity::housekeeping`, and no chat moves.
+
+The tests: the store's `opening_is_not_activity_tests` (`session/session_manager.rs`, including the
+same-model rebind, a switch, the housekeeping save, and the writes behind the composer toggles,
+`workspace_set_tools` and a Crew grant), the door census
+`only_the_opening_and_housekeeping_doors_enter_a_scope` (`session/activity.rs`, which fails if any
+other door enters a scope), the cold restore in `agents/agent.rs`,
+`opening_is_not_activity_route_tests` (`routes/agent.rs`: the desktop's own calls on a public and a
+private chat, then a rename; a same-model `update_provider`, a model switch, and the composer's
+extension toggle on and off), `opening_is_not_activity_app_tests` (`routes/apps.rs`, the connect,
+and pages loaded and closed over the real socket), `pruning_an_uninstalled_extension_moves_no_chat`
+(`agents/extension_manager_extension.rs`), the resume cases in
+`biorouter-cli/tests/non_interactive.rs`, `test_acp_load_session_is_not_activity` in
+`biorouter-acp/tests/server_test.rs`, and in the renderer
+`useSidebarSessions.renameActivity.test.tsx` and `SessionListView.renameActivity.test.tsx` (a rename
+moves the chat at once; opening a chat moves no row).
 
 ### Drawing the list
 

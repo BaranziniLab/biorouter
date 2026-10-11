@@ -412,6 +412,12 @@ impl Conversation {
         );
         if options.session_id.is_some() {
             if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
+                // Sent even when it names the provider and model the chat already
+                // records, so the daemon stays the one that decides the binding. That
+                // re-bind does not move the chat under "Last activity": the daemon
+                // stamps a bind only when it changes the provider or the model
+                // (R-30, ruling 16; `bind_provider_if_allowed`, pinned by the route
+                // test `a_same_model_rebind_keeps_a_chats_place_and_a_switch_or_a_toggle_moves_it`).
                 let notice = self
                     .client
                     .request_text(
