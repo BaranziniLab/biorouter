@@ -230,7 +230,12 @@ export function CommandInput({ className, placeholder, ...props }: CommandInputP
     // The field's own 32px, from the Input primitive's geometry. Sub-32px fields
     // do not exist in this app and adding a `size` variant to `Input` is a
     // design-system change this surface does not own (ui-spec §4.0).
-    <div className="flex h-control-md flex-none items-center gap-2 border-b border-border-subtle px-2">
+    // `px-4` puts the glyph on the 16px edge every row's text starts on (the list's 4px plus
+    // the row's 12px) and the typed text at 40px, where an icon row's label starts. At `px-2`
+    // the glyph was the one thing in the popover 8px left of that edge (WS-PICKERS-4,
+    // coordinator ruling 13). The rule below it stays: the field is pinned and the list
+    // scrolls under it, a structural scroll edge (R-27 keeps those).
+    <div className="flex h-control-md flex-none items-center gap-2 border-b border-border-subtle px-4">
       <Search className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
       <input
         type="text"

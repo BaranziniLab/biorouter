@@ -31,6 +31,23 @@ import { Input } from './input';
 import { Card, CardContent } from './card';
 import { Note } from './note';
 import { Badge } from './badge';
+import { Command, CommandInput, CommandItem, CommandList } from './command';
+import { Database } from '../icons/app-icons';
+
+function Picker() {
+  const [query, setQuery] = React.useState('');
+  return (
+    <div id="picker" className="biorouter-popover-surface rounded-container bg-background-default" style={{ width: 280 }}>
+      <Command label="Bases" query={query} onQueryChange={setQuery}>
+        <CommandInput aria-label="Search bases" placeholder="Search bases" />
+        <CommandList aria-label="Bases">
+          <CommandItem data-testid="cmd-plain" onSelect={() => {}}><span>Soul</span></CommandItem>
+          <CommandItem data-testid="cmd-icon" onSelect={() => {}}><Database /><span>Papers</span></CommandItem>
+        </CommandList>
+      </Command>
+    </div>
+  );
+}
 
 function Pair({ prefix }: { prefix: string }) {
   return (
@@ -62,6 +79,7 @@ function App() {
       <div className="biorouter-popover-surface" id="popover" style={{ padding: 8 }}>
         <Button id="popover-button" variant="secondary" size="sm">Disable all</Button>
       </div>
+      <Picker />
     </div>
   );
 }
@@ -320,6 +338,36 @@ describe('the filled primitives under the whole stylesheet (R-27)', () => {
       expect(Math.abs(m.offset), 'button centre vs first line centre').toBeLessThanOrEqual(0.5);
       expect(m.height).toBe(m.bare);
       expect(m.inside, 'the button stays inside the note').toBe(true);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('puts the command search glyph on the rows’ 16px text edge, and the typed text on an icon row’s label (WS-PICKERS-4)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      const m = await tab.evaluate(() => {
+        const picker = document.getElementById('picker')!;
+        const edge = picker.getBoundingClientRect().left + picker.clientLeft;
+        const left = (el: Element) => el.getBoundingClientRect().left - edge;
+        const row = picker.querySelector('[data-command-root] > div:first-child')!;
+        const icon = picker.querySelector('[data-testid="cmd-icon"]')!;
+        return {
+          glyph: left(row.querySelector('svg')!),
+          typed: left(row.querySelector('input')!),
+          rowText: left(picker.querySelector('[data-testid="cmd-plain"] span')!),
+          rowIcon: left(icon.querySelector('svg')!),
+          rowLabel: left(icon.querySelector('span')!),
+          rule: getComputedStyle(row).borderBottomWidth,
+        };
+      });
+      expect(m.rowText, 'a row’s text starts 16px in').toBe(16);
+      expect(m.glyph, 'the search glyph sits on the rows’ text edge').toBe(m.rowText);
+      expect(m.glyph).toBe(m.rowIcon);
+      expect(m.typed, 'the typed text starts where an icon row’s label does').toBe(m.rowLabel);
+      // The pinned field over a scrolling list keeps its structural rule (R-27).
+      expect(m.rule).toBe('1px');
     } finally {
       await tab.close();
     }
