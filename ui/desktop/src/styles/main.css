@@ -2002,9 +2002,15 @@
  * with the role carries, so a plain `role="tab"` button — which is not
  * positioned — keeps the outline.
  *
- * A document tab's inner button fills its `.br-tab` pill edge to edge inside a
- * scrolling strip, where an outset ring would be clipped and would cross the
- * neighbouring pill, so there the outline is drawn INSET. */
+ * A document tab draws its keyboard ring on the `.br-tab` pill (tab family,
+ * WS-MOTION: `.br-tab:has(> [role='tab']:focus-visible)`), because the label
+ * button does not fill the pill: it starts after the padding and stops before
+ * the close control, so an inset outline on it ran through the chat glyph and
+ * the ellipsis. Every strip in the app (chat, preview, dock) puts the button
+ * directly in the pill, so that rule wins there. This inset outline is the
+ * fallback for a `.br-tab` whose focusable is not a direct child, inside a
+ * scrolling strip where an outset ring would be clipped and would cross the
+ * neighbouring pill. */
 :where([role='tab']:not(.br-tab)):focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;

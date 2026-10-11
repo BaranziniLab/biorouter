@@ -368,7 +368,9 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
     expect(tabs).not.toMatch(/before:/);
   });
 
-  it('insets a document tab’s ring inside its pill', () => {
+  // The pill's own ring (tab family, WS-MOTION) wins for every strip in the app; this inset
+  // outline is the fallback for a `.br-tab` whose focusable is not a direct child.
+  it('insets the fallback ring of a document tab whose focusable is nested', () => {
     expect(onlyRule(":where(.br-tab [role='tab']):focus-visible").body).toMatch(
       /outline-offset:\s*-2px/
     );
