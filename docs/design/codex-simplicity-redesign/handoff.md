@@ -51,8 +51,9 @@ ground, the big Knowledge drop zone).
     out.
   - On Windows the app folder moved to `%APPDATA%\UCSF\biorouter`.
 - R-32 and R-33 (owner message 17, 2026-10-11) landed: the composer card is the page ground with
-  its hairline again (`d3be11a4b`, `a5fa59b6f`, the site's mockups in `a5cd7046c`), and the
-  Knowledge drop zone fills the Sources rail again (`5055fe64d`).
+  its hairline again (`d3be11a4b`, `a5fa59b6f`, the site's mockups in `a5cd7046c`, and the message
+  edit card by ruling 21 in `95d838a25`), and the Knowledge drop zone fills the Sources rail again
+  (`5055fe64d`).
 - Vision rounds 2 to 4 ran on four sandboxed app instances (plus the website in rounds 2 and 3):
   40, 28 and 19 findings, of which 12, 6 and 6 were high or medium. Round 4 found no high. Its six
   medium findings all have fixes committed:
@@ -84,23 +85,18 @@ ground, the big Knowledge drop zone).
    - V3: V3-R4-2 to V3-R4-5. V3-R4-2 is the Knowledge tier badge's rest fill, a privacy UI
      presentation change for the review list.
    - V4: V4-R4-4 to V4-R4-6.
-3. **The open coordinator request** `requests/coordinator/WS-COMPOSER-2.md` (R-32 follow ups):
-   its `CLAUDE.md` and spec items are done; what is left is the `main.css` fill tokens comment
-   that still lists the composer card (inside WS-TOKENS' region, so route it there). Its FYI, the
-   transcript's message edit card, is answered by ruling 21: the edit card is a composer and
-   follows R-32 (owner WS-TRANSCRIPT).
-4. **Final gate again** after the last fix, the same steps as `impl/gate-final-2.log`, ending
+3. **Final gate again** after the last fix, the same steps as `impl/gate-final-2.log`, ending
    with a clean `git status`.
-5. **`CLAUDE.md`** (ruling 3): at `0cb5ab465` it carried only the PreviewBar and rung 0 bullets.
+4. **`CLAUDE.md`** (ruling 3): at `0cb5ab465` it carried only the PreviewBar and rung 0 bullets.
    The coordinator docs pass `cc710982a` (2026-10-11) wrote the rest (the 28px sidebar rows and
    the view menu, the composer and Tools popover, the icon registry and lock badge, the fill rule
    and the R-32 composer card, the Slider primitive, the R-30 activity rule, the repo guard), and
    a claim pass checked it against the code. Re-measure any value a round 5 or 6 fix moves.
-6. **[progress.md](progress.md):** mark the pending rows Done as rounds 5 and 6 pass, and log
+5. **[progress.md](progress.md):** mark the pending rows Done as rounds 5 and 6 pass, and log
    each round.
-7. **A Windows run of the folder move** before release, with the checklist in `PR-BODY.md`
+6. **A Windows run of the folder move** before release, with the checklist in `PR-BODY.md`
    (from `impl/WS-BRAND.md`). Nothing in CI exercises the real Windows layout.
-8. **Pull request** against `main`, using `PR-BODY.md`. Do not merge: the landing site deploys
+7. **Pull request** against `main`, using `PR-BODY.md`. Do not merge: the landing site deploys
    when `main` changes, and the owner approves publication.
 
 ## Needs human review in the pull request

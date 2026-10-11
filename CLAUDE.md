@@ -1051,7 +1051,8 @@ value's *location* is as load-bearing as the number.
   (`.dark .biorouter-popover-surface`), so a field there rests as a quiet well and
   still shows hover. Crew's own `crew-*` recipes keep their lines; the shared
   primitives Crew renders take the fill like everywhere else (ruling 12). The
-  chat composer's card is the one exception (R-32, next bullet).
+  composer card (a chat's, Home's and the message editor's) is the one exception
+  (R-32, next bullet).
 - **The composer is one card and one muted footer line** (`ChatInput.tsx`, spec
   3.7; `ChatInput.structure.test.tsx` pins the shape). The card holds the queue,
   notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
@@ -1059,11 +1060,15 @@ value's *location* is as load-bearing as the number.
   (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
   ring and the chat's cost on the right, only the folder on Home. The card's
   classes live in one module, `composer/composerCard.ts`, and Home renders the
-  same `ChatInput`, so the two never differ. ⚠ **The card is the one box the fill
-  rule does not reach** (R-32, owner message 17, 2026-10-11, superseding R-27 for
-  this card only, in a chat and on Home): it is the page ground (white in light)
-  with its pre-R-27 resting 1px hairline, not the grey fill, and it carries no
-  `.br-fill-surface`, so what sits in it rests as on any page ground. Do not
+  same `ChatInput`, so the two never differ. Its surface,
+  `composerCardSurfaceClassName`, is also what the in-place message edit card in
+  `UserMessage.tsx` wears, because editing a message is writing in a composer
+  (coordinator ruling 21). ⚠ **The composer card is the one box the fill rule
+  does not reach** (R-32, owner message 17, 2026-10-11, superseding R-27 for this
+  card only, in a chat, on Home and in the message editor): it is the page
+  ground (white in light) with its pre-R-27 resting 1px hairline, not the grey
+  fill, and it carries no `.br-fill-surface`, so what sits in it rests as on any
+  page ground. Do not
   "fix" it under the fill rule. The focus edge is that same 1px border turning
   `--border-accent` (the family accent, coral in Parchment; not `--accent-muted`,
   which at 2px reads as a thick warm-grey band), and it is **authored CSS**:
