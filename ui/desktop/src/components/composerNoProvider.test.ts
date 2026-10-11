@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { hasNoModelConfigured } from './composerNoProvider';
+import {
+  NO_MODEL_CHIP_LABEL,
+  NO_MODEL_COMPOSER_ACTION,
+  NO_MODEL_COMPOSER_HINT,
+  hasNoModelConfigured,
+} from './composerNoProvider';
 
 /**
  * ⚠ **The whole point of this function is the `loading` arm.**
@@ -35,5 +40,21 @@ describe('hasNoModelConfigured', () => {
   it('says nothing at all when the status is unknown', () => {
     expect(hasNoModelConfigured(undefined, null)).toBe(false);
     expect(hasNoModelConfigured(undefined, 'versa_azure')).toBe(false);
+  });
+});
+
+/**
+ * One missing step gets one noun (FR-R2-9). The composer card shows the hint's link and the model
+ * chip together, and both open the same catalog, so they cannot name the move two ways.
+ */
+describe('the no-model words', () => {
+  it('names the next move the same way on the hint link and the chip', () => {
+    expect(NO_MODEL_COMPOSER_ACTION).toBe(NO_MODEL_CHIP_LABEL);
+    expect(NO_MODEL_CHIP_LABEL).toBe('Choose a model');
+  });
+
+  it('states the problem in the hint and keeps the remedy out of it', () => {
+    expect(NO_MODEL_COMPOSER_HINT).toBe('No model selected');
+    expect(NO_MODEL_COMPOSER_HINT).not.toContain(NO_MODEL_COMPOSER_ACTION);
   });
 });

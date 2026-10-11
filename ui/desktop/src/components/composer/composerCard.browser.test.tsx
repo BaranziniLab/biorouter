@@ -38,6 +38,11 @@ import { composerCardClassName } from './composerCard';
 import { ComposerChips } from './ComposerChips';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { MessageQueue } from '../MessageQueue';
+import {
+  NO_MODEL_CHIP_LABEL,
+  NO_MODEL_COMPOSER_ACTION,
+  NO_MODEL_COMPOSER_HINT,
+} from '../composerNoProvider';
 import { Button } from '../ui/button';
 import { ArrowUp, ChevronDown, Folder } from '../icons/app-icons';
 
@@ -62,6 +67,7 @@ function Card({
   ready = false,
   dragging = false,
   working = false,
+  modelChip,
   children,
 }: {
   id: string;
@@ -69,6 +75,8 @@ function Card({
   ready?: boolean;
   dragging?: boolean;
   working?: boolean;
+  /** Replaces the model chip, as the no-model state does (no chevron: it opens the catalog). */
+  modelChip?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
@@ -95,9 +103,11 @@ function Card({
           </Chip>
           <span className="br-composer-controls__spacer" />
           <div className="br-composer-controls__model">
-            <Chip>
-              <span className="br-picker-chip__name">gpt-5.6-sol</span>
-            </Chip>
+            {modelChip ?? (
+              <Chip>
+                <span className="br-picker-chip__name">gpt-5.6-sol</span>
+              </Chip>
+            )}
           </div>
           <span className="flex-shrink-0">
             <Button
@@ -183,9 +193,9 @@ function App() {
           </Card>
           <Card id="refs" text="Plot these">
             <div className="br-composer-notice">
-              <span className="text-supporting">No model selected</span>
+              <span className="text-supporting">{NO_MODEL_COMPOSER_HINT}</span>
               <Button type="button" variant="link" size="xs" className="h-auto px-0 text-supporting">
-                Choose a provider
+                {NO_MODEL_COMPOSER_ACTION}
               </Button>
             </div>
             <ComposerChips
@@ -207,6 +217,28 @@ function App() {
               onRetryImage={() => {}}
               onRemoveFile={() => {}}
             />
+          </Card>
+          <Card
+            id="nomodel"
+            text="hello"
+            modelChip={
+              <button type="button" className="br-picker-chip" data-kind="model">
+                <span className="br-picker-chip__name">{NO_MODEL_CHIP_LABEL}</span>
+              </button>
+            }
+          >
+            <div className="br-composer-notice">
+              <span className="text-supporting">{NO_MODEL_COMPOSER_HINT}</span>
+              <Button
+                id="nomodel-action"
+                type="button"
+                variant="link"
+                size="xs"
+                className="h-auto px-0 text-supporting"
+              >
+                {NO_MODEL_COMPOSER_ACTION}
+              </Button>
+            </div>
           </Card>
           <Card id="typing" text="Compare the two fits" />
           <Card id="drag" dragging />
@@ -495,6 +527,39 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
     }
   });
 
+  /**
+   * FR-R2-9: the first screen after leaving first run showed one missing step as two nouns and
+   * two controls, "Choose a provider" in the card's notice and "Choose a model" on the chip. The
+   * notice's link and the chip must read the same, in a real layout, and the card must stay one
+   * card (the notice sits above the input, the chip in the controls row).
+   */
+  it('names the one missing step the same way on the notice link and on the model chip', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      try {
+        const words = await tab.evaluate(() => {
+          const text = (el: Element | null) => (el?.textContent ?? '').trim();
+          return {
+            link: text(document.getElementById('nomodel-action')),
+            chip: text(
+              document.querySelector('#nomodel .br-composer-controls__model .br-picker-chip')
+            ),
+            notice: text(document.querySelector('#nomodel .br-composer-notice > span')),
+            // Every visible word the card carries about the missing step, once each.
+            card: text(document.getElementById('nomodel')),
+          };
+        });
+        expect(words.link, `${mode} link`).toBe('Choose a model');
+        expect(words.chip, `${mode} chip`).toBe(words.link);
+        expect(words.notice, `${mode} notice`).toBe('No model selected');
+        expect(words.card, `${mode} no second noun`).not.toMatch(/provider/i);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
   it('saves screenshots when asked', async (ctx) => {
     if (!browser || !SHOTS) return ctx.skip();
     mkdirSync(SHOTS, { recursive: true });
@@ -533,6 +598,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
         await tab.waitForTimeout(250);
         await shot('#full', 'queue');
         await shot('#refs', 'refs');
+        await shot('#nomodel', 'no-model');
         // The queue's edit field open.
         await tab.click('#full .br-queue-row .br-queue-edit');
         await tab.waitForSelector('#full .br-queue-row textarea');

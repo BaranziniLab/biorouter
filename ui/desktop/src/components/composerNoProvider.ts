@@ -14,9 +14,16 @@ import type { ModelConfigStatus } from './ModelAndProviderContext';
 /** What the model chip reads when nothing is configured. */
 export const NO_MODEL_CHIP_LABEL = 'Choose a model';
 
-/** The one line inside the composer card, and the link on the end of it. */
+/**
+ * The one line inside the composer card, and the link on the end of it.
+ *
+ * ⚠ **The link is the chip's own label, not a second spelling of it.** Both sit in the same card
+ * and both open the same catalog, and one missing step used to read "Choose a provider" in the
+ * hint and "Choose a model" on the chip: two nouns for one next move on the first screen after
+ * leaving first run (FR-R2-9). Deriving it makes the drift impossible rather than merely tested.
+ */
 export const NO_MODEL_COMPOSER_HINT = 'No model selected';
-export const NO_MODEL_COMPOSER_ACTION = 'Choose a provider';
+export const NO_MODEL_COMPOSER_ACTION = NO_MODEL_CHIP_LABEL;
 
 /**
  * Is there genuinely no model bound?

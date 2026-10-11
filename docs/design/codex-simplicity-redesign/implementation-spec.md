@@ -1558,7 +1558,8 @@ footer line.
   - **Fix the solid black overlays** (`bg-opacity-*` does not exist in Tailwind v4,
     `:3501-3558`) with `bg-[color:var(--scrim)]` and use `Spinner`.
 - **Banners:**
-  - "No model selected" with a `link` button "Choose a provider". This removes the em dash in
+  - "No model selected" with a `link` button "Choose a model", the same words as the model chip
+    beside it (FR-R2-9: one missing step, one noun). This removes the em dash in
     `composerNoProvider.ts:18`.
   - The vision banner reads "This model can't read images" with an inline "Switch model" and an
     `EyeOff` icon.
