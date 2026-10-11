@@ -13473,7 +13473,13 @@ impl Agent {
         // model against a private session, which is the one thing Gate A exists
         // to stop. The fix is the repair card reaching this site and not only
         // `reply`, which needs a UI surface that does not exist yet.
-        self.update_provider(provider, &session.id).await
+        //
+        // R-30: restoring a chat's binding is part of opening it (resume,
+        // restart, a working-directory change on an empty chat, a cold agent
+        // before an injected turn), never activity in it, so the bind leaves
+        // `updated_at` alone. A turn that follows moves the chat by its own
+        // writes. Gate A is untouched: the scope changes only the timestamp.
+        crate::session::activity::opening(self.update_provider(provider, &session.id)).await
     }
 
     /// Restore the provider recorded by `session` only when this agent has no

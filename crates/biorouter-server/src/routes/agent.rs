@@ -1411,8 +1411,13 @@ async fn resume_agent(
     // exact live Agent once its permit and atomic profile are ready.
     let child_initializing = session.session_type == SessionType::SubAgent
         && biorouter::agents::subagent_handle::is_child_initializing(&payload.session_id);
-    let (extension_results, initialization_error) =
-        load_resumed_agent_extensions(&state, &payload, &session, child_initializing).await;
+    // R-30: everything a resume does is OPENING the chat (the provider restore
+    // on a cold agent, a subagent's legacy profile migration), never activity in
+    // it, so none of it moves the chat in any list sorted by activity.
+    let (extension_results, initialization_error) = biorouter::session::activity::opening(
+        load_resumed_agent_extensions(&state, &payload, &session, child_initializing),
+    )
+    .await;
 
     let active_turn = state
         .active_turn_id(&payload.session_id)

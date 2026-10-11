@@ -818,16 +818,23 @@ impl BioRouterAcpAgent {
         )))
     }
 
+    /// Bind this server's provider to a chat it is creating or loading.
+    ///
+    /// R-30: that bind is part of opening the chat, never activity in it, so it
+    /// leaves the chat's activity time (and its place in every list sorted by
+    /// it) alone. The turns the client sends move it.
     async fn update_session_with_provider(
         &self,
         biorouter_session: &Session,
     ) -> Result<(), sacp::Error> {
-        self.agent
-            .update_provider(self.provider.clone(), &biorouter_session.id)
-            .await
-            .map_err(|e| {
-                sacp::Error::internal_error().data(format!("Failed to set provider: {}", e))
-            })?;
+        biorouter::session::activity::opening(
+            self.agent
+                .update_provider(self.provider.clone(), &biorouter_session.id),
+        )
+        .await
+        .map_err(|e| {
+            sacp::Error::internal_error().data(format!("Failed to set provider: {}", e))
+        })?;
         Ok(())
     }
 
@@ -861,9 +868,12 @@ impl BioRouterAcpAgent {
         // still empty (the same guarded update the HTTP route uses); a
         // non-empty session keeps its own dir, logged at debug, and the load
         // succeeds.
-        match manager
-            .try_update_working_dir_if_empty(&session_id, args.cwd.clone())
-            .await
+        // R-30: applying the client's directory while loading is part of
+        // opening the chat, so it does not move the chat either.
+        match biorouter::session::activity::opening(
+            manager.try_update_working_dir_if_empty(&session_id, args.cwd.clone()),
+        )
+        .await
         {
             Ok(WorkingDirUpdate::Updated) => {}
             Ok(WorkingDirUpdate::RefusedNotEmpty) => {

@@ -3779,6 +3779,12 @@ impl SessionStorage {
     /// fixture id — the one way that test can lie. The two are distinguished
     /// with a single follow-up read in the zero case, on a path that is already
     /// an error.
+    ///
+    /// R-30: inside [`crate::session::activity::opening`] the bind leaves
+    /// `updated_at` alone. Restoring the model a chat records is part of
+    /// opening it, not activity in it. The choice is a bound parameter for the
+    /// same reason as the privacy toggle above: it must not change which
+    /// statement runs.
     pub(crate) async fn bind_provider_if_allowed(
         &self,
         session_id: &str,
@@ -3799,16 +3805,19 @@ impl SessionStorage {
         // A direct read, not a `CallCapability`: a provider bind is not a tool
         // call and has no admitted capability to inherit.
         let admits_anything = incoming_is_private || !crate::privacy::privacy_tiers_enabled();
+        let is_activity = crate::session::activity::setup_write_is_activity();
         let write = sqlx::query(
             r#"
             UPDATE sessions
-               SET provider_name = ?, model_config_json = ?, updated_at = datetime('now')
+               SET provider_name = ?, model_config_json = ?,
+                   updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END
              WHERE id = ?
                AND (privacy_tier = 'public' OR ? = 1)
             "#,
         )
         .bind(provider_name)
         .bind(model_config_json)
+        .bind(i64::from(is_activity))
         .bind(session_id)
         .bind(i64::from(admits_anything));
         // ⚠ The last statement before the write, and test-only. Read the ⚠ in
@@ -6154,11 +6163,16 @@ impl SessionStorage {
         working_dir: &Path,
     ) -> Result<WorkingDirUpdate> {
         let pool = self.pool().await?;
+        // R-30: inside `session::activity::opening` (ACP applies the client's
+        // directory while it loads a chat) this is setup, not activity.
+        let is_activity = crate::session::activity::setup_write_is_activity();
         let result = sqlx::query(
-            "UPDATE sessions SET working_dir = ?, updated_at = datetime('now') \
+            "UPDATE sessions SET working_dir = ?, \
+               updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END \
              WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?)",
         )
         .bind(working_dir.to_string_lossy().as_ref())
+        .bind(i64::from(is_activity))
         .bind(id)
         .bind(id)
         .execute(pool)
@@ -6280,11 +6294,23 @@ impl SessionStorage {
         // latest-committed state, which is what makes the merge sound.
         //
         // It also keeps `updated_at` moving, exactly as the
-        // `update(id).extension_data(..)` path this replaces did.
-        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        // `update(id).extension_data(..)` path this replaces did, EXCEPT inside
+        // `session::activity::opening` (R-30): saving the roster a chat was
+        // opened with is setup, not activity. The statement stays a write either
+        // way. SQLite counts a matched row as changed even when the value it
+        // assigns is the one already there, so `SET updated_at = updated_at`
+        // still takes the write lock and still reports the one row the
+        // not-found check below reads.
+        let is_activity = crate::session::activity::setup_write_is_activity();
+        let touched = sqlx::query(
+            "UPDATE sessions \
+                SET updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END \
+              WHERE id = ?",
+        )
+        .bind(i64::from(is_activity))
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
         if touched.rows_affected() == 0 {
             tx.rollback().await?;
             return Ok(None);
@@ -6470,8 +6496,17 @@ impl SessionStorage {
             return Ok(());
         }
 
-        query.push_str(", ");
-        query.push_str("updated_at = datetime('now') WHERE id = ?");
+        // R-30: an update that writes ONLY `extension_data` while a chat is
+        // being opened (`session::activity::opening`) is setup, not activity:
+        // an app's connect re-installs its goal guardrail this way on every
+        // connect. Anything else (a rename above all) stamps, inside the scope
+        // or not.
+        let setup_only = updates.iter().all(|field| *field == "extension_data");
+        if setup_only && !crate::session::activity::setup_write_is_activity() {
+            query.push_str(" WHERE id = ?");
+        } else {
+            query.push_str(", updated_at = datetime('now') WHERE id = ?");
+        }
 
         let mut q = sqlx::query(&query);
 

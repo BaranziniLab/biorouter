@@ -2081,7 +2081,32 @@ pub(crate) fn grant_knowledge_base(
     Ok(())
 }
 
+/// Configure an app's agent for a connecting page.
+///
+/// R-30: connecting to an app OPENS its chat. Binding the app's model, arming
+/// its servers and re-installing its goal guardrail is setup, not activity in
+/// the chat, so none of it moves the chat in any list sorted by activity; the
+/// turns the page asks for do.
 async fn configure_agent(
+    agent: &biorouter::agents::Agent,
+    state: &AppState,
+    session_id: &str,
+    manifest: &Manifest,
+    ui_bridge: &UiBridge,
+    enable_consult: bool,
+) -> CapabilityReport {
+    biorouter::session::activity::opening(configure_agent_for_connection(
+        agent,
+        state,
+        session_id,
+        manifest,
+        ui_bridge,
+        enable_consult,
+    ))
+    .await
+}
+
+async fn configure_agent_for_connection(
     agent: &biorouter::agents::Agent,
     state: &AppState,
     session_id: &str,
