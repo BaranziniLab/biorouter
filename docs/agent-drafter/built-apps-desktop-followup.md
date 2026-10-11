@@ -76,3 +76,26 @@ Real Electron verification should include a figure in an agentic managed preview
 URI-card failure feedback, deleted-build-chat disabled feedback, all three native export modes,
 and a hints/workflow write both within and outside the roots. CI/release/live status belongs
 to the integrated coordinator report, not this targeted test result.
+
+## Independent security followup review
+
+Source-reviewed security checkpoint `4ef194521ef1500be670d239da0f8cb5d2aeb6ae` and followup
+`5f31a2ada35e6c455ab35e2b0f17ed138e83a8c3` in the security worktree, without builds or tests.
+The new outer socket lifetime covers setup, consult and inline knowledge-base awaits; turn
+and consulted-worker child tokens inherit cancellation. Token, app UID and retirement lifetime
+come from one cached generation, and authentication compares that generation with the current
+manifest before upgrade. Unknown socket requests do not allocate cached app state.
+
+The review found a reconnect race in `UiBridge::detach`: its old atomic generation check could
+pass before a concurrent attach, then clear the fresh sender and cancel the new connection's
+parked tools. The security followup replaces that generation with a mutex held for the entire
+attach/detach lifecycle and adds a forced-interleaving regression. The followup also gives the
+shell its actual request URI instead of a default URI, so authority-only requests cannot bypass
+the secure-address check. Both fixes were re-reviewed; no actionable issue remains in that
+reviewed scope. The root coordinator still owns execution of the new Rust regressions.
+
+For the forwarded HTTPS path, the secure-context gate requires both browser-owned Fetch
+Metadata headers, and the document gate checks their navigation values. A page-set
+`X-Forwarded-Proto` alone cannot admit an old plain-HTTP LAN app's fetch. Existing submitted
+knowledge-ingest background jobs intentionally outlive the socket loop; this review does not
+claim they are canceled when the app is deleted.
