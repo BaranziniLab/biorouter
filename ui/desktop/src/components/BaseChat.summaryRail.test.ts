@@ -322,3 +322,36 @@ describe('BaseChat: no figure the usage ledger then withdraws (V2-R5-5)', () => 
     expect(element).not.toMatch(/modelCostRows=\{modelRows\}/);
   });
 });
+
+describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6-1)', () => {
+  const scrollAreaElement = () =>
+    code.slice(code.indexOf('<ScrollArea\n'), code.indexOf('>', code.indexOf('paddingY={0}')));
+
+  it('hands the live transcript the follow hook, with the stacked preview and the mount', () => {
+    expect(code).toMatch(
+      /const transcriptFollow = useTranscriptFollow\(\{\s*scrollRef,\s*isPreviewStacked: artifactPanel\.isStacked,\s*transcriptMounted: !isCleanConversation && !sessionLoadError,\s*\}\);/
+    );
+    const element = scrollAreaElement();
+    expect(element).toContain('anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}');
+    expect(element).toContain('onScrollChange={transcriptFollow.onScrollChange}');
+    // The stacked-only predicate is gone: it left every other resize unanchored.
+    expect(code).not.toContain('anchorBottomOnResize={artifactPanel.isStacked}');
+  });
+
+  it('calls the hook above the load-error early return', () => {
+    expect(code.indexOf('useTranscriptFollow(')).toBeGreaterThan(-1);
+    expect(code.indexOf('useTranscriptFollow(')).toBeLessThan(
+      code.indexOf('if (sessionLoadError) {')
+    );
+  });
+
+  it('lets a clicked card’s restore win over the end for that one width change', () => {
+    const effect = code.slice(
+      code.indexOf('const restore = scrollAnchorRestoreRef.current;'),
+      code.indexOf('}, [previewMounted, columnGlide, transcriptFollow]);')
+    );
+    expect(effect).toMatch(
+      /if \(restore\) \{\s*transcriptFollow\.keepPlaceForWidthChange\(\);\s*restore\(\);\s*\}/
+    );
+  });
+});

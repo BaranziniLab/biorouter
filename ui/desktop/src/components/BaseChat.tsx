@@ -58,6 +58,7 @@ import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChatRow } from './summary/useLoadingChatRow';
+import { useTranscriptFollow } from './summary/useTranscriptFollow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -2329,6 +2330,16 @@ function BaseChatContent({
     chatState === ChatState.Idle &&
     !isCreatingSession;
 
+  // The newest line stays against the composer when the transcript changes
+  // size while the reader follows it: the subagent's line mounting above it, a
+  // shorter or narrower window (vision V2-R6-1). A reader who scrolled up keeps
+  // their place. See summary/useTranscriptFollow.ts.
+  const transcriptFollow = useTranscriptFollow({
+    scrollRef,
+    isPreviewStacked: artifactPanel.isStacked,
+    transcriptMounted: !isCleanConversation && !sessionLoadError,
+  });
+
   // The composer's own FLIP: from the centred empty state to its place above
   // the transcript, on the first turn. Translate only (a `scaleX` squeezed its
   // text) and on the motion tokens. Declared BEFORE the summary rail on purpose:
@@ -2425,8 +2436,12 @@ function BaseChatContent({
     columnGlide.playCaptured({ duration: previewMounted ? DUR.med : DUR.fastMax });
     const restore = scrollAnchorRestoreRef.current;
     scrollAnchorRestoreRef.current = null;
-    restore?.();
-  }, [previewMounted, columnGlide]);
+    if (restore) {
+      // The clicked card's place wins over the end for this one width change.
+      transcriptFollow.keepPlaceForWidthChange();
+      restore();
+    }
+  }, [previewMounted, columnGlide, transcriptFollow]);
 
   // A figure the chat does not know yet is an empty value, never a stand-in the
   // load then replaces: nothing while the transcript loads, and no Tokens until
@@ -3029,11 +3044,11 @@ function BaseChatContent({
                   // floats over the conversation instead of pushing it.
                   className={`flex-1 min-h-0 relative ${contentClassName}`}
                   autoScroll
-                  // A stacked preview opening above the transcript shrinks its
-                  // viewport from the TOP; this keeps the newest message against
-                  // the composer instead of sliding under it. Scoped to a stacked
-                  // sheet: every other chat keeps the scroll behaviour it had.
-                  anchorBottomOnResize={artifactPanel.isStacked}
+                  // Keeps the line against the composer where it is when the
+                  // viewport changes height: under a stacked preview always, and
+                  // otherwise while the reader follows the newest line (V2-R6-1).
+                  anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}
+                  onScrollChange={transcriptFollow.onScrollChange}
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"

@@ -204,6 +204,12 @@ or the pointer is over the summary.
   `Layout/summaryRailPreference.ts` (the viewer's choice).
 - **Wiring**: `BaseChat.tsx` spreads `summaryRail.splitPaneProps` beside the artifact panel's,
   merging the two `style` objects after both spreads, and renders one `ChatSummaryRail`.
+- **Following the newest line**: `components/summary/useTranscriptFollow.ts` gives the
+  transcript's `ScrollArea` its `anchorBottomOnResize` (a stacked preview, or a reader following
+  the newest line) and `onScrollChange`, and puts a reader who was at the end back at the end
+  after a width change. Crew's timeline uses the same recipe; this one asks "at the end" rather
+  than "following" for a width change, so the rail or a side preview changing the column's width
+  never pulls a reader who is up to 200px above the end down to it (vision V2-R6-1).
 
 ## Where it is pinned
 
@@ -221,7 +227,8 @@ or the pointer is over the summary.
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, empty values (and `aria-busy`) for figures not known yet, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, and the Tokens value and the footer cost waiting for the ledger |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, the Tokens value and the footer cost waiting for the ledger, and the transcript's follow hook (its arguments, both props, above the early return, the clicked card's hold) |
+| `components/summary/transcriptFollow.browser.test.tsx` | In Chromium, on the real `ScrollArea`: the old stacked-only wiring ending 32px short when the subagent line mounts (the instrument); the end kept through that line mounting, a shorter window, a shorter and narrower one, and a narrower one that wraps the text taller (also with the layout read in the same task); a reader who scrolled up left where they are; a reader 100px up not pulled down by a width change and keeping their bottom line through a height change; a clicked card's place winning for one width change; a stacked preview still anchoring a reader who scrolled up |
 | `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end, and the header button's `data-still` beating the Button's layered transition with its clearing starting none |
 
 ## Related documentation
