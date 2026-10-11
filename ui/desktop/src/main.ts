@@ -120,6 +120,7 @@ import {
 } from './components/crew/attention/attentionMain';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
+import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
 import { reportFatalStartupError } from './utils/fatalStartupError';
@@ -4332,21 +4333,11 @@ ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
   );
 });
 
-ipcMain.handle('write-file', async (_event, filePath, content) => {
+ipcMain.handle('write-file', async (event, filePath: unknown, content: unknown) => {
   try {
+    if (typeof filePath !== 'string') return false;
     const expandedPath = expandBiorouterPath(filePath);
-    await fs.mkdir(path.dirname(expandedPath), { recursive: true });
-    // Atomic replace via a uniquely named temp file + rename, so a concurrent
-    // reader (e.g. the CLI reading skills-config.json) never observes a
-    // truncated half-written file, and two writers never share a temp path.
-    const tmpPath = `${expandedPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-    await fs.writeFile(tmpPath, content, { encoding: 'utf8' });
-    try {
-      await fs.rename(tmpPath, expandedPath);
-    } catch (renameError) {
-      await fs.unlink(tmpPath).catch(() => {});
-      throw renameError;
-    }
+    await writeFileWithinRoots(expandedPath, content, allowedFileRoots(workingDirForSender(event)));
     return true;
   } catch (error) {
     console.error('Error writing to file:', error);

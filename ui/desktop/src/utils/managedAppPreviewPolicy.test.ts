@@ -196,6 +196,26 @@ describe('managed app default-deny requests', () => {
     expect(isManagedAppRequest(scope, { ...request, resourceType: 'xhr' })).toBe(false);
   });
 
+  it('allows the figure shell only as a subframe of this app on the same daemon', () => {
+    const request = {
+      url: `${origin}${scope.rootPath}figure-frame`,
+      method: 'GET',
+      resourceType: 'subFrame',
+    };
+    expect(isManagedAppRequest(scope, request)).toBe(true);
+    for (const resourceType of ['mainFrame', 'xhr', 'script', 'webSocket', 'image']) {
+      expect(isManagedAppRequest(scope, { ...request, resourceType })).toBe(false);
+    }
+    for (const url of [
+      `${origin}/apps/other/figure-frame`,
+      `http://127.0.0.1:64006${scope.rootPath}figure-frame`,
+      `${origin}${scope.rootPath}figure-frame/`,
+      `${origin}${scope.rootPath}figure-frame/anything`,
+    ]) {
+      expect(isManagedAppRequest(scope, { ...request, url })).toBe(false);
+    }
+  });
+
   it.each([
     '/sessions',
     '/config',

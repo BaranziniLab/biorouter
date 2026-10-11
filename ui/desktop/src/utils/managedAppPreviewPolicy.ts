@@ -182,6 +182,9 @@ export function isManagedAppRequest(
   if (url.origin !== origin || !request.url.startsWith(`${origin}/`)) return false;
   if (socket) return url.pathname === `${scope.rootPath}agent`;
   if (request.resourceType === 'mainFrame') return isManagedAppNavigation(scope, request.url);
+  if (url.pathname === `${scope.rootPath}figure-frame`) {
+    return request.resourceType === 'subFrame';
+  }
   if (url.pathname === scope.rootPath || url.pathname === scope.rootPath.slice(0, -1)) return true;
   if (!url.pathname.startsWith(scope.rootPath)) return false;
   const tail = url.pathname.slice(scope.rootPath.length);

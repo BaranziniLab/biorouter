@@ -2,6 +2,7 @@ import { EmbeddedResource } from '../api';
 import { Maximize2 } from './icons/app-icons';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
+import { openInBrowser } from '../utils/openInBrowser';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -42,7 +43,7 @@ export default function MCPUIResourceRenderer({
     // An external URL is a live web page we do not hold a copy of, so it belongs
     // in the user's own browser rather than in the panel.
     if (artifactSource.kind === 'externalUrl') {
-      await window.electron.openExternal(artifactSource.url);
+      await openInBrowser(artifactSource.url);
       return;
     }
     onOpenArtifact(artifactSource);

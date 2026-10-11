@@ -5,6 +5,9 @@ import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import type { EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import { toastError } from '../toasts';
+
+vi.mock('../toasts', () => ({ toastError: vi.fn() }));
 
 // MCPUIResourceRenderer no longer imports '@mcp-ui/client' at all — the panel is
 // the only surface that renders a ui:// document. The mock stays anyway: it is
@@ -165,6 +168,24 @@ describe('MCPUIResourceRenderer', () => {
     expect(
       screen.getByRole('button', { name: /^Open .+ Researcher Impact Dashboard/i })
     ).toBeInTheDocument();
+  });
+
+  it('shows a failed managed app browser launch instead of losing the failure', async () => {
+    const { openExternal, onOpenArtifact } = renderResource({
+      uri: 'ui://agent-drafter/app',
+      mimeType: 'text/uri-list',
+      text: 'http://127.0.0.1:64005/apps/chart/',
+    });
+    openExternal.mockResolvedValueOnce({ ok: false, message: 'This app no longer exists.' });
+    fireEvent.click(screen.getByRole('button', { name: /open app agent drafter/i }));
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith({
+        title: 'Could not open the app',
+        msg: 'This app no longer exists.',
+      })
+    );
+    expect(onOpenArtifact).not.toHaveBeenCalled();
   });
 
   it('opens MCP HTML artifacts in the side viewer, carrying the preferred frame size', () => {
