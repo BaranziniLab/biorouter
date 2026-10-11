@@ -188,7 +188,7 @@ const PROVIDER_NOT_SET_UP = 'this provider is not set up in Biorouter';
  */
 export const SWITCH_SCOPE_THIS_CHAT = 'Select a provider and model for this chat.';
 export const SWITCH_SCOPE_NEW_CHATS =
-  'Select the provider and model new chats start on, in every window. Existing chats keep their own model.';
+  'Applies to new chats in every window. Existing chats keep their model.';
 export const ALSO_FOR_NEW_CHATS_LABEL = 'Also use for new chats';
 export const ALSO_FOR_NEW_CHATS_HINT =
   'New chats in every window will start on this model. Left unticked, only this chat changes.';
