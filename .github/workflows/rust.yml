@@ -266,6 +266,10 @@ jobs:
         timeout-minutes: 2
         run: node scripts/agent-drafter/check-windows-runtime-digest.mjs
 
+      - name: Full export payload (generated launchers and authenticated daemon fixture)
+        timeout-minutes: 2
+        run: node scripts/agent-drafter/check-export-payload.mjs
+
       - name: Stage pinned native app compiler
         timeout-minutes: 2
         shell: bash

@@ -1788,38 +1788,129 @@ open_url() {
 }
 
 # ── 5. First-run payload install (full-mode exports only) ─────────────────
-# A "full" export carries the app's server-side dependencies under payload/:
-# knowledge bases (.brkb archives) and skills (plain directory trees), listed in
-# export.json at the top of this folder. On the FIRST run they are imported
-# into your store, guarded by a marker so re-runs are no-ops. A launcher-mode
-# export has no payload/ dir, so this is a clean no-op there.
-#
-# Consent: the payload list is printed and an interactive y/N confirmation is
-# required. Set BIOROUTER_EXPORT_YES=1 to skip the prompt (CI / headless).
-#
-# ⚠ The lists are bash arrays, expanded quoted. They were space-separated
-# strings, so a folder unzipped under "My Apps" split into "My" and "Apps/...":
-# the prompt named a skill "My", and the install copied whatever "My" was.
-install_payload() {
-  [ -d "$DIR/payload" ] || return 0                     # launcher-mode export: nothing to install
-  MARKER="$CFG/.apps-payload-installed-$APP_ID"
-  [ -f "$MARKER" ] && return 0                          # already installed on a previous run
+PAYLOAD_STATE="$LAUNCHER_HOME/payload/$APP_ID/$SOURCE_DIGEST"
+knowledge_id_ok() {
+  [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#1}" -le 64 ]
+}
 
-  # Collect what there is to install (knowledge bases + skills). A payload that
-  # only carries a bundled daemon (payload/bin) has nothing to import here.
+# Change only the declared agent binding and knowledge requirements. Token
+# locations preserve the rest of the JSON, including independently edited fields.
+rebind_knowledge_id() {
+  local old="$1" new="$2" source="$3" target="$STORE/manifest.json" fresh snapshot
+  [ "$old" = "$new" ] && return 0
+  [ -f "$target" ] && [ ! -L "$target" ] && same_app "$target" || return 0
+  fresh="$target.payload-$$"; snapshot="$fresh.original"
+  (umask 077; cp "$target" "$snapshot") || return 1
+  if ! awk -v old="$old" -v new="$new" -v source="$source" '
+    function ws() { while (substr(doc,pos,1) ~ /[ \t\r\n]/ && pos<=length(doc)) pos++ }
+    function str(   begin,c) {
+      begin=pos
+      while(pos<=length(doc)) { c=substr(doc,pos++,1); if(c=="\\") pos++; else if(c=="\"") { value=substr(doc,begin,pos-begin-1); return } }
+      bad=1
+    }
+    function change(start,len) { starts[++count]=start; lengths[count]=len }
+    function parse(path,   c,key,start,len,kind,id,idstart,idlen,item) {
+      ws(); c=substr(doc,pos,1)
+      if(c=="{") {
+        pos++; ws(); if(substr(doc,pos,1)=="}") {pos++;return}
+        while(pos<=length(doc)) {
+          ws(); if(substr(doc,pos++,1)!="\"") {bad=1;return}; str(); key=value
+          ws(); if(substr(doc,pos++,1)!=":") {bad=1;return}
+          ws(); start=pos; parse(path==""?key:path"."key); len=pos-start
+          if(path=="agent" && key=="knowledge_base") {
+            if(mode) declared[path"."key]=substr(doc,start,len)
+            else if(declared[path"."key]=="\""source"\"" && substr(doc,start,len)=="\""old"\"") change(start,len)
+          }
+          if(path ~ /^agent\.requires\[[0-9]+\]$/) {
+            if(key=="kind") kind=substr(doc,start,len)
+            if(key=="id") {id=substr(doc,start,len);idstart=start;idlen=len}
+          }
+          ws(); c=substr(doc,pos++,1); if(c=="}") break; if(c!="," || bad) {bad=1;return}
+        }
+        if(path ~ /^agent\.requires\[[0-9]+\]$/ && kind=="\"knowledge_base\"") {
+          if(mode) declared[path".id"]=id
+          else if(declared[path".id"]=="\""source"\"" && id=="\""old"\"") change(idstart,idlen)
+        }
+      } else if(c=="[") {
+        pos++;ws();if(substr(doc,pos,1)=="]") {pos++;return}
+        while(pos<=length(doc)) {parse(path"["item++"]");ws();c=substr(doc,pos++,1);if(c=="]") break;if(c!="," || bad){bad=1;return}}
+      } else if(c=="\"") {pos++;str()}
+      else {while(pos<=length(doc) && substr(doc,pos,1) !~ /[ \t\r\n,}\]]/) pos++}
+    }
+    FNR==1 {file++}
+    file==1 {sourceDoc=sourceDoc $0 "\n"}
+    file==2 {targetDoc=targetDoc $0 "\n"}
+    END {
+      mode=1;doc=sourceDoc;pos=1;parse("");ws();if(bad || pos<=length(doc)) exit 1
+      mode=0;doc=targetDoc;pos=1;parse("");ws();if(bad || pos<=length(doc)) exit 1
+      # Requirements are recognized after their object closes; sort their
+      # replacement spans to retain the original JSON byte order.
+      for(i=1;i<=count;i++) for(j=i+1;j<=count;j++) if(starts[i]>starts[j]) {t=starts[i];starts[i]=starts[j];starts[j]=t;t=lengths[i];lengths[i]=lengths[j];lengths[j]=t}
+      last=1;for(i=1;i<=count;i++){printf "%s\"%s\"",substr(doc,last,starts[i]-last),new;last=starts[i]+lengths[i]};printf "%s",substr(doc,last)
+    }
+  ' "$DIR/manifest.json" "$snapshot" > "$fresh"; then rm -f "$fresh" "$snapshot"; return 1; fi
+  if ! cmp -s "$snapshot" "$target"; then rm -f "$fresh" "$snapshot"; return 1; fi
+  rm -f "$snapshot"
+  mv "$fresh" "$target"
+}
+
+restore_knowledge_receipts() {
+  local f hash receipt source imported oldreceipt oldsource oldid
+  [ -d "$PAYLOAD_STATE/knowledge" ] || return 0
+  for f in ${kbs[@]+"${kbs[@]}"}; do
+    hash="$(sha256_stdin < "$f")" || continue
+    receipt="$PAYLOAD_STATE/knowledge/$hash"
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] || continue
+    source="$(sed -n '1p' "$receipt")"; imported="$(sed -n '2p' "$receipt")"
+    [ "$source.brkb" = "${f##*/}" ] && knowledge_id_ok "$source" && knowledge_id_ok "$imported" || continue
+    rebind_knowledge_id "$source" "$imported" "$source" || return 1
+    for oldreceipt in "$PAYLOAD_STATE/knowledge/"*; do
+      [ -f "$oldreceipt" ] && [ ! -L "$oldreceipt" ] || continue
+      oldsource="$(sed -n '1p' "$oldreceipt")"; oldid="$(sed -n '2p' "$oldreceipt")"
+      if [ "$oldsource" = "$source" ] && knowledge_id_ok "$oldid"; then rebind_knowledge_id "$oldid" "$imported" "$source" || return 1; fi
+    done
+  done
+}
+
+payload_fingerprint() (
+  cd "$DIR" || exit 1
+  {
+    [ ! -f export.json ] || [ -L export.json ] || printf '%s\n' export.json
+    for f in ${kbs[@]+"${kbs[@]}"}; do printf '%s\n' "${f#"$DIR/"}"; done
+    for d in ${skills[@]+"${skills[@]}"}; do find "${d#"$DIR/"}" -type f; done
+  } | LC_ALL=C sort -u | while IFS= read -r f; do
+    printf '%s %s\n' "$(sha256_stdin < "$f")" "$f"
+  done | LC_ALL=C sort | sha256_stdin
+)
+
+import_knowledge_archive() {
+  local f="$1" source="${1##*/}" escaped response imported
+  source="${source%.brkb}"
+  knowledge_id_ok "$source" || return 1
+  [ -n "$PORT" ] && [ -n "$SECRET" ] || return 1
+  [ "$(wc -c < "$f")" -le 134217728 ] || return 1
+  escaped="${f//\\/\\\\}"; escaped="${escaped//\"/\\\"}"
+  response="$(printf 'X-Secret-Key: %s\n' "$SECRET" | curl -fsS --max-time 120 -H @- \
+    -F "file=@\"$escaped\";filename=\"$source.brkb\";type=application/octet-stream" \
+    "http://127.0.0.1:$PORT/knowledge/bases/import")" || return 1
+  imported="$(printf '%s' "$response" | sed -n 's/^[[:space:]]*{[[:space:]]*"id"[[:space:]]*:[[:space:]]*"\([a-z0-9-]*\)"[[:space:]]*}[[:space:]]*$/\1/p')"
+  knowledge_id_ok "$imported" || return 1
+  printf '%s\n' "$imported"
+}
+
+install_payload() {
+  [ -d "$DIR/payload" ] && [ -n "$SOURCE_DIGEST" ] || return 0
+  local f d name hash receipt imported source previous oldsource oldid fingerprint marker failed=0
   kbs=(); skills=(); nkb=0; nskill=0
-  if [ -d "$DIR/payload/knowledge" ]; then
+  if [ -d "$DIR/payload/knowledge" ] && [ ! -L "$DIR/payload/knowledge" ]; then
     for f in "$DIR/payload/knowledge/"*.brkb; do
       if [ -f "$f" ] && [ ! -L "$f" ]; then kbs+=("$f"); nkb=$((nkb + 1)); fi
     done
   fi
-  if [ -d "$DIR/payload/skills" ]; then
+  if [ -d "$DIR/payload/skills" ] && [ ! -L "$DIR/payload/skills" ]; then
     for d in "$DIR/payload/skills/"*/; do
-      d="${d%/}"
-      name="${d##*/}"
-      case "$name" in '' | .* | *[!A-Za-z0-9._-]*) continue ;; esac
-      # A skill Biorouter ships is seeded by your own install; one copied over
-      # it could no longer be removed. Exports leave them out; so does this.
+      d="${d%/}"; name="${d##*/}"
+      [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || continue
       case "$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')" in
         __SHIPPED_SKILLS__) echo "  (skipping skill $name: it ships with Biorouter)"; continue ;;
       esac
@@ -1827,40 +1918,49 @@ install_payload() {
     done
   fi
   [ "$nkb" -eq 0 ] && [ "$nskill" -eq 0 ] && return 0
-
+  restore_knowledge_receipts || { echo "Payload bindings could not be restored; re-run to retry." >&2; return 0; }
+  fingerprint="$(payload_fingerprint)" || fingerprint=""
+  [ -n "$fingerprint" ] || { echo "Payload could not be hashed; it was not installed." >&2; return 0; }
+  marker="$PAYLOAD_STATE/complete"
+  if [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat "$marker")" = "$fingerprint" ]; then return 0; fi
   echo ""
   echo "This app ships a payload to install into your Biorouter (see export.json):"
   for f in ${kbs[@]+"${kbs[@]}"}; do echo "  - knowledge base: ${f##*/}"; done
   for d in ${skills[@]+"${skills[@]}"}; do echo "  - skill: ${d##*/}"; done
-
   if [ "${BIOROUTER_EXPORT_YES:-}" != "1" ]; then
     printf "Install this payload now? [y/N] "
     read -r reply || reply=""
-    case "$reply" in
-      y|Y|yes|YES) ;;
-      *) echo "Skipping payload install. Re-run to install it later."; return 0 ;;
-    esac
+    case "$reply" in y|Y|yes|YES) ;; *) echo "Skipping payload install. This app may lack its declared capabilities. Re-run to install it later."; return 0 ;; esac
   fi
-
-  mkdir -p "$CFG/skills"
-  # Knowledge bases: the `biorouter` CLI has no `knowledge import` subcommand as
-  # of the 2026-07 tree, so each .brkb is staged under knowledge-imports/ and you
-  # are pointed at the Knowledge panel's importer. If a future CLI grows
-  # `knowledge import`, it is preferred.
+  (umask 077; mkdir -p "$PAYLOAD_STATE/knowledge") || die "could not create payload receipts"
   for f in ${kbs[@]+"${kbs[@]}"}; do
-    if command -v biorouter >/dev/null 2>&1 && biorouter knowledge import --help >/dev/null 2>&1; then
-      biorouter knowledge import "$f" && echo "  - imported ${f##*/}" || echo "  ! import failed for ${f##*/}"
-    else
-      mkdir -p "$CFG/knowledge-imports"
-      cp "$f" "$CFG/knowledge-imports/"
-      echo "  - staged ${f##*/} in $CFG/knowledge-imports/ (import it from Biorouter's Knowledge panel)"
+    source="${f##*/}"; source="${source%.brkb}"
+    hash="$(sha256_stdin < "$f")" || hash=""
+    receipt="$PAYLOAD_STATE/knowledge/$hash"
+    if [ -n "$hash" ] && [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
+      imported="$(sed -n '2p' "$receipt")"
+      if knowledge_id_ok "$imported" && [ "$(sed -n '1p' "$receipt")" = "$source" ]; then continue; fi
     fi
+    if [ -z "$hash" ] || ! imported="$(import_knowledge_archive "$f")"; then
+      echo "  ! import failed for ${f##*/}; re-run to retry. This app may lack this knowledge base." >&2
+      failed=1; continue
+    fi
+    # A durable receipt prevents retrying a successful import if a later base
+    # fails. The service allocates a new ID and preserves privacy/owner floors.
+    (umask 077; printf '%s\n%s\n' "$source" "$imported" > "$receipt.new-$$") && mv "$receipt.new-$$" "$receipt" || die "could not save knowledge import receipt"
+    rebind_knowledge_id "$source" "$imported" "$source" || failed=1
+    for previous in "$PAYLOAD_STATE/knowledge/"*; do
+      [ -f "$previous" ] && [ ! -L "$previous" ] || continue
+      oldsource="$(sed -n '1p' "$previous")"; oldid="$(sed -n '2p' "$previous")"
+      if [ "$oldsource" = "$source" ] && knowledge_id_ok "$oldid"; then rebind_knowledge_id "$oldid" "$imported" "$source" || failed=1; fi
+    done
+    echo "  - imported ${f##*/} as $imported"
   done
-  # Skills install straight into the skills dir the daemon already reads. One
-  # you already have under the same name is moved to backups, never deleted.
+  [ "$failed" -eq 0 ] || { echo "Payload was not fully installed; re-run to retry." >&2; return 0; }
+  mkdir -p "$CFG/skills"
   for d in ${skills[@]+"${skills[@]}"}; do
-    name="${d##*/}"
-    dest="$CFG/skills/$name"
+    name="${d##*/}"; dest="$CFG/skills/$name"
+    if [ -n "$(find "$d" -type l -print -quit)" ]; then echo "  ! skill $name contains a linked file; payload was not installed." >&2; return 0; fi
     if [ -e "$dest" ] || [ -L "$dest" ]; then
       backup="$(backup_dir)" || die "could not create a backup folder in $LAUNCHER_HOME/backups"
       mv "$dest" "$backup/$name" || die "could not move your installed skill $name aside"
@@ -1869,9 +1969,7 @@ install_payload() {
     cp -R "$d" "$dest" || die "could not install skill $name"
     echo "  - installed skill $name"
   done
-
-  mkdir -p "$CFG"
-  : > "$MARKER"
+  (umask 077; printf '%s\n' "$fingerprint" > "$marker.new-$$") && mv "$marker.new-$$" "$marker" || die "could not save payload completion"
   echo "Payload installed."
 }
 "##;
@@ -1890,8 +1988,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/biorouter-launch.sh"
 
 install_app
-install_payload          # no-op for launcher-mode exports (no payload/ dir)
 start_daemon
+install_payload          # no-op for launcher-mode exports (no payload/ dir)
 launch_url
 open_url "$LAUNCH_URL"
 "#
@@ -2188,64 +2286,169 @@ function Install-App {
   Write-InstallRecord $entry
 }
 
-# First-run payload install (full-mode exports). Mirrors bash install_payload:
-# import knowledge bases + skills once, guarded by a marker, consent required
-# (set BIOROUTER_EXPORT_YES=1 to skip the prompt).
-function Install-Payload {
-  $payload = Join-Path $Dir "payload"
-  if (-not (Test-Path -LiteralPath $payload)) { return }    # launcher-mode export
-  $marker = Join-Path $Cfg ".apps-payload-installed-$AppId"
-  if (Test-Path -LiteralPath $marker) { return }            # already installed
+$PayloadState = Join-Path $LauncherHome "payload\$AppId\$SourceDigest"
+function Test-KnowledgeId([string]$Id) {
+  return ($Id.Length -le 64 -and $Id -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$')
+}
+function Get-PayloadHash([byte[]]$Bytes) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString("x2") }) -join "") } finally { $sha.Dispose() }
+}
+function Get-PayloadFileHash([string]$Path) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $stream = $null
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    return (($sha.ComputeHash($stream) | ForEach-Object { $_.ToString("x2") }) -join "")
+  } finally { if ($stream) { $stream.Dispose() }; $sha.Dispose() }
+}
+function Write-PayloadFile([string]$Path, [string]$Text) {
+  $fresh = "$Path.new-$PID"
+  [IO.File]::WriteAllText($fresh, $Text, (New-Object Text.UTF8Encoding($false)))
+  Move-Item -LiteralPath $fresh -Destination $Path -Force
+}
+function Read-KnowledgeReceipt([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  if ((Get-Item -LiteralPath $Path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+  $lines = @(Get-Content -LiteralPath $Path)
+  if ($lines.Count -ne 2 -or -not (Test-KnowledgeId $lines[0]) -or -not (Test-KnowledgeId $lines[1])) { return $null }
+  return ,$lines
+}
+function Restore-KnowledgeReceipts($Kbs) {
+  $target = Join-Path $Store "manifest.json"
+  if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { return }
+  if ((Get-Item -LiteralPath $target -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+  $original = [IO.File]::ReadAllText($target)
+  $current = $original | ConvertFrom-Json
+  $source = Read-Manifest (Join-Path $Dir "manifest.json")
+  if (-not $current -or -not $source -or -not (Test-SameApp $source $current)) { return }
+  if (-not $current.PSObject.Properties["agent"] -or -not $current.agent) { return }
+  $changed = $false
+  $mappings = @{}
+  foreach ($file in $Kbs) {
+    $receipt = Read-KnowledgeReceipt (Join-Path $PayloadState ("knowledge\" + (Get-PayloadFileHash $file.FullName)))
+    if (-not $receipt -or "$($receipt[0]).brkb" -cne $file.Name) { continue }
+    $old = [string]$receipt[0]; $new = [string]$receipt[1]
+    $aliases = @($old)
+    foreach ($prior in (Get-ChildItem -LiteralPath (Join-Path $PayloadState "knowledge") -File -ErrorAction Stop)) {
+      $saved = Read-KnowledgeReceipt $prior.FullName
+      if ($saved -and $saved[0] -ceq $old) { $aliases += $saved[1] }
+    }
+    $mappings[$old] = @{ New = $new; Aliases = $aliases }
+  }
+  if (-not $source.PSObject.Properties["agent"] -or -not $source.agent) { return }
+  if ($source.agent.PSObject.Properties["knowledge_base"] -and $current.agent.PSObject.Properties["knowledge_base"]) {
+    $mapping = $mappings[[string]$source.agent.knowledge_base]
+    if ($mapping -and $mapping.Aliases -ccontains [string]$current.agent.knowledge_base -and [string]$current.agent.knowledge_base -cne $mapping.New) {
+      $current.agent.knowledge_base = $mapping.New; $changed = $true
+    }
+  }
+  if ($source.agent.PSObject.Properties["requires"] -and $current.agent.PSObject.Properties["requires"]) {
+    for ($i = 0; $i -lt $current.agent.requires.Count -and $i -lt $source.agent.requires.Count; $i++) {
+      $requirement = $current.agent.requires[$i]; $declared = $source.agent.requires[$i]
+      if ($requirement.kind -cne "knowledge_base" -or $declared.kind -cne "knowledge_base") { continue }
+      $mapping = $mappings[[string]$declared.id]
+      if ($mapping -and $mapping.Aliases -ccontains [string]$requirement.id -and [string]$requirement.id -cne $mapping.New) {
+        $requirement.id = $mapping.New; $changed = $true
+      }
+    }
+  }
+  if ($changed) {
+    if ([IO.File]::ReadAllText($target) -cne $original) { throw "The installed manifest changed while restoring payload bindings." }
+    Write-PayloadFile $target (($current | ConvertTo-Json -Depth 100) + "`n")
+  }
+}
+function Get-PayloadFingerprint($Kbs, $Skills) {
+  $files = @($Kbs)
+  $export = Join-Path $Dir "export.json"
+  if (Test-Path -LiteralPath $export -PathType Leaf) {
+    $item = Get-Item -LiteralPath $export -Force
+    if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $files += $item }
+  }
+  foreach ($skill in $Skills) { $files += @(Get-ChildItem -LiteralPath $skill.FullName -Recurse -File -Force -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) }) }
+  $lines = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($file in $files) {
+    $relative = $file.FullName.Substring($Dir.Length + 1) -replace '\\', '/'
+    $lines.Add("$(Get-PayloadFileHash $file.FullName) $relative`n")
+  }
+  $sorted = $lines.ToArray()
+  $utf8Order = [Collections.Generic.Comparer[string]]::Create({
+    param($left, $right)
+    $a = [Text.Encoding]::UTF8.GetBytes($left); $b = [Text.Encoding]::UTF8.GetBytes($right)
+    for ($i = 0; $i -lt [Math]::Min($a.Length, $b.Length); $i++) { if ($a[$i] -ne $b[$i]) { return $a[$i].CompareTo($b[$i]) } }
+    return $a.Length.CompareTo($b.Length)
+  })
+  [Array]::Sort($sorted, $utf8Order)
+  return (Get-PayloadHash ([Text.Encoding]::UTF8.GetBytes(($sorted -join ""))))
+}
+function Import-KnowledgeArchive($File, [int]$Port, [string]$Secret) {
+  if ($File.Length -gt 134217728) { throw "Knowledge archive exceeds the import size limit." }
+  Add-Type -AssemblyName System.Net.Http
+  $client = [Net.Http.HttpClient]::new()
+  $form = [Net.Http.MultipartFormDataContent]::new()
+  $response = $null
+  try {
+    $client.Timeout = [TimeSpan]::FromSeconds(120)
+    $client.DefaultRequestHeaders.Add("X-Secret-Key", $Secret)
+    $part = [Net.Http.StreamContent]::new([IO.File]::OpenRead($File.FullName))
+    $part.Headers.ContentType = [Net.Http.Headers.MediaTypeHeaderValue]::new("application/octet-stream")
+    $form.Add($part, "file", $File.Name)
+    $response = $client.PostAsync("http://127.0.0.1:$Port/knowledge/bases/import", $form).GetAwaiter().GetResult()
+    [void]$response.EnsureSuccessStatusCode()
+    $result = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+    if (-not $result.PSObject.Properties["id"] -or -not (Test-KnowledgeId ([string]$result.id))) { throw "Knowledge import returned an invalid ID." }
+    return [string]$result.id
+  } finally { if ($response) { $response.Dispose() }; $form.Dispose(); $client.Dispose() }
+}
 
+function Install-Payload([int]$Port, [string]$Secret) {
+  $payload = Join-Path $Dir "payload"
+  if (-not (Test-Path -LiteralPath $payload -PathType Container)) { return }
   $kbs = @(); $skills = @()
   $kdir = Join-Path $payload "knowledge"
-  if (Test-Path -LiteralPath $kdir) { $kbs = @(Get-ChildItem -LiteralPath $kdir -Filter *.brkb -File -ErrorAction SilentlyContinue) }
+  if ((Test-Path -LiteralPath $kdir) -and -not ((Get-Item -LiteralPath $kdir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    $kbs = @(Get-ChildItem -LiteralPath $kdir -Filter *.brkb -File -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+  }
   $sdir = Join-Path $payload "skills"
-  if (Test-Path -LiteralPath $sdir) {
-    $skills = @(Get-ChildItem -LiteralPath $sdir -Directory -ErrorAction SilentlyContinue |
-      Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $_.Name -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' })
-    # A skill Biorouter ships is seeded by your own install; one copied over it
-    # could no longer be removed. Exports leave them out; so does this.
+  if ((Test-Path -LiteralPath $sdir) -and -not ((Get-Item -LiteralPath $sdir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    $skills = @(Get-ChildItem -LiteralPath $sdir -Directory -ErrorAction Stop | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $_.Name -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' })
     $shipped = @(__SHIPPED_SKILLS__)
-    $skills = @($skills | Where-Object {
-      if ($shipped -contains $_.Name) { Write-Host "  (skipping skill $($_.Name): it ships with Biorouter)"; $false } else { $true }
-    })
+    $skills = @($skills | Where-Object { if ($shipped -contains $_.Name) { Write-Host "  (skipping skill $($_.Name): it ships with Biorouter)"; $false } else { $true } })
   }
   if ($kbs.Count -eq 0 -and $skills.Count -eq 0) { return }
-
+  try {
+    Restore-KnowledgeReceipts $kbs
+    $fingerprint = Get-PayloadFingerprint $kbs $skills
+  } catch { Write-Host "Payload bindings or files could not be read; payload was not installed. Re-run to retry."; return }
+  $marker = Join-Path $PayloadState "complete"
+  if ((Test-Path -LiteralPath $marker -PathType Leaf) -and -not ((Get-Item -LiteralPath $marker -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -and ([IO.File]::ReadAllText($marker).Trim() -ceq $fingerprint)) { return }
   Write-Host ""
   Write-Host "This app ships a payload to install into your Biorouter (see export.json):"
-  foreach ($f in $kbs)    { Write-Host "  - knowledge base: $($f.Name)" }
+  foreach ($f in $kbs) { Write-Host "  - knowledge base: $($f.Name)" }
   foreach ($d in $skills) { Write-Host "  - skill: $($d.Name)" }
-
   if ($env:BIOROUTER_EXPORT_YES -ne "1") {
     $reply = Read-Host "Install this payload now? [y/N]"
-    if ($reply -notmatch '^(y|Y|yes|YES)$') {
-      Write-Host "Skipping payload install. Re-run to install it later."
-      return
-    }
+    if ($reply -notmatch '^(y|Y|yes|YES)$') { Write-Host "Skipping payload install. This app may lack its declared capabilities. Re-run to install it later."; return }
   }
-
-  New-Item -ItemType Directory -Force -Path (Join-Path $Cfg "skills") | Out-Null
-  # No `biorouter knowledge import` CLI subcommand exists yet (2026-07 tree), so
-  # stage each .brkb and point the user at the Knowledge panel importer. Prefer
-  # the CLI if a future version grows the command.
+  New-Item -ItemType Directory -Force -Path (Join-Path $PayloadState "knowledge") | Out-Null
+  $failed = $false
   foreach ($f in $kbs) {
-    $bio = Get-Command biorouter -ErrorAction SilentlyContinue
-    $canImport = $false
-    if ($bio) { & $bio.Source knowledge import --help *> $null; $canImport = ($LASTEXITCODE -eq 0) }
-    if ($canImport) {
-      & $bio.Source knowledge import $f.FullName
-      Write-Host "  - imported $($f.Name)"
-    } else {
-      $imp = Join-Path $Cfg "knowledge-imports"
-      New-Item -ItemType Directory -Force -Path $imp | Out-Null
-      Copy-Item -LiteralPath $f.FullName -Destination $imp -Force
-      Write-Host "  - staged $($f.Name) in $imp (import it from Biorouter's Knowledge panel)"
-    }
+    try {
+      $source = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+      if (-not (Test-KnowledgeId $source)) { throw "Invalid knowledge archive name." }
+      $receiptPath = Join-Path $PayloadState ("knowledge\" + (Get-PayloadFileHash $f.FullName))
+      $receipt = Read-KnowledgeReceipt $receiptPath
+      if ($receipt -and $receipt[0] -ceq $source) { continue }
+      $imported = Import-KnowledgeArchive $f $Port $Secret
+      Write-PayloadFile $receiptPath "$source`n$imported`n"
+      Restore-KnowledgeReceipts $kbs
+      Write-Host "  - imported $($f.Name) as $imported"
+    } catch { Write-Host "  ! import failed for $($f.Name); re-run to retry. This app may lack this knowledge base."; $failed = $true }
   }
-  # A skill you already have under the same name is moved to backups, never deleted.
+  if ($failed) { Write-Host "Payload was not fully installed; re-run to retry."; return }
+  New-Item -ItemType Directory -Force -Path (Join-Path $Cfg "skills") | Out-Null
   foreach ($d in $skills) {
+    if (@(Get-ChildItem -LiteralPath $d.FullName -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -gt 0) { Write-Host "  ! skill $($d.Name) contains a linked file; payload was not installed."; return }
     $dst = Join-Path (Join-Path $Cfg "skills") $d.Name
     if (Test-Path -LiteralPath $dst) {
       $backup = New-Backup
@@ -2255,12 +2458,9 @@ function Install-Payload {
     Copy-Item -LiteralPath $d.FullName -Destination $dst -Recurse -Force
     Write-Host "  - installed skill $($d.Name)"
   }
-
-  New-Item -ItemType Directory -Force -Path $Cfg | Out-Null
-  New-Item -ItemType File -Force -Path $marker | Out-Null
+  Write-PayloadFile $marker "$fingerprint`n"
   Write-Host "Payload installed."
 }
-
 function Test-Port([int]$Port) {
   try {
     $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/status" -TimeoutSec 1 -UseBasicParsing
@@ -2341,11 +2541,11 @@ function Start-Daemon {
 }
 
 Install-App
-Install-Payload
 $Daemon = Start-Daemon
 $Port = [int]$Daemon[0]
 $Secret = [string]$Daemon[1]
 $Base = "http://127.0.0.1:$Port"
+Install-Payload $Port $Secret
 # The app's one-time launch link: opening it sets the app's access cookie in the
 # browser and lands on the app. It works once and for a few minutes.
 $LaunchPath = $null
@@ -2403,6 +2603,10 @@ fn serve_mjs(id: &str, default_port: u16, export_digest: &str) -> String {
         .replace("__EXPORT_DIGEST__", export_digest)
         .replace("__RUNTIME_EXCLUDED__", &runtime_exclusions_json())
         .replace(
+            "__SHIPPED_SKILLS_JSON__",
+            &serde_json::to_string(SHIPPED_SKILL_NAMES).unwrap_or_else(|_| "[]".to_string()),
+        )
+        .replace(
             "__APP_ID_JSON__",
             &serde_json::to_string(id).unwrap_or_else(|_| "\"app\"".to_string()),
         )
@@ -2424,7 +2628,7 @@ const SERVE_MJS_TEMPLATE: &str = r##"// Dev server for the exported Biorouter ap
 import { createServer, request as httpRequest } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, rename, mkdir, cp, rm, access } from "node:fs/promises";
-import { readdirSync, lstatSync, statSync, readFileSync, realpathSync, constants } from "node:fs";
+import { readdirSync, lstatSync, statSync, readFileSync, realpathSync, createReadStream, constants } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
 import { join, dirname, isAbsolute, win32, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2437,6 +2641,7 @@ const ROOT = realpathSync(dirname(fileURLToPath(import.meta.url)));
 const SOURCE_DIGEST = createHash("sha256").update(ROOT).digest("hex");
 const RUNTIME_EXCLUDED = new Set(__RUNTIME_EXCLUDED__);
 const runtimeName = (name) => !name.startsWith(".") && !RUNTIME_EXCLUDED.has(name);
+const SHIPPED_SKILLS = new Set(__SHIPPED_SKILLS_JSON__);
 
 // biorouter:config-dir:start
 /**
@@ -2468,10 +2673,12 @@ const LAUNCHER_HOME = join(CFG, "app-launcher");
 // BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
 const LAUNCHER_STATE = join(LAUNCHER_HOME, "daemon");
 const APP_PREFIX = `/apps/${APP_ID}/`;
+const PAYLOAD_STATE = join(LAUNCHER_HOME, "payload", APP_ID, SOURCE_DIGEST);
 const exists = (p) => access(p, constants.F_OK).then(() => true, () => false);
 const readManifest = (p) => readFile(p, "utf8").then((t) => JSON.parse(t), () => null);
 
 let ENTRY = "index.html";
+let payloadContext;
 
 // What the store's copy held when this folder was exported, and where each
 // install records what it put there. Equal updated_at values do not mean an
@@ -2649,6 +2856,7 @@ async function installApp() {
       if (process.env.BIOROUTER_EXPORT_REPLACE !== "1") {
         console.log(`The installed '${APP_ID}' was changed after this folder was exported, so it is used as it is.`);
         console.log("To replace it with this folder, run again with BIOROUTER_EXPORT_REPLACE=1.");
+        await restorePayloadMappings();
         return;
       }
       await backupRuntime();
@@ -2660,6 +2868,7 @@ async function installApp() {
         if (process.env.BIOROUTER_EXPORT_REPLACE !== "1") {
           console.log(`The installed '${APP_ID}' was changed where it is installed since this folder was exported or last installed (an edit, or a rebuild by a newer Biorouter), so it is used as it is.`);
           console.log("To replace it with this folder, run again with BIOROUTER_EXPORT_REPLACE=1.");
+          await restorePayloadMappings();
           return;
         }
         await backupRuntime();
@@ -2668,6 +2877,7 @@ async function installApp() {
   }
   await copyRuntime(withManifest);
   await recordInstall();
+  await restorePayloadMappings();
 }
 
 /** A bundled daemon is used only when it runs on this machine. */
@@ -2815,6 +3025,236 @@ async function ensureDaemon() {
   );
 }
 
+const validKnowledgeId = (id) => typeof id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) && id.length <= 64;
+
+function payloadKind(path) {
+  try { return lstatSync(path); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+async function payloadHash(path) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function collectPayload() {
+  const knowledge = [];
+  const skills = [];
+  const records = [];
+  const addFile = async (relative) => {
+    const path = join(ROOT, ...relative.split("/"));
+    const hash = await payloadHash(path);
+    records.push(Buffer.from(`${hash} ${relative}\n`));
+    return hash;
+  };
+  if (payloadKind(join(ROOT, "export.json"))?.isFile()) await addFile("export.json");
+  const knowledgeDir = join(ROOT, "payload", "knowledge");
+  if (payloadKind(knowledgeDir)?.isDirectory()) {
+    for (const item of readdirSync(knowledgeDir, { withFileTypes: true })) {
+      if (!item.isFile() || !item.name.endsWith(".brkb")) continue;
+      const source = item.name.slice(0, -5);
+      const relative = `payload/knowledge/${item.name}`;
+      const hash = await addFile(relative);
+      knowledge.push({ source, hash, path: join(knowledgeDir, item.name) });
+    }
+  }
+  const skillsDir = join(ROOT, "payload", "skills");
+  if (payloadKind(skillsDir)?.isDirectory()) {
+    const walk = async (relative) => {
+      for (const item of readdirSync(join(ROOT, ...relative.split("/")), { withFileTypes: true })) {
+        const child = `${relative}/${item.name}`;
+        if (item.isDirectory()) await walk(child);
+        else if (item.isFile()) await addFile(child);
+        else throw new Error(`skill payload contains a link or unsupported file: ${child}`);
+      }
+    };
+    for (const item of readdirSync(skillsDir, { withFileTypes: true })) {
+      if (!item.isDirectory() || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.name)) continue;
+      if (SHIPPED_SKILLS.has(item.name.toLowerCase())) {
+        console.log(`  (skipping skill ${item.name}: it ships with Biorouter)`);
+        continue;
+      }
+      await walk(`payload/skills/${item.name}`);
+      skills.push({ name: item.name, path: join(skillsDir, item.name) });
+    }
+  }
+  knowledge.sort((a, b) => Buffer.compare(Buffer.from(a.source), Buffer.from(b.source)));
+  skills.sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)));
+  records.sort(Buffer.compare);
+  return { knowledge, skills, fingerprint: createHash("sha256").update(Buffer.concat(records)).digest("hex") };
+}
+
+async function payloadReceipts() {
+  const dir = join(PAYLOAD_STATE, "knowledge");
+  if (!payloadKind(dir)?.isDirectory()) return [];
+  const receipts = [];
+  for (const item of readdirSync(dir, { withFileTypes: true })) {
+    if (!item.isFile() || !/^[0-9a-f]{64}$/.test(item.name)) continue;
+    const lines = (await readFile(join(dir, item.name), "utf8")).trim().split(/\r?\n/);
+    if (lines.length === 2 && lines.every(validKnowledgeId)) {
+      receipts.push({ hash: item.name, source: lines[0], allocated: lines[1] });
+    }
+  }
+  return receipts;
+}
+
+async function writePayloadState(path, text) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const staged = `${path}.${process.pid}`;
+  try {
+    await writeFile(staged, text, { mode: 0o600 });
+    await rename(staged, path);
+  } finally { await rm(staged, { force: true }); }
+}
+
+async function restorePayloadMappings() {
+  if (!payloadContext?.knowledge.length) return;
+  const receipts = await payloadReceipts();
+  const ours = await readManifest(join(ROOT, "manifest.json"));
+  const path = join(STORE, "manifest.json");
+  const original = await readFile(path, "utf8");
+  const installed = JSON.parse(original);
+  if (!ours || !sameApp(ours, installed) || !installed.agent) return;
+  let changed = false;
+  // Scope each field to its exported declaration: an allocated ID can also be
+  // another archive's source ID, especially after a partial import retry.
+  const mappedId = (declared, currentId) => {
+    const kb = payloadContext.knowledge.find((item) => item.source === declared);
+    if (!kb) return currentId;
+    const current = receipts.find((receipt) => receipt.hash === kb.hash && receipt.source === kb.source);
+    if (!current) return currentId;
+    const prior = receipts.filter((receipt) => receipt.source === kb.source).map((receipt) => receipt.allocated);
+    return currentId === kb.source || prior.includes(currentId) ? current.allocated : currentId;
+  };
+  const primary = mappedId(ours.agent?.knowledge_base, installed.agent.knowledge_base);
+  if (primary !== installed.agent.knowledge_base) { installed.agent.knowledge_base = primary; changed = true; }
+  for (const [index, requirement] of (installed.agent.requires || []).entries()) {
+    const declared = ours.agent?.requires?.[index];
+    if (requirement.kind !== "knowledge_base" || declared?.kind !== "knowledge_base") continue;
+    const id = mappedId(declared.id, requirement.id);
+    if (id !== requirement.id) { requirement.id = id; changed = true; }
+  }
+  if (!changed) return;
+  const staged = `${path}.payload.${process.pid}`;
+  try {
+    await writeFile(staged, JSON.stringify(installed, null, 2) + "\n", { mode: 0o600 });
+    if ((await readFile(path, "utf8")) !== original) {
+      console.warn("The app manifest changed during payload import; its edits were kept. Re-run to apply the knowledge-base mapping.");
+      return;
+    }
+    await rename(staged, path);
+  } finally { await rm(staged, { force: true }); }
+}
+
+async function importPayloadKnowledge(port, secret, kb) {
+  if (!validKnowledgeId(kb.source)) throw new Error("archive filename is not a knowledge-base ID");
+  const size = lstatSync(kb.path).size;
+  if (size > 128 * 1024 * 1024) throw new Error("archive exceeds the 128 MiB import limit");
+  const boundary = `biorouter-${randomBytes(16).toString("hex")}`;
+  const header = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${kb.source}.brkb"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const response = await new Promise((resolve, reject) => {
+    const stream = createReadStream(kb.path);
+    const request = httpRequest({
+      host: "127.0.0.1", port, path: "/knowledge/bases/import", method: "POST", timeout: 120000,
+      headers: { "X-Secret-Key": secret, "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": header.length + size + footer.length },
+    }, (reply) => {
+      let body = "";
+      reply.setEncoding("utf8");
+      reply.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 1024 * 1024) request.destroy(new Error("unexpected import response"));
+      });
+      reply.on("error", reject);
+      reply.on("end", () => resolve({ status: reply.statusCode, body }));
+    });
+    request.on("error", (error) => { stream.destroy(); reject(error); });
+    request.on("timeout", () => request.destroy(new Error("knowledge-base import timed out")));
+    stream.on("error", (error) => request.destroy(error));
+    request.write(header);
+    stream.pipe(request, { end: false });
+    stream.on("end", () => request.end(footer));
+  });
+  if (response.status !== 200) throw new Error(`daemon returned HTTP ${response.status}`);
+  let allocated;
+  try { allocated = JSON.parse(response.body).id; } catch { }
+  if (!validKnowledgeId(allocated)) throw new Error("daemon returned no valid imported knowledge-base ID");
+  return allocated;
+}
+
+async function installPayloadSkill(skill) {
+  const dir = join(CFG, "skills");
+  await mkdir(dir, { recursive: true });
+  const destination = join(dir, skill.name);
+  const staged = join(dir, `.${skill.name}.payload.${process.pid}`);
+  await rm(staged, { recursive: true, force: true });
+  await cp(skill.path, staged, { recursive: true });
+  let saved;
+  try {
+    if (payloadKind(destination)) {
+      const backup = await backupDir();
+      saved = join(backup, skill.name);
+      await rename(destination, saved);
+      console.log(`  - moved your installed skill ${skill.name} to ${backup}`);
+    }
+    await rename(staged, destination);
+  } catch (error) {
+    if (saved && !payloadKind(destination)) await rename(saved, destination);
+    throw error;
+  } finally { await rm(staged, { recursive: true, force: true }); }
+  console.log(`  - installed skill ${skill.name}`);
+}
+
+async function installPayload(port, secret) {
+  try {
+    payloadContext = await collectPayload();
+    const { knowledge, skills, fingerprint } = payloadContext;
+    if (!knowledge.length && !skills.length) return;
+    await restorePayloadMappings();
+    const marker = join(PAYLOAD_STATE, "complete");
+    if (payloadKind(marker)?.isFile() && (await readFile(marker, "utf8")).trim() === fingerprint) return;
+    console.log("\nThis app ships a payload to install into your Biorouter (see export.json):");
+    for (const kb of knowledge) console.log(`  - knowledge base: ${kb.source}.brkb`);
+    for (const skill of skills) console.log(`  - skill: ${skill.name}`);
+    if (process.env.BIOROUTER_EXPORT_YES !== "1") {
+      let accepted = false;
+      if (process.stdin.isTTY) {
+        const prompt = createInterface({ input: process.stdin, output: process.stdout });
+        try { accepted = /^(y|yes)$/i.test((await prompt.question("Install this payload now? [y/N] ")).trim()); }
+        finally { prompt.close(); }
+      }
+      if (!accepted) {
+        console.warn("Skipping payload install. This app may lack its declared capabilities. Re-run to install it later.");
+        return;
+      }
+    }
+    const receipts = await payloadReceipts();
+    let failed = false;
+    for (const kb of knowledge) {
+      if (receipts.some((receipt) => receipt.hash === kb.hash && receipt.source === kb.source)) continue;
+      try {
+        const allocated = await importPayloadKnowledge(port, secret, kb);
+        await writePayloadState(join(PAYLOAD_STATE, "knowledge", kb.hash), `${kb.source}\n${allocated}\n`);
+        console.log(`  - imported ${kb.source}.brkb as ${allocated}`);
+      } catch (error) {
+        failed = true;
+        console.warn(`  ! import failed for ${kb.source}.brkb: ${error.message}`);
+      }
+    }
+    await restorePayloadMappings();
+    if (failed) {
+      console.warn("Payload was not fully installed; knowledge bases may be missing. Successful imports were kept. Re-run to retry.");
+      return;
+    }
+    for (const skill of skills) await installPayloadSkill(skill);
+    await writePayloadState(marker, `${fingerprint}\n`);
+    console.log("Payload installed.");
+  } catch (error) {
+    console.warn(`Payload installation is incomplete: ${error.message}. Re-run to retry; its knowledge bases or skills may be missing.`);
+  }
+}
+
 /** The path of this app's one-time launch link: opening it sets the app's access cookie. */
 async function launchPath(port, secret) {
   const { status, body } = await withSecret(port, secret, "POST", `/apps/${APP_ID}/launch`);
@@ -2834,6 +3274,7 @@ try {
   await installApp();
   const daemon = await ensureDaemon();
   daemonPort = daemon.port;
+  await installPayload(daemon.port, daemon.secret);
   launch = await launchPath(daemon.port, daemon.secret);
 } catch (e) {
   console.error("\n" + (e && e.message ? e.message : e) + "\n");
@@ -2990,6 +3431,11 @@ somewhere unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
   downloaded from the internet is quarantined by Gatekeeper. If macOS blocks it,
   right-click the launcher (or the binary) and choose **Open** once to approve
   it. Per-app notarized packaging is a later milestone.
+- **Full export payload:** after consent, the launcher imports knowledge-base
+  archives through your daemon and installs included skills. If a base ID
+  already exists, the daemon allocates another ID and the installed app is
+  rebound to it; the export folder and existing bases are preserved. Failed
+  imports stay unfinished so running the launcher again can retry.
 - **Non-interactive install:** set `BIOROUTER_EXPORT_YES=1` to accept the
   payload install without the interactive prompt.
 
@@ -3959,11 +4405,11 @@ if (late.listeners.click) throw new Error("bound twice");
 
         assert!(lib.contains("install_payload()"), "defines install_payload");
         assert!(
-            lib.contains(r#"[ -d "$DIR/payload" ] || return 0"#),
+            lib.contains(r#"[ -d "$DIR/payload" ] && [ -n "$SOURCE_DIGEST" ] || return 0"#),
             "no-op without a payload dir"
         );
         assert!(
-            lib.contains(".apps-payload-installed-$APP_ID"),
+            lib.contains("marker=\"$PAYLOAD_STATE/complete\""),
             "guarded by a marker"
         );
         assert!(lib.contains("BIOROUTER_EXPORT_YES"), "consent skip hook");
@@ -4009,7 +4455,7 @@ if (late.listeners.click) throw new Error("bound twice");
         assert!(lib.contains("umask 077"));
         // The secret never rides a command line other accounts can read: every
         // curl that carries it reads the header from stdin.
-        assert_eq!(lib.matches("-H @-").count(), 2);
+        assert_eq!(lib.matches("-H @-").count(), 3);
         assert!(!lib.contains("-H \"X-Secret-Key"));
         // A daemon that never answers is waited on for 60 s and then stopped,
         // never left running with a secret nobody knows.
@@ -4972,10 +5418,8 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("My Apps").join("demo");
         std::fs::create_dir_all(folder.join("payload/skills/s1")).unwrap();
-        std::fs::create_dir_all(folder.join("payload/knowledge")).unwrap();
         export_folder(&folder, "uid-1", 100, 200);
         std::fs::write(folder.join("payload/skills/s1/SKILL.md"), "shipped").unwrap();
-        std::fs::write(folder.join("payload/knowledge/k.brkb"), "kb").unwrap();
         let home = root.path().join("home");
         let cfg = home.join(".config/biorouter");
         std::fs::create_dir_all(cfg.join("skills/s1")).unwrap();
@@ -5000,7 +5444,6 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             std::fs::read_to_string(cfg.join("skills/s1/SKILL.md")).unwrap(),
             "shipped"
         );
-        assert!(cfg.join("knowledge-imports/k.brkb").is_file());
         assert!(!cfg.join("skills/My").exists());
         let backups: Vec<_> = std::fs::read_dir(cfg.join("app-launcher/backups"))
             .unwrap()
@@ -5011,6 +5454,36 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             "mine",
             "the skill you had is kept"
         );
+    }
+
+    #[test]
+    fn generated_launchers_import_full_payload_through_authenticated_daemon() {
+        let Some(node) = which_node() else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI must supply Node for payload launcher coverage"
+            );
+            eprintln!("skipped: no Node for generated payload launcher fixture");
+            return;
+        };
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let output = std::process::Command::new(node)
+            .arg(repo.join("scripts/agent-drafter/check-export-payload.mjs"))
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("node: authenticated import"), "{stdout}");
+        #[cfg(unix)]
+        assert!(stdout.contains("bash: authenticated import"), "{stdout}");
+        #[cfg(windows)]
+        assert!(stdout.contains("ps: authenticated import"), "{stdout}");
     }
 
     /// A fat export's daemon is used only when it runs on this machine.
