@@ -16,6 +16,9 @@
 //! So a report inlines its libraries regardless of the flag, and dedup keeps that to
 //! exactly one copy per library however many panels use it.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biorouter_mcp::AutoVisualiserRouter;
 use rmcp::handler::server::wrapper::Parameters;

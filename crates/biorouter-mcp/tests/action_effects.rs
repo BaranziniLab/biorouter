@@ -19,6 +19,9 @@
 //!   2. **readback** — `app_call` re-reads those pointers afterwards and tells the
 //!      model what actually moved, or that nothing did.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::control::{AppControlServer, UiBridge};
 use biorouter_mcp::agent_drafter::manifest::{ActionDecl, ActionEffect, SurfaceDecl, UiCapability};
 

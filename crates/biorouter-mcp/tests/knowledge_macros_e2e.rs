@@ -4,6 +4,9 @@
 //! a temp directory, with a local `MockCompleter` providing canned LLM replies.
 //! No network calls or real LLM provider is required.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use biorouter_mcp::knowledge::{

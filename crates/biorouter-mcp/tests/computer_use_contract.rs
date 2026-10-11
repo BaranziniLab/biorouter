@@ -1,3 +1,6 @@
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::{
     computer_use::{contract, manifest},
     ComputerControllerServer, DeveloperServer, WebDocumentsServer,

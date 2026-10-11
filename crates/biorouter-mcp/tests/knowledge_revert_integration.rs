@@ -10,6 +10,9 @@
 //! acts as a regression guard for the file-presence + history-kind contract
 //! that higher-level routes rely on.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::knowledge::{git::GitRepo, paths, service::KnowledgeService, types::ChangeKind};
 
 #[test]

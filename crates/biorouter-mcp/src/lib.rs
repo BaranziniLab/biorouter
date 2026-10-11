@@ -29,6 +29,8 @@ mod memory;
 pub mod paths;
 pub mod privacy_toggle;
 pub mod secret_guard;
+#[cfg(test)]
+mod test_sandbox;
 /// Test binaries only; see the module docs.
 #[doc(hidden)]
 pub mod test_tracing;

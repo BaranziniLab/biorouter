@@ -26,6 +26,9 @@
 //! source: the URL is in the list, and the tag matches the pattern that list is
 //! consumed with.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biorouter_mcp::autovisualiser::{
     AutoVisualiserRouter, RenderMapParams, RenderMermaidParams, RenderNetworkParams,

@@ -17,6 +17,9 @@
 //! directly. It goes through `KnowledgeServer::new()`, which resolves its root
 //! from `BIOROUTER_PATH_ROOT` — the same resolution the shipped daemon uses.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::knowledge::server::{ExportArchiveParams, KnowledgeServer};
 use rmcp::handler::server::wrapper::Parameters;
 

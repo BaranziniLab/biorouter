@@ -15,6 +15,9 @@
 //! binary.
 #![cfg(unix)]
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 

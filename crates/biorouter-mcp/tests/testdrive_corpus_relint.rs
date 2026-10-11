@@ -15,6 +15,9 @@
 //! Skips cleanly when the corpus is absent (it is git-ignored runtime state), so
 //! this is a no-op on a fresh clone and on CI.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::bundle::{lint_app, LintLevel};
 use biorouter_mcp::agent_drafter::catalog::Catalog;
 use biorouter_mcp::agent_drafter::store::Manifest;

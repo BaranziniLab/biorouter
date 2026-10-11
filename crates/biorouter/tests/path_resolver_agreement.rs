@@ -19,13 +19,13 @@
 //! file's `Paths::config_dir()` calls resolve through `etcetera`. The two
 //! change together or not at all.
 //!
-//! On Windows both sides also run the move out of the folder earlier releases
-//! used (R-31, `biorouter_mcp::app_folder`). Which folder each resolves for
-//! each state on disk is pinned by one table both suites run,
-//! `crates/biorouter-mcp/src/app_folder/resolution-cases.json`; the tests at
-//! the end of this file pin that `Paths` reaches that rule, that the layout it
-//! builds is etcetera's own, and that the rewrite after a move covers the files
-//! the stores really use.
+//! On Windows both sides also resolve the folder earlier releases used until
+//! the daemon has moved it (R-31, `biorouter_mcp::app_folder`). Which folder
+//! each resolves for each state on disk is pinned by one table both suites
+//! run, `crates/biorouter-mcp/src/app_folder/resolution-cases.json`; the tests
+//! at the end of this file pin that `Paths` reaches that rule, that the layout
+//! it builds is etcetera's own, and that the rewrite after a move covers the
+//! files the stores really use.
 
 use biorouter::config::paths::Paths;
 use serial_test::serial;
@@ -42,8 +42,26 @@ use std::path::PathBuf;
 /// `#[serial]` does not — `#[serial]` only orders tests that are themselves
 /// annotated, and this variable is read by `Paths::*` on every call from
 /// anywhere.
+///
+/// It also points both Windows bases at throwaway directories. With no root
+/// (or a blank one, which every resolver reads as none) a resolver reaches the
+/// real platform directories, and on Windows those are the developer's own
+/// profile: a legacy folder there would be held by this test binary for the
+/// rest of its run. Elsewhere the two variables are not read.
 fn with_path_root<T>(root: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", root)]);
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let _guard = env_lock::lock_env([
+        ("BIOROUTER_PATH_ROOT", root.map(str::to_owned)),
+        (
+            "APPDATA",
+            Some(roaming.path().to_string_lossy().into_owned()),
+        ),
+        (
+            "LOCALAPPDATA",
+            Some(local.path().to_string_lossy().into_owned()),
+        ),
+    ]);
     f()
 }
 
@@ -248,7 +266,7 @@ fn paths_resolves_through_the_one_platform_function() {
                     calls,
                     0,
                     "{} resolves the app folder itself; use biorouter_mcp::paths::platform_dirs, \
-                     which also applies the Windows move",
+                     which also applies the Windows folder rule",
                     path.display()
                 );
             }

@@ -10,6 +10,9 @@
 //!     *paid* agent turn writes to the document — the reason authors kept a private
 //!     local `state` object, which then diverged from the doc the agent reads.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::bundle::{lint_app, LintLevel};
 use std::path::Path;
 use tempfile::TempDir;

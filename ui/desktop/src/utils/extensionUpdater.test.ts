@@ -112,12 +112,21 @@ async function seedExtension(extensionsDir: string, name: string) {
 
 let originalPathRoot: string | undefined;
 let originalXdgConfigHome: string | undefined;
+let originalAppData: string | undefined;
+let originalLocalAppData: string | undefined;
 let redirectRoot: string;
 
 beforeAll(() => {
   originalPathRoot = process.env.BIOROUTER_PATH_ROOT;
   originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+  originalAppData = process.env.APPDATA;
+  originalLocalAppData = process.env.LOCALAPPDATA;
 });
+
+function restoreEnv(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 beforeEach(async () => {
   sentEvents.length = 0;
@@ -128,6 +137,11 @@ beforeEach(async () => {
   delete process.env.XDG_CONFIG_HOME;
   fakeHome = await fs.mkdtemp(path.join(TMP_BASE, 'br-extupd-home-'));
   redirectRoot = await fs.mkdtemp(path.join(TMP_BASE, 'br-extupd-root-'));
+  // R-31: on Windows the resolver reads both bases (and the folder earlier
+  // releases used under each). Point them into the fake home, so no test here
+  // ever looks at the developer's real profile, whatever it unsets.
+  process.env.APPDATA = path.join(fakeHome, 'AppData', 'Roaming');
+  process.env.LOCALAPPDATA = path.join(fakeHome, 'AppData', 'Local');
 });
 
 afterEach(async () => {
@@ -135,6 +149,8 @@ afterEach(async () => {
   else process.env.BIOROUTER_PATH_ROOT = originalPathRoot;
   if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  restoreEnv('APPDATA', originalAppData);
+  restoreEnv('LOCALAPPDATA', originalLocalAppData);
   await fs.rm(fakeHome, { recursive: true, force: true });
   await fs.rm(redirectRoot, { recursive: true, force: true });
 });
@@ -228,7 +244,6 @@ describe('extension updater directory resolution (#146)', () => {
    */
   it.runIf(IS_WINDOWS)('uses the Windows layout on Windows', async () => {
     const appData = await fs.mkdtemp(path.join(TMP_BASE, 'br-extupd-appdata-'));
-    const originalAppData = process.env.APPDATA;
     try {
       process.env.APPDATA = appData;
       const { biorouterExtensionsDir } = await loadUpdater();
@@ -236,10 +251,29 @@ describe('extension updater directory resolution (#146)', () => {
         path.join(appData, 'UCSF', 'biorouter', 'config', 'extensions')
       );
     } finally {
-      if (originalAppData === undefined) delete process.env.APPDATA;
-      else process.env.APPDATA = originalAppData;
       await fs.rm(appData, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * R-31. Resolving never touches either Windows base: the folder earlier
+   * releases used stays exactly where it is, and nothing is created beside
+   * it. (The desktop used to move it on the first resolution, so this suite
+   * moved a developer's real profile on Windows.) Runs on every OS through
+   * the Windows branch the suite can reach, `platformConfigDirFor`, against
+   * real directories.
+   */
+  it('resolving the Windows layout moves nothing', async () => {
+    const roaming = path.join(fakeHome, 'AppData', 'Roaming');
+    const { APP_AUTHOR, APP_NAME, LEGACY_APP_AUTHOR } = await import('./appFolder');
+    const legacyConfig = path.join(roaming, LEGACY_APP_AUTHOR, APP_NAME, 'config');
+    await fs.mkdir(legacyConfig, { recursive: true });
+    const { platformConfigDirFor } = await import('./biorouterPaths');
+    expect(platformConfigDirFor({ platform: 'win32', env: process.env, homedir: fakeHome })).toBe(
+      legacyConfig
+    );
+    expect(existsSync(legacyConfig)).toBe(true);
+    expect(existsSync(path.join(roaming, APP_AUTHOR))).toBe(false);
   });
 
   /**

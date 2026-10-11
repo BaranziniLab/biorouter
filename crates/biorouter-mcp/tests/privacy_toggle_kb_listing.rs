@@ -28,6 +28,9 @@
 //! made to. Each `tests/*.rs` file is its own process, so nothing outside this
 //! file can observe its writes.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::knowledge::affiliation::CallerAffiliation;
 use biorouter_mcp::knowledge::caller::KbCaller;
 use biorouter_mcp::knowledge::service::KnowledgeService;

@@ -18,6 +18,9 @@
 //! main agent cannot write, and a fail-closed check at `app_call` — the one place
 //! quantitative output can reach the page.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::control::{
     AppControlServer, EvidenceEntry, EvidenceStatus, ProvenanceSource, UiBridge,
 };

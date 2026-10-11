@@ -22,6 +22,9 @@
 //! *literal* references are denied one layer up, by the agent's global-memory
 //! inspector.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;
 use biorouter_mcp::webdocuments::{CacheCommand, CacheParams};
 use biorouter_mcp::{global_memory_dir, DeveloperServer, WebDocumentsServer};

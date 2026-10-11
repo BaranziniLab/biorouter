@@ -13,6 +13,9 @@
 //! `BIOROUTER_WORKING_DIR`, so it is a single test in its own integration
 //! binary.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::path::PathBuf;
 
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;

@@ -9,6 +9,9 @@
 //! it caused a review pass to wrongly conclude that real findings cited
 //! nonexistent code. Never again.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::path::{Path, PathBuf};
 
 fn templates_dir() -> PathBuf {
