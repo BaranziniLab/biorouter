@@ -3,6 +3,7 @@
 import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import { CheckIcon, ChevronRightIcon } from '../icons/app-icons';
+import { lastInputWasKey } from './inputTrail';
 
 import { cn } from '../../utils';
 
@@ -331,6 +332,58 @@ export function usePointerPickFocusRule<T extends HTMLElement>({
   };
 }
 
+/**
+ * The attribute a dropdown menu's surface carries to say how the person is driving it: `pointer`
+ * or `key`. `main.css` (the menu rows, `@ws WS-PRIMITIVES begin: primitives`) takes the D-15 ring
+ * off a row in a `pointer` menu.
+ */
+export const MENU_INPUT_ATTRIBUTE = 'data-menu-input';
+
+/**
+ * A menu opened with the pointer rings no row (WS-SIDEBAR-2, measured in Chromium on the real
+ * sidebar). `DropdownMenuTrigger` opens on `pointerdown` and cancels it, so the trigger never takes
+ * mouse focus, and Radix then moves focus into the menu and onto each row the pointer crosses by
+ * script. Chromium counts a script focus that no mouse press preceded as keyboard focus, so every
+ * hovered row matched `:focus-visible` and wore D-15's 2px inset ring, a row the person had only
+ * pointed at. A right-click ContextMenu does not (its press is not cancelled), so it is left alone.
+ *
+ * The surface records the modality instead of trusting the browser's guess: the app's one input
+ * tracker (`inputTrail.ts`) answers when the menu mounts (a click on the trigger reads `pointer`;
+ * Enter, Space or an arrow on it reads `key`), a key pressed inside turns it to `key` (the ring is
+ * then exactly where the keyboard is) and a press inside turns it back. The row keeps its quiet
+ * `--overlay-hover` highlight either way; under `prefers-contrast: more` and forced colours the
+ * highlighted row's outline is untouched.
+ */
+function useMenuInputModality<T extends HTMLElement>({
+  ref,
+  onKeyDownCapture,
+  onPointerDownCapture,
+}: {
+  ref?: React.Ref<T>;
+  onKeyDownCapture?: React.KeyboardEventHandler<T>;
+  onPointerDownCapture?: React.PointerEventHandler<T>;
+}) {
+  const markRef = React.useCallback(
+    (node: T | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<T | null>).current = node;
+      node?.setAttribute(MENU_INPUT_ATTRIBUTE, lastInputWasKey() ? 'key' : 'pointer');
+    },
+    [ref]
+  );
+  return {
+    ref: markRef,
+    onKeyDownCapture: (event: React.KeyboardEvent<T>) => {
+      event.currentTarget.setAttribute(MENU_INPUT_ATTRIBUTE, 'key');
+      onKeyDownCapture?.(event);
+    },
+    onPointerDownCapture: (event: React.PointerEvent<T>) => {
+      event.currentTarget.setAttribute(MENU_INPUT_ATTRIBUTE, 'pointer');
+      onPointerDownCapture?.(event);
+    },
+  };
+}
+
 function DropdownMenuContent({
   className,
   sideOffset = 6,
@@ -342,11 +395,16 @@ function DropdownMenuContent({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
-  const focusRule = usePointerPickFocusRule<HTMLDivElement>({
+  const modality = useMenuInputModality<HTMLDivElement>({
     ref,
-    onCloseAutoFocus: handleCloseAutoFocus,
     onKeyDownCapture,
     onPointerDownCapture,
+  });
+  const focusRule = usePointerPickFocusRule<HTMLDivElement>({
+    ref: modality.ref,
+    onCloseAutoFocus: handleCloseAutoFocus,
+    onKeyDownCapture: modality.onKeyDownCapture,
+    onPointerDownCapture: modality.onPointerDownCapture,
   });
   return (
     <DropdownMenuPrimitive.Portal>
@@ -596,11 +654,21 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  onKeyDownCapture,
+  onPointerDownCapture,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  // A submenu reached by hovering its row reads `pointer`, one opened with ArrowRight reads `key`.
+  const modality = useMenuInputModality<HTMLDivElement>({
+    ref,
+    onKeyDownCapture,
+    onPointerDownCapture,
+  });
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
+      {...modality}
       className={cn(MENU_SURFACE_CLASS_NAME, 'overflow-hidden', MENU_EASE_CLASS_NAME, className)}
       {...props}
     />

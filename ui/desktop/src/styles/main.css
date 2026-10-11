@@ -4976,6 +4976,20 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   transition-duration: var(--dur-fast-min);
 }
 
+/* A menu opened with the pointer rings no row (WS-SIDEBAR-2). A DropdownMenu trigger opens on a
+   cancelled `pointerdown`, so Radix's script focus on each row the pointer crosses reads as
+   keyboard focus to Chromium, and the hovered row wore D-15's 2px inset ring (measured on the
+   sidebar's View options and a chat row's menu). The surface says how it is being driven
+   (`data-menu-input`, set from `ui/inputTrail.ts` by `dropdown-menu.tsx`): in a `pointer` menu
+   the ring goes and the row keeps its `--overlay-hover` highlight, the hover look; the first key
+   pressed in the menu turns it to `key`, and the ring is back on the focused row. Unlayered, so
+   it beats the layered D-15 rule; the `prefers-contrast: more` and forced-colours outlines on a
+   highlighted row are `!important` and untouched. */
+[data-menu-input='pointer']
+  :is([role='menuitem'], [role='menuitemcheckbox'], [role='menuitemradio']):focus-visible {
+  box-shadow: none;
+}
+
 /* Its geometry, authored as well as written in the row's utilities (the same values, pinned
    together in `menuRow.test.tsx`): a 32px floor, 6px 12px padding, an 8px gap, radius 8, 13/18
    text. Layered, so a caller's own utility still wins; it is what a stylesheet without
