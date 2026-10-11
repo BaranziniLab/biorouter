@@ -5607,9 +5607,9 @@ br.run("hello", "#missing");
         candidates.into_iter().find(|path| path.is_file())
     }
 
-    /// A real pinned native compiler exercises the public fat export path.
-    /// The Rust-only CI matrix has no compiler installation, so there it must
-    /// explicitly return the missing-helper thin export contract instead.
+    /// CI stages a pinned native compiler and supplies its explicit path, so
+    /// every OS must exercise the real public fat export path. A local Rust-only
+    /// checkout without one instead verifies the missing-helper thin contract.
     #[tokio::test]
     #[serial_test::serial]
     async fn export_bundle_daemon_current_checks_packaged_compiler_contract() {

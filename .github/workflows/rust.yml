@@ -257,6 +257,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Stage pinned native app compiler
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { execFileSync } = require('node:child_process');
+          const { fetchEsbuild, ESBUILD_VERSION } = require('./ui/desktop/scripts/fetch-esbuild.js');
+          const compiler = path.resolve(fetchEsbuild(process.platform, process.arch, {
+            binDir: path.join(process.env.RUNNER_TEMP, 'biorouter-test-tools'),
+            cacheDir: path.join(process.env.RUNNER_TEMP, 'biorouter-esbuild-cache'),
+          }));
+          const version = execFileSync(compiler, ['--version'], {
+            encoding: 'utf8', timeout: 5000, maxBuffer: 64,
+          }).trim();
+          if (version !== ESBUILD_VERSION) throw new Error('Native esbuild does not match the pinned release');
+          fs.appendFileSync(process.env.GITHUB_ENV, `BIOROUTER_ESBUILD_BIN=${compiler}\n`);
+          NODE
+
       # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
       # widen as it proves stable. This selector leaves out `tests/`; those
       # binaries run in their own step below, ubuntu only, with no network.
