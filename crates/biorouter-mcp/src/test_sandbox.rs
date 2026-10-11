@@ -41,23 +41,26 @@ fn sandbox_this_crates_lib_test_binary() {
     }
 }
 
-#[test]
-fn this_binary_never_reaches_the_real_app_folder() {
-    assert!(
-        crate::paths::path_root_override().is_some(),
-        "the lib test binary runs without a BIOROUTER_PATH_ROOT, so every resolver reaches the \
-         developer's real folders"
-    );
-    // Resolve the way every store does.
-    let _ = crate::paths::platform_dirs();
-    let _ = crate::paths::config_dir();
-    let _ = crate::knowledge::paths::knowledge_root();
-    assert!(
-        crate::app_folder::process_move().is_none(),
-        "a resolver ran the Windows folder move in a test binary; only `biorouterd agent` may"
-    );
-    assert!(
-        !crate::app_folder::process_holds_a_lock(),
-        "a test took the lock beside the real folder earlier releases used"
-    );
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn this_binary_never_reaches_the_real_app_folder() {
+        assert!(
+            crate::paths::path_root_override().is_some(),
+            "the lib test binary runs without a BIOROUTER_PATH_ROOT, so every resolver reaches the \
+             developer's real folders"
+        );
+        // Resolve the way every store does.
+        let _ = crate::paths::platform_dirs();
+        let _ = crate::paths::config_dir();
+        let _ = crate::knowledge::paths::knowledge_root();
+        assert!(
+            crate::app_folder::process_move().is_none(),
+            "a resolver ran the Windows folder move in a test binary; only `biorouterd agent` may"
+        );
+        assert!(
+            !crate::app_folder::process_holds_a_lock(),
+            "a test took the lock beside the real folder earlier releases used"
+        );
+    }
 }
