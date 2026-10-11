@@ -190,6 +190,35 @@ describe('InstitutionalSetupCard', () => {
     expect(screen.queryByLabelText(institutionalCopy.apiKey)).toBeNull();
   });
 
+  // FR-R2-5: an empty form's Connect was the coral primary at half opacity (pale coral in light,
+  // a muddy brown in dark) beside Public's grey "Detect provider". The same rule now: secondary
+  // until it can act, coral once the keys it needs are in.
+  it('keeps Connect secondary until both Bedrock keys are in', () => {
+    render(<InstitutionalSetupCard flavor="bedrock" onSuccess={vi.fn()} />);
+    const connect = screen.getByRole('button', { name: institutionalCopy.connect });
+    expect(connect).toBeDisabled();
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(institutionalCopy.accessKeyId), {
+      target: { value: 'an-id' },
+    });
+    // One of two keys is not enough to act on.
+    expect(connect).toBeDisabled();
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(/Secret Access Key/i), {
+      target: { value: 'a-secret' },
+    });
+    expect(connect).toBeEnabled();
+    expect(connect.className).toContain('bg-background-accent');
+  });
+
+  it('keeps Connect secondary until the Azure key is in', () => {
+    render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
+    const connect = screen.getByRole('button', { name: institutionalCopy.connect });
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
+    expect(connect.className).toContain('bg-background-accent');
+  });
+
   it('keeps its words while it connects', async () => {
     let settle!: () => void;
     mockCheckProvider.mockReturnValueOnce(new Promise<void>((resolve) => (settle = resolve)));

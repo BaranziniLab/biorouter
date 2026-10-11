@@ -85,11 +85,11 @@ export default function InstitutionalSetupCard({
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const canSubmit =
-    !isLoading &&
-    (flavor === 'bedrock'
+  const hasKeys =
+    flavor === 'bedrock'
       ? bedrockAccessKey.trim().length > 0 && bedrockSecretKey.trim().length > 0
-      : azureApiKey.trim().length > 0);
+      : azureApiKey.trim().length > 0;
+  const canSubmit = !isLoading && hasKeys;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -247,9 +247,17 @@ export default function InstitutionalSetupCard({
       </Disclosure>
 
       {/* One verb, on the 32px rung, and it keeps its words while it works: a bare spinner left
-          the button with no name and half its width (FR-S-6, FR-R1-11). */}
+          the button with no name and half its width (FR-S-6, FR-R1-11). Secondary until the keys
+          it needs are in, coral once it can act: Public's "Detect provider" rule, so the catalog
+          has one look for a primary that is not ready yet (FR-R2-5). Disabled coral was a pale
+          coral in light and a muddy brown in dark. */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={handleSubmit} disabled={!canSubmit} data-testid="institutional-connect">
+        <Button
+          variant={hasKeys ? 'default' : 'secondary'}
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          data-testid="institutional-connect"
+        >
           {isLoading ? (
             <>
               <Spinner size={14} />
