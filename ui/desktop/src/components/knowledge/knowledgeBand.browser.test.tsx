@@ -92,7 +92,7 @@ function bandCss(): string {
     // The page band (WS-VIEWS-A), its hairline rule just above it.
     cut(main, '.biorouter-page-header {', '/* @ws WS-VIEWS-A end: page band */'),
     // The Knowledge pane: the container, the step defaults, the band block, the ladder.
-    cut(main, '.br-knowledge-pane {', '/* ── the filter control (R-02)'),
+    cut(main, '.br-knowledge-pane {', '/* @ws WS-KNOWLEDGE begin: filter facet */'),
   ].join('\n');
 }
 

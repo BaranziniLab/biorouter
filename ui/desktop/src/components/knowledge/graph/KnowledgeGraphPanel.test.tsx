@@ -9,12 +9,14 @@ vi.mock('./ForceGraphCanvas', () => ({ ForceGraphCanvas: () => null }));
 /**
  * R-27 on the graph pane's own ground. The canvas paints `--background-muted`, which is the
  * value `--background-fill` has (1.00:1), so a filled control sitting directly on it rests on
- * `--background-fill-strong` and keeps a transparent border for forced colours (design.md 9.11).
- * The pane's one such control is the error state's retry. jsdom runs no Tailwind, so this pins
- * the classes the rule is written in.
+ * `--background-fill-strong` and hovers one fill deeper, `--background-strong` (design.md 9.11).
+ * The canvas says so once, for every filled control on it (`.br-knowledge-recessed`, which
+ * `knowledgeFill.browser.test.tsx` measures in Chromium), so the pane's one such control, the
+ * error state's retry, is the plain filled secondary with no ground of its own. jsdom runs no
+ * Tailwind, so this pins the classes the rule is written in.
  */
 describe('KnowledgeGraphPanel on its muted ground', () => {
-  it('rests the retry button on the strong fill with a transparent border', async () => {
+  it('lets the canvas rest the retry button on the strong fill', async () => {
     const onRefresh = vi.fn();
     render(
       <KnowledgeGraphPanel
@@ -29,12 +31,13 @@ describe('KnowledgeGraphPanel on its muted ground', () => {
     );
 
     const retry = screen.getByRole('button', { name: 'Try again' });
-    const classes = retry.className.split(/\s+/);
-    expect(classes).toContain('bg-background-fill-strong');
-    expect(classes).toContain('border-transparent');
-    // Not the resting fill, and not the variant's own ground, which the override replaces.
-    expect(classes).not.toContain('bg-background-fill');
-    expect(classes).not.toContain('bg-background-medium');
+    // The filled secondary: the control ground and the hover step come from its classes.
+    expect(retry.className).toMatch(/\bbr-fill-rest\b/);
+    expect(retry.className).toMatch(/\bbr-fill-hover\b/);
+    // Not a ground of its own: a `bg-*` here would beat the layered fill and the hover with it.
+    expect(retry.className).not.toMatch(/\bbg-background-/);
+    // The recessed ground is what moves the rest to the strong step and the hover one deeper.
+    expect(retry.closest('.br-knowledge-recessed')).not.toBeNull();
 
     await userEvent.click(retry);
     expect(onRefresh).toHaveBeenCalledTimes(1);

@@ -2931,7 +2931,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   gap: 8px;
   height: 28px;
   margin: -4px -4px 4px;
-  padding: 0 12px;
+  /* 16px: pulled out to the menu's edge by the margin, so the glyph lands on the
+     16px edge every row's glyph starts on (the menu's 4px plus the row's 12px)
+     and the typed text on the rows' label edge, as CommandInput's px-4 does. At
+     12px both sat 4px left of the rows (measured in Chromium). */
+  padding: 0 16px;
   background: var(--background-default);
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--radius-container) var(--radius-container) 0 0;
@@ -4334,30 +4338,32 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* @ws WS-KNOWLEDGE end: band */
 
 /* @ws WS-KNOWLEDGE begin: dropzone */
-/* The Sources rail's drop target (spec 3.12). One muted field on a hairline,
-   holding its label button, a one-line hint with an InfoTip and "Paste text".
-   Hover is the neutral overlay over the field's own ground; a file dragged
-   over it firms the edge and steps the ground. Authored, because the drag
-   state is load-bearing feedback and must not depend on class scanning. */
+/* The Sources rail's drop target (spec 3.12): one filled field holding its label button, a one-line
+   hint with an InfoTip and "Paste text", the recipe Workflows' Import and the .brxt install draw
+   (`workflows.css`, `brxt-install.css`), with no resting outline (owner message 13, R-27, design.md
+   9.11). The rail is the page ground, so the field rests on the subtle fill and steps to the
+   strong fill under the pointer. The 1px border is kept and transparent, so forced colours draw the
+   edge and nothing moves between states. A file held over it firms the edge and the ground (the
+   "this will act" state). Authored, because the drag state is load-bearing feedback and must not
+   depend on class scanning. */
 .br-knowledge-dropzone {
-  border: 1px solid var(--border-subtle);
-  background-color: var(--background-muted);
-  transition:
-    background-color var(--dur-fast-min) var(--ease-out),
-    border-color var(--dur-fast-min) var(--ease-out);
+  border: 1px solid transparent;
+  background-color: var(--background-fill);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
 }
 
 .br-knowledge-dropzone:hover {
-  background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+  background-color: var(--background-fill-strong);
 }
 
 .br-knowledge-dropzone[data-dragging='true'] {
-  border-color: var(--border-strong);
-  background-color: var(--background-medium);
+  background-color: var(--background-fill-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
+/* The 32px glyph plate rests one ground back (the page's), so it is a plate without being an
+   outlined box: a fill never sits on a fill. */
 .br-knowledge-drop-plate {
-  border: 1px solid var(--border-subtle);
   background-color: var(--background-default);
   color: var(--text-muted);
   transition:
@@ -4366,8 +4372,14 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 .br-knowledge-dropzone[data-dragging='true'] .br-knowledge-drop-plate {
-  background-color: var(--background-strong);
   color: var(--text-default);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-knowledge-dropzone,
+  .br-knowledge-drop-plate {
+    transition: none;
+  }
 }
 /* The model picker and Digest, one column under the rail (V3-12). At the two-column step the rail
    is 264px and the cap does nothing; on the narrow Sources tab the rail is the whole pane and an
@@ -4409,6 +4421,24 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   background-color: var(--sidebar);
 }
 /* @ws WS-KNOWLEDGE end: pane header */
+
+/* @ws WS-KNOWLEDGE begin: recessed ground */
+/* A RECESSED GROUND (R-27, design.md 9.11): a pane header paints `--sidebar` and the graph canvas
+   paints `--background-muted`, and the resting fill is 1.00:1 and 1.03:1 off them. A filled control
+   there rests on the strong step instead (`--br-control-ground`, which `.br-fill-rest` and every
+   field read), and then has no step left to hover to, since the hover IS the strong step, so the
+   hover goes one fill deeper, `--background-strong`. Unlayered, so it beats the layered
+   `.br-fill-hover` without a utility. It belongs on the ground itself (a controls' ancestor), and a
+   filled box inside it still sets its own control ground for its children (`.br-fill-surface`),
+   so a field in a card on the canvas keeps resting on the page ground. */
+.br-knowledge-recessed {
+  --br-control-ground: var(--background-fill-strong);
+}
+.br-knowledge-recessed .br-fill-hover:hover,
+.br-knowledge-recessed .br-fill-hover:active {
+  background-color: var(--background-strong);
+}
+/* @ws WS-KNOWLEDGE end: recessed ground */
 
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
@@ -4508,51 +4538,46 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    yield (spec 3.12). */
 /* @ws WS-KNOWLEDGE end: no height step */
 
-/* ── the filter control (R-02) ──────────────────────────────────────────────
+/* @ws WS-KNOWLEDGE begin: filter facet */
+/* ── the filter control (R-02, R-27) ────────────────────────────────────────
    A filter is NOT a button and NOT a pill. It sits on `--radius-element`, the
-   same step as every button, input, select and tab — a control differentiated
+   same step as every button, input, select and tab: a control differentiated
    by being a different SHAPE from the rest of the app is a control that reads
-   as foreign. What separates it is edge and ground: a 1.5px border on a
-   transparent fill reads as a field that holds a value, where a secondary
-   button is a filled slab with no edge at all. Engaged is a solid accent fill
-   rather than a tint, because across a 1600px bar a tint is a guess.
+   as foreign. It is the app's one filled control now (owner message 13, R-27,
+   design.md 9.11): it rests on the subtle fill (the strip is the page ground,
+   or the control ground a filled box set for it), steps to the strong fill under
+   the pointer, and keeps a 1px TRANSPARENT border, so forced colours draw its
+   edge and nothing moves between states. It used to be a 1.5px outline on a
+   transparent fill, which read as a field that holds a value: the facet's own
+   count and caret say that now.
 
-   This rule is authored rather than composed from utilities because the
-   `:has()`-free resting/engaged pair has to survive the class scanner, and
-   because the design system's D-15 focus surface must read THROUGH it. */
+   ENGAGED is a neutral selected state, not coral. It was a solid accent fill,
+   which put a second coral bar beside the Sources rail's Digest, one per
+   engaged facet across a 1600px strip, and the accent is not allowed there
+   (principle 7 names its places and a filter is not one). The strong fill under
+   the selected wash is the darkest neutral on the strip and the label stays the
+   default ink, so an engaged facet is still the loudest thing on it, and
+   the count beside the label and the `Clear filters` control say which.
+
+   Authored rather than composed from utilities because the resting/engaged pair
+   has to survive the class scanner, and because the design system's D-15 focus
+   surface must read THROUGH it (the wash is a background-image, so the focus
+   ground, a background-colour, shows under it). */
 .br-facet {
-  border: 1.5px solid var(--border-subtle);
-  background: transparent;
+  border: 1px solid transparent;
+  background-color: var(--br-control-ground, var(--background-fill));
 }
 .br-facet:hover {
-  border-color: var(--border-strong);
-  background: var(--background-muted);
+  background-color: var(--background-fill-strong);
 }
 .br-facet[data-engaged='true'] {
-  border-color: var(--background-accent);
-  background: var(--background-accent);
-  color: var(--text-on-accent);
+  background-color: var(--background-fill-strong);
+  background-image: linear-gradient(var(--overlay-selected), var(--overlay-selected));
 }
 .br-facet[data-engaged='true']:hover {
-  border-color: var(--background-accent);
-  background: var(--background-accent);
+  background-image: linear-gradient(var(--overlay-selected-hover), var(--overlay-selected-hover));
 }
-/* @ws WS-KNOWLEDGE begin: engaged facet focus */
-/* ⚠ **A solid accent fill cannot take the grey focus surface.** `.biorouter-focus-
-   surface:focus-visible` (every facet carries the class) paints
-   `--background-focus` under the label, and an engaged facet's label is
-   `--text-on-accent`: white on a light grey, unreadable. It happened to the
-   keyboard user the moment a facet's menu closed and focus came back to it
-   (measured in the browser: "Type 1" washed out). The design system's own answer
-   for an accent fill is `.biorouter-focus-surface-accent`: brighten the token,
-   and frame it in `--text-on-accent`. Restated here at higher specificity
-   because the class is one, and a facet's resting rule owns its fill. */
-.br-facet[data-engaged='true']:focus-visible {
-  border-color: var(--background-accent-hover);
-  background: var(--background-accent-hover);
-  box-shadow: inset 0 0 0 2px var(--text-on-accent);
-}
-/* @ws WS-KNOWLEDGE end: engaged facet focus */
+/* @ws WS-KNOWLEDGE end: filter facet */
 
 /* ⚠ **THERE IS NO CANVAS-ANCHORED LEGEND CARD, AND THAT IS DELIBERATE.**
    An earlier revision floated the legend over the canvas between 940 and 1400,

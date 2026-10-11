@@ -119,8 +119,9 @@ describe('GraphFacetStrip', () => {
 
   /**
    * A filter is not a button, and after R-02 it is not one in the DOM either:
-   * `data-engaged` is what `.br-facet` keys its solid accent fill off, and it
-   * has to flip when a facet is actually engaged or the fill is decoration.
+   * `data-engaged` is what `.br-facet` keys its selected fill off (the strong fill under
+   * the selected wash, R-27), and it has to flip when a facet is actually engaged or the
+   * fill is decoration.
    */
   it('marks an engaged facet so the fill can change, not just a badge', () => {
     // The strip is controlled, so this asserts the MAPPING from facet state to

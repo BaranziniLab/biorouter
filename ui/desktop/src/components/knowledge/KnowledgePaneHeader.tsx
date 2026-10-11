@@ -26,7 +26,8 @@ interface Props {
  * The Knowledge panes' header: Crew's pane header (`crew/pane/pane.css`, spec 3.12 "Graph and
  * drawers") for the node and edge previews and the change-log and lint drawers.
  *
- * 44px (`--chrome-height`, the band every surface shares), the `--sidebar` ground, a bottom
+ * 44px (`--chrome-height`, the band every surface shares), the `--sidebar` ground (a recessed
+ * one: a filled control in it, the lint drawer's Check, rests on the strong fill, R-27), a bottom
  * hairline, a `text-label` title whose text starts 16px in (8px of band padding plus the
  * title's own 8px, Crew's `--crew-pane-inset - 8px`), and a ghost round close with a Tooltip,
  * 8px from the edge. The geometry is authored in `main.css`.
@@ -59,7 +60,7 @@ export function KnowledgePaneHeader({
     </Button>
   );
   return (
-    <div className="br-knowledge-pane-header flex h-chrome flex-none items-center border-b border-border-subtle bg-sidebar">
+    <div className="br-knowledge-pane-header br-knowledge-recessed flex h-chrome flex-none items-center border-b border-border-subtle bg-sidebar">
       <div className="flex min-w-0 flex-1 items-center gap-2 px-2">
         {leading}
         {title}

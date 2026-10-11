@@ -20,7 +20,8 @@ describe('PasteTextBox', () => {
     expect(stage).toBeEnabled();
     // The primary variant is the one that paints the accent fill.
     expect(stage.className).not.toMatch(/bg-background-accent/);
-    expect(stage.className).toMatch(/bg-background-medium/);
+    // The secondary is the filled button (WS-PRIMITIVES, R-27), not the old medium ground.
+    expect(stage.className).toMatch(/\bbr-fill-rest\b/);
     expect(document.querySelectorAll('[class*="bg-background-accent"]')).toHaveLength(0);
 
     fireEvent.click(stage);
