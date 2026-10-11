@@ -22,21 +22,46 @@ import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
 /**
- * Whether a dependency can be installed by the "Install all" button.
+ * A real command: not empty, not a shell COMMENT. One definition for the row's Install button, the
+ * batch and the coral count, so the number on "Install all", the one-coral decision and the
+ * buttons on screen can never disagree.
  *
- * Excludes rows whose "install command" is really a note to the user. On macOS
- * and unknown Linux distros the fallback is `# Install <dep> via your system
- * package manager` — a shell COMMENT, so running it exits 0 and the tool is then
- * reported as "the installer finished successfully but is still not detectable",
- * which reads as a broken installer rather than as no installer.
+ * Two shapes carry no installer. On an unknown Linux distro the desktop's own fallback is
+ * `# Install <dep> via your system package manager`, a shell comment: running it exits 0 and the
+ * tool is then reported as "the installer finished successfully but is still not detectable",
+ * which reads as a broken installer rather than as no installer. And the bundled CLI reports no
+ * command at all for a tool it has no installer for (an unknown distro, `llama-server` on Linux),
+ * which arrives here as an empty string.
  */
+export function hasInstaller(info: Pick<DependencyInfo, 'installCmd'>): boolean {
+  const cmd = info.installCmd.trim();
+  return cmd.length > 0 && !cmd.startsWith('#');
+}
+
+/** Whether a dependency can be installed by the "Install all" button. */
 export function isBatchInstallable(dep: {
   info: DependencyInfo;
   installState: InstallState;
 }): boolean {
   if (dep.info.installed || dep.installState === 'done') return false;
-  const cmd = dep.info.installCmd.trim();
-  return cmd.length > 0 && !cmd.startsWith('#');
+  return hasInstaller(dep.info);
+}
+
+/**
+ * The line under a row's name while nothing has run: the command it will run, in mono, or, for a
+ * row with no installer, what to do instead, in prose. A shell comment is printed as its text
+ * (no `#`). An empty command with a download page needs no line, because Download is the action;
+ * with no page either, the row says the sentence `buildInstallInfo` writes for that case, so it is
+ * never a name with no text and no action.
+ */
+function installLine(
+  info: Pick<DependencyInfo, 'installCmd' | 'displayName' | 'downloadUrl'>
+): { text: string; command: boolean } | null {
+  if (hasInstaller(info)) return { text: info.installCmd, command: true };
+  const note = info.installCmd.trim().replace(/^#+\s*/, '');
+  if (note) return { text: note, command: false };
+  if (info.downloadUrl) return null;
+  return { text: `Install ${info.displayName} via your system package manager`, command: false };
 }
 
 interface DepState {
@@ -425,7 +450,10 @@ export default function DependencySetupModal() {
   const showInstallAll = installableCount > 1 && !allDone;
   const cliButtonShown = showCli && cliState !== 'running';
   const rowInstallsShown = deps.filter(
-    (d) => !(d.installState === 'done' || d.info.installed) && d.installState !== 'running'
+    (d) =>
+      !(d.installState === 'done' || d.info.installed) &&
+      d.installState !== 'running' &&
+      hasInstaller(d.info)
   ).length;
   const singlePrimary = !showInstallAll && rowInstallsShown + (cliButtonShown ? 1 : 0) === 1;
   const installVariant = singlePrimary ? 'default' : 'secondary';
@@ -575,6 +603,7 @@ export default function DependencySetupModal() {
 
         {deps.map(({ info, installState, output, errorMsg }) => {
           const installed = installState === 'done' || info.installed;
+          const line = !installed && installState === 'idle' ? installLine(info) : null;
           return (
             <div
               key={info.name}
@@ -604,9 +633,15 @@ export default function DependencySetupModal() {
                   {installed && info.version && (
                     <p className="text-supporting text-text-muted mt-0.5">{info.version}</p>
                   )}
-                  {!installed && installState === 'idle' && (
-                    <p className="text-supporting text-text-muted font-mono mt-0.5 break-all">
-                      {info.installCmd}
+                  {line && (
+                    <p
+                      className={
+                        line.command
+                          ? 'text-supporting text-text-muted font-mono mt-0.5 break-all'
+                          : 'text-supporting text-text-muted mt-0.5'
+                      }
+                    >
+                      {line.text}
                     </p>
                   )}
                 </div>
@@ -623,7 +658,9 @@ export default function DependencySetupModal() {
                       </Button>
                     </HelpTooltip>
                   )}
-                  {!installed && installState !== 'running' && (
+                  {/* Only a row with a real command offers Install (`hasInstaller`). A row
+                      in `error` keeps it as the retry: only a command that ran can fail. */}
+                  {!installed && installState !== 'running' && hasInstaller(info) && (
                     <Button
                       variant={installVariant}
                       size="sm"

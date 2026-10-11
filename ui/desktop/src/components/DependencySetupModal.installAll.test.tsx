@@ -21,7 +21,7 @@ vi.mock('./ModalShell', () => ({
   ),
 }));
 
-import DependencySetupModal, { isBatchInstallable } from './DependencySetupModal';
+import DependencySetupModal, { hasInstaller, isBatchInstallable } from './DependencySetupModal';
 
 const installDependency = vi.fn();
 let emit: (e: DependencyEvent) => void = () => {};
@@ -117,6 +117,20 @@ describe('Install all', () => {
   });
 });
 
+describe('hasInstaller', () => {
+  // One definition for the row's Install button, the batch and the coral count.
+  it.each([
+    ['brew install uv', true],
+    ['  curl -LsSf https://astral.sh/uv/install.sh | sh  ', true],
+    ['', false],
+    ['   ', false],
+    ['# Install git via your system package manager', false],
+    ['  # Install git via your system package manager', false],
+  ])('%j -> %s', (installCmd, expected) => {
+    expect(hasInstaller({ installCmd })).toBe(expected);
+  });
+});
+
 describe('isBatchInstallable', () => {
   const row = (info: Partial<DependencyInfo>, installState: 'idle' | 'done' = 'idle') => ({
     info: { ...dep('x'), ...info },
@@ -137,9 +151,9 @@ describe('isBatchInstallable', () => {
   });
 
   it('excludes a shell COMMENT posing as an install command', () => {
-    // The macOS / unknown-distro fallback. Running it exits 0, and the tool is
-    // then reported as "installer finished but still not detectable" — which
-    // reads as a broken installer rather than as no installer at all.
+    // The unknown-distro fallback. Running it exits 0, and the tool is then
+    // reported as "installer finished but still not detectable", which reads
+    // as a broken installer rather than as no installer at all.
     expect(
       isBatchInstallable(row({ installCmd: '# Install rust via your system package manager' }))
     ).toBe(false);

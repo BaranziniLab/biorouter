@@ -212,7 +212,8 @@ describe('the startup dependency prompt in Chromium (FR-S-7)', () => {
         const m = await read(tab);
         const coralNames = m.buttons.filter((b) => b.ground === coral).map((b) => b.name);
         expect(coralNames, `${mode} coral buttons`).toEqual(['Install all (2)']);
-        expect(m.buttons.filter((b) => b.name === 'Install')).toHaveLength(3);
+        // The Rust row's command is a shell comment: it has no installer, so no Install.
+        expect(m.buttons.filter((b) => b.name === 'Install')).toHaveLength(2);
         // Row titles are the label role, never bolder (Arial draws 600 as bold).
         for (const weight of m.titles) expect(Number(weight)).toBeLessThan(600);
         expect(m.text).not.toMatch(/[✓✗→`]/);

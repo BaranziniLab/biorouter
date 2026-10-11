@@ -70,12 +70,32 @@ describe('DependencySetupModal: one coral button (principle 7)', () => {
     expect(coralButtons()).toEqual([screen.getByRole('button', { name: 'Install' })]);
   });
 
-  it('draws no coral when two single actions stand side by side with no batch', async () => {
-    // Only one of the two has an automated installer, so there is no "Install all".
+  it('keeps the lone real Install coral beside a row that has no installer', async () => {
+    // Only one of the two has an automated installer, so there is no "Install all", and the row
+    // without one offers no Install: Node.js's is the one install action on screen.
     await show([
       dep('node'),
       dep('rust', { installCmd: '# Install rust via your package manager' }),
     ]);
+    expect(screen.queryByRole('button', { name: /install all/i })).toBeNull();
+    expect(coralButtons()).toEqual([screen.getByRole('button', { name: 'Install' })]);
+  });
+
+  it('draws no coral when two single actions stand side by side with no batch', async () => {
+    // One row and the CLI card: two install actions, no "Install all", so neither is the primary.
+    cliStatus = {
+      bundled: '/app/biorouter',
+      onPath: true,
+      pathLocation: '/usr/local/bin/biorouter',
+      bundledVersion: '1.92.1',
+      pathVersion: '1.90.4',
+      needsUpdate: true,
+      brokenOnPath: false,
+    } as CliStatus;
+    render(<DependencySetupModal />);
+    await screen.findByRole('button', { name: 'Update' });
+    await act(async () => emit({ type: 'check-results', deps: [dep('node')] }));
+    expect(screen.getByRole('button', { name: 'Install' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /install all/i })).toBeNull();
     expect(coralButtons()).toEqual([]);
   });
@@ -113,6 +133,60 @@ describe('DependencySetupModal: one coral button (principle 7)', () => {
     // With a batch beside it, the batch is.
     expect(coralButtons()).toEqual([screen.getByRole('button', { name: 'Install all (2)' })]);
     expect(isCoral(update)).toBe(false);
+  });
+});
+
+describe('DependencySetupModal: a row with no installer offers no Install', () => {
+  /** The row (the panel holding the name) for one dependency. */
+  const rowOf = (name: string) =>
+    screen.getByText(name, { selector: 'p' }).closest('.br-fill-surface') as HTMLElement;
+
+  it('prints a shell comment as a prose note, keeps Download, and has no Install', async () => {
+    await show([
+      dep('node'),
+      dep('git', { installCmd: '# Install git via your system package manager' }),
+    ]);
+    const row = rowOf('git');
+    expect(within(row).queryByRole('button', { name: 'Install' })).toBeNull();
+    expect(within(row).getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    const note = within(row).getByText('Install git via your system package manager');
+    expect(note.textContent).not.toContain('#');
+    expect(note).not.toHaveClass('font-mono');
+    // The row with a real command still prints it as code, with its Install.
+    const node = rowOf('node');
+    expect(within(node).getByText('brew install node')).toHaveClass('font-mono');
+    expect(within(node).getByRole('button', { name: 'Install' })).toBeInTheDocument();
+  });
+
+  it('leaves Download as the only action, with no empty line, for an empty command and a page', async () => {
+    await show([dep('node'), dep('llama-server', { installCmd: '' })]);
+    const row = rowOf('llama-server');
+    expect(within(row).queryByRole('button', { name: 'Install' })).toBeNull();
+    expect(
+      within(row)
+        .getAllByRole('button')
+        .map((b) => b.textContent)
+    ).toEqual(['Download']);
+    // The name is the row's one line: no empty paragraph under it.
+    const lines = Array.from(row.querySelectorAll('p'));
+    expect(lines.map((p) => p.textContent)).toEqual(['llama-server']);
+  });
+
+  it('says what to do when there is neither an installer nor a download page', async () => {
+    await show([
+      dep('node'),
+      dep('python', { displayName: 'Python', installCmd: '', downloadUrl: '' }),
+    ]);
+    const row = rowOf('Python');
+    expect(within(row).queryAllByRole('button')).toEqual([]);
+    const note = within(row).getByText('Install Python via your system package manager');
+    expect(note).not.toHaveClass('font-mono');
+  });
+
+  it('keeps Install on a failed row as the retry', async () => {
+    await show([dep('node'), dep('uv')]);
+    await act(async () => emit({ type: 'install-error', dep: 'uv', error: 'no network' }));
+    expect(within(rowOf('uv')).getByRole('button', { name: 'Install' })).toBeInTheDocument();
   });
 });
 
