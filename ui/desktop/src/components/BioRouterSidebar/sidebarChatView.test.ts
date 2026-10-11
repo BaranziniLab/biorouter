@@ -16,6 +16,9 @@ import {
   readSidebarChatView,
   SIDEBAR_CHAT_VIEW_STORAGE_KEY,
   linesToDrawRow,
+  nextSidebarDrawRange,
+  sidebarLinesInView,
+  sliceSidebarLines,
   windowSidebarRows,
   sidebarRenderWindow,
   SIDEBAR_LINE_HEIGHT_PX,
@@ -536,6 +539,178 @@ describe('windowSidebarRows: draw what can be seen (R-28)', () => {
     expect(sidebarRenderWindow(0)).toBe(SIDEBAR_RENDER_WINDOW);
     expect(sidebarRenderWindow(-1)).toBe(SIDEBAR_RENDER_WINDOW);
     expect(sidebarRenderWindow(Number.NaN)).toBe(SIDEBAR_RENDER_WINDOW);
+  });
+});
+
+describe('sliceSidebarLines: draw only the lines near the viewport (R-28, V1-R2-2 round 4)', () => {
+  type Entry = { key: string; header: number; rows: Array<{ id: string }>; more: 'more' | null };
+  const entry = (key: string, header: number, rows: number, more: 'more' | null = null): Entry => ({
+    key,
+    header,
+    rows: Array.from({ length: rows }, (_, index) => ({ id: `${key}${index}` })),
+    more,
+  });
+  const header = (e: Entry) => e.header;
+  // A group as drawn: `H` a drawn header, `h` an undrawn one, a row id, `+` Show more, `~n` a gap.
+  const show = (sliced: ReturnType<typeof sliceSidebarLines<Entry>>) =>
+    sliced
+      .map(
+        (e) =>
+          (e.header ? (e.headerDrawn ? 'H ' : 'h ') : '') +
+          e.lines
+            .map((l) => (l.kind === 'row' ? l.row.id : l.kind === 'more' ? '+' : `~${l.lines}`))
+            .join(' ')
+      )
+      .join(' | ');
+  const lineCount = (sliced: ReturnType<typeof sliceSidebarLines<Entry>>) =>
+    sliced.reduce(
+      (sum, e) =>
+        sum + e.header + e.lines.reduce((n, l) => n + (l.kind === 'gap' ? l.lines : 1), 0),
+      0
+    );
+
+  it('draws every line for a list not measured yet (no range)', () => {
+    const sliced = sliceSidebarLines([entry('a', 1, 3, 'more'), entry('b', 1, 2)], null, header);
+    expect(show(sliced)).toBe('H a0 a1 a2 + | H b0 b1');
+    expect(sliced.map((e) => e.rows.length)).toEqual([3, 2]);
+    expect(sliced[0].more).toBe('more');
+  });
+
+  it('folds the rows outside the range into gaps that keep every line', () => {
+    const entries = [entry('all', 0, 100)];
+    const sliced = sliceSidebarLines(entries, { from: 40, to: 45 }, header);
+    expect(show(sliced)).toBe('~40 all40 all41 all42 all43 all44 ~55');
+    expect(lineCount(sliced)).toBe(100);
+    // The rows drawn are the list's own, in its order, with nothing between them.
+    expect(sliced[0].rows.map((row) => row.id)).toEqual([
+      'all40',
+      'all41',
+      'all42',
+      'all43',
+      'all44',
+    ]);
+  });
+
+  it('counts headers and Show more as lines, and folds Show more into a gap', () => {
+    // Lines: a header 0, a0..a4 1-5, + 6, b header 7, b0..b2 8-10.
+    const entries = [entry('a', 1, 5, 'more'), entry('b', 1, 3)];
+    const sliced = sliceSidebarLines(entries, { from: 3, to: 5 }, header);
+    expect(show(sliced)).toBe('h ~2 a2 a3 ~2 | h ~3');
+    expect(sliced[0].more).toBeNull();
+    expect(sliced.map((e) => e.rowsLine)).toEqual([1, 8]);
+    expect(lineCount(sliced)).toBe(11);
+    // From the header on: a header, then its rows, then Show more.
+    expect(show(sliceSidebarLines(entries, { from: 0, to: 2 }, header))).toBe('H a0 ~5 | h ~3');
+    expect(show(sliceSidebarLines(entries, { from: 6, to: 9 }, header))).toBe('h ~5 + | H b0 ~2');
+  });
+
+  it('always draws the rows it is told to keep', () => {
+    const entries = [entry('all', 0, 50)];
+    const keep = (row: { id: string }) => row.id === 'all7' || row.id === 'all30';
+    const sliced = sliceSidebarLines(entries, { from: 20, to: 22 }, header, keep);
+    expect(show(sliced)).toBe('~7 all7 ~12 all20 all21 ~8 all30 ~19');
+    expect(lineCount(sliced)).toBe(50);
+  });
+
+  it('keys each gap by the row it starts at, unique within its group', () => {
+    const sliced = sliceSidebarLines([entry('all', 0, 30)], { from: 10, to: 12 }, header);
+    const keys = sliced[0].lines.flatMap((l) => (l.kind === 'gap' ? [l.key] : []));
+    expect(keys).toEqual(['gap:0', 'gap:12']);
+  });
+
+  it('draws a collapsed folder header by the range like any other line', () => {
+    const entries = [entry('a', 1, 0), entry('b', 1, 0), entry('c', 1, 0), entry('d', 1, 0)];
+    expect(show(sliceSidebarLines(entries, { from: 1, to: 2 }, header))).toBe('h  | H  | h  | h ');
+  });
+});
+
+describe('sidebarLinesInView: lines from the drawn groups (R-28)', () => {
+  // Three groups: a header 24px tall over rows on a 30px pitch, as the DOM gives them.
+  const boxes = [
+    { rowsLine: 1, headerLines: 1, top: 0, rowsTop: 24 }, // 10 rows: lines 1-10
+    { rowsLine: 12, headerLines: 1, top: 328, rowsTop: 360 }, // 100 rows: lines 12-111
+    { rowsLine: 113, headerLines: 1, top: 3392, rowsTop: 3424 },
+  ];
+  const reads: number[] = [];
+  const boxAt = (index: number) => {
+    reads.push(index);
+    return boxes[index];
+  };
+
+  it('reads a line on the row pitch below its group', () => {
+    expect(sidebarLinesInView(3, boxAt, 0, 600)).toEqual({ first: 0, last: 20 });
+    expect(sidebarLinesInView(3, boxAt, 30, 600)).toEqual({ first: 1, last: 20 });
+    expect(sidebarLinesInView(3, boxAt, 400, 1000)).toEqual({ first: 13, last: 33 });
+    // A y inside a header reads as the header's line.
+    expect(sidebarLinesInView(3, boxAt, 340, 3400)).toEqual({ first: 11, last: 112 });
+    expect(sidebarLinesInView(3, boxAt, 3500, 4000)).toEqual({ first: 115, last: 132 });
+  });
+
+  it('reads only the boxes a binary search visits', () => {
+    const many = Array.from({ length: 1200 }, (_, index) => ({
+      rowsLine: index * 2 + 1,
+      headerLines: 1,
+      top: index * 64,
+      rowsTop: index * 64 + 32,
+    }));
+    let count = 0;
+    const result = sidebarLinesInView(
+      many.length,
+      (index) => {
+        count += 1;
+        return many[index];
+      },
+      64 * 600,
+      64 * 600 + 600
+    );
+    expect(result).toEqual({ first: 1200, last: 1218 });
+    expect(count).toBeLessThan(30);
+  });
+
+  it('measures nothing when there is nothing to measure', () => {
+    expect(sidebarLinesInView(0, boxAt, 0, 600)).toBeNull();
+    expect(sidebarLinesInView(3, boxAt, 0, 0)).toBeNull();
+    expect(sidebarLinesInView(3, boxAt, 0, 600, 0)).toBeNull();
+  });
+});
+
+describe('nextSidebarDrawRange: a range that holds still while it covers the view (R-28)', () => {
+  const o = SIDEBAR_RENDER_OVERSCAN;
+
+  it('draws the lines in view plus the overscan on both sides', () => {
+    expect(nextSidebarDrawRange(null, { first: 100, last: 120 })).toEqual({
+      from: 100 - o,
+      to: 121 + o,
+    });
+    expect(nextSidebarDrawRange(null, { first: 3, last: 23 })).toEqual({ from: 0, to: 24 + o });
+  });
+
+  it('keeps the same range (same object) while the view stays half an overscan inside it', () => {
+    const current = nextSidebarDrawRange(null, { first: 100, last: 120 });
+    expect(nextSidebarDrawRange(current, { first: 104, last: 124 })).toBe(current);
+    expect(nextSidebarDrawRange(current, { first: 96, last: 116 })).toBe(current);
+    const atTop = nextSidebarDrawRange(null, { first: 0, last: 20 });
+    expect(nextSidebarDrawRange(atTop, { first: 2, last: 22 })).toBe(atTop);
+  });
+
+  it('moves with the view once it nears an edge, and never grows past view plus overscan', () => {
+    const current = nextSidebarDrawRange(null, { first: 100, last: 120 });
+    expect(nextSidebarDrawRange(current, { first: 110, last: 130 })).toEqual({
+      from: 110 - o,
+      to: 131 + o,
+    });
+    // A shorter view (the window shrank): the range shrinks with it.
+    const tall = nextSidebarDrawRange(null, { first: 100, last: 200 });
+    expect(nextSidebarDrawRange(tall, { first: 100, last: 110 })).toEqual({
+      from: 100 - o,
+      to: 111 + o,
+    });
+  });
+
+  it('keeps what it drew when the list cannot be measured', () => {
+    const current = { from: 10, to: 40 };
+    expect(nextSidebarDrawRange(current, null)).toBe(current);
+    expect(nextSidebarDrawRange(null, null)).toBeNull();
   });
 });
 

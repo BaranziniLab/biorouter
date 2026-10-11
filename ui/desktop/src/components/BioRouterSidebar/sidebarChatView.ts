@@ -447,6 +447,187 @@ export function linesToDrawRow<Entry extends { rows: readonly { id: string }[]; 
   return null;
 }
 
+// ── Draw only the lines near the viewport ────────────────────────────────
+
+/**
+ * The lines the list draws for real, `[from, to)`, counted the way
+ * {@link windowSidebarRows} counts them (a header, a row, a "Show more").
+ */
+export interface SidebarDrawRange {
+  from: number;
+  to: number;
+}
+
+/** One line of a group as the list draws it: a row, its "Show more", or a run of neither. */
+export type SidebarDrawnLine<Row> =
+  | { kind: 'row'; row: Row }
+  | { kind: 'more' }
+  /**
+   * `lines` rows (or a "Show more") held but not drawn: ONE placeholder exactly
+   * their height, so the scroll height and every drawn row's place are what
+   * the real rows would give (`.br-chat-row-gap`).
+   */
+  | { kind: 'gap'; lines: number; key: string };
+
+export type SidebarSlicedEntry<Entry extends { rows: readonly unknown[]; more: unknown }> = Omit<
+  Entry,
+  'rows' | 'more'
+> & {
+  /** The rows drawn for real, in order (the roving keys). */
+  rows: Array<Entry['rows'][number]>;
+  /** The group's "Show more", or null when it has none or it is not drawn. */
+  more: Entry['more'] | null;
+  /** False: the header's line is outside the range; draw a placeholder of its height. */
+  headerDrawn: boolean;
+  /** The group's rows and "Show more" in order, runs not drawn folded into gaps. */
+  lines: Array<SidebarDrawnLine<Entry['rows'][number]>>;
+  /** The line index of the group's first row (after its header). */
+  rowsLine: number;
+};
+
+/**
+ * Which lines of a windowed list are drawn for real (R-28, vision V1-R2-2
+ * round 4). The list grew as it was scrolled and never shrank, so after a
+ * scroll to its end every chat was a mounted row: with 5,542 drawn, a
+ * right-click spent about 2 s restyling them and a view switch 0.5 s
+ * unmounting them. Rows and "Show more" lines outside `range` are folded into
+ * placeholders the height of the lines they stand for, and a header outside it
+ * says so (`headerDrawn` false): the list draws an empty box of its height for
+ * a folder header (a tooltip, a + and a menu button each) and draws a date
+ * header anyway (one element).
+ *
+ * Always drawn whatever the range: every row `keep` names (the focused row, a
+ * row being renamed or whose menu is open), so focus and an open editor are
+ * never unmounted under the person. Nothing else is, so the rows drawn read in
+ * the list's order with nothing between them; Home and End scroll the list to
+ * its end before they move focus (`RecentChats`). A null range (the list not
+ * measured yet, or no layout at all, as in jsdom) draws every line.
+ */
+export function sliceSidebarLines<Entry extends { rows: readonly unknown[]; more: unknown }>(
+  entries: readonly Entry[],
+  range: SidebarDrawRange | null,
+  headerLines: (entry: Entry) => number,
+  keep: (row: Entry['rows'][number]) => boolean = () => false
+): Array<SidebarSlicedEntry<Entry>> {
+  type Row = Entry['rows'][number];
+  const inRange = (line: number) => range === null || (line >= range.from && line < range.to);
+  const sliced: Array<SidebarSlicedEntry<Entry>> = [];
+  let line = 0;
+  for (const entry of entries) {
+    const header = headerLines(entry);
+    const headerDrawn = header === 0 || inRange(line);
+    line += header;
+    const rowsLine = line;
+    const lines: Array<SidebarDrawnLine<Row>> = [];
+    const rows: Row[] = [];
+    let gap = 0;
+    let gapStart = 0;
+    const closeGap = () => {
+      if (gap > 0) lines.push({ kind: 'gap', lines: gap, key: `gap:${gapStart}` });
+      gap = 0;
+    };
+    entry.rows.forEach((row, index) => {
+      if (inRange(line) || keep(row)) {
+        closeGap();
+        lines.push({ kind: 'row', row });
+        rows.push(row);
+      } else {
+        if (gap === 0) gapStart = index;
+        gap += 1;
+      }
+      line += 1;
+    });
+    let more: Entry['more'] | null = null;
+    if (entry.more) {
+      if (inRange(line)) {
+        closeGap();
+        lines.push({ kind: 'more' });
+        more = entry.more;
+      } else {
+        if (gap === 0) gapStart = entry.rows.length;
+        gap += 1;
+      }
+      line += 1;
+    }
+    closeGap();
+    sliced.push({ ...entry, rows, more, headerDrawn, lines, rowsLine });
+  }
+  return sliced;
+}
+
+/**
+ * Where a drawn group sits in the list, in the scroll container's content
+ * coordinates (px): read from the DOM by the list, so the line math below
+ * never assumes a header's or a gap's height.
+ */
+export interface SidebarGroupBox {
+  /** The line index of the group's first row. */
+  rowsLine: number;
+  /** Lines the group's header takes above its rows. */
+  headerLines: number;
+  /** The top of the group's box, and of its first row (its box's bottom when it has none). */
+  top: number;
+  rowsTop: number;
+}
+
+/**
+ * The first and last line inside `[viewTop, viewBottom]`, from the drawn
+ * groups' boxes: rows and gaps sit on one pitch below their group's first row,
+ * so a line is exact without measuring a row. `boxAt` is asked only for the
+ * groups a binary search visits, so a list of 1,200 folder groups reads about
+ * twenty boxes, not every one. Null when nothing can be measured.
+ */
+export function sidebarLinesInView(
+  count: number,
+  boxAt: (index: number) => SidebarGroupBox,
+  viewTop: number,
+  viewBottom: number,
+  pitch: number = SIDEBAR_LINE_HEIGHT_PX
+): { first: number; last: number } | null {
+  if (count <= 0 || !(viewBottom > viewTop) || !(pitch > 0)) return null;
+  const lineAt = (y: number) => {
+    let low = 0;
+    let high = count - 1;
+    let found = -1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (boxAt(middle).top <= y) {
+        found = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    const box = boxAt(Math.max(0, found));
+    if (found < 0 || y < box.rowsTop) return Math.max(0, box.rowsLine - box.headerLines);
+    return box.rowsLine + Math.floor((y - box.rowsTop) / pitch);
+  };
+  return { first: lineAt(viewTop), last: lineAt(viewBottom) };
+}
+
+/**
+ * The range to draw for the lines in view: those lines plus the overscan on
+ * each side, kept as it is (the same object, so the list does not re-render)
+ * while the lines in view stay at least half an overscan inside it. A null
+ * `inView` (the list could not be measured) keeps whatever was drawn.
+ */
+export function nextSidebarDrawRange(
+  current: SidebarDrawRange | null,
+  inView: { first: number; last: number } | null,
+  overscan: number = SIDEBAR_RENDER_OVERSCAN
+): SidebarDrawRange | null {
+  if (!inView) return current;
+  const wanted = { from: Math.max(0, inView.first - overscan), to: inView.last + 1 + overscan };
+  if (current) {
+    const margin = Math.floor(overscan / 2);
+    const coversTop = current.from <= Math.max(0, inView.first - margin);
+    const coversBottom = current.to >= inView.last + 1 + margin;
+    const bounded = current.to - current.from <= wanted.to - wanted.from + overscan;
+    if (coversTop && coversBottom && bounded) return current;
+  }
+  return wanted;
+}
+
 // ── Never move a row under the pointer ──────────────────────────────────────
 
 /** The order the list showed when the pointer came in: groups and the ids in each. */
