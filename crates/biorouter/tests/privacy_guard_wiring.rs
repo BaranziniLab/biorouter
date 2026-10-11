@@ -551,7 +551,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter-server/src/routes/session.rs",
                 counts: c(3, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /sessions/sidebar`, `GET /sessions/insights` and `GET /sessions/activity`, each omitting Crew-owned rows before serialization",
+                what: "`keyset_listing_scope`, which `GET /sessions/sidebar` and the paged `GET /sessions?limit=` (History's first paint) both ask, plus `GET /sessions/insights` and `GET /sessions/activity`, each omitting Crew-owned rows before serialization",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_meta.rs",
@@ -713,8 +713,10 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter-server/src/routes/session.rs",
                 counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`GET /sessions`, filtered row by row, and `GET /sessions/sidebar` ONCE \
-                       — it now asks whether this caller is shown private chats and hands the \
+                what: "`GET /sessions`, filtered row by row, and `keyset_listing_scope` ONCE \
+                       — asked by `GET /sessions/sidebar` and by the paged `GET /sessions?limit=` \
+                       alike (V1-R3-2), so the two cannot admit different chats. It asks whether \
+                       this caller is shown private chats and hands the \
                        answer to SQL as a predicate. It used to ask per row of a scan over the \
                        unfiltered ordering and resume from the position it reached, which made \
                        the continuation value a count of the rows it hid (adversarial review \

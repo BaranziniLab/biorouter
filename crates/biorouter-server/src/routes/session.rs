@@ -38,6 +38,15 @@ use utoipa::ToSchema;
 pub struct SessionListResponse {
     /// List of available session information objects
     sessions: Vec<Session>,
+    /// Paged form only (`limit` was sent): whether the listing holds more rows
+    /// after this page. Absent from a whole-list answer.
+    #[serde(rename = "has_more", skip_serializing_if = "Option::is_none")]
+    has_more: Option<bool>,
+    /// Paged form only: where the next page resumes. Pass it back as `cursor`,
+    /// unchanged, and do not parse it; it is the same token `GET
+    /// /sessions/sidebar` issues. Absent on the last page.
+    #[serde(rename = "next_cursor", skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
 }
 
 const DEFAULT_SIDEBAR_SESSION_LIMIT: u32 = 10;
@@ -183,6 +192,14 @@ pub struct ListSessionsQuery {
     /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
     #[serde(default)]
     pub include_subagents: bool,
+    /// Rows per page. Absent: the whole listing in one answer, as before.
+    /// Present (clamped to 1..=2000): one keyset page, so a reader that paints
+    /// the newest chats first does not wait for every row on the machine.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// The previous page's `next_cursor`, passed back unchanged. Needs `limit`.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 fn default_sidebar_session_limit() -> u32 {
@@ -388,13 +405,16 @@ fn is_valid_session_id(id: &str) -> bool {
     get,
     path = "/sessions",
     params(
-        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
+        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false"),
+        ("limit" = Option<u32>, Query, description = "Rows per page, clamped to 1..=2000. Omit for the whole listing in one answer; send it to read one keyset page, newest chats first"),
+        ("cursor" = Option<String>, Query, description = "The previous page's `next_cursor`, passed back unchanged. Needs `limit`; an unrecognised value is answered 400")
     ),
     responses(
         (status = 200, description = "The sessions this caller could open. A private session is \
                                       omitted — never redacted — for a caller that carries neither \
                                       the user-action proof nor a private capability, exactly as \
                                       `GET /sessions/{session_id}` would refuse it", body = SessionListResponse),
+        (status = 400, description = "The `cursor` was not one this route issued, or came without a `limit`"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 500, description = "Internal server error")
     ),
@@ -408,6 +428,17 @@ async fn list_sessions(
     Query(query): Query<ListSessionsQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<SessionListResponse>, StatusCode> {
+    // V1-R3-2: History paints the newest chats from one small page. A page is the
+    // sidebar's keyset listing over the whole `Session`, filtered in SQL like it.
+    if let Some(limit) = query.limit {
+        return list_sessions_page(&state, &query, limit, &headers).await;
+    }
+    if query.cursor.is_some() {
+        // A cursor names the end of a page, and without a page size the answer
+        // would be the whole listing from the top: a client bug that looks like
+        // success. Refuse it.
+        return Err(StatusCode::BAD_REQUEST);
+    }
     // Issue #56, QA 2026-09-10 M1: this returned every row on the machine —
     // title, working directory, privacy reason — to a caller the singular read
     // refuses. It now returns the rows that read would admit, and nothing else.
@@ -429,7 +460,72 @@ async fn list_sessions(
         caller.lists_session(session.privacy_tier) && !excluded_crew.contains(&session.id)
     });
 
-    Ok(Json(SessionListResponse { sessions }))
+    Ok(Json(SessionListResponse {
+        sessions,
+        has_more: None,
+        next_cursor: None,
+    }))
+}
+
+/// Who a KEYSET listing is shown to: whether it holds public chats only, and the
+/// Crew chats it omits. Both are SQL predicates, never a retain over the rows
+/// (see [`SessionStorage::list_sessions_page`]'s reason), and ONE function so
+/// `GET /sessions?limit=` and `GET /sessions/sidebar` cannot admit different
+/// chats to the same caller.
+async fn keyset_listing_scope(
+    headers: &axum::http::HeaderMap,
+) -> Result<(bool, Vec<String>), StatusCode> {
+    let caller = crate::routes::session_reach::http_caller(headers).await;
+    let public_only = !caller.lists_session(SessionClassification::Private);
+    let excluded = caller
+        .excluded_crew_sessions()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .collect();
+    Ok((public_only, excluded))
+}
+
+/// `GET /sessions?limit=`: one keyset page of the full listing. The rows, their
+/// order and their counts are what the whole answer holds at that place; what
+/// differs is that the caller reads the first page now and the rest when it needs
+/// them. The cursor is the sidebar's, because the key is the same one.
+async fn list_sessions_page(
+    state: &Arc<AppState>,
+    query: &ListSessionsQuery,
+    limit: u32,
+    headers: &axum::http::HeaderMap,
+) -> Result<Json<SessionListResponse>, StatusCode> {
+    let limit = limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
+    let after = match query.cursor.as_deref() {
+        Some(encoded) => Some(decode_sidebar_cursor(encoded).ok_or(StatusCode::BAD_REQUEST)?),
+        None => None,
+    };
+    let (public_only, excluded) = keyset_listing_scope(headers).await?;
+
+    let mut rows = state
+        .session_manager()
+        .list_sessions_page_excluding(
+            listed_session_types(query.include_subagents),
+            limit.saturating_add(1),
+            after.as_ref(),
+            public_only,
+            &excluded,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = has_more
+        .then(|| rows.last().map(|row| encode_sidebar_cursor(&row.cursor)))
+        .flatten();
+
+    Ok(Json(SessionListResponse {
+        sessions: rows.into_iter().map(|row| row.session).collect(),
+        has_more: Some(has_more),
+        next_cursor,
+    }))
 }
 
 #[utoipa::path(
@@ -463,7 +559,6 @@ async fn list_sidebar_sessions(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<SidebarSessionListResponse>, StatusCode> {
     let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
-    let caller = crate::routes::session_reach::http_caller(&headers).await;
 
     // Issue #56, QA 2026-09-10 M1: a caller that may not open a private chat is
     // not shown one here either — the listing is the union of what the singular
@@ -490,13 +585,7 @@ async fn list_sidebar_sessions(
         },
         None => None,
     };
-    let public_only = !caller.lists_session(SessionClassification::Private);
-    let excluded: Vec<_> = caller
-        .excluded_crew_sessions()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .into_iter()
-        .collect();
+    let (public_only, excluded) = keyset_listing_scope(&headers).await?;
 
     let mut rows = state
         .session_manager()
@@ -2530,6 +2619,106 @@ pub(crate) mod diverge_tests {
                 );
             }
         }
+    }
+
+    /// V1-R3-2: `GET /sessions?limit=` is the whole listing a page at a time.
+    /// Walking it with its own cursor yields the rows `GET /sessions` holds, in
+    /// the same order, each once; the last page says so; and a whole-list answer
+    /// carries neither paging key, so every reader built before the page existed
+    /// reads the bytes it always did. Read-only against the real database, so the
+    /// comparison holds for any content, including none.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_page_walk_of_sessions_is_the_whole_listing() {
+        let state = AppState::new().await.unwrap();
+        let (status, whole) = get_sessions(state.clone(), "").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            whole.get("has_more").is_none() && whole.get("next_cursor").is_none(),
+            "a whole-list answer grew paging keys"
+        );
+        let ids = |body: &serde_json::Value| -> Vec<String> {
+            body["sessions"]
+                .as_array()
+                .expect("sessions array")
+                .iter()
+                .map(|session| session["id"].as_str().expect("id").to_string())
+                .collect()
+        };
+        let whole_ids = ids(&whole);
+
+        for limit in [1_usize, 7, 500] {
+            // Never more than a few dozen requests, whatever the real store holds.
+            if whole_ids.len() / limit > 60 {
+                continue;
+            }
+            let mut walked = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let query = match &cursor {
+                    Some(cursor) => format!("?limit={limit}&cursor={cursor}"),
+                    None => format!("?limit={limit}"),
+                };
+                let (status, page) = get_sessions(state.clone(), &query).await;
+                assert_eq!(status, axum::http::StatusCode::OK, "{query}");
+                let rows = ids(&page);
+                assert!(rows.len() <= limit, "{query} carried {} rows", rows.len());
+                walked.extend(rows);
+                let has_more = page["has_more"].as_bool().expect("has_more on a page");
+                assert_eq!(
+                    page.get("next_cursor").is_some(),
+                    has_more,
+                    "{query}: next_cursor and has_more disagree"
+                );
+                match page["next_cursor"].as_str() {
+                    Some(next) => cursor = Some(next.to_string()),
+                    None => break,
+                }
+            }
+            assert_eq!(walked, whole_ids, "limit={limit}");
+        }
+    }
+
+    /// A page is still the full row (what History draws), the page size clamps at
+    /// the sidebar's bound, and a cursor this route did not issue, or one that
+    /// arrives without the `limit` that makes it mean something, is a 400.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_sessions_page_has_bounds_and_refuses_a_stray_cursor() {
+        let state = AppState::new().await.unwrap();
+
+        let (status, body) = get_sessions(
+            state.clone(),
+            &format!("?limit={}", MAX_SIDEBAR_SESSION_LIMIT + 500),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let rows = body["sessions"].as_array().expect("sessions array");
+        assert!(rows.len() <= MAX_SIDEBAR_SESSION_LIMIT as usize);
+        if body["has_more"] == serde_json::Value::Bool(true) {
+            assert_eq!(rows.len(), MAX_SIDEBAR_SESSION_LIMIT as usize);
+        }
+
+        let (_, page) = get_sessions(state.clone(), "?limit=1").await;
+        if let Some(row) = page["sessions"].as_array().and_then(|rows| rows.first()) {
+            for field in ["id", "working_dir", "updated_at", "message_count"] {
+                assert!(row.get(field).is_some(), "a page row lost {field}: {row}");
+            }
+        }
+
+        for query in [
+            "?limit=1&cursor=not-a-cursor",
+            "?cursor=Zm9v",
+            "?limit=0&cursor=%00",
+        ] {
+            let (status, _) = get_sessions(state.clone(), query).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{query}");
+        }
+
+        // `limit=0` is clamped to one row, not refused: the same rule as the sidebar.
+        let (status, body) = get_sessions(state, "?limit=0").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body["sessions"].as_array().expect("sessions").len() <= 1);
     }
 
     async fn get_usage(

@@ -4777,6 +4777,17 @@ export type SessionInsights = {
 
 export type SessionListResponse = {
     /**
+     * Paged form only (`limit` was sent): whether the listing holds more rows
+     * after this page. Absent from a whole-list answer.
+     */
+    has_more?: boolean | null;
+    /**
+     * Paged form only: where the next page resumes. Pass it back as `cursor`,
+     * unchanged, and do not parse it; it is the same token `GET
+     * /sessions/sidebar` issues. Absent on the last page.
+     */
+    next_cursor?: string | null;
+    /**
      * List of available session information objects
      */
     sessions: Array<Session>;
@@ -10754,11 +10765,23 @@ export type ListSessionsData = {
          * Include sub_agent sessions (grouped under parent_session_id); default false
          */
         include_subagents?: boolean | null;
+        /**
+         * Rows per page, clamped to 1..=2000. Omit for the whole listing in one answer; send it to read one keyset page, newest chats first
+         */
+        limit?: number | null;
+        /**
+         * The previous page's `next_cursor`, passed back unchanged. Needs `limit`; an unrecognised value is answered 400
+         */
+        cursor?: string | null;
     };
     url: '/sessions';
 };
 
 export type ListSessionsErrors = {
+    /**
+     * The `cursor` was not one this route issued, or came without a `limit`
+     */
+    400: unknown;
     /**
      * Unauthorized - Invalid or missing API key
      */

@@ -6037,6 +6037,108 @@ mod bypass_tests {
             .collect()
     }
 
+    /// One page of `GET /sessions?limit=`: the full listing a page at a time
+    /// (V1-R3-2, History's first paint). Same shape of helper as [`sidebar_page`].
+    async fn full_listing_page(
+        state: &Arc<AppState>,
+        limit: u32,
+        cursor: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let uri = match cursor {
+            Some(cursor) => format!("/sessions?limit={limit}&cursor={cursor}"),
+            None => format!("/sessions?limit={limit}"),
+        };
+        let (status, body) = call(state.clone(), "GET", &uri, None, headers).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
+    }
+
+    /// **The paged full listing admits a caller exactly what the sidebar admits.**
+    /// `GET /sessions?limit=` hands History the same rows `GET /sessions/sidebar`
+    /// hands the sidebar, with more columns, and it must not be a second place
+    /// where a private chat can leave the database for a caller that may not open
+    /// it, or a second continuation value that counts what was hidden.
+    ///
+    /// Walked in lockstep, page for page, for the caller that holds only the
+    /// secret and for the person at the keyboard: the two routes must return the
+    /// same ids and the same `next_cursor` at every step. Three private chats are
+    /// seeded above a public one, so the secret-only walk differs from the
+    /// person's, and the equality is a statement about a filter doing work.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_paged_full_listing_admits_a_caller_what_the_sidebar_admits() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+
+        let public = seed_chat(
+            &state,
+            "paged listing public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let mut hidden = Vec::new();
+        for i in 0..3 {
+            hidden.push(
+                seed_private_chat(&state, &format!("paged listing hidden {i} (test fixture)"))
+                    .await,
+            );
+        }
+        let seeded_public = public.id().to_string();
+        let seeded_hidden: Vec<&str> = hidden.iter().map(SeededChat::id).collect();
+
+        let secret_only: &[(&str, &str)] = &[];
+        for (label, headers, sees_private) in [
+            ("secret only", secret_only, false),
+            ("the person", &[PROOF][..], true),
+        ] {
+            let mut cursor: Option<String> = None;
+            let mut reached_public = false;
+            let mut reached_hidden = 0;
+            let mut finished = false;
+            for step in 0..60 {
+                let sidebar = sidebar_page(&state, 100, cursor.as_deref(), headers).await;
+                let full = full_listing_page(&state, 100, cursor.as_deref(), headers).await;
+                assert_eq!(
+                    page_ids(&full),
+                    page_ids(&sidebar),
+                    "{label}, page {step}: the two listings admitted different chats"
+                );
+                assert_eq!(
+                    full["has_more"], sidebar["has_more"],
+                    "{label}, page {step}: has_more differs"
+                );
+                assert_eq!(
+                    full["next_cursor"], sidebar["next_cursor"],
+                    "{label}, page {step}: the continuation values differ"
+                );
+                let ids = page_ids(&full);
+                reached_public |= ids.contains(&seeded_public);
+                reached_hidden += seeded_hidden
+                    .iter()
+                    .filter(|id| ids.iter().any(|seen| seen == **id))
+                    .count();
+                match full["next_cursor"].as_str() {
+                    Some(next) => cursor = Some(next.to_string()),
+                    None => {
+                        finished = true;
+                        break;
+                    }
+                }
+            }
+            // A store longer than the walk is not a failure of the equality above.
+            if finished {
+                assert!(reached_public, "{label}: the public chat was not listed");
+                assert_eq!(
+                    reached_hidden,
+                    if sees_private { seeded_hidden.len() } else { 0 },
+                    "{label}: the private chats were listed wrongly"
+                );
+            }
+        }
+    }
+
     /// A private chat with no message at all — `/workflows/create` answers such
     /// a chat before it builds an agent.
     async fn seed_private_chat_without_messages(state: &Arc<AppState>, label: &str) -> SeededChat {

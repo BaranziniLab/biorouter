@@ -768,6 +768,16 @@ pub struct SidebarRow {
     pub cursor: SidebarCursor,
 }
 
+/// One row of a page of the FULL listing (`GET /sessions?limit=`, which History
+/// reads): the whole [`Session`] the caller is shown, and the [`SidebarCursor`] a
+/// later page resumes after it. The same key as [`SidebarRow`], so one cursor
+/// codec serves both listings.
+#[derive(Debug, Clone)]
+pub struct SessionPageRow {
+    pub session: Session,
+    pub cursor: SidebarCursor,
+}
+
 /// One turn's token usage, applied additively and atomically in SQL.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenDelta {
@@ -2368,6 +2378,25 @@ impl SessionManager {
         self.storage.list_sessions_by_types(types).await
     }
 
+    /// One keyset page of the FULL listing, for `GET /sessions?limit=`: the same
+    /// rows, order and counts as [`Self::list_sessions_by_types`], resumed from a
+    /// [`SidebarCursor`] and filtered in SQL exactly as
+    /// [`Self::list_session_summaries_page_excluding`] filters its page.
+    /// See [`SessionStorage::list_sessions_page`] for why the filter has to be
+    /// SQL and not a retain over the rows.
+    pub async fn list_sessions_page_excluding(
+        &self,
+        types: &[SessionType],
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SessionPageRow>> {
+        self.storage
+            .list_sessions_page(types, limit, after, public_only, excluded_ids)
+            .await
+    }
+
     /// [`Self::list_sessions_by_types`], including sessions that have recorded
     /// no message yet.
     ///
@@ -3603,6 +3632,23 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SidebarRow {
                 id: summary.id.clone(),
             },
             summary,
+        })
+    }
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionPageRow {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let session = Session::from_row(row)?;
+        Ok(SessionPageRow {
+            // As for [`SidebarRow`]: `CAST(s.updated_at AS TEXT)`, the bytes the
+            // ordering compares, not a value chrono has been through.
+            cursor: SidebarCursor {
+                updated_at: row.try_get("cursor_updated_at")?,
+                id: session.id.clone(),
+            },
+            session,
         })
     }
 }
@@ -7544,6 +7590,19 @@ impl SessionStorage {
     /// tied group came back in id DESC order, so History and the sidebar drew
     /// the same chats in two orders under "Last activity" (vision V3-R2-3).
     fn full_listing_sql(types_len: usize, include_empty: bool) -> String {
+        Self::full_listing_page_sql(types_len, include_empty, "", "")
+    }
+
+    /// [`Self::full_listing_sql`] with the keyset form's filters and `LIMIT`
+    /// (`filters` from [`Self::page_filters`], `page` the `LIMIT ?` tail), and the
+    /// cursor's own column. The projection is the same either way, so a page's
+    /// rows are exactly the rows the whole listing would hold at that place.
+    fn full_listing_page_sql(
+        types_len: usize,
+        include_empty: bool,
+        filters: &str,
+        page: &str,
+    ) -> String {
         let placeholders = vec!["?"; types_len].join(", ");
         // History hides message-less chats so "Untitled chat" placeholders never
         // appear; `biorouter session list --subagents` asks for them, because a
@@ -7561,13 +7620,90 @@ impl SessionStorage {
                    s.schedule_id, s.workflow_json, s.user_workflow_values_json,
                    s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
                    s.privacy_tier, s.privacy_reason,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
             FROM sessions s
             WHERE +s.session_type IN ({placeholders})
             {non_empty}
+            {filters}
             ORDER BY s.updated_at DESC, s.id ASC
+            {page}
             "#
         )
+    }
+
+    /// The predicates every keyset listing shares, so there is ONE spelling of
+    /// who may be shown a row and of where a page resumes.
+    ///
+    /// * `public_only` is `= 'public'`, which fails **closed**: a row whose
+    ///   column is absent, `NULL` or unrecognised is withheld rather than shown.
+    /// * the crew exclusion is a bound JSON array, `NOT IN (SELECT value FROM
+    ///   json_each(?))`, so any number of ids is one bind.
+    /// * the keyset mirrors `ORDER BY s.updated_at DESC, s.id ASC` exactly:
+    ///   strictly older, or the same instant with a larger id, both sides
+    ///   `CAST(... AS TEXT)` so the boundary is evaluated on the bytes the cursor
+    ///   carries.
+    ///
+    /// Binds, in text order: the exclusion array, then (with `keyset`) the cursor's
+    /// `updated_at` twice and its id.
+    fn page_filters(public_only: bool, keyset: bool) -> String {
+        let tier_filter = if public_only {
+            "AND s.privacy_tier = 'public'"
+        } else {
+            ""
+        };
+        let keyset = if keyset {
+            "AND (CAST(s.updated_at AS TEXT) < ? \
+              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
+        } else {
+            ""
+        };
+        format!(
+            "{tier_filter}\n            AND s.id NOT IN (SELECT value FROM json_each(?))\n            {keyset}"
+        )
+    }
+
+    /// One keyset page of the full listing, for `GET /sessions?limit=` (History's
+    /// first paint). Same rows, order and message counts as
+    /// [`Self::list_sessions_by_types_maybe_empty`] with `include_empty = false`.
+    ///
+    /// ⚠ **The tier and Crew filters are SQL, for the reason
+    /// [`Self::list_session_summaries_page`] gives (adversarial security review
+    /// 2026-09-12, HIGH).** A page that fetched `LIMIT n` unfiltered rows and
+    /// dropped the ones its caller may not see in Rust would hand back a short
+    /// page and a continuation that counts the rows it hid. Here the rows a
+    /// caller may not see never leave the database, and a page resumes from a
+    /// fact the caller was just handed.
+    async fn list_sessions_page(
+        &self,
+        types: &[SessionType],
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SessionPageRow>> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filters = Self::page_filters(public_only, after.is_some());
+        let query = Self::full_listing_page_sql(types.len(), false, &filters, "LIMIT ?");
+        let mut q = sqlx::query_as::<_, SessionPageRow>(&query);
+        for t in types {
+            q = q.bind(t.to_string());
+        }
+        q = q.bind(serde_json::to_string(excluded_ids)?);
+        if let Some(cursor) = after {
+            q = q
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.id.clone());
+        }
+        let pool = self.pool().await?;
+        q.bind(i64::from(limit))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
     }
 
     /// The SQL behind both summary listings: one projection, one set of filters,
@@ -7690,20 +7826,7 @@ impl SessionStorage {
         public_only: bool,
         excluded_ids: &[String],
     ) -> Result<Vec<SidebarRow>> {
-        let tier_filter = if public_only {
-            "AND s.privacy_tier = 'public'"
-        } else {
-            ""
-        };
-        let keyset = if after.is_some() {
-            "AND (CAST(s.updated_at AS TEXT) < ? \
-              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
-        } else {
-            ""
-        };
-        let filters = format!(
-            "{tier_filter}\n            AND s.id NOT IN (SELECT value FROM json_each(?))\n            {keyset}"
-        );
+        let filters = Self::page_filters(public_only, after.is_some());
         let query =
             Self::summary_listing_sql(include_subagents, include_empty, &filters, "LIMIT ?");
 
@@ -13908,6 +14031,200 @@ mod tests {
             with_empty, expected,
             "the empty chat is listed and counts 0"
         );
+    }
+
+    /// V1-R3-2, History's first paint: the keyset form of the full listing keeps
+    /// the full listing's plan, filters and all. A page that sorted every listed
+    /// chat before its `LIMIT` would cost what the whole list costs, which is the
+    /// 0.7 s the page exists to avoid. See [`SessionStorage::list_sessions_page`].
+    #[tokio::test]
+    async fn a_full_listing_page_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        seed_session_with_messages(&sm, 1).await;
+        let pool = sm.storage.pool().await.unwrap();
+
+        for types_len in [1, 2, 3] {
+            for (public_only, keyset) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let filters = SessionStorage::page_filters(public_only, keyset);
+                let sql =
+                    SessionStorage::full_listing_page_sql(types_len, false, &filters, "LIMIT ?");
+                let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                let mut query = sqlx::query(&explain);
+                for t in ["user", "scheduled", "sub_agent"].iter().take(types_len) {
+                    query = query.bind(*t);
+                }
+                query = query.bind("[]");
+                if keyset {
+                    query = query
+                        .bind("2026-01-01 00:00:00")
+                        .bind("2026-01-01 00:00:00")
+                        .bind("x");
+                }
+                let plan: Vec<String> = query
+                    .bind(10_i64)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                    .collect();
+                let shape = format!(
+                    "types={types_len} public_only={public_only} keyset={keyset}: {plan:?}"
+                );
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("idx_sessions_updated")),
+                    "the page no longer walks idx_sessions_updated ({shape})"
+                );
+                assert!(
+                    !plan
+                        .iter()
+                        .any(|step| step.contains("GROUP BY")
+                            || step == "USE TEMP B-TREE FOR ORDER BY"),
+                    "the page groups or sorts every row before its LIMIT ({shape})"
+                );
+            }
+        }
+    }
+
+    /// V1-R3-2: walking the full listing a page at a time yields EXACTLY the rows
+    /// the whole listing holds, once each, in its order, with the same counts,
+    /// whatever the page size, across a tied `updated_at` group, and for a caller
+    /// who is shown public chats only and one whose Crew chats are excluded.
+    ///
+    /// Two properties are the security half. A hidden row never shortens a page:
+    /// if it did, `has_more` and the page length would count what was hidden
+    /// (the 2026-09-12 review). And the walk agrees, id for id, with the sidebar's
+    /// own keyset walk for the same caller, so the two listings can never admit
+    /// different chats.
+    #[tokio::test]
+    async fn a_full_listing_page_walk_is_the_whole_listing_once_for_every_caller() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut ids = Vec::new();
+        for index in 0..9_i64 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("chat {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            for turn in 0..=(index % 3) {
+                sm.add_message(&session.id, &umsg(10 + turn, "hello"))
+                    .await
+                    .unwrap();
+            }
+            ids.push(session.id);
+        }
+        // Chats 1, 4 and 7 are private; 0 to 5 share one second, the rest are
+        // newer, so a page boundary falls inside a tied group.
+        let pool = sm.storage().pool().await.unwrap();
+        for (index, id) in ids.iter().enumerate() {
+            if index % 3 == 1 {
+                sm.update(id)
+                    .raise_privacy(SessionClassification::Private, "turn:test")
+                    .apply()
+                    .await
+                    .unwrap();
+            }
+            let at = if index < 6 {
+                "2026-09-05 17:49:17"
+            } else {
+                "2026-09-06 08:00:00"
+            };
+            sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+                .bind(at)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let crew_id = ids[2].clone();
+        let types = [SessionType::User, SessionType::Scheduled];
+
+        let callers: [(&str, bool, Vec<String>); 4] = [
+            ("proven", false, vec![]),
+            ("public only", true, vec![]),
+            ("crew excluded", false, vec![crew_id.clone()]),
+            ("public only, crew excluded", true, vec![crew_id.clone()]),
+        ];
+        for (label, public_only, excluded) in callers {
+            let whole: Vec<(String, usize)> = sm
+                .list_sessions_by_types(&types)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|s| {
+                    !excluded.contains(&s.id)
+                        && (!public_only || s.privacy_tier == SessionClassification::Public)
+                })
+                .map(|s| (s.id, s.message_count))
+                .collect();
+            assert!(!whole.is_empty(), "{label}: the fixture lists nothing");
+
+            // Bounded, so a cursor that repeats its own row fails the walk below
+            // instead of hanging it.
+            let mut sidebar = Vec::new();
+            let mut cursor: Option<SidebarCursor> = None;
+            for _ in 0..40 {
+                let page = sm
+                    .list_session_summaries_page_excluding(
+                        2,
+                        cursor.as_ref(),
+                        false,
+                        false,
+                        public_only,
+                        &excluded,
+                    )
+                    .await
+                    .unwrap();
+                let Some(last) = page.last() else { break };
+                cursor = Some(last.cursor.clone());
+                sidebar.extend(page.into_iter().map(|row| row.summary.id));
+            }
+            assert_eq!(
+                sidebar,
+                whole.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+                "{label}: the sidebar's walk is not the listing"
+            );
+
+            for limit in [1_u32, 2, 3, 4, 100] {
+                let mut walked: Vec<(String, usize)> = Vec::new();
+                let mut cursor: Option<SidebarCursor> = None;
+                for _ in 0..40 {
+                    let page = sm
+                        .list_sessions_page_excluding(
+                            &types,
+                            limit,
+                            cursor.as_ref(),
+                            public_only,
+                            &excluded,
+                        )
+                        .await
+                        .unwrap();
+                    let Some(last) = page.last() else { break };
+                    let remaining = whole.len() - walked.len();
+                    assert_eq!(
+                        page.len(),
+                        (limit as usize).min(remaining),
+                        "{label} limit={limit}: a page's length is not the number of \
+                         rows due, so it counts rows that were hidden or skipped"
+                    );
+                    cursor = Some(last.cursor.clone());
+                    walked.extend(
+                        page.into_iter()
+                            .map(|row| (row.session.id, row.session.message_count)),
+                    );
+                }
+                assert_eq!(walked, whole, "{label} limit={limit}");
+            }
+        }
     }
 
     #[test]
