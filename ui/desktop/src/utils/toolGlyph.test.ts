@@ -229,6 +229,32 @@ describe('the ladder', () => {
     expect(extensionGlyphFor('computercontroller').kind).toBe('copilot');
   });
 
+  /**
+   * V2-R5-3. The Developer server used to carry `screen_capture` and a window
+   * list; both left it when Biorouter Copilot became the one desktop surface.
+   * A chat saved before that names them under `developer`, and the toolbox
+   * fallback drew both as code, beside "Ran computer control" with the Copilot
+   * glyph.
+   */
+  it('draws a legacy developer screen capture or window list as desktop control', () => {
+    for (const name of ['developer__screen_capture', 'developer__list_windows']) {
+      expect(toolGlyphKind(name), name).toBe('copilot');
+      expect(toolGlyphKind(`mcp__biorouter__${name}`), name).toBe('copilot');
+      expect(toolGlyphFor(name).Icon, name).toBe(TOOL_GLYPHS.copilot);
+      // Arguments do not move it: a capture of a window or of a display is one glyph.
+      expect(toolGlyphKind(name, { window_title: 'Terminal' }), name).toBe('copilot');
+    }
+    // The successor draws the same figure, so a new and an old row agree.
+    expect(toolGlyphKind('computercontroller__screen_capture')).toBe('copilot');
+    // Only those two names moved: the rest of the toolbox keeps its glyphs,
+    // and an external extension's same-named tool is still the Puzzle.
+    expect(toolGlyphKind('developer__shell')).toBe('shell');
+    expect(toolGlyphKind('developer__text_editor', { command: 'view' })).toBe('read');
+    expect(toolGlyphKind('developer__brand_new_tool')).toBe('code');
+    expect(toolGlyphKind('acme__screen_capture')).toBe('extension');
+    expect(toolGlyphKind('screen_capture')).toBe('unknown');
+  });
+
   it('falls back to the extension glyph, then to the wrench', () => {
     expect(toolGlyphKind('acme__do_something')).toBe('extension');
     expect(toolGlyphKind('mcp__github__create_issue')).toBe('extension');

@@ -254,6 +254,13 @@ const EXACT: Record<string, ToolGlyphKind> = {
   computercontroller__docx_tool: 'document',
   computercontroller__xlsx_tool: 'spreadsheet',
   computercontroller__automation_script: 'shell',
+  // History, second block. The Developer server used to carry screen capture
+  // and a window list; both left it when Biorouter Copilot became the only
+  // desktop surface, but a chat saved before that still names them under
+  // `developer`, and the Developer toolbox fallback would draw both as code
+  // (V2-R5-3: "Ran screen capture" beside "Ran computer control").
+  developer__screen_capture: 'copilot',
+  developer__list_windows: 'copilot',
 };
 
 /** 3. Built-in families that ARE one Biorouter concept: every tool draws it. */
