@@ -198,10 +198,16 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   // and the fallback both resolved to it), so the 0.75 rung was a no-op.
   const barTone = overThreshold ? 'danger' : ratio <= 0.5 ? 'success' : 'warning';
   return (
-    <div className="flex items-center gap-3 rounded-element px-2 py-1.5">
+    // The label and the Compact button sit on the BAR's line, not centred on the
+    // bar and its caption together: centred, "Context" floated between the two
+    // and belonged to neither. The bar's centre is 14px down its column (the
+    // threshold triangle's 10px, then half the 8px track), so the label's 16px
+    // line takes 6px above it and the 28px button none. 16px in from the popover
+    // edge (`p-1` + `px-3`), the text edge every composer menu and list shares.
+    <div className="flex items-start gap-3 px-3 py-1.5">
       {/* ONE metadata size in this popover: every figure here is a reading off
           a gauge, so all of it is `supporting` in the muted ink. */}
-      <span className="flex-shrink-0 text-supporting text-text-muted">
+      <span className="mt-1.5 flex-shrink-0 text-supporting text-text-muted">
         {FOOTER_COPY.contextLabel}
       </span>
       <div className="flex-1 min-w-0 flex flex-col gap-1">

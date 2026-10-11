@@ -111,7 +111,13 @@
   flex-direction: column;
 }
 
-/* The scope line under the search: label and InfoTip left, bulk action right. */
+/*
+ * The scope line under the search: label and InfoTip left, bulk action right.
+ * The label starts 16px in, on the rows' text edge (the list's 4px plus a row's
+ * 12px), which is the menu recipe's edge too; at 12px it sat 4px out of line
+ * with every name under it. The bulk action's text ends 12px in, on the
+ * switches' trailing edge (4px here plus the button's own 8px).
+ */
 .br-picker-panel__bar {
   display: flex;
   flex: none;
@@ -119,7 +125,7 @@
   justify-content: space-between;
   gap: 8px;
   min-height: var(--control-sm);
-  padding: 2px 4px 2px 12px;
+  padding: 2px 4px 2px 16px;
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);

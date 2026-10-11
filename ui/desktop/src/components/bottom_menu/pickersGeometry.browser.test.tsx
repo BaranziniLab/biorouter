@@ -97,8 +97,20 @@ const BASE_FOCUS = `@layer base {
   }
 }`;
 
-/** The one Tailwind utility the dimming rule has to beat, in its own cascade layer. */
-const UTILITIES = `@layer utilities { .opacity-50 { opacity: 0.5; } }`;
+/**
+ * The Tailwind utilities these measurements depend on, in their own cascade layer:
+ * the one the dimming rule has to beat, and `CommandList`'s `p-1`, which puts the
+ * rows' text 16px in, and the bulk action's `px-2`. Without them the rows sat 12px
+ * in here and 16px in the real build, and a scope line 4px out of line with them
+ * passed as aligned.
+ */
+const UTILITIES = `@layer utilities {
+  .opacity-50 { opacity: 0.5; }
+  .p-1 { padding: 4px; }
+}
+/* Unlayered, because this file's preflight is: its \`button { padding: 0 }\` would beat a
+   layered utility, where the real build layers both (base under utilities). */
+.px-2 { padding-inline: 8px; }`;
 
 const LONG_MODEL = 'gpt-5.6-sol-with-a-name-long-enough-to-need-an-ellipsis-on-any-composer';
 
@@ -332,7 +344,7 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
     }
   });
 
-  it('opens a 320px popover whose scope line is 12px with the bulk action on the right', async (ctx) => {
+  it('opens a 320px popover whose scope line is 12px, on the rows’ text edges', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
@@ -340,21 +352,35 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
         const popover = document.getElementById('popover')!.getBoundingClientRect();
         const bar = document.querySelector('.br-picker-panel__bar')!;
         const scope = bar.querySelector('.br-picker-panel__scope')!.getBoundingClientRect();
-        const bulk = bar.querySelector('button:last-child')!.getBoundingClientRect();
+        const bulk = bar.querySelector(':scope > button')!;
+        const bulkText = document.createRange();
+        bulkText.selectNodeContents(bulk);
+        const rowName = document.querySelector('[data-testid="row-on"] .br-picker-row__name')!;
+        const rowSwitch = document
+          .querySelector('[data-testid="row-on"] .br-picker-row__switch')!
+          .getBoundingClientRect();
         const b = bar.getBoundingClientRect();
         return {
           width: popover.width,
           barHeight: b.height,
           size: getComputedStyle(bar).fontSize,
-          scopeLeft: scope.left - b.left,
-          bulkRight: b.right - bulk.right,
+          scopeLeft: scope.left - popover.left,
+          nameLeft: rowName.getBoundingClientRect().left - popover.left,
+          bulkTextRight: popover.right - bulkText.getBoundingClientRect().right,
+          switchRight: popover.right - rowSwitch.right,
         };
       });
       near(m.width, 320, 'popover width');
       expect(m.barHeight).toBeGreaterThanOrEqual(28);
       expect(m.size).toBe('12px');
-      near(m.scopeLeft, 12, 'scope word on the rows’ text edge');
-      expect(m.bulkRight).toBeLessThanOrEqual(8);
+      // One left edge for the words: the scope label starts where every row's
+      // name does, 16px in (the menu recipe's edge), not 4px short of it.
+      near(m.nameLeft, 16, 'row name 16px in');
+      near(m.scopeLeft, m.nameLeft, 'scope word on the rows’ text edge');
+      // One right edge for the trailing controls: the bulk action's words end
+      // where the switches do, 12px in.
+      near(m.switchRight, 12, 'switch 12px from the trailing edge');
+      near(m.bulkTextRight, m.switchRight, 'bulk action on the switches’ trailing edge');
     } finally {
       await tab.close();
     }
