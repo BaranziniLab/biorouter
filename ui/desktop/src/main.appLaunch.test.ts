@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 
 /**
  * How the main process opens a built app in the browser and in the artifact panel (W2-HRD-1).
@@ -12,6 +13,26 @@ import { join } from 'node:path';
  * pinned here is that the handlers really do delegate to them.
  */
 const main = readFileSync(join(__dirname, 'main.ts'), 'utf8');
+const mainSyntax = ts.createSourceFile('main.ts', main, ts.ScriptTarget.Latest, true);
+
+function windowDaemonAttachment(): ts.CallExpression {
+  const attachments: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'windowDaemons' &&
+      node.expression.name.text === 'set'
+    ) {
+      attachments.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(mainSyntax);
+  expect(attachments).toHaveLength(1);
+  return attachments[0];
+}
 
 /** The body of one `ipcMain.handle` registration, up to the next `ipcMain.` call. */
 function ipcHandlerSource(channel: string): string {
@@ -60,9 +81,33 @@ describe('opening an app in the browser', () => {
     }
     expect(opener).toContain('windowDaemons.get(window.id)');
     expect(opener).toContain('secretKey: daemon.secretKey');
-    expect(main).toContain(
-      'windowDaemons.set(mainWindow.id, { baseUrl, secretKey: serverSecret, result: biorouterdResult });'
-    );
+    const attachment = windowDaemonAttachment();
+    const owner = attachment.arguments[0];
+    expect(ts.isPropertyAccessExpression(owner)).toBe(true);
+    if (!ts.isPropertyAccessExpression(owner)) throw new Error('Missing attachment window id');
+    expect(ts.isIdentifier(owner.expression) && owner.expression.text).toBe('mainWindow');
+    expect(owner.name.text).toBe('id');
+
+    const options = attachment.arguments[1];
+    expect(ts.isObjectLiteralExpression(options)).toBe(true);
+    if (!ts.isObjectLiteralExpression(options)) throw new Error('Missing captured daemon keys');
+    const fields = new Map<string, ts.Expression>();
+    for (const property of options.properties) {
+      if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+        fields.set(property.name.text, property.initializer);
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        fields.set(property.name.text, property.name);
+      } else {
+        throw new Error('Attachment fields must be explicit, without spread overrides');
+      }
+    }
+    for (const [field, captured] of [
+      ['secretKey', 'serverSecret'],
+      ['userActionKey', 'userActionKey'],
+    ]) {
+      const value = fields.get(field);
+      expect(value && ts.isIdentifier(value) && value.text).toBe(captured);
+    }
   });
 
   it('sends the browser to the daemon Biorouter runs, and opens the page in a web browser', () => {
