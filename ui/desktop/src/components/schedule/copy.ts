@@ -50,7 +50,8 @@ export const scheduleCopy = {
   runNow: 'Run now',
   inspectRun: 'Inspect run',
   stopRun: 'Stop run',
-  delete: 'Delete',
+  // A menu item that opens a confirmation takes the ellipsis, as Skills' Delete… does (V3-21).
+  delete: 'Delete…',
   moreActionsNamed: (name: string) => `More actions for ${name}`,
 
   deleteTitle: (name: string) => `Delete ${name}?`,

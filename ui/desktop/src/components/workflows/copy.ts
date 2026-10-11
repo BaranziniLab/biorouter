@@ -32,7 +32,8 @@ export const workflowsCopy = {
   copyLink: 'Copy link',
   copyYaml: 'Copy YAML',
   exportToFile: 'Export to file…',
-  delete: 'Delete',
+  // A menu item that opens a confirmation takes the ellipsis, as Skills' Delete… does (V3-21).
+  delete: 'Delete…',
   scheduleBadgeLabel: 'Schedule',
   modified: (when: string) => `Modified ${when}`,
 
@@ -59,7 +60,9 @@ export const workflowsCopy = {
     title: 'Slash command',
     inputLabel: 'Command',
     placeholder: 'command-name',
-    // The one live helper line under the field; an error replaces it.
+    // The one live helper line under the field, always present: it says what to do before
+    // anything is typed and then follows the name; an error replaces it.
+    helperEmpty: 'Type your command in any chat to start this workflow',
     helper: (cmd: string) => `Type /${cmd} in any chat`,
     remove: 'Remove',
     save: 'Save',
@@ -86,8 +89,8 @@ export const workflowsCopy = {
 
   importDialog: {
     title: 'Import workflow',
-    drop: 'Drop a YAML or JSON file here',
-    browse: 'or click to browse',
+    // One line, like Knowledge's and Add skill's drop zones; the zone is also a button.
+    drop: 'Drop a .yaml or .json file here',
     importing: 'Importing…',
     wrongType: 'Choose a YAML or JSON workflow file.',
     imported: (title: string) => `Imported ${title}`,
@@ -111,6 +114,7 @@ export const workflowFormCopy = {
   saving: 'Saving…',
   creating: 'Creating…',
   saved: (title: string) => `Saved ${title}`,
+  created: (title: string) => `Created ${title}`,
   couldNotSave: 'Couldn’t save the workflow',
   couldNotCreate: 'Couldn’t create the workflow',
   invalid: 'Fill in the title, the description, and instructions or a prompt.',

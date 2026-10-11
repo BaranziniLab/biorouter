@@ -4,38 +4,39 @@
  * utility can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md).
  */
 
-/* The import drop zone: a dashed hairline well. A file held over it takes the accent edge and
-   the selected wash (the "this will act" state), an error takes the danger edge. Hover is
-   neutral, like every hover in the app. */
+/* The import drop zone: one filled field with a 32px plate over one label line, the recipe
+   Knowledge's and Add skill's drop zones draw (vision round 1, V3-08), on the fill ground and
+   with no resting outline (owner message 13, R-27). The 1px border is kept and transparent, so
+   forced colours draw the edge and no geometry moves between states. Hover steps to the strong
+   fill, like every filled control. A file held over it firms the edge and the ground (the "this
+   will act" state), an error takes the danger edge. */
 .br-workflow-dropzone {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 32px 16px;
-  border: 1px dashed var(--border-strong);
+  padding: 24px 16px;
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background: var(--background-muted);
+  background-color: var(--background-fill);
   cursor: pointer;
   user-select: none;
-  transition:
-    background-color var(--dur-fast-min) var(--ease-out),
-    border-color var(--dur-fast-min) var(--ease-out);
+  text-align: center;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
 }
 
-/* The hover wash layered over the well's ground, so the well keeps its own step. */
 .br-workflow-dropzone:hover {
-  background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+  background-color: var(--background-fill-strong);
 }
 
 .br-workflow-dropzone[data-state='dragging'] {
-  border-color: var(--border-accent);
-  background: var(--overlay-selected);
+  background-color: var(--background-fill-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .br-workflow-dropzone[data-state='error'] {
-  border-color: var(--border-danger);
+  box-shadow: inset 0 0 0 1px var(--border-danger);
 }
 
 .br-workflow-dropzone[aria-disabled='true'] {
@@ -44,15 +45,65 @@
 
 .br-workflow-dropzone:focus-visible {
   outline: none;
-  border-style: solid;
-  border-color: var(--border-focus);
-  background: var(--background-focus);
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The 32px glyph plate. It sits on the field's fill, one step lighter (the page ground), so it
+   is a plate without being an outlined box. */
+.br-workflow-drop-plate {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-workflow-dropzone[data-state='dragging'] .br-workflow-drop-plate {
+  color: var(--text-default);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-workflow-dropzone {
+  .br-workflow-dropzone,
+  .br-workflow-drop-plate {
     transition: none;
   }
+}
+
+/* The slash dialog's command field: the "/" is part of the field, drawn inside it as a leading
+   adornment instead of floating beside it as loose text (V3-19). The input's text starts after
+   the glyph, and the glyph does not take the pointer, so a click on it still focuses the field. */
+.br-workflow-slash-field {
+  position: relative;
+}
+
+.br-workflow-slash-glyph {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 8px;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.br-workflow-slash-field .br-workflow-slash-input {
+  padding-inline-start: 16px;
+}
+
+/* A group's label inside a workflow dialog ("Activities", "Model"): smaller and quieter than a
+   field's 14px label, so a group reads as a group (V3-18). See `shared/GroupLabel.tsx`. */
+.br-form-group-label {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 /* The response-schema and instructions editors' text areas fill their dialog. The primitive's

@@ -519,7 +519,7 @@ export default function CreateWorkflowFromSessionModal({
         <>
           <Button
             onClick={onClose}
-            variant="ghost"
+            variant="secondary"
             disabled={isCreating}
             data-testid="cancel-button"
           >

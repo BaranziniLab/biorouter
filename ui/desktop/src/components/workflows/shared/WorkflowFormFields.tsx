@@ -13,7 +13,9 @@ import { Input } from '../../ui/input';
 import { Textarea } from '../../ui/textarea';
 import { WorkflowFormApi, WorkflowFormData } from './workflowFormSchema';
 import { getExtensions } from '../../../api';
-import type { ExtensionConfig } from '../../../api';
+import type { ExtensionConfig, ExtensionEntry } from '../../../api';
+import { getFriendlyTitle } from '../../settings/extensions/subcomponents/ExtensionList';
+import { GroupLabel } from './GroupLabel';
 import { WorkflowResourceItem, WorkflowResourcePicker } from './WorkflowResourcePicker';
 import { storeSubscriptionCleanup } from '../../../utils/storeSubscription';
 import { workflowFormCopy as copy } from '../copy';
@@ -119,18 +121,6 @@ function FieldWithAction({
   );
 }
 
-/** A group's label with its InfoTip: "Parameters", "Model". Sentence case, `text-label`. */
-function GroupLabel({ id, label, info }: { id: string; label: string; info?: string }) {
-  return (
-    <div className="flex min-w-0 items-center">
-      <span id={id} className="text-label text-text-default">
-        {label}
-      </span>
-      {info && <InfoTip label={label} help={info} />}
-    </div>
-  );
-}
-
 /** "Initial prompt (optional)": optional fields are marked, required ones are not. */
 function OptionalLabel({ children }: { children: string }) {
   return (
@@ -163,7 +153,7 @@ export function WorkflowFormFields({
   const [showInstructionsEditor, setShowInstructionsEditor] = useState(false);
   const [newParameterName, setNewParameterName] = useState('');
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
-  const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
+  const [availableExtensions, setAvailableExtensions] = useState<ExtensionEntry[]>([]);
 
   useEffect(() => {
     getExtensions({ throwOnError: false }).then((res) => {
@@ -734,9 +724,13 @@ export function WorkflowFormFields({
             <WorkflowResourcePicker
               label={copy.extensions}
               description={copy.extensionsInfo}
+              // The row is named as the Extensions page names it (Chat Recall, Biorouter
+              // Copilot), never by its config key (principle 10). The key stays what is saved
+              // and what the picker's search also matches, so a typed `computercontroller`
+              // still finds its row.
               items={availableExtensions.map((ext) => ({
                 id: ext.name,
-                label: ext.name,
+                label: getFriendlyTitle(ext),
                 description: ext.description,
               }))}
               selectedIds={extensions.map((ext) => ext.name)}

@@ -204,6 +204,9 @@ export default function CreateEditWorkflowModal({
   /** Why `validateForm` said no, in one line: the missing fields, or the schema. */
   const validationMessage = () => (requiredFieldsAreFilled() ? copy.invalidSchema : copy.invalid);
 
+  const savedTitle = (title?: string) =>
+    isCreateMode ? copy.created((title || '').trim()) : copy.saved((title || '').trim());
+
   const handleSaveWorkflowClick = async () => {
     if (isSaving) return;
     if (!validateForm()) {
@@ -219,7 +222,7 @@ export default function CreateEditWorkflowModal({
 
       onClose(true);
 
-      toastSuccess({ title: copy.saved((workflow.title || '').trim()) });
+      toastSuccess({ title: savedTitle(workflow.title) });
     } catch (error) {
       console.error('Failed to save workflow:', error);
 
@@ -259,7 +262,7 @@ export default function CreateEditWorkflowModal({
         saved_workflow_id
       );
 
-      toastSuccess({ title: copy.saved((workflow.title || '').trim()) });
+      toastSuccess({ title: savedTitle(workflow.title) });
     } catch (error) {
       console.error('Failed to save and run workflow:', error);
 
@@ -275,6 +278,10 @@ export default function CreateEditWorkflowModal({
 
   if (!isOpen) return null;
 
+  // A workflow that does not exist yet is created, not saved (spec 3.10); the same two buttons
+  // read Save and Save and run once there is a file to write over.
+  const progressLabel = isCreateMode ? copy.creating : copy.saving;
+
   // One editor shape (spec 3.10): `ModalShell size="lg" scrollBody`, a title and nothing under
   // it. Sharing is not part of editing; it lives on the Workflows row menu ("Copy link").
   return (
@@ -289,7 +296,7 @@ export default function CreateEditWorkflowModal({
       title={isCreateMode ? copy.newTitle : copy.editTitle}
       footer={
         <>
-          <Button onClick={() => onClose(false)} variant="ghost" disabled={isSaving}>
+          <Button onClick={() => onClose(false)} variant="secondary" disabled={isSaving}>
             {copy.cancel}
           </Button>
           <Button
@@ -297,13 +304,13 @@ export default function CreateEditWorkflowModal({
             disabled={!requiredFieldsAreFilled() || isSaving}
             variant="secondary"
           >
-            {isSaving ? copy.saving : copy.save}
+            {isSaving ? progressLabel : isCreateMode ? copy.create : copy.save}
           </Button>
           <Button
             onClick={handleSaveAndRunWorkflowClick}
             disabled={!requiredFieldsAreFilled() || isSaving}
           >
-            {isSaving ? copy.saving : copy.saveAndRun}
+            {isSaving ? progressLabel : isCreateMode ? copy.createAndRun : copy.saveAndRun}
           </Button>
         </>
       }

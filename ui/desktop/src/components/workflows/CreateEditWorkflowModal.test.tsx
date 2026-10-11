@@ -35,7 +35,10 @@ describe('CreateEditWorkflowModal', () => {
     render(<CreateEditWorkflowModal isOpen onClose={vi.fn()} workflow={workflow} />);
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass('bg-transparent');
+    // Cancel is the filled secondary here as in every other dialog (V3-06), never ghost.
+    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass(
+      'bg-background-medium'
+    );
     expect(within(dialog).getByRole('button', { name: copy.save })).not.toHaveClass(
       'bg-background-accent'
     );
@@ -45,11 +48,15 @@ describe('CreateEditWorkflowModal', () => {
     expect(dialog.querySelectorAll('button.bg-background-accent')).toHaveLength(1);
   });
 
-  it('is titled for a new workflow in create mode', () => {
+  it('is titled for a new workflow in create mode, and creates rather than saves', () => {
     render(<CreateEditWorkflowModal isOpen onClose={vi.fn()} isCreateMode />);
 
     expect(screen.getByRole('dialog', { name: copy.newTitle })).toBeInTheDocument();
+    // A workflow that does not exist yet is created, not saved (V3-17).
+    expect(screen.getByRole('button', { name: copy.create })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.save })).toBeNull();
+    expect(screen.queryByRole('button', { name: copy.saveAndRun })).toBeNull();
     // Nothing is filled in yet, so nothing can be saved.
-    expect(screen.getByRole('button', { name: copy.saveAndRun })).toBeDisabled();
+    expect(screen.getByRole('button', { name: copy.createAndRun })).toBeDisabled();
   });
 });

@@ -238,6 +238,115 @@ describe('WorkflowsView loading transition', () => {
  * statement `Layout/PageHeader.test.tsx` makes about the strip and the
  * hairline, and the companion `styles/measures.test.ts` makes at the source.
  */
+/**
+ * Vision round 1, V3: the slash dialog's one live helper line and its in-field "/", Cancel as the
+ * filled secondary in every Views-A dialog, "Delete…" for an item that opens a confirmation, and a
+ * built-in row that does not claim to have just been edited.
+ */
+describe('WorkflowsView dialogs and rows after vision round 1', () => {
+  const PLAIN = {
+    id: 'workflow-1',
+    file_path: '/tmp/workflow.yaml',
+    last_modified: '2026-07-11',
+    workflow: { title: 'Cohort Review', description: 'Review cohort results' },
+  };
+
+  const renderView = () =>
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+
+  it('says its one helper line before anything is typed, then follows the name (V3-19)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+
+    await chooseFromRowMenu('Cohort Review', copy.slashCommandItem);
+    const dialog = await screen.findByRole('dialog');
+    const input = within(dialog).getByPlaceholderText(copy.slash.placeholder);
+
+    // Empty: the line is already there, and the field is described by it.
+    const helper = within(dialog).getByText(copy.slash.helperEmpty);
+    expect(helper).toHaveAttribute('id', 'workflow-slash-command-help');
+    expect(input).toHaveAttribute('aria-describedby', 'workflow-slash-command-help');
+    expect(helper).toHaveClass('text-supporting');
+
+    fireEvent.change(input, { target: { value: 'cohort-review' } });
+    expect(within(dialog).queryByText(copy.slash.helperEmpty)).toBeNull();
+    expect(within(dialog).getByText(copy.slash.helper('cohort-review'))).toBeInTheDocument();
+  });
+
+  it('draws the "/" inside the command field, not loose beside it (V3-19)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+
+    await chooseFromRowMenu('Cohort Review', copy.slashCommandItem);
+    const dialog = await screen.findByRole('dialog');
+    const input = within(dialog).getByPlaceholderText(copy.slash.placeholder);
+
+    const field = input.parentElement as HTMLElement;
+    expect(field).toHaveClass('br-workflow-slash-field');
+    const glyph = field.querySelector('.br-workflow-slash-glyph');
+    expect(glyph).toHaveTextContent('/');
+    expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    expect(input).toHaveClass('br-workflow-slash-input');
+    // The field sits straight under its label, with no loose "/" element beside it.
+    expect(field.previousElementSibling?.tagName).toBe('LABEL');
+    expect(field.parentElement?.querySelectorAll(':scope > span')).toHaveLength(0);
+  });
+
+  it('draws Cancel as the filled secondary in the slash and schedule dialogs (V3-06)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+
+    await chooseFromRowMenu('Cohort Review', copy.slashCommandItem);
+    let dialog = await screen.findByRole('dialog');
+    const cancel = within(dialog).getByRole('button', { name: copy.cancel });
+    expect(cancel).toHaveClass('bg-background-medium');
+    expect(cancel).not.toHaveClass('bg-transparent');
+    fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await chooseFromRowMenu('Cohort Review', copy.scheduleItem);
+    dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass(
+      'bg-background-medium'
+    );
+  });
+
+  it('marks the row item that opens a confirmation with an ellipsis (V3-21)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+    await openRowMenu('Cohort Review');
+
+    expect(await screen.findByRole('menuitem', { name: 'Delete…' })).toBeInTheDocument();
+    expect(copy.delete).toBe('Delete…');
+    // The confirmation's own button is the plain verb.
+    expect(copy.deleteConfirm).toBe('Delete');
+  });
+
+  it('shows no modified time on a built-in, whose file is rewritten at every launch (V3-22)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([
+      { ...PLAIN, id: 'built-in', file_path: '/tmp/workflows/meditation.yaml' },
+      {
+        ...PLAIN,
+        id: 'plain',
+        file_path: '/tmp/workflows/other.yaml',
+        workflow: { title: 'Other', description: 'Another one' },
+      },
+    ]);
+    renderView();
+
+    const rows = await screen.findAllByTestId('workflow-row');
+    expect(rows).toHaveLength(2);
+    const [builtIn, other] = rows;
+    expect(within(builtIn).getByText('Cohort Review')).toBeInTheDocument();
+    expect(builtIn.querySelector('time')).toBeNull();
+    expect(other.querySelector('time')).not.toBeNull();
+  });
+});
+
 describe('WorkflowsView on the settings visual vocabulary', () => {
   const WORKFLOW = {
     id: 'workflow-1',
@@ -388,7 +497,7 @@ describe('WorkflowsView on the settings visual vocabulary', () => {
     expect(badges.getByText('/cohort-review')).toBeInTheDocument();
     const cron = badges.getByText('Daily 2 PM');
     // The whole rule is one hover or Tab away, on the badge itself.
-    expect(cron).toHaveAccessibleDescription('At 02:00 PM');
+    expect(cron).toHaveAccessibleDescription('Every day at 2:00 PM');
     expect(badges.getByText(WORKFLOW.workflow.description)).toHaveClass('truncate');
 
     // The modified time sits in the sans face with tabular figures, never mono.

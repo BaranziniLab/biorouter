@@ -26,7 +26,8 @@ export const appsCopy = {
   launchNamed: (title: string) => `Launch ${title} in browser`,
   openChat: 'Open the chat it was built in',
   exportItem: 'Export…',
-  delete: 'Delete',
+  // A menu item that opens a confirmation takes the ellipsis, as Skills' Delete… does (V3-21).
+  delete: 'Delete…',
   moreActionsNamed: (title: string) => `More actions for ${title}`,
 
   updated: (when: string) => `Updated ${when}`,

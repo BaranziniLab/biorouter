@@ -89,7 +89,7 @@ export function WorkflowResourcePicker({
     const q = query.trim().toLowerCase();
     const filtered = q
       ? items.filter((item) =>
-          [item.label, item.description, item.badge]
+          [item.label, item.id, item.description, item.badge]
             .filter(Boolean)
             .some((value) => value!.toLowerCase().includes(q))
         )

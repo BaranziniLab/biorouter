@@ -117,7 +117,7 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
       subtitle={copy.credentials}
       footer={
         <>
-          <Button variant="ghost" onClick={onCancel}>
+          <Button variant="secondary" onClick={onCancel}>
             {copy.cancel}
           </Button>
           <Button onClick={confirm}>{copy.export}</Button>

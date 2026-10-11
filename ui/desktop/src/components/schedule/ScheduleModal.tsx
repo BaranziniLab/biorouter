@@ -151,7 +151,12 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       scrollBody
       footer={
         <>
-          <Button type="button" variant="ghost" onClick={onClose} disabled={isLoadingExternally}>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={isLoadingExternally}
+          >
             {copy.cancel}
           </Button>
           <Button type="submit" form="schedule-form" disabled={isLoadingExternally || !isValid}>

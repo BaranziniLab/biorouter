@@ -582,7 +582,7 @@ export default function WorkflowsView() {
                   {isSavingSchedule ? copy.schedule.working : copy.schedule.remove}
                 </Button>
               )}
-              <Button variant="ghost" onClick={closeScheduleDialog} disabled={isSavingSchedule}>
+              <Button variant="secondary" onClick={closeScheduleDialog} disabled={isSavingSchedule}>
                 {copy.cancel}
               </Button>
               <Button onClick={handleSaveSchedule} disabled={!scheduleValid || isSavingSchedule}>
@@ -635,7 +635,7 @@ export default function WorkflowsView() {
                 </Button>
               )}
               <Button
-                variant="ghost"
+                variant="secondary"
                 onClick={closeSlashCommandDialog}
                 disabled={isSavingSlashCommand}
               >
@@ -649,13 +649,15 @@ export default function WorkflowsView() {
         >
           {/* The Field recipe (label, 6px, control, one live line), written out
               because the control carries a leading "/" the Field cannot clone
-              onto. The error replaces the helper, in danger ink. */}
+              onto. The "/" is drawn INSIDE the field (V3-19). The one helper line is
+              always there and follows what is typed; an error replaces it, in danger
+              ink. */}
           <div className="br-form-field flex min-w-0 flex-col gap-1.5 pb-1" data-slot="field">
             <label htmlFor="workflow-slash-command" className="text-label text-text-default">
               {copy.slash.inputLabel}
             </label>
-            <div className="flex items-center gap-2">
-              <span className="text-label text-text-muted" aria-hidden>
+            <div className="br-workflow-slash-field">
+              <span className="br-workflow-slash-glyph text-label" aria-hidden>
                 /
               </span>
               <Input
@@ -671,10 +673,8 @@ export default function WorkflowsView() {
                 }}
                 placeholder={copy.slash.placeholder}
                 aria-invalid={slashCommandError ? true : undefined}
-                aria-describedby={
-                  slashCommandError || slashCommand ? 'workflow-slash-command-help' : undefined
-                }
-                className="flex-1"
+                aria-describedby="workflow-slash-command-help"
+                className="br-workflow-slash-input"
               />
             </div>
             {slashCommandError ? (
@@ -685,11 +685,13 @@ export default function WorkflowsView() {
               >
                 {slashCommandError}
               </p>
-            ) : slashCommand ? (
+            ) : (
               <p id="workflow-slash-command-help" className="text-supporting text-text-muted">
-                {copy.slash.helper(slashCommand)}
+                {slashCommand.trim()
+                  ? copy.slash.helper(slashCommand.trim())
+                  : copy.slash.helperEmpty}
               </p>
-            ) : null}
+            )}
           </div>
         </ModalShell>
       )}
@@ -729,8 +731,9 @@ interface WorkflowRowProps {
 /**
  * One workflow (spec 3.10). Line 1 is the title and its state as neutral badges: the slash
  * command, a short schedule ("Daily 2 PM", the whole rule in its help) and Built-in. Line 2 is
- * the description, muted, one line. At rest the trailing edge shows only when it was modified;
- * on hover or focus that gives way to Run and `⋯`, whose menu holds every other verb.
+ * the description, muted, one line. At rest the trailing edge shows only when it was modified
+ * (never for a built-in, whose file is rewritten at each launch); on hover or focus that gives
+ * way to Run and `⋯`, whose menu holds every other verb.
  * Right-click and Shift+F10 open the same menu, and a click on the row opens Edit.
  *
  * The state the two tinted buttons used to carry (a slash command exists, a schedule exists)
@@ -755,7 +758,11 @@ export function WorkflowRow({
   const { workflow, schedule_cron: scheduleCron, slash_command: slashCommand } = manifest;
   const title = workflow.title;
   const cronBadge = shortCron(scheduleCron);
-  const modified = modifiedAt(manifest.last_modified);
+  const builtIn = isBuiltinWorkflow(manifest.file_path);
+  // A built-in is rewritten at every launch, so its `last_modified` is always "just now" and
+  // says nothing about the workflow; its Built-in badge is the whole of what it has to say
+  // (V3-22). Everything else shows when it was last edited.
+  const modified = builtIn ? null : modifiedAt(manifest.last_modified);
   const modifiedText = rowTime(modified);
   const modifiedTitle = rowTimeTitle(modified);
 
@@ -801,9 +808,7 @@ export function WorkflowRow({
                 </Badge>
               </InfoTip>
             )}
-            {isBuiltinWorkflow(manifest.file_path) && (
-              <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
-            )}
+            {builtIn && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
           </div>
           {workflow.description && (
             <p className="min-w-0 truncate text-supporting text-text-muted">

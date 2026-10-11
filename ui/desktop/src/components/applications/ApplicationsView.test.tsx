@@ -78,6 +78,9 @@ describe('ApplicationItem', () => {
       appsCopy.delete,
     ]);
     expect(items[2]).toHaveAttribute('data-variant', 'destructive');
+    // The items that open a dialog carry the ellipsis (V3-21): Export… and Delete….
+    expect(items[1]).toHaveTextContent('Export…');
+    expect(items[2]).toHaveTextContent('Delete…');
     await user.click(items[0]);
     expect(onOpenConversation).toHaveBeenCalledTimes(1);
   });

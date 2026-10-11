@@ -142,7 +142,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
       title={copy.title}
       footer={
         <>
-          <Button type="button" onClick={handleCancel} variant="ghost">
+          <Button type="button" onClick={handleCancel} variant="secondary">
             {copy.cancel}
           </Button>
           <Button type="button" onClick={handleSubmit}>

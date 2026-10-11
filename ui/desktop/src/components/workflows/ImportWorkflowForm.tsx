@@ -121,15 +121,15 @@ export default function ImportWorkflowForm({
       purpose="form"
       title={copy.title}
       footer={
-        <Button variant="ghost" onClick={handleClose} disabled={isSubmitting}>
+        <Button variant="secondary" onClick={handleClose} disabled={isSubmitting}>
           {copy.cancel}
         </Button>
       }
     >
       <div className="flex flex-col gap-2 pb-1">
-        {/* The drop zone says what to do in its own words, so the dialog carries
-            no description repeating them. It is a button to the keyboard too:
-            Enter or Space opens the file picker. */}
+        {/* The drop zone says what to do in one line, so the dialog carries no
+            description repeating it (Knowledge's and Add skill's recipe, V3-08). It is a
+            button to the keyboard too: Enter or Space opens the file picker. */}
         <div
           role="button"
           tabIndex={isSubmitting ? -1 : 0}
@@ -165,9 +165,10 @@ export default function ImportWorkflowForm({
             </span>
           ) : (
             <>
-              <Upload className="size-5 text-text-muted" aria-hidden />
-              <p className="text-label text-text-default">{copy.drop}</p>
-              <p className="text-supporting text-text-muted">{copy.browse}</p>
+              <span aria-hidden className="br-workflow-drop-plate">
+                <Upload className="size-4" />
+              </span>
+              <span className="text-label text-text-default">{copy.drop}</span>
             </>
           )}
         </div>

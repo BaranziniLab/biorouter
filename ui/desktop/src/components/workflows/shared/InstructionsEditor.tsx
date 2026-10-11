@@ -79,7 +79,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
       title={copy.title}
       footer={
         <>
-          <Button type="button" onClick={handleCancel} variant="ghost">
+          <Button type="button" onClick={handleCancel} variant="secondary">
             {copy.cancel}
           </Button>
           <Button type="button" onClick={handleSave}>

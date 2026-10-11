@@ -5,6 +5,7 @@ import { Field } from '../ui/field';
 import { InfoTip } from '../ui/info-tip';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
+import { GroupLabel } from './shared/GroupLabel';
 import { workflowFormCopy } from './copy';
 
 const copy = workflowFormCopy.activities;
@@ -76,12 +77,7 @@ export default function WorkflowActivityEditor({
 
   return (
     <div className="flex flex-col gap-3" role="group" aria-labelledby="workflow-activities-label">
-      <div className="flex min-w-0 items-center">
-        <span id="workflow-activities-label" className="text-label text-text-default">
-          {copy.title}
-        </span>
-        <InfoTip label={copy.title} help={copy.info} />
-      </div>
+      <GroupLabel id="workflow-activities-label" label={copy.title} info={copy.info} />
 
       <Field id="workflow-intro-message" label={copy.message} info={copy.messageInfo}>
         <Textarea
