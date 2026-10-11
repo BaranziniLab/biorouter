@@ -570,26 +570,43 @@ export default function RecentChats({
   const focusAfterEdit = useRef<string | null>(null);
 
   // Principle 9: while the pointer is over the list (or a row is being renamed)
-  // the rows hold still; the live order applies when it leaves. That includes
-  // the moment a non-default view's full read lands (vision V1-H2): the list it
-  // replaces is the one under the pointer.
+  // the rows hold still; the live order applies when it leaves.
+  //
+  // ⚠ Only a COMPLETE list is held past its read (vision V1-R2-3). A non-default
+  // view shows its first page while the rest is read. A hold taken from that
+  // page keeps its rows still during the read (V1-H2), and gives way to the
+  // complete arrangement the moment the read lands: one move, at the end. Kept
+  // as it was, it held the first page's order (50 rows sorted by name, the
+  // wrong 50) for as long as the pointer rested on the list. Nothing is held
+  // while the list is empty either, so a first load's first page is held as
+  // drawn rather than as "every row arrives below nothing", which held nothing.
+  const listComplete = !isLoadingAll;
   const [pointerInside, setPointerInside] = useState(false);
-  const [held, setHeld] = useState<HeldArrangement | null>(null);
+  const [held, setHeld] = useState<{ arrangement: HeldArrangement; complete: boolean } | null>(
+    null
+  );
   const holding = pointerInside || editing !== null;
-  useEffect(() => {
-    if (!holding) setHeld(null);
-  }, [holding]);
-  const captureHold = useCallback(
-    () => setHeld((current) => current ?? holdArrangement(arranged, view)),
-    [arranged, view]
-  );
+  const heldApplies =
+    holding &&
+    held !== null &&
+    held.arrangement.view.groupBy === view.groupBy &&
+    held.arrangement.view.sortBy === view.sortBy &&
+    (held.complete || !listComplete);
   const groups = useMemo(
-    () =>
-      holding && held && held.view.groupBy === view.groupBy && held.view.sortBy === view.sortBy
-        ? applyHeldArrangement(held, arranged)
-        : arranged,
-    [holding, held, arranged, view]
+    () => (heldApplies && held ? applyHeldArrangement(held.arrangement, arranged) : arranged),
+    [heldApplies, held, arranged]
   );
+  // Take the hold from what is drawn: whenever the list is held and no hold
+  // applies (none yet, another view's, or a partial one the full read has
+  // replaced), the rows on screen ARE the live arrangement.
+  useEffect(() => {
+    if (!holding) {
+      setHeld(null);
+      return;
+    }
+    if (heldApplies || arranged.length === 0) return;
+    setHeld({ arrangement: holdArrangement(arranged, view), complete: listComplete });
+  }, [holding, heldApplies, arranged, view, listComplete]);
 
   // A view change re-renders the list at rest and fades it in from 0.6.
   const [viewGeneration, setViewGeneration] = useState(0);
@@ -691,8 +708,7 @@ export default function RecentChats({
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return;
       // Whatever started the edit (F2, ⌘⌥R, the menu), the rows hold still
-      // while the person types, as they do under the pointer.
-      captureHold();
+      // while the person types, as they do under the pointer (`holding`).
       // The editor mounts in the chat's row. ⌘⌥R names the chat you are in, and
       // in a long list that row may lie past the lines drawn so far (R-28): draw
       // up to it, or the list would hold still around an editor nobody can see.
@@ -700,7 +716,7 @@ export default function RecentChats({
       if (needed !== null) setRenderBudget((budget) => Math.max(budget, needed));
       setEditing({ sessionId, draft: session.name.trim() || sidebarCopy.chats.untitled });
     },
-    [sessions, shown, captureHold]
+    [sessions, shown]
   );
 
   // A chat deleted (here or in another window) while it is being renamed leaves
@@ -932,10 +948,7 @@ export default function RecentChats({
         hidden={!isExpanded}
         className="br-sidebar-chats-scroll"
         onScroll={handleScroll}
-        onPointerEnter={() => {
-          setPointerInside(true);
-          captureHold();
-        }}
+        onPointerEnter={() => setPointerInside(true)}
         onPointerLeave={() => setPointerInside(false)}
         onKeyDown={roving.onKeyDown}
         onFocus={roving.onFocus}

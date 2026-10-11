@@ -430,9 +430,11 @@ describe('opening a chat is not activity', () => {
 });
 
 /**
- * Vision V1-H2, the list's half. A non-default view's full read lands all at once, and it can
- * land while the pointer is over the list: the hold covers it as it covers a live re-sort, so
- * rows that sort above the ones under the pointer wait until it leaves.
+ * Vision V1-H2, the list's half, and V1-R2-3. A non-default view shows its first page while the
+ * rest is read, and the full read lands all at once, often under the pointer. During the read the
+ * rows under the pointer hold still. When the read lands, the COMPLETE arrangement shows at once
+ * and is what the pointer holds from then on: holding the first page's order (the wrong 50 rows,
+ * sorted by name) kept the list wrong for as long as the pointer rested on it.
  */
 describe('a full read that lands under the pointer', () => {
   const named = (index: number, name: string) => ({ ...makeSession(index), name });
@@ -440,62 +442,102 @@ describe('a full read that lands under the pointer', () => {
     Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((row) =>
       row.getAttribute('data-row')
     );
+  const byName = { groupBy: 'none', sortBy: 'name' } as const;
+  const props = {
+    runningSessionIds: new Set<string>(),
+    onLoadMore: vi.fn(),
+    onOpen: vi.fn(),
+    onViewAll: vi.fn(),
+    view: byName,
+    onViewChange: vi.fn(),
+  };
+  const reading = (sessions: SessionSummary[]) => (
+    <SidebarProvider>
+      <RecentChats {...props} sessions={sessions} hasMore isLoadingMore={false} isLoadingAll />
+    </SidebarProvider>
+  );
+  const read = (sessions: SessionSummary[]) => (
+    <SidebarProvider>
+      <RecentChats
+        {...props}
+        sessions={sessions}
+        hasMore={false}
+        isLoadingMore={false}
+        isLoadingAll={false}
+      />
+    </SidebarProvider>
+  );
 
-  it('waits for the pointer to leave before the rows above it arrive', () => {
-    const byName = { groupBy: 'none', sortBy: 'name' } as const;
+  it('holds the first page still during the read and shows the complete list when it lands', () => {
     const firstPage = [named(0, 'Cohort'), named(1, 'Dose')];
-    const props = {
-      runningSessionIds: new Set<string>(),
-      hasMore: true,
-      isLoadingMore: true,
-      onLoadMore: vi.fn(),
-      onOpen: vi.fn(),
-      onViewAll: vi.fn(),
-      view: byName,
-      onViewChange: vi.fn(),
-    };
-    const { rerender } = render(
-      <SidebarProvider>
-        <RecentChats {...props} sessions={firstPage} isLoadingAll />
-      </SidebarProvider>
-    );
+    const { rerender } = render(reading(firstPage));
     expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
 
     const list = screen.getByTestId('recent-chat-scroll');
     fireEvent.pointerEnter(list);
-    // Still reading: a rename that would sort Dose above Cohort waits too. The hold used to
-    // stand down for the whole read, which is when the rows moved most.
+    // Still reading: a rename that would sort Dose above Cohort waits.
     const renamed = [firstPage[0], named(1, 'Aardvark')];
-    rerender(
-      <SidebarProvider>
-        <RecentChats {...props} sessions={renamed} isLoadingAll />
-      </SidebarProvider>
-    );
+    rerender(reading(renamed));
     expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
 
-    rerender(
-      <SidebarProvider>
-        <RecentChats
-          {...props}
-          hasMore={false}
-          isLoadingMore={false}
-          isLoadingAll={false}
-          sessions={[...renamed, named(2, 'Atlas'), named(3, 'Biopsy'), named(4, 'Survey')]}
-        />
-      </SidebarProvider>
-    );
-    // Atlas and Biopsy sort above the rows under the pointer, so they wait; Survey sorts
-    // below every held row and shifts nothing, so it may join.
-    expect(order()).toEqual(['chat:session-0', 'chat:session-1', 'chat:session-4']);
-
-    fireEvent.pointerLeave(list);
-    expect(order()).toEqual([
+    // The read lands with the pointer still over the list: the complete arrangement, at once.
+    const complete = [...renamed, named(2, 'Atlas'), named(3, 'Biopsy'), named(4, 'Survey')];
+    rerender(read(complete));
+    const arranged = [
       'chat:session-1',
       'chat:session-2',
       'chat:session-3',
       'chat:session-0',
       'chat:session-4',
+    ];
+    expect(order()).toEqual(arranged);
+    // The "Loading chats…" foot went with the read: the list on screen is the whole list.
+    expect(screen.queryByTestId('recent-chat-loading')).toBeNull();
+
+    // From here the complete list is what the pointer holds: a live re-sort waits again.
+    rerender(read([...complete.slice(0, 4), named(4, 'Aaa')]));
+    expect(order()).toEqual(arranged);
+
+    fireEvent.pointerLeave(list);
+    expect(order()).toEqual([
+      'chat:session-4',
+      'chat:session-1',
+      'chat:session-2',
+      'chat:session-3',
+      'chat:session-0',
     ]);
+  });
+
+  it('holds a first load from the rows it draws, not from the empty list before them', () => {
+    const view = DEFAULT_SIDEBAR_CHAT_VIEW;
+    const currentTime = Date.now();
+    const draw = (sessions: SessionSummary[]) => (
+      <SidebarProvider>
+        <RecentChats
+          {...props}
+          view={view}
+          sessions={sessions}
+          hasMore={sessions.length === 0}
+          isLoadingMore={sessions.length === 0}
+        />
+      </SidebarProvider>
+    );
+    // A reload with the pointer resting on the list: nothing has loaded yet.
+    const { rerender } = render(draw([]));
+    fireEvent.pointerEnter(screen.getByTestId('recent-chat-scroll'));
+
+    const firstPage = [makeSession(0, currentTime), makeSession(1, currentTime)];
+    rerender(draw(firstPage));
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    // A turn in the second chat raises it; under the pointer it waits. Held from the empty
+    // list, every row counted as "arriving below nothing" and moved at once.
+    const raised = { ...firstPage[1], updated_at: new Date(currentTime + 60_000).toISOString() };
+    rerender(draw([firstPage[0], raised]));
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    fireEvent.pointerLeave(screen.getByTestId('recent-chat-scroll'));
+    expect(order()).toEqual(['chat:session-1', 'chat:session-0']);
   });
 });
 
