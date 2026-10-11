@@ -79,6 +79,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Button, buttonVariants } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
+import { artifactCardKind } from '../MCPUIResourceRenderer';
+import { ARTIFACT_CARD_COPY } from '../toolCallCopy';
 import { PREVIEW_COPY } from './copy';
 import {
   PreviewBar,
@@ -1515,7 +1517,15 @@ export default function ArtifactViewer({
   const canQuote = Boolean(sessionId) && hasSelectedText(quotedSelection);
   const quoteSelectionToChat = () =>
     attachSelectedText(quoteSource, quotedSelection, previewBodyRef.current ?? undefined);
-  const showMoreMenu = Boolean(sessionId) || activeArtifact.kind === 'file';
+  // A menu of one is the control with a click in front of it. A figure, a report
+  // or a page has nothing for ⋯ to hold but "Send a region to the chat", so that
+  // action stands in the header as an icon, where the menu would be. It keeps the
+  // menu only where the menu has a second item (a file also reveals itself), and
+  // where the action is off and the menu's visible reason is what says why
+  // (a `biorouter serve` browser, principle 2).
+  const annotateInline =
+    Boolean(sessionId) && activeArtifact.kind !== 'file' && annotateUnavailable === null;
+  const showMoreMenu = !annotateInline && (Boolean(sessionId) || activeArtifact.kind === 'file');
 
   const renderLayer = (
     key: string,
@@ -1750,7 +1760,7 @@ export default function ArtifactViewer({
                 <TextQuote className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
             )}
-            {isAnnotating && (
+            {isAnnotating && !annotateInline && (
               <PreviewIconButton
                 label={PREVIEW_COPY.cancelAnnotate}
                 data-testid="artifact-annotate-cancel"
@@ -1786,6 +1796,19 @@ export default function ArtifactViewer({
             {activeArtifact.kind !== 'mcpResource' && (
               <PreviewIconButton label={PREVIEW_COPY.openExternally} onClick={openStandalone}>
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            {annotateInline && (
+              // One control for both states, in the one place: while a region is
+              // being picked it is the pressed tool, and pressing it again cancels.
+              <PreviewIconButton
+                label={isAnnotating ? PREVIEW_COPY.cancelAnnotate : PREVIEW_COPY.annotate}
+                data-testid={isAnnotating ? 'artifact-annotate-cancel' : 'artifact-annotate'}
+                aria-pressed={isAnnotating ? true : undefined}
+                onClick={() => void toggleAnnotation()}
+                className={isAnnotating ? 'br-preview-icon-button--pressed' : undefined}
+              >
+                <Camera className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
             )}
             {showMoreMenu && (
@@ -1974,6 +1997,29 @@ function ArtifactErrorState({
   );
 }
 
+/**
+ * What a `ui://` artifact is, in the word its transcript card uses (Figure,
+ * Report, App), as the bar's meta. Without it the bar only repeated the tab's
+ * title under the tab (principle 2: no repeated labels), and a figure has no
+ * line count, row count or page count to say instead. One classifier, the
+ * card's own (`artifactCardKind`), so the two never name a thing differently.
+ */
+function ArtifactKindMeta({ artifact }: { artifact: ArtifactSource }) {
+  const uri =
+    artifact.kind === 'mcpResource'
+      ? artifact.resource.uri
+      : artifact.kind === 'html'
+        ? artifact.sourceUri
+        : undefined;
+  return (
+    <PreviewBarMeta>
+      <span data-testid="artifact-kind-meta">
+        {ARTIFACT_CARD_COPY.kind[artifactCardKind(artifact, uri)]}
+      </span>
+    </PreviewBarMeta>
+  );
+}
+
 function ArtifactPreviewBody({
   preview,
   artifact,
@@ -2021,27 +2067,30 @@ function ArtifactPreviewBody({
     // `data:` URL, which the main window's open handler turns into a real
     // BrowserWindow that inherits the preload IPC bridge.
     return (
-      <iframe
-        name="biorouter-artifact-preview"
-        key={preview.html}
-        ref={trustedFrameRef}
-        aria-label={artifact.title}
-        // Inject the app theme so this preview matches the expanded/opened view,
-        // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
-        srcDoc={injectArtifactBrowserCsp(
-          withPreviewSizeReporting(withHostTheme(preview.html, resolvedTheme))
-        )}
-        sandbox="allow-scripts allow-downloads"
-        // Held transparent until its document has painted, then faded in
-        // (preview-panel.css): the white page ground stays, but it never
-        // flashes over a dark panel before the figure is drawn.
-        data-loaded="false"
-        onLoad={markFrameLoaded}
-        className={cn(
-          'br-preview-frame h-full w-full bg-white',
-          isResizing && 'pointer-events-none'
-        )}
-      />
+      <>
+        <ArtifactKindMeta artifact={artifact} />
+        <iframe
+          name="biorouter-artifact-preview"
+          key={preview.html}
+          ref={trustedFrameRef}
+          aria-label={artifact.title}
+          // Inject the app theme so this preview matches the expanded/opened view,
+          // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
+          srcDoc={injectArtifactBrowserCsp(
+            withPreviewSizeReporting(withHostTheme(preview.html, resolvedTheme))
+          )}
+          sandbox="allow-scripts allow-downloads"
+          // Held transparent until its document has painted, then faded in
+          // (preview-panel.css): the white page ground stays, but it never
+          // flashes over a dark panel before the figure is drawn.
+          data-loaded="false"
+          onLoad={markFrameLoaded}
+          className={cn(
+            'br-preview-frame h-full w-full bg-white',
+            isResizing && 'pointer-events-none'
+          )}
+        />
+      </>
     );
   }
 
@@ -2109,15 +2158,18 @@ function ArtifactPreviewBody({
 
   if (preview.kind === 'mcpResource' && artifact.kind === 'mcpResource') {
     return (
-      <UIResourceRenderer
-        resource={artifact.resource}
-        supportedContentTypes={['rawHtml']}
-        htmlProps={{
-          autoResizeIframe: { height: false, width: false },
-          style: { width: '100%', height: '100%', minHeight: '100%', border: 'none' },
-          iframeRenderData: { host: 'biorouter', theme: resolvedTheme },
-        }}
-      />
+      <>
+        <ArtifactKindMeta artifact={artifact} />
+        <UIResourceRenderer
+          resource={artifact.resource}
+          supportedContentTypes={['rawHtml']}
+          htmlProps={{
+            autoResizeIframe: { height: false, width: false },
+            style: { width: '100%', height: '100%', minHeight: '100%', border: 'none' },
+            iframeRenderData: { host: 'biorouter', theme: resolvedTheme },
+          }}
+        />
+      </>
     );
   }
 

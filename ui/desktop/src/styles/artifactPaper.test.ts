@@ -125,11 +125,46 @@ describe('artifact panel paper', () => {
     expect(css.trimEnd().slice(-400)).not.toContain('.br-paper');
   });
 
-  it('gives the code view and table an overflow hint', () => {
-    const body = ruleBody(".br-paper-scroll[data-view='code'], .br-paper-table-scroll");
+  it('gives the code view an overflow hint', () => {
+    const body = ruleBody(".br-paper-scroll[data-view='code']");
     expect(body).toMatch(/no-repeat local,/);
     expect(body).toMatch(
       /var\(--paper-hint-ink\), transparent\) 100% 0 \/ 14px 100% no-repeat scroll/
+    );
+    // A table draws its own fade; the scroller's background hint is the code view's.
+    expect(flat).not.toMatch(/\.br-paper-table-scroll \{[^}]*no-repeat local/);
+    expect(flat).not.toContain('br-paper-fill-hint');
+    expect(flat).not.toContain('scroll-state(stuck');
+  });
+
+  // V2-09: a CSV scrolls sideways in a narrow panel, and nothing said so. Every
+  // row's filler cell sticks to the scroller's right edge and paints 40px of the
+  // row's own ground over the text, while `data-overflow` says more lies to the
+  // right (DelimitedTable). A mask on the scroller would fade its vertical
+  // scrollbar too, which is why the fade is not one.
+  it('fades a scrolling table out at its right edge, on each row’s own ground', () => {
+    expect(ruleBody('.br-paper-table')).toContain('--paper-fade-width: 40px;');
+    const filler = ruleBody('.br-paper-table .br-paper-fill');
+    expect(filler).toContain('position: sticky;');
+    expect(filler).toContain('right: 0;');
+    const fade = ruleBody('.br-paper-table .br-paper-fill::after');
+    expect(fade).toContain('width: var(--paper-fade-width);');
+    expect(fade).toContain('pointer-events: none;');
+    expect(fade).toContain('display: none;');
+    expect(fade).toMatch(/linear-gradient\(to left, var\(--paper-fade-ground\), transparent\)/);
+    // The header and a hovered row each fade into their own ground.
+    expect(ruleBody('.br-paper-table th.br-paper-fill::after')).toContain(
+      'var(--paper-fade-head-ground)'
+    );
+    expect(ruleBody('.br-paper-table tbody tr:hover .br-paper-fill::after')).toContain(
+      'var(--overlay-hover)'
+    );
+    // Drawn only while more lies to the right, and never over forced colours.
+    expect(
+      ruleBody(".br-paper-table-scroll[data-overflow='true'] .br-paper-fill::after")
+    ).toContain('display: block;');
+    expect(flat).toMatch(
+      /@media \(forced-colors: active\) \{ \.br-paper-table \.br-paper-fill::after \{ display: none !important;/
     );
   });
 
@@ -160,8 +195,13 @@ describe('artifact panel paper', () => {
     const head = ruleBody('.br-paper-table.br-md-table th');
     expect(head).toContain('position: sticky;');
     expect(head).toContain('box-shadow: inset 0 -1px 0 var(--border-subtle);');
-    // The frame sits on the column edge the bar's name and the prose share.
-    expect(ruleBody('.br-paper-table-frame')).toContain('min(var(--paper-inset),');
+    // The frame sits on the column edge the bar's name and the prose share…
+    expect(ruleBody('.br-paper-table-frame')).toContain('padding-left: var(--paper-inset);');
+    // …and leaves it only for a table that fits by doing so (V2-09: a 1300px
+    // table in a 600px panel sat at the 10px lead, 18px left of the bar's name).
+    const yields = ruleBody('.br-paper-table-frame[data-yield]');
+    expect(yields).toContain('min(var(--paper-inset),');
+    expect(yields).toContain('var(--paper-lead)');
     expect(flat).not.toContain('.br-paper-table-note');
   });
 

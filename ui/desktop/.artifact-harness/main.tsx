@@ -267,6 +267,8 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     make: async () => ({
       kind: 'html',
       title: 'Dashboard Tumour Vs Normal',
+      // The address the tool gives it, which is what names the bar's meta (Report).
+      sourceUri: 'ui://dashboard/report',
       html: await (await fetch('/fixtures/dashboard.html')).text(),
     }),
   },
@@ -275,6 +277,7 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     make: async () => ({
       kind: 'html',
       title: 'Agent Drafter Cohort Explorer',
+      sourceUri: 'ui://agent-drafter/cohort-explorer',
       html: await (await fetch('/fixtures/agent-drafter-card.html')).text(),
     }),
   },

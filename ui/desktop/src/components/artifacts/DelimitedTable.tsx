@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { analyzeDelimitedColumns, isMissingCell } from './artifactUtils';
 
 /**
@@ -16,6 +16,10 @@ import { analyzeDelimitedColumns, isMissingCell } from './artifactUtils';
  *   (`NA`, `null`, …) recedes.
  * - Past the cap, the bar above says "500 of 620 rows" and its InfoTip says
  *   why; the table itself carries no note.
+ * - The frame's left edge is the column edge the bar's name shares, whatever the
+ *   table's width; the one exception is a table that fits only by sitting nearer
+ *   the panel's edge (`data-yield`). A table wider than the panel scrolls, and
+ *   fades out at the right edge while more lies that way (`data-overflow`).
  *
  * All of it is authored CSS in main.css ("Delimited table"), keyed on the
  * classes and data attributes below.
@@ -33,23 +37,48 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
     };
   }, [rows, maxRows]);
 
-  // The frame's left edge is the column edge — unless the table is too wide to
-  // show whole from there, in which case it yields just enough to bring the last
-  // column into view, and only a table wider than the whole panel scrolls. That
-  // needs the table's real width, which CSS cannot read, so it is published as a
-  // custom property the frame's padding resolves against (main.css). Without a
-  // ResizeObserver (jsdom) the table simply sits on the column edge.
+  // The frame's left edge is the column edge, the edge the bar's name and the
+  // prose share (checklist 11). It yields from it only when yielding is what
+  // brings the whole table into view, and only as far as that takes; a table
+  // wider than the panel could not be shown whole from any edge, so it keeps
+  // the column edge and scrolls. Both answers need the table's real width, which
+  // CSS cannot read, so it is measured here and published for the frame's padding
+  // to resolve against (`--paper-table-width`, `data-yield`; main.css). The same
+  // pass tells the scroller whether more lies to its right (`data-overflow`),
+  // which is what draws the fade there. In a layout effect, so the first paint
+  // is already the right one. Without a ResizeObserver (jsdom) the table simply
+  // sits on the column edge with no fade.
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLTableElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
     const frame = frameRef.current;
     const table = tableRef.current;
-    if (!frame || !table || typeof ResizeObserver === 'undefined') return;
-    const sync = () => frame.style.setProperty('--paper-table-width', `${table.offsetWidth}px`);
+    if (!scroller || !frame || !table || typeof ResizeObserver === 'undefined') return;
+    const syncOverflow = () => {
+      const more = scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
+      if (more) scroller.setAttribute('data-overflow', 'true');
+      else scroller.removeAttribute('data-overflow');
+    };
+    const sync = () => {
+      const tableWidth = table.offsetWidth;
+      frame.style.setProperty('--paper-table-width', `${tableWidth}px`);
+      const style = getComputedStyle(frame);
+      const lead = Number.parseFloat(style.getPropertyValue('--paper-lead')) || 0;
+      const gutter = Number.parseFloat(style.paddingRight) || 0;
+      frame.toggleAttribute('data-yield', lead + tableWidth + gutter <= scroller.clientWidth);
+      syncOverflow();
+    };
     sync();
     const observer = new ResizeObserver(sync);
     observer.observe(table);
-    return () => observer.disconnect();
+    observer.observe(scroller);
+    scroller.addEventListener('scroll', syncOverflow, { passive: true });
+    return () => {
+      observer.disconnect();
+      scroller.removeEventListener('scroll', syncOverflow);
+    };
   }, [rows]);
 
   if (rows.length === 0) {
@@ -60,7 +89,7 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
     // Its own scroller, so the header can stick: a sticky cell sticks to its
     // nearest scrolling ancestor, and the frame's left padding puts the table on
     // the column edge while letting a wide table run past the column's right.
-    <div className="br-paper-table-scroll" data-preview-scroller="">
+    <div ref={scrollerRef} className="br-paper-table-scroll" data-preview-scroller="">
       <div ref={frameRef} className="br-paper-table-frame">
         <table ref={tableRef} className="br-md-table br-paper-table" data-preview-intrinsic="">
           <thead>
@@ -71,12 +100,10 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
                   {cell}
                 </th>
               ))}
-              {/* The filler also carries the overflow hint through the opaque
-                  sticky header, which would otherwise paint over the scroller's
-                  own hint and notch it at this row (main.css). */}
-              <th className="br-paper-fill" aria-hidden="true">
-                <span className="br-paper-fill-hint" />
-              </th>
+              {/* The filler of every row is also where the right-edge fade is
+                  drawn: it sticks to the scroller's right edge while the table
+                  runs past it, so each row fades on its own ground (main.css). */}
+              <th className="br-paper-fill" aria-hidden="true" />
             </tr>
           </thead>
           <tbody>

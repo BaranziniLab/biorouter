@@ -7225,15 +7225,14 @@ code [class~='token'] {
   height: 1lh;
 }
 
-/* Overflow hint. Long lines and wide tables used to clip at the panel edge with
-   no cue that anything was there. Two background layers, no JS: an ink shadow
-   pinned to the visible right edge (`scroll`), under a ground-coloured cover
-   pinned to the END of the content (`local`). While more content lies to the
-   right the cover is off-screen and the shadow shows; scrolled to the end, or
-   with nothing to scroll, the cover sits on top of it. A background, so it
-   paints under the text rather than over it. */
-.br-paper-scroll[data-view='code'],
-.br-paper-table-scroll {
+/* Overflow hint for the code view. Long lines used to clip at the panel edge
+   with no cue that anything was there (a table draws its own fade, below). Two
+   background layers, no JS: an ink shadow pinned to the visible right edge
+   (`scroll`), under a ground-coloured cover pinned to the END of the content
+   (`local`). While more content lies to the right the cover is off-screen and the
+   shadow shows; scrolled to the end, or with nothing to scroll, the cover sits on
+   top of it. A background, so it paints under the text rather than over it. */
+.br-paper-scroll[data-view='code'] {
   background:
     linear-gradient(to left, var(--background-default) 45%, transparent) 100% 0 / 36px 100%
       no-repeat local,
@@ -7354,10 +7353,12 @@ code [class~='token'] {
    under it, a quiet row index as the first column, and packed columns.
 
    The frame sits on the column edge, the left edge the bar's name and a
-   report's prose share, yielding only as far as a wide table needs to show its
-   last column, and never closer than the lead to the panel.
-   `--paper-table-width` is the table's measured width (a ResizeObserver in
-   DelimitedTable); without it this is the column edge. */
+   report's prose share. It leaves that edge for one reason only: a table that
+   would show whole if it sat nearer the panel's edge (`data-yield`, measured in
+   DelimitedTable) moves exactly that far, never closer than the lead. A table
+   wider than the panel could not be shown whole from anywhere, so yielding would
+   only outdent it for nothing: it keeps the column edge and scrolls.
+   `--paper-table-width` is the table's measured width. */
 .br-paper-table-frame {
   box-sizing: border-box;
   width: max-content;
@@ -7375,6 +7376,10 @@ code [class~='token'] {
    three-column CSV stays packed on the left while its frame still spans the
    column. `max-content` so a wide table is as wide as its content, never
    squeezed into wrapping. The frame spans the column, but never more than the
+  padding-left: var(--paper-inset);
+}
+
+.br-paper-table-frame[data-yield] {
    panel has room for once the lead and the right gutter are taken, so a narrow
    CSV never scrolls sideways for nothing. */
 .br-paper-table {
@@ -7389,6 +7394,11 @@ code [class~='token'] {
 .br-paper-table.br-md-table {
   overflow: visible;
 }
+  /* The grounds the right-edge fade ends in (below): the page's, and the
+     header's. A table that changes its ground changes these. */
+  --paper-fade-width: 40px;
+  --paper-fade-ground: var(--background-default);
+  --paper-fade-head-ground: var(--background-muted);
 
 .br-paper-table.br-md-table th {
   position: sticky;
@@ -7441,32 +7451,52 @@ code [class~='token'] {
   padding: 0;
 }
 
-/* The overflow hint through the sticky header. The scroller's hint is a
-   BACKGROUND, and the header row has to be opaque so rows can scroll under it,
-   so the header would paint over the hint and notch it at the header row. The
-   header's filler cell carries its own copy: it sticks to the scroller's right
-   edge (`right: 0`) whenever the table runs past that edge, and a scroll-state
-   query shows its shadow only while it is stuck there. Where scroll-state
-   queries are unsupported the header keeps the notch and nothing else changes. */
-.br-paper-table th.br-paper-fill {
+/* THE RIGHT-EDGE FADE. A table wider than the panel fades out at the panel's
+   right edge while more lies that way, and the fade is gone at the scroll end, so
+   the last column is never dimmed (the recipe `.br-md-table-scroll` draws with a
+   mask, spec 3.8). A mask on this scroller would also fade its vertical
+   scrollbar, and a background shadow cannot sit over the text, so each row's
+   filler cell draws it instead: it sticks to the scroller's right edge
+   (`right: 0`) whenever the table runs past that edge, and its pseudo-element
+   paints 40px of the row's own ground over the text, transparent to opaque
+   towards the edge. The header's filler is on the header's ground, and a hovered
+   row's is on the hover wash, so no row shows a patch. `data-overflow` (set by
+   DelimitedTable while more lies to the right) turns every fade on at once.
+   Forced colours repaint grounds, so the fade yields to the system there, as the
+   recipe's does. */
+.br-paper-table .br-paper-fill {
+  position: sticky;
   right: 0;
-  container-type: scroll-state;
 }
 
-.br-paper-fill-hint {
+.br-paper-table .br-paper-fill::after {
+  content: '';
   position: absolute;
-  top: 0;
+  inset-block: 0;
   right: 0;
-  bottom: 0;
-  width: 14px;
-  background: linear-gradient(to left, var(--paper-hint-ink), transparent);
-  opacity: 0;
+  display: none;
+  width: var(--paper-fade-width);
+  background: linear-gradient(to left, var(--paper-fade-ground), transparent);
   pointer-events: none;
 }
 
-@container scroll-state(stuck: right) {
-  .br-paper-fill-hint {
-    opacity: 1;
+.br-paper-table th.br-paper-fill::after {
+  background: linear-gradient(to left, var(--paper-fade-head-ground), transparent);
+}
+
+.br-paper-table tbody tr:hover .br-paper-fill::after {
+  background:
+    linear-gradient(to left, var(--overlay-hover), transparent),
+    linear-gradient(to left, var(--paper-fade-ground), transparent);
+}
+
+.br-paper-table-scroll[data-overflow='true'] .br-paper-fill::after {
+  display: block;
+}
+
+@media (forced-colors: active) {
+  .br-paper-table .br-paper-fill::after {
+    display: none !important;
   }
 }
 
@@ -7550,7 +7580,7 @@ code [class~='token'] {
 
 /* ── Notebook (NotebookPreview.tsx) ── */
 .br-paper-nb {
-  padding-block: 36px 88px;
+  padding-block: 16px 88px;
 }
 
 .br-paper-nb-cell {
@@ -7560,9 +7590,16 @@ code [class~='token'] {
 
 .br-paper-nb-cell[data-kind='markdown'] {
   margin-top: 8px;
+/* @ws WS-PREVIEW begin: notebook top */
+/* The first cell opens 16px under the bar, the paper inset the CSV table's frame
+   uses, plus the first heading's own margin (24px for an h1): the same 40px a
+   report's title sits at, not the 84px that 36px of padding, a markdown cell's
+   8px and a heading's 24px stacked into. A markdown cell's 8px belongs between
+   cells, so the first one has none. */
 }
 
 .br-paper-well {
+/* @ws WS-PREVIEW end: notebook top */
   overflow-x: auto;
   border-radius: 10px;
   background-color: var(--background-well);
@@ -7573,6 +7610,10 @@ code [class~='token'] {
   position: absolute;
   top: 12px;
   right: calc(100% + 14px);
+.br-paper-nb > .br-paper-nb-cell:first-child {
+  margin-top: 0;
+}
+
   color: var(--text-subtle);
   font: 12px/20px var(--font-mono);
   font-variant-numeric: tabular-nums;

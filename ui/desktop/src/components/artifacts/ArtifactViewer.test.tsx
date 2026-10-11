@@ -27,9 +27,14 @@ vi.mock('utif2', () => ({
   toRGBA8: tiffToRgba,
 }));
 
-/** "Send a region to the chat" is an item in the header's More actions menu (spec 3.8). */
+/**
+ * "Send a region to the chat" is an item in the header's More actions menu
+ * (spec 3.8), except where the menu would hold nothing else (a figure, a report,
+ * a page), where it stands in the header as an icon.
+ */
 async function startAnnotating() {
-  await userEvent.click(screen.getByRole('button', { name: PREVIEW_COPY.moreActions }));
+  const more = screen.queryByRole('button', { name: PREVIEW_COPY.moreActions });
+  if (more) await userEvent.click(more);
   await userEvent.click(await screen.findByTestId('artifact-annotate'));
 }
 
@@ -1345,11 +1350,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.getAllByRole('row')[0].lastElementChild).toHaveClass('br-paper-fill');
     // The bar states the table's row count, with a noun, instead of a line count.
     expect(screen.getByTestId('artifact-strip-count')).toHaveTextContent(/^2 rows$/);
-    // The header's filler carries the overflow hint through the opaque sticky
-    // header row (main.css, `.br-paper-fill-hint`).
-    expect(
-      screen.getAllByRole('row')[0].lastElementChild!.querySelector('.br-paper-fill-hint')
-    ).not.toBeNull();
+    // The right-edge fade is drawn by every row's own filler (main.css), so the
+    // cell carries nothing of its own: no hint element left over from the older
+    // header-only workaround.
+    expect(screen.getAllByRole('row')[0].lastElementChild).toBeEmptyDOMElement();
+    expect(firstRow.lastElementChild).toBeEmptyDOMElement();
   });
 
   // A `shrink-0` count ("70 rows · 11 columns") kept its full width in a

@@ -54,23 +54,29 @@
 }
 
 /* ── The tab strip's edges ── a tab scrolled past an edge fades into it, so a
-   cut-off label reads as "more this way" rather than as a clipped word. Only
-   while scrolled: a strip that fits has no mask at all. Scoped to the panel;
-   the chat strip is WS-MOTION's. */
+   cut-off tab reads as "more this way" rather than as a clipped glyph beside the
+   ▾. The fade is as long as a tab's leading glyph and its padding (32px): a
+   shorter one left the glyph, the tab's divider and the active underline at near
+   full strength in the sliver that showed. Only while scrolled: a strip that fits
+   has no mask at all. Scoped to the panel; the chat strip is WS-MOTION's. */
+[data-br-panel-artifact] .br-tabstrip__scroll {
+  --tab-edge-fade: 32px;
+}
+
 [data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-start] {
-  mask-image: linear-gradient(to right, transparent, #000 12px);
+  mask-image: linear-gradient(to right, transparent, #000 var(--tab-edge-fade));
 }
 
 [data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-end] {
-  mask-image: linear-gradient(to left, transparent, #000 12px);
+  mask-image: linear-gradient(to left, transparent, #000 var(--tab-edge-fade));
 }
 
 [data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-start][data-scrolled-end] {
   mask-image: linear-gradient(
     to right,
     transparent,
-    #000 12px,
-    #000 calc(100% - 12px),
+    #000 var(--tab-edge-fade),
+    #000 calc(100% - var(--tab-edge-fade)),
     transparent
   );
 }
