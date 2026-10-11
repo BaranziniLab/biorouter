@@ -39,7 +39,8 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const [hasProvider, setHasProvider] = useState(false);
   const [showFirstTimeSetup, setShowFirstTimeSetup] = useState(false);
   const [userInActiveSetup, setUserInActiveSetup] = useState(false);
-  const [providers, setProviders] = useState<ProviderDetails[]>([]);
+  // `null` until the daemon has answered: the catalog draws its skeleton, never an empty tab.
+  const [providers, setProviders] = useState<ProviderDetails[] | null>(null);
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
@@ -146,15 +147,28 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     (async () => {
       try {
         const result = await getProviders(false);
-        if (!cancelled && result) setProviders(result);
+        if (!cancelled) setProviders(result ?? []);
       } catch (error) {
         console.error('Failed to load providers for onboarding:', error);
+        if (!cancelled) setProviders([]);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [needsCatalog, getProviders]);
+
+  /**
+   * Re-read the list after a setup changed it (a key saved, an agent's command written), so a
+   * row's "Configured" follows what was just done. The first read is the effect above.
+   */
+  const refreshProviders = useCallback(() => {
+    getProviders(true)
+      .then((result) => {
+        if (result) setProviders(result);
+      })
+      .catch((error: unknown) => console.error('Failed to refresh providers:', error));
+  }, [getProviders]);
 
   const resumingSession =
     location.pathname === '/pair' &&
@@ -255,7 +269,10 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
             ) : (
               <>
                 <ProviderCatalog
-                  providers={providers}
+                  providers={providers ?? []}
+                  loading={providers === null}
+                  holdUntilSettled
+                  refreshProviders={refreshProviders}
                   mode="onboarding"
                   setView={setView}
                   onModelSelected={handleModelSelected}

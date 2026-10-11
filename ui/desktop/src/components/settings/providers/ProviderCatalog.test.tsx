@@ -1,10 +1,14 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
-import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
+import ProviderCatalog, {
+  AGENT_PROBE_WAIT_MS,
+  defaultCatalogTab,
+  tabFromHint,
+} from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
-import { catalogCopy, customProviderCopy } from './copy';
+import { catalogCopy, customProviderCopy, providerPageCopy } from './copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import type { CodingAgentAuth, CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
 
@@ -1023,5 +1027,129 @@ describe('ProviderCatalog — anatomy', () => {
     const panel = screen.getByRole('tabpanel');
     expect(within(panel).getByTestId('catalog-empty-institutional')).toBeInTheDocument();
     expect(panel).toHaveAttribute('tabindex', '0');
+  });
+});
+
+/**
+ * FR-R1-1 (first-run vision round 1). The first screen painted Local with "Nothing here yet." while
+ * the list was in flight, filled it a beat later, then switched itself to Public when the agent
+ * probe answered: a false empty state and a tab change under the pointer. A held catalog draws a
+ * skeleton until its opening tab is known and then opens there at rest, and keeps it.
+ */
+describe('ProviderCatalog — settling (FR-R1-1)', () => {
+  const rows = [
+    provider('llamacpp', PRIVATE_LOCAL, 'Llama Server'),
+    provider('claude_code', {}, 'Claude Code'),
+    provider('anthropic', {}, 'Anthropic'),
+  ];
+  const ready = { agents: [agent('claude_code', { state: 'signed_in_subscription' })] };
+
+  /** A probe that answers only when the test says so. */
+  const pendingProbe = () => {
+    let answer!: (value: unknown) => void;
+    mocks.fetchCodingAgentStatus.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    return (value: unknown) => answer(value);
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('draws the skeleton, never an empty tab, while the provider list loads', () => {
+    render(<ProviderCatalog providers={[]} loading mode="onboarding" configuredProvider={null} />);
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    expect(screen.queryByText(catalogCopy.emptyTab)).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+  });
+
+  it('waits for the agent probe when it can decide the tab, then opens on its answer at rest', async () => {
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    // The list is in, but a signed-in agent would open Public, so Local is not drawn first.
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).toBeNull();
+
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('commercial');
+    expect(screen.queryByRole('status', { name: providerPageCopy.loading })).toBeNull();
+  });
+
+  it('opens without the probe once the wait is over, and a late answer never moves the tab', async () => {
+    vi.useFakeTimers();
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    expect(screen.queryByRole('tab')).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(AGENT_PROBE_WAIT_MS);
+    });
+    expect(openTab()).toBe('local');
+
+    // The probe answers after the catalog opened: the person is already reading Local.
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('local');
+  });
+
+  it('does not wait for the probe when a bound provider already decides the tab', () => {
+    pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider="anthropic"
+        holdUntilSettled
+      />
+    );
+    expect(openTab()).toBe('commercial');
+  });
+
+  it('does not wait for the probe when a route hint decides the tab', () => {
+    pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="local"
+        holdUntilSettled
+      />
+    );
+    expect(openTab()).toBe('local');
+  });
+
+  it('holds while the bound provider has not been read yet', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
+    const { rerender } = render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider={undefined}
+        holdUntilSettled
+      />
+    );
+    expect(screen.queryByRole('tab')).toBeNull();
+    rerender(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider="anthropic"
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('commercial'));
   });
 });

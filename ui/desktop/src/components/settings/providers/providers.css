@@ -158,3 +158,12 @@ body:has(.br-provider-page) .titlebar-drag-region {
   background-color: var(--br-row-fill);
   --br-control-hover: var(--br-row-control-hover);
 }
+
+/* The catalog while it settles (`ProviderCatalog`, `holdUntilSettled`/`loading`): the tier line and
+   three 40px rows on the rows' own inset, so the reveal changes what is drawn, not where. */
+.br-provider-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-inline: 12px;
+}

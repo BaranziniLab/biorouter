@@ -24,7 +24,9 @@ import { useConfig } from '../../ConfigContext';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Note } from '../../ui/note';
 import { Button } from '../../ui/button';
-import { catalogCopy, customProviderCopy } from './copy';
+import { Skeleton } from '../../ui/skeleton';
+import { llamaServerStore } from '../models/llamaServerStore';
+import { catalogCopy, customProviderCopy, providerPageCopy } from './copy';
 import './providers.css';
 import {
   RETIRED_AZURE_ENDPOINT_NOTICE,
@@ -138,7 +140,28 @@ interface ProviderCatalogProps {
    * tabs appear the moment it is.
    */
   tabsHost?: HTMLElement | null;
+  /**
+   * The provider list is still being fetched (`providers` is not the answer yet). The catalog
+   * draws its quiet skeleton instead of a tab that would say "Nothing here yet." about providers
+   * it has not been told about (first run, vision FR-R1-1).
+   */
+  loading?: boolean;
+  /**
+   * Draw nothing but the skeleton until the opening tab is known, then open on it at rest and
+   * keep it: the provider list, `configuredProvider` (`undefined` = not read yet) and, when it can
+   * decide the tab (no route hint, no bound provider), the coding-agent probe, waited for at most
+   * {@link AGENT_PROBE_WAIT_MS}. Without it the first run painted Local, then switched itself to
+   * Public a second later when the probe answered, under the pointer (FR-R1-1).
+   */
+  holdUntilSettled?: boolean;
 }
+
+/**
+ * How long a held catalog waits for the coding-agent probe before it opens without it. The probe
+ * spawns two vendor CLIs and answered in about 1.4 s in the first-run review; a hung CLI must not
+ * keep the first screen a skeleton. After this the probe can no longer move the tab.
+ */
+export const AGENT_PROBE_WAIT_MS = 2500;
 
 /**
  * The provider ids that open a bespoke first-run setup panel, and which one.
@@ -254,6 +277,8 @@ export default function ProviderCatalog({
   chatPrivacyTier,
   heldChatTabId = null,
   tabsHost,
+  loading = false,
+  holdUntilSettled = false,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
   const { read } = useConfig();
@@ -406,7 +431,52 @@ export default function ProviderCatalog({
     hasSubscriptionReadyAgent,
     routeHint: initialTab,
   });
-  const activeTab = chosenTab ?? computedTab;
+
+  /**
+   * A held catalog (`holdUntilSettled`) opens once, at rest, on the tab its inputs settle on.
+   *
+   * The probe only gets a say when it could change the answer: a route hint or a bound provider
+   * outranks it (rules 1 and 2 of {@link defaultCatalogTab}), so with either of those the catalog
+   * does not wait for two CLIs to start. Once settled the tab is frozen in `settledTab`, so a late
+   * probe (one that outlived {@link AGENT_PROBE_WAIT_MS}) or a refreshed provider list never moves
+   * it; the person's own click (`chosenTab`) still does.
+   */
+  const [probeWaitOver, setProbeWaitOver] = useState(false);
+  useEffect(() => {
+    if (!holdUntilSettled) return;
+    const timer = window.setTimeout(() => setProbeWaitOver(true), AGENT_PROBE_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [holdUntilSettled]);
+  const ownsBoundProvider =
+    !!configuredProvider &&
+    groups.some((group) =>
+      group.providers.some((provider) => provider.name === configuredProvider)
+    );
+  const probeCanDecide = tabFromHint(initialTab) === null && !ownsBoundProvider;
+  const settling =
+    loading ||
+    (holdUntilSettled &&
+      (configuredProvider === undefined ||
+        (probeCanDecide && agentControls.isChecking && !probeWaitOver)));
+  const [settledTab, setSettledTab] = useState<ProviderGroupKey | null>(null);
+  useEffect(() => {
+    if (holdUntilSettled && !settling && settledTab === null) setSettledTab(computedTab);
+  }, [computedTab, holdUntilSettled, settledTab, settling]);
+  const activeTab = chosenTab ?? settledTab ?? computedTab;
+
+  // First run opens the Llama Server row by default, and that panel starts on "Checking Llama
+  // Server…" until its status arrives. Asked here, while the catalog is still a skeleton, the
+  // status is usually in by the time the panel mounts, so the panel opens on its content. A read
+  // (`GET /llamacpp/status`), never a start: nothing is downloaded or run.
+  const hasLlamaServer =
+    Array.isArray(providers) && providers.some((provider) => provider.name === 'llamacpp');
+  useEffect(() => {
+    if (!isOnboarding || !hasLlamaServer) return;
+    if (llamaServerStore.getSnapshot().status !== null) return;
+    llamaServerStore.refresh().catch(() => {
+      // The panel asks again when it mounts and says so if it fails.
+    });
+  }, [hasLlamaServer, isOnboarding]);
 
   const [openRow, setOpenRow] = useState<string | null>(() => {
     // The recommended local provider opens by default in onboarding: it is the
@@ -762,32 +832,49 @@ export default function ProviderCatalog({
       */}
       <HostManagedModelNote className="mb-6" />
 
-      <Tabs
-        value={activeTab}
-        onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
-        className="br-provider-catalog br-rows-flat flex flex-col"
-      >
-        {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
+      {settling ? (
+        // The quiet skeleton at row height: the tier line, then three rows. Nothing in it can be
+        // read as an answer (no "Nothing here yet.", no tab), so nothing on the first screen is
+        // contradicted a second later (FR-R1-1).
+        <div
+          role="status"
+          aria-label={providerPageCopy.loading}
+          className="br-provider-skeleton"
+          data-testid="provider-catalog-loading"
+        >
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+      ) : (
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
+          className="br-provider-catalog br-rows-flat flex flex-col"
+        >
+          {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
             colour that says private from public at a glance. In the page band they sit on the
             title's line, as Settings' do, and the band's own hairline is the one rule. */}
-        {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
+          {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
 
-        {/* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
+          {/* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
             the tab list would land on a panel that shows nothing. A panel with rows hands that
             stop to its first control (V4-05, request WS-PRIMITIVES-3); one with no control to
             hand it to (an empty institutional tab) keeps it, so a keyboard user can still reach
             the line that explains why. */}
-        {groups.map((group) => (
-          <TabsContent
-            key={group.key}
-            value={group.key}
-            className="mt-0"
-            {...(group.providers.length > 0 ? { tabIndex: -1 } : {})}
-          >
-            {renderPanel(group)}
-          </TabsContent>
-        ))}
-      </Tabs>
+          {groups.map((group) => (
+            <TabsContent
+              key={group.key}
+              value={group.key}
+              className="mt-0"
+              {...(group.providers.length > 0 ? { tabIndex: -1 } : {})}
+            >
+              {renderPanel(group)}
+            </TabsContent>
+          ))}
+        </Tabs>
+      )}
 
       <ModalShell
         open={showCustomProviderModal}

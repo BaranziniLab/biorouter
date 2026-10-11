@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ScrollArea } from '../../ui/scroll-area';
 import { PageHeader } from '../../Layout/PageHeader';
 import { getTitlebarControlInset } from '../../Layout/TitlebarControls';
-import { Skeleton } from '../../ui/skeleton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
 import { ProviderDetails, type SessionClassification } from '../../../api';
@@ -40,7 +39,10 @@ export default function ProviderSettings({
   const { search } = useLocation();
   const [loading, setLoading] = useState(true);
   const [providers, setProviders] = useState<ProviderDetails[]>([]);
-  const [configuredProvider, setConfiguredProvider] = useState<string | null>(null);
+  // `undefined` until read: the catalog holds its opening tab until it knows (`holdUntilSettled`).
+  const [configuredProvider, setConfiguredProvider] = useState<string | null | undefined>(
+    undefined
+  );
   const initialLoadDone = useRef(false);
   // The band's tab slot, which the catalog draws its tabs into (`ProviderCatalog.tabsHost`). State
   // rather than a ref: the catalog must re-render when the element exists.
@@ -153,34 +155,25 @@ export default function ProviderSettings({
       />
       <ScrollArea className="flex-1 w-full">
         <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
-          {loading ? (
-            <div
-              role="status"
-              aria-label={providerPageCopy.loading}
-              className="flex flex-col gap-3"
-            >
-              <Skeleton className="h-5 w-48" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </div>
-          ) : (
-            <ProviderCatalog
-              tabsHost={tabsHost}
-              providers={providers}
-              mode={isOnboarding ? 'onboarding' : 'settings'}
-              refreshProviders={refreshProviders}
-              setView={setView}
-              onModelSelected={onProviderLaunched}
-              onLocalComplete={() => onProviderLaunched?.()}
-              onCommercialSuccess={handleCommercialSuccess}
-              configuredProvider={configuredProvider}
-              initialTab={tabHint}
-              chatSessionId={chatSessionId}
-              chatPrivacyTier={chatPrivacyTier}
-              heldChatTabId={heldChatTabId}
-            />
-          )}
+          {/* Mounted at once, so the coding-agent probe runs while the list loads; the catalog
+              draws the skeleton until it knows which tab opens, then opens there at rest. */}
+          <ProviderCatalog
+            tabsHost={tabsHost}
+            providers={providers}
+            loading={loading}
+            holdUntilSettled
+            mode={isOnboarding ? 'onboarding' : 'settings'}
+            refreshProviders={refreshProviders}
+            setView={setView}
+            onModelSelected={onProviderLaunched}
+            onLocalComplete={() => onProviderLaunched?.()}
+            onCommercialSuccess={handleCommercialSuccess}
+            configuredProvider={configuredProvider}
+            initialTab={tabHint}
+            chatSessionId={chatSessionId}
+            chatPrivacyTier={chatPrivacyTier}
+            heldChatTabId={heldChatTabId}
+          />
         </div>
       </ScrollArea>
     </div>

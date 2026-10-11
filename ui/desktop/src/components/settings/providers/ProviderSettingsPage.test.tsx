@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,8 +32,25 @@ vi.mock('../../ConfigContext', () => ({
 // The catalog draws its tab list into the band's slot (`tabsHost`); the stand-in does the same
 // with a marker, which is what proves the slot is the band's.
 vi.mock('./ProviderCatalog', () => ({
-  default: ({ mode, tabsHost }: { mode: string; tabsHost?: HTMLElement | null }) => (
-    <div data-testid="catalog">
+  default: ({
+    mode,
+    tabsHost,
+    loading,
+    holdUntilSettled,
+    configuredProvider,
+  }: {
+    mode: string;
+    tabsHost?: HTMLElement | null;
+    loading?: boolean;
+    holdUntilSettled?: boolean;
+    configuredProvider?: string | null;
+  }) => (
+    <div
+      data-testid="catalog"
+      data-loading={String(Boolean(loading))}
+      data-hold={String(Boolean(holdUntilSettled))}
+      data-configured={configuredProvider === undefined ? 'unread' : String(configuredProvider)}
+    >
       {mode}
       {tabsHost ? createPortal(<span data-testid="tabs-marker" />, tabsHost) : null}
     </div>
@@ -166,10 +183,20 @@ describe('the provider page', () => {
     expect(root.className).not.toContain('bg-background-muted');
   });
 
-  it('shows skeleton rows, not a line of text, while the providers load', () => {
+  // FR-R1-1: the catalog is mounted at once, so its coding-agent probe runs while the list loads,
+  // and it draws the skeleton itself until it knows which tab opens (`holdUntilSettled`). The
+  // skeleton and the hold are the catalog's own suite's (ProviderCatalog.test, "settling").
+  it('mounts the catalog while the providers load, told that they are loading and to hold its tab', async () => {
     mocks.getProviders.mockReturnValue(new Promise(() => {}));
+    let release!: (value: string) => void;
+    mocks.read.mockReturnValue(new Promise((resolve) => (release = resolve)));
     renderPage(false);
-    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
-    expect(screen.queryByTestId('catalog')).toBeNull();
+    const catalog = screen.getByTestId('catalog');
+    expect(catalog).toHaveAttribute('data-loading', 'true');
+    expect(catalog).toHaveAttribute('data-hold', 'true');
+    // The bound provider is not read yet, which the catalog is told rather than shown `null`.
+    expect(catalog).toHaveAttribute('data-configured', 'unread');
+    release('versa_azure');
+    await waitFor(() => expect(catalog).toHaveAttribute('data-configured', 'versa_azure'));
   });
 });

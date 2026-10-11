@@ -34,11 +34,19 @@ vi.mock('./settings/providers/ProviderCatalog', () => ({
   default: ({
     onCommercialSuccess,
     onLocalComplete,
+    loading,
+    holdUntilSettled,
   }: {
     onCommercialSuccess?: (setup: unknown) => void | Promise<void>;
     onLocalComplete?: () => void;
+    loading?: boolean;
+    holdUntilSettled?: boolean;
   }) => (
-    <div>
+    <div
+      data-testid="catalog-stub"
+      data-loading={String(Boolean(loading))}
+      data-hold={String(Boolean(holdUntilSettled))}
+    >
       CATALOG
       <button
         onClick={() =>
@@ -134,6 +142,26 @@ describe('ProviderGuard', () => {
       expect(column.className).toContain('px-5');
       expect(column.className).toContain('sm:px-6');
     }
+  });
+
+  // FR-R1-1: the catalog is told the list is still in flight, so it draws its skeleton rather
+  // than a tab that says there is nothing in it, and it holds its opening tab until it is known.
+  it('tells the catalog the provider list is loading until the daemon answers', async () => {
+    let answer!: (value: unknown[]) => void;
+    mocks.getProviders.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    renderGuard();
+    const catalog = await screen.findByTestId('catalog-stub');
+    expect(catalog).toHaveAttribute('data-loading', 'true');
+    expect(catalog).toHaveAttribute('data-hold', 'true');
+    answer([]);
+    await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
+  });
+
+  it('stops loading when the list cannot be read, rather than holding the skeleton forever', async () => {
+    mocks.getProviders.mockRejectedValue(new Error('daemon down'));
+    renderGuard();
+    const catalog = await screen.findByTestId('catalog-stub');
+    await waitFor(() => expect(catalog).toHaveAttribute('data-loading', 'false'));
   });
 
   it('lets a configured install straight through', async () => {
