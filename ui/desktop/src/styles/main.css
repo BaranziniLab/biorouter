@@ -3704,6 +3704,22 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   box-shadow: var(--shadow-popover);
 }
 
+/* @ws WS-PRIMITIVES begin: popover elevation */
+/* Dark: a floating surface steps UP one ground and takes the stronger edge (vision round 1,
+   V1-M5; checklist 13). The neutrals step up from the page in dark, and the shadow is black on
+   near-black, so a menu on `--background-default` (#1b1b19) over the sidebar (#171716) or a card
+   (#1b1b19) was separated by its 1px `--border-subtle` alone. `--background-medium` is the step
+   (1.28:1 on the sidebar, 1.23:1 on a card) and `--border-strong` the edge (1.65:1 and 1.59:1),
+   the raised-thumb rule of the segmented control. The token is re-pointed INSIDE the surface, so
+   a field or list in a popover that paints `--background-default` rides the same ground instead
+   of reading as a dark well. `ui/popoverSurface.test.ts` measures every family. */
+.dark .biorouter-popover-surface {
+  --background-default: var(--background-medium);
+  border-color: var(--border-strong);
+  background-color: var(--background-default);
+}
+/* @ws WS-PRIMITIVES end: popover elevation */
+
 /* D-05 / P1 — a flat header separated by a hairline. The gradient wash and the
    chrome shadow that used to replace the border are gone. */
 .biorouter-page-header {
