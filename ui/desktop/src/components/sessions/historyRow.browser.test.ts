@@ -35,6 +35,19 @@ function primitiveBlocks(): string {
   return out.join('\n');
 }
 
+/**
+ * The app's base focus rule (`:where(a, button, …):focus-visible`, in `@layer base`): the focus
+ * ground and an inset 2px edge on the control itself. Pulled from `main.css` so the test sees the
+ * rule the row is up against, and it throws rather than going vacuous if the rule moves.
+ */
+function baseFocusRule(): string {
+  const match = MAIN_CSS.match(
+    /:where\(\s*:is\(\s*a,\s*button,[\s\S]*?\):focus-visible\s*\{[^}]*\}/
+  );
+  if (!match) throw new Error('main.css has no base :focus-visible rule to measure against');
+  return `@layer base {\n${match[0]}\n}`;
+}
+
 const TOKENS = `:root {
   --radius-inner: 4px;
   --radius-md: 8px;
@@ -98,7 +111,7 @@ const row = (
   </div>`;
 
 function page(css: string) {
-  return `<!doctype html><html><head><style>${TOKENS}\n${primitiveBlocks()}\n${css}</style></head><body>
+  return `<!doctype html><html><head><style>${TOKENS}\n${baseFocusRule()}\n${primitiveBlocks()}\n${css}</style></head><body>
     <main style="width:760px;padding:0 24px">
       <section>
         <h2 class="br-history-bucket text-supporting" id="bucket">Today</h2>
@@ -246,6 +259,109 @@ describe('Chat history rows in a real layout engine', () => {
     } finally {
       await tab.close();
     }
+  });
+
+  /**
+   * Vision V1-R3-4. Keyboard focus on the open control drew the base rule's inset ring on the
+   * control itself: a 370px text block with no padding, so the ring touched and cut the first
+   * letter of the title and of the time and read as a box inside the row's hover fill. The
+   * ring is the row's (spec 2.5: `--background-focus` and an inset 2px `--border-focus`), as a
+   * sidebar row's is, and the control paints nothing.
+   */
+  describe('keyboard focus on the open control (V1-R3-4)', () => {
+    const RING = 'rgb(90, 90, 90) 0px 0px 0px 2px inset';
+    const FOCUS_GROUND = 'rgb(235, 235, 235)';
+    const style = (tab: Page, id: string) =>
+      tab.evaluate((el) => {
+        const cs = getComputedStyle(document.getElementById(el)!);
+        return { shadow: cs.boxShadow, ground: cs.backgroundColor };
+      }, id);
+    const settled = (tab: Page, id: string, ground: string) =>
+      tab.waitForFunction(
+        ([el, want]) => getComputedStyle(document.getElementById(el)!).backgroundColor === want,
+        [id, ground] as const,
+        // Short, so a ground that never arrives fails in seconds rather than at the 30s default.
+        { timeout: 3000 }
+      );
+    /** Tab in from the end of the page, the way a keyboard user arrives (so `:focus-visible` holds). */
+    const tabTo = async (tab: Page, id: string) => {
+      await tab.mouse.move(990, 590);
+      await tab.focus('#outside');
+      await tab.keyboard.press('Shift+Tab');
+      for (let i = 0; i < 12; i++) {
+        if ((await tab.evaluate(() => document.activeElement?.id)) === id) return;
+        await tab.keyboard.press('Tab');
+      }
+      throw new Error(`Tab never reached #${id}`);
+    };
+    /** Where the first glyph of an element's text sits. */
+    const textLeft = (tab: Page, selector: string) =>
+      tab.evaluate((sel) => {
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector(sel)!);
+        return range.getBoundingClientRect().left;
+      }, selector);
+
+    it('is drawn on the row, clear of the title and the time, and not on the control', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open();
+      try {
+        // The instrument: the base rule really draws its ring on a bare focused button here, so
+        // the control's silence below is the stylesheet's doing and not a missing rule.
+        await tabTo(tab, 'outside');
+        expect((await style(tab, 'outside')).shadow).toBe(RING);
+
+        await tabTo(tab, 'a-open');
+        await settled(tab, 'a', FOCUS_GROUND);
+        expect((await style(tab, 'a')).shadow).toBe(RING);
+        expect((await style(tab, 'a-open')).shadow).toBe('none');
+
+        // The edge is 2px inside the row; the first letters sit well clear of it (4px is the floor).
+        const rowLeft = (await box(tab, 'a')).left;
+        expect((await textLeft(tab, '#a-title')) - (rowLeft + 2)).toBeGreaterThanOrEqual(4);
+        expect(
+          (await textLeft(tab, '#a .br-history-row-meta')) - (rowLeft + 2)
+        ).toBeGreaterThanOrEqual(4);
+
+        // The neighbours stay at rest.
+        expect((await style(tab, 'b')).shadow).toBe('none');
+        expect((await style(tab, 'c')).shadow).toBe('none');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('still reads as focused when the pointer is over the row', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open();
+      try {
+        await tabTo(tab, 'a-open');
+        await tab.hover('#a-open');
+        await settled(tab, 'a', FOCUS_GROUND);
+        expect((await style(tab, 'a')).shadow).toBe(RING);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('leaves nothing behind after a click and keeps the actions their own ring', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open();
+      try {
+        // A clicked button is not `:focus-visible`: no ring on the row or the control.
+        await tab.click('#a-open');
+        expect((await style(tab, 'a')).shadow).toBe('none');
+        expect((await style(tab, 'a-open')).shadow).toBe('none');
+
+        // Rename keeps the control's own ring; the row draws none and holds only the wash.
+        await tabTo(tab, 'a-rename');
+        expect((await style(tab, 'a-rename')).shadow).toBe(RING);
+        expect((await style(tab, 'a')).shadow).toBe('none');
+        await settled(tab, 'a', 'rgb(240, 240, 240)');
+      } finally {
+        await tab.close();
+      }
+    });
   });
 
   it('fades the reveal over --dur-fast-min when motion is allowed', async (ctx) => {

@@ -77,6 +77,31 @@
   border-radius: var(--radius-inner);
 }
 
+/* Keyboard focus on the open control is the ROW's focus (vision V1-R3-4; spec 2.5: a row gets
+   `--background-focus` and an inset 2px `--border-focus` edge, as a sidebar row does). The
+   control is the text block with no padding of its own, so the base rule's inset ring, drawn on
+   it, touched and clipped the first letter of the title and of the time and read as a box inside
+   the row's hover fill. The ring is drawn on the row instead, 12px clear of the glyph and 34px
+   clear of the title, and the control paints nothing of its own, so there is one edge and not
+   two. Keyed on `:focus-visible` through `:has()`, never `:focus-within`, so a click on the row
+   leaves no residue (a clicked button is not `:focus-visible`); the Rename and `⋯` buttons keep
+   their own ring and the shared row's wash. The control's rule outranks the base layer's
+   `:where(button):focus-visible`, and the row's outranks the shared recipe's hover and
+   `:has(:focus-visible)` washes (0,2,0), so a focused row under the pointer still reads as
+   focused. Under forced colours and `prefers-contrast: more` the end of `main.css` still draws
+   the system ring, with a 2px offset, on the control itself (a box-shadow is not painted
+   there). Authored here, not Tailwind `focus-visible:` utilities: a focus indicator must not
+   depend on class scanning having worked. */
+.br-history-row-open:focus-visible {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.br-history-row:has(.br-history-row-open:focus-visible) {
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
 .br-history-row-meta {
   display: flex;
   min-width: 0;

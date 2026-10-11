@@ -51,6 +51,34 @@ describe('a row whose menu is open (V1-R2-6)', () => {
   });
 });
 
+describe("a row's keyboard focus (V1-R3-4)", () => {
+  const row = HISTORY_CSS.match(
+    /\.br-history-row:has\(\.br-history-row-open:focus-visible\)\s*\{([^}]*)\}/
+  );
+  const control = HISTORY_CSS.match(/\.br-history-row-open:focus-visible\s*\{([^}]*)\}/);
+
+  /**
+   * Spec 2.5: a row takes `--background-focus` and an inset 2px `--border-focus` edge. The open
+   * control is the row's text block with no padding, so the base rule's ring on it clipped the
+   * title; the ring moves to the row and the control paints nothing. Keyed on `:focus-visible`
+   * through `:has()`, never `:focus-within`, so a click leaves no residue. Measured in Chromium
+   * by `historyRow.browser.test.ts`; this pins the two rules a jsdom test cannot see.
+   */
+  it('draws the focus ground and the inset edge on the row', () => {
+    expect(row).not.toBeNull();
+    expect(row![1]).toMatch(/background-color:\s*var\(--background-focus\)/);
+    expect(row![1]).toMatch(/box-shadow:\s*inset 0 0 0 2px var\(--border-focus\)/);
+    const rules = HISTORY_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(rules).not.toMatch(/\.br-history-row[^{]*:focus-within/);
+  });
+
+  it('draws nothing on the open control itself', () => {
+    expect(control).not.toBeNull();
+    expect(control![1]).toMatch(/background-color:\s*transparent/);
+    expect(control![1]).toMatch(/box-shadow:\s*none/);
+  });
+});
+
 describe('the loading skeleton', () => {
   const block = MAIN_CSS.match(
     /@ws WS-HISTORY begin: history loading[\s\S]*?@ws WS-HISTORY end: history loading/
