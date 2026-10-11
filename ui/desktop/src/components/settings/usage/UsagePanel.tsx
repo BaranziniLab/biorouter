@@ -13,6 +13,7 @@ import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
 import { StatGrid, type StatItem } from '../../usage/StatGrid';
 import { settingsUsageCopy as copy } from '../../usage/copy';
+import '../../usage/usage.css';
 
 /**
  * Settings > App > Usage (spec 3.9): the BILLING view of the month, which
@@ -409,7 +410,10 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
         {dayRows.length === 0 ? (
           <EmptyTableState>{copy.empty}</EmptyTableState>
         ) : (
-          <div className="w-full overflow-x-auto" data-testid="usage-day-table-wrap">
+          <div
+            className="br-usage-table-frame w-full overflow-x-auto"
+            data-testid="usage-day-table-wrap"
+          >
             <table
               className="w-full table-fixed border-collapse text-secondary"
               data-testid="usage-day-table"
@@ -465,7 +469,10 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
         {modelRows.length === 0 ? (
           <EmptyTableState>{copy.empty}</EmptyTableState>
         ) : (
-          <div className="w-full overflow-x-auto" data-testid="usage-model-table-wrap">
+          <div
+            className="br-usage-table-frame w-full overflow-x-auto"
+            data-testid="usage-model-table-wrap"
+          >
             <table
               className="w-full table-fixed border-collapse text-secondary"
               data-testid="usage-model-table"

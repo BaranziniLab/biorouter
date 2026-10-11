@@ -8,10 +8,14 @@
  * with the card's stylesheet (`usage.css`) and the heatmap's block from
  * `main.css` (between its `@ws WS-USAGE` markers) at the token values. It pins
  * what the acceptance names as measurements:
- *  - the card is the 760px chat measure with a 36px head over a 1px hairline;
+ *  - the card is the 760px chat measure with a 36px head over a 1px hairline, and a FILL
+ *    with a transparent 1px edge (R-27): no outline, nothing moves;
+ *  - the segmented range control inside it rests one ground deeper than the card (a fill
+ *    never sits on a fill), and an empty heatmap day is a step off the fill in light and dark;
  *  - six tiles in three columns, two under a 480px container, figures at 24px;
  *  - the heatmap is fluid: one equal column per week, square cells, a 3px gap,
- *    filling the card's 726px inner width; month labels are 12px;
+ *    filling the card's 726px inner width; month labels are 12px, in one row, and a label in
+ *    the last two columns ends flush with the grid's right edge;
  *  - both tabs keep one height (the panels' 112px floor);
  *  - the tab panels share one grid cell, so a crossfade moves nothing, and the
  *    leaving panel fades out on its own animation (Radix keeps it mounted for it).
@@ -34,17 +38,33 @@ const TOKENS = `:root {
   --text-supporting: 12px;
   --text-supporting--line-height: 16px;
   --radius-inner: 4px;
+  --radius-element: 8px;
+  --control-sm: 28px;
   --radius-container: 12px;
   --radius-full: 9999px;
   --dock-height: 36px;
   --border-subtle: #e5e3df;
   --border-focus: #6b6963;
   --background-card: #ffffff;
+  --background-default: #ffffff;
+  --background-fill: #f4f4f2;
+  --background-fill-strong: #eaeae6;
+  --background-strong: #dcdcd8;
   --text-default: #1f1e1c;
   --text-muted: #6b6862;
   --heat-0: #eeeeea; --heat-1: #e9c9ab; --heat-2: #dda27a; --heat-3: #c6774c; --heat-4: #a04a27;
   --dur-fast-min: 95ms; --dur-fast: 125ms; --dur-fast-max: 175ms; --dur-med: 300ms; --dur-slow: 525ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
+}
+html.dark {
+  --border-subtle: #302f2c;
+  --background-card: #1b1b19;
+  --background-default: #1b1b19;
+  --background-fill: #232320;
+  --background-fill-strong: #2c2c29;
+  --background-strong: #3a3a36;
+  --text-default: #f4f0e6;
+  --heat-0: #32312e; --heat-1: #573e2a; --heat-2: #7a4d2e; --heat-3: #b0653a; --heat-4: #e8895f;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/20px var(--font-body); }
@@ -65,6 +85,17 @@ function heatmapCss(): string {
   const end = main.indexOf('/* @ws WS-USAGE end: heatmap */');
   if (begin < 0 || end < begin) throw new Error('heatmap block markers not found in main.css');
   return main.slice(begin, end);
+}
+
+/**
+ * The segmented control's own track rule, cut from `main.css`: the card's override has to beat
+ * THIS (a (0,2,0) selector over a (0,1,0) one), so the real rule is the thing to lay out against.
+ */
+function segmentedTrackCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  const match = main.match(/\n\.br-segmented \{[^}]*\}/);
+  if (!match) throw new Error('.br-segmented rule not found in main.css');
+  return match[0];
 }
 
 /** A 371-day window, as the daemon serves it. */
@@ -100,7 +131,7 @@ function cardHtml(width: number): string {
             <button style="height:36px;font:inherit;border:0;background:none;padding:0">Overview</button>
           </div>
         </div>
-        <div class="br-usage-card-range" id="range" style="height:28px;width:96px"></div>
+        <div class="br-usage-card-range br-segmented" id="range" style="width:96px"></div>
       </div>
       <div class="br-usage-card-body" id="body">
         <div class="br-usage-panels" id="panels">${tiles}</div>
@@ -133,7 +164,7 @@ describe('Home usage card in a real layout engine', () => {
           'tests. Run `npx playwright install chromium` to enable them.'
       );
     }
-    css = readFileSync(resolve(here, 'usage.css'), 'utf8') + heatmapCss();
+    css = readFileSync(resolve(here, 'usage.css'), 'utf8') + heatmapCss() + segmentedTrackCss();
   }, 120_000);
 
   afterAll(async () => {
@@ -180,6 +211,59 @@ describe('Home usage card in a real layout engine', () => {
       expect(Math.abs(m.rangeCentre - m.headCentre)).toBeLessThanOrEqual(0.5);
     } finally {
       await tab.close();
+    }
+  });
+
+  it('is a fill with no outline, and the range track rests one ground deeper than it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(760);
+      try {
+        const m = await tab.evaluate((dark) => {
+          document.documentElement.classList.toggle('dark', dark);
+          const style = (id: string) => getComputedStyle(document.getElementById(id)!);
+          return {
+            fill: style('card').backgroundColor,
+            edgeWidth: style('card').borderTopWidth,
+            edgeColor: style('card').borderTopColor,
+            radius: style('card').borderTopLeftRadius,
+            track: style('range').backgroundColor,
+            trackHeight: document.getElementById('range')!.getBoundingClientRect().height,
+          };
+        }, mode === 'dark');
+        expect(m.fill).toBe(mode === 'dark' ? 'rgb(35, 35, 32)' : 'rgb(244, 244, 242)');
+        // The 1px edge stays, transparent, so forced colours draw it and nothing moves.
+        expect(m.edgeWidth).toBe('1px');
+        expect(m.edgeColor).toBe('rgba(0, 0, 0, 0)');
+        expect(m.radius).toBe('12px');
+        // A fill on the fill would be invisible: the track is the strong step.
+        expect(m.track).toBe(mode === 'dark' ? 'rgb(44, 44, 41)' : 'rgb(234, 234, 230)');
+        expect(m.track).not.toBe(m.fill);
+        expect(m.trackHeight).toBe(28);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('paints an empty day a step off the fill: white in light, the dark ramp\u2019s own step in dark', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(760);
+      try {
+        const m = await tab.evaluate((dark) => {
+          document.documentElement.classList.toggle('dark', dark);
+          const cell = document.querySelector('[role="gridcell"]')!;
+          return {
+            empty: getComputedStyle(cell).backgroundColor,
+            card: getComputedStyle(document.getElementById('card')!).backgroundColor,
+          };
+        }, mode === 'dark');
+        expect(m.empty).toBe(mode === 'dark' ? 'rgb(50, 49, 46)' : 'rgb(255, 255, 255)');
+        expect(m.empty).not.toBe(m.card);
+      } finally {
+        await tab.close();
+      }
     }
   });
 
@@ -257,6 +341,46 @@ describe('Home usage card in a real layout engine', () => {
       expect(m.monthFont).toBe('12px');
     } finally {
       await tab.close();
+    }
+  });
+
+  it('keeps every month label in one row, the last one flush with the grid edge, not past it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    // The window ends on 2026-10-09; its last column starts on Sunday 2026-10-04, so its month
+    // label lands in the final column, which is about 11px wide for a label about 21px wide.
+    for (const width of [760, 560]) {
+      const tab = await open(width);
+      try {
+        const m = await tab.evaluate(() => {
+          const grid = document.querySelector('[role="grid"]')!.getBoundingClientRect();
+          const labels = [...document.querySelectorAll('.biorouter-heatmap-months > span')].map(
+            (label) => {
+              const box = label.getBoundingClientRect();
+              return {
+                text: label.textContent,
+                end: label.hasAttribute('data-end'),
+                left: box.left,
+                right: box.right,
+                top: box.top,
+              };
+            }
+          );
+          return { gridRight: grid.right, labels };
+        });
+        const last = m.labels[m.labels.length - 1];
+        expect(last.text).toBe('Oct');
+        expect(last.end).toBe(true);
+        expect(Math.abs(last.right - m.gridRight)).toBeLessThanOrEqual(0.5);
+        // One row: a label that spans the whole row must not push the others down.
+        expect(new Set(m.labels.map((label) => label.top)).size).toBe(1);
+        // Never on top of the label before it.
+        const before = m.labels[m.labels.length - 2];
+        expect(last.left).toBeGreaterThan(before.right);
+        // Only a label this close to the edge is flagged.
+        expect(m.labels.filter((label) => label.end)).toHaveLength(1);
+      } finally {
+        await tab.close();
+      }
     }
   });
 

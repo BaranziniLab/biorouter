@@ -296,8 +296,16 @@ describe('UsageReport', () => {
 
     const dayTable = screen.getByTestId('usage-day-table');
     const modelTable = screen.getByTestId('usage-model-table');
-    expect(screen.getByTestId('usage-day-table-wrap')).toHaveClass('w-full', 'overflow-x-auto');
-    expect(screen.getByTestId('usage-model-table-wrap')).toHaveClass('w-full', 'overflow-x-auto');
+    // Each table sits in the one filled panel (R-27: a fill, no frame), and scrolls sideways
+    // before it squeezes a column.
+    for (const id of ['usage-day-table-wrap', 'usage-model-table-wrap']) {
+      expect(screen.getByTestId(id)).toHaveClass(
+        'br-usage-table-frame',
+        'w-full',
+        'overflow-x-auto'
+      );
+      expect(screen.getByTestId(id).className).not.toMatch(/\bborder\b/);
+    }
     // Fixed layouts sized to the 640px dialog, not minimum widths that scroll.
     expect(dayTable).toHaveClass('table-fixed', 'border-collapse', 'text-secondary');
     expect(modelTable).toHaveClass('table-fixed', 'border-collapse', 'text-secondary');

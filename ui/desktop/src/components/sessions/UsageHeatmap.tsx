@@ -170,7 +170,7 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
       // `--z-dropdown`, not `--z-toast`: it is portalled to `document.body`, so
       // it only has to clear the sticky page chrome, and a transient popover is
       // exactly what `--z-dropdown` names.
-      className="biorouter-heatmap-tooltip pointer-events-none fixed z-[var(--z-dropdown)] w-max max-w-[calc(100vw-16px)] rounded-container border border-border-subtle bg-background-default p-3 shadow-popover"
+      className="biorouter-heatmap-tooltip biorouter-popover-surface pointer-events-none fixed z-[var(--z-dropdown)] w-max max-w-[calc(100vw-16px)] rounded-container bg-background-default p-3"
       style={{
         left: pos?.left ?? -9999,
         top: pos?.top ?? -9999,
@@ -353,16 +353,23 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
     cellRefs.current[to]?.focus();
   };
 
-  // One label per month, placed on the first column whose Sunday falls in it.
+  // One label per month, placed on the first column whose Sunday falls in it. A label that
+  // starts in the last two columns has no room for its three letters under them (a column is
+  // about 11px, a label about 21px), so it would hang past the grid's right edge, the one edge
+  // the range control, the cells and the legend share: `end` ends it flush with that edge.
   const months = useMemo(() => {
-    const out: { column: number; label: string }[] = [];
+    const out: { column: number; label: string; end: boolean }[] = [];
     let last = '';
     for (let w = 0; w < weeks; w++) {
       const d = cells[w * 7].date;
       const key = `${d.getFullYear()}-${d.getMonth()}`;
       if (key !== last && d.getDate() <= 7) {
         last = key;
-        out.push({ column: w, label: d.toLocaleDateString('en-US', { month: 'short' }) });
+        out.push({
+          column: w,
+          label: d.toLocaleDateString('en-US', { month: 'short' }),
+          end: weeks - w <= 2,
+        });
       }
     }
     return out;
@@ -381,8 +388,12 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
       style={{ '--heat-weeks': weeks } as React.CSSProperties}
     >
       <div className="biorouter-heatmap-months" aria-hidden="true">
-        {months.map(({ column, label }) => (
-          <span key={column} style={{ gridColumnStart: column + 1 }}>
+        {months.map(({ column, label, end }) => (
+          <span
+            key={column}
+            data-end={end ? '' : undefined}
+            style={end ? undefined : { gridColumnStart: column + 1 }}
+          >
             {label}
           </span>
         ))}

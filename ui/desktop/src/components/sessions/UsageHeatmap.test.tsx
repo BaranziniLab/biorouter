@@ -104,6 +104,18 @@ describe('UsageHeatmap', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  it('draws the tooltip on the one floating-surface recipe, so dark lifts it off the card', () => {
+    // A floating surface keeps its hairline and shadow (R-27), and in dark it steps up one ground
+    // and takes the stronger edge, which `.dark .biorouter-popover-surface` does. The tooltip used
+    // to hand-roll `border` + `shadow-popover` on the card's own ground and so vanished on the
+    // dark fill (vision round 1, V1-M5).
+    render(<UsageHeatmap window={windowOf({ days: [day('2026-03-02', 3, 3, 128402)] })} />);
+    fireEvent.mouseEnter(screen.getByLabelText(/2026-03-02/));
+    const tip = screen.getByRole('tooltip');
+    expect(tip).toHaveClass('biorouter-popover-surface', 'rounded-container');
+    expect(tip.className).not.toMatch(/\bborder\b|shadow-popover/);
+  });
+
   it('marks activity token counts as lower bounds when the server reports incomplete history', () => {
     render(
       <UsageHeatmap
@@ -257,6 +269,28 @@ describe('UsageHeatmap layout', () => {
     for (const weekday of ['Sun', 'Mon', 'Tue', 'Thu', 'Sat']) {
       expect(screen.queryByText(weekday)).toBeNull();
     }
+  });
+
+  it('flags only a label in the last two columns, to end flush with the grid edge', () => {
+    // The window ends Friday 2026-10-09; its last column starts Sunday 2026-10-04, so "Oct" has
+    // one column under it: about 11px for a label of about 21px, which would hang past the
+    // grid's right edge. Only that label ends at the edge; the rest sit on their own column.
+    const { container } = render(<UsageHeatmap window={windowOf(YEAR)} />);
+    const labels = [...container.querySelectorAll<HTMLElement>('.biorouter-heatmap-months span')];
+    const flagged = labels.filter((label) => label.hasAttribute('data-end'));
+    expect(flagged.map((label) => label.textContent)).toEqual(['Oct']);
+    expect(flagged[0]).toBe(labels[labels.length - 1]);
+    // A flagged label spans the row (the stylesheet), so it carries no column of its own.
+    expect(flagged[0].style.gridColumnStart).toBe('');
+    for (const label of labels.filter((label) => !label.hasAttribute('data-end'))) {
+      expect(label.style.gridColumnStart).not.toBe('');
+    }
+
+    // A window whose last week is mid-month has no such label: nothing is flagged.
+    const mid = render(
+      <UsageHeatmap window={windowOf({ start: '2026-03-01', end: '2026-03-21' })} />
+    );
+    expect(mid.container.querySelectorAll('.biorouter-heatmap-months [data-end]')).toHaveLength(0);
   });
 
   it('reveals the first heatmap of a session once, and later mounts at rest', () => {

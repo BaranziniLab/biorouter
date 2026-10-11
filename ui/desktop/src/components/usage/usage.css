@@ -75,14 +75,32 @@
 }
 
 /* ── Home usage card ───────────────────────────────────────────────────────
-   One bordered card on the chat measure, flat (no shadow): a 36px head with
-   the Overview and Models tabs and the range control over a hairline, then the
-   figures, the heatmap and one footnote line. */
+   One card on the chat measure, flat (no shadow): a 36px head with the
+   Overview and Models tabs and the range control, then the figures, the
+   heatmap and one footnote line.
+
+   Fills before lines (R-27, design.md 9.11): the card is the subtle fill with
+   NO resting outline. The 1px edge stays, transparent, so nothing moves
+   between the old and the new look and forced colours still draw the card's
+   box in the system ink. */
 .br-usage-card {
   min-inline-size: 0;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background-color: var(--background-card);
+  background-color: var(--background-fill);
+}
+
+/* The zero day on the fill. `--heat-0` is a step off WHITE (1.14:1), which on this
+   fill is 1.06:1 in light, so the empty days all but vanish. The fix goes LIGHTER,
+   not darker, because the ramp's first step is a pale tint (Roche Limit's #fadcc0
+   is 1.19:1 off the fill): a grey darker than the fill lands on top of it (1.02:1).
+   So in light an empty day is the page's own white, a punched-out cell (1.10:1 off
+   the fill, 1.3:1 and more under the first step in every family). In dark `--heat-0`
+   already is a step lighter than this fill (1.21:1) and keeps its token, so only
+   light re-points it. It also paints the legend's first swatch, the streak glyph,
+   the Models bars' track and the loading skeleton, which sit on the same fill. */
+:root:not(.dark) .br-usage-card {
+  --heat-0: var(--background-default);
 }
 
 /* The tab underline (`-bottom-px` on the trigger) lands on this hairline. */
@@ -112,6 +130,14 @@
 .br-usage-card-range {
   align-self: center;
   flex: none;
+}
+
+/* A fill never sits on a fill (design.md 9.11): the segmented track rests on
+   the page's `--background-fill`, which is this card's own ground, so inside the
+   card it steps one ground deeper, the recessed-ground rule. The thumb stays the
+   raised surface above it. */
+.br-usage-card .br-segmented {
+  background: var(--background-fill-strong);
 }
 
 .br-usage-card-body {
@@ -150,6 +176,19 @@
   margin-block-start: 24px;
 }
 
+/* The month row: every label sits on row 1 (so one that spans the whole row never
+   pushes the others down a row), and a label flagged `data-end` ends flush with
+   the grid's right edge instead of hanging past it (`UsageHeatmap` flags the ones
+   that start in the last two columns). */
+.biorouter-heatmap-months > span {
+  grid-row: 1;
+}
+
+.biorouter-heatmap-months > span[data-end] {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
 .br-usage-card-foot {
   display: flex;
   min-inline-size: 0;
@@ -167,6 +206,17 @@
   min-inline-size: 0;
   align-items: center;
   gap: 6px;
+}
+
+/* ── Settings report tables ────────────────────────────────────────────────
+   The two tables ("By day", "By model") take the same filled panel the chat's
+   tables take (R-27): `--background-fill`, no frame, the table's own radius.
+   The rules BETWEEN rows are structural and stay (each cell draws its top
+   edge); only the box around them is a fill now. The wrapper clips the rounded
+   corners, and scrolls sideways before it ever squeezes a column. */
+.br-usage-table-frame {
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
 }
 
 /* ── Models tab: up to four 28px rows ──────────────────────────────────── */
