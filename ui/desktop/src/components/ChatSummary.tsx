@@ -100,11 +100,17 @@ function TodoRow({
   );
 }
 
+/**
+ * The statistics take `null` while a figure is not known yet: the transcript is
+ * still loading, or (Tokens) the chat's usage ledger has not answered. The row
+ * keeps its label and its 28px, with an empty value, so the figure arrives
+ * once instead of a stand-in that is then replaced (vision V2-R5-5, V2-R5-6).
+ */
 export interface ChatSummaryProps {
-  toolCalls: string;
-  billedTokens: string;
-  artifacts: string;
-  codeDelta: { added: number; removed: number };
+  toolCalls: string | null;
+  billedTokens: string | null;
+  artifacts: string | null;
+  codeDelta: { added: number; removed: number } | null;
   todos: { items: TodoItem[]; loading: boolean; error: boolean; refresh: () => void };
   hasWorkflow: boolean;
   onWorkflow: () => void;
@@ -132,6 +138,8 @@ export function ChatSummary({
 }: ChatSummaryProps) {
   const total = todos.items.length;
   const completed = todos.items.filter((item) => item.status === 'completed').length;
+  const statsPending =
+    toolCalls === null || billedTokens === null || artifacts === null || codeDelta === null;
 
   // Rows that arrive with the first snapshot (an open, a reload, a tab switch)
   // are at rest; only rows added later enter. The baseline is taken once the
@@ -245,6 +253,7 @@ export function ChatSummary({
         )}
         <dl
           aria-label={summaryCopy.statsLabel}
+          aria-busy={statsPending || undefined}
           className="br-summary__stats"
           // The 12px that parts the statistics from what sits above them: the
           // to-do list, or the refresh error that stands in for it.
@@ -263,19 +272,24 @@ export function ChatSummary({
           </Stat>
           <Stat label={summaryCopy.artifacts}>{artifacts}</Stat>
           <Stat label={summaryCopy.code}>
-            <span className="sr-only">
-              {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
-            </span>
-            {/* A count carries its colour only when it is a change: "+0" and
-                "−0" are muted, so a chat that touched no code shows no red. */}
-            <span aria-hidden="true">
-              <span className={codeDelta.added > 0 ? 'text-text-success' : 'text-text-muted'}>
-                +{codeDelta.added.toLocaleString()}
-              </span>{' '}
-              <span className={codeDelta.removed > 0 ? 'text-text-danger' : 'text-text-muted'}>
-                −{codeDelta.removed.toLocaleString()}
-              </span>
-            </span>
+            {codeDelta && (
+              <>
+                <span className="sr-only">
+                  {summaryCopy.codeDelta(codeDelta.added, codeDelta.removed)}
+                </span>
+                {/* A count carries its colour only when it is a change: "+0"
+                    and "−0" are muted, so a chat that touched no code shows no
+                    red. */}
+                <span aria-hidden="true">
+                  <span className={codeDelta.added > 0 ? 'text-text-success' : 'text-text-muted'}>
+                    +{codeDelta.added.toLocaleString()}
+                  </span>{' '}
+                  <span className={codeDelta.removed > 0 ? 'text-text-danger' : 'text-text-muted'}>
+                    −{codeDelta.removed.toLocaleString()}
+                  </span>
+                </span>
+              </>
+            )}
           </Stat>
         </dl>
       </div>

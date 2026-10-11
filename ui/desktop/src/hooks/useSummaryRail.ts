@@ -63,6 +63,11 @@ export interface SummaryRailChatInputs {
    * far as anyone can see: the composer leaves the empty state in this commit.
    */
   creatingChat: boolean;
+  /**
+   * While the transcript loads: the chat's row says it has messages (the
+   * listing's, or the row itself; `summary/useLoadingChatRow.ts`).
+   */
+  knownToHaveMessages?: boolean;
 }
 
 /**
@@ -76,6 +81,12 @@ export interface SummaryRailChatInputs {
  * to its place beside the rail, and only the transcript glides (spec 3.5 item
  * 5, V2-08). Waiting for the stream made it move twice: the FLIP to the centre,
  * then the glide 140px left.
+ *
+ * A chat that is still loading its transcript, and is known to have messages,
+ * is active too (vision V2-R5-6). It is a chat with a turn as far as the layout
+ * goes, and dropping the rail for the load re-centred the column 140px and
+ * brought it back when the transcript landed. Its phase stays `loading`, so the
+ * rail appears at rest.
  */
 export function summaryRailChat({
   clean,
@@ -83,13 +94,15 @@ export function summaryRailChat({
   loading,
   running,
   creatingChat,
+  knownToHaveMessages = false,
 }: SummaryRailChatInputs): { active: boolean; chatPhase: SummaryRailChatPhase } {
   // Only until the transcript holds the message: from then on it is a chat
   // with a turn like any other (`isCreatingSession` is never cleared after a
   // chat is created).
   const firstTurnStarting = creatingChat && messageCount === 0;
+  const loadingKnownChat = loading && knownToHaveMessages;
   return {
-    active: !clean && (messageCount > 0 || running || firstTurnStarting),
+    active: !clean && (messageCount > 0 || running || firstTurnStarting || loadingKnownChat),
     chatPhase: loading ? 'loading' : running || firstTurnStarting ? 'running' : 'idle',
   };
 }

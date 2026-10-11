@@ -232,3 +232,93 @@ describe('BaseChat: the transcript does not re-render for the rail or the previe
     );
   });
 });
+
+/**
+ * Vision round 5. The pieces are tested on their own (`useLoadingChatRow`,
+ * `summaryRailChat`, `useCostTracking`'s `ledgerSettled`, `ChatSummary`'s empty
+ * values, and `BaseChat.costLedger.test.tsx` end to end on the real footer);
+ * this pins how BaseChat joins them.
+ */
+/** The `<ChatInput …>` element BaseChat renders, up to its props spread. */
+const chatInputElement = () => {
+  const start = code.indexOf('<ChatInput');
+  return code.slice(start, code.indexOf('{...customChatInputProps}', start));
+};
+const summaryPropsBlock = () =>
+  code.slice(
+    code.indexOf('const summaryProps = {'),
+    code.indexOf('};', code.indexOf('const summaryProps = {'))
+  );
+
+describe('BaseChat: a chat that is still loading looks like itself (V2-R5-6)', () => {
+  it('reads the chat’s row while the transcript loads, above the early return', () => {
+    expect(code).toMatch(/const chatLoading = chatState === ChatState\.LoadingConversation;/);
+    expect(code).toMatch(/const loadingChatRow = useLoadingChatRow\(sessionId, chatLoading\);/);
+    expect(code.indexOf('useLoadingChatRow(')).toBeLessThan(code.indexOf('if (sessionLoadError)'));
+    expect(code).toMatch(
+      /const loadingChatKnownMessages = loadingChatRow\?\.message_count \?\? 0;/
+    );
+  });
+
+  it('keeps the rail for a loading chat its row says has messages', () => {
+    const state = code.slice(
+      code.indexOf('summaryRailChat({'),
+      code.indexOf('});', code.indexOf('summaryRailChat({'))
+    );
+    expect(state).toContain('knownToHaveMessages: loadingChatKnownMessages > 0,');
+  });
+
+  it('names the chat’s own model on the chip, never the new-chat default', () => {
+    expect(code).toMatch(/usePinnedModel\(session \?\? loadingChatRow, pinnedModel\)/);
+    expect(code.match(/usePinnedModel\(/g) ?? []).toHaveLength(1);
+  });
+
+  it('gives the composer the follow-up placeholder and the ring the chat’s own figure', () => {
+    const element = chatInputElement();
+    expect(element).toContain('messagesLength={messages.length || loadingChatKnownMessages}');
+    expect(element).toMatch(
+      /totalTokens=\{\s*loadingChatRow\s*\?\s*\(loadingChatRow\.total_tokens \?\? undefined\)\s*:\s*\(tokenState\?\.totalTokens \?\? session\?\.total_tokens \?\? undefined\)\s*\}/
+    );
+  });
+
+  it('shows no figure while loading, and reads the to-do list only once the chat is in', () => {
+    const props = summaryPropsBlock();
+    expect(props).toContain('toolCalls: chatLoading ? null :');
+    expect(props).toContain('artifacts: chatLoading ? null :');
+    expect(props).toContain('codeDelta: chatLoading ? null : codeDelta,');
+    expect(props).toContain(
+      'todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,'
+    );
+    expect(props).toContain('hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),');
+    const todos = code.slice(
+      code.indexOf('useSessionTodos('),
+      code.indexOf(');', code.indexOf('useSessionTodos('))
+    );
+    expect(todos).toMatch(/!chatLoading &&/);
+  });
+});
+
+describe('BaseChat: no figure the usage ledger then withdraws (V2-R5-5)', () => {
+  it('waits for this chat’s ledger before the Tokens value', () => {
+    expect(code).toMatch(
+      /const \{ sessionCosts, modelRows, ledgerSettled \} = useCostTracking\(\{ session \}\);/
+    );
+    expect(summaryPropsBlock()).toMatch(
+      /billedTokens: summaryTokensValue\(\{\s*loading: chatLoading,\s*ledgerSettled,\s*billed: totalSessionTokens,\s*\}\)/
+    );
+  });
+
+  it('hands the footer only what footerCostInputs allows, once the ledger is in', () => {
+    expect(code).toMatch(
+      /const footerCost = footerCostInputs\(\{\s*ready: !!session && ledgerSettled,/
+    );
+    const element = chatInputElement();
+    expect(element).toContain('accumulatedInputTokens={footerCost.accumulatedInputTokens}');
+    expect(element).toContain('accumulatedOutputTokens={footerCost.accumulatedOutputTokens}');
+    expect(element).toContain('sessionCosts={footerCost.sessionCosts}');
+    expect(element).toContain('modelCostRows={footerCost.modelCostRows}');
+    // No second path to the counters or the rows.
+    expect(element).not.toMatch(/accumulated_(input|output)_tokens/);
+    expect(element).not.toMatch(/modelCostRows=\{modelRows\}/);
+  });
+});

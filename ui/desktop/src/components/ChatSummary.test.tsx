@@ -79,6 +79,46 @@ describe('compact chat summary', () => {
     expect(screen.getByText('−4')).toHaveClass('text-text-danger');
   });
 
+  it('leaves a figure it does not know yet empty, in a row that keeps its place (V2-R5-5, V2-R5-6)', () => {
+    // The transcript is loading: every value is unknown.
+    const { rerender } = render(
+      <ChatSummary
+        {...props}
+        toolCalls={null}
+        billedTokens={null}
+        artifacts={null}
+        codeDelta={null}
+      />
+    );
+    const values = () => screen.getAllByRole('definition');
+    expect(values()).toHaveLength(4);
+    for (const value of values()) {
+      expect(value).toHaveClass('br-summary__stat-value');
+      expect(value).toBeEmptyDOMElement();
+    }
+    // The labels stay, so the card does not change shape when the figures land.
+    expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
+    expect(screen.getByText(summaryCopy.code)).toBeInTheDocument();
+    const dl = screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;
+    expect(dl).toHaveAttribute('aria-busy', 'true');
+    // No stand-in that the load would replace.
+    expect(screen.queryByText('N/A')).not.toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    expect(screen.queryByText('+0')).not.toBeInTheDocument();
+
+    // The transcript has landed; only the usage ledger is still to answer.
+    rerender(<ChatSummary {...props} billedTokens={null} />);
+    expect(screen.getByText('6')).toHaveClass('br-summary__stat-value');
+    const tokens = screen.getByText(summaryCopy.tokens).closest('dt')?.nextElementSibling;
+    expect(tokens).toBeEmptyDOMElement();
+    expect(dl).toHaveAttribute('aria-busy', 'true');
+
+    // The ledger answered: one value, and the list is no longer busy.
+    rerender(<ChatSummary {...props} />);
+    expect(screen.getByText('211k')).toHaveClass('br-summary__stat-value');
+    expect(dl).not.toHaveAttribute('aria-busy');
+  });
+
   it('parts the statistics from the list or from the refresh error that stands in for it', () => {
     const { rerender } = render(<ChatSummary {...props} />);
     const dl = () => screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;

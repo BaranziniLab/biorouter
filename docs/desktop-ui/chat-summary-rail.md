@@ -65,6 +65,16 @@ browser` (`summaryRailVisible`).
   chat's first turn counts from the commit that starts creating the chat, which is the commit in
   which the composer leaves the empty state; the message and the running stream arrive about
   300ms later. Waiting for them made the composer move twice: to the centre, then 140px left.
+- **A chat whose transcript is loading** is active when its row says it has messages
+  (`knownToHaveMessages`). While a chat loads, `BaseChat` holds no `session`, so it reads the
+  row from the session listing, or the row alone (`GET /sessions/{id}?metadata_only=true` with
+  the user-action headers, sent in the same moment as the composer's read of it, so the two are
+  one request): `components/summary/useLoadingChatRow.ts`. Without it, every first open dropped
+  the rail for the load, re-centred the column 140px and brought it back, and the composer said
+  "Ask Biorouter anything…" with the new-chat model on its chip (vision V2-R5-6). The same row
+  gives the composer "Ask a follow-up", the chip the chat's own model (through
+  `usePinnedModel`'s one rule), and the context ring the chat's own figure. The rail's values stay
+  empty until the transcript lands, and the to-do list is read only then.
 - **Timing** (`hooks/useSummaryRail.ts`): the pane is measured synchronously on mount, so a tab
   switch or a reload shows the rail at once and at rest. A narrowing hides it at once; a widening
   shows it only after the width has held still for 160ms, so a sidebar sweep does not make the
@@ -132,7 +142,13 @@ and 12px for labels.
   primitive's own track is `--background-muted`, which is the fill itself and would vanish.
 - **Statistics**: a `dl` of 28px rows: Tool calls, Tokens (with an InfoTip saying what is
   counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words. A count of
-  zero is muted, so a chat that touched no code shows no red.
+  zero is muted, so a chat that touched no code shows no red. A figure that is not known yet is
+  an empty value in a row that keeps its label and its 28px, never a stand-in the load then
+  replaces: all four while the transcript loads, and Tokens until the chat's usage ledger has
+  answered (`useCostTracking`'s `ledgerSettled`, `summaryTokensValue`). Before that, the
+  accumulated counters stood in, and a ledger row with no certified total then turned "2.2M"
+  into "N/A" on every open (vision V2-R5-5). The composer footer's cost waits for the same
+  answer (`footerCostInputs`).
 - **Footer**: Make workflow (Workflow when the chat has one) and Diagnostics as full-width ghost
   rows.
 - The scrolling body is a focus region with a tab stop (`.biorouter-focus-region`), so a
@@ -194,15 +210,18 @@ or the pointer is over the summary.
 | Test | Holds |
 |---|---|
 | `components/Layout/yieldLadder.test.ts` | Each seam one pixel apart (1055/1056, 1067/1068), the width steps (1056 → 240, 1076 → 260, 1096 → 280), the full measure across every pane width, the side-preview subtraction (1975/1976 at the default preview), a stacked preview, an unmeasured pane, and the window table |
-| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the first turn enters (from the commit that creates a new chat, once) but a loaded history (fetched, cached or rejoining a turn) does not, the toggle's entrance, exit and glide, and one live observer under StrictMode |
+| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the first turn enters (from the commit that creates a new chat, once) but a loaded history (fetched, cached or rejoining a turn) does not, a loading chat known to have messages holds the rail at rest from its first frame with no glide when it lands, the toggle's entrance, exit and glide, and one live observer under StrictMode |
 | `components/summary/ChatSummaryRail.test.tsx` | The card mounts entered when geometry showed it, plays its entrance once, ignores its children's animations, reports its exit (or its cancelled exit) and re-arms the entrance when reopened mid-exit |
 | `Layout/summaryRailPreference.test.ts` | The per-viewer store, its default and the `storage` event |
 | `hooks/useColumnGlide.test.ts` | No glide while resizing, under reduced motion or under 8px; the composer left to its own FLIP; the scroll anchor |
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
-| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
+| `components/summary/useLoadingChatRow.test.ts` | A loading chat's row from a warm listing in the first render, from the row read (with the proof, preferred to the listing), from a listing that arrives later; nothing for another chat, a failed read, a chat that is not loading or a new chat |
+| `hooks/useCostTracking.ledger.test.tsx` | `ledgerSettled` false with no rows while the usage request is pending, settled on rows, on none and on a failure, never one chat's ledger for another's, and a refresh of the same chat keeps its answer |
+| `components/BaseChat.costLedger.test.tsx` | On the real hook and the real footer `CostTracker`: no Tokens value and no cost while the ledger is pending, then exactly one reading ("N/A" and no cost for an uncertified row; "2.2M" and the priced counters for a ledger with no rows) |
+| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, empty values (and `aria-busy`) for figures not known yet, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, and the Tokens value and the footer cost waiting for the ledger |
 | `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end, and the header button's `data-still` beating the Button's layered transition with its clearing starting none |
 
 ## Related documentation

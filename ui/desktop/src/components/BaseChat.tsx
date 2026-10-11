@@ -14,7 +14,7 @@ import { artifactRefreshTarget } from '../utils/artifactRefresh';
 import { imageExtensionAlternation } from '../utils/imageFormats';
 import { useArtifactPanelAccess } from './artifacts/useArtifactPanelAccess';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
-import { Message } from '../api';
+import { Message, type Session } from '../api';
 import type { UserAttachment } from '../types/message';
 import {
   getProviderMetadata,
@@ -45,7 +45,7 @@ import { useModelAndProvider, type ChangeModelOptions } from './ModelAndProvider
 import { PendingChatModelContext, useHeldChatModel } from './settings/models/pendingChatModel';
 import type Model from './settings/models/modelInterface';
 import { scanWorkflow } from '../workflow';
-import { useCostTracking } from '../hooks/useCostTracking';
+import { useCostTracking, type ModelCostRow } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
 import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
@@ -57,6 +57,7 @@ import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
+import { useLoadingChatRow } from './summary/useLoadingChatRow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
 import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
 import { Note } from './ui/note';
@@ -1075,6 +1076,67 @@ export function formatCompactNumber(value: number) {
 // (BaseChat.artifacts.test.ts precedent).
 export { selectBilledTokens };
 
+/**
+ * The summary's Tokens value, or `null` (an empty value) while it is not known:
+ * the transcript is loading, or this chat's usage ledger has not answered. The
+ * counters used to stand in until the ledger answered, and a ledger row with no
+ * certified total then turned "2.2M" into "N/A" (vision V2-R5-5).
+ */
+export function summaryTokensValue({
+  loading,
+  ledgerSettled,
+  billed,
+}: {
+  loading: boolean;
+  ledgerSettled: boolean;
+  billed: number | null;
+}): string | null {
+  if (loading || !ledgerSettled) return null;
+  return billed === null ? 'N/A' : formatCompactNumber(billed);
+}
+
+/** The legacy per-model cost map `ChatInput` still takes beside the rows. */
+type FooterSessionCosts = ReturnType<typeof useCostTracking>['sessionCosts'];
+
+/**
+ * What the composer's footer may price. `CostTracker` prices the ledger's rows
+ * or, when there are none, the accumulated counters at the current model's
+ * rate, so handed the counters before this chat's ledger answered it showed
+ * "$11.75" and then withdrew it (vision V2-R5-5). Until the ledger is in, it
+ * gets nothing to price, and draws nothing.
+ */
+export function footerCostInputs({
+  ready,
+  tokenState,
+  session,
+  sessionCosts,
+  modelRows,
+}: {
+  ready: boolean;
+  tokenState?: {
+    accumulatedInputTokens?: number | null;
+    accumulatedOutputTokens?: number | null;
+  } | null;
+  session?: Pick<Session, 'accumulated_input_tokens' | 'accumulated_output_tokens'> | null;
+  sessionCosts: FooterSessionCosts;
+  modelRows: ModelCostRow[];
+}): {
+  accumulatedInputTokens?: number;
+  accumulatedOutputTokens?: number;
+  sessionCosts?: FooterSessionCosts;
+  modelCostRows?: ModelCostRow[];
+} {
+  if (!ready) return {};
+  return {
+    accumulatedInputTokens:
+      tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined,
+    accumulatedOutputTokens:
+      tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined,
+    sessionCosts,
+    modelCostRows: modelRows,
+  };
+}
+
 function metadataRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
@@ -1966,7 +2028,25 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
-  const { sessionCosts, modelRows } = useCostTracking({ session });
+  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({ session });
+  // The footer prices this chat's ledger, or its counters when the ledger has no
+  // rows; never the counters while the ledger is still to answer, or the cost
+  // it shows is withdrawn a moment later (vision V2-R5-5).
+  const footerCost = footerCostInputs({
+    ready: !!session && ledgerSettled,
+    tokenState,
+    session,
+    sessionCosts,
+    modelRows,
+  });
+
+  // While a chat's transcript loads there is no `session`, and the chat looked
+  // new: no rail, the empty composer's placeholder, the new-chat model on the
+  // chip and an empty context ring (vision V2-R5-6). Its row, from the listing
+  // or a read of the row alone, says what the load will say.
+  const chatLoading = chatState === ChatState.LoadingConversation;
+  const loadingChatRow = useLoadingChatRow(sessionId, chatLoading);
+  const loadingChatKnownMessages = loadingChatRow?.message_count ?? 0;
 
   const workflow = session?.workflow;
 
@@ -2292,13 +2372,16 @@ function BaseChatContent({
   // A new chat's first turn counts from the commit that starts creating it, the
   // one in which the composer's FLIP above leaves the empty state: the rail is
   // then already in the grid when the FLIP measures its target, so the composer
-  // moves once and only the transcript glides (V2-08).
+  // moves once and only the transcript glides (V2-08). A chat whose transcript
+  // is loading keeps the rail when its row says it has messages, so the column
+  // does not re-centre for the load and come back (V2-R5-6).
   const summaryRailChatState = summaryRailChat({
     clean: isCleanConversation,
     messageCount: messages.length,
     loading: chatState === ChatState.LoadingConversation,
     running: isRunningState(chatState),
     creatingChat: isCreatingSession,
+    knownToHaveMessages: loadingChatKnownMessages > 0,
   });
   const summaryActive = summaryRailChatState.active;
   const summaryRail = useSummaryRail({
@@ -2319,11 +2402,14 @@ function BaseChatContent({
   // rail) and while a turn runs, so the header button's progress dot is current
   // even when the rail is folded away. Called here, below the rail, because
   // `summaryActive` needs `isCleanConversation`; still above the early return.
+  // Not while the transcript loads: the row read then would only be read again
+  // when the session lands.
   const sessionTodos = useSessionTodos(
     sessionId,
     session,
     messages,
-    reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState))
+    !chatLoading &&
+      (reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState)))
   );
 
   // The window widened under an open popover: the button is the rail's now, in
@@ -2342,13 +2428,21 @@ function BaseChatContent({
     restore?.();
   }, [previewMounted, columnGlide]);
 
+  // A figure the chat does not know yet is an empty value, never a stand-in the
+  // load then replaces: nothing while the transcript loads, and no Tokens until
+  // this chat's ledger has answered (V2-R5-5, V2-R5-6). The to-do list counts as
+  // still loading too, so its rows arrive at rest with the transcript.
   const summaryProps = {
-    toolCalls: sessionToolCallCount.toLocaleString(),
-    billedTokens: totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens),
-    artifacts: sessionArtifacts.length.toLocaleString(),
-    codeDelta,
-    todos: sessionTodos,
-    hasWorkflow: !!workflow,
+    toolCalls: chatLoading ? null : sessionToolCallCount.toLocaleString(),
+    billedTokens: summaryTokensValue({
+      loading: chatLoading,
+      ledgerSettled,
+      billed: totalSessionTokens,
+    }),
+    artifacts: chatLoading ? null : sessionArtifacts.length.toLocaleString(),
+    codeDelta: chatLoading ? null : codeDelta,
+    todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
+    hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
   };
@@ -2418,8 +2512,13 @@ function BaseChatContent({
    * Free: both facts already ride the `/agent/resume` payload the chat stream
    * holds. See `privacy/usePinnedModel.ts` for the one rule, and for why the
    * override is gated rather than unconditional.
+   *
+   * While the transcript loads, the same rule reads the chat's row instead
+   * (`loadingChatRow`): the chip named the model for NEW chats, padlock and
+   * all, on a public chat bound to another model for as long as the load took
+   * (vision V2-R5-6), and the ring measured against that model's window.
    */
-  const { effectiveModel } = usePinnedModel(session, pinnedModel);
+  const { effectiveModel } = usePinnedModel(session ?? loadingChatRow, pinnedModel);
 
   // The message list, held as ONE element across the commits that do not change
   // it (V2-17). No message component is memoised and the list re-renders every
@@ -2618,19 +2717,24 @@ function BaseChatContent({
             draftKey={inputDraftKey}
             reasoningDraftKey={reasoningDraftKey}
             setView={setView}
-            totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
-            accumulatedInputTokens={
-              tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+            // While the transcript loads the stream's counters are zero, and
+            // the ring read "0 of …" before the chat's own figure (V2-R5-6).
+            totalTokens={
+              loadingChatRow
+                ? (loadingChatRow.total_tokens ?? undefined)
+                : (tokenState?.totalTokens ?? session?.total_tokens ?? undefined)
             }
-            accumulatedOutputTokens={
-              tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
-            }
+            // The counters and the ledger feed only the footer's cost, which
+            // waits for this chat's ledger (V2-R5-5).
+            accumulatedInputTokens={footerCost.accumulatedInputTokens}
+            accumulatedOutputTokens={footerCost.accumulatedOutputTokens}
             droppedFiles={droppedFiles}
             onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-            messagesLength={messages.length}
+            // A loading chat is not an empty one: "Ask a follow-up" (V2-R5-6).
+            messagesLength={messages.length || loadingChatKnownMessages}
             workingDirLocked={workingDirLocked}
-            sessionCosts={sessionCosts}
-            modelCostRows={modelRows}
+            sessionCosts={footerCost.sessionCosts}
+            modelCostRows={footerCost.modelCostRows}
             workflow={workflow}
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}

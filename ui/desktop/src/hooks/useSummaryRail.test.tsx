@@ -303,6 +303,64 @@ describe('useSummaryRail', () => {
     });
   });
 
+  describe('a chat known to have messages keeps the rail while its transcript loads (V2-R5-6)', () => {
+    // BaseChat in `LoadingConversation`: not clean (the state is not idle), no
+    // messages yet, not running.
+    const loading = {
+      clean: false,
+      messageCount: 0,
+      loading: true,
+      running: false,
+      creatingChat: false,
+    };
+
+    it('is active, in the loading phase, when the row says the chat has messages', () => {
+      expect(summaryRailChat({ ...loading, knownToHaveMessages: true })).toEqual({
+        active: true,
+        chatPhase: 'loading',
+      });
+      // Nothing known (a workflow chat before its first run is not listed, and
+      // a row the app has not read yet says nothing): the old answer.
+      expect(summaryRailChat(loading)).toEqual({ active: false, chatPhase: 'loading' });
+      expect(summaryRailChat({ ...loading, knownToHaveMessages: false }).active).toBe(false);
+      // The flag means nothing once the load is over: the transcript decides.
+      expect(
+        summaryRailChat({ ...loading, loading: false, clean: true, knownToHaveMessages: true })
+      ).toEqual({ active: false, chatPhase: 'idle' });
+    });
+
+    it('seats the rail at rest from the first frame and never moves the column as the load ends', () => {
+      const onGlide = vi.fn();
+      const view = mount({
+        ...summaryRailChat({ ...loading, knownToHaveMessages: true }),
+        onGlide,
+      });
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      commits = [];
+      // The transcript lands: idle with its messages, the row no longer read.
+      view.update(summaryRailChat({ ...loading, loading: false, messageCount: 12 }));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+      expect(commits.every((c) => c.rendered && c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('stays at rest when the loaded chat rejoins a running turn', () => {
+      const onGlide = vi.fn();
+      const view = mount({
+        ...summaryRailChat({ ...loading, knownToHaveMessages: true }),
+        onGlide,
+      });
+      commits = [];
+      view.update(summaryRailChat({ ...loading, loading: false, messageCount: 3, running: true }));
+      expect(latest.shown).toBe(true);
+      expect(commits.every((c) => c.rendered && c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+  });
+
   it('closes on a toggle: plays the exit, then drops the column and glides back', () => {
     const onGlide = vi.fn();
     mount({ onGlide });
