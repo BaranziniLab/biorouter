@@ -632,7 +632,7 @@ function Sidebar({
       <div
         data-slot="sidebar"
         className={cn(
-          'bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col',
+          'br-ground-recessed bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col',
           className
         )}
         {...props}
@@ -649,7 +649,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) min-w-(--sidebar-width) max-w-(--sidebar-width) px-4 py-0 [&>button]:hidden"
+          className="br-ground-recessed bg-sidebar text-sidebar-foreground w-(--sidebar-width) min-w-(--sidebar-width) max-w-(--sidebar-width) px-4 py-0 [&>button]:hidden"
           style={
             {
               '--sidebar-width': SIDEBAR_WIDTH_MOBILE,
@@ -736,10 +736,16 @@ function Sidebar({
         )}
         {...panelProps}
       >
+        {/* The sidebar is a RECESSED ground (R-27): its rest fill is the ground itself (1.03:1), so
+            a filled control placed on it rests on the strong step, and a filled button hovers a
+            step deeper. `.br-ground-recessed` says so once for everything inside; a Note or card
+            in the column still sets its own grounds for its children (`shared-controls.md`,
+            "Fills before lines"). Nothing in the column rests on it today (rows are clear, the
+            notice is a Note), so this changes no pixel: it keeps the next filled control right. */}
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-container group-data-[variant=floating]:border"
+          className="br-ground-recessed bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-container group-data-[variant=floating]:border"
         >
           {children}
         </div>

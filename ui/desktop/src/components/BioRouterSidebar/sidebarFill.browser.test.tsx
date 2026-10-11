@@ -16,7 +16,11 @@
  *   each trigger overwrites `data-state`;
  * - the rename editor's edge is a real border, so forced colours keep it;
  * - Crew's neutral count badge steps to the page ground on a lit row instead of vanishing into it;
- * - the titlebar controls hover on the strong fill.
+ * - the titlebar controls hover on the strong fill;
+ * - the column is a recessed ground (`.br-ground-recessed`): a filled control placed on it rests on
+ *   the strong step, while a Note in the footer still steps its own buttons back to the page;
+ * - a menu the pointer opened (a row's ⋯, View options) rings no row, and its first key brings the
+ *   ring back (WS-PRIMITIVES-3, the fix for WS-SIDEBAR-2).
  *
  * Colours are compared with probes that paint the token itself, so a token value can change
  * without this file changing. Set `SIDEBAR_SHOTS_DIR` to also save light and dark screenshots.
@@ -98,8 +102,11 @@ createRoot(document.getElementById('root')!).render(
 );
 `;
 
-/** The window globals the real sidebar reads (the preload bridge and the app config). */
-const STUBS = `
+/**
+ * The window globals the real sidebar reads (the preload bridge and the app config). `daemon` is
+ * what the main process says about the shared daemon: 'lost' shows the footer's notice.
+ */
+const stubs = (daemon: 'attached' | 'lost') => `
 window.electron = {
   platform: 'darwin',
   getUserActionKey: async () => 'test-key',
@@ -107,7 +114,7 @@ window.electron = {
   copyConversationId: async () => {},
   onUpdaterEvent: () => () => {},
   getUpdateState: async () => null,
-  getDaemonConnection: async () => 'attached',
+  getDaemonConnection: async () => '${daemon}',
   onDaemonConnection: () => () => {},
   on: () => {},
   off: () => {},
@@ -200,13 +207,17 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     await browser?.close();
   }, 120_000);
 
-  async function open(mode: 'light' | 'dark', forcedColors = false): Promise<Page> {
+  async function open(
+    mode: 'light' | 'dark',
+    forcedColors = false,
+    daemon: 'attached' | 'lost' = 'attached'
+  ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1200, height: 900 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     const html =
       `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
       `<body style="margin:0"><div id="root"></div>` +
-      `<script>${STUBS}</script><script>${script.replace(/<\/script/gi, '<\\/script')}</script>` +
+      `<script>${stubs(daemon)}</script><script>${script.replace(/<\/script/gi, '<\\/script')}</script>` +
       `</body></html>`;
     await tab.route(`${ORIGIN}/**`, async (route) => {
       const url = route.request().url();
@@ -495,6 +506,120 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
             await paint(tab, 'var(--background-fill-strong)')
           );
         }
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('is a recessed ground: a filled control on it rests on the strong step, a Note still steps its buttons back', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode, false, 'lost');
+      try {
+        await tab.waitForSelector('[data-testid="daemon-restart-notice"]');
+        await settle(tab);
+        const inner = '[data-slot="sidebar-inner"]';
+        const strong = await paint(tab, 'var(--background-fill-strong)', inner);
+        const rest = await paint(tab, 'var(--background-fill)', inner);
+        const page = await paint(tab, 'var(--background-default)', inner);
+        // A filled control placed straight on the column (a probe with the shared rest class).
+        const probe = () =>
+          tab.evaluate((selector) => {
+            const el = document.createElement('div');
+            el.className = 'br-fill-rest';
+            document.querySelector(selector)!.append(el);
+            const colour = getComputedStyle(el).backgroundColor;
+            el.remove();
+            return colour;
+          }, inner);
+        expect(await probe(), `${mode}: a filled control on the column`).toBe(strong);
+        // The instrument can fail: without the class the same probe rests on the page's rest fill,
+        // which is 1.03:1 off the sidebar and draws almost nothing.
+        await tab.evaluate((selector) => {
+          document.querySelector(selector)!.classList.remove('br-ground-recessed');
+        }, inner);
+        expect(await probe(), `${mode}: the same probe off the recessed ground`).toBe(rest);
+        await tab.evaluate((selector) => {
+          document.querySelector(selector)!.classList.add('br-ground-recessed');
+        }, inner);
+        // The footer's Note is a filled box: its secondary button rests on the page ground, not
+        // on a fill beside the Note's own.
+        const retry = tab.getByRole('button', { name: 'Try again' });
+        expect(await retry.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(page);
+        expect(strong).not.toBe(page);
+        if (SHOTS) {
+          await tab.screenshot({
+            path: resolve(SHOTS, `sidebar-daemon-notice-${mode}.png`),
+            clip: { x: 0, y: 640, width: 320, height: 260 },
+          });
+        }
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('rings no row in a menu the pointer opened, and the first key brings the ring back', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const active = (tab: Page) =>
+      tab.evaluate(() => {
+        const el = document.activeElement as HTMLElement;
+        return {
+          role: el.getAttribute('role'),
+          label: (el.textContent ?? '').trim(),
+          surface: el.closest('[data-menu-input]')?.getAttribute('data-menu-input') ?? null,
+          shadow: getComputedStyle(el).boxShadow,
+        };
+      });
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      // A step that never finds its target fails by name, not by the test's own timeout.
+      tab.setDefaultTimeout(8_000);
+      try {
+        // A chat row's menu: click the ⋯, point at Diverge.
+        await tab.hover('[data-testid="recent-chat-s4"]');
+        await settle(tab);
+        await tab.click('[data-testid="recent-chat-more-s4"]');
+        await tab.getByRole('menuitem', { name: 'Diverge' }).hover();
+        await settle(tab);
+        const pointed = await active(tab);
+        expect(pointed, `${mode}: pointed-at row in the row menu`).toMatchObject({
+          role: 'menuitem',
+          label: 'Diverge',
+          surface: 'pointer',
+          shadow: 'none',
+        });
+        await tab.keyboard.press('ArrowDown');
+        await settle(tab);
+        const keyed = await active(tab);
+        expect(keyed.surface, `${mode}: the menu is now driven by keys`).toBe('key');
+        expect(keyed.shadow, `${mode}: the focused row rings again`).toMatch(/inset/);
+        await tab.keyboard.press('Escape');
+        await settle(tab);
+
+        // View options: Group by opens a submenu of radio rows. The trigger row and the radio row
+        // the pointer reaches are both unringed; a key rings the one it lands on.
+        await tab.click('[data-testid="sidebar-view-options"]');
+        await tab.locator('[data-testid="sidebar-view-group-by"]').hover();
+        await settle(tab);
+        expect(await active(tab), `${mode}: pointed-at Group by`).toMatchObject({
+          role: 'menuitem',
+          surface: 'pointer',
+          shadow: 'none',
+        });
+        await tab.getByRole('menuitemradio').first().hover();
+        await settle(tab);
+        expect(await active(tab), `${mode}: pointed-at radio row`).toMatchObject({
+          role: 'menuitemradio',
+          surface: 'pointer',
+          shadow: 'none',
+        });
+        await tab.keyboard.press('ArrowDown');
+        await settle(tab);
+        const radio = await active(tab);
+        expect(radio.role).toBe('menuitemradio');
+        expect(radio.shadow, `${mode}: the radio row rings on a key`).toMatch(/inset/);
       } finally {
         await tab.close();
       }

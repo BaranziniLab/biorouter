@@ -165,7 +165,12 @@ reloads the window on any `⌘R`, so the handler has to skip the reload when Alt
 ## Fills, not lines
 
 The sidebar follows the app's fill rule (owner message 13, R-27; design.md 9.11). It is a recessed
-ground, so every fill on it is the strong step:
+ground, so every fill on it is the strong step. `ui/sidebar.tsx` puts the shared `.br-ground-recessed`
+on the column (`data-slot="sidebar-inner"`), which sets the control, hover and track grounds for
+everything in it ([shared-controls.md](shared-controls.md), "Fills before lines"). Nothing rests on
+it today, so it draws no new pixel: rows are clear, and the daemon notice is a `Note`, which sets its
+own grounds and so keeps its "Try again" button on the page ground. The class is there so the next
+filled control placed in the column is right without a rule of its own.
 
 - Rows rest clear and light with the sidebar's own steps, `--sidebar-hover` and `--sidebar-active`.
   No hairline separates rows; spacing and the hover fill do.
@@ -179,6 +184,11 @@ ground, so every fill on it is the strong step:
 - The rename editor rests on the page ground (its row is already the strong fill) and is edged by a
   real 1px `--border-focus` border, not a box-shadow ring, so forced colours keep its outline.
 - The titlebar controls hover on `--background-fill-strong`, the band's step.
+- A menu the pointer opened rings no row (the row's `⋯`, View options and its submenus): the shared
+  menu surface says how it is driven (`data-menu-input`, from `ui/inputTrail.ts`), and the D-15 ring
+  comes off a row the pointer only crossed. The first key pressed in the menu brings it back on the
+  focused row. The rule is the primitives' (`main.css`, after `.br-menu-row`); the sidebar only
+  proves it on its own menus.
 
 ⚠ A menu trigger in the sidebar sits inside a `TooltipTrigger`, and the tooltip's `data-state`
 ("closed") overwrites the menu's on the same button. A rule written as `[data-state='open']` never
@@ -203,7 +213,7 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open |
 
 ## Related documentation
