@@ -35,13 +35,18 @@
   var Q_SPELL = 3;    // a question that needs more lines than this takes a shorter spelling
   var Q_LINES = 4;    // and one that still needs more than this steps aside
   var T_LINES = 2;    // a tool row that needs more lines than this steps aside
-  var PH = ['l', 'm', 's', '0'];  // placeholder spellings, longest first; 0 hides it
+  // The bar inside each composer card gives up its parts in this order when a
+  // narrow chat cannot hold them: the two chevrons, the Tools chip, the model's
+  // name (its padlock stays), then the + button.
+  var BAR_STEPS = 4;
 
   var PATHS = {
     lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
     puzzle: '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>',
     messages: '<path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/>',
     up: '<path d="m6 11 6-6 6 6"/><path d="M12 19V5"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    down: '<path d="m6 9 6 6 6-6"/>',
     left: '<path d="m15 18-6-6 6-6"/>',
     right: '<path d="m9 18 6-6-6-6"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
@@ -62,11 +67,20 @@
   }
 
   // Each chat already has messages, so the composer asks for a follow-up
-  // (composer/copy.ts), with two shorter spellings for narrow frames.
-  function composer(model, lock) {
+  // (composer/copy.ts); a narrow chat ellipsizes it rather than rewording it.
+  // The card holds the prose line and the controls row the app draws under it:
+  // the + menu and the Tools chip, then the model chip and Send.
+  function composer(model, lock, tools) {
     return '<div class="wall-comp">' +
-      '<div class="wall-card"><span class="wall-ph"><span class="wall-phl">Ask a follow-up</span><span class="wall-phm">Follow up…</span><span class="wall-phs">Ask…</span></span><span class="wall-send">' + icon('up') + '</span></div>' +
-      '<p class="wall-chip">' + '<span class="wall-cn">' + model + '</span>' + (lock ? icon('lock', 'wall-chiplock') : '') + '</p>' +
+      '<div class="wall-card">' +
+        '<span class="wall-ph">Ask a follow-up</span>' +
+        '<div class="wall-bar">' +
+          '<span class="wall-plus">' + icon('plus') + '</span>' +
+          '<span class="wall-tools">Tools ' + tools + icon('down', 'wall-dd') + '</span>' +
+          '<span class="wall-chip"><span class="wall-cn">' + model + '</span>' + (lock ? icon('lock', 'wall-chiplock') : '') + icon('down', 'wall-dd') + '</span>' +
+          '<span class="wall-send">' + icon('up') + '</span>' +
+        '</div>' +
+      '</div>' +
     '</div>';
   }
 
@@ -80,7 +94,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('How many patients with type 2 diabetes take a statin?', 'How many T2D patients take a statin?', 0, 'T2D patients on a statin?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + icon('right', 'wall-tchev') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
           '<p class="wall-bot wall-m-bot">412 patients match.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
@@ -93,7 +107,7 @@
             '</div>' +
           '</div>' +
         '</div>' +
-        composer('Versa API Azure', true) +
+        composer('Versa API Azure', true, 4) +
       '</div>' +
     '</div></div>';
 
@@ -106,7 +120,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.', 0, 'Statins and cognition?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + '</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + icon('right', 'wall-tchev') + '</span></span></p>' +
           '<p class="wall-bot wall-m-bot">23 trials since 2020.</p>' +
         '</div>' +
         '<div class="wall-evt">' +
@@ -116,7 +130,7 @@
           '</div>' +
           '<p class="wall-note">' + say('Public models cannot read private chats. Nothing was read.', 'Public models cannot read private chats.') + '</p>' +
         '</div>' +
-        composer('Claude', false) +
+        composer('Claude', false, 2) +
       '</div>' +
     '</div></div>';
 
@@ -170,12 +184,12 @@
         evt: pane.querySelector('.wall-evt'),
         rows: pane.querySelectorAll('.wall-opt, .wall-reqrow'),
         comp: pane.querySelector('.wall-comp'),
-        ph: pane.querySelector('.wall-ph'),
+        bar: pane.querySelector('.wall-bar'),
         // The reference arrangement (see the note at the top), and geometry
         // that only changes with the frame's size; both set by reference().
-        refEvt: 'full', refDrops: 0, refPh: 0,
-        headH: 0, headOuter: 0, padB: 0, phI: 0,
-        phLevel: -1, drops: -1, lv: -1
+        refEvt: 'full', refDrops: 0,
+        headH: 0, headOuter: 0, padB: 0,
+        bs: -1, drops: -1, lv: -1
       };
     }
     var panes = [paneParts('priv'), paneParts('pub')];
@@ -196,7 +210,7 @@
       P.pane.classList.add(prefix + value);
       P[key] = value;
     }
-    function setPh(P, i) { setClass(P, 'wall-phx-', PH[i], 'phLevel'); P.phI = i; }
+    function setBar(P, n) { setClass(P, 'wall-bs', n, 'bs'); }
     function setDrops(P, d) { setClass(P, 'wall-drop', d, 'drops'); }
     function setLevel(P, v) { setClass(P, 'wall-sp', v, 'lv'); }
     function tallTool(P) {
@@ -230,10 +244,11 @@
         if (!titleFits(P)) cl.add('wall-no-title');
       }
 
-      // Placeholder: the reference spelling, or a shorter one where it does not fit.
-      var i = P.refPh;
-      setPh(P, i);
-      while (i < PH.length - 1 && shown(P.ph) && overflows(P.ph)) setPh(P, ++i);
+      // The controls row: every part, or fewer where this width cannot hold
+      // them (BAR_STEPS). The placeholder above it ellipsizes (wall.css).
+      var n = 0;
+      setBar(P, 0);
+      while (n < BAR_STEPS && shown(P.bar) && overflows(P.bar)) setBar(P, ++n);
 
       // Messages: the reference drops, and more only where this width needs
       // them (the answer, then the tool row, then the question). A narrow
@@ -278,7 +293,7 @@
         top = limit - h;
         evt.style.bottom = Math.round(P.body.clientHeight - limit) + 'px';
         if (top < msgEnd + GAP) return false;
-        var x0 = evt.offsetLeft, x1 = x0 + pop.offsetWidth, rad = 12;
+        var x0 = evt.offsetLeft + pop.offsetLeft, x1 = x0 + pop.offsetWidth, rad = 12;
         var dx = Math.max(x0 + rad - hx, 0, hx - (x1 - rad));
         var dy = Math.max(top + rad - hy, 0, hy - (top + pop.offsetHeight + shut - rad));
         return Math.sqrt(dx * dx + dy * dy) - rad - hr >= 4;
@@ -299,8 +314,7 @@
     function hasRoom(i) { return !panes[i].pane.classList.contains('wall-no-evt'); }
 
     // Measure the frame, then choose each chat's reference arrangement with
-    // the wall in the middle, and the placeholder that fits across the
-    // first-view hint (44 to 56). Runs at mount and when the frame resizes.
+    // the wall in the middle. Runs at mount and when the frame resizes.
     var LADDER = {
       priv: [['full', 0], ['compact', 0], ['compact', 1], ['compact', 2]],
       pub: [['full', 0], ['full', 1], ['full', 2]]
@@ -316,7 +330,6 @@
       });
       place(50);
       panes.forEach(function (P, n) {
-        P.refPh = 0;
         var steps = LADDER[P.side], found = false;
         for (var i = 0; i < steps.length && !found; i++) {
           P.refEvt = steps[i][0]; P.refDrops = steps[i][1];
@@ -325,15 +338,6 @@
         }
         if (!found) { P.refEvt = 'none'; P.refDrops = 0; }
       });
-      // Both composers share one spelling: the longest that fits either chat
-      // at its narrowest point in the hint.
-      var ph = 0;
-      [[44, 0], [56, 1]].forEach(function (s) {
-        place(s[0]);
-        fitPane(panes[s[1]]);
-        ph = Math.max(ph, panes[s[1]].phI);
-      });
-      panes.forEach(function (P) { P.refPh = ph; });
       place(keep);
       fitted = -1;
       fit();
@@ -344,6 +348,10 @@
       if (fitted === split) return;
       fitted = split;
       panes.forEach(fitPane);
+      // The two cards share one look: when either has dropped its chevrons,
+      // both have, so the same row never reads as two designs side by side.
+      var keepDd = Math.min(1, Math.max(panes[0].bs, panes[1].bs));
+      panes.forEach(function (P) { if (P.bs < keepDd) setBar(P, keepDd); });
     }
     var fitted = -1, fitRaf = 0;
     function flushFit() { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } fit(); }

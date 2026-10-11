@@ -23,6 +23,8 @@
     // The app's Skill glyph (components/icons/app-icons.tsx): a tile carrying a bolt.
     skill: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="M12.75 7 9 12.5h6L11.25 17"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    down: '<path d="m6 9 6 6 6-6"/>',
     up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
     chev: '<path d="m9 18 6-6-6-6"/>',
     dashed: '<path d="M10.1 2.18a9.93 9.93 0 0 1 3.8 0"/><path d="M17.6 3.71a9.95 9.95 0 0 1 2.69 2.7"/><path d="M21.82 10.1a9.93 9.93 0 0 1 0 3.8"/><path d="M20.29 17.6a9.95 9.95 0 0 1-2.7 2.69"/><path d="M13.9 21.82a9.94 9.94 0 0 1-3.8 0"/><path d="M6.4 20.29a9.95 9.95 0 0 1-2.69-2.7"/><path d="M2.18 13.9a9.93 9.93 0 0 1 0-3.8"/><path d="M3.71 6.4a9.95 9.95 0 0 1 2.7-2.69"/><circle cx="12" cy="12" r="1"/>',
@@ -46,6 +48,8 @@
   var SKILL = 'scientific-research';
   var QUERY = '/skill:';
   var PROMPT = 'Survey TREM2';
+  // The skill runs on a public model, as the wall's public chat does.
+  var MODEL = 'Claude Code';
   // Three stages of the skill's loop, in its own words.
   var STEPS = ['Scope', 'Literature review', 'Verification'];
 
@@ -91,6 +95,13 @@
         '<div class="sk-refs"><div class="sk-refs-in">' + chip(true) + '</div></div>' +
         '<div class="sk-line">' +
           '<span class="sk-input"><span class="sk-ph">Ask Biorouter anything…</span><span class="sk-typed"></span><span class="sk-caret"></span></span>' +
+        '</div>' +
+        // The controls row inside the card, as the app draws it: the + menu
+        // and the Tools chip at the left, the model chip and Send at the right.
+        '<div class="sk-bar">' +
+          '<span class="sk-plus">' + svg('plus', 'sk-bar-ic') + '</span>' +
+          '<span class="sk-tools">Tools 5' + svg('down', 'sk-dd') + '</span>' +
+          '<span class="sk-model">' + MODEL + svg('down', 'sk-dd') + '</span>' +
           '<span class="sk-send">' + svg('up', 'sk-send-ic', 2) + '</span>' +
         '</div>' +
       '</div>';

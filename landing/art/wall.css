@@ -29,8 +29,8 @@
   --wall-head: 48px;   /* header band height */
   --wall-top: 16px;    /* space under the header */
   --wall-gap: 11px;    /* between messages */
-  --wall-card: 40px;   /* composer card */
-  --wall-pb: 12px;     /* under the chip */
+  --wall-bar: 28px;    /* the controls row inside the composer card */
+  --wall-pb: 12px;     /* under the card */
   --wall-row: 28px;    /* a picker row */
   position: absolute; inset: 0; background: var(--paper);
 }
@@ -94,6 +94,8 @@
 .art-wall .wall-tool > .wall-i { margin-top: calc((var(--wall-l-tool) - 14px) / 2); color: var(--subtle); }
 .art-wall .wall-tx { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0; }
 .art-wall .wall-tt { min-width: 0; text-wrap: balance; }
+/* The row's own chevron (ChevronRight at 60%), as the app and the Biomed tile draw it. */
+.art-wall .wall-tchev { display: inline-block; vertical-align: middle; margin: -2px 0 0 3px; opacity: 0.6; }
 .art-wall .wall-aff {
   display: inline-flex; align-items: center; gap: 4px; flex: none;
   height: 20px; padding: 0 6px; border-radius: var(--r-inner);
@@ -108,33 +110,46 @@
 .art-wall .wall-drop2 .wall-m-bot, .art-wall .wall-drop2 .wall-m-tool,
 .art-wall .wall-drop3 .wall-msgs > * { display: none; }
 
-/* Composer: the card, then the model chip under it. */
+/* Composer: one card holding the prose line and, under it, the controls row
+   the app draws: [+] [Tools N]  ·  [model] (Send). The + glyph hangs back onto
+   the card's text edge. wall.js drops the row's parts, in order, from a chat
+   too narrow to hold them (the wall-bs steps below). */
 .art-wall .wall-comp { flex: none; margin-top: auto; }
 .art-wall .wall-card {
-  height: var(--wall-card); display: flex; align-items: center; gap: 8px;
-  padding: 0 5px 0 12px;
+  padding: 9px 6px 6px 12px;
   background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-container);
 }
-.art-wall .wall-ph { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-/* wall.js picks the spelling: the longest that fits. */
-.art-wall .wall-ph > span { display: none; }
-.art-wall .wall-phx-l .wall-phl, .art-wall .wall-phx-m .wall-phm, .art-wall .wall-phx-s .wall-phs { display: inline; }
-.art-wall .wall-phx-0 .wall-ph { visibility: hidden; }
+.art-wall .wall-ph {
+  display: block; font-size: 13px; line-height: 20px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.art-wall .wall-bar { display: flex; align-items: center; gap: 2px; height: var(--wall-bar); margin: 2px 0 0 -6px; }
+.art-wall .wall-plus { display: grid; place-items: center; flex: none; width: var(--wall-bar); height: var(--wall-bar); color: var(--muted); }
+.art-wall .wall-plus .wall-i { width: 16px; height: 16px; }
+.art-wall .wall-tools, .art-wall .wall-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: var(--wall-bar); padding: 0 7px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease);
+}
+.art-wall .wall-chip { margin-left: auto; color: var(--ink-2); }
+.art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
+.art-wall .wall-chip.is-open { background: var(--medium); }
+.art-wall .wall-dd { width: 12px; height: 12px; margin-left: -1px; opacity: 0.6; }
 .art-wall .wall-send {
-  flex: none; margin-left: auto;
-  width: 28px; height: 28px; border-radius: var(--r-element);
+  flex: none; margin-left: 2px;
+  width: var(--wall-bar); height: var(--wall-bar); border-radius: var(--r-element);
   display: grid; place-items: center;
   background: var(--medium); color: var(--muted);
 }
-.art-wall .wall-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 24px; margin: 6px 0 0 -6px; padding: 0 7px;
-  border-radius: var(--r-element);
-  font-size: 12px; color: var(--ink-2); white-space: nowrap;
-  transition: background var(--dur-fast) var(--ease);
-}
-.art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
-.art-wall .wall-chip.is-open { background: var(--medium); }
+/* Steps wall.js takes, in order, until the row fits. */
+.art-wall .wall-bs1 .wall-dd,
+.art-wall .wall-bs2 .wall-dd, .art-wall .wall-bs2 .wall-tools,
+.art-wall .wall-bs3 .wall-dd, .art-wall .wall-bs3 .wall-tools, .art-wall .wall-bs3 .wall-cn,
+.art-wall .wall-bs4 .wall-dd, .art-wall .wall-bs4 .wall-tools, .art-wall .wall-bs4 .wall-cn, .art-wall .wall-bs4 .wall-plus { display: none; }
+/* A chip with no padlock has nothing left once its name goes. */
+.art-wall .wall-bs3 .wall-chip:not(:has(.wall-chiplock)),
+.art-wall .wall-bs4 .wall-chip:not(:has(.wall-chiplock)) { display: none; }
 
 /* ── Events: wall.js sets their top, clear of the messages and the composer ── */
 .art-wall .wall-evt {
@@ -143,7 +158,7 @@
 }
 .art-wall .wall-pub .wall-evt { left: var(--wall-pw); right: var(--wall-po); }
 /* The picker hangs from the composer (wall.js sets its bottom). */
-.art-wall .wall-priv .wall-evt { top: auto; bottom: 0; }
+.art-wall .wall-priv .wall-evt { top: auto; bottom: 0; align-items: flex-end; }
 .art-wall .wall-no-evt .wall-evt { visibility: hidden; }
 
 /* The model picker, as the app draws it in a private chat: the current
@@ -161,12 +176,8 @@
 .art-wall .wall-pop.is-on { opacity: 1; transform: none; }
 .art-wall .wall-hl {
   position: absolute; left: 4px; right: 4px; top: 4px; height: var(--wall-row);
-  border-radius: var(--r-element); background: var(--sidebar-active);
+  border-radius: var(--r-element); background: var(--medium);
   transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
-}
-.art-wall .wall-hl::before {
-  content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
-  border-radius: 2px; background: var(--coral-bar);
 }
 .art-wall .wall-pop.is-try .wall-hl { transform: translateY(var(--wall-row)); }
 .art-wall .wall-compact .wall-keep { display: none; }
@@ -284,7 +295,7 @@
     --wall-t-tool: 12px; --wall-t-opt: 12px; --wall-t-note: 12px; --wall-l-note: 16px;
   }
   .art-wall .wall-head { gap: 8px; }
-  .art-wall .wall-card { padding-left: 10px; gap: 6px; }
+  .art-wall .wall-card { padding-left: 10px; }
   .art-wall .wall-ph { font-size: 12px; }
   .art-wall .wall-pop { padding: 3px; }
   .art-wall .wall-hl { left: 3px; right: 3px; top: 3px; }
@@ -307,15 +318,15 @@
 }
 /* Short frames: a tighter rhythm. */
 @container wallframe (max-height: 420px) {
-  .art-wall .wall-layer { --wall-top: 12px; --wall-gap: 8px; --wall-card: 36px; --wall-pb: 10px; --wall-row: 26px; }
-  .art-wall .wall-chip { margin-top: 4px; height: 22px; }
-  .art-wall .wall-send { width: 26px; height: 26px; }
+  .art-wall .wall-layer { --wall-top: 12px; --wall-gap: 8px; --wall-bar: 26px; --wall-pb: 10px; --wall-row: 26px; }
+  .art-wall .wall-card { padding-top: 7px; }
+  .art-wall .wall-bar { margin-top: 0; }
 }
 /* Large frames (the stacked tablet layout): larger type, the long words. */
 @container wallframe (min-width: 640px) and (min-height: 460px) {
   .art-wall .wall-d { display: none; }
   .art-wall .wall-g { display: inline; }
-  .art-wall .wall-layer { --wall-po: 22px; --wall-pw: 30px; --wall-hw: 16px; --wall-head: 54px; --wall-top: 20px; --wall-gap: 13px; --wall-card: 44px; --wall-pb: 14px; --wall-row: 30px; }
+  .art-wall .wall-layer { --wall-po: 22px; --wall-pw: 30px; --wall-hw: 16px; --wall-head: 54px; --wall-top: 20px; --wall-gap: 13px; --wall-bar: 30px; --wall-pb: 14px; --wall-row: 30px; }
   .art-wall .wall-head, .art-wall .wall-body {
     --wall-t-title: 14px; --wall-l-title: 18px;
     --wall-t-msg: 14px; --wall-l-user: 20px; --wall-l-bot: 20px; --wall-bub: 8px 13px;
@@ -325,8 +336,7 @@
   }
   .art-wall .wall-aff { font-size: 12px; height: 22px; }
   .art-wall .wall-ph { font-size: 13px; }
-  .art-wall .wall-send { width: 30px; height: 30px; }
-  .art-wall .wall-chip { font-size: 13px; margin-top: 7px; }
+  .art-wall .wall-tools, .art-wall .wall-chip { font-size: 13px; }
   .art-wall .wall-pop { width: min(100%, 300px); }
 }
 
@@ -356,9 +366,6 @@
   .art-wall .wall-opt .wall-check { display: none; }
 }
 @container wallpane (max-width: 190px) {
-}
-@container wallpane (max-width: 132px) {
-  .art-wall .wall-priv .wall-chip .wall-cn { display: none; }
 }
 @container wallpane (max-width: 100px) {
   .art-wall .wall-comp { display: none; }

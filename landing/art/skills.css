@@ -24,7 +24,7 @@
 /* ── The conversation: one column pinned above the composer ── */
 .art-skills .sk-thread {
   position: absolute; left: var(--pad); right: var(--pad); top: var(--pad);
-  bottom: calc(var(--pad) + 44px + var(--gap)); /* above the 44px composer */
+  bottom: calc(var(--pad) + 66px + var(--gap)); /* above the 66px composer: prose line and controls row */
   display: flex; flex-direction: column; justify-content: flex-end; gap: 10px;
   transition: opacity var(--dur-slow) var(--ease);
 }
@@ -101,7 +101,7 @@
   position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
   background: var(--paper);
   border: 1px solid var(--line); border-radius: var(--r-container);
-  padding: 5px 5px 5px 12px;
+  padding: 6px 6px 6px 12px;
   transition: border-color var(--dur-menu) var(--ease);
 }
 /* The app's focus edge (--border-accent): the card's own hairline turns
@@ -131,6 +131,19 @@
 .art-skills .sk-typed { color: var(--ink); }
 .art-skills .sk-caret { display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
 .art-skills.is-focus .sk-caret { opacity: 1; }
+
+/* The controls row: [+] [Tools N]  ·  [model] (Send). The + glyph hangs back
+   onto the card's text edge, as in the app. */
+.art-skills .sk-bar { display: flex; align-items: center; gap: 2px; height: 32px; margin-left: -6px; min-width: 0; }
+.art-skills .sk-plus { display: grid; place-items: center; flex: none; width: 28px; height: 28px; color: var(--muted); }
+.art-skills .sk-bar-ic { width: 16px; height: 16px; }
+.art-skills .sk-tools, .art-skills .sk-model {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  height: 28px; padding: 0 7px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; white-space: nowrap; color: var(--muted);
+}
+.art-skills .sk-model { margin-left: auto; min-width: 0; }
+.art-skills .sk-dd { width: 12px; height: 12px; opacity: 0.6; }
 
 .art-skills .sk-send {
   display: grid; place-items: center; flex: none;
