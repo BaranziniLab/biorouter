@@ -13,6 +13,14 @@
  * V3-R3-1: the same defect on Skills' Browse and Add dialogs); this file pins the Extensions
  * page's three mounts so the page cannot lose it without a failing case.
  *
+ * Two layers hold it now, and either one alone returns focus. `MarketplaceDialog` leaves its box
+ * alone until Radix asks, and since 218cfe015 the dialog primitive also reads the opener when its
+ * content mounts with focus already inside (a field with `autoFocus`; WS-PRIMITIVES, whose
+ * `dialogAutoFocusReturn.browser.test` pins that layer). Measured 2026-10-11: with `autoFocus`
+ * put back into `MarketplaceDialog` the Browse case below still passes. So these cases pin what a
+ * person sees (Escape lands on Add), not which layer did it. The instrument below is what proves
+ * they can fail: it removes the primitive's return itself.
+ *
  * The REAL `ExtensionsView` is bundled with esbuild and rendered in Chromium, with the real
  * Browse, Install from file and Custom extension dialogs. Only the data edges are stubbed (the
  * config hook, the extension list and the marketplace feed). Each case drives the keyboard the
