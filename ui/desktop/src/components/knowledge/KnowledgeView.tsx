@@ -287,7 +287,12 @@ function KnowledgeViewInner() {
                   icon={loading ? RefreshingGlyph : RefreshCw}
                   label={knowledgeCopy.actions.refresh}
                   onClick={() => void refreshGraph()}
-                  disabled={!primaryKbId || loading}
+                  // `busy`, not `disabled`, while the request this button started is out: a
+                  // button that turns `disabled` under a keyboard user hands focus to <body>
+                  // (V3-R2-1). `busy` keeps it focused and ignores the press itself. No base
+                  // to refresh is a different thing: nothing was pressed, and it stays disabled.
+                  disabled={!primaryKbId}
+                  busy={loading}
                 />
                 <DropdownMenu>
                   <Tooltip>

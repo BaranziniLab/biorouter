@@ -307,3 +307,33 @@ describe('LintDrawer — a coding-agent model is a model like any other (#109)',
     expect(mocks.start).not.toHaveBeenCalled();
   });
 });
+
+// V3-R2-1 (from WS-VIEWS-A, WS-VIEWS-A-3): the check starts as the drawer opens, while focus is
+// arriving on the Check button, so a button that turned `disabled` for the run would hand focus to
+// <body> at once. It is `aria-busy` instead: still enabled and focused, the press ignored.
+describe('LintDrawer while the check runs', () => {
+  it('keeps the Check button enabled, focused and busy, and ignores the press', async () => {
+    mocks.stream = { events: [], status: 'streaming', finalResult: null, error: undefined };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeEnabled();
+    expect(run).toHaveAttribute('aria-disabled', 'true');
+    expect(run).toHaveAttribute('aria-busy', 'true');
+    expect(run).toHaveTextContent('Checking…');
+
+    const started = mocks.start.mock.calls.length;
+    run.focus();
+    await userEvent.click(run);
+    expect(mocks.start).toHaveBeenCalledTimes(started);
+    expect(run).toHaveFocus();
+  });
+
+  it('is an ordinary enabled button when nothing is running', () => {
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeEnabled();
+    expect(run).not.toHaveAttribute('aria-busy');
+    expect(run).not.toHaveAttribute('aria-disabled');
+  });
+});

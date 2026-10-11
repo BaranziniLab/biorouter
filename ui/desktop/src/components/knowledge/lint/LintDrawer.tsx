@@ -218,10 +218,17 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               type="button"
               variant="secondary"
               size="sm"
-              className="shrink-0"
+              className={running ? 'shrink-0 br-action-busy' : 'shrink-0'}
               data-testid="knowledge-lint-run"
-              disabled={running || !dispatchKbId || !model}
-              onClick={run}
+              // A run in flight is `aria-busy`, not `disabled`: a button that turns `disabled`
+              // under a keyboard user hands focus to <body>, and this one starts running as the
+              // drawer opens, while focus is arriving on it (V3-R2-1, WS-VIEWS-A-3). The press is
+              // ignored here instead, and `.br-action-busy` dims it. No base or no model is a
+              // control that genuinely cannot act, and stays `disabled`.
+              disabled={!dispatchKbId || !model}
+              aria-disabled={running || undefined}
+              aria-busy={running || undefined}
+              onClick={running ? undefined : run}
             >
               {running ? 'Checking…' : report ? 'Check again' : 'Check'}
             </Button>

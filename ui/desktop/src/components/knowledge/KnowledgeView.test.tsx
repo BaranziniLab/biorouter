@@ -22,6 +22,7 @@ const state = vi.hoisted(() => ({
     format?: string;
   } | null,
   bases: [] as { id: string }[],
+  graphLoading: false,
 }));
 
 vi.mock('./KnowledgeContext', () => ({
@@ -37,7 +38,7 @@ vi.mock('./KnowledgeContext', () => ({
 vi.mock('./hooks/useKnowledgeGraph', () => ({
   useKnowledgeGraph: () => ({
     graph: { nodes: [], edges: [] },
-    loading: false,
+    loading: state.graphLoading,
     error: null,
     refresh: mocks.refreshGraph,
   }),
@@ -114,6 +115,7 @@ beforeEach(() => {
     format: 'okf',
   };
   state.bases = [{ id: 'omop' }];
+  state.graphLoading = false;
 });
 
 describe('KnowledgeView compact workspace', () => {
@@ -213,6 +215,37 @@ describe('KnowledgeView lint affordance', () => {
     state.bases = [{ id: 'omop' }];
     render(<KnowledgeView />);
     expect(screen.getByRole('button', { name: 'Check for problems' })).toBeDisabled();
+  });
+});
+
+// V3-R2-1 (from WS-VIEWS-A): a focused button that turns `disabled` hands focus to <body> in
+// Chromium, so the band's Refresh stays a live, focused control while its own request is out.
+describe('KnowledgeView refresh while the graph loads', () => {
+  it('stays enabled and focusable while loading, says it is busy, and ignores the press', async () => {
+    state.graphLoading = true;
+    render(<KnowledgeView />);
+    const refresh = screen.getByRole('button', { name: knowledgeCopy.actions.refresh });
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    refresh.focus();
+    await userEvent.click(refresh);
+    expect(mocks.refreshGraph).not.toHaveBeenCalled();
+    expect(refresh).toHaveFocus();
+  });
+
+  it('refreshes when it is not loading', async () => {
+    render(<KnowledgeView />);
+    const refresh = screen.getByRole('button', { name: knowledgeCopy.actions.refresh });
+    expect(refresh).not.toHaveAttribute('aria-busy');
+    await userEvent.click(refresh);
+    expect(mocks.refreshGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it('is still disabled when there is no base to refresh', () => {
+    state.primaryKb = null;
+    render(<KnowledgeView />);
+    expect(screen.getByRole('button', { name: knowledgeCopy.actions.refresh })).toBeDisabled();
   });
 });
 

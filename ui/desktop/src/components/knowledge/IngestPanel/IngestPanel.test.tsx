@@ -625,3 +625,33 @@ describe('IngestPanel digest log lifetime', () => {
     expect(resetsAtCheck).toBeGreaterThan(before);
   });
 });
+
+// V3-R2-1 (from WS-VIEWS-A, WS-VIEWS-A-3): the person has just pressed Stop, and a button that turns
+// `disabled` under a keyboard user hands focus to <body> in Chromium (jsdom keeps it, so this pins
+// the markup that cannot lose it: still enabled, `aria-busy`, the press ignored).
+describe('IngestPanel stopping', () => {
+  it('stays enabled, focused and busy while stopping, and ignores a second press', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    mocks.start.mockReturnValue(new Promise(() => undefined));
+
+    render(<IngestPanel />);
+    stageSomeText();
+    const button = screen.getByTestId('knowledge-digest-button');
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Stop'));
+    expect(button).not.toHaveAttribute('aria-busy');
+
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Stopping…'));
+    expect(mocks.abort).toHaveBeenCalledTimes(1);
+    expect(button).toBeEnabled();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(button).toHaveFocus();
+
+    fireEvent.click(button);
+    expect(mocks.abort).toHaveBeenCalledTimes(1);
+  });
+});

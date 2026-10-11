@@ -645,17 +645,24 @@ export function IngestPanel() {
                 data-testid="knowledge-digest-button"
                 variant={busy ? 'secondary' : 'default'}
                 size="lg"
-                disabled={digestState === 'stopping'}
-                aria-disabled={(!busy && nothingToDigest) || undefined}
+                // Stopping is `aria-busy`, not `disabled`: the person has just pressed this
+                // button, and one that turns `disabled` under a keyboard user hands focus to
+                // <body> (V3-R2-1, WS-VIEWS-A-3). The press is ignored below, and
+                // `.br-action-busy` dims it.
+                aria-disabled={
+                  (!busy && nothingToDigest) || digestState === 'stopping' || undefined
+                }
+                aria-busy={digestState === 'stopping' || undefined}
                 aria-describedby={quietReason ? quietReasonId : undefined}
                 onClick={() => {
+                  if (digestState === 'stopping') return;
                   if (busy) {
                     onAbort();
                     return;
                   }
                   if (!nothingToDigest) void onDigest();
                 }}
-                className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
+                className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''} ${digestState === 'stopping' ? 'br-action-busy' : ''}`}
               >
                 {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
               </Button>
