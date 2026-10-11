@@ -37,10 +37,10 @@ fn token_path(base: &Path, spec: &str) -> PathBuf {
     rest.split('/')
         .filter(|segment| !segment.is_empty())
         .fold(root, |path, segment| {
-            path.join(if segment == "marker" {
-                MOVE_MARKER
-            } else {
-                segment
+            path.join(match segment {
+                "marker" => MOVE_MARKER,
+                "lock" => MOVE_LOCK,
+                other => other,
             })
         })
 }
@@ -55,11 +55,65 @@ fn materialize(base: &Path, spec: &str) {
     }
 }
 
+/// Directories whose permissions a case removes, restored on drop so a failed
+/// assertion cannot leave an undeletable temporary directory behind.
+struct Unreadable(Vec<PathBuf>);
+
+impl Unreadable {
+    /// `None` when the case cannot be set up here: not unix, or permissions
+    /// that are not enforced (running as root).
+    fn make(base: &Path, specs: &[String]) -> Option<Self> {
+        if specs.is_empty() {
+            return Some(Self(Vec::new()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dirs: Vec<PathBuf> = specs.iter().map(|spec| token_path(base, spec)).collect();
+            for dir in &dirs {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+            }
+            let guard = Self(dirs);
+            if guard.0.iter().any(|dir| fs::read_dir(dir).is_ok()) {
+                return None;
+            }
+            Some(guard)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = base;
+            None
+        }
+    }
+}
+
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for dir in &self.0 {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Case {
+struct ResolutionCase {
     name: String,
     before: Vec<String>,
+    #[serde(default)]
+    unreadable: Vec<String>,
+    resolves: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveCase {
+    name: String,
+    before: Vec<String>,
+    #[serde(default)]
+    unreadable: Vec<String>,
     #[serde(default)]
     rename_fails: bool,
     runs: Vec<String>,
@@ -70,20 +124,54 @@ struct Case {
 
 #[derive(serde::Deserialize)]
 struct Table {
-    cases: Vec<Case>,
+    resolution: Vec<ResolutionCase>,
+    moves: Vec<MoveCase>,
 }
 
-/// The shared table, also run by `ui/desktop/src/utils/appFolder.test.ts`, so
-/// the desktop main process and every Rust process agree on each state.
+fn table() -> Table {
+    serde_json::from_str(include_str!("resolution-cases.json")).unwrap()
+}
+
+/// The shared resolution states, also run by
+/// `ui/desktop/src/utils/appFolder.test.ts`, so the desktop main process and
+/// every Rust process resolve each state to the same folder.
 #[test]
-fn every_case_in_the_shared_table_holds() {
-    let table: Table = serde_json::from_str(include_str!("resolution-cases.json")).unwrap();
-    assert!(table.cases.len() >= 9, "the table lost cases");
-    for case in table.cases {
+fn every_resolution_case_in_the_shared_table_holds() {
+    let cases = table().resolution;
+    assert!(cases.len() >= 8, "the table lost resolution cases");
+    for case in cases {
         let base = tempfile::tempdir().unwrap();
         for spec in &case.before {
             materialize(base.path(), spec);
         }
+        let Some(_unreadable) = Unreadable::make(base.path(), &case.unreadable) else {
+            eprintln!("skipped here: {}", case.name);
+            continue;
+        };
+        let root = AppRoot::under(base.path());
+        assert_eq!(
+            root.resolve(),
+            token_path(base.path(), &case.resolves),
+            "{}: resolved the wrong folder",
+            case.name
+        );
+    }
+}
+
+/// The daemon's moves, state by state.
+#[test]
+fn every_move_case_in_the_shared_table_holds() {
+    let cases = table().moves;
+    assert!(cases.len() >= 10, "the table lost move cases");
+    for case in cases {
+        let base = tempfile::tempdir().unwrap();
+        for spec in &case.before {
+            materialize(base.path(), spec);
+        }
+        let Some(unreadable) = Unreadable::make(base.path(), &case.unreadable) else {
+            eprintln!("skipped here: {}", case.name);
+            continue;
+        };
         let root = AppRoot::under(base.path());
         for (run, expected) in case.runs.iter().enumerate() {
             let outcome = move_root(&root, true, &ops(case.rename_fails));
@@ -101,6 +189,7 @@ fn every_case_in_the_shared_table_holds() {
             "{}: resolved the wrong folder",
             case.name
         );
+        drop(unreadable);
         for spec in &case.exists {
             assert!(
                 token_path(base.path(), spec).exists(),
@@ -135,9 +224,10 @@ fn a_moved_file_keeps_its_bytes() {
     );
 }
 
-/// Two processes racing: one rename wins, the other sees the current folder,
-/// and the tree arrives whole either way. Repeated, because the interleaving
-/// differs from run to run.
+/// Two daemons racing: one takes the lock and renames, the other waits for the
+/// lock and then sees the current folder (or gives up waiting), and the tree
+/// arrives whole either way. Repeated, because the interleaving differs from
+/// run to run.
 ///
 /// With retries, as in production: on Windows the other mover's marker handle,
 /// open for an instant inside the folder, is enough to refuse a rename once.
@@ -167,7 +257,12 @@ fn two_movers_at_once_end_with_one_tree() {
             .collect();
         let mut tokens: Vec<&str> = racers.into_iter().map(|r| r.join().unwrap()).collect();
         tokens.sort();
-        assert_eq!(tokens, ["already-moved", "moved"]);
+        // The loser either waited for the lock and found the move done, or
+        // gave up waiting while the winner held it; it never moves twice.
+        assert!(
+            tokens == ["already-moved", "moved"] || tokens == ["in-use", "moved"],
+            "{tokens:?}"
+        );
         assert!(!root.legacy.exists());
         assert_eq!(
             fs::read_to_string(root.current.join("config").join("config.yaml")).unwrap(),
@@ -477,6 +572,97 @@ fn a_rewrite_the_parse_does_not_confirm_is_refused() {
     assert_eq!(
         rw.rewrite_document("path: elsewhere\n", Format::Yaml),
         Ok(None)
+    );
+}
+
+/// A roaming profile redirected to a share: the environment names the base
+/// `\\fs1\...`, and `fs::canonicalize`, which `daemon_runtime::profile_record`
+/// stores, spells it `\\?\UNC\fs1\...`. The environment's spelling alone does
+/// not match the stored one, so the rewrite also matches the canonical
+/// spelling; without it the Crew vault refuses to unlock after the move.
+#[test]
+fn a_canonical_unc_path_on_a_redirected_profile_is_rewritten() {
+    let plain = Path::new(r"\\fs1\home$\ana\AppData\Roaming");
+    let canonical = Path::new(r"\\?\UNC\fs1\home$\ana\AppData\Roaming");
+    let root = AppRoot::under(plain);
+    let stored = format!(
+        r"{}\{LEGACY_APP_AUTHOR}\{APP_NAME}\config",
+        canonical.display()
+    );
+    let expected = format!(r"{}\{APP_AUTHOR}\{APP_NAME}\config", canonical.display());
+
+    assert_eq!(
+        RootRewrite::new(&root).rewrite_str(&stored),
+        None,
+        "the environment's spelling alone does not reach the canonical one"
+    );
+    let spellings = rewrite::root_spellings(&root, Some(canonical));
+    assert_eq!(spellings.len(), 2);
+    let rw = RootRewrite::for_roots(&spellings);
+    assert_eq!(rw.rewrite_str(&stored).as_deref(), Some(expected.as_str()));
+    assert_eq!(
+        rw.rewrite_str(&format!(
+            r"{plain}\{LEGACY_APP_AUTHOR}\{APP_NAME}\config",
+            plain = plain.display()
+        )),
+        Some(format!(
+            r"{plain}\{APP_AUTHOR}\{APP_NAME}\config",
+            plain = plain.display()
+        )),
+        "the environment's spelling still matches too"
+    );
+
+    let profile = serde_json::to_string(
+        &serde_json::json!({"version": 1, "profile_id": "p", "config_dir": stored}),
+    )
+    .unwrap();
+    let rewritten = rw
+        .rewrite_document(&profile, Format::Json)
+        .unwrap()
+        .expect("changed");
+    let parsed: serde_json::Value = serde_json::from_str(&rewritten).unwrap();
+    assert_eq!(parsed["config_dir"], expected);
+}
+
+/// The same spelling found on disk: a base reached through a link (on
+/// Windows a junction, a mapped drive or a `subst` drive), with the stored
+/// config dir in the canonical spelling `daemon_runtime::profile_record`
+/// writes. After the move it must equal the canonical current config dir,
+/// which is exactly what that function compares it to.
+#[cfg(unix)]
+#[test]
+fn a_canonical_path_through_a_link_in_the_base_is_rewritten() {
+    let real = tempfile::tempdir().unwrap();
+    let links = tempfile::tempdir().unwrap();
+    let base = links.path().join("Roaming");
+    std::os::unix::fs::symlink(real.path(), &base).unwrap();
+    let root = AppRoot::under(&base);
+    fs::create_dir_all(root.legacy.join("config")).unwrap();
+    let stored = fs::canonicalize(root.legacy.join("config")).unwrap();
+    assert!(
+        !stored.starts_with(&base),
+        "the stored spelling must differ"
+    );
+    fs::write(
+        root.legacy.join("config").join("daemon-profile.json"),
+        serde_json::to_string(
+            &serde_json::json!({"version": 1, "profile_id": "p", "config_dir": stored}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(move_root(&root, true, &ops(false)).token(), "moved");
+    let report = rewrite::finish_pending_rewrite(&root);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.files_rewritten.len(), 1);
+    let profile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.current.join("config").join("daemon-profile.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        profile["config_dir"].as_str().map(PathBuf::from),
+        Some(fs::canonicalize(root.current.join("config")).unwrap()),
     );
 }
 
@@ -790,7 +976,7 @@ fn a_store_that_cannot_be_written_keeps_the_marker() {
     assert_eq!(report.files_rewritten.len(), 1);
 }
 
-/// The desktop main process carries the same four values in `appFolder.ts`.
+/// The desktop main process carries the same three values in `appFolder.ts`.
 /// Read from its source, and compared to these constants rather than to
 /// literals, so no third copy of the legacy name exists.
 #[test]
@@ -803,7 +989,6 @@ fn the_desktop_constants_match_these() {
         ("APP_AUTHOR", APP_AUTHOR),
         ("APP_NAME", APP_NAME),
         ("LEGACY_APP_AUTHOR", LEGACY_APP_AUTHOR),
-        ("MOVE_MARKER", MOVE_MARKER),
     ] {
         let declaration = format!("export const {name} = '{value}';");
         assert!(
@@ -818,5 +1003,177 @@ fn the_desktop_constants_match_these() {
             test.contains("resolution-cases.json")
         },
         "the desktop suite must run the shared table"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Who may move, and when.
+
+/// The race the move must never lose: one process resolved the legacy folder
+/// and froze the path (as `Config::global`, the session store and the log
+/// directory do), and a second process starts and would move the folder out
+/// from under it. The first holds the lock, as `platform_dirs` makes every
+/// resolver do, so the second leaves the folder where it is and resolves the
+/// same one; the frozen writer's data stays in the one folder in use, and the
+/// next start with nobody left on the old folder moves it, data included.
+#[test]
+fn a_process_using_the_legacy_folder_keeps_the_move_away() {
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    materialize(roaming.path(), "legacy/config/config.yaml");
+    let bases = || Some((roaming.path().to_path_buf(), local.path().to_path_buf()));
+
+    // The first process resolves, holds, and freezes its config dir.
+    let first = Pins::new();
+    let root = AppRoot::under(roaming.path());
+    first.hold_while_legacy(&[&root]);
+    assert!(
+        !first.is_empty(),
+        "a process using the legacy folder must hold its lock"
+    );
+    let frozen = crate::paths::windows_dirs(roaming.path(), local.path()).config;
+    assert_eq!(frozen, token_path(roaming.path(), "legacy/config"));
+
+    // The daemon starts.
+    let second = move_for_process(None, bases, &ops(false));
+    assert_eq!(second.roaming.as_ref().unwrap().outcome.token(), "in-use");
+    assert!(
+        !token_path(roaming.path(), "current").exists(),
+        "the folder moved under a process that had frozen its path"
+    );
+    assert_eq!(
+        crate::paths::windows_dirs(roaming.path(), local.path()).config,
+        frozen,
+        "both processes must resolve the one folder in use"
+    );
+    assert!(
+        !second.pins.is_empty(),
+        "the daemon now uses the legacy folder too, so it holds the lock"
+    );
+
+    // The first process's cached writer: `Config::save_values` runs
+    // `create_dir_all` on the parent it froze, then writes.
+    fs::create_dir_all(&frozen).unwrap();
+    fs::write(frozen.join("config.yaml"), "written: later\n").unwrap();
+
+    // Everyone exits; the next start moves the folder with the write in it.
+    drop(first);
+    drop(second);
+    let next = move_for_process(None, bases, &ops(false));
+    assert_eq!(next.roaming.as_ref().unwrap().outcome.token(), "moved");
+    assert!(next.pins.is_empty());
+    assert_eq!(
+        fs::read_to_string(token_path(roaming.path(), "current/config/config.yaml")).unwrap(),
+        "written: later\n"
+    );
+    assert!(!token_path(roaming.path(), "legacy").exists());
+    assert!(
+        !token_path(roaming.path(), "legacyParent").exists(),
+        "the lock and the emptied author folder go with the move"
+    );
+}
+
+/// A process that only ever sees the current folder (or a fresh install)
+/// holds nothing, and a resolver holds each legacy lock once.
+#[test]
+fn a_resolver_holds_a_lock_only_while_it_uses_a_legacy_folder() {
+    let fresh = tempfile::tempdir().unwrap();
+    let moved = tempfile::tempdir().unwrap();
+    materialize(moved.path(), "current/config/config.yaml");
+    let pins = Pins::new();
+    pins.hold_while_legacy(&[&AppRoot::under(fresh.path()), &AppRoot::under(moved.path())]);
+    assert!(pins.is_empty());
+    assert!(
+        !token_path(fresh.path(), "legacyParent").exists(),
+        "holding nothing creates nothing"
+    );
+
+    let legacy = tempfile::tempdir().unwrap();
+    materialize(legacy.path(), "legacy/config/config.yaml");
+    let root = AppRoot::under(legacy.path());
+    pins.hold_while_legacy(&[&root]);
+    pins.hold_while_legacy(&[&root]);
+    assert_eq!(pins.into_inner().len(), 1);
+}
+
+/// A process that starts while the daemon is moving waits for the move, and
+/// then resolves the folder it moved to.
+#[test]
+fn a_resolver_that_starts_during_a_move_waits_for_it() {
+    let base = tempfile::tempdir().unwrap();
+    materialize(base.path(), "legacy/config/config.yaml");
+    let root = AppRoot::under(base.path());
+    let mover = match take_exclusive(&root.move_lock(), NO_DELAYS) {
+        Exclusive::Held(lock) => lock,
+        _ => panic!("nobody else holds the lock"),
+    };
+
+    let (done, finished) = std::sync::mpsc::channel();
+    let waiting = {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            Pins::new().hold_while_legacy(&[&root]);
+            done.send(root.resolve().to_path_buf()).unwrap();
+        })
+    };
+    assert!(
+        finished.recv_timeout(Duration::from_millis(200)).is_err(),
+        "a resolver went ahead in the middle of a move"
+    );
+    assert_eq!(attempt_move(&root, true, &ops(false)).token(), "moved");
+    mover.unlock().unwrap();
+    assert_eq!(
+        finished.recv_timeout(Duration::from_secs(10)).unwrap(),
+        root.current
+    );
+    waiting.join().unwrap();
+}
+
+/// Only the daemon (`biorouterd agent`) moves: the command line tool, the
+/// `mcp` children and every resolver only resolve, so no process that has
+/// frozen the legacy path can be the one that moves it, and no test binary
+/// that reaches a resolver can move a developer's real folder.
+#[test]
+fn only_the_daemon_moves_the_folder() {
+    // Built from pieces, so this test's own source is not a caller.
+    let needle = ["move_for_this", "_process("].concat();
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut callers = Vec::new();
+    let mut stack = vec![crates];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !path.ends_with("target") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") || path.ends_with("app_folder/mod.rs")
+            {
+                continue;
+            }
+            let code = fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = code.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains(&needle) {
+                    continue;
+                }
+                let arm = lines[index.saturating_sub(12)..index]
+                    .iter()
+                    .any(|above| above.contains("Commands::Agent"));
+                callers.push((path.display().to_string(), arm));
+            }
+        }
+    }
+    assert_eq!(
+        callers.len(),
+        1,
+        "the move has callers besides the daemon: {callers:?}"
+    );
+    let (file, in_agent_arm) = &callers[0];
+    assert!(
+        file.ends_with("biorouter-server/src/main.rs") && *in_agent_arm,
+        "the one caller must be `biorouterd agent`, found {callers:?}"
     );
 }

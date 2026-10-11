@@ -24,8 +24,9 @@
  *    That is the **Xdg** strategy on macOS as well as Linux (verified in
  *    etcetera 0.11's `app_strategy.rs`: `create_strategies!(Apple, Xdg)` puts
  *    Xdg in the `choose_app_strategy` slot), and the **Windows** strategy on
- *    Windows, where the folder is the one `./appFolder.ts` resolves after its
- *    move out of the folder earlier releases used. It is NOT
+ *    Windows, where the folder is the one `./appFolder.ts` resolves: the
+ *    current one, or the folder earlier releases used until the daemon has
+ *    moved it. It is NOT
  *    `~/.config/biorouter` on either count: a non-default `XDG_CONFIG_HOME`
  *    moves it, and Windows has never used that layout.
  *    `crates/biorouter-server/src/routes/shell.rs` fixed and documented the
@@ -60,37 +61,11 @@
  * this file does — not a reason to point the writers at the real tree.
  */
 
-import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import {
-  APP_NAME,
-  appRootUnder,
-  moveForProcess,
-  resolveAppRoot,
-  windowsBases,
-  type FolderMove,
-} from './appFolder';
+import { APP_NAME, appRootUnder, resolveAppRoot, windowsBases, type Presence } from './appFolder';
 
 const APP_STRATEGY_APP_NAME = APP_NAME;
-
-let processFolderMove: FolderMove | undefined;
-
-/**
- * Run the Windows move out of the folder earlier releases used (R-31), once
- * per process, and answer what it did. `main.ts` calls it before anything
- * reads or writes Biorouter's folder and before the daemon starts; every
- * resolver below calls it too, so no caller can get ahead of it. Off Windows,
- * and under `BIOROUTER_PATH_ROOT`, it does nothing.
- */
-export function ensureAppFolderMoved(): FolderMove {
-  processFolderMove ??= moveForProcess({
-    platform: process.platform,
-    env: process.env,
-    homedir: os.homedir(),
-  });
-  return processFolderMove;
-}
 
 /** What the platform half of the resolver reads; `process` and `os` in the app. */
 export interface PlatformInputs {
@@ -99,7 +74,7 @@ export interface PlatformInputs {
   homedir: string;
   /** `path.win32` lets the suite run the Windows branch on every OS. */
   pathImpl?: Pick<typeof path, 'join' | 'isAbsolute'>;
-  exists?: (target: string) => boolean;
+  presence?: (target: string) => Presence;
 }
 
 /**
@@ -109,7 +84,8 @@ export interface PlatformInputs {
  * `biorouterConfigDir`.
  *
  * Windows: `%APPDATA%\UCSF\biorouter\config`, or the same folder under the
- * legacy author while the move has not happened (see `./appFolder.ts`). ⚠
+ * legacy author while the daemon has not moved it yet (see `./appFolder.ts`;
+ * this process never moves it). ⚠
  * etcetera's ladder has a rung this cannot reproduce — an unset `APPDATA`
  * sends it to the known-folder API before it falls back to
  * `<home>\AppData\Roaming` — so this skips the middle rung and joins the home
@@ -126,7 +102,7 @@ export function platformConfigDirFor(inputs: PlatformInputs): string {
   if (inputs.platform === 'win32') {
     const { roaming } = windowsBases(inputs.env, inputs.homedir, p.join);
     const root = appRootUnder(roaming, p.join);
-    return p.join(resolveAppRoot(root, { exists: inputs.exists ?? fsExists }), 'config');
+    return p.join(resolveAppRoot(root, inputs.presence), 'config');
   }
 
   const xdgConfigHome = inputs.env.XDG_CONFIG_HOME;
@@ -137,12 +113,7 @@ export function platformConfigDirFor(inputs: PlatformInputs): string {
   return p.join(base, APP_STRATEGY_APP_NAME);
 }
 
-function fsExists(target: string): boolean {
-  return fsSync.existsSync(target);
-}
-
 function platformConfigDir(): string {
-  ensureAppFolderMoved();
   return platformConfigDirFor({
     platform: process.platform,
     env: process.env,

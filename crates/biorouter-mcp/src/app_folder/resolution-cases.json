@@ -1,6 +1,50 @@
 {
-  "about": "The Windows app-folder rule (R-31), as one table both implementations run: crates/biorouter-mcp/src/app_folder/tests.rs and ui/desktop/src/utils/appFolder.test.ts. Each case builds `before` under an empty temporary base directory, runs the move once per entry of `runs` (writing the move marker, as for the roaming folder), and expects that outcome from each run, then the folder named by `resolves`, then every `exists` path present and every `absent` path missing. Path tokens: `current` is <base>/<APP_AUTHOR>/<APP_NAME>, `legacy` is <base>/<LEGACY_APP_AUTHOR>/<APP_NAME>, `currentParent` and `legacyParent` are their author folders, `lookalike` is <base>/<LEGACY_APP_AUTHOR>2/<APP_NAME>, and `marker` is the move marker's file name. A trailing slash in `before` makes an empty directory instead of a file. `renameFails` makes every rename attempt fail, as a file held open by another process does on Windows.",
-  "cases": [
+  "about": "The Windows app-folder rule (R-31), as one table. Path tokens: `current` is <base>/<APP_AUTHOR>/<APP_NAME>, `legacy` is <base>/<LEGACY_APP_AUTHOR>/<APP_NAME>, `currentParent` and `legacyParent` are their author folders, `lookalike` is <base>/<LEGACY_APP_AUTHOR>2/<APP_NAME>, `marker` is the move marker's file name and `lock` is the move lock's. Each case builds `before` under an empty temporary base directory; a trailing slash makes an empty directory instead of a file. `unreadable` lists directories whose permissions are then removed, so checking a path below them fails (unix only, and skipped where the permissions are not enforced). `resolution` is run by both implementations, crates/biorouter-mcp/src/app_folder/tests.rs and ui/desktop/src/utils/appFolder.test.ts: it expects the folder named by `resolves`, with nothing moved. `moves` is run by the daemon's suite only, since only the daemon moves: it runs the move once per entry of `runs` (writing the marker, as for the roaming folder) and expects that outcome from each run, then the folder named by `resolves`, then every `exists` path present and every `absent` path missing. `renameFails` makes every rename attempt fail, as a file held open by another process does on Windows.",
+  "resolution": [
+    {
+      "name": "a fresh install resolves the current folder",
+      "before": [],
+      "resolves": "current"
+    },
+    {
+      "name": "the legacy folder alone stays in use until it is moved",
+      "before": ["legacy/config/config.yaml"],
+      "resolves": "legacy"
+    },
+    {
+      "name": "the current folder alone is used",
+      "before": ["current/config/config.yaml"],
+      "resolves": "current"
+    },
+    {
+      "name": "when both exist the current folder wins",
+      "before": ["legacy/config/config.yaml", "current/config/config.yaml"],
+      "resolves": "current"
+    },
+    {
+      "name": "a folder whose author only starts like the legacy one is not the legacy folder",
+      "before": ["lookalike/config/config.yaml"],
+      "resolves": "current"
+    },
+    {
+      "name": "a file where the legacy author folder would be is not a legacy folder",
+      "before": ["legacyParent"],
+      "resolves": "current"
+    },
+    {
+      "name": "a legacy folder that cannot be checked may hold data, so it stays in use",
+      "before": ["legacy/config/config.yaml"],
+      "unreadable": ["legacyParent"],
+      "resolves": "legacy"
+    },
+    {
+      "name": "a current folder that cannot be checked is still the current one when no legacy folder exists",
+      "before": ["current/config/config.yaml"],
+      "unreadable": ["currentParent"],
+      "resolves": "current"
+    }
+  ],
+  "moves": [
     {
       "name": "a fresh install starts in the current folder and creates nothing yet",
       "before": [],
@@ -10,7 +54,7 @@
       "absent": ["current", "legacy", "currentParent", "legacyParent"]
     },
     {
-      "name": "the legacy folder alone is moved whole, marker inside, and its emptied author folder removed",
+      "name": "the legacy folder alone is moved whole, marker inside, and its emptied author folder and lock removed",
       "before": [
         "legacy/config/config.yaml",
         "legacy/data/sessions/sessions.db",
@@ -27,12 +71,12 @@
       "absent": ["legacy", "legacyParent"]
     },
     {
-      "name": "an author folder that also holds another app keeps it, and is not removed",
+      "name": "an author folder that also holds another app keeps it, and is not removed, but loses the lock",
       "before": ["legacy/config/config.yaml", "legacyParent/other-app/settings.json"],
       "runs": ["moved"],
       "resolves": "current",
       "exists": ["current/config/config.yaml", "legacyParent/other-app/settings.json"],
-      "absent": ["legacy"]
+      "absent": ["legacy", "legacyParent/lock"]
     },
     {
       "name": "the current folder alone is used as it is",
@@ -51,8 +95,8 @@
       "absent": ["legacy/marker", "current/marker"]
     },
     {
-      "name": "an empty legacy author folder an interrupted run left behind is tidied",
-      "before": ["current/config/config.yaml", "legacyParent/"],
+      "name": "an empty legacy author folder, or one holding only the lock, that an interrupted run left behind is tidied",
+      "before": ["current/config/config.yaml", "legacyParent/lock"],
       "runs": ["already-moved"],
       "resolves": "current",
       "exists": ["current/config/config.yaml"],
@@ -83,6 +127,15 @@
       "resolves": "legacy",
       "exists": ["legacy/config/config.yaml", "currentParent/other-app/settings.json"],
       "absent": ["current"]
+    },
+    {
+      "name": "a legacy folder that cannot be checked is neither moved nor hidden by a new current folder",
+      "before": ["legacy/config/config.yaml"],
+      "unreadable": ["legacyParent"],
+      "runs": ["unreadable", "unreadable"],
+      "resolves": "legacy",
+      "exists": ["legacy/config/config.yaml"],
+      "absent": ["current", "currentParent", "legacy/marker"]
     }
   ]
 }

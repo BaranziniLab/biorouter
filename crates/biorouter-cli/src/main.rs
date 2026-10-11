@@ -41,14 +41,13 @@ async fn async_main() -> ExitCode {
     // `--version` and a usage mistake are answered here, and touch nothing on disk (SF-F8).
     let command_line = read_command_line();
     tune_allocator();
-    // R-31: on Windows, move the app folder out of the one earlier releases
-    // used before logging creates its first directory there, and say what
-    // happened once logging is up.
-    biorouter_mcp::app_folder::ensure_moved();
+    // R-31: the command line tool never moves the Windows app folder out of
+    // the one earlier releases used; the daemon does, as it starts. While this
+    // process uses that folder it holds its lock (`platform_dirs`), so no
+    // move happens under the paths it freezes here and below.
     if let Err(e) = biorouter_cli::logging::setup_logging(None, None) {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }
-    biorouter_mcp::app_folder::report_once();
 
     // Issue #56 Task 30. The CLI is a SECOND host of the same agent library, and
     // it loaded this switch nowhere: a user who turned privacy tiers off in

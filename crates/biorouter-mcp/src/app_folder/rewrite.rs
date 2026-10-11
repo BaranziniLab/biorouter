@@ -20,6 +20,14 @@
 //! author keeps the spelling it was stored with, case included, so a
 //! canonical `\\?\C:\...` value stays canonical.
 //!
+//! The legacy root is matched in two spellings: the base as the environment
+//! names it (`%APPDATA%`), and the base as `fs::canonicalize` returns it, which
+//! is how `daemon-profile.json` stores its config dir. The two differ by more
+//! than the `\\?\` prefix whenever the base is not a plain local path: a
+//! roaming profile redirected to a share (`\\fs1\home$\...` against
+//! `\\?\UNC\fs1\home$\...`), a mapped drive (which canonicalizes to its UNC
+//! path), or a junction or `subst` drive in the profile path.
+//!
 //! # How a file is rewritten
 //!
 //! On the file's TEXT, so every byte outside the matched author segments is
@@ -59,10 +67,35 @@ enum Mode {
 /// Rewrites strings that name the legacy root so they name the current one.
 #[derive(Debug, Clone)]
 pub struct RootRewrite {
+    spellings: Vec<Spelling>,
+    legacy_lower: String,
+}
+
+/// One spelling of the legacy root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Spelling {
     old: Vec<char>,
     /// Where the legacy author sits in `old`.
     author: Range<usize>,
-    legacy_lower: String,
+}
+
+/// The spellings of one root the rewrite matches: as given, and under
+/// `canonical_base` when that spells the same base differently.
+pub fn root_spellings(root: &AppRoot, canonical_base: Option<&Path>) -> Vec<AppRoot> {
+    let mut roots = vec![root.clone()];
+    if let Some(base) = canonical_base {
+        let canonical = AppRoot::under(base);
+        if canonical != *root {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
+/// The base of `root` as `fs::canonicalize` spells it. The base still exists
+/// after the move, so this works when the legacy folder no longer does.
+pub fn canonical_base(root: &AppRoot) -> Option<PathBuf> {
+    fs::canonicalize(root.current.parent()?.parent()?).ok()
 }
 
 struct Found {
@@ -73,19 +106,23 @@ struct Found {
 }
 
 impl RootRewrite {
+    /// One spelling of one root.
     pub fn new(root: &AppRoot) -> Self {
-        let old: Vec<char> = root.legacy.to_string_lossy().chars().collect();
-        let app = APP_NAME.chars().count();
-        let author_len = LEGACY_APP_AUTHOR.chars().count();
-        let end = old.len() - app - 1;
-        let author = end - author_len..end;
-        debug_assert_eq!(
-            old[author.clone()].iter().collect::<String>(),
-            LEGACY_APP_AUTHOR
-        );
+        Self::for_roots(std::slice::from_ref(root))
+    }
+
+    /// Every spelling in `roots`; at each position the first that matches
+    /// wins (they all end at the same app segment).
+    pub fn for_roots(roots: &[AppRoot]) -> Self {
+        let mut spellings: Vec<Spelling> = Vec::new();
+        for root in roots {
+            let spelling = Spelling::of(root);
+            if !spellings.contains(&spelling) {
+                spellings.push(spelling);
+            }
+        }
         Self {
-            old,
-            author,
+            spellings,
             legacy_lower: LEGACY_APP_AUTHOR.to_lowercase(),
         }
     }
@@ -108,7 +145,11 @@ impl RootRewrite {
         while index < chars.len() {
             let leading = index == 0 || !chars[index - 1].is_alphanumeric();
             if let Some(found) = leading
-                .then(|| self.match_at(&chars, index, mode))
+                .then(|| {
+                    self.spellings
+                        .iter()
+                        .find_map(|spelling| spelling.match_at(&chars, index, mode))
+                })
                 .flatten()
             {
                 out.extend(&chars[copied..found.author.start]);
@@ -123,33 +164,6 @@ impl RootRewrite {
         changed.then(|| {
             out.extend(&chars[copied..]);
             out
-        })
-    }
-
-    fn match_at(&self, chars: &[char], start: usize, mode: Mode) -> Option<Found> {
-        let mut at = start;
-        let mut author_start = at;
-        let mut author_end = at;
-        for (index, &expected) in self.old.iter().enumerate() {
-            if index == self.author.start {
-                author_start = at;
-            }
-            if index == self.author.end {
-                author_end = at;
-            }
-            if is_separator(expected) {
-                at = consume_separator(chars, at, mode)?;
-            } else {
-                if !same_letter(*chars.get(at)?, expected) {
-                    return None;
-                }
-                at += 1;
-            }
-        }
-        let bounded = chars.get(at).is_none_or(|next| ends_a_segment(*next));
-        bounded.then_some(Found {
-            end: at,
-            author: author_start..author_end,
         })
     }
 
@@ -224,6 +238,48 @@ impl RootRewrite {
             Value::Tagged(tagged) => self.rewrite_yaml(&mut tagged.value),
             Value::Null | Value::Bool(_) | Value::Number(_) => {}
         }
+    }
+}
+
+impl Spelling {
+    fn of(root: &AppRoot) -> Self {
+        let old: Vec<char> = root.legacy.to_string_lossy().chars().collect();
+        let app = APP_NAME.chars().count();
+        let author_len = LEGACY_APP_AUTHOR.chars().count();
+        let end = old.len() - app - 1;
+        let author = end - author_len..end;
+        debug_assert_eq!(
+            old[author.clone()].iter().collect::<String>(),
+            LEGACY_APP_AUTHOR
+        );
+        Self { old, author }
+    }
+
+    fn match_at(&self, chars: &[char], start: usize, mode: Mode) -> Option<Found> {
+        let mut at = start;
+        let mut author_start = at;
+        let mut author_end = at;
+        for (index, &expected) in self.old.iter().enumerate() {
+            if index == self.author.start {
+                author_start = at;
+            }
+            if index == self.author.end {
+                author_end = at;
+            }
+            if is_separator(expected) {
+                at = consume_separator(chars, at, mode)?;
+            } else {
+                if !same_letter(*chars.get(at)?, expected) {
+                    return None;
+                }
+                at += 1;
+            }
+        }
+        let bounded = chars.get(at).is_none_or(|next| ends_a_segment(*next));
+        bounded.then_some(Found {
+            end: at,
+            author: author_start..author_end,
+        })
     }
 }
 
@@ -397,7 +453,7 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
 /// Rule 3 for one roaming root whose current folder holds the marker. Clears
 /// the marker once every store was read, whatever it held.
 pub fn finish_pending_rewrite(root: &AppRoot) -> RewriteReport {
-    let rewrite = RootRewrite::new(root);
+    let rewrite = RootRewrite::for_roots(&root_spellings(root, canonical_base(root).as_deref()));
     let mut report = RewriteReport::default();
     for (path, format) in store_files(&root.current) {
         match rewrite_file(&rewrite, &path, format) {

@@ -1,42 +1,42 @@
 // @vitest-environment node
 
 /**
- * The Windows app-folder move (R-31) from the desktop main process's side.
+ * The Windows app folder (R-31) from the desktop main process's side.
  *
- * The first block runs the table the daemon's suite runs too
- * (`crates/biorouter-mcp/src/app_folder/resolution-cases.json`), against real
- * temporary directories, so the two implementations agree on every state
- * rather than each agreeing with its own idea of it. The rest pins what only
- * this side has: the process-level guards, the inputs it reads, and the
- * resolver's Windows branch, which runs here on every OS through `path.win32`.
+ * The first block runs the `resolution` cases of the table the daemon's suite
+ * runs too (`crates/biorouter-mcp/src/app_folder/resolution-cases.json`),
+ * against real temporary directories, so the two implementations resolve
+ * every state to the same folder rather than each agreeing with its own idea
+ * of it. The `moves` cases are the daemon's alone: this process never moves
+ * anything, and the block after the table holds it to that. The rest pins what
+ * only this side has: the notice for a hidden legacy folder, the inputs it
+ * reads, and the resolver's Windows branch, which runs here on every OS
+ * through `path.win32`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as appFolder from './appFolder';
 import {
   APP_AUTHOR,
   APP_NAME,
   LEGACY_APP_AUTHOR,
-  MOVE_MARKER,
-  NODE_FOLDER_IO,
   appRootUnder,
-  describeFolderMove,
-  moveForProcess,
-  moveLegacyRoot,
+  describeLegacyFolderNotice,
+  legacyFolderNotice,
+  presenceOf,
   resolveAppRoot,
-  type FolderIo,
+  windowsBases,
+  type Presence,
 } from './appFolder';
 import { platformConfigDirFor } from './biorouterPaths';
 
-interface Case {
+interface ResolutionCase {
   name: string;
   before: string[];
-  renameFails?: boolean;
-  runs: string[];
+  unreadable?: string[];
   resolves: string;
-  exists: string[];
-  absent: string[];
 }
 
 const TABLE = new URL(
@@ -45,12 +45,14 @@ const TABLE = new URL(
 );
 
 const temporary: string[] = [];
+const locked: string[] = [];
 function tempBase(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'br-app-folder-'));
   temporary.push(dir);
   return dir;
 }
 afterEach(() => {
+  for (const dir of locked.splice(0)) fs.chmodSync(dir, 0o755);
   for (const dir of temporary.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -66,7 +68,7 @@ function tokenPath(base: string, spec: string): string {
   };
   const root = roots[head];
   if (!root) throw new Error(`unknown path token ${head}`);
-  return path.join(root, ...rest.filter(Boolean).map((s) => (s === 'marker' ? MOVE_MARKER : s)));
+  return path.join(root, ...rest.filter(Boolean));
 }
 
 function materialize(base: string, spec: string): void {
@@ -79,125 +81,188 @@ function materialize(base: string, spec: string): void {
   }
 }
 
-const refusingIo: FolderIo = {
-  ...NODE_FOLDER_IO,
-  rename: () => {
-    throw Object.assign(new Error('a file in the folder is held open'), { code: 'EPERM' });
-  },
-};
+/** Remove the permissions of `specs`; false when that cannot set the state up
+ *  here (Windows, or permissions not enforced because this runs as root). */
+function makeUnreadable(base: string, specs: string[]): boolean {
+  if (specs.length === 0) return true;
+  if (process.platform === 'win32') return false;
+  for (const spec of specs) {
+    const dir = tokenPath(base, spec);
+    fs.chmodSync(dir, 0o000);
+    locked.push(dir);
+  }
+  return specs.every((spec) => {
+    try {
+      fs.readdirSync(tokenPath(base, spec));
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
 
-describe('the table both implementations run', () => {
-  const cases: Case[] = JSON.parse(fs.readFileSync(TABLE, 'utf-8')).cases;
+describe('the resolution table both implementations run', () => {
+  const cases: ResolutionCase[] = JSON.parse(fs.readFileSync(TABLE, 'utf-8')).resolution;
 
   it('has every case the daemon suite counts on', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(9);
+    expect(cases.length).toBeGreaterThanOrEqual(8);
   });
 
   for (const testCase of cases) {
-    it(testCase.name, () => {
+    it(testCase.name, (context) => {
       const base = tempBase();
       for (const spec of testCase.before) materialize(base, spec);
-      const root = appRootUnder(base);
-      const io = testCase.renameFails ? refusingIo : NODE_FOLDER_IO;
-      expect(testCase.runs.map(() => moveLegacyRoot(root, true, io).token)).toEqual(testCase.runs);
-      expect(resolveAppRoot(root)).toBe(tokenPath(base, testCase.resolves));
-      for (const spec of testCase.exists) {
-        expect(fs.existsSync(tokenPath(base, spec)), `${spec} is missing`).toBe(true);
+      if (!makeUnreadable(base, testCase.unreadable ?? [])) {
+        context.skip();
+        return;
       }
-      for (const spec of testCase.absent) {
-        expect(fs.existsSync(tokenPath(base, spec)), `${spec} should not exist`).toBe(false);
-      }
+      expect(resolveAppRoot(appRootUnder(base))).toBe(tokenPath(base, testCase.resolves));
     });
   }
 });
 
-describe('the move for a whole process', () => {
-  it('does nothing off Windows, even with a legacy folder present', () => {
+describe('this process never moves the folder', () => {
+  it('exports nothing that moves, and resolving leaves a legacy folder where it is', () => {
+    const exported = Object.keys(appFolder);
+    for (const mover of ['moveForProcess', 'moveLegacyRoot', 'ensureAppFolderMoved']) {
+      expect(exported).not.toContain(mover);
+    }
     const base = tempBase();
     materialize(base, 'legacy/config/config.yaml');
-    const move = moveForProcess({ platform: 'darwin', env: { APPDATA: base }, homedir: base });
-    expect(move).toEqual({ skipped: 'not-windows' });
+    expect(resolveAppRoot(appRootUnder(base))).toBe(tokenPath(base, 'legacy'));
     expect(fs.existsSync(tokenPath(base, 'legacy/config/config.yaml'))).toBe(true);
+    expect(fs.existsSync(tokenPath(base, 'currentParent'))).toBe(false);
   });
 
-  it('does nothing under a sandbox root, and a blank root is no root', () => {
+  it('the main process does not move it at load either', () => {
+    const main = fs.readFileSync(new URL('../main.ts', import.meta.url), 'utf-8');
+    expect(main).not.toMatch(/ensureAppFolderMoved|moveForProcess|describeFolderMove/);
+    const resolver = fs.readFileSync(new URL('./biorouterPaths.ts', import.meta.url), 'utf-8');
+    expect(resolver).not.toMatch(/ensureAppFolderMoved|moveForProcess/);
+  });
+});
+
+describe('presence', () => {
+  it('reads a missing path and a path under a file as absent, and a real one as present', () => {
     const base = tempBase();
-    materialize(base, 'legacy/config/config.yaml');
-    const env = { APPDATA: base, LOCALAPPDATA: base };
-    expect(
-      moveForProcess({
-        platform: 'win32',
-        env: { ...env, BIOROUTER_PATH_ROOT: '/sb' },
-        homedir: base,
-      })
-    ).toEqual({ skipped: 'sandboxed' });
-    expect(fs.existsSync(tokenPath(base, 'current'))).toBe(false);
-
-    const move = moveForProcess({
-      platform: 'win32',
-      env: { ...env, BIOROUTER_PATH_ROOT: '   ' },
-      homedir: base,
-    });
-    expect(move.roaming?.outcome.token).toBe('moved');
+    materialize(base, 'legacyParent');
+    expect(presenceOf(tokenPath(base, 'legacy'))).toBe('absent');
+    expect(presenceOf(tokenPath(base, 'current'))).toBe('absent');
+    expect(presenceOf(base)).toBe('present');
   });
 
-  it('moves both bases and marks only the roaming one for the daemon to finish', () => {
-    const roaming = tempBase();
-    const local = tempBase();
-    materialize(roaming, 'legacy/config/config.yaml');
-    materialize(local, 'legacy/cache/autovisualiser/figure.html');
-    const move = moveForProcess({
-      platform: 'win32',
-      env: { APPDATA: roaming, LOCALAPPDATA: local },
-      homedir: tempBase(),
-    });
-    expect(move.roaming?.outcome.token).toBe('moved');
-    expect(move.local?.outcome.token).toBe('moved');
-    expect(fs.existsSync(tokenPath(roaming, 'current/marker'))).toBe(true);
-    expect(fs.existsSync(tokenPath(local, 'current/marker'))).toBe(false);
-    expect(fs.existsSync(tokenPath(local, 'current/cache/autovisualiser/figure.html'))).toBe(true);
-  });
+  it.skipIf(process.platform === 'win32')(
+    'reads a failed check as unknown, not absent',
+    (context) => {
+      const base = tempBase();
+      materialize(base, 'legacy/config/config.yaml');
+      if (!makeUnreadable(base, ['legacyParent'])) {
+        context.skip();
+        return;
+      }
+      expect(presenceOf(tokenPath(base, 'legacy'))).toBe('unknown');
+    }
+  );
+});
 
-  it('falls back to the home folder when APPDATA and LOCALAPPDATA are blank', () => {
-    const home = tempBase();
-    const roaming = path.join(home, 'AppData', 'Roaming');
-    materialize(roaming, 'legacy/config/config.yaml');
-    const move = moveForProcess({
-      platform: 'win32',
-      env: { APPDATA: '', LOCALAPPDATA: '' },
-      homedir: home,
-    });
-    expect(move.roaming?.root.current).toBe(path.join(roaming, APP_AUTHOR, APP_NAME));
-    expect(move.roaming?.outcome.token).toBe('moved');
-    expect(move.local?.root.current).toBe(
-      path.join(home, 'AppData', 'Local', APP_AUTHOR, APP_NAME)
-    );
-  });
-
-  it('says what it did, naming both folders, and is quiet when there was nothing to do', () => {
+describe('the notice for a hidden legacy folder', () => {
+  const both = () => {
     const roaming = tempBase();
     materialize(roaming, 'legacy/config/config.yaml');
-    const moved = moveForProcess({
+    materialize(roaming, 'current/config/config.yaml');
+    return roaming;
+  };
+
+  it('names both folders when both exist on Windows', () => {
+    const roaming = both();
+    const notice = legacyFolderNotice({
       platform: 'win32',
       env: { APPDATA: roaming, LOCALAPPDATA: tempBase() },
       homedir: roaming,
     });
-    const lines = describeFolderMove(moved);
-    expect(lines).toHaveLength(1);
-    expect(lines[0].level).toBe('info');
-    expect(lines[0].text).toContain(tokenPath(roaming, 'current'));
-    expect(lines[0].text).toContain(tokenPath(roaming, 'legacy'));
-
-    const failed = tempBase();
-    materialize(failed, 'legacy/config/config.yaml');
-    const refused = moveForProcess({
-      platform: 'win32',
-      env: { APPDATA: failed, LOCALAPPDATA: tempBase() },
-      homedir: failed,
-      io: refusingIo,
+    expect(notice).toEqual({
+      current: tokenPath(roaming, 'current'),
+      legacy: tokenPath(roaming, 'legacy'),
     });
-    expect(describeFolderMove(refused).map((line) => line.level)).toEqual(['warn']);
-    expect(describeFolderMove({ skipped: 'not-windows' })).toEqual([]);
+    const words = describeLegacyFolderNotice(notice!);
+    expect(words.detail).toContain(tokenPath(roaming, 'legacy'));
+    expect(words.detail).toContain(tokenPath(roaming, 'current'));
+    expect(words.buttons).toHaveLength(2);
+  });
+
+  it('says nothing in every other state, off Windows, and under a sandbox root', () => {
+    const states: string[][] = [
+      [],
+      ['legacy/config/config.yaml'],
+      ['current/config/config.yaml'],
+      ['lookalike/config/config.yaml', 'current/config/config.yaml'],
+    ];
+    for (const before of states) {
+      const roaming = tempBase();
+      for (const spec of before) materialize(roaming, spec);
+      expect(
+        legacyFolderNotice({ platform: 'win32', env: { APPDATA: roaming }, homedir: roaming }),
+        before.join(', ')
+      ).toBeUndefined();
+    }
+    const roaming = both();
+    expect(
+      legacyFolderNotice({ platform: 'darwin', env: { APPDATA: roaming }, homedir: roaming })
+    ).toBeUndefined();
+    expect(
+      legacyFolderNotice({
+        platform: 'win32',
+        env: { APPDATA: roaming, BIOROUTER_PATH_ROOT: '/sb' },
+        homedir: roaming,
+      })
+    ).toBeUndefined();
+    expect(
+      legacyFolderNotice({
+        platform: 'win32',
+        env: { APPDATA: roaming, BIOROUTER_PATH_ROOT: '   ' },
+        homedir: roaming,
+      }),
+      'a blank root is no root'
+    ).toBeDefined();
+  });
+
+  it('only for the roaming folder: a cache folder holds nothing to recover', () => {
+    const roaming = tempBase();
+    materialize(roaming, 'current/config/config.yaml');
+    const local = tempBase();
+    materialize(local, 'legacy/cache/a.html');
+    materialize(local, 'current/cache/a.html');
+    expect(
+      legacyFolderNotice({
+        platform: 'win32',
+        env: { APPDATA: roaming, LOCALAPPDATA: local },
+        homedir: roaming,
+      })
+    ).toBeUndefined();
+  });
+
+  it('is not raised by a check that failed', () => {
+    const roaming = both();
+    const unknownLegacy = (target: string): Presence =>
+      target === tokenPath(roaming, 'legacy') ? 'unknown' : presenceOf(target);
+    expect(
+      legacyFolderNotice({
+        platform: 'win32',
+        env: { APPDATA: roaming },
+        homedir: roaming,
+        presence: unknownLegacy,
+      })
+    ).toBeUndefined();
+  });
+});
+
+describe('the Windows bases', () => {
+  it('falls back to the home folder when APPDATA and LOCALAPPDATA are blank', () => {
+    const home = 'C:\\Users\\Ana';
+    expect(windowsBases({ APPDATA: '', LOCALAPPDATA: '' }, home, path.win32.join)).toEqual({
+      roaming: 'C:\\Users\\Ana\\AppData\\Roaming',
+      local: 'C:\\Users\\Ana\\AppData\\Local',
+    });
   });
 });
 
@@ -211,33 +276,41 @@ describe('the resolver on Windows', () => {
   const appData = 'C:\\Users\\Ana\\AppData\\Roaming';
   const current = path.win32.join(appData, APP_AUTHOR, APP_NAME);
   const legacy = path.win32.join(appData, LEGACY_APP_AUTHOR, APP_NAME);
-  const resolveWith = (present: string[], env: Record<string, string | undefined>) =>
+  const resolveWith = (states: Record<string, Presence>, env: Record<string, string | undefined>) =>
     platformConfigDirFor({
       platform: 'win32',
       env,
       homedir: home,
       pathImpl: path.win32,
-      exists: (target) => present.includes(target),
+      presence: (target) => states[target] ?? 'absent',
     });
 
   it('names the current folder on a fresh install', () => {
-    expect(resolveWith([], { APPDATA: appData })).toBe(
+    expect(resolveWith({}, { APPDATA: appData })).toBe(
       'C:\\Users\\Ana\\AppData\\Roaming\\UCSF\\biorouter\\config'
     );
   });
 
-  it('keeps the legacy folder while the move has not happened', () => {
-    expect(resolveWith([legacy], { APPDATA: appData })).toBe(path.win32.join(legacy, 'config'));
+  it('keeps the legacy folder while the daemon has not moved it', () => {
+    expect(resolveWith({ [legacy]: 'present' }, { APPDATA: appData })).toBe(
+      path.win32.join(legacy, 'config')
+    );
+  });
+
+  it('keeps the legacy folder while it cannot be checked', () => {
+    expect(resolveWith({ [legacy]: 'unknown' }, { APPDATA: appData })).toBe(
+      path.win32.join(legacy, 'config')
+    );
   });
 
   it('prefers the current folder when both exist', () => {
-    expect(resolveWith([legacy, current], { APPDATA: appData })).toBe(
+    expect(resolveWith({ [legacy]: 'present', [current]: 'present' }, { APPDATA: appData })).toBe(
       path.win32.join(current, 'config')
     );
   });
 
   it('joins the home folder when APPDATA is blank, as etcetera does', () => {
-    expect(resolveWith([], { APPDATA: '' })).toBe(
+    expect(resolveWith({}, { APPDATA: '' })).toBe(
       'C:\\Users\\Ana\\AppData\\Roaming\\UCSF\\biorouter\\config'
     );
   });

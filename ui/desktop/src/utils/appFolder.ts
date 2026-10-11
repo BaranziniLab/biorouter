@@ -1,30 +1,33 @@
 /**
- * appFolder.ts — Biorouter's own folder on Windows, and the one-time move out
- * of the folder earlier releases used (R-31).
+ * appFolder.ts — Biorouter's own folder on Windows, as the desktop main
+ * process resolves it (R-31).
  *
- * The desktop main process's half of `crates/biorouter-mcp/src/app_folder/`,
- * whose module header states the whole rule. In short, for each base
- * (`%APPDATA%` for config, data and logs, `%LOCALAPPDATA%` for the cache):
+ * The desktop half of `crates/biorouter-mcp/src/app_folder/`, whose module
+ * header states the whole rule. For each base (`%APPDATA%` for config, data
+ * and logs, `%LOCALAPPDATA%` for the cache) there is a current folder,
+ * `<base>\UCSF\biorouter`, and the legacy folder earlier releases used.
  *
- * 1. Move, once per process, before first use: when the legacy folder exists
- *    and the current one does not, drop the empty marker into the legacy
- *    folder, create `<base>\UCSF`, rename the legacy folder to the current one,
- *    and remove the legacy author folder if that left it empty.
- * 2. Resolve on every call: current if it exists, else legacy if it still
- *    exists (the move could not happen this run), else current.
+ * This process only RESOLVES, on every call: the legacy folder while it is (or
+ * may be) there and the current one is known not to be, otherwise the current
+ * one. It never moves anything. The daemon moves the legacy folder as it
+ * starts, when no other Biorouter process is using it, and then rewrites the
+ * paths stored inside; because this process resolves per call and freezes no
+ * path, a move during its run costs it nothing. (It used to move the folder
+ * itself, at module load. That could rename the folder out from under a
+ * command line session that had already frozen the legacy path, and a second
+ * instance about to quit as a duplicate did it too.)
  *
- * The daemon does both of those and a third step this process cannot: it
- * rewrites the absolute paths stored in the moved folder (the session database
- * among them), prompted by the marker. The main process runs the move before it
- * starts the daemon, so both always see the same folder; whichever of them
- * renames first wins, and the other finds the current folder.
+ * When both folders exist the current one wins, and anything saved in the
+ * legacy one is hidden; `legacyFolderNotice` is what the main process shows
+ * the person then, naming the folder.
  *
- * Both implementations run one table of cases,
+ * Both implementations run the `resolution` cases of one table,
  * `crates/biorouter-mcp/src/app_folder/resolution-cases.json`, and a Rust test
- * reads the four constants below from this file and compares them with its own.
+ * reads the three constants below from this file and compares them with its
+ * own.
  *
  * macOS and Linux use the XDG layout, which has no author segment, so nothing
- * here runs there.
+ * here applies there.
  */
 
 import * as fs from 'fs';
@@ -35,16 +38,12 @@ import * as path from 'path';
 export const APP_AUTHOR = 'UCSF';
 export const APP_NAME = 'biorouter';
 /**
- * The author folder earlier releases used on Windows. The move has to name the
- * folder to find it, so this is the one place the desktop code writes the name;
- * the daemon's copy is `LEGACY_APP_AUTHOR` in `app_folder/mod.rs`, pinned equal
- * to this one by a Rust test.
+ * The author folder earlier releases used on Windows. Resolution has to name
+ * the folder to find it, so this is the one place the desktop code writes the
+ * name; the daemon's copy is `LEGACY_APP_AUTHOR` in `app_folder/mod.rs`,
+ * pinned equal to this one by a Rust test.
  */
 export const LEGACY_APP_AUTHOR = 'Block';
-/** An empty file dropped into the legacy folder just before it is renamed. In
- *  the current folder it tells the daemon the stored paths still need
- *  rewriting. */
-export const MOVE_MARKER = '.folder-move-pending';
 
 type Join = (...parts: string[]) => string;
 
@@ -65,117 +64,46 @@ export function appRootUnder(base: string, join: Join = path.join): AppRoot {
   };
 }
 
-/** The filesystem calls the move makes; tests swap in a rename that refuses. */
-export interface FolderIo {
-  exists(target: string): boolean;
-  createEmptyFile(target: string): void;
-  mkdir(target: string): void;
-  rename(from: string, to: string): void;
-  /** Removes an EMPTY directory only, and throws otherwise. */
-  rmdir(target: string): void;
-}
+/** What a check of one folder found. `unknown`: the check failed (permission
+ *  denied, an unreachable share), so it may be there. */
+export type Presence = 'present' | 'absent' | 'unknown';
 
-export const NODE_FOLDER_IO: FolderIo = {
-  exists: (target) => fs.existsSync(target),
-  createEmptyFile: (target) => fs.writeFileSync(target, ''),
-  mkdir: (target) => {
-    fs.mkdirSync(target, { recursive: true });
-  },
-  rename: (from, to) => fs.renameSync(from, to),
-  rmdir: (target) => fs.rmdirSync(target),
-};
-
-/** Rule 2: the folder to read and write right now. */
-export function resolveAppRoot(root: AppRoot, io: Pick<FolderIo, 'exists'> = NODE_FOLDER_IO) {
-  if (io.exists(root.current)) return root.current;
-  if (io.exists(root.legacy)) return root.legacy;
-  return root.current;
-}
-
-export type MoveToken = 'fresh' | 'already-moved' | 'moved' | 'both-exist' | 'move-failed';
-
-export interface MoveOutcome {
-  token: MoveToken;
-  error?: unknown;
+/** `fs.existsSync` reads every failure as "absent", which is how a check that
+ *  failed for a moment could send this process into a new, empty current
+ *  folder. Only "not found" and "a segment above it is a file" are absent. */
+export function presenceOf(target: string): Presence {
+  try {
+    fs.statSync(target);
+    return 'present';
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unknown';
+  }
 }
 
 /**
- * `[legacy exists, current exists]` as of one instant. Two separate checks can
- * straddle the daemon's rename and see the legacy folder before it and the
- * current one after it; reading `legacy` on both sides of `current` and
- * retrying when they disagree gives a consistent pair.
+ * `[legacy, current]` as of one instant. Two separate checks can straddle the
+ * daemon's rename and see the legacy folder before it and the current one
+ * after it; reading `legacy` on both sides of `current` and retrying when they
+ * disagree gives a consistent pair. Bounded, as on the Rust side.
  */
-function snapshot(root: AppRoot, io: FolderIo): [boolean, boolean] {
-  for (;;) {
-    const legacy = io.exists(root.legacy);
-    const current = io.exists(root.current);
-    if (io.exists(root.legacy) === legacy) return [legacy, current];
+function snapshot(root: AppRoot, presence: (target: string) => Presence): [Presence, Presence] {
+  let pair: [Presence, Presence] = [presence(root.legacy), presence(root.current)];
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const again = presence(root.legacy);
+    if (again === pair[0]) break;
+    pair = [again, presence(root.current)];
   }
+  return pair;
 }
 
-/** After a failed step: did another process finish the move, or create the
- *  current folder, in the meantime? */
-function settledByAnotherProcess(root: AppRoot, io: FolderIo): MoveOutcome | undefined {
-  const [legacy, current] = snapshot(root, io);
-  if (!legacy && current) return { token: 'already-moved' };
-  if (legacy && current) return { token: 'both-exist' };
-  return undefined;
-}
-
-function attemptMove(root: AppRoot, writeMarker: boolean, io: FolderIo): MoveOutcome {
-  try {
-    // Never removed again on failure: the daemon may be about to rename the
-    // tree with it inside, and an empty file in a folder that stays costs
-    // nothing.
-    if (writeMarker) io.createEmptyFile(path.join(root.legacy, MOVE_MARKER));
-  } catch (error) {
-    return settledByAnotherProcess(root, io) ?? { token: 'move-failed', error };
-  }
-  const createdParent = !io.exists(root.currentParent);
-  try {
-    if (createdParent) io.mkdir(root.currentParent);
-    io.rename(root.legacy, root.current);
-    return { token: 'moved' };
-  } catch (error) {
-    const settled = settledByAnotherProcess(root, io);
-    if (settled) return settled;
-    // One attempt only: this runs on the main thread before the first window,
-    // and the daemon, which starts next, retries with a short backoff.
-    if (createdParent) {
-      try {
-        io.rmdir(root.currentParent);
-      } catch {
-        /* not empty, or already gone */
-      }
-    }
-    return { token: 'move-failed', error };
-  }
-}
-
-/** Rule 1 for one base directory. `writeMarker` is true for the roaming
- *  folder, the only one whose stores hold paths that need rewriting. */
-export function moveLegacyRoot(
+/** The folder to read and write right now. */
+export function resolveAppRoot(
   root: AppRoot,
-  writeMarker: boolean,
-  io: FolderIo = NODE_FOLDER_IO
-): MoveOutcome {
-  const [legacy, current] = snapshot(root, io);
-  let outcome: MoveOutcome;
-  if (!legacy && !current) outcome = { token: 'fresh' };
-  else if (!legacy) outcome = { token: 'already-moved' };
-  else if (current) outcome = { token: 'both-exist' };
-  else outcome = attemptMove(root, writeMarker, io);
-
-  if (!io.exists(root.legacy)) {
-    // The author folder may hold other apps' folders; `rmdir` only removes an
-    // empty one. Also tidies a folder an interrupted earlier run left empty.
-    try {
-      io.rmdir(root.legacyParent);
-    } catch {
-      /* not empty, or not there */
-    }
-  }
-  return outcome;
+  presence: (target: string) => Presence = presenceOf
+): string {
+  const [legacy, current] = snapshot(root, presence);
+  return current === 'absent' && legacy !== 'absent' ? root.legacy : root.current;
 }
 
 type Env = Record<string, string | undefined>;
@@ -196,67 +124,53 @@ export function windowsBases(env: Env, homedir: string, join: Join = path.join) 
   };
 }
 
-export interface FolderMove {
-  /** Why nothing was looked at, when nothing was. */
-  skipped?: 'not-windows' | 'sandboxed';
-  roaming?: { root: AppRoot; outcome: MoveOutcome };
-  local?: { root: AppRoot; outcome: MoveOutcome };
-}
-
 export interface ProcessInputs {
   platform: typeof process.platform;
   env: Env;
   homedir: string;
-  io?: FolderIo;
+  presence?: (target: string) => Presence;
   join?: Join;
 }
 
-/** Rule 1 for a whole process, from explicit inputs so the Windows branch is
- *  tested on every OS. Never throws. */
-export function moveForProcess(inputs: ProcessInputs): FolderMove {
-  if (inputs.platform !== 'win32') return { skipped: 'not-windows' };
-  // The sandbox owns every path; same blank-is-absent rule as the resolvers.
-  const sandboxRoot = inputs.env.BIOROUTER_PATH_ROOT;
-  if (sandboxRoot && sandboxRoot.trim().length > 0) return { skipped: 'sandboxed' };
-  const join = inputs.join ?? path.join;
-  const io = inputs.io ?? NODE_FOLDER_IO;
-  const bases = windowsBases(inputs.env, inputs.homedir, join);
-  const roaming = appRootUnder(bases.roaming, join);
-  const local = appRootUnder(bases.local, join);
-  return {
-    roaming: { root: roaming, outcome: moveLegacyRoot(roaming, true, io) },
-    local: { root: local, outcome: moveLegacyRoot(local, false, io) },
-  };
+/** Both folders exist for the roaming base, which holds config, chats and
+ *  knowledge bases: the current one is in use, and the legacy one is hidden. */
+export interface LegacyFolderNotice {
+  current: string;
+  legacy: string;
 }
 
-/** One line per thing worth saying about a process's move. */
-export function describeFolderMove(move: FolderMove): { level: 'info' | 'warn'; text: string }[] {
-  const lines: { level: 'info' | 'warn'; text: string }[] = [];
-  for (const report of [move.roaming, move.local]) {
-    if (!report) continue;
-    const { current, legacy } = report.root;
-    switch (report.outcome.token) {
-      case 'moved':
-        lines.push({
-          level: 'info',
-          text: `moved Biorouter's folder from ${legacy}, the folder earlier releases used, to ${current}`,
-        });
-        break;
-      case 'both-exist':
-        lines.push({
-          level: 'warn',
-          text: `both ${current} and ${legacy} (the folder earlier releases used) exist; using ${current} and leaving the other untouched`,
-        });
-        break;
-      case 'move-failed':
-        lines.push({
-          level: 'warn',
-          text: `could not move ${legacy} (the folder earlier releases used) to ${current}: ${String(report.outcome.error)}. Using it as it is; the daemon tries again as it starts`,
-        });
-        break;
-      default:
-        break;
-    }
-  }
-  return lines;
+/**
+ * Whether the person must be told about a hidden legacy folder. Only on
+ * Windows, only outside a sandbox (the same blank-is-absent rule as the
+ * resolvers), and only when both roaming folders are certainly there: the
+ * cache's legacy folder holds nothing worth recovering.
+ */
+export function legacyFolderNotice(inputs: ProcessInputs): LegacyFolderNotice | undefined {
+  if (inputs.platform !== 'win32') return undefined;
+  const sandboxRoot = inputs.env.BIOROUTER_PATH_ROOT;
+  if (sandboxRoot && sandboxRoot.trim().length > 0) return undefined;
+  const join = inputs.join ?? path.join;
+  const root = appRootUnder(windowsBases(inputs.env, inputs.homedir, join).roaming, join);
+  const [legacy, current] = snapshot(root, inputs.presence ?? presenceOf);
+  if (legacy !== 'present' || current !== 'present') return undefined;
+  return { current: root.current, legacy: root.legacy };
+}
+
+/** The words of that notice, for a message box. */
+export function describeLegacyFolderNotice(notice: LegacyFolderNotice) {
+  return {
+    title: 'Older Biorouter folder found',
+    message: 'Biorouter found a second data folder, and is not using it.',
+    detail:
+      `Biorouter keeps its settings, chats and knowledge bases in ${notice.current}. ` +
+      `Earlier releases used ${notice.legacy}, and that folder exists again, so anything ` +
+      'saved there since the update (settings, chats, knowledge bases) does not appear in ' +
+      'Biorouter.\n\n' +
+      'This usually means an older copy of the biorouter command line tool ran after the ' +
+      'update, or an earlier release of the app was opened. Update the command line tool ' +
+      'when Biorouter offers to, then copy anything you need out of the older folder, and ' +
+      'delete it when you no longer need it. Biorouter never moves or deletes it on its own.',
+    buttons: ['Show older folder', 'OK'],
+    checkboxLabel: 'Do not show this again for this folder',
+  };
 }

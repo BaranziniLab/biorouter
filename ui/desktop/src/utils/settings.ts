@@ -37,6 +37,12 @@ export interface Settings {
    * launch, when the window follows the OS like the page does.
    */
   windowCanvasMode?: WindowCanvasMode;
+  /**
+   * R-31, Windows: legacy folders whose "older Biorouter folder found" notice
+   * the person asked not to see again (`noticeHiddenLegacyFolder` in main.ts).
+   * Keyed by the folder, so a different one is still shown.
+   */
+  dismissedFolderNotices?: string[];
 }
 
 function getSettingsFile(): string {

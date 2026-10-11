@@ -23,8 +23,8 @@ impl Paths {
             }
         } else {
             // The one app-strategy tuple lives in `biorouter-mcp`, and so does
-            // the Windows move out of the folder earlier releases used (R-31):
-            // `platform_dirs` runs it once per process before answering.
+            // the Windows rule for the folder earlier releases used (R-31):
+            // `platform_dirs` resolves it, and holds it while it is in use.
             let dirs =
                 biorouter_mcp::paths::platform_dirs().expect("biorouter requires a home dir");
 
