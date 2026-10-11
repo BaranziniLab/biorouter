@@ -4,7 +4,7 @@
 > ([`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli)), Google's
 > open-source terminal AI coding agent, covering its layered `LoopDetectionService`, its
 > declarative TOML policy engine, shadow-git checkpointing with `/rewind`, and
-> 30%-verbatim-tail compaction. One of nine tool reports in this folder, each covering the
+> 30%-verbatim-tail compaction. One of eight tool reports in this folder, each covering the
 > same ten dimensions.
 > **Status:** Current. External-tool research; the cited source for verbatim-window
 > compaction (BR-10), three-layer loop detection (BR-29/BR-30) and shadow-git rewind
@@ -15,11 +15,10 @@
 index lives in [the improvement proposals register](../../history/agent-loop-review/improvement-proposals.md).
 
 Gemini CLI is a TypeScript/Node monorepo — `packages/core` is the agent engine,
-`packages/cli` the Ink/React terminal UI. BioRouter is a Rust agent whose design drew heavily
-on Goose, while Gemini CLI is an *independent* TypeScript architecture: the cleanest "how would
-a from-scratch competitor solve the same loop problems" reference in this corpus. Several of its
-subsystems were more mature than their counterparts in Goose and in BioRouter at the time of
-this report: the layered `LoopDetectionService`, the declarative TOML policy engine, shadow-git
+`packages/cli` the Ink/React terminal UI. BioRouter is a Rust agent, while Gemini CLI is an
+*independent* TypeScript architecture: the cleanest "how would a from-scratch competitor solve
+the same loop problems" reference in this corpus. Several of its subsystems were more mature
+than their counterparts in BioRouter at the time of this report: the layered `LoopDetectionService`, the declarative TOML policy engine, shadow-git
 checkpointing and rewind, and an unusually deep hooks surface. That cross-project
 judgement is developed properly in the
 [competitive comparison chapters](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md);
@@ -260,7 +259,7 @@ self-verification as a hook/skill responsibility rather than a built-in agent be
 1. **Layered `LoopDetectionService`.** The three-tier detector — SHA-256 identical-tool-call
    count (threshold 5), streaming content-chanting via 50-char chunk hashing (threshold 10
    within a tight window), and a periodic LLM sanity check after turn 30 at 0.9 confidence —
-   is far more robust than Goose's single `RepetitionInspector`. BioRouter should port at
+   is far more robust than a single repetition check. BioRouter should port at
    least layers 1–2 (cheap, deterministic, run in the streaming path) with the list/code-block
    false-positive guards, since token-burning oscillation is the #1 autonomy failure.
 
@@ -269,13 +268,13 @@ self-verification as a hook/skill responsibility rather than a built-in agent be
    tier (User < Admin, admin always wins, ownership-verified) is exactly the governance layer a
    UCSF/lab deployment needs — e.g. hard-deny writes outside a data dir, or force `ask_user` on
    any `run_shell_command(rm …)` regardless of mode. It is more expressive and auditable than
-   Goose's mode enum + `permission.yaml`, and lives *outside* the binary as config.
+   a fixed mode enum, and lives *outside* the binary as config.
 
 3. **Shadow-git checkpointing + `/rewind`.** Snapshot files to a **home-dir shadow repo**
    (never touching the project's git) before each edit, persist conversation + tool call, and
-   offer granular revert (both / chat-only / files-only). The Goose review explicitly flags the
-   *absence* of native checkpoint/undo as BioRouter's biggest safety gap versus current agents;
-   Gemini CLI's design is a ready blueprint to close it.
+   offer granular revert (both / chat-only / files-only). The absence of native
+   checkpoint/undo was BioRouter's biggest safety gap versus current agents when this report
+   was written; Gemini CLI's design is a ready blueprint to close it.
 
 4. **Compression inflation guard + two-phase state snapshot.** Keep the last 30% verbatim,
    summarize the rest into a structured `<state_snapshot>` with a second self-correction pass,
@@ -285,14 +284,14 @@ self-verification as a hook/skill responsibility rather than a built-in agent be
    poisons the window" failure without lossy whole-history summarization.
 
 5. **Deep hook surface — especially `BeforeModel`/`AfterModel`/`AfterAgent`/`PreCompress`.**
-   Goose's hooks are tool-lifecycle only; Gemini CLI hooks also intercept the *model request/
-   response* and *compression*. `AfterAgent` returning `deny` to force a retry is a clean,
+   Tool-lifecycle hooks are the common baseline; Gemini CLI hooks also intercept the *model
+   request/response* and *compression*. `AfterAgent` returning `deny` to force a retry is a clean,
    external self-verification mechanism (run the tests; if they fail, make the agent try again)
    without hard-coding it in the loop — high value for reproducible research workflows.
 
 6. **Native `write_todos` with a live pinned indicator.** A first-class, agent-authored todo
    tool (one `in_progress`, five states, rendered above the prompt) gives users legible progress
-   on long multi-step tasks. Neither Goose nor BioRouter had an equivalent at the time of this
+   on long multi-step tasks. BioRouter had no equivalent at the time of this
    report; it is a small addition with a large payoff for users, especially paired with plan mode.
 
 ## Sources
@@ -322,7 +321,6 @@ with the defining file named at each mention.
 
 ## Related documentation
 
-- [Goose report](goose.md) — Goose, whose `RepetitionInspector` and missing checkpoint story this report is measured against.
 - [Cline report](cline.md) — the other shadow-git checkpointing design in this corpus, with a different restore-axis split.
 - [Codex CLI report](codex-cli.md) — the other declarative command-policy engine, for comparison against the TOML tiers here.
 - [Safety and guardrails comparison](../../history/agent-loop-review/competitive-comparison/safety-and-guardrails.md) — where the cross-project maturity judgements in this report are argued in full.

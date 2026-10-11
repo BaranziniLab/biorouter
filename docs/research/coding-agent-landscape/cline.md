@@ -3,7 +3,7 @@
 > **What this is.** An external review of how Cline — an open-source autonomous coding
 > agent shipping as a VS Code extension, a CLI and an SDK — implements its agentic loop,
 > with emphasis on shadow-git checkpoints, three-axis restore, the mistake tracker and the
-> rules system. One of nine tool reports in this folder, each covering the same ten
+> rules system. One of eight tool reports in this folder, each covering the same ten
 > dimensions.
 > **Status:** Current. External-tool research, unaffected by BioRouter's own changes; it is
 > the source for the shadow-git checkpoint design that proposal BR-43 implemented. Research

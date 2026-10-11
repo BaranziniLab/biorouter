@@ -3,7 +3,7 @@
 > **What this is.** An external review of how OpenHands, an open-source AI
 > software-engineering agent, implements its agentic loop — the five-heuristic
 > `StuckDetector`, the structured summarizing condenser that preserves task IDs, and
-> risk-graded confirmation via a per-action `security_risk` field. One of nine tool reports
+> risk-graded confirmation via a per-action `security_risk` field. One of eight tool reports
 > in this folder, each covering the same ten dimensions.
 > **Status:** Current. External-tool research; the cited source for the
 > oscillation/action-error detection in proposal BR-30 and the risk-graded permission model
