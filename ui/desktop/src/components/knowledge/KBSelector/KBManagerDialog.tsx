@@ -4,7 +4,6 @@ import {
   Download,
   FolderInput,
   FolderPlus,
-  MoreHorizontal,
   Pencil,
   Search,
   Trash2,
@@ -18,13 +17,7 @@ import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { Skeleton } from '../../ui/skeleton';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../../ui/dropdown-menu';
+import { RowActions, type RowActionItem } from '../../ui/row-actions';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ModalShell } from '../../ModalShell';
 import BuiltInBadge from '../../ui/BuiltInBadge';
@@ -243,6 +236,39 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     } finally {
       setBusyId(null);
     }
+  }
+
+  // The menu behind a row's ⋯. A destructive item stays behind the separator, and every item is
+  // inert while this row's own request is in flight (the old ⋯ disabled itself for that).
+  function rowMenu(base: KbListEntry, busy: boolean): RowActionItem[] {
+    return [
+      {
+        label: knowledgeCopy.actions.export,
+        icon: Download,
+        disabled: busy,
+        onSelect: () => void handleExport(base),
+      },
+      {
+        label: knowledgeCopy.manager.rename,
+        icon: Pencil,
+        disabled: busy,
+        onSelect: () => startRename(base),
+      },
+      {
+        label: knowledgeCopy.manager.copyId,
+        icon: Copy,
+        disabled: busy,
+        onSelect: () => void handleCopyId(base),
+      },
+      { kind: 'separator' },
+      {
+        label: knowledgeCopy.actions.delete,
+        icon: Trash2,
+        destructive: true,
+        disabled: busy,
+        onSelect: () => setBaseToDelete(base),
+      },
+    ];
   }
 
   return (
@@ -486,44 +512,18 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                           a permanent target, so they join the menu, and so does
                           the base's id: it used to be printed in mono on every
                           row, and an id belongs behind "Copy ID" (principle
-                          10). */}
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              shape="round"
-                              disabled={isBusy}
-                              aria-label={`More actions for ${base.name}`}
-                            >
-                              <MoreHorizontal aria-hidden="true" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onSelect={() => void handleExport(base)}>
-                              <Download aria-hidden="true" />
-                              Export as .brkb
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => startRename(base)}>
-                              <Pencil aria-hidden="true" />
-                              Rename knowledge base
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => void handleCopyId(base)}>
-                              <Copy aria-hidden="true" />
-                              {knowledgeCopy.manager.copyId}
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            {/* A destructive control never sits visible in a hover
-                              cluster (ROWS-3), and stays behind the separator. */}
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={() => setBaseToDelete(base)}
-                            >
-                              <Trash2 aria-hidden="true" />
-                              Delete knowledge base
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                          10).
+
+                          It is `RowActions`, so the ⋯ shows on hover, focus or an
+                          open menu and always without a hover pointer, like every
+                          other list row (V3-09). It sat at full opacity here and
+                          was the one row action in the app that did. The switch
+                          stays drawn: it is state, not an action. A destructive
+                          item stays behind the separator (ROWS-3). */}
+                        <RowActions
+                          menuLabel={`More actions for ${base.name}`}
+                          menu={rowMenu(base, isBusy)}
+                        />
                       </div>
                     </div>
                   );

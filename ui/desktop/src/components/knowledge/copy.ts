@@ -25,10 +25,11 @@ export const knowledgeCopy = {
     check: 'Check for problems',
     refresh: 'Refresh graph',
     more: 'More knowledge base actions',
-    export: 'Export as .brkb',
+    // A menu item that opens a dialog or asks first takes the ellipsis, as Skills' Delete… does (V3-21).
+    export: 'Export as .brkb…',
     changeLog: 'Change log',
     openFolder: 'Open folder',
-    delete: 'Delete knowledge base',
+    delete: 'Delete knowledge base…',
   },
 
   /** The tier badge-button (Crew's ClassificationBadge) and its menu. */
@@ -103,6 +104,7 @@ export const knowledgeCopy = {
     infoLabel: 'bases in this chat',
     info: 'The primary is where knowledge is written when no base is named. Bases left out can still be named.',
     primary: 'Primary',
+    rename: 'Rename knowledge base',
     copyId: 'Copy ID',
     copied: 'Copied the ID',
     copyFailed: 'Could not copy the ID',

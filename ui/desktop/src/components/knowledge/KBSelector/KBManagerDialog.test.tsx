@@ -129,6 +129,33 @@ describe('KBManagerDialog', () => {
     ).toBeInTheDocument();
   });
 
+  // V3-09: the row's ⋯ is a RowActions cluster, so it rests hidden and shows on hover, focus or an
+  // open menu like every other list row (the rule is `.br-row-actions` in main.css; jsdom draws no
+  // CSS, so this pins the markup the rule hangs on). The switch is state and stays drawn.
+  it('draws the row ⋯ as a RowActions cluster, with the switch outside it', () => {
+    open();
+    const row = screen.getByRole('option', { name: /Alpha/ }).closest('.biorouter-list-row')!;
+    const more = within(row as HTMLElement).getByLabelText('More actions for Alpha');
+    expect(more.closest('[data-slot="row-actions"]')).not.toBeNull();
+    expect(more.closest('.br-row-actions')).not.toBeNull();
+    expect(
+      within(row as HTMLElement)
+        .getByRole('switch')
+        .closest('.br-row-actions')
+    ).toBeNull();
+  });
+
+  // V3-21: an item that opens a dialog or asks first takes the ellipsis, as Skills' Delete… does.
+  it('marks the items that open a dialog with an ellipsis', async () => {
+    open();
+    await userEvent.click(screen.getByLabelText('More actions for Alpha'));
+    expect(await screen.findByRole('menuitem', { name: 'Export as .brkb…' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete knowledge base…' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: knowledgeCopy.manager.rename })
+    ).toBeInTheDocument();
+  });
+
   // Picking a primary used to close the palette, which made the selector feel
   // like a radio group over a single-active model. The MANAGER is a place you
   // stay — the picker (§4.1) is the surface that closes.
