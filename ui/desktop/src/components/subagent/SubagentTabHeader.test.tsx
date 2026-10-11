@@ -54,6 +54,14 @@ describe('SubagentTabHeader', () => {
     const line = screen.getByTestId('subagent-header-child-1');
     expect(line).toHaveClass('h-8', 'max-w-measure-chat');
     expect(line.className).not.toMatch(/\bh-chrome\b|\bbg-sidebar\b|\bborder-b\b/);
+    // One size along the line: the controls in it are dense 32px-strip
+    // controls (spec 2.1), 13px like the parent link, not the buttons' 14px.
+    expect(line).toHaveClass('text-secondary');
+    expect(contextButton()).toHaveClass('text-secondary');
+    expect(screen.getByRole('button', { name: props.parentSessionName })).toHaveClass(
+      'text-secondary'
+    );
+    expect(screen.getByRole('button', { name: copy.stopLabel })).toHaveClass('text-secondary');
   });
 
   it('Stop is offered while running and confirms through onStop', () => {

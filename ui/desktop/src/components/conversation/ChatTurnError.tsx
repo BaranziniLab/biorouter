@@ -277,7 +277,9 @@ export function TurnErrorRow({
         <div className="text-secondary text-text-muted break-words">{presentation.message}</div>
         {presentation.details && (
           <Disclosure label={transcriptCopy.turn.details} className="mt-1">
-            <div className="whitespace-pre-wrap break-words font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+            {/* One well, as a tool call's expanded body is: the raw payload is
+                machine text, and the fill keeps it apart from the rows below. */}
+            <div className="whitespace-pre-wrap break-words rounded-element bg-background-well p-3 font-mono text-code text-text-muted [overflow-wrap:anywhere]">
               {presentation.details}
             </div>
           </Disclosure>

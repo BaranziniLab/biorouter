@@ -52,6 +52,26 @@ describe('UserMessage edit actions', () => {
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });
 
+  // R-27: the editor is the composer's card, so it is the subtle fill with a
+  // transparent edge (the coral focus edge turns it), never a hairline box, and
+  // the secondary button inside steps back to the page ground.
+  it('edits on the filled composer card, with no resting outline', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
+
+    const card = screen
+      .getByRole('textbox', { name: 'Edit message content' })
+      .closest('.biorouter-composer-card');
+    expect(card).not.toBeNull();
+    expect(card).toHaveClass(
+      'bg-background-fill',
+      'border',
+      'border-transparent',
+      'br-fill-surface'
+    );
+    expect(card?.className).not.toMatch(/border-border-|bg-background-default/);
+  });
+
   it('hands focus back to the Edit button when the editor closes', () => {
     // The editor replaces the bubble and the button that opened it, so a
     // keyboard user would otherwise be dropped on the page.

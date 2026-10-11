@@ -81,6 +81,9 @@ describe('ChatTurnError', () => {
     const detailBody = screen.getByText(details);
     expect(detailBody).toHaveClass('break-words');
     expect(detailBody).toHaveClass('[overflow-wrap:anywhere]');
+    // One well, as a tool call's expanded body is (R-27: a fill, no frame).
+    expect(detailBody).toHaveClass('rounded-element', 'bg-background-well', 'p-3');
+    expect(detailBody.className).not.toMatch(/\bborder\b/);
   });
 
   it('labels a transient backend-unreachable failure distinctly from a provider failure', () => {

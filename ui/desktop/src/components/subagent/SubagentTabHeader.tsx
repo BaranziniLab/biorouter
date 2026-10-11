@@ -120,14 +120,18 @@ export function SubagentTabHeader({
           sessions older than it have no record, so `spawnContext` really can
           be absent while the line itself is still worth showing, and a toggle
           that can only ever open onto nothing is a dead control. It is the
-          shared Disclosure's trigger (ghost sm, a chevron that turns 90°). */}
+          shared Disclosure's trigger (ghost sm, a chevron that turns 90°), at
+          the line's 13px like the parent link and Stop: a dense control in a
+          32px strip (spec 2.1), so the line reads at one size. It takes the
+          trigger's -12px start too, so its chevron sits one gap after the count
+          before it rather than a gap plus the button's padding. */}
         {spawnContext && (
           <CollapsibleTrigger asChild>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="flex-none text-text-muted"
+              className="biorouter-disclosure-trigger flex-none text-secondary text-text-muted"
               aria-controls={spawnContextId}
             >
               <ChevronRight aria-hidden="true" className="biorouter-disclosure-chevron" />
@@ -157,7 +161,7 @@ export function SubagentTabHeader({
               type="button"
               variant="ghost"
               size="sm"
-              className="ml-auto flex-none"
+              className="ml-auto flex-none text-secondary"
               onClick={onStop}
               aria-label={copy.stopLabel}
             >
