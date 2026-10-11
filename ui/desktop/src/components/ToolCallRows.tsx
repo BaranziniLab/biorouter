@@ -67,6 +67,13 @@ export function exploredCounts(kinds: readonly ExploreKind[]): string {
  * that only looked around, opening onto the calls themselves (each still its
  * own row, 4px apart, indented to the label). "Exploring" while one of them is
  * still working, with the running pulse.
+ *
+ * The body's shape is a contract: a plain body holding a `flex min-w-0 flex-col`
+ * column of `min-w-0` divs, one closed row each. `transcript/
+ * messageActionsGeometry.browser.test.tsx` rebuilds exactly this to pin that
+ * every nested row shares one right edge under an answer's floating actions
+ * (`message-meta.css` reserves the same 192px on all of them, on purpose). If
+ * the shape changes, change that case with it.
  */
 export function ExploredRow({
   kinds,
