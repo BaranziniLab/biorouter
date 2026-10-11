@@ -83,16 +83,22 @@ the chat: a message is stored, a turn runs (its token accounting stamps as it go
 conversation is compacted, edited or rewound, or the person renames the chat. Opening a chat is not
 activity. Resuming it, restoring the model it records on a cold agent, reloading and saving its
 extensions, and applying a working directory to an empty chat leave `updated_at` alone, from the
-desktop, a browser, `biorouter session --resume`, ACP and an app's socket alike. Those doors run
-their work inside `biorouter::session::activity::opening`, and only the setup writes read that scope
-(the provider bind, the extension-data writes, the empty-chat working-directory write), so a rename
-or a message inside it still moves the chat. A model the person picks in the model picker, or with
+desktop, a browser, `biorouter session --resume` and ACP. Those doors run their work inside
+`biorouter::session::activity::opening`, and only the setup writes read that scope (the provider
+bind, the extension-data writes, the empty-chat working-directory write), so a rename or a message
+inside it still moves the chat. An app's page is opened the same way: its connect binds the app's
+model and re-installs its goal inside the scope. Closing or reloading the page saves the app's
+shared state only when that state holds a change not yet saved (`save_ui_state` in
+`routes/apps.rs`). The page's own state writes and a turn's are activity and move the chat when they
+are saved; the declared initial state is never saved on its own, and a close after a saved change
+does not move the chat again. A model the person picks in the model picker, or with
 `--provider`/`--model` on a CLI resume, still moves it, as it did before. The tests: the store's
 `opening_is_not_activity_tests` (`session/session_manager.rs`), the cold restore in
 `agents/agent.rs`, `opening_is_not_activity_route_tests` (`routes/agent.rs`, the desktop's own calls
 on a public and a private chat, then a rename), `opening_is_not_activity_app_tests`
-(`routes/apps.rs`), the resume cases in `biorouter-cli/tests/non_interactive.rs` and
-`test_acp_load_session_is_not_activity` in `biorouter-acp/tests/server_test.rs`.
+(`routes/apps.rs`, the connect, and pages loaded and closed over the real socket), the resume cases
+in `biorouter-cli/tests/non_interactive.rs` and `test_acp_load_session_is_not_activity` in
+`biorouter-acp/tests/server_test.rs`.
 
 ### Drawing the list
 

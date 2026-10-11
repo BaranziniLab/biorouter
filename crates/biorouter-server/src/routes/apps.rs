@@ -6093,16 +6093,35 @@ impl PersistedUiState {
 /// change this is called at **interaction boundaries** — after each accepted
 /// client `state_write`, at end-of-turn (which captures a turn's agent-driven
 /// `ui_state` frames), and on socket close — which bounds write frequency to
-/// turn/interaction granularity. Best-effort; a pristine session is skipped so
-/// we never write an empty doc.
+/// turn/interaction granularity. Best-effort.
+///
+/// R-30: a save with nothing new to write is skipped, because the write would
+/// stamp the chat's activity time (`updated_at`), and a page closed or reloaded
+/// with nothing done in it is not activity. Two cases, both "nothing new":
+///
+/// * **Version 0.** Nothing has written the document since it was seeded, so it
+///   is the empty doc, the manifest's declared `surface.state_initial` (which
+///   every connect seeds again), or a version-0 doc already on disk. Every
+///   mutation bumps the version (`control.rs`), so version 0 is never news.
+/// * **Already on disk.** Each change is saved at its own boundary (an accepted
+///   `state_write`, the end of a turn), so the close of a page that did nothing
+///   since finds the same `(doc, version)` stored.
+///
+/// A change that IS new comes from the page's own write or the agent's during a
+/// turn. Both are activity, and their save still stamps.
 async fn save_ui_state(state: &AppState, session_id: &str, bridge: &UiBridge) {
     let (doc, version) = bridge.state_snapshot();
-    if version == 0 && doc.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+    if version == 0 {
         return;
     }
-    let ps = PersistedUiState { doc, version };
     let sm = state.session_manager();
     if let Ok(mut sd) = sm.get_session(session_id, false).await {
+        if PersistedUiState::load_from(&sd.extension_data)
+            .is_some_and(|saved| saved.version == version && saved.doc == doc)
+        {
+            return;
+        }
+        let ps = PersistedUiState { doc, version };
         ps.store_into(&mut sd.extension_data);
         let _ = sm
             .update(session_id)
@@ -12641,6 +12660,11 @@ mod app_decision_tests {
 /// of an app moved its chat to the top of every list sorted by activity. Each
 /// connect here uses a fresh agent over the same store: a reload after a daemon
 /// restart, which is the case that reached the bind with nothing bound.
+///
+/// A reload is also a close, and the close saved the app's shared state
+/// document (`save_ui_state`) whether or not anything had changed, which moved
+/// the chat just the same. The last test drives real page loads over the socket
+/// to pin that half.
 #[cfg(test)]
 mod opening_is_not_activity_app_tests {
     use super::configure_agent;
@@ -12816,5 +12840,200 @@ mod opening_is_not_activity_app_tests {
                 "{connect}: re-installing an app's goal on connect is not activity (R-30)"
             );
         }
+    }
+
+    type ClientSocket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// The next JSON text frame from the daemon, within five seconds.
+    async fn next_json(ws: &mut ClientSocket, waiting_for: &str) -> serde_json::Value {
+        use futures::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {waiting_for}"))
+                .unwrap_or_else(|| panic!("the socket ended while waiting for {waiting_for}"))
+                .unwrap_or_else(|e| panic!("socket error while waiting for {waiting_for}: {e}"));
+            if let ClientMessage::Text(text) = frame {
+                return serde_json::from_str(text.as_str()).expect("the daemon sends JSON");
+            }
+        }
+    }
+
+    /// One page load of an app over its real socket (`GET /apps/{id}/agent`),
+    /// as the SDK makes it: connect with the page's stable `client_id`, read up
+    /// to `ready`, optionally write the shared state the way a click on the page
+    /// does, then close the page. Returns the chat's session id once the daemon
+    /// has finished with the close: the close arm saves the state document
+    /// BEFORE it detaches the bridge, so a detached bridge means that save ran.
+    async fn load_page(
+        addr: std::net::SocketAddr,
+        app: &str,
+        client_id: &str,
+        write: Option<serde_json::Value>,
+    ) -> String {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        let url = format!(
+            "ws://{addr}/apps/{app}/agent?token={}&client_id={client_id}",
+            super::ws_token_for(app)
+        );
+        let (mut ws, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .expect("the app socket accepts the page");
+        let session_id = loop {
+            let frame = next_json(&mut ws, "ready").await;
+            if frame["type"] == "ready" {
+                break frame["sessionId"].as_str().unwrap().to_string();
+            }
+        };
+        if let Some(write) = write {
+            ws.send(ClientMessage::Text(write.to_string().into()))
+                .await
+                .unwrap();
+            loop {
+                let frame = next_json(&mut ws, "the accepted write's patch").await;
+                assert_ne!(frame["cmd"], "notify", "the write was refused: {frame}");
+                if frame["cmd"] == "state" && frame["mode"] == "patch" {
+                    break;
+                }
+            }
+        }
+        let _ = ws.close(None).await;
+        while let Some(frame) = ws.next().await {
+            if frame.is_err() {
+                break;
+            }
+        }
+        let bridge = super::ui_bridge_for(&session_id);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while bridge.emit_frame(serde_json::json!({ "type": "probe" })) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the daemon never finished closing the page"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        session_id
+    }
+
+    /// Forget the app chat's in-memory bridge, as a daemon restart does, so the
+    /// next load seeds its shared state from disk (a cold bridge).
+    fn forget_bridge(session_id: &str) {
+        match super::UI_BRIDGES.lock() {
+            Ok(mut map) => map.remove(session_id),
+            Err(poisoned) => poisoned.into_inner().remove(session_id),
+        };
+    }
+
+    /// The other half of an app connect. Closing or reloading an app's page
+    /// saves its shared state document (`save_ui_state`, from the idle loop's
+    /// close arm), an `extension_data`-only update that runs outside any
+    /// `opening` scope. It rewrote the document on every close, so an app that
+    /// declares `surface.state_initial`, or whose page had ever saved state,
+    /// moved its chat to the top on every reload with nothing done in it (found
+    /// live by the R-30 verifier). A write the page makes is still activity, and
+    /// the close after it must not move the chat a second time, whether the
+    /// bridge is still warm or was seeded from disk after a restart.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn closing_an_app_page_with_nothing_done_in_it_does_not_move_its_chat() {
+        use biorouter_mcp::agent_drafter::store::ArtifactKind;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let store = super::store();
+        let mut manifest = store
+            .create_with_id(
+                &format!("r30-close-{nonce}"),
+                "R-30 close",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
+            .unwrap();
+        let app = manifest.id.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = super::routes(state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let client = format!("client-{nonce}");
+        let sm = state.session_manager();
+
+        // The first load creates the chat, from an app with no declared state.
+        let session = load_page(addr, &app, &client, None).await;
+        // The app is rebuilt with a declared initial state. The chat has no
+        // saved state, so the next loads seed it from the manifest.
+        manifest.surface.state_initial = Some(serde_json::json!({ "count": 1 }));
+        store.save_manifest(&manifest).unwrap();
+        // `datetime('now')` has one-second resolution: load again in a later
+        // second, so a stamp cannot hide in the second the row was written in.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let before = sm.get_session(&session, false).await.unwrap().updated_at;
+
+        for load in ["a reload", "another reload", "a reload after a restart"] {
+            if load == "a reload after a restart" {
+                forget_bridge(&session);
+            }
+            assert_eq!(load_page(addr, &app, &client, None).await, session);
+            let row = sm.get_session(&session, false).await.unwrap();
+            assert_eq!(
+                row.updated_at, before,
+                "{load} with nothing done in the page is not activity in its chat (R-30)"
+            );
+            assert!(
+                super::PersistedUiState::load_from(&row.extension_data).is_none(),
+                "{load}: the declared initial state is not saved on its own"
+            );
+        }
+
+        // A write the page makes is something done in the app: it is saved, and
+        // it moves the chat.
+        let write = serde_json::json!({
+            "type": "state_write",
+            "set": { "path": "/count", "value": 2 },
+            "baseVersion": 0,
+        });
+        assert_eq!(load_page(addr, &app, &client, Some(write)).await, session);
+        let row = sm.get_session(&session, false).await.unwrap();
+        let saved = super::PersistedUiState::load_from(&row.extension_data)
+            .expect("premise, the page's write was saved");
+        assert_eq!(
+            (saved.doc, saved.version),
+            (serde_json::json!({ "count": 2 }), 1)
+        );
+        assert!(
+            row.updated_at > before,
+            "an accepted state write is activity: {} vs {before}",
+            row.updated_at
+        );
+
+        // Later reloads find that saved document and close with it unchanged:
+        // the warm bridge, then one seeded from disk after a restart.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        for load in ["a reload", "a reload after a restart"] {
+            if load == "a reload after a restart" {
+                forget_bridge(&session);
+            }
+            assert_eq!(load_page(addr, &app, &client, None).await, session);
+            assert_eq!(
+                sm.get_session(&session, false).await.unwrap().updated_at,
+                row.updated_at,
+                "{load}: closing a page whose saved state is unchanged is not activity (R-30)"
+            );
+        }
+
+        forget_bridge(&session);
+        let _ = store.delete(&app);
     }
 }
