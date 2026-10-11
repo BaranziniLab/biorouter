@@ -1,7 +1,7 @@
 # Biorouter Landing Site — Content & Requirements Tracker
 
 ## Overview
-Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. White paper, warm ink, hairlines instead of boxes, one coral accent, mobile/tablet/desktop responsive, light only.
+Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. White paper, warm ink, subtle fills instead of outlined boxes, hairlines only for section and table rules, one coral accent, mobile/tablet/desktop responsive, light only.
 
 **Color palette:** white paper (#ffffff), warm ink (#2a2520), coral (#b85a32, rails #cf6d47), UCSF navy (#052049). The values mirror the app's Parchment light tokens in `site.css`.
 **Font:** Arial first, the app's interface stack (`--font`); Inter 600 only for the wordmark and the BR mark; one monospace stack for code. The type scale is shared with the app: 12, 13, 14, 17 and 24 plus a 16px reading size and two clamps for titles (`--fs-*` in `site.css`).
@@ -349,7 +349,8 @@ Each card contains:
 ## Design Requirements
 
 ### General
-- [x] The app's look on the web: white paper, warm ink, hairlines, one coral accent, UCSF navy
+- [x] The app's look on the web: white paper, warm ink, one coral accent, UCSF navy
+- [x] Fills before lines: cards, fields, buttons, tags, notes and diagram boxes rest on the subtle fill (`--fill`) with no outline; the animations' app windows are lifted by a soft shadow; hairlines stay for section rules, table rules and the menus the animations draw
 - [x] Light only (a test fails if a page follows the system dark mode)
 - [x] One type scale shared with the app, weights 400 (700 only for strong in the docs)
 - [x] Buttons 32px for small actions and 40px for the one call to action of a view
