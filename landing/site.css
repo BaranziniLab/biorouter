@@ -9,12 +9,16 @@
 
   /* Grounds */
   --paper: #ffffff;        /* --background-default */
-  --muted-ground: #f4f4f2; /* --background-muted: the app's page ground */
+  --fill: #f4f4f2;         /* --background-fill: the subtle fill every card, field and
+                              secondary button rests on, with no outline (owner message 13) */
+  --fill-strong: #eaeae6;  /* --background-fill-strong: hover, press, and the rest fill of a
+                              chip or a card that sits on a --fill ground */
+  --muted-ground: var(--fill); /* --background-muted: the app's page ground */
   --wash: #f5f5f3;         /* --background-well: code, prompts */
   --medium: #ecece9;       /* --background-medium: hover, user message */
   --strong: #dcdcd8;       /* --background-strong: switch off, idle dot */
   --sidebar: #f7f7f5;
-  --sidebar-active: #eaeae6;
+  --sidebar-active: var(--fill-strong);
 
   /* Lines */
   --line: #e4e4e0;         /* --border-subtle, the hairline */
@@ -34,6 +38,8 @@
   --coral-hover: #a94f2a;
   --coral-bar: #cf6d47;    /* rails, underlines, dots; never text */
   --coral-wash: rgba(184, 90, 50, 0.12);
+  /* Coral ink on --coral-wash: --coral itself is 3.9:1 there, --coral-hover 4.7:1. */
+  --coral-ink: var(--coral-hover);
   --navy: #052049;         /* UCSF navy, the B in the mark */
   --navy-wash: rgba(5, 32, 73, 0.07);
 
@@ -44,6 +50,7 @@
 
   --ok: #1f7a3d;
   --danger: #b3261e;
+  --danger-wash: color-mix(in srgb, var(--danger) 10%, transparent);
 
   /* Type. The app's interface stack is Arial first. Inter is the brand face,
      used only for the wordmark and the BR mark. */
@@ -94,6 +101,8 @@
 
   --shadow-raised: 0 1px 2px rgba(31, 30, 28, .07);
   --shadow-popover: 0 8px 24px rgba(31, 30, 28, .11), 0 0 1px rgba(31, 30, 28, .16);
+  /* An app window drawn on the page: the floating-surface recipe, quieter. */
+  --shadow-window: 0 8px 24px rgba(31, 30, 28, .07), 0 0 1px rgba(31, 30, 28, .14);
 
   --lock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E");
 }
@@ -157,13 +166,13 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .slack-link {
   display: inline-flex; align-items: center; gap: 7px;
   height: var(--h-control); padding: 0 12px; border-radius: var(--r-element);
-  border: 1px solid var(--coral); color: var(--coral) !important;
+  border: 1px solid transparent; background: var(--coral-wash); color: var(--coral-ink) !important;
   font-size: var(--fs-sm); white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .slack-link:hover { background: var(--coral); color: #fff !important; text-decoration: none; }
 .slack-link svg { width: 14px; height: 14px; flex: none; }
-.nav .slack-link { padding: 0 12px; color: var(--coral); }
+.nav .slack-link { padding: 0 12px; }
 .nav .slack-link::after { display: none; }
 .header-slack { display: none; }
 
@@ -181,8 +190,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
     transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease), visibility 0s linear var(--dur-med);
   }
   .nav.open { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease); }
-  .nav a { font-size: var(--fs-h3); padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--ink); }
-  .nav a:last-child { border-bottom: 0; }
+  .nav a { font-size: var(--fs-h3); padding: 14px 0; color: var(--ink); }
   .nav a[aria-current="page"]::after { display: none; }
   .nav a[aria-current="page"] { color: var(--coral); }
   html:not(.js) .site-header { position: static; }
@@ -247,8 +255,8 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .btn-dark:hover { background: #17130f; }
 .btn-accent { background: var(--coral); color: #fff; }
 .btn-accent:hover { background: var(--coral-hover); }
-.btn-line { background: var(--paper); color: var(--ink); border-color: var(--line-2); }
-.btn-line:hover { border-color: var(--ink); }
+.btn-line { background: var(--fill); color: var(--ink); }
+.btn-line:hover { background: var(--fill-strong); }
 .btn svg { width: 16px; height: 16px; flex: none; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 24px; margin-top: 32px; }
 /* The link's underline gap, mirrored above, puts its words on the button label's line. */
@@ -302,10 +310,13 @@ table.plain tr > :last-child { padding-right: 0; }
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 /* ── Artifact frame: every small animation sits on one of these ── */
+/* The frame is the app's window on the page: white, no outline, lifted by the
+   floating-surface shadow. What is drawn inside it follows the app's fills. */
 .art {
   position: relative; overflow: hidden;
   background: var(--paper);
-  border: 1px solid var(--line); border-radius: var(--r-surface);
+  border-radius: var(--r-surface);
+  box-shadow: var(--shadow-window);
   isolation: isolate;
   color: var(--ink);
 }
@@ -340,13 +351,17 @@ table.plain tr > :last-child { padding-right: 0; }
 
 /* ── Community (Slack) band, shared by pages ───────────────── */
 .community {
-  position: relative;
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px 40px;
-  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
-  padding: 28px 0;
+  background: var(--fill); border-radius: var(--r-container);
+  padding: 28px 32px;
 }
-.community::before { content: ''; position: absolute; left: 0; top: -1px; width: 40px; height: 2px; background: var(--coral-bar); }
-.community .label { font-size: var(--fs-sm); color: var(--coral); margin: 0 0 8px; }
+.community .label { font-size: var(--fs-sm); color: var(--coral-ink); margin: 0 0 8px; }
 .community h2 { font-size: var(--fs-h2); letter-spacing: var(--tr-h); line-height: var(--lh-h2); margin: 0; }
 .community p.sub { color: var(--muted); font-size: var(--fs-md); margin: 8px 0 0; max-width: 560px; }
-@media (max-width: 640px) { .community { grid-template-columns: 1fr; } .community .btn { justify-self: start; } }
+@media (max-width: 640px) { .community { grid-template-columns: 1fr; padding: 24px 20px; } .community .btn { justify-self: start; } }
+
+/* Forced colours drop shadows and fills, so the frames that lost their outline
+   get one back in the system ink. */
+@media (forced-colors: active) {
+  .art, .community { border: 1px solid CanvasText; }
+}

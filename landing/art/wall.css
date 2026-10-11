@@ -117,7 +117,7 @@
 .art-wall .wall-comp { flex: none; margin-top: auto; }
 .art-wall .wall-card {
   padding: 9px 6px 6px 12px;
-  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--fill); border: 1px solid transparent; border-radius: var(--r-container);
 }
 .art-wall .wall-ph {
   display: block; font-size: 13px; line-height: 20px; color: var(--muted);
@@ -134,13 +134,13 @@
 }
 .art-wall .wall-chip { margin-left: auto; color: var(--ink-2); }
 .art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
-.art-wall .wall-chip.is-open { background: var(--medium); }
+.art-wall .wall-chip.is-open { background: var(--fill-strong); }
 .art-wall .wall-dd { width: 12px; height: 12px; margin-left: -1px; opacity: 0.6; }
 .art-wall .wall-send {
   flex: none; margin-left: 2px;
   width: var(--wall-bar); height: var(--wall-bar); border-radius: var(--r-element);
   display: grid; place-items: center;
-  background: var(--medium); color: var(--muted);
+  background: var(--paper); color: var(--muted);
 }
 /* Steps wall.js takes, in order, until the row fits. */
 .art-wall .wall-bs1 .wall-dd,
@@ -169,14 +169,15 @@
 .art-wall .wall-pop {
   position: relative; width: min(100%, 250px);
   padding: 4px; background: var(--paper);
-  border: 1px solid var(--line-2); border-radius: var(--r-container);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   opacity: 0; transform: translateY(4px);
   transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
 }
 .art-wall .wall-pop.is-on { opacity: 1; transform: none; }
 .art-wall .wall-hl {
   position: absolute; left: 4px; right: 4px; top: 4px; height: var(--wall-row);
-  border-radius: var(--r-element); background: var(--medium);
+  border-radius: var(--r-element); background: var(--fill-strong);
   transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-pop.is-try .wall-hl { transform: translateY(var(--wall-row)); }
@@ -259,7 +260,8 @@
   position: absolute; top: 50%; left: calc(var(--split) - 1px);
   width: 38px; height: 38px; transform: translate(-50%, -50%);
   display: flex; align-items: center; justify-content: center;
-  background: var(--paper); border: 1px solid var(--line-2); border-radius: 50%;
+  background: var(--paper); border: 1px solid transparent; border-radius: 50%;
+  box-shadow: var(--shadow-popover);
   pointer-events: none;
 }
 .art-wall .wall-handle .wall-chev { width: 11px; height: 11px; color: var(--coral); }

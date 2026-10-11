@@ -37,7 +37,7 @@
 /* The workflow file: instructions, parameters, extensions. Never records. */
 .art-federate .fed-card {
   grid-row: 4; position: relative; z-index: 3; min-width: 0;
-  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-element);
+  background: var(--paper); border: 1px solid transparent; border-radius: var(--r-element);
   padding: 9px 10px 10px;
   opacity: 0; transform: translateY(6px);
   transition: opacity var(--dur-slow) var(--ease), transform 1150ms var(--ease), border-color var(--dur-med) var(--ease);

@@ -99,13 +99,14 @@
 /* ── The composer ───────────────────────────────────────── */
 .art-skills .sk-composer {
   position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
-  background: var(--paper);
-  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
   padding: 6px 6px 6px 12px;
   transition: border-color var(--dur-menu) var(--ease);
 }
-/* The app's focus edge (--border-accent): the card's own hairline turns
-   accent while the command is typed. */
+/* The app's focus edge (--border-accent): the card rests on the subtle fill
+   with a transparent edge, and the edge turns accent while the command is
+   typed. */
 .art-skills.is-edge .sk-composer { border-color: var(--coral); }
 
 /* The reference rail: above the prose, inside the card. The chip is never
@@ -148,7 +149,7 @@
 .art-skills .sk-send {
   display: grid; place-items: center; flex: none;
   width: 32px; height: 32px; border-radius: var(--r-element);
-  background: var(--medium); color: var(--faint);
+  background: var(--paper); color: var(--faint);
   transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-skills .sk-send-ic { width: 16px; height: 16px; }
@@ -161,6 +162,7 @@
   position: absolute; left: -1px; right: -1px; bottom: calc(100% + 8px);
   background: var(--paper);
   border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   padding: 6px;
   opacity: 0; transform: translateY(6px);
   transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease);
@@ -178,13 +180,12 @@
 .art-skills .sk-row-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .art-skills .sk-row-name { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; overflow: hidden; }
 .art-skills .sk-row-desc { font-size: 12px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-/* The selected row, as the app marks it: an inset hairline ring on the strong
-   ground at 70%, moving as the arrow keys would. */
+/* The selected row, as the app marks it: the solid strong fill, no ring,
+   moving as the arrow keys would. */
 .art-skills .sk-sel {
   position: absolute; left: 0; right: 0; top: 0; height: 37px;
   border-radius: var(--r-inner);
-  background: color-mix(in srgb, var(--strong) 70%, transparent);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--fill-strong);
   transition: transform var(--dur-menu) var(--ease);
 }
 

@@ -50,8 +50,8 @@
 /* ── The dropped paper, as a card ─────────────────────── */
 [data-art="knowledge"] .kn-card {
   position: absolute;
-  border: 1px solid var(--line); border-radius: var(--r-element);
-  background: var(--paper);
+  border: 1px solid transparent; border-radius: var(--r-element);
+  background: var(--fill);
 }
 [data-art="knowledge"] .kn-file { position: absolute; width: 16px; height: 16px; color: var(--muted); }
 [data-art="knowledge"] .kn-card,

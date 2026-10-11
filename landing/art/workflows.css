@@ -139,18 +139,17 @@
 [data-art="workflows"] .wf-file {
   flex: 1 1 auto; min-height: 0;
   display: flex; flex-direction: column;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: var(--r-container);
   overflow: hidden;
-  background: var(--paper);
+  background: var(--fill);
 }
 [data-art="workflows"] .wf-head {
   flex: none;
   height: var(--wf-head);
   display: flex; align-items: center; gap: 7px;
   padding: 0 var(--wf-padx);
-  background: var(--sidebar);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid transparent;
 }
 [data-art="workflows"] .wf-head svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 [data-art="workflows"] .wf-name { font-size: var(--wf-ui); line-height: 1; color: var(--ink); white-space: nowrap; }
@@ -220,9 +219,9 @@
   display: inline-flex; align-items: center;
   height: var(--wf-ctl); width: 76px;
   padding: 0 9px;
-  border: 1px solid var(--line-2);
+  border: 1px solid transparent;
   border-radius: var(--r-element);
-  background: var(--paper);
+  background: var(--fill);
   font-size: var(--wf-ui); line-height: 1; color: var(--ink);
   transition: border-color var(--dur-fast) var(--ease);
 }
@@ -237,14 +236,14 @@
 [data-art="workflows"] .wf-field.is-focus .wf-caret { opacity: 1; }
 
 /* Start (the app's parameter dialog says "Start workflow"): the app's 8px
-   rounded square. Idle is the secondary grey; armed is coral with white text;
+   rounded square. Idle is the secondary fill; armed is coral with white text;
    the press is the app's scale(0.98). */
 [data-art="workflows"] .wf-btn {
   margin-left: auto;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: var(--wf-ctl); padding: 0 11px 0 10px;
   border-radius: var(--r-element);
-  background: var(--medium); color: var(--ink);
+  background: var(--fill); color: var(--ink);
   font-size: var(--wf-ui); line-height: 1; white-space: nowrap;
   transition: background var(--dur-med) var(--ease), color var(--dur-med) var(--ease), transform var(--dur-fast) var(--ease);
 }

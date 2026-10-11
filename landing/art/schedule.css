@@ -100,10 +100,6 @@
   transform: translateY(calc(var(--slot, 0) * var(--sch-row)));
   transition: transform var(--sch-move) var(--ease), opacity var(--dur-med) var(--ease);
 }
-[data-art="schedule"] .sch-run::after {
-  content: ''; position: absolute; left: 10px; right: 0; bottom: 0; height: 1px; background: var(--line);
-}
-[data-art="schedule"] .sch-run.is-last::after { background: transparent; }
 [data-art="schedule"] .sch-run::before {
   content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
   border-radius: 2px; background: var(--coral-bar); opacity: 0;

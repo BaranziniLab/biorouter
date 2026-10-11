@@ -3,7 +3,11 @@
    catalogue (Local, Institutional, Public) at the right. The person picks a
    model from the composer's model chip; a coral pulse carries the turn through
    Biorouter to that row. Geometry is set by art/hub.js; this file holds the
-   look. Every rule is scoped to the artifact. */
+   look. Every rule is scoped to the artifact.
+   Fills before lines (owner message 13): the composer card and the mark's tile
+   are the subtle fill with a transparent 1px edge, so nothing moves; the idle
+   Send rests on the page ground (a fill never sits on a fill); the chip's menu
+   is a floating surface and keeps its hairline with a shadow. */
 
 .art-hub .hub {
   position: absolute; inset: 0;
@@ -58,8 +62,8 @@
 .art-hub .hub-card {
   position: absolute;
   display: flex; flex-direction: column;
-  background: var(--paper);
-  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
   padding: 4px 6px 6px 14px;
 }
 .art-hub .hub-input {
@@ -77,7 +81,7 @@
 .art-hub .hub-send {
   flex: none; width: 32px; height: 32px; margin-left: 2px; border-radius: var(--r-element);
   display: grid; place-items: center;
-  background: var(--medium); color: var(--muted);
+  background: var(--paper); color: var(--muted);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-hub .hub-send svg { width: 16px; height: 16px; }
@@ -111,7 +115,7 @@
   font-size: 12px; line-height: 16px; color: var(--subtle); white-space: nowrap;
 }
 .art-hub .hub-folder .hub-fi { width: 14px; height: 14px; }
-.art-hub .hub-chip.tint { background: var(--medium); color: var(--ink); }
+.art-hub .hub-chip.tint { background: var(--fill-strong); color: var(--ink); }
 /* The chip's model and padlock change by a plain crossfade: the padlock
    appears or goes, it never slides. */
 .art-hub .hub-chip .model { display: inline-flex; align-items: center; transition: opacity var(--dur-menu) var(--ease); }
@@ -124,7 +128,8 @@
 .art-hub .hub-pick {
   position: absolute; padding: 3px;
   background: var(--paper);
-  border: 1px solid var(--line-2); border-radius: var(--r-container);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   opacity: 0; transform: translateY(4px);
   transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
 }
@@ -136,7 +141,7 @@
   font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap;
   transition: background var(--dur-menu) var(--ease);
 }
-.art-hub .hub-prow.on { background: var(--medium); }
+.art-hub .hub-prow.on { background: var(--fill-strong); }
 .art-hub .hub-prow .hub-lock { margin-left: 6px; color: var(--muted); }
 .art-hub .hub-prow .note { display: none; margin-left: 10px; font-size: 12px; color: var(--subtle); }
 .art-hub .hub-prow.off { color: var(--faint); }
@@ -155,8 +160,8 @@
 .art-hub .hub-mark {
   position: absolute;
   display: grid; place-items: center;
-  background: var(--paper);
-  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
 }
 .art-hub .hub-mark img { width: 100%; height: 100%; }
 

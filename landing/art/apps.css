@@ -18,8 +18,9 @@
   inset: clamp(14px, 6.4cqh, 18px) clamp(14px, 5cqw, 18px);
   display: flex; flex-direction: column;
   background: var(--paper);
-  border: 1px solid var(--line-2);
+  border: 1px solid transparent;
   border-radius: var(--r-container);
+  box-shadow: var(--shadow-window);
   overflow: hidden;
 }
 [data-art="apps"] .apps-bar {
@@ -42,7 +43,8 @@
 [data-art="apps"] .apps-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  border: 1px dashed var(--line-2); border-radius: var(--r-element);
+  border: 1px solid transparent; border-radius: var(--r-element);
+  background: var(--fill);
   transition: opacity var(--dur-med) var(--ease);
 }
 [data-art="apps"] .apps-empty span { font-family: var(--mono); font-size: 12px; line-height: 1; color: var(--subtle); }
@@ -131,8 +133,9 @@
   min-width: 164px;
   padding: 11px 12px 10px;
   background: var(--paper);
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--line);
   border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   opacity: 0;
   transform: translate(-50%, calc(-50% + 6px));
   transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
@@ -157,7 +160,7 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 [data-art="apps"] .apps-skip { color: var(--muted); }
-[data-art="apps"] .apps-go { color: var(--ink); background: var(--paper); border: 1px solid var(--line-2); }
+[data-art="apps"] .apps-go { color: var(--ink); background: var(--fill); border: 1px solid transparent; }
 [data-art="apps"] .is-ask .apps-scrim { opacity: 1; }
 [data-art="apps"] .is-ask .apps-ask { opacity: 1; transform: translate(-50%, -50%); }
 [data-art="apps"] .is-press .apps-go { background: var(--coral); border-color: var(--coral); color: var(--paper); }
