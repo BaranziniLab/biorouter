@@ -13,11 +13,18 @@ import {
   TITLEBAR_CONTROL_RESERVE_PROPERTY,
 } from './TitlebarControls';
 import { SIDEBAR_COMPACT_WIDTH } from './yieldLadder';
+import { MOTION } from '../../styles/motion';
 
 // Rung 1's threshold. Imported, not re-declared: this is the same number the
 // titlebar reserve and the chat's compact title key off, and a local copy that
 // drifted would desynchronise the ladder from the chrome with nothing failing.
 const SIDEBAR_AUTO_COLLAPSE_WIDTH = SIDEBAR_COMPACT_WIDTH;
+
+/**
+ * The `<body>` class `main.css` keys the "layout snaps while the window moves" rule on. Spelled
+ * out here, not read from `RESIZING_CLASSES`: `styles/motion.test.ts` pins this file to the name.
+ */
+const WINDOW_RESIZING_CLASS = 'biorouter-window-resizing';
 
 /**
  * What the width watcher should do to the sidebar, given a width sample.
@@ -125,6 +132,25 @@ const AppLayoutContent: React.FC = () => {
   useTopBandRouteBodyClass(location.pathname);
 
   /**
+   * Put `<body>` in the "window is resizing" state NOW and keep it there until the window has
+   * been still for `MOTION.resizeSettleMs` (`main.css` zeroes the sidebar's gap, panel and inset
+   * transitions under it, and `isWindowResizing()` stills the JS glides).
+   *
+   * Stable, and shared by the `resize` listener below and by the width watcher. The watcher must
+   * not wait for the listener: see the comment on that effect.
+   */
+  const holdWindowStill = React.useCallback(() => {
+    document.body.classList.add(WINDOW_RESIZING_CLASS);
+    if (resizeSettlingTimerRef.current !== null) {
+      window.clearTimeout(resizeSettlingTimerRef.current);
+    }
+    resizeSettlingTimerRef.current = window.setTimeout(() => {
+      resizeSettlingTimerRef.current = null;
+      document.body.classList.remove(WINDOW_RESIZING_CLASS);
+    }, MOTION.resizeSettleMs);
+  }, []);
+
+  /**
    * Auto-collapse the sidebar when the window gets too narrow, and restore it
    * when there is room again.
    *
@@ -146,15 +172,30 @@ const AppLayoutContent: React.FC = () => {
   React.useEffect(() => {
     const updateSidebarMode = () => {
       const shouldCollapse = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
-      document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
-
       const action = sidebarAutoCollapseAction({
         wasCompact: wasCompactRef.current,
         isCompact: shouldCollapse,
         open: sidebarOpenRef.current,
         autoCollapsed: autoCollapsedSidebarRef.current,
       });
+      const crossed = wasCompactRef.current !== null && wasCompactRef.current !== shouldCollapse;
       wasCompactRef.current = shouldCollapse;
+
+      // Hold the window still while the sidebar changes sides of the rung, BEFORE anything below
+      // touches it (vision V1-R4-1). The marking listener cannot be counted on to have run first.
+      // Chromium fires window `resize` listeners in registration order whatever their capture
+      // flag, and after a load this one is registered ahead of both markers (the provider's and
+      // the one below). Only a re-run of this effect, which every change of `open` causes, moves
+      // it to the end, so only the first crossing after a load slid. React commits `setOpen` for
+      // a discrete event in the microtask right after this listener returns, and a chat reads
+      // layout in that commit, so styles resolved with the sidebar collapsed and `<body>`
+      // unmarked, and the gap's width and the panel's translate eased against the resize. The
+      // class left by the PREVIOUS event cannot be counted on either: it lapses
+      // `MOTION.resizeSettleMs` after it, and a window set to sizes by a script, or a maximise,
+      // lands the crossing on a later step. A person's own toggle is no crossing and holds
+      // nothing, so it still slides.
+      if (crossed || action !== 'none') holdWindowStill(); // @hold-before-move
+      document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
 
       if (action === 'collapse') {
         // Remember that WE took the sidebar away, so we know to give it back.
@@ -172,29 +213,23 @@ const AppLayoutContent: React.FC = () => {
       document.body.classList.remove('biorouter-sidebar-compact');
       window.removeEventListener('resize', updateSidebarMode);
     };
-  }, [isMobile, setOpen]);
+  }, [isMobile, setOpen, holdWindowStill]);
 
+  // Marks every resize, crossing or not. Its own effect, apart from the watcher, on purpose: the
+  // watcher re-runs whenever `setOpen` changes identity (every toggle), and a cleanup that lifted
+  // the class there would drop the hold a crossing has just taken, before the styles that need
+  // it are resolved. `holdWindowStill` never changes, so this one runs once.
   React.useEffect(() => {
-    const markWindowResizing = () => {
-      document.body.classList.add('biorouter-window-resizing');
-      if (resizeSettlingTimerRef.current !== null) {
-        window.clearTimeout(resizeSettlingTimerRef.current);
-      }
-      resizeSettlingTimerRef.current = window.setTimeout(() => {
-        resizeSettlingTimerRef.current = null;
-        document.body.classList.remove('biorouter-window-resizing');
-      }, 180);
-    };
-
-    window.addEventListener('resize', markWindowResizing);
+    window.addEventListener('resize', holdWindowStill);
     return () => {
-      window.removeEventListener('resize', markWindowResizing);
+      window.removeEventListener('resize', holdWindowStill);
       if (resizeSettlingTimerRef.current !== null) {
         window.clearTimeout(resizeSettlingTimerRef.current);
+        resizeSettlingTimerRef.current = null;
       }
-      document.body.classList.remove('biorouter-window-resizing');
+      document.body.classList.remove(WINDOW_RESIZING_CLASS);
     };
-  }, []);
+  }, [holdWindowStill]);
 
   // Keep every top-level route on the shared navigation mapping.
   const navigateToView = useNavigation();
