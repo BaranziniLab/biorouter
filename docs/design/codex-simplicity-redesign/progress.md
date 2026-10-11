@@ -18,7 +18,7 @@ Requirement IDs (`R-nn`) and workstream names (`WS-...`) are defined in the
 | 2. Specification | Done | [implementation-spec.md](implementation-spec.md): synthesis, critic pass, coordinator rulings (section 8). |
 | 3. Foundations | Done | All ten wave 0 contracts landed. |
 | 4. Surfaces | Done | All 21 workstreams implemented and reviewed; integration gate green; wave 2 sweeps done. |
-| 5. Verification loops | In progress | Vision reviewers on four sandboxed app instances and the website, owner-routed fixes, until each group is clean twice. |
+| 5. Verification loops | In progress | Round 1 done and fixed; rounds 2 to 4 not run yet. See [handoff.md](handoff.md). |
 | 6. Review and pull request | Not started | |
 
 ## Workstreams and file ownership
@@ -80,10 +80,10 @@ spec's tables are authoritative where this summary is shorter.
 | R-22 | Website revision | WS-LANDING | In progress |
 | R-23 | Vision verification loops | coordinator (vision loop) | In progress |
 | R-24 | Requirements and progress documents | coordinator | Done |
-| R-25 | Tools popover switcher at the bottom | WS-PICKERS | Not started |
-| R-26 | Effort slider | WS-PRIMITIVES, WS-PICKERS | Not started |
-| R-27 | Fill over lines, plus a polish review | WS-TOKENS, WS-PRIMITIVES, all | Not started |
-| R-28 | Fast sidebar reordering (listing path) | WS-PERF | Not started |
+| R-25 | Tools popover switcher at the bottom | WS-PICKERS | Implemented; vision check pending |
+| R-26 | Effort slider | WS-PRIMITIVES, WS-PICKERS | Implemented; vision check pending |
+| R-27 | Fill over lines, plus a polish review | WS-TOKENS, WS-PRIMITIVES, all | In progress: tokens, primitives and 7 of 18 surface sweeps done |
+| R-28 | Fast sidebar reordering (listing path) | WS-PERF | Implemented: 2,000 chats reorder in about 0.2 s (was 3.1 s); vision check pending |
 
 ## Log
 
@@ -147,8 +147,17 @@ spec's tables are authoritative where this summary is shorter.
   R-27 (subtle solid fills instead of outlines, plus a polish review). Spec principle 8 now reads
   "fills come before lines", and spec section 9 holds the rulings. The vision loop was stopped so
   that reviewers and fixers aim at the new rule; it resumes after the fill sweep.
+- Round 1 fixes landed for every owner. Owner message 13 first changes landed: the Tools switcher
+  at the bottom (R-25), the Slider primitive and the Effort slider (R-26), the fill tokens and the
+  filled shared controls (R-27). The sidebar listing is fast (R-28): a 50 row page 118 to 10 ms, a
+  complete reordered list of 2,000 chats 3.1 s to about 0.2 s.
+- The R-27 surface sweep finished for six workstreams; WS-TOOLS' sweep was committed unreviewed when
+  the run stopped. The coordinator stopped work here to save tokens and wrote
+  [handoff.md](handoff.md) with the remaining steps: eleven surface sweeps, pending requests, a
+  full gate, vision rounds 2 to 4, CLAUDE.md updates and the pull request.
 
 ## Related documentation
 
+- [Handoff](handoff.md): what is left and how to resume.
 - [Requirements and plan](requirements-and-plan.md): what is being built and why.
 - [Design folder index](../README.md): the other design records this work sits beside.

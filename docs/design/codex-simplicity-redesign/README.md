@@ -10,6 +10,7 @@ redesigned. Come here to see what was asked, how the work is split, and where it
 |----------|----------------|
 | [Requirements and plan](requirements-and-plan.md) | The owner's requirements as items R-01 to R-24, the owner decisions, the constraints, the phases and the workstreams. Current. |
 | [Implementation spec](implementation-spec.md) | Principles, tokens, control specs, one section per workstream with file ownership and acceptance checks, sequencing, verification and the owner decisions. Current. |
+| [Handoff](handoff.md) | Where the work stands, what is left in order, how to resume, and the traps the first run hit. Current. |
 | [Progress](progress.md) | The live status of every phase and requirement, and a dated log. Current; updated as work lands. |
 
 ## Related documentation
