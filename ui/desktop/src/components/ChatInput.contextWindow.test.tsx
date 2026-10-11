@@ -195,3 +195,71 @@ describe('ChatInput context window across overlapping lookups', () => {
     await waitFor(() => expect(ring()).toHaveAccessibleName(/of 200k$/));
   });
 });
+
+/** The composer of a chat that is opening: loading, then loaded with or without a pin. */
+function opening(chatState: ChatState, effectiveModel?: PinnedModelView) {
+  return (
+    <ChatInput
+      sessionId="session-1"
+      handleSubmit={vi.fn()}
+      chatState={chatState}
+      onStop={vi.fn()}
+      initialValue=""
+      setView={vi.fn()}
+      totalTokens={50_000}
+      accumulatedInputTokens={0}
+      accumulatedOutputTokens={0}
+      droppedFiles={[]}
+      onFilesProcessed={vi.fn()}
+      messagesLength={2}
+      toolCount={0}
+      effectiveModel={effectiveModel}
+    />
+  );
+}
+
+/** Lets a lookup whose promises are already resolved run to its settle. */
+async function flushLookups() {
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, 0));
+  });
+}
+
+// V2-R4-1, round 5. Until a chat's row lands (a tab restored after a reload, a
+// hash or History open), the composer has no binding and looks up the window of
+// the model for NEW chats; that lookup is loaded, for the wrong model. Measured:
+// a 200k chat read "0 of 1.1M", swept to "64.6k of 1.1M", then "of 200k".
+describe('ChatInput context window while a chat opens (V2-R4-1, round 5)', () => {
+  it('draws no ring while the chat loads, nor until its own model’s window lands', async () => {
+    mocks.getProviders.mockResolvedValueOnce(PROVIDERS);
+    const view = render(opening(ChatState.LoadingConversation));
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledTimes(1));
+    await flushLookups();
+    // The app's model's window has loaded, but the chat's binding is not known.
+    expect(ring()).toBeNull();
+
+    // The row lands, pinned to another model; its window is still being read.
+    const pinned = deferred();
+    mocks.getProviders.mockReturnValueOnce(pinned.promise);
+    view.rerender(opening(ChatState.Idle, PINNED));
+    expect(ring()).toBeNull();
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledTimes(2));
+    expect(ring()).toBeNull();
+
+    await act(async () => pinned.resolve(PROVIDERS));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(/of 200k$/));
+  });
+
+  it('draws the selection’s window as soon as a chat with no pin has loaded', async () => {
+    mocks.getProviders.mockResolvedValueOnce(PROVIDERS);
+    const view = render(opening(ChatState.LoadingConversation));
+    await waitFor(() => expect(mocks.getProviders).toHaveBeenCalledTimes(1));
+    await flushLookups();
+    expect(ring()).toBeNull();
+
+    view.rerender(opening(ChatState.Idle));
+    expect(ring()).toHaveAccessibleName(/of 1M$/);
+    // The lookup made while the chat loaded was for this same model: no second one.
+    expect(mocks.getProviders).toHaveBeenCalledTimes(1);
+  });
+});

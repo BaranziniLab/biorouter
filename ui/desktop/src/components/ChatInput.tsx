@@ -11,6 +11,7 @@ import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { ToolsChip } from './bottom_menu/ToolsChip';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
+import { contextWindowModelKey } from './ContextWindowIndicator';
 import { draftReasoningScope, sessionReasoningScope } from '../store/reasoningEffort';
 import { InfoTip } from './ui/info-tip';
 import { Spinner } from './ui/spinner';
@@ -481,6 +482,13 @@ export default function ChatInput({
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   // Counts window lookups so only the newest one may settle (see loadProviderDetails).
   const tokenLimitRequestRef = useRef(0);
+  // The model the footer ring must measure for now: this chat's binding, else the
+  // app's selection. `tokenLimitModel` is the model the window in `tokenLimit`
+  // was looked up for. The ring draws a window only when the two agree, and
+  // nothing while the chat loads (V2-R4-1, round 5): until the row lands there is
+  // no binding, and the lookup meanwhile measures the model for new chats.
+  const contextModel = contextWindowModelKey(effectiveModel, currentProvider, currentModel);
+  const [tokenLimitModel, setTokenLimitModel] = useState<string | null>(null);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
@@ -1358,10 +1366,13 @@ export default function ChatInput({
     // no longer bound to, and the footer ring draws whatever window is marked
     // loaded.
     const request = ++tokenLimitRequestRef.current;
+    // The model this lookup answers for, from the render that started it.
+    const forModel = contextModel;
     const settle = (limit: number, loaded: boolean) => {
       if (request !== tokenLimitRequestRef.current) return;
       setTokenLimit(limit);
       setIsTokenLimitLoaded(loaded);
+      setTokenLimitModel(forModel);
     };
     try {
       // Reset token limit loaded state
@@ -2942,6 +2953,8 @@ export default function ChatInput({
         totalTokens={totalTokens}
         tokenLimit={tokenLimit}
         isTokenLimitLoaded={isTokenLimitLoaded}
+        boundModel={chatState === ChatState.LoadingConversation ? null : contextModel}
+        tokenLimitModel={tokenLimitModel}
         onCompact={compactNow}
         inputTokens={accumulatedInputTokens}
         outputTokens={accumulatedOutputTokens}
