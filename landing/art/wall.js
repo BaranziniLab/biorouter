@@ -36,8 +36,9 @@
   var Q_LINES = 4;    // and one that still needs more than this steps aside
   var T_LINES = 2;    // a tool row that needs more lines than this steps aside
   // The bar inside each composer card gives up its parts in this order when a
-  // narrow chat cannot hold them: the two chevrons, the Tools chip, the model's
-  // name (its padlock stays), then the + button.
+  // narrow chat cannot hold them: the two chevrons, the Tools chip, the +
+  // button (the model's name then ellipsizes as the app's chip does), and only
+  // last the name itself (its padlock stays).
   var BAR_STEPS = 4;
 
   var PATHS = {
@@ -120,7 +121,7 @@
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
           '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.', 0, 'Statins and cognition?') + '</p>' +
-          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + icon('right', 'wall-tchev') + '</span></span></p>' +
+          '<p class="wall-tool wall-m-tool">' + icon('puzzle') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran LiteratureAgent', 'Ran LiteratureAgent · PubMed search') + icon('right', 'wall-tchev') + '</span></span></p>' +
           '<p class="wall-bot wall-m-bot">23 trials since 2020.</p>' +
         '</div>' +
         '<div class="wall-evt">' +

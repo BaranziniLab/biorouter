@@ -142,13 +142,20 @@
   display: grid; place-items: center;
   background: var(--paper); color: var(--muted);
 }
-/* Steps wall.js takes, in order, until the row fits. */
+/* The model's name is the chip's whole point, so it is never hidden while it
+   can show part of itself: the app truncates it inside the chip (max width,
+   ellipsis) rather than leaving a lone padlock. */
+.art-wall .wall-cn { overflow: hidden; text-overflow: ellipsis; }
+/* Steps wall.js takes, in order, until the row fits: the chevrons, the Tools
+   chip, then the + button, after which the chip gives way and its name
+   ellipsizes. Only when not even the first few letters fit does the name go
+   (its padlock stays; a chip with no padlock goes with it). */
 .art-wall .wall-bs1 .wall-dd,
 .art-wall .wall-bs2 .wall-dd, .art-wall .wall-bs2 .wall-tools,
-.art-wall .wall-bs3 .wall-dd, .art-wall .wall-bs3 .wall-tools, .art-wall .wall-bs3 .wall-cn,
-.art-wall .wall-bs4 .wall-dd, .art-wall .wall-bs4 .wall-tools, .art-wall .wall-bs4 .wall-cn, .art-wall .wall-bs4 .wall-plus { display: none; }
-/* A chip with no padlock has nothing left once its name goes. */
-.art-wall .wall-bs3 .wall-chip:not(:has(.wall-chiplock)),
+.art-wall .wall-bs3 .wall-dd, .art-wall .wall-bs3 .wall-tools, .art-wall .wall-bs3 .wall-plus,
+.art-wall .wall-bs4 .wall-dd, .art-wall .wall-bs4 .wall-tools, .art-wall .wall-bs4 .wall-plus, .art-wall .wall-bs4 .wall-cn { display: none; }
+.art-wall .wall-bs3 .wall-chip { flex: 0 1 auto; min-width: 0; }
+.art-wall .wall-bs3 .wall-cn { min-width: 2.5em; }
 .art-wall .wall-bs4 .wall-chip:not(:has(.wall-chiplock)) { display: none; }
 
 /* ── Events: wall.js sets their top, clear of the messages and the composer ── */
