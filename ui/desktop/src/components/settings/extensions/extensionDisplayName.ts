@@ -81,9 +81,11 @@ function builtInNameFor(key: string): string | null {
 /**
  * The display name for an extension, from the most specific source that has one:
  *
- *   1. the entry's own `display_name`, when it is a bundled one that states it;
+ *   1. for a `builtin` entry, the bundled capabilities' catalogue (`computercontroller` is
+ *      `Biorouter Copilot`), and only when the catalogue does not know it, the entry's own
+ *      `display_name`;
  *   2. the platform names (`Chat Recall`, `Workspace Control`), never for an installed entry;
- *   3. the bundled capabilities' catalogue (`computercontroller` is `Biorouter Copilot`);
+ *   3. the bundled capabilities' catalogue again, for a bare key or a platform entry;
  *   4. the marketplace catalogue (`cdwagent` is `CDWAgent`), for anything that is not bundled;
  *   5. the key read as words, only when nothing above knows it.
  *
@@ -103,8 +105,14 @@ export function extensionDisplayName(
   // an installed one (stdio, http, inline) is never a bundled capability, whatever it is called.
   const installed = type !== undefined && !bundled;
 
-  if (type === 'builtin' && entry.display_name) {
-    return formatExtensionName(entry.display_name);
+  if (type === 'builtin') {
+    // The catalogue's name beats a stored one: a chat records the extensions it ran with, display
+    // names included, so one from before a rename still says `Computer Controller` where the
+    // Extensions page, Settings and the pickers say `Biorouter Copilot` (V3-R2-6). A stored name
+    // is kept only for a bundled entry the catalogue does not know, so it keeps its own name.
+    const catalogued = builtInNameFor(entry.name);
+    if (catalogued) return catalogued;
+    if (entry.display_name) return formatExtensionName(entry.display_name);
   }
 
   if (!installed) {
