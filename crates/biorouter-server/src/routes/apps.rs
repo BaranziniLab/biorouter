@@ -731,9 +731,9 @@ impl biorouter_mcp::agent_drafter::export::PayloadAccess for HttpExportPayload {
     }
 
     /// The seeder's own answer, which `export`'s copy of the list is tested
-    /// against: a shipped skill never travels in a zip either.
+    /// against: neither a shipped skill nor its seeded bundle travels in a zip.
     fn is_shipped_skill(&self, name: &str) -> bool {
-        biorouter::agents::skills_extension::is_builtin_skill_name(&name.to_ascii_lowercase())
+        biorouter::agents::skills_extension::is_shipped_entry_name(&name.to_ascii_lowercase())
     }
 }
 
@@ -1266,6 +1266,39 @@ mod export_route_tests {
             );
         }
         assert!(!payload.is_shipped_skill("ggplot-visualization"));
+        assert!(!payload.is_shipped_skill("Knowledge-Bases-Of-Mine"));
+
+        app(&stores, "shipped-skills-demo", PAGE);
+        let names: Vec<String> = biorouter_mcp::agent_drafter::render::SHIPPED_SKILL_NAMES
+            .iter()
+            .flat_map(|name| [name.to_string(), name.to_ascii_uppercase()])
+            .collect();
+        let response = post(
+            &stores,
+            "shipped-skills-demo",
+            serde_json::json!({
+                "mode": "full",
+                "include": { "knowledge_bases": [], "skills": names, "extensions": [] },
+            }),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let summary = report(&response);
+        assert_eq!(summary["skills"], serde_json::json!([]));
+        let notes = summary["notes"].as_array().unwrap();
+        for name in names {
+            assert!(
+                notes.iter().any(|note| note
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("skill '{name}' ships with Biorouter"))),
+                "{summary}"
+            );
+        }
+        assert!(entries(&body_bytes(response).await)
+            .iter()
+            .all(|(name, _, _)| !name.contains("/payload/skills/")));
     }
 }
 
