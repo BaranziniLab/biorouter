@@ -177,7 +177,9 @@ describe('MCPUIResourceRenderer', () => {
       text: 'http://127.0.0.1:64005/apps/chart/',
     });
     openExternal.mockResolvedValueOnce({ ok: false, message: 'This app no longer exists.' });
-    fireEvent.click(screen.getByRole('button', { name: /open app agent drafter/i }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open Agent Drafter App in the default browser' })
+    );
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({

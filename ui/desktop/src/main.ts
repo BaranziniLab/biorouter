@@ -121,6 +121,7 @@ import {
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
+import { attachedDaemonKey } from './utils/attachedDaemonKey';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
 import { reportFatalStartupError } from './utils/fatalStartupError';
@@ -1329,8 +1330,8 @@ const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 /**
  * What each window's daemon client was created with: the address it talks to, the secret it
- * sends, the proof of a person that daemon was started with, and the attach result. Opening or
- * exporting an app reads this record, never the settings: a person can save Settings ▸ External
+ * sends, the proof of a person that daemon was started with, and the attach result. Authentication,
+ * opening and exporting an app read this record: a person can save Settings ▸ External
  * Backend under a running window, and the secret and key the settings name then belong to a
  * daemon this window is not attached to (`openAppForWindow`, `apps:export`).
  */
@@ -3264,18 +3265,22 @@ ipcMain.handle('save-settings', (_event, settings) => {
   }
 });
 
-ipcMain.handle('get-secret-key', () => {
-  const settings = loadSettings();
-  return getServerSecret(settings);
+ipcMain.handle('get-secret-key', (event) => {
+  const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
+  return attachedDaemonKey(windowDaemons, windowId, 'secretKey', () =>
+    getServerSecret(loadSettings())
+  );
 });
 
 // Issue #56 DR-16. The renderer IS the user's surface, so it is the one holder
 // of the raw key besides this process. It attaches it to the three tier-raising
 // requests only — never as a default header on every request, which would make
 // the proof as ambient as the daemon secret it is meant to be stronger than.
-ipcMain.handle('get-user-action-key', () => {
-  const settings = loadSettings();
-  return getUserActionKey(settings);
+ipcMain.handle('get-user-action-key', (event) => {
+  const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
+  return attachedDaemonKey(windowDaemons, windowId, 'userActionKey', () =>
+    getUserActionKey(loadSettings())
+  );
 });
 
 ipcMain.handle('get-biorouterd-host-port', async (event) => {
