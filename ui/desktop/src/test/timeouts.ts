@@ -53,18 +53,19 @@ export const TEST_TIMEOUT_MS = 30_000;
  * one with all its assertions passed and a different set of files each time:
  * `Error: Hook timed out in 30000ms` at `afterAll`. Alone, the same files
  * finish in 2 to 18 s. The failure was the budget, not a test, so the budget is
- * what moved. 120 s matches the explicit `beforeAll` timeout
- * `artifactCdnAssets.browser.test.ts` already gave its launch.
+ * what moved. 120 s was tried first and was overrun once in the next three
+ * full runs (`tabFocusRing.browser.test.ts`, whose three tests took 1.3 s and
+ * whose close took over 120 s, at a load average of 560), so it is 300 s.
  *
  * Raising it costs nothing on a green run (it bounds failures only). What it
- * does cost is that a hook that really hangs is now reported after 120 s, not
+ * does cost is that a hook that really hangs is now reported after 300 s, not
  * 30. A test body keeps `TEST_TIMEOUT_MS`.
  *
  * `src/test/hookTimeout.test.ts` pins this number into every command that runs
  * vitest, because a `--hookTimeout=` flag on the command line beats the config
  * and CI carried one at 30000 until this change.
  */
-export const HOOK_TIMEOUT_MS = 120_000;
+export const HOOK_TIMEOUT_MS = 300_000;
 
 /**
  * Single-wait budget. Must stay comfortably under TEST_TIMEOUT_MS so that a

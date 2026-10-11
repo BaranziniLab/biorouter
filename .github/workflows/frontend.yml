@@ -340,7 +340,7 @@ jobs:
       # So the fix is a timeout. Raising a timeout costs nothing on a green
       # run — it bounds failures only. `--testTimeout` is kept here at the same
       # 30000 the config now sets (src/test/timeouts.ts). There is NO
-      # `--hookTimeout` flag: it beats the config, and the config's 120000 is
+      # `--hookTimeout` flag: it beats the config, and the config's 300000 is
       # deliberately larger than a test's, because the ~80 browser files close
       # a Chromium in `afterAll` and that overruns 30000 on a loaded machine.
       #

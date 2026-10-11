@@ -32,11 +32,11 @@ const DESKTOP = join(__dirname, '../..');
 const REPO = join(DESKTOP, '../..');
 
 /**
- * The smallest hook budget that has held. A full run of the whole suite
- * measured at load average 115 to 300 overran 30 s; a lower number than this is
- * a regression to be argued, not a tidy-up.
+ * The smallest hook budget that has held. A full run of the whole suite at load
+ * average 115 to 300 overran 30 s, and one at 560 overran 120 s; a lower number
+ * than this is a regression to be argued, not a tidy-up.
  */
-const FLOOR_MS = 120_000;
+const FLOOR_MS = 300_000;
 
 const MARKER = '@@hook-timeout-guard@@';
 
