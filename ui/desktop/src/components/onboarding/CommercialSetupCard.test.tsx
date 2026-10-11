@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import CommercialSetupCard from './CommercialSetupCard';
+import { commercialCopy } from './copy';
 
 const mockDetectProvider = vi.fn();
 const mockGetDetectableProviders = vi.fn();
@@ -15,11 +16,9 @@ vi.mock('react-router-dom', () => ({
 }));
 
 function typeKeyAndSubmit(value: string) {
-  const input = screen.getByPlaceholderText('Paste your API key here…');
+  const input = screen.getByLabelText(commercialCopy.apiKey);
   fireEvent.change(input, { target: { value } });
-  // The arrow button is the only button in the input row.
-  const buttons = screen.getAllByRole('button');
-  fireEvent.click(buttons[0]);
+  fireEvent.click(screen.getByRole('button', { name: commercialCopy.detect }));
 }
 
 describe('CommercialSetupCard', () => {
@@ -35,11 +34,26 @@ describe('CommercialSetupCard', () => {
     });
   });
 
-  it('renders the supported-provider list fetched from the backend', async () => {
-    render(<CommercialSetupCard onSuccess={vi.fn()} />);
-    await waitFor(() => {
-      expect(screen.getByText(/Paste a key from OpenAI, Anthropic/)).toBeInTheDocument();
-    });
+  it('says what it detects, from the backend list, in the key field’s InfoTip', async () => {
+    render(<CommercialSetupCard onSuccess={vi.fn()} chrome="bare" />);
+    const field = screen.getByLabelText(commercialCopy.apiKey);
+    await waitFor(() =>
+      expect(field).toHaveAccessibleDescription(commercialCopy.help('OpenAI, Anthropic'))
+    );
+    // A labelled field, not a placeholder doing a label's job.
+    expect(field).not.toHaveAttribute('placeholder');
+  });
+
+  // FR-R1-11 / FR-S-11: an empty field's Detect was a disabled coral fill, a second coral button
+  // beside an open agent's "Use".
+  it('keeps Detect secondary until there is a key', () => {
+    render(<CommercialSetupCard onSuccess={vi.fn()} chrome="bare" />);
+    const detect = screen.getByRole('button', { name: commercialCopy.detect });
+    expect(detect).toBeDisabled();
+    expect(detect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(commercialCopy.apiKey), { target: { value: 'sk-x' } });
+    expect(detect).toBeEnabled();
+    expect(detect.className).toContain('bg-background-accent');
   });
 
   it('calls onSuccess with provider, default model, key and extra config on success', async () => {
@@ -149,6 +163,10 @@ describe('CommercialSetupCard', () => {
     typeKeyAndSubmit('unknown-key');
 
     await waitFor(() => expect(screen.getByText('Could not detect provider')).toBeInTheDocument());
+    // The supported list is the note's own detail, not a hand-drawn list under it (FR-S-5).
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('OpenAI, Anthropic'));
+    expect(screen.queryByText(/sufficient credits/)).toBeNull();
+    expect(screen.queryByText(/use the Local tab/)).toBeNull();
   });
 
   it('treats a thrown transport error as a network failure', async () => {

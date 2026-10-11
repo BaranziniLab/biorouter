@@ -101,3 +101,36 @@ export const agentCopy = {
   couldNotCheck: 'Could not check',
   tryAgain: 'Try again',
 } as const;
+
+/** The key detector at the top of Public's API providers (`CommercialSetupCard`). */
+export const commercialCopy = {
+  apiKey: 'API key',
+  help: (supported: string) => `Paste a key from ${supported} and Biorouter detects the provider.`,
+  detect: 'Detect provider',
+  detecting: 'Detecting…',
+  detected: (provider: string) => `Detected ${provider}`,
+  detectedDetail: (model: string, count: number) => `${model} · ${count} models available`,
+  errors: {
+    timeout: {
+      title: 'Detection timed out',
+      detail: 'The provider took too long to respond. Check your connection and try again.',
+    },
+    network: {
+      title: 'Could not reach the provider',
+      detail: 'A network error occurred while validating the key. Check your connection.',
+    },
+    configuration: {
+      title: 'Could not save provider',
+      detail: 'The key was valid, but Biorouter could not save the provider configuration.',
+    },
+    invalidKey: {
+      title: 'Key was rejected',
+      detail:
+        "The key matched a provider but was rejected. Check that it's complete, active and has credit.",
+    },
+    noMatch: (supported: string) => ({
+      title: 'Could not detect provider',
+      detail: `This key didn't match a supported provider (${supported}). Pick yours from the list below.`,
+    }),
+  },
+} as const;

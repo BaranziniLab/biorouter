@@ -792,7 +792,7 @@ describe('ProviderCatalog — modes', () => {
       />
     );
     clickTab('commercial');
-    expect(screen.getByLabelText('Commercial provider API key')).toBeInTheDocument();
+    expect(screen.getByLabelText('API key')).toBeInTheDocument();
     unmount();
 
     render(
@@ -803,7 +803,7 @@ describe('ProviderCatalog — modes', () => {
       />
     );
     clickTab('commercial');
-    expect(screen.queryByLabelText('Commercial provider API key')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
   });
 
   it('opens on the bound provider tab without being told which one that is', async () => {

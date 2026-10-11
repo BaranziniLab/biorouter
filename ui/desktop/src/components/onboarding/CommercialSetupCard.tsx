@@ -3,9 +3,11 @@ import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
-import { AlertTriangle, ArrowRight, Check } from '../icons/app-icons';
+import { AlertTriangle, Check } from '../icons/app-icons';
+import { Field } from '../ui/field';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { Spinner } from '../ui/spinner';
+import { commercialCopy } from './copy';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
@@ -59,35 +61,24 @@ interface DetectionResult {
 // the Rust `auto_detect` module).
 const FALLBACK_PROVIDERS = ['OpenAI', 'Anthropic', 'Google', 'Groq', 'xAI', 'z.ai', 'Xiaomi MiMo'];
 
-// Map a backend failure reason code to actionable copy.
-function messageForReason(reason: string | null | undefined): { title: string; detail: string } {
+// Map a backend failure reason code to actionable copy. The no-match case names what IS
+// supported, in the note's own detail: it used to be a hand-drawn "·" list under the note.
+function messageForReason(
+  reason: string | null | undefined,
+  supportedLabel: string
+): { title: string; detail: string } {
   switch (reason) {
     case 'timeout':
-      return {
-        title: 'Detection timed out',
-        detail: 'The provider took too long to respond. Check your connection and try again.',
-      };
+      return commercialCopy.errors.timeout;
     case 'network':
-      return {
-        title: 'Could not reach the provider',
-        detail: 'A network error occurred while validating the key. Check your connection.',
-      };
+      return commercialCopy.errors.network;
     case 'configuration':
-      return {
-        title: 'Could not save provider',
-        detail: 'The key was valid, but Biorouter could not save the provider configuration.',
-      };
+      return commercialCopy.errors.configuration;
     case 'invalid_key':
-      return {
-        title: 'Key was rejected',
-        detail: "The key matched a provider but was rejected. Check that it's complete and active.",
-      };
+      return commercialCopy.errors.invalidKey;
     case 'no_match':
     default:
-      return {
-        title: 'Could not detect provider',
-        detail: "This key didn't match a supported provider. Pick yours from the full list below.",
-      };
+      return commercialCopy.errors.noMatch(supportedLabel);
   }
 }
 
@@ -174,6 +165,7 @@ export default function CommercialSetupCard({
   const hasInput = apiKey.trim().length > 0;
   const canSubmit = hasInput && !isLoading;
   const supportedLabel = supported.join(', ');
+  const failure = errorReason ? messageForReason(errorReason, supportedLabel) : null;
 
   return (
     <OnboardingCardShell
@@ -182,60 +174,64 @@ export default function CommercialSetupCard({
       category="commercial"
       label="Commercial APIs"
       title="Auto-detect from API key"
-      description={`Paste a key from ${supportedLabel}. We'll detect the provider for you.`}
+      description={commercialCopy.help(supportedLabel)}
     >
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <label htmlFor="commercial-provider-api-key" className="sr-only">
-          Commercial provider API key
-        </label>
-        <Input
+      {/* A labelled field, the Institutional form's recipe: "API key" with what is detected in its
+          InfoTip (FR-S-5). It was an unlabelled 36px box whose placeholder was its only words, and
+          the supported list appeared only after a failure. */}
+      <div className="space-y-3">
+        <Field
           id="commercial-provider-api-key"
-          ref={inputRef}
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="Paste your API key here…"
-          // The same 36px (the control ladder's lg rung) as the button beside it.
-          className="h-control-lg min-w-0"
-          disabled={isLoading}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) testApiKey();
-          }}
-        />
-        <Button onClick={testApiKey} disabled={!canSubmit} aria-label="Detect provider" size="lg">
-          {isLoading ? <Spinner /> : <ArrowRight className="w-4 h-4" />}
-        </Button>
-      </div>
-
-      {isLoading && (
-        <div className="flex items-center gap-2 mt-3 text-supporting text-text-muted">
-          <Spinner size={14} />
-          <span>Detecting provider and validating key…</span>
+          label={commercialCopy.apiKey}
+          info={commercialCopy.help(supportedLabel)}
+        >
+          <Input
+            ref={inputRef}
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            disabled={isLoading}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canSubmit) testApiKey();
+            }}
+          />
+        </Field>
+        {/* Secondary until there is a key to detect: an empty field's disabled coral button was a
+            second coral fill beside an open agent's "Use" (principle 7, FR-R1-11). */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={hasInput ? 'default' : 'secondary'}
+            onClick={testApiKey}
+            disabled={!canSubmit}
+            data-testid="commercial-detect"
+          >
+            {isLoading ? (
+              <>
+                <Spinner size={14} />
+                {commercialCopy.detecting}
+              </>
+            ) : (
+              commercialCopy.detect
+            )}
+          </Button>
         </div>
-      )}
 
-      {result && (
-        <Note tone="success" role="status" icon={Check} className="mt-3">
-          <div className="text-label">Detected {result.provider}</div>
-          <div className="mt-0.5">
-            {result.model} · {result.totalModels} models available
-          </div>
-        </Note>
-      )}
-
-      {errorReason && (
-        <div className="mt-3 space-y-2">
-          <Note tone="danger" role="alert" icon={AlertTriangle}>
-            <div className="text-label">{messageForReason(errorReason).title}</div>
-            <div className="mt-0.5">{messageForReason(errorReason).detail}</div>
+        {result && (
+          <Note tone="success" role="status" icon={Check}>
+            <div className="text-label">{commercialCopy.detected(result.provider)}</div>
+            <div className="mt-0.5">
+              {commercialCopy.detectedDetail(result.model, result.totalModels)}
+            </div>
           </Note>
-          <ul className="text-supporting text-text-muted space-y-1 pl-1">
-            <li>· Supported providers: {supportedLabel}</li>
-            <li>· Verify the key is active and has sufficient credits</li>
-            <li>· For local models, use the Local tab</li>
-          </ul>
-        </div>
-      )}
+        )}
+
+        {failure && (
+          <Note tone="danger" role="alert" icon={AlertTriangle}>
+            <div className="text-label">{failure.title}</div>
+            <div className="mt-0.5">{failure.detail}</div>
+          </Note>
+        )}
+      </div>
     </OnboardingCardShell>
   );
 }
