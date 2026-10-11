@@ -5,6 +5,7 @@ import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
 import { Spinner } from '../../ui/spinner';
+import { knowledgeCopy } from '../copy';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
 import { GraphFacetStrip } from './GraphFacetStrip';
@@ -155,8 +156,8 @@ export function KnowledgeGraphPanel({
               <EmptyState
                 className="m-auto"
                 icon={Sparkles}
-                title="Nothing digested yet"
-                description="Stage a source in the Sources rail and press Digest."
+                title={knowledgeCopy.graph.emptyTitle}
+                description={knowledgeCopy.graph.emptyHint}
               />
             ) : hasNodes && model ? (
               <ForceGraphCanvas

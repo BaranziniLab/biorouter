@@ -306,6 +306,17 @@ describe('LintDrawer — a coding-agent model is a model like any other (#109)',
     expect(screen.getByRole('heading', { name: 'No model is configured' })).toBeInTheDocument();
     expect(mocks.start).not.toHaveBeenCalled();
   });
+
+  it('points at the model picker by name, not by where the Sources column is (V3-R3-6)', () => {
+    mocks.modelAndProvider = { currentProvider: null, currentModel: null };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    // Sources is a tab below the 860px step and a column with no label above it, so "the Sources
+    // rail" is wrong at one width. The picker's own accessible name is the same at both.
+    const hint = screen.getByText(knowledgeCopy.drawers.lintNoModel);
+    expect(hint.textContent).toContain(knowledgeCopy.ingest.modelName.toLowerCase());
+    expect(hint.textContent).not.toMatch(/\b(rail|tab|column|sources)\b/i);
+  });
 });
 
 // V3-R2-1 (from WS-VIEWS-A, WS-VIEWS-A-3): the check starts as the drawer opens, while focus is

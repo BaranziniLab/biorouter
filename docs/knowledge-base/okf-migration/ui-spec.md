@@ -886,7 +886,7 @@ re-exports land in the same commit.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Workspace — no bases at all | `ENTITY_ICONS.knowledge` | No knowledge bases yet | Create one and Biorouter will build and maintain notes, sources and links for you. | `Create knowledge base` (default) · `Import .brkb` (secondary) |
 | 2 | Workspace — bases exist, none primary | `ENTITY_ICONS.knowledge` | No primary knowledge base | Choose which base this chat reads and writes. | `Choose a base` (default) |
-| 3 | Canvas — base primary, zero pages | `Sparkles` | Nothing digested yet | Stage a source in the Sources rail and press Digest. | none |
+| 3 | Canvas — base primary, zero pages | `Sparkles` | Nothing digested yet | Stage a source, then digest it. | none |
 | 4 | Canvas — graph load failed | `AlertCircle` | Could not load the graph | *the error message* | `Try again` (secondary) |
 | 5 | Canvas — filters exclude everything | `Filter` | No pages match these filters | Widen or clear the filters to bring the map back. *(compact)* | `Clear filters` (ghost) |
 | 6 | Staged list — nothing staged | `Inbox` | Nothing staged | Drop files above, paste text, or choose a folder. *(compact)* | none |

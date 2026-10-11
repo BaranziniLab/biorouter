@@ -293,7 +293,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               compact
               icon={AlertCircle}
               title="No model is configured"
-              description="A check reads the base with a model. Choose one in the Sources rail and try again."
+              description={knowledgeCopy.drawers.lintNoModel}
             />
           ) : null}
 

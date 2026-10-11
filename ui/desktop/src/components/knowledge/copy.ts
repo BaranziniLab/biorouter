@@ -128,6 +128,14 @@ export const knowledgeCopy = {
       `Clear filters (showing ${passing} of ${total})`,
     showing: (passing: number, total: number) => `Showing ${passing} of ${total}`,
     familyFilter: (family: string) => `Filter by every ${family} type`,
+    /**
+     * The empty graph's tile (V3-R3-6). The hint names no container, because the container it
+     * would name changes with the pane: below the 860px step Sources is a tab, at the wide step
+     * it is a column that draws no label of its own. It uses the two verbs the controls use
+     * instead ("Drag and drop to stage", "Digest staged sources"), so it is true at both.
+     */
+    emptyTitle: 'Nothing digested yet',
+    emptyHint: 'Stage a source, then digest it.',
   },
 
   /** The change log's kinds, in sentence case (spec 3.12; they were caps). */
@@ -147,6 +155,12 @@ export const knowledgeCopy = {
     lint: 'Check for problems',
     closeChangeLog: 'Close change log',
     closeLint: 'Close check',
+    /**
+     * The check's "no model" tile. The picker it points at is the Sources column's, which is a
+     * tab at the narrow step and carries no label at the wide one, so it is named by its own
+     * accessible name ("Knowledge model") and not by where it sits (V3-R3-6).
+     */
+    lintNoModel: 'A check reads the base with a model. Choose a knowledge model, then try again.',
     /** A change-log entry's primary action (an icon) and the item behind its ⋯. */
     preview: 'Preview',
     restore: 'Restore…',
