@@ -2696,9 +2696,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* @ws WS-PRIMITIVES end: dialog motion */
 
 /* @ws WS-PRIMITIVES begin: dialog box focus */
-/* A dialog opened by a POINTER pick from a menu puts focus on its own box instead of its first
-   button (`useReturnFocusToOpener`, vision round 1 V4-04): after that pick every script focus
-   matches `:focus-visible`, so a Cancel button or a link wore the inset ring after a mouse click.
+/* A dialog opened by the POINTER (a click, a pick from a menu) or raised by the app puts focus on
+   its own box instead of its first button, unless that is a text field (`useReturnFocusToOpener`,
+   V4-04, V4-R5-1; the typed confirmation `DangerousConfirmDialog` does the same itself, V3-R6-2):
+   after such an open a script focus can match `:focus-visible`, so a Cancel button or a link wore
+   the inset ring after a mouse click.
    The box is where a screen reader reads the title and the message; it is not a control, so it
    draws no ring of its own, and the next Tab reaches the first control, which does. Forced colours
    and `prefers-contrast: more` keep the ring through their own `[tabindex]` arm, which comes later
