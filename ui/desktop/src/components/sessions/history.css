@@ -19,6 +19,29 @@
   background: var(--background-canvas);
 }
 
+/* A parent's subagent runs: one block indented to where the parent's title starts, tied to it
+   by a 2px rail drawn as a FILL (the strong step), not a hairline (fills before lines, R-27).
+   The rail sits under the parent's glyph (the row's 12px padding plus half of its 16px slot)
+   and stops 8px short of the block's end, so it reads as a bracket and not as a divider. */
+.br-history-children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin-left: 24px;
+}
+
+.br-history-children::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 8px;
+  left: -5px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--background-fill-strong);
+  pointer-events: none;
+}
+
 .br-history-row {
   display: flex;
   align-items: center;
@@ -93,7 +116,7 @@
 /* "Show subagent runs" is a view toggle in the band: pressed reads as a
    selected ground and default ink, never coral (hover is always neutral). */
 .br-history-toggle[aria-pressed='true'] {
-  background: var(--overlay-selected);
+  background: var(--background-fill-strong);
   color: var(--text-default);
 }
 
@@ -114,6 +137,99 @@
 .br-transcript-action[aria-busy='true'] {
   cursor: progress;
   opacity: 1;
+}
+
+/* The Import chat dialog's drop target: the one plated drop zone Workflows' Import, the .brxt
+   installer, Add skill and Knowledge's Sources draw, on the subtle fill with no resting outline
+   (owner message 13, R-27): a 32px glyph plate over two label lines. The 1px border is kept and
+   transparent, so forced colours draw the edge and no geometry moves between states. Hover steps
+   to the strong fill like every filled control, except while a file is being read (the zone does
+   nothing then). A file held over it firms the edge and the ground (the "this will act" state),
+   an error takes the danger edge. Keyed on `data-state`, not on utilities, because the drag
+   state is load-bearing feedback and a newly written utility can fail to generate. */
+.br-history-dropzone {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-history-dropzone:hover {
+  background-color: var(--background-fill-strong);
+}
+
+.br-history-dropzone[data-state='dragging'] {
+  background-color: var(--background-fill-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.br-history-dropzone[data-state='error'] {
+  box-shadow: inset 0 0 0 1px var(--border-danger);
+}
+
+.br-history-dropzone:disabled {
+  cursor: progress;
+}
+
+.br-history-dropzone:disabled:hover {
+  background-color: var(--background-fill);
+}
+
+/* Keyboard focus is the app's one treatment (D-15): the focus ground and a 2px inset edge. It is
+   restated here because this rule's own background would otherwise outrank the layered one. */
+.br-history-dropzone:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The 32px glyph plate. It sits on the field's fill, one step back (the page ground), so it is a
+   plate without being an outlined box. */
+.br-history-drop-plate {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  transition: color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-history-dropzone[data-state='dragging'] .br-history-drop-plate {
+  color: var(--text-default);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-history-dropzone,
+  .br-history-drop-plate {
+    transition: none;
+  }
+}
+
+/* The Share dialog's link: a mono machine string in a well with one Copy action, the box
+   `CopyField` draws, on `--background-well` with no resting outline (owner message 13, R-27). The
+   1px border is kept and transparent, so forced colours draw the edge; the padding gives the
+   border back to the 4px inset the box had before it, so nothing moves. */
+.br-history-share-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 3px 3px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--background-well);
 }
 
 /* @ws WS-HISTORY end: Chat history list */

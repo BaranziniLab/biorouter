@@ -2,11 +2,12 @@
  * Vision V1-M8, principle 9: Chat history must not paint the cached order and
  * then re-sort it in front of the reader.
  *
- * The cache is only as fresh as the last membership change, and opening a chat
- * in a tab moves its `updated_at` without one. Painting it on open showed one
- * chat under Today, then the first fresh page moved three more in above the
- * rows and changed the row under the pointer. Every open now waits for its
- * first fresh page; the cache is only the fallback when that fetch fails.
+ * The cache is only as fresh as the last membership change, and a turn or a
+ * rename in another tab or window moves a chat's `updated_at` without one
+ * (opening a chat no longer does, R-30). Painting it on open can show one chat
+ * under Today, then the first fresh page moves more in above the rows and
+ * changes the row under the pointer. Every open waits for its first fresh page;
+ * the cache is only the fallback when that fetch fails.
  */
 import { act, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';

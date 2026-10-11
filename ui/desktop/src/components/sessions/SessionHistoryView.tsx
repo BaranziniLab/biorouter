@@ -475,8 +475,9 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           </Button>
         }
       >
-        {/* The link is a machine string: mono, in a well, with one Copy action. */}
-        <div className="flex items-center gap-2 rounded-element bg-background-well py-1 pl-3 pr-1">
+        {/* The link is a machine string: mono, in a well (the fill, no outline; its transparent
+            1px edge is what forced colours draw), with one Copy action. */}
+        <div className="br-history-share-link">
           <code className="min-w-0 flex-1 truncate text-code text-text-default">{shareLink}</code>
           <Tooltip>
             <TooltipTrigger asChild>

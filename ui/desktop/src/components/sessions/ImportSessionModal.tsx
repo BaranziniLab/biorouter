@@ -12,6 +12,7 @@ import {
   IMPORT_NOT_JSON,
   IMPORT_TITLE,
 } from './copy';
+import './history.css';
 
 interface ImportSessionModalProps {
   isOpen: boolean;
@@ -23,7 +24,9 @@ interface ImportSessionModalProps {
  * Import a chat from an exported JSON file. One drop target that is also a
  * button, so the file picker is reachable from the keyboard as well as by
  * dragging a file onto it; the target's own two lines say what to do, so the
- * dialog carries no description paragraph repeating them.
+ * dialog carries no description paragraph repeating them. It is the one plated
+ * drop zone every import surface draws (`history.css`): the subtle fill, no
+ * resting outline, its states keyed on `data-state`.
  */
 export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionModalProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -108,21 +111,16 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          className={[
-            'biorouter-modal-panel biorouter-focus-surface flex w-full select-none flex-col items-center justify-center gap-2 rounded-container py-10 transition-colors duration-[var(--dur-fast)] ease-[var(--ease-out)]',
-            // Status is a wash (`--wash-*`, generated per family), never a hand-mixed alpha.
-            isDragging
-              ? '!border-border-info bg-wash-info'
-              : error
-                ? '!border-border-danger bg-wash-danger'
-                : 'hover:!border-border-strong tint-interactive',
-          ].join(' ')}
+          data-state={isDragging ? 'dragging' : error ? 'error' : undefined}
+          className="br-history-dropzone"
         >
           {isSubmitting ? (
             <span className="text-supporting text-text-muted">{IMPORTING}</span>
           ) : (
             <>
-              <Upload className="h-5 w-5 text-text-muted" aria-hidden="true" />
+              <span aria-hidden="true" className="br-history-drop-plate">
+                <Upload className="h-4 w-4" />
+              </span>
               <span className="text-label text-text-default">{IMPORT_DROP}</span>
               <span className="text-supporting text-text-muted">{IMPORT_BROWSE}</span>
             </>

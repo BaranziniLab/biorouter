@@ -220,7 +220,7 @@ function HistoryLoading() {
               style={{ animationDelay: `${-groupIndex * 180}ms` }}
             />
           </div>
-          <div className="session-grid biorouter-list-shell overflow-hidden">
+          <div className="session-grid biorouter-list-shell br-rows-flat overflow-hidden">
             {Array.from({ length: rowCount }, (_, index) => {
               const currentRow = rowIndex++;
               const delay = -((currentRow * 95) % 1100);
@@ -596,13 +596,15 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const navigate = useNavigate();
   const { diverge } = useDiverge();
   // ⚠ The cached list is NOT painted on open. It is only as fresh as the last
-  // membership change, and opening a chat in a tab moves its `updated_at`
-  // without one, so a cached paint showed yesterday's order and the first fresh
-  // page then re-sorted it in front of the reader: three chats jumped into Today
-  // and the row under the pointer changed (vision V1-M8, principle 9). Every
-  // open waits for its first fresh page and appears at rest. A warm open shows
-  // nothing for `HISTORY_SKELETON_DELAY_MS`, then the skeleton; a cold one shows
-  // the skeleton at once; the cache is the fallback if the fetch fails.
+  // membership change, and a turn or a rename in another tab or window moves a
+  // chat's `updated_at` without one (opening a chat no longer does, R-30), so a
+  // cached paint can show an older order that the first fresh page then
+  // re-sorts in front of the reader. Before R-30, opening chats alone sent
+  // three of them into Today and changed the row under the pointer (vision
+  // V1-M8, principle 9). Every open waits for its first fresh page and appears
+  // at rest. A warm open shows nothing for `HISTORY_SKELETON_DELAY_MS`, then
+  // the skeleton; a cold one shows the skeleton at once; the cache is the
+  // fallback if the fetch fails.
   const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
   const [isLoading, setIsLoading] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
@@ -950,7 +952,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
             {/* Bucket labels are sentence case at 12px, the sidebar's, not caps:
                 caps are for page section labels only. */}
             <h2 className="br-history-bucket text-supporting text-text-subtle">{group.label}</h2>
-            <div className="session-grid biorouter-list-shell">
+            <div className="session-grid biorouter-list-shell br-rows-flat">
               {group.sessions.map((session) => {
                 const children = childrenByParentId.get(session.id);
                 return (
@@ -958,11 +960,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
                     {renderRow(session)}
                     {/* One indented block for all of a parent's children, not
                         one wrapper each: a lone row inside its own wrapper is
-                        `:last-child` and loses its separator. */}
+                        `:last-child` and would otherwise lose its separator.
+                        Its tie to the parent is a 2px fill rail, not a line
+                        (`history.css`). */}
                     {children && (
-                      <div className="ml-6 flex flex-col border-l border-border-subtle pl-2">
-                        {children.map(renderRow)}
-                      </div>
+                      <div className="br-history-children">{children.map(renderRow)}</div>
                     )}
                   </React.Fragment>
                 );

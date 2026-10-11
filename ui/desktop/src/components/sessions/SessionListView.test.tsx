@@ -402,12 +402,12 @@ describe('SessionListView row actions', () => {
         expect.objectContaining({ query: { include_subagents: true } })
       )
     );
-    // Nested, not merely present: the child sits inside the indented wrapper
-    // and carries the badge, so the row reads as belonging to 'Parent'. The
+    // Nested, not merely present: the child sits inside the indented block
+    // (`.br-history-children`) and carries the badge, so the row reads as belonging to 'Parent'. The
     // wait is for the refetch the toggle kicked off; re-querying inside it
     // keeps the assertion reading the tree as it stands on each attempt.
     await waitFor(() => {
-      const childRow = screen.getByText('Subagent task').closest('.ml-6');
+      const childRow = screen.getByText('Subagent task').closest('.br-history-children');
       expect(childRow).not.toBeNull();
       // The badge belongs to the row, not above it: a bare inline span placed
       // before a block-level row inside a flex column renders on its own line.
@@ -458,7 +458,9 @@ describe('SessionListView row actions', () => {
       )
     );
 
-    await waitFor(() => expect(screen.getByText('Subagent task').closest('.ml-6')).not.toBeNull());
+    await waitFor(() =>
+      expect(screen.getByText('Subagent task').closest('.br-history-children')).not.toBeNull()
+    );
     // The child rides in its parent's bucket, so its own date never opens one.
     expect(screen.queryByText(/July 10/)).not.toBeInTheDocument();
   });
