@@ -5,6 +5,7 @@ import { Button } from '../ui/button';
 import { Field } from '../ui/field';
 import { InfoTip } from '../ui/info-tip';
 import { Input } from '../ui/input';
+import { NativeSelect } from './NativeSelect';
 import { Textarea } from '../ui/textarea';
 import { cn } from '../../utils';
 
@@ -38,18 +39,11 @@ export const parameterCopy = {
 const copy = parameterCopy;
 
 /**
- * A native select drawn on the Input skin (`.br-field`: 32px, radius 8, the control edge), so
- * the parameter's two choices sit on the same field skin as every other control in the form.
- * Native rather than the shared react-select, because two fixed four-item lists inside a
- * scrolling dialog need no search and no portal.
- */
-export const NATIVE_SELECT_CLASS =
-  'br-field h-control-md w-full rounded-element border bg-background-default px-2 text-label text-text-default';
-
-/**
- * One workflow parameter: a hairline-framed group whose header names it (`{{key}}`, the machine
- * string in mono), flags it when nothing uses it, and can delete it; the details below edit
- * what the person running the workflow is asked.
+ * One workflow parameter: a filled card whose header names it (`{{key}}`, the machine string in
+ * mono), flags it when nothing uses it, and can delete it; the details below edit what the
+ * person running the workflow is asked. The card is the subtle fill with a transparent edge and
+ * no outline (R-27), and it is a `.br-fill-surface`, so the fields and selects inside it rest
+ * one ground back on the page colour. Header and details are told apart by space.
  */
 const ParameterInput: React.FC<ParameterInputProps> = ({
   parameter,
@@ -64,11 +58,11 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
   const idBase = `parameter-${key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
   return (
-    <div className="parameter-input overflow-hidden rounded-element border border-border-subtle">
+    <div className="parameter-input br-fill-surface overflow-hidden rounded-element border border-transparent bg-background-fill">
       <div
         className={cn(
           'flex min-h-10 items-center justify-between gap-2 px-2',
-          onToggleExpanded && 'cursor-pointer hover:bg-overlay-hover'
+          onToggleExpanded && 'cursor-pointer hover:bg-background-fill-strong'
         )}
         onClick={(e) => {
           if (onToggleExpanded && !(e.target as HTMLElement).closest('button')) {
@@ -96,7 +90,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
             </Button>
           )}
 
-          <code className="min-w-0 truncate rounded-inner bg-background-muted px-1.5 font-mono text-code text-text-default">
+          <code className="min-w-0 truncate rounded-inner bg-background-default px-1.5 font-mono text-code text-text-default">
             {'{{'}
             <span>{key}</span>
             {'}}'}
@@ -131,7 +125,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
       </div>
 
       {isExpanded && (
-        <div className="flex flex-col gap-3 border-t border-border-subtle p-3">
+        <div className="flex flex-col gap-3 p-3">
           <Field id={`${idBase}-description`} label={copy.description} info={copy.descriptionInfo}>
             <Input
               type="text"
@@ -143,8 +137,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
 
           <div className="grid grid-cols-2 gap-3">
             <Field id={`${idBase}-type`} label={copy.inputType}>
-              <select
-                className={NATIVE_SELECT_CLASS}
+              <NativeSelect
                 value={parameter.input_type || 'string'}
                 onChange={(e) =>
                   onChange(key, { input_type: e.target.value as Parameter['input_type'] })
@@ -154,12 +147,11 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
                 <option value="select">{copy.types.select}</option>
                 <option value="number">{copy.types.number}</option>
                 <option value="boolean">{copy.types.boolean}</option>
-              </select>
+              </NativeSelect>
             </Field>
 
             <Field id={`${idBase}-requirement`} label={copy.requirement}>
-              <select
-                className={NATIVE_SELECT_CLASS}
+              <NativeSelect
                 value={requirement}
                 onChange={(e) =>
                   onChange(key, { requirement: e.target.value as Parameter['requirement'] })
@@ -167,7 +159,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               >
                 <option value="required">{copy.requirements.required}</option>
                 <option value="optional">{copy.requirements.optional}</option>
-              </select>
+              </NativeSelect>
             </Field>
           </div>
 

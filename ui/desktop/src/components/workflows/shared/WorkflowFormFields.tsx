@@ -601,10 +601,10 @@ export function WorkflowFormFields({
 
                 {field.state.value && field.state.value.trim() && (
                   <pre
-                    className={`max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-element border bg-background-muted p-3 font-mono text-code text-text-default ${
+                    className={`max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-element border bg-background-fill p-3 font-mono text-code text-text-default ${
                       field.state.meta.errors.length > 0
                         ? 'border-border-danger'
-                        : 'border-border-subtle'
+                        : 'border-transparent'
                     }`}
                   >
                     {field.state.value}

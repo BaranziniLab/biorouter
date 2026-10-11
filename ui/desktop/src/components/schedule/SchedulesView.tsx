@@ -485,7 +485,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 )}
 
                 {isLoading && schedules.length === 0 && (
-                  <div className="biorouter-list-shell" aria-hidden>
+                  <div className="biorouter-list-shell br-rows-flat" aria-hidden>
                     <ScheduleRowSkeleton />
                     <ScheduleRowSkeleton />
                     <ScheduleRowSkeleton />
@@ -509,7 +509,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                     skeletons require an empty list, and the empty state
                     requires the load to have finished. */}
                 {schedules.length > 0 && (
-                  <div className="biorouter-list-shell">
+                  <div className="biorouter-list-shell br-rows-flat">
                     {schedules.map((job) => (
                       <ScheduleRow
                         key={job.id}

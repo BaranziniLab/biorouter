@@ -5,7 +5,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { ModalShell } from './ModalShell';
 import { Field } from './ui/field';
 import { Input } from './ui/input';
-import { NATIVE_SELECT_CLASS } from './parameter/ParameterInput';
+import { NativeSelect } from './parameter/NativeSelect';
 
 const copy = {
   title: 'Workflow parameters',
@@ -179,10 +179,9 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
               required={param.requirement === 'required'}
             >
               {param.input_type === 'select' && param.options ? (
-                <select
+                <NativeSelect
                   value={value}
                   onChange={(e) => handleChange(param.key, e.target.value)}
-                  className={NATIVE_SELECT_CLASS}
                 >
                   <option value="">{copy.chooseOption}</option>
                   {param.options.map((option) => (
@@ -190,17 +189,16 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                       {option}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               ) : param.input_type === 'boolean' ? (
-                <select
+                <NativeSelect
                   value={value}
                   onChange={(e) => handleChange(param.key, e.target.value)}
-                  className={NATIVE_SELECT_CLASS}
                 >
                   <option value="">{copy.chooseOption}</option>
                   <option value="true">{copy.yes}</option>
                   <option value="false">{copy.no}</option>
-                </select>
+                </NativeSelect>
               ) : (
                 <Input
                   type={param.input_type === 'number' ? 'number' : 'text'}

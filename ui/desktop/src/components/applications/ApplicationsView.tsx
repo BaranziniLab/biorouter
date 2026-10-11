@@ -213,7 +213,7 @@ export default function ApplicationsView() {
               )}
 
               {loading && apps.length === 0 && (
-                <div className="biorouter-list-shell" aria-hidden>
+                <div className="biorouter-list-shell br-rows-flat" aria-hidden>
                   <ApplicationItemSkeleton />
                   <ApplicationItemSkeleton />
                   <ApplicationItemSkeleton />
@@ -234,7 +234,7 @@ export default function ApplicationsView() {
                   every request. The three branches stay mutually exclusive
                   without it. */}
               {filtered.length > 0 && (
-                <div className="biorouter-list-shell">
+                <div className="biorouter-list-shell br-rows-flat">
                   {filtered.map((app) => (
                     <ApplicationItem
                       key={app.id}

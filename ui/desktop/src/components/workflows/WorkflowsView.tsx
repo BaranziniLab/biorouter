@@ -420,7 +420,7 @@ export default function WorkflowsView() {
   const renderContent = () => {
     if (loading) {
       return (
-        <div className="biorouter-list-shell" aria-hidden>
+        <div className="biorouter-list-shell br-rows-flat" aria-hidden>
           <WorkflowRowSkeleton />
           <WorkflowRowSkeleton />
           <WorkflowRowSkeleton />
@@ -472,7 +472,7 @@ export default function WorkflowsView() {
     }
 
     return (
-      <div className="biorouter-list-shell">
+      <div className="biorouter-list-shell br-rows-flat">
         {filteredWorkflows.map((manifest: WorkflowManifest) => (
           <WorkflowRow
             key={manifest.id}

@@ -41,6 +41,7 @@ import { getSession, Session, type SessionClassification } from '../../api';
 import { useSessionListTiers } from '../privacy/useSessionListTiers';
 import { userActionHeaders } from '../../utils/userAction';
 import { DELETE_SCHEDULE_MESSAGE, scheduleCopy } from './copy';
+import { DefinitionRow, FactRow, ScheduleFacts, ScheduleFactsSkeleton } from './ScheduleFacts';
 import './schedule.css';
 
 const copy = scheduleCopy.detail;
@@ -69,51 +70,6 @@ interface ScheduleSessionMeta {
 interface ScheduleDetailViewProps {
   scheduleId: string | null;
   onNavigateBack: () => void;
-}
-
-/**
- * A fact row: the label on the left, the fact on its trailing edge (astryx §4.5's definition
- * row). Names, never ids (principle 10): a path or a raw cron is one hover away in `tooltip`,
- * never on the row.
- *
- * A fact is not a control, so it is `.br-schedule-fact` (`schedule.css`), not the shared
- * `.biorouter-settings-row`: that recipe paints a hover wash and a focus edge, and the facts do
- * nothing when pressed (V3-14).
- */
-function DefinitionRow({
-  label,
-  children,
-  tone,
-  tooltip,
-}: {
-  label: string;
-  children: React.ReactNode;
-  tone?: 'danger';
-  tooltip?: React.ReactNode;
-}) {
-  const value = (
-    <span
-      className={[
-        'min-w-0 text-body tabular-nums [overflow-wrap:anywhere]',
-        tone === 'danger' ? 'text-text-danger' : 'text-text-default',
-      ].join(' ')}
-    >
-      {children}
-    </span>
-  );
-  return (
-    <div className="br-schedule-fact">
-      <span className="text-body text-text-muted">{label}</span>
-      {tooltip ? (
-        <Tooltip>
-          <TooltipTrigger asChild>{value}</TooltipTrigger>
-          <TooltipContent>{tooltip}</TooltipContent>
-        </Tooltip>
-      ) : (
-        value
-      )}
-    </div>
-  );
 }
 
 /**
@@ -553,25 +509,14 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6 pt-2">
             <ScrollArea className="h-full">
               <div className="pb-6">
-                {isLoadingSchedule && !scheduleDetails && (
-                  <div className="br-schedule-facts" aria-hidden>
-                    <div className="br-schedule-fact">
-                      <Skeleton className="h-4 w-24" />
-                      <Skeleton className="h-4 w-40" />
-                    </div>
-                    <div className="br-schedule-fact">
-                      <Skeleton className="h-4 w-24" />
-                      <Skeleton className="h-4 w-56" />
-                    </div>
-                  </div>
-                )}
+                {isLoadingSchedule && !scheduleDetails && <ScheduleFactsSkeleton />}
                 {scheduleError && (
                   <Note tone="danger" role="alert">
                     {scheduleError}
                   </Note>
                 )}
                 {scheduleDetails && (
-                  <div className="br-schedule-facts">
+                  <ScheduleFacts>
                     <DefinitionRow
                       label={copy.runs}
                       tooltip={<span className="font-mono">{scheduleDetails.cron}</span>}
@@ -613,10 +558,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     {running && (
                       // The 28px button rides a negative hit-box margin so the row keeps the
                       // one 40px rhythm (`.br-schedule-fact`, settings vocabulary V2).
-                      <div className="br-schedule-fact">
-                        <span className="text-body text-text-muted">
-                          {scheduleCopy.status.running}
-                        </span>
+                      <FactRow label={scheduleCopy.status.running}>
                         <Button
                           variant="secondary"
                           size="sm"
@@ -626,9 +568,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                         >
                           {copy.openChat}
                         </Button>
-                      </div>
+                      </FactRow>
                     )}
-                  </div>
+                  </ScheduleFacts>
                 )}
 
                 <div className="biorouter-settings-section">
@@ -636,7 +578,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     <h2 className="text-caps text-text-muted">{copy.recentRuns}</h2>
                   </div>
                   {isLoadingSessions && sessions.length === 0 && (
-                    <div className="biorouter-list-shell" aria-hidden>
+                    <div className="biorouter-list-shell br-rows-flat" aria-hidden>
                       <RunRowSkeleton />
                       <RunRowSkeleton />
                       <RunRowSkeleton />
@@ -656,7 +598,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     />
                   )}
                   {sessions.length > 0 && (
-                    <div className="biorouter-list-shell">
+                    <div className="biorouter-list-shell br-rows-flat">
                       {sessions.map((session) => (
                         <RunRow
                           key={session.id}
