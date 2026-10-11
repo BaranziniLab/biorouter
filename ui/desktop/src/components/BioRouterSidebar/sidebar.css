@@ -149,6 +149,19 @@
   background-color: var(--background-default);
 }
 
+/* The icon is the row's ink (WS-TOKENS-10, vision V1-R2-5): `--sidebar-icon`,
+   the muted label ink, at rest, and the label's own ink when the row is
+   hovered, focused or current, so a lit row never shows two inks. The folder
+   and Chats headers follow the same rule. Before the Update rule below: the
+   two weigh the same (0,3,0), and the Update glyph keeps its accent on hover. */
+.br-nav-row:is(:hover, :focus-visible, [data-active='true'], [aria-current='page'])
+  :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-folder-toggle:is(:hover, :focus-visible) :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-folder[data-menu-open] .br-sidebar-folder-toggle :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-chats-toggle:is(:hover, :focus-visible) > .br-nav-chevron {
+  color: currentColor;
+}
+
 /* The Update row's download glyph is the accent (principle 7). */
 .br-nav-row[data-tone='update'] .br-nav-row-icon {
   color: var(--accent-bar);

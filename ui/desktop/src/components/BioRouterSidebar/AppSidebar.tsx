@@ -313,9 +313,10 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           isActive={isActive}
           className="br-nav-row no-drag"
         >
-          {/* Icons take --sidebar-icon rather than inheriting the label's ink.
-              Every family passes its label ink through (the accent is held for
-              the active rail), and the token stays per family so
+          {/* At rest an icon takes --sidebar-icon, which every family points
+              at its muted label ink (the accent is held for the active rail);
+              hovered, focused or current, the row decides and the icon wears
+              the label's ink (sidebar.css). The token stays per family so
               check-contrast.mjs can assert it on every row fill. */}
           <IconComponent className="br-nav-row-icon" />
           <span className="br-nav-row-label">{entry.label}</span>

@@ -271,6 +271,10 @@ filled control placed in the column is right without a rule of its own.
 - The rename editor rests on the page ground (its row is already the strong fill) and is edged by a
   real 1px `--border-focus` border, not a box-shadow ring, so forced colours keep its outline.
 - The titlebar controls hover on `--background-fill-strong`, the band's step.
+- A nav row is one ink (vision V1-R2-5). Its icon or chevron wears `--sidebar-icon`, which every
+  family points at its muted label ink, at rest, and the label's own ink when the row is hovered,
+  focused or current; the folder and Chats headers do the same. The Update row's download glyph
+  keeps the accent.
 - A menu the pointer opened rings no row (the row's `⋯`, View options and its submenus): the shared
   menu surface says how it is driven (`data-menu-input`, from `ui/inputTrail.ts`), and the D-15 ring
   comes off a row the pointer only crossed. The first key pressed in the menu brings it back on the
@@ -300,7 +304,7 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; the list itself under a real layout: the next page read when the list's box grows, and a rename moving its chat to the top with the pointer resting on the list. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, and a rename moving its chat to the top with the pointer resting on the list. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation

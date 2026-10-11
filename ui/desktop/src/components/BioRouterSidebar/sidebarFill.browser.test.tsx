@@ -634,6 +634,53 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
   });
 
   /**
+   * WS-TOKENS-10 (vision V1-R2-5): a nav row is one ink. Its icon wears `--sidebar-icon`, the
+   * muted label ink, at rest, and the label's own ink once the row is lit; the icon used to stay
+   * muted beside a default-ink label on hover and on the current row.
+   */
+  it('paints a nav row’s icon in its label’s ink, at rest and lit', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      try {
+        const inks = (rowSelector: string) =>
+          tab.evaluate((selector) => {
+            const row = document.querySelector(selector);
+            const ink = (part: string) => {
+              const el = row?.querySelector(part);
+              return el ? getComputedStyle(el).color : `${selector} has no ${part}`;
+            };
+            return {
+              icon: ink('.br-nav-row-icon, .br-nav-chevron'),
+              label: ink('.br-nav-row-label'),
+            };
+          }, rowSelector);
+        const muted = await paint(tab, 'var(--text-muted)');
+        const ink = await paint(tab, 'var(--text-default)');
+        const home = '[data-testid="sidebar-home-button"]';
+
+        await away(tab);
+        await settle(tab);
+        expect(await inks(home), `${mode}: at rest`).toEqual({ icon: muted, label: muted });
+        for (const row of [home, '[data-testid="sidebar-components-disclosure"]']) {
+          await tab.hover(row);
+          await settle(tab);
+          expect(await inks(row), `${mode}: ${row} hovered`).toEqual({ icon: ink, label: ink });
+        }
+        // The current row: the harness's Crew row drawn current (AppSidebar's own markup).
+        await away(tab);
+        await settle(tab);
+        expect(await inks('#crew-current'), `${mode}: current row`).toEqual({
+          icon: ink,
+          label: ink,
+        });
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  /**
    * Vision round 2, the list itself under a real layout and real pointer events (jsdom has
    * neither, so the unit tests stand in a ResizeObserver and fire pointer events by hand).
    */
