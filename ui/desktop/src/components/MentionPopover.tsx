@@ -217,6 +217,32 @@ const uniqueDisplayItems = (displayItems: DisplayItem[]) => {
   });
 };
 
+/** A path that lists as something with entries is a folder (the way a symlinked one reads). */
+const readsAsFolder = async (fullPath: string) => {
+  try {
+    return (await window.electron.listFiles(fullPath)).length > 0;
+  } catch {
+    return false;
+  }
+};
+
+/** A file or a folder found by scanning the chat's working directory. */
+const isFileSystemItem = (item: DisplayItem) =>
+  item.itemType === 'File' || item.itemType === 'Directory';
+
+/**
+ * What a row says under its name. A file or folder says which folder it sits in,
+ * relative to the chat's folder, and nothing at all when it sits directly in it
+ * (names, not paths: principle 10). The full path is the row's tooltip, and it is
+ * still what `extra` holds, because that is what a pick inserts. Any other row
+ * says what it is: a command's help, a skill's description.
+ */
+export const mentionRowDetail = (item: DisplayItem): string | undefined => {
+  if (!isFileSystemItem(item)) return item.extra || undefined;
+  const slash = item.relativePath.lastIndexOf('/');
+  return slash > 0 ? item.relativePath.slice(0, slash) : undefined;
+};
+
 const MAX_FILE_SCAN_RESULTS = 300;
 const MAX_FILE_DISPLAY_RESULTS = 80;
 
@@ -334,6 +360,11 @@ const MentionPopover = forwardRef<
 
         try {
           const items = await window.electron.listFiles(dirPath);
+          // Which of these entries are folders. `listFiles` cannot say: it answers an
+          // empty list for a file and for an empty folder alike, so asking it about
+          // each entry called every file with an unfamiliar extension (a .zip) a
+          // folder. One call here names the folders of this listing (V2-10).
+          const folderNames = new Set(await window.electron.listSkillDirs(dirPath));
           const results: DisplayItem[] = [];
 
           // Common directories to prioritize or skip
@@ -513,37 +544,45 @@ const MentionPopover = forwardRef<
               continue;
             }
 
-            // Otherwise, try to determine if it's a directory
-            try {
-              await window.electron.listFiles(fullPath);
-
+            // Otherwise it is a folder only when this folder's listing says so. A symlink
+            // to a folder is not in that list (the entry is the link), but reading it
+            // answers its entries, so a non-empty answer still counts. Anything else
+            // that is there is a file whose extension is not in the list above.
+            const isFolder = folderNames.has(item) || (await readsAsFolder(fullPath));
+            if (!isFolder) {
               results.push({
-                name: item,
                 extra: fullPath,
-                itemType: 'Directory',
+                name: item,
+                itemType: 'File',
                 relativePath: itemRelativePath,
               });
               limitRef.count += 1;
+              continue;
+            }
 
-              const shouldRecurse =
-                depth === 0 &&
-                (priorityDirs.includes(item) ||
-                  (queryForRecursion.length >= 2 &&
-                    fuzzyMatch(queryForRecursion, itemRelativePath).score >=
-                      Math.max(8, queryForRecursion.length * 4)));
+            results.push({
+              name: item,
+              extra: fullPath,
+              itemType: 'Directory',
+              relativePath: itemRelativePath,
+            });
+            limitRef.count += 1;
 
-              if (shouldRecurse) {
-                const subFiles = await scanDirectoryFromRoot(
-                  fullPath,
-                  itemRelativePath,
-                  depth + 1,
-                  limitRef
-                );
-                results.push(...subFiles);
-              }
-            } catch {
-              // If we can't list it and it doesn't have a known extension, skip it
-              // This could be a file with an unknown extension or a permission issue
+            const shouldRecurse =
+              depth === 0 &&
+              (priorityDirs.includes(item) ||
+                (queryForRecursion.length >= 2 &&
+                  fuzzyMatch(queryForRecursion, itemRelativePath).score >=
+                    Math.max(8, queryForRecursion.length * 4)));
+
+            if (shouldRecurse) {
+              const subFiles = await scanDirectoryFromRoot(
+                fullPath,
+                itemRelativePath,
+                depth + 1,
+                limitRef
+              );
+              results.push(...subFiles);
             }
           }
 
@@ -879,32 +918,36 @@ const MentionPopover = forwardRef<
           </div>
         ) : (
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-            {displayItems.map((item, index) => (
-              <div
-                key={`${item.itemType}-${item.relativePath}-${item.name}`}
-                role="option"
-                aria-selected={index === selectedIndex}
-                data-selected={index === selectedIndex ? '' : undefined}
-                onClick={() => handleItemClick(index)}
-                onMouseEnter={() => onSelectedIndexChange(index)}
-                className={cn(MENU_ROW_CLASS_NAME, 'cursor-pointer')}
-              >
-                <span className="flex-shrink-0 text-text-muted">
-                  <ItemIcon item={item} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate text-secondary text-text-default">{item.name}</span>
-                    {item.builtIn && <BuiltInBadge />}
+            {displayItems.map((item, index) => {
+              const detail = mentionRowDetail(item);
+              return (
+                <div
+                  key={`${item.itemType}-${item.relativePath}-${item.name}`}
+                  role="option"
+                  aria-selected={index === selectedIndex}
+                  data-selected={index === selectedIndex ? '' : undefined}
+                  title={isFileSystemItem(item) ? item.extra : undefined}
+                  onClick={() => handleItemClick(index)}
+                  onMouseEnter={() => onSelectedIndexChange(index)}
+                  className={cn(MENU_ROW_CLASS_NAME, 'cursor-pointer')}
+                >
+                  <span className="flex-shrink-0 text-text-muted">
+                    <ItemIcon item={item} />
                   </span>
-                  {item.extra && (
-                    <span className="block truncate text-supporting text-text-muted">
-                      {item.extra}
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-secondary text-text-default">{item.name}</span>
+                      {item.builtIn && <BuiltInBadge />}
                     </span>
-                  )}
-                </span>
-              </div>
-            ))}
+                    {detail && (
+                      <span className="block truncate text-supporting text-text-muted">
+                        {detail}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
 
             {displayItems.length === 0 && query && (
               <div className="flex min-h-control-md items-center px-3 text-secondary text-text-muted">
