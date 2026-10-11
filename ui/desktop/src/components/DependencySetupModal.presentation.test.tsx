@@ -80,6 +80,21 @@ describe('DependencySetupModal: one coral button (principle 7)', () => {
     expect(coralButtons()).toEqual([]);
   });
 
+  it('ends the footer like every other dialog on this path: Dismiss, then the primary, both 32px', async () => {
+    // FR-R2-2: the coral "Install all" sat before "Dismiss", and both were the 28px `sm` rung
+    // while the Configure and privacy dialogs end Cancel, primary on the 32px default.
+    await show([dep('node'), dep('uv')]);
+    const dismiss = screen.getByRole('button', { name: 'Dismiss' });
+    const all = screen.getByRole('button', { name: 'Install all (2)' });
+    expect(dismiss.parentElement).toBe(all.parentElement);
+    const footerButtons = Array.from(dismiss.parentElement!.querySelectorAll('button'));
+    expect(footerButtons).toEqual([dismiss, all]);
+    for (const button of footerButtons) {
+      expect(button).toHaveClass('h-control-md');
+      expect(button).not.toHaveClass('h-control-sm');
+    }
+  });
+
   it('counts the CLI card with the rows', async () => {
     cliStatus = {
       bundled: '/app/biorouter',

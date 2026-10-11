@@ -223,6 +223,36 @@ describe('the startup dependency prompt in Chromium (FR-S-7)', () => {
     }
   });
 
+  it('ends the footer Dismiss then "Install all" at the trailing edge, both 32px (FR-R2-2)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light', { deps: DEPS });
+    try {
+      const footer = await tab.evaluate(() => {
+        const dialog = document.querySelector('[role="dialog"]')!;
+        const box = dialog.getBoundingClientRect();
+        const pick = (name: string) => {
+          const b = [...dialog.querySelectorAll('button')].find(
+            (el) => (el.textContent ?? '').trim() === name
+          )!;
+          const r = b.getBoundingClientRect();
+          return { left: r.left, right: r.right, height: r.height };
+        };
+        // The panel's inner edge: its 1px hairline is not part of the footer's gutter.
+        const innerRight = box.right - parseFloat(getComputedStyle(dialog).borderRightWidth);
+        return { dialogRight: innerRight, dismiss: pick('Dismiss'), all: pick('Install all (2)') };
+      });
+      // The way out first, the primary last: what Configure, Add provider and the privacy notice do.
+      expect(footer.dismiss.right).toBeLessThan(footer.all.left);
+      // The primary is the footer's last control: only the 16px gutter sits past it.
+      expect(footer.dialogRight - footer.all.right).toBeCloseTo(16, 0);
+      // The dialog footer's 32px rung, not the 28px `sm` (FR-R1-11).
+      expect(footer.dismiss.height).toBe(32);
+      expect(footer.all.height).toBe(32);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('opens by itself with no ring on any control: focus rests on the dialog box', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const scene of [{ deps: DEPS }, { cli: STALE_CLI }] as const) {

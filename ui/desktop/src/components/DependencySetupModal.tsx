@@ -479,15 +479,17 @@ export default function DependencySetupModal() {
           {allDone && (
             <p className="min-w-0 text-supporting text-text-muted">All dependencies installed.</p>
           )}
+          {/* The footer every dialog on this path draws (FR-R2-2): the way out first, the primary
+              at the trailing edge, both on the dialog footer's 32px rung (FR-R1-11). */}
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button variant="secondary" onClick={handleDismiss} disabled={isBusy}>
+              {allDone ? 'Done' : 'Dismiss'}
+            </Button>
             {showInstallAll && (
-              <Button variant="default" size="sm" onClick={handleInstallAll} disabled={isBusy}>
+              <Button variant="default" onClick={handleInstallAll} disabled={isBusy}>
                 Install all ({installableCount})
               </Button>
             )}
-            <Button variant="secondary" size="sm" onClick={handleDismiss} disabled={isBusy}>
-              {allDone ? 'Done' : 'Dismiss'}
-            </Button>
           </div>
         </div>
       }
