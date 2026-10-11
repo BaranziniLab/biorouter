@@ -431,7 +431,7 @@ describe('Home usage card in a real layout engine', () => {
     }
   });
 
-  it('leads the footnote with a 12px ring: ink while a streak runs, muted when none does', async (ctx) => {
+  it('leads the footnote with a 12px ringed heat cell: ink ring while a streak runs, muted when none does', async (ctx) => {
     if (!browser) return ctx.skip();
     for (const mode of ['light', 'dark'] as const) {
       const measured = {} as Record<'running' | 'past', Record<string, unknown>>;
@@ -451,6 +451,9 @@ describe('Home usage card in a real layout engine', () => {
               wordsCentre: words.top + words.height / 2,
               gap: words.left - g.right,
               ring: getComputedStyle(glyph).boxShadow,
+              fill: getComputedStyle(glyph).backgroundColor,
+              heat0: getComputedStyle(document.body).getPropertyValue('--heat-0').trim(),
+              heat3: getComputedStyle(document.body).getPropertyValue('--heat-3').trim(),
               ink: getComputedStyle(document.body).getPropertyValue('--text-default').trim(),
               muted: getComputedStyle(document.body).getPropertyValue('--text-muted').trim(),
               foot: document.getElementById('foot')!.getBoundingClientRect().height,
@@ -485,6 +488,14 @@ describe('Home usage card in a real layout engine', () => {
           .join('');
       expect(hex(ringColour('running'))).toBe(measured.running.ink);
       expect(hex(ringColour('past'))).toBe(measured.past.muted);
+      // Both are FILLED with an active heat step (V1-R3-5): a hollow ringed square beside a
+      // label reads as an unchecked checkbox. The fill is the grid's own step 3, which is not
+      // the empty step 0 and not the ground the footnote sits on.
+      for (const streak of ['running', 'past'] as const) {
+        const fill = hex(measured[streak].fill as string);
+        expect(fill).toBe(measured[streak].heat3);
+        expect(fill).not.toBe(measured[streak].heat0);
+      }
     }
   });
 

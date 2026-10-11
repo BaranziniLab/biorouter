@@ -240,15 +240,18 @@ export function HeatmapLegend() {
 }
 
 /**
- * The 12px ringed square that leads the footnote's streak words. While a streak is
- * running its ring is the cells' own ink (the key to them); with none running there
- * are no ringed cells to point at, so the ring goes muted and means "streak" only.
+ * The 12px ringed cell that leads the footnote's streak words: a heat step with the
+ * streak ring on it, which is what a streak cell looks like (an active day, ringed).
+ * It is FILLED on purpose: a hollow ringed square beside a label reads as an unchecked
+ * checkbox. While a streak is running its ring is the cells' own ink (the key to them);
+ * with none running there are no ringed cells to point at, so the ring goes muted and
+ * means "streak" only.
  */
 export function StreakGlyph({ running = true }: { running?: boolean }) {
   return (
     <i
       aria-hidden="true"
-      className="biorouter-heatmap-swatch bg-heat-0"
+      className={`biorouter-heatmap-swatch ${LEVEL_CLASS[3]}`}
       data-streak={running ? 'true' : 'past'}
     />
   );

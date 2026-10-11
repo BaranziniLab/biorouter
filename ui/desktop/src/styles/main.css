@@ -8339,7 +8339,9 @@ code [class~='token'] {
 }
 
 /* The current streak: an inset ring in ink, on its cells and on the
-   footnote's glyph alike. */
+   footnote's glyph alike. The glyph is a FILLED cell (`StreakGlyph` paints a heat
+   step under the ring): a hollow ringed square beside a label reads as an
+   unchecked checkbox, a ringed heat cell reads as a key to the grid. */
 .biorouter-heatmap-cell[data-streak='true'],
 .biorouter-heatmap-swatch[data-streak='true'] {
   box-shadow: inset 0 0 0 1.5px var(--text-default);

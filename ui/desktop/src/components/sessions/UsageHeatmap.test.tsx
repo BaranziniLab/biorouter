@@ -353,6 +353,19 @@ describe('legend and streak glyph', () => {
     expect(container.firstElementChild).toHaveAttribute('aria-hidden', 'true');
   });
 
+  it('fills the glyph with an active heat step, so it never reads as an empty checkbox', () => {
+    // A hollow ringed square beside a label looks like an unchecked form control
+    // (V1-R3-5). A streak cell is an ACTIVE day with a ring: heat 1 to 4, never the
+    // empty step 0.
+    for (const running of [true, false]) {
+      const { container, unmount } = render(<StreakGlyph running={running} />);
+      const glyph = container.firstElementChild as HTMLElement;
+      expect(glyph.className).toMatch(/\bbg-heat-[1-4]\b/);
+      expect(glyph.className).not.toMatch(/\bbg-heat-0\b/);
+      unmount();
+    }
+  });
+
   it('keeps the ring with no streak running, but in the muted ink, never the cells', () => {
     const { container } = render(<StreakGlyph running={false} />);
     expect(container.firstElementChild).toHaveAttribute('data-streak', 'past');
