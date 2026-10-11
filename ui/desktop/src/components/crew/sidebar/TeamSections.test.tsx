@@ -106,7 +106,7 @@ describe('team sections', () => {
     expect(raw).toHaveAttribute('data-unread', 'true');
     const badge = raw.querySelector('[aria-hidden="true"].tabular-nums') as HTMLElement;
     expect(badge).toHaveTextContent('3');
-    expect(badge.className).toContain('bg-background-fill-strong');
+    expect(badge.className).toContain('br-badge-neutral');
     expect(badge.className).not.toMatch(/accent|danger|warning|success|info/);
     // A read channel is plain.
     expect(channelRow('general')).not.toHaveAttribute('data-unread');

@@ -4150,25 +4150,32 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    the row is washed (pointer, keyboard focus on or in it) its controls rest on the page ground
    and hover on the strong step, as in a filled card, and a neutral track in it steps one in. The
    wash itself is unchanged, so it still adapts to the ground the list sits on. Custom properties
-   only: no row rule here paints anything new. */
+   only: no row rule here paints anything new.
+   A neutral BADGE steps back too (`--br-badge-ground`, read by `.br-badge-neutral`; vision round
+   2, V3-R2-5, WS-KNOWLEDGE-3). It rests on the strong step, and the wash lands 1.10:1 off it in
+   light and 1.08:1 in dark, so Built-in, a base's format, Primary and a change's kind read as bare
+   ink under the pointer. On the page ground it is a hole in the wash, the way the row's button is
+   (1.10:1 light, 1.14:1 dark; `ui/groundsAndRows.browser.test.tsx` paints both). */
 .biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)),
 .biorouter-settings-row:is(:hover, :focus-visible, :has(:focus-visible)) {
   --br-control-ground: var(--background-default);
   --br-control-hover: var(--background-fill-strong);
   --br-track-ground: var(--background-fill-strong);
+  --br-badge-ground: var(--background-default);
 }
 
 /* The privacy pills (`PrivacyBadge`, `AffiliationBadge`: `.br-privacy-pill`) rest on
    `--background-muted`, the rest fill's own value, and the wash composites to it, so on a washed
    list row the Public or Private pill lost its box and read as bare text (WS-SKILLS-1, measured
    1.00:1 on the Browse extensions row in light and dark; the Extensions page and the knowledge
-   base manager are the same rows). There it steps to the strong step, where the neutral Badge
-   beside it already rests; both inks are held to 4.5:1 on it by `check-contrast.mjs`. Only here,
-   and only on a list row: Crew draws "🔒 Private · UCSF" as ONE chip whose own box paints the
-   muted token under the pill and the institution, and a pill that changed its fill everywhere
-   would split that chip in two. */
+   base manager are the same rows). There it takes the neutral Badge's ground beside it, the page
+   ground, so one row is one ground (WS-KNOWLEDGE-3); both inks (`--text-default`,
+   `--text-muted`) only gain on the page ground over the muted rest `check-contrast.mjs` holds to
+   4.5:1. Only here, and only on a list row: Crew draws "🔒 Private · UCSF" as ONE chip whose own
+   box paints the muted token under the pill and the institution, and a pill that changed its
+   fill everywhere would split that chip in two. */
 .biorouter-list-row:is(:hover, :focus-visible, :has(:focus-visible)) .br-privacy-pill {
-  background-color: var(--background-fill-strong);
+  background-color: var(--br-badge-ground);
 }
 
 .biorouter-list-row:hover,
@@ -5783,7 +5790,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
    The filled BUTTON (`secondary`, `outline`) takes the same ground from `.br-fill-rest`, and its
    hover and press step from `.br-fill-hover`. A neutral badge is NOT on the control ground: it
-   rests on the strong step so it still reads on a row that washes under the pointer (badge.tsx).
+   rests on the strong step (`.br-badge-neutral`, below), a step off the page and a filled card,
+   and reads its own ground variable, which only a washed row sets (the rows block; badge.tsx).
 
    Layered (`components`), so a caller's own utility still wins (the forms pass
    `border-border-danger` for an invalid field, a toolbar its own `bg-*`); and because `components`
@@ -5806,6 +5814,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   .br-fill-hover:hover,
   .br-fill-hover:active {
     background-color: var(--br-control-hover, var(--background-fill-strong));
+  }
+
+  /* The neutral Badge (badge.tsx): the strong step, unless the ground names another. Only a
+     washed list or settings row does, with the page ground (the rows block, V3-R2-5). Layered
+     with the rest so a caller's own `bg-*` (the privacy pills' muted rest) still wins. */
+  .br-badge-neutral {
+    background-color: var(--br-badge-ground, var(--background-fill-strong));
   }
 
   .br-field:focus,

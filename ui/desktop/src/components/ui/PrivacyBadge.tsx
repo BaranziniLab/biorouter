@@ -147,8 +147,10 @@ const TIER: Record<
  * `--background-muted` is the rest fill's own value, and a list row's hover wash
  * composites to it, so under the pointer the pill lost its box (WS-SKILLS-1,
  * 1.00:1 on the Browse extensions row). `.br-privacy-pill` is the hook main.css's
- * shared rows use to step it to `--background-fill-strong` on a washed list row,
- * where the neutral `Badge` beside it already rests. The resting fill stays
+ * shared rows use to step it to the neutral `Badge`'s ground on a washed list
+ * row, the page ground, so one row is one ground (WS-KNOWLEDGE-3). The resting
+ * fill is this `bg-background-muted`, a utility that out-ranks the neutral
+ * tone's layered `.br-badge-neutral`. The resting fill stays
  * muted on purpose: Crew draws "🔒 Private · UCSF" as ONE chip whose own box
  * paints the same token under the pill and the institution.
  *
