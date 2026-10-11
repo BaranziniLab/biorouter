@@ -122,6 +122,19 @@ the cursor. A keyboard open hands focus on as before. jsdom has no `:focus-visib
 `LeadWorkerSettings.focusRing.browser.test.tsx` drives the real menu with Playwright's mouse and keyboard in
 Chromium and reads `:focus-visible` off the focused node; it fails against the previous `dialogFocus.ts`.
 
+**The shared dialog now makes every pointer open quiet by itself, and this module is still needed** (V4-R5-1).
+`useReturnFocusToOpener` in `ui/dialog.tsx` rests any dialog opened without a key on its box, unless Radix's first
+stop is a text field, so a dialog that does nothing about focus gets the quiet open for free. These two dialogs
+cannot rely on that, for two reasons. Their first control does not exist when the dialog mounts, so there is
+nothing for the shared rule to look at: `restOnDialog` runs first (the shared hook calls the caller's
+`onOpenAutoFocus` and stands down when it cancels the event), keeps the box as the resting place, and records the
+modality for `useHandFocusOnReady`, which decides the hand-off once the body arrives. And a keyboard open must
+still land on the first control after the late load, which only the hand-off does. The two rules agree about a
+pointer open (the box, unless a text field) because one was written after the other; the shared dialog does not
+hand focus on, so deleting `dialogFocus.ts` would leave a late-loading form with no first stop at all.
+`dialogFocus.ts` keeps its own small text-entry test for the hand-off: both callers' selectors name a switch or a
+plain input, never the shared `Select`'s typing input that the shared rule excludes.
+
 ## The Llama Server card's model picker is the shared select
 
 `LlamaServerInlineCard` (the first row of the Local tab, open by default in onboarding, and the expanded row in
