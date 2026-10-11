@@ -359,8 +359,8 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
 // `same-origin` (`routes::web_ui`), so whoever opens either gets a closed
 // handle (measured in Chrome 155). ⚠ All of that needs a secure context: at a
 // plain-HTTP network address a browser sends no Fetch Metadata and ignores
-// opener policies, so no app surface is served on a browser credential there
-// at all (`reached_over_a_secure_context`). ⚠ An engine that does not know
+// opener policies, so neither the shell nor app surfaces are served on a
+// browser credential there (`reached_over_a_secure_context`). ⚠ An engine that does not know
 // `noopener-allow-popups` treats it as `unsafe-none` and keeps the handle; and
 // origin storage (`localStorage`) is shared by every app. Serving each app on
 // its own origin is the follow-up that closes both; see
@@ -624,8 +624,8 @@ fn app_access_granted_by(
 
 /// Whether the address a request was sent to is one a browser treats as a
 /// secure context: a loopback address, `localhost` or a name under
-/// `.localhost`, or anything a TLS proxy in front forwarded as `https`
-/// (`routes::request_scheme`). A request with no `Host` (nor authority) was not
+/// `.localhost`, or HTTPS forwarded by a TLS proxy with Fetch Metadata from
+/// the browser (`routes::request_scheme`). A request with no `Host` (nor authority) was not
 /// sent by a browser, and counts as one.
 ///
 /// It is what decides whether [`is_document_navigation`] and the opener
@@ -638,17 +638,14 @@ fn app_access_granted_by(
 /// arrived with no `Sec-Fetch-*` at all, where on 127.0.0.1 the same script was
 /// told apart and severed.
 ///
-/// ⚠ `X-Forwarded-Proto` can be set by a page's `fetch`, unlike on a WebSocket
-/// handshake. That opens nothing: it matters only to script already running on
-/// such an address, and no app's page is served there to run it
-/// (`check_token`).
+/// `X-Forwarded-Proto` alone proves nothing: a page left open from an older
+/// daemon can set it on an HTTP LAN fetch. Such a browser sends no Fetch
+/// Metadata and cannot forge those headers, so forwarded HTTPS also requires
+/// both metadata headers. Secret-header callers do not depend on this gate.
 pub fn reached_over_a_secure_context(
     headers: &axum::http::HeaderMap,
     uri: &axum::http::Uri,
 ) -> bool {
-    if crate::routes::request_scheme(headers) == "https" {
-        return true;
-    }
     let host = match headers.get(axum::http::header::HOST) {
         Some(value) => match value.to_str() {
             Ok(host) => host,
@@ -661,6 +658,13 @@ pub fn reached_over_a_secure_context(
         },
     };
     host_is_loopback(host)
+        || (crate::routes::request_scheme(headers) == "https"
+            && ["sec-fetch-mode", "sec-fetch-dest"].iter().all(|name| {
+                headers
+                    .get(*name)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| !value.trim().is_empty())
+            }))
 }
 
 /// Whether a `Host` value names this machine the way a browser counts as
@@ -746,11 +750,13 @@ const APP_NEEDS_A_SECURE_ADDRESS_HTML: &str =
     "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
      <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
      <h1 style=\"font-size:1.2rem\">Apps open only on this machine or over HTTPS</h1>\
-     <p>This Biorouter is being reached at a plain-HTTP network address. There, a browser \
+     <p>This address does not provide the secure browser request information Biorouter needs. \
+     At a plain-HTTP network address a browser \
      cannot keep one app's page from reading another's, or the Biorouter page itself, so \
      apps are not opened at such an address.</p>\
      <p>Reach Biorouter through an SSH tunnel and open it as <code>localhost</code>, or put \
-     an HTTPS proxy in front of it. Chats and everything else keep working here.</p>";
+     an HTTPS proxy in front of it. Use a current browser, and preserve \
+     <code>Sec-Fetch-*</code> headers through the proxy. The browser interface requires the same protection.</p>";
 
 const APP_ACCESS_REFUSED_HTML: &str =
     "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
@@ -835,8 +841,8 @@ pub async fn check_token(
     // sends no Fetch Metadata and ignores the opener policy, so A's `fetch` of
     // B, or of a serve shell holding the daemon secret, is served as if the
     // person had opened it. No app surface is served on a browser credential at
-    // such an address ([`reached_over_a_secure_context`]): with no app's script
-    // running on that origin, nothing there is left to read the shell.
+    // such an address ([`reached_over_a_secure_context`]). The shell enforces
+    // the same rule, because an old app tab can remain open during an update.
     let app = is_app_browser_get(request.method(), path);
     let mut not_a_navigation = false;
     let mut insecure_address = false;
@@ -1933,6 +1939,25 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(redeem_app_launch("present-app", &launch).is_some());
 
+        // An HTTP LAN page already open during an update can forge this proxy
+        // header on a fetch, but cannot make the browser emit Fetch Metadata.
+        for uri in surfaces {
+            let (status, body) = app_request(
+                &app,
+                peer,
+                Method::GET,
+                uri,
+                &[
+                    ("cookie", cookie.as_str()),
+                    ("host", "192.168.1.5:8765"),
+                    ("x-forwarded-proto", "https"),
+                ],
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "forged HTTPS: {uri}");
+            assert!(!body.contains("reached the app route"));
+        }
+
         // Loopback in every spelling a browser counts as secure, and anything a
         // TLS proxy forwarded as https.
         for headers in [
@@ -1945,6 +1970,8 @@ mod tests {
             vec![
                 ("host", "biorouter.example.org"),
                 ("x-forwarded-proto", "https"),
+                ("sec-fetch-mode", "navigate"),
+                ("sec-fetch-dest", "document"),
             ],
             // No `Host` at all is not a browser.
             vec![],

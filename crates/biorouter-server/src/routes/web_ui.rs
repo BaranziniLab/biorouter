@@ -81,9 +81,10 @@
 //! ⚠ Both need a secure context. At a plain-HTTP network address (`serve
 //! --host 0.0.0.0` opened at its LAN address) a browser sends no Fetch Metadata
 //! and ignores the opener policy, so an app's `fetch('/')` would be served the
-//! shell. What holds there is that no app is served at all on a browser
-//! credential (`auth::reached_over_a_secure_context`): no app's script runs on
-//! that origin to make the request.
+//! shell. Both shell and app documents are therefore refused at such an
+//! address (`auth::reached_over_a_secure_context`), including the token exchange.
+//! An old app tab can remain open during an update, so refusing new app pages
+//! alone would not protect the shell from code already running there.
 //!
 //! # Why there is no brute-force throttle here
 //!
@@ -264,9 +265,12 @@ async fn index(
     // and script cannot forge it; a client that sends none is not a browser
     // running anyone's script and is answered as before. See `SHELL_CSP` for
     // the other half, and `docs/deployment/serve-decisions.md` SD-14.
-    // ⚠ A browser sends none at a plain-HTTP network address either, so there
-    // every request is served; what keeps app script off that origin is
-    // `auth::check_token` refusing apps at such an address.
+    // An old app tab can remain open across an update. Refusing new app pages
+    // alone therefore cannot keep the secret out of an HTTP LAN fetch.
+    if !biorouter_server::auth::reached_over_a_secure_context(&headers, &axum::http::Uri::default())
+    {
+        return insecure_address();
+    }
     if !biorouter_server::auth::is_document_navigation(&headers) {
         return not_a_navigation();
     }
@@ -313,6 +317,18 @@ async fn index(
 /// other. The interface still opens an app in a new tab: the tab is opened
 /// blank, sent to the app, and cut off from the shell (`openAppInThisBrowser`).
 const SHELL_CSP: &str = "frame-ancestors 'none'";
+
+fn insecure_address() -> Response<Body> {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        "Open Biorouter through localhost or HTTPS. Use an SSH tunnel or a TLS proxy and a current browser that sends Fetch Metadata.",
+    )
+        .into_response()
+}
 
 /// The answer to a request for the shell that is not a document navigation: a
 /// `fetch`, an `<iframe>`, an `<object>`, a `<script src>`. Carries nothing.
@@ -632,6 +648,66 @@ mod tests {
             headers.insert("sec-fetch-dest", dest.parse().unwrap());
         }
         headers
+    }
+
+    #[tokio::test]
+    async fn lan_requests_cannot_read_the_shell_or_spoof_a_tls_proxy() {
+        let ui = WebUi {
+            index_html: inject_runtime_config(
+                "<html><head></head><body></body></html>",
+                "lan-secret",
+            ),
+            browser_token: Some("tok".into()),
+        };
+        for forwarded in [None, Some("https")] {
+            for token in [None, Some("tok")] {
+                let mut headers = cookie_request(None, None);
+                headers.insert(header::HOST, "192.168.1.5:8765".parse().unwrap());
+                if let Some(proto) = forwarded {
+                    headers.insert("x-forwarded-proto", proto.parse().unwrap());
+                }
+                let res = index(
+                    State(ui.clone()),
+                    headers,
+                    Query(IndexQuery {
+                        t: token.map(str::to_owned),
+                    }),
+                )
+                .await;
+                assert_eq!(res.status(), StatusCode::FORBIDDEN);
+                assert!(res.headers().get(header::SET_COOKIE).is_none());
+                assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+                let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+                    .await
+                    .unwrap();
+                let body = String::from_utf8_lossy(&body);
+                assert!(body.contains("SSH tunnel"));
+                assert!(!body.contains("lan-secret"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn modern_tls_proxy_navigations_can_open_the_shell_and_exchange_tokens() {
+        let ui = ui_with(Some("tok"));
+        for token in [None, Some("tok")] {
+            let mut headers = cookie_request(Some("navigate"), Some("document"));
+            headers.insert(header::HOST, "biorouter.example.org".parse().unwrap());
+            headers.insert("x-forwarded-proto", "https".parse().unwrap());
+            let res = index(
+                State(ui.clone()),
+                headers,
+                Query(IndexQuery {
+                    t: token.map(str::to_owned),
+                }),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers().get(header::SET_COOKIE).is_some(),
+                token.is_some()
+            );
+        }
     }
 
     /// The shell carries the daemon secret and shares its origin with every

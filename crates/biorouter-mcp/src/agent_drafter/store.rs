@@ -531,6 +531,9 @@ impl ArtifactStore {
     fn dir(&self, id: &str) -> io::Result<PathBuf> {
         validate_artifact_id(id)?;
         let dir = self.root.join(id);
+        if std::fs::symlink_metadata(&dir).is_ok() && !self.has_entry_named_exactly(id) {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no such app"));
+        }
         reject_store_symlinks(&self.root, &dir)?;
         Ok(dir)
     }
@@ -1607,6 +1610,10 @@ mod tests {
         .unwrap();
 
         assert!(!s.has_entry("CaseFold-App"));
+        assert!(!s.exists("CaseFold-App"));
+        s.write_file("casefold-app", "index.html", "casefold marker")
+            .unwrap();
+        assert!(s.read_bytes("CaseFold-App", "index.html").is_err());
         s.delete("CaseFold-App").unwrap();
         assert!(
             s.load_manifest("casefold-app").is_ok(),

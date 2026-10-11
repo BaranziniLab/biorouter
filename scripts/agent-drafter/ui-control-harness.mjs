@@ -1502,6 +1502,16 @@ async function runSelftest() {
   const zRows = () =>
     Array.from(winZ.document.querySelectorAll("#tl .br-run-step")).map((r) => r.textContent || "");
 
+  const injectedTool = '<img id="injected-tool" src=x onerror="alert(1)">';
+  send({ type: "tool", name: injectedTool, status: "running" });
+  await waitFor(() => winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedTool));
+  check(
+    "tool names render as text without injecting markup",
+    !winZ.document.querySelector("#injected-tool") &&
+      winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedTool),
+    winZ.document.querySelector("#tl .br-run-answer")?.innerHTML
+  );
+
   // The `approval` frame is the control: it already had a row before this fix,
   // so a failure below is about `approval_refused`, not about the timeline.
   send({ type: "approval", requestId: "req-z1", tool: "developer__shell" });
@@ -1717,6 +1727,23 @@ async function runSelftest() {
     winZ.eval("window.__z") === "partial answer",
     JSON.stringify(winZ.eval("window.__z"))
   );
+
+  const injectedError = '<img id="injected-error" src=x onerror="alert(1)">';
+  winZ.__injectedError = injectedError;
+  winZ.eval(
+    "window.__promptBeforeError = window.Biorouter.prompt;" +
+      "window.Biorouter.prompt = function () { return Promise.reject(new Error(window.__injectedError)); };" +
+      "window.__errorFinished = false;" +
+      "window.Biorouter.run('fail', '#tl', { progress: false }).catch(function () { window.__errorFinished = true; });"
+  );
+  await waitFor(() => winZ.__errorFinished);
+  check(
+    "run errors render as text without injecting markup",
+    !winZ.document.querySelector("#injected-error") &&
+      winZ.document.querySelector("#tl .br-run-answer")?.textContent.includes(injectedError),
+    winZ.document.querySelector("#tl .br-run-answer")?.innerHTML
+  );
+  winZ.eval("window.Biorouter.prompt = window.__promptBeforeError;");
   domZ.window.close();
 
   // ── Scenario Z2: the known-kind list covers the AgentEvent union exactly ────

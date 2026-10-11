@@ -1992,7 +1992,7 @@ export class BioRouterClient {
     };
     const onTool: Listener = (ev) => {
       if (ev.type === "tool" && frameAgent(ev) === want && !buf) {
-        answerEl.innerHTML = `<span class="br-spinner"></span> <span class="br-msg--tool">${ev.name}…</span>`;
+        answerEl.innerHTML = `<span class="br-spinner"></span> <span class="br-msg--tool">${escapeHtml(ev.name)}…</span>`;
       }
     };
     this.on("message", onMsg);
@@ -2004,7 +2004,7 @@ export class BioRouterClient {
       // Hoisted out of the template literal so the no-esbuild fallback stripper
       // (which treats `${…}` as part of the string) can strip the `as` cast.
       const emsg = (e as Error).message || "request failed";
-      answerEl.innerHTML = `<div class="br-msg br-msg--agent">Failed: ${emsg}</div>`;
+      answerEl.innerHTML = `<div class="br-msg br-msg--agent">Failed: ${escapeHtml(emsg)}</div>`;
       throw e;
     } finally {
       this.off("message", onMsg);

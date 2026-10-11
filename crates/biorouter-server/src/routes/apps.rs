@@ -70,7 +70,7 @@ use biorouter::permission::{Permission, PermissionConfirmation};
 // comment.
 use biorouter::session::SessionType;
 use biorouter_mcp::agent_drafter::control::{
-    ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
+    ConnToken, ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
 };
 use biorouter_mcp::agent_drafter::manifest::{PiiMode, SignalDecl, UiCapability};
 use biorouter_mcp::agent_drafter::store::{
@@ -516,7 +516,7 @@ async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> 
     let base_href = format!("/apps/{id}/");
     // Embed this daemon's per-app socket token so the served page can
     // authenticate its agent WebSocket (checked in `agent_ws`).
-    let ws_token = ws_token_for(&id);
+    let ws_token = ws_token_for(&id, manifest.app_uid.as_deref());
     // Fresh for every response: the page's `on…=` handlers are bound by a
     // script to markers carrying it, so markup injected later, which never
     // sees it, is never bound (`render::bind_inline_handlers`).
@@ -1268,8 +1268,8 @@ mod export_route_tests {
 /// DELETE /apps/{id} — delete the app, including one `GET /apps` lists as broken.
 ///
 /// The store tells [`forget_app_runtime`] once the folder is gone, so the app's
-/// socket token, access cookie, launch links, UI bridges and vault key go with
-/// it, and a page of the deleted app left open cannot reconnect to whatever is
+/// socket token, access cookie, launch links and vault key go with it, and a
+/// page of the deleted app left open cannot reconnect to whatever is
 /// built under the same id next.
 async fn delete_app_route(Path(id): Path<String>) -> Response {
     let st = store();
@@ -1306,9 +1306,11 @@ async fn agent_ws(
     // daemon run reconnects with a stale token → 403 and must reload.
     let upgrade = super::UpgradeOrigin::from_headers(&headers);
     let origin = upgrade.origin;
-    // Before the token check; see `forget_app_runtime` for why the order matters.
-    let retired = app_socket_retirement(&id);
-    let expected = served_page_token(&id);
+    // Take both from the same app generation: a concurrent delete retires this
+    // socket even if its upgrade or setup has not finished yet.
+    let access = served_page_access(&id);
+    let retired = app_socket_retirement(access.as_ref());
+    let expected = page_token_or_standin(access.as_ref());
     if let Err(reason) = check_ws_auth(&upgrade, params.get("token").map(String::as_str), &expected)
     {
         tracing::warn!(origin = origin.unwrap_or("<none>"), app = %id, "rejected app agent WebSocket: {reason}");
@@ -1319,6 +1321,9 @@ async fn agent_ws(
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
     };
+    if !access.is_some_and(|access| access.belongs_to(&manifest)) {
+        return app_page_token_refused();
+    }
     // Stable per-client handle for durable, resumable sessions (the SDK persists
     // it in localStorage and passes it as ?client_id=…).
     let client_id = params
@@ -1540,29 +1545,51 @@ fn ui_bridge_for(session_id: &str) -> UiBridge {
 /// serving (sdk_hash drift), so every page this daemon serves carries this
 /// run's token. A page left open from a *previous* daemon run reconnects with a
 /// stale token and gets 403 — it must reload to pick up the current one.
-static APP_WS_TOKENS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+#[derive(Clone)]
+struct AppPageAccess {
+    token: String,
+    app_uid: Option<String>,
+    retired: CancellationToken,
+}
+
+impl AppPageAccess {
+    fn new(app_uid: Option<&str>) -> Self {
+        Self {
+            token: hex::encode(rand::random::<[u8; 16]>()),
+            app_uid: app_uid.map(str::to_owned),
+            retired: CancellationToken::new(),
+        }
+    }
+
+    fn belongs_to(&self, manifest: &Manifest) -> bool {
+        !self.retired.is_cancelled() && self.app_uid == manifest.app_uid
+    }
+}
+
+static APP_WS_TOKENS: LazyLock<Mutex<std::collections::HashMap<String, AppPageAccess>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
-/// The agent-socket token for `app_id`, generating a random 32-hex-char one on
-/// first use and returning the cached value afterwards.
-fn ws_token_for(app_id: &str) -> String {
+/// The agent-socket token for this app instance. A changed manifest uid retires
+/// the previous generation before minting its replacement.
+fn ws_token_for(app_id: &str, app_uid: Option<&str>) -> String {
     let mut map = match APP_WS_TOKENS.lock() {
         Ok(m) => m,
         Err(p) => p.into_inner(),
     };
     map.entry(app_id.to_string())
-        .or_insert_with(|| {
-            // 16 random bytes → 32 hex chars, matching the crate's existing
-            // token convention (see `tunnel::generate_secret`).
-            let bytes: [u8; 16] = rand::random();
-            hex::encode(bytes)
+        .and_modify(|access| {
+            if access.app_uid.as_deref() != app_uid {
+                access.retired.cancel();
+                *access = AppPageAccess::new(app_uid);
+            }
         })
+        .or_insert_with(|| AppPageAccess::new(app_uid))
+        .token
         .clone()
 }
 
-/// The token a page this daemon served for `app_id` holds, or a stand-in no
-/// page holds when it never served one: what the agent socket, run-state and
-/// models routes compare a presented token against.
+/// The access of a page this daemon served, without minting anything. Token
+/// comparisons use a random stand-in when this returns none.
 ///
 /// ⚠ Never [`ws_token_for`] there. That MINTS a token for an id it has not
 /// seen, and these routes are reached before anything checks that the app
@@ -1572,16 +1599,18 @@ fn ws_token_for(app_id: &str) -> String {
 /// a request, kept until the daemon stopped. Only `serve_index`, which has just
 /// loaded the app's manifest, mints. A page from a previous daemon run is
 /// refused either way, as it always was: a fresh token would not match it.
-fn served_page_token(app_id: &str) -> String {
-    static NEVER_SERVED: LazyLock<String> =
-        LazyLock::new(|| hex::encode(rand::random::<[u8; 16]>()));
+fn served_page_access(app_id: &str) -> Option<AppPageAccess> {
     APP_WS_TOKENS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(app_id)
         .cloned()
-        // Compared like a real token, so a miss costs what a mismatch does.
-        .unwrap_or_else(|| NEVER_SERVED.clone())
+}
+
+fn page_token_or_standin(access: Option<&AppPageAccess>) -> String {
+    static NEVER_SERVED: LazyLock<String> =
+        LazyLock::new(|| hex::encode(rand::random::<[u8; 16]>()));
+    access.map_or_else(|| NEVER_SERVED.clone(), |access| access.token.clone())
 }
 
 /// Whether `presented` is `app_id`'s page token: the one [`ws_token_for`] mints,
@@ -1594,7 +1623,14 @@ fn served_page_token(app_id: &str) -> String {
 /// the app's own page holds the token, now that another app's page can no
 /// longer fetch it (the Fetch Metadata gate in `auth::check_token`).
 fn app_page_token_matches(app_id: &str, presented: Option<&str>) -> bool {
-    presented.is_some_and(|token| super::secret_matches(token, &served_page_token(app_id)))
+    let access = served_page_access(app_id);
+    presented
+        .is_some_and(|token| super::secret_matches(token, &page_token_or_standin(access.as_ref())))
+        && access.is_some_and(|access| {
+            store()
+                .load_manifest(app_id)
+                .is_ok_and(|manifest| access.belongs_to(&manifest))
+        })
 }
 
 /// The answer to an app route that needs the page token and did not get it.
@@ -1606,24 +1642,17 @@ fn app_page_token_refused() -> Response {
         .into_response()
 }
 
-/// One token per app that every open agent socket of that app watches, so
-/// deleting the app closes them ([`forget_app_runtime`] cancels it and drops
-/// it; the next socket for the id gets a fresh one).
-static APP_SOCKET_RETIREMENT: LazyLock<
-    Mutex<std::collections::HashMap<String, CancellationToken>>,
-> = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
-
-/// The token an agent socket for `app_id` watches: cancelled when the app is
-/// deleted. Taken by `agent_ws` BEFORE it checks the socket token, so a delete
-/// that lands between that check and the socket starting still reaches it
-/// (once the delete has run, the check itself fails: the token is forgotten).
-fn app_socket_retirement(app_id: &str) -> CancellationToken {
-    APP_SOCKET_RETIREMENT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .entry(app_id.to_string())
-        .or_default()
-        .clone()
+/// Unknown ids never allocate cached runtime state. Their cancelled lifetime
+/// also closes an upgrade if a caller somehow presents the fixed stand-in.
+fn app_socket_retirement(access: Option<&AppPageAccess>) -> CancellationToken {
+    access.map_or_else(
+        || {
+            let retired = CancellationToken::new();
+            retired.cancel();
+            retired
+        },
+        |access| access.retired.clone(),
+    )
 }
 
 /// Forget what this daemon holds for an app that was just deleted: its socket
@@ -1651,20 +1680,12 @@ fn app_socket_retirement(app_id: &str) -> CancellationToken {
 /// durable session, and a new bridge would leave its `ui_*` tools writing into
 /// one no socket reads.
 fn forget_app_runtime(app_id: &str) {
-    APP_WS_TOKENS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(app_id);
-    // ⚠ The token FIRST. `agent_ws` takes its retirement token before its token
-    // check, so a socket that passes the check took it before the line above,
-    // and so holds the one cancelled here. In the other order a socket could
-    // take a fresh retirement token and then pass the check on the old token.
-    if let Some(retired) = APP_SOCKET_RETIREMENT
+    if let Some(access) = APP_WS_TOKENS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(app_id)
     {
-        retired.cancel();
+        access.retired.cancel();
     }
     biorouter_server::auth::forget_app_access(app_id);
     // ⚠ Never from a test binary: `Config::global()` there may read the
@@ -5472,6 +5493,96 @@ mod app_isolation_and_lifecycle_tests {
             .unwrap()
     }
 
+    #[test]
+    fn rejecting_unknown_socket_ids_never_caches_runtime_state() {
+        for n in 0..128 {
+            let id = format!("iso-unserved-socket-{n}");
+            let access = served_page_access(&id);
+            assert!(access.is_none());
+            assert!(app_socket_retirement(access.as_ref()).is_cancelled());
+            assert!(!app_page_token_matches(&id, Some("wrong-token")));
+            assert!(served_page_access(&id).is_none());
+        }
+    }
+
+    #[test]
+    fn a_late_deleted_page_cannot_authenticate_a_replacement_app() {
+        on_app_deleted(forget_app_runtime);
+        let id = "iso-late-deleted-page";
+        let first = create(id, ArtifactKind::Agentic);
+        ws_token_for(id, first.app_uid.as_deref());
+        let first_access = served_page_access(id).unwrap();
+        store().delete(id).unwrap();
+        let replacement = create(id, ArtifactKind::Agentic);
+        assert!(first_access.retired.is_cancelled());
+
+        // A page response can finish after its manifest has been deleted.
+        let late_token = ws_token_for(id, first.app_uid.as_deref());
+        let late_access = served_page_access(id).unwrap();
+        assert!(!late_access.belongs_to(&replacement));
+        assert!(!app_page_token_matches(id, Some(&late_token)));
+
+        let replacement_token = ws_token_for(id, replacement.app_uid.as_deref());
+        assert!(late_access.retired.is_cancelled());
+        assert_ne!(replacement_token, late_token);
+        assert!(app_page_token_matches(id, Some(&replacement_token)));
+        assert!(served_page_access(id).unwrap().belongs_to(&replacement));
+        store().delete(id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_an_app_interrupts_socket_work_outside_the_event_loops() {
+        let retired = CancellationToken::new();
+        let turn = retired.child_token();
+        let bridge = ui_bridge_for("iso-retired-await-bridge");
+        let (mut frames, token) = bridge.attach();
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let attached = bridge.clone();
+        let lifetime = retired.clone();
+        let work = tokio::spawn(async move {
+            run_until_app_retired(&lifetime, async move {
+                let _connection = UiConnection {
+                    bridge: attached,
+                    token,
+                };
+                let _ = started.send(());
+                std::future::pending::<()>().await;
+            })
+            .await;
+        });
+        waiting.await.unwrap();
+        retired.cancel();
+        tokio::time::timeout(Duration::from_secs(2), work)
+            .await
+            .expect("a stalled socket operation must not outlive app deletion")
+            .unwrap();
+        assert!(turn.is_cancelled());
+        assert!(
+            frames.recv().await.is_none(),
+            "the socket bridge was detached"
+        );
+
+        let (mut resumed, resumed_token) = ui_bridge_for("iso-retired-await-bridge").attach();
+        assert!(bridge.emit_frame(json!({"type":"ui","cmd":"notify","message":"resumed"})));
+        assert_eq!(resumed.recv().await.unwrap()["message"], "resumed");
+        bridge.detach(resumed_token);
+    }
+
+    #[tokio::test]
+    async fn retired_socket_cleanup_does_not_detach_a_new_connection() {
+        let bridge = UiBridge::new();
+        let (_old_frames, old_token) = bridge.attach();
+        let old = UiConnection {
+            bridge: bridge.clone(),
+            token: old_token,
+        };
+        let (mut frames, token) = bridge.attach();
+        drop(old);
+        assert!(bridge.emit_frame(json!({"type":"ui","cmd":"notify","message":"fresh"})));
+        assert_eq!(frames.recv().await.unwrap()["message"], "fresh");
+        bridge.detach(token);
+    }
+
     /// Every app shares one origin, so the access cookie alone admitted any
     /// other app's page that fetched these routes. They want the token only the
     /// app's own page holds, and refuse without it before looking at anything,
@@ -5479,9 +5590,9 @@ mod app_isolation_and_lifecycle_tests {
     #[tokio::test]
     async fn run_state_and_models_want_the_page_token() {
         let id = "iso-token-gated";
-        create(id, ArtifactKind::Agentic);
-        let token = ws_token_for(id);
-        let another_apps = ws_token_for("iso-token-gated-other");
+        let manifest = create(id, ArtifactKind::Agentic);
+        let token = ws_token_for(id, manifest.app_uid.as_deref());
+        let another_apps = ws_token_for("iso-token-gated-other", None);
         let state = crate::state::AppState::new().await.unwrap();
 
         for presented in [None, Some("0".repeat(32)), Some(another_apps.clone())] {
@@ -5662,13 +5773,13 @@ mod app_isolation_and_lifecycle_tests {
         on_app_deleted(forget_app_runtime);
         let id = "iso-forgotten";
         let kept = "iso-forgotten-kept";
-        create(id, ArtifactKind::Agentic);
-        create(kept, ArtifactKind::Agentic);
-        let token = ws_token_for(id);
-        let kept_token = ws_token_for(kept);
+        let manifest = create(id, ArtifactKind::Agentic);
+        let kept_manifest = create(kept, ArtifactKind::Agentic);
+        let token = ws_token_for(id, manifest.app_uid.as_deref());
+        let kept_token = ws_token_for(kept, kept_manifest.app_uid.as_deref());
         // What an open socket of each app watches (`agent_ws`).
-        let open_socket = app_socket_retirement(id);
-        let kept_socket = app_socket_retirement(kept);
+        let open_socket = app_socket_retirement(served_page_access(id).as_ref());
+        let kept_socket = app_socket_retirement(served_page_access(kept).as_ref());
         let session = "iso-forgotten-session";
         let bridge = ui_bridge_for(session);
         bridge.seed_state(json!({"kept": true}), 3);
@@ -5683,19 +5794,25 @@ mod app_isolation_and_lifecycle_tests {
         );
         assert!(!kept_socket.is_cancelled(), "another app's socket is not");
         assert!(
-            !app_socket_retirement(id).is_cancelled(),
-            "a socket of whatever is built under the id next starts fresh"
+            app_socket_retirement(served_page_access(id).as_ref()).is_cancelled(),
+            "an id without a served page cannot start a socket"
         );
         assert!(
             !app_page_token_matches(id, Some(&token)),
             "the deleted app's page token opens nothing"
         );
+        let next = create(id, ArtifactKind::Agentic);
         assert_ne!(
-            ws_token_for(id),
+            ws_token_for(id, next.app_uid.as_deref()),
             token,
             "a new token for whatever comes next"
         );
-        assert_eq!(ws_token_for(kept), kept_token, "another app keeps its own");
+        assert!(!app_socket_retirement(served_page_access(id).as_ref()).is_cancelled());
+        assert_eq!(
+            ws_token_for(kept, kept_manifest.app_uid.as_deref()),
+            kept_token,
+            "another app keeps its own"
+        );
         // The session's bridge is the one its cached agent's `ui_*` tools hold,
         // so a later socket for the same session must get that one back.
         assert_eq!(
@@ -5707,6 +5824,7 @@ mod app_isolation_and_lifecycle_tests {
             None,
             "a link minted before the delete opens nothing after it"
         );
+        store().delete(id).unwrap();
         assert_eq!(
             delete_app_route(Path(id.to_string())).await.status(),
             StatusCode::NOT_FOUND
@@ -6140,20 +6258,52 @@ fn handle_midturn_frame(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn handle_agent_socket(
     socket: WebSocket,
     state: Arc<AppState>,
     manifest: Manifest,
     client_id: Option<String>,
-    // Cancelled when the app is deleted ([`forget_app_runtime`]). Both loops
-    // below treat it as the page going away, so a running turn is cancelled.
     retired: CancellationToken,
 ) {
-    if retired.is_cancelled() {
-        // Deleted while the upgrade was in flight: configure nothing for it.
-        return;
+    let connection = retired.child_token();
+    let _cancel_on_close = connection.clone().drop_guard();
+    run_until_app_retired(
+        &connection,
+        handle_agent_socket_inner(socket, state, manifest, client_id, connection.clone()),
+    )
+    .await;
+}
+
+async fn run_until_app_retired(
+    retired: &CancellationToken,
+    work: impl std::future::Future<Output = ()>,
+) {
+    tokio::select! {
+        biased;
+        () = retired.cancelled() => {},
+        () = work => {},
     }
+}
+
+struct UiConnection {
+    bridge: UiBridge,
+    token: ConnToken,
+}
+
+impl Drop for UiConnection {
+    fn drop(&mut self) {
+        self.bridge.detach(self.token);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_agent_socket_inner(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    manifest: Manifest,
+    client_id: Option<String>,
+    retired: CancellationToken,
+) {
     // Split so the loop can await agent events, agent-issued UI commands, and
     // inbound client frames at the same time. A `ui_ask` tool call parks *inside*
     // `agent.reply`, so its answer has to be readable while that stream is pending.
@@ -6245,6 +6395,12 @@ async fn handle_agent_socket(
     }
 
     let (mut ui_rx, conn_token) = ui_bridge.attach();
+    // Cancellation can interrupt setup, a consult, or a KB request as well as
+    // the event loops. Preserve the cached bridge and detach this generation.
+    let _ui_connection = UiConnection {
+        bridge: ui_bridge.clone(),
+        token: conn_token,
+    };
 
     // Validate declared worker profiles (design §3.8) up front, so the main
     // agent's `consult` tool can be armed and the survivors advertised in `ready`.
@@ -6975,7 +7131,7 @@ async fn handle_agent_socket(
                 retry_config: None,
                 reasoning_effort: None,
             };
-            let cancel = CancellationToken::new();
+            let cancel = retired.child_token();
             let mut stream = match turn_agent
                 .reply(turn_message.clone(), session_config, Some(cancel.clone()))
                 .await
@@ -10057,9 +10213,9 @@ mod tests {
     #[test]
     fn ws_token_for_is_stable_per_app_and_distinct_across_apps() {
         use super::ws_token_for;
-        let a1 = ws_token_for("wsauth-app-a");
-        let a2 = ws_token_for("wsauth-app-a");
-        let b = ws_token_for("wsauth-app-b");
+        let a1 = ws_token_for("wsauth-app-a", None);
+        let a2 = ws_token_for("wsauth-app-a", None);
+        let b = ws_token_for("wsauth-app-b", None);
         assert_eq!(a1, a2, "the same app must get the same token");
         assert_ne!(a1, b, "different apps must get different tokens");
         // 16 random bytes → 32 lowercase hex chars.

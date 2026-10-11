@@ -203,12 +203,11 @@ fn count_user_workflows(directory: &Path) -> u64 {
 
 fn reset_applications(root: &Path) -> Result<u64> {
     let store = ArtifactStore::new(root.to_path_buf());
-    let count = store.list().len() as u64;
     // Each app through the store first, so the daemon forgets what it holds for
     // it (`store::on_app_deleted`). Removing the root alone kept every app's
     // socket token, cookie, open sockets and vault key for whatever was built
     // under its id next.
-    store.delete_all()?;
+    let count = store.delete_all()? as u64;
     if root.exists() {
         fs::remove_dir_all(root)?;
     }
@@ -680,7 +679,11 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(reset_applications(&root).unwrap(), 2);
+        fs::create_dir_all(root.join("reset-broken")).unwrap();
+        fs::write(root.join("reset-broken/manifest.json"), "{").unwrap();
+        fs::create_dir_all(root.join("reset-unfinished")).unwrap();
+
+        assert_eq!(reset_applications(&root).unwrap(), 4);
         assert!(!root.exists());
         let mut heard = FORGOTTEN_APPS
             .lock()
@@ -690,6 +693,9 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         heard.sort();
-        assert_eq!(heard, ["reset-one", "reset-two"]);
+        assert_eq!(
+            heard,
+            ["reset-broken", "reset-one", "reset-two", "reset-unfinished"]
+        );
     }
 }

@@ -1166,15 +1166,18 @@ navigation is refused; the interface itself fetches no path that falls through t
 **All of it needs a secure context (2026-10-10).** A browser sends Fetch Metadata only to an
 address it treats as secure, and it ignores `Cross-Origin-Opener-Policy` everywhere else. On
 `biorouter serve --host 0.0.0.0` opened at its plain-HTTP LAN address, an app's `fetch('/')`
-arrives with no `Sec-Fetch-*` header and is served the shell, secret included, and a popup stays
-scriptable (a reviewer measured both in Chrome). A missing header has to stay a navigation, because
-every client that is not a browser sends none. So no app surface (page, assets, socket, models,
-run state, figure frame) is served on a browser credential at an address that is not loopback,
-`localhost` or a name under `.localhost`, unless a TLS proxy forwards it as `https`
-(`auth::reached_over_a_secure_context`). The person is shown a page that says to use an SSH tunnel
-or an HTTPS proxy; the rest of the interface works there as before. With no app's script on that
-origin, nothing is left there to read the shell. An engine that sends no Fetch Metadata at all
-(Safari before 16.4) is not covered on any address.
+arrives with no `Sec-Fetch-*` header, and a popup stays scriptable (a reviewer measured both in
+Chrome). The shell and every app surface (page, assets, socket, models, run state, figure frame)
+therefore refuse browser credentials at a plain-HTTP network address. Blocking only new app loads
+is insufficient: an old app tab may remain open through an update and fetch the secret-bearing
+shell. Both the cookie-bearing shell load and its token exchange now require loopback,
+`localhost` or a name under `.localhost`, or HTTPS forwarded by a TLS proxy with the browser's
+Fetch Metadata preserved (`auth::reached_over_a_secure_context`). `X-Forwarded-Proto: https` alone
+is refused because old HTTP page code can forge that header; it cannot forge `Sec-Fetch-Mode` or
+`Sec-Fetch-Dest`. Refusals give SSH tunnel or TLS guidance and carry no secret. Explicit secret-header
+API callers remain supported. Missing headers remain accepted on loopback for non-browser clients,
+so an engine that sends no Fetch Metadata at all (Safari before 16.4) is still not isolated there;
+such engines are refused through a non-loopback HTTPS proxy. Per-app origins remain the complete fix.
 
 ---
 

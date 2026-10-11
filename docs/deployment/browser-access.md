@@ -151,9 +151,10 @@ else. Exposing the port is an explicit act.
 biorouter serve --host 0.0.0.0
 ```
 
-With a wildcard bind, `serve` prints a second address built from a routable address of the machine,
-which is the one to paste into a browser elsewhere. On a machine with no default route it says so
-rather than printing a loopback address that could not work.
+With a wildcard bind, `serve` prints a second address built from a routable address of the machine.
+Browser access from another machine requires a TLS proxy or an SSH tunnel: the plain-HTTP network
+address refuses the interface and apps, even with a valid access token. On a machine with no default
+route `serve` says so rather than printing a loopback address that could not work.
 
 A token is **mandatory** on any non-loopback bind. Passing `--no-token` alongside one does not
 warn, it refuses:
@@ -171,20 +172,20 @@ and reaches whatever extensions are configured — all on the serving machine, a
 started `serve`.
 
 - **There is no transport encryption.** `serve` speaks plain HTTP. Over an untrusted network the
-  token and everything else are readable in transit. For anything beyond a trusted local network,
-  put a TLS-terminating reverse proxy in front of it, or do not expose the port at all. The proxy
-  must forward the original `Host` and set `X-Forwarded-Proto`; the
+  token and everything else are readable in transit. Browser access from another machine requires
+  a TLS-terminating reverse proxy or an SSH tunnel. The proxy must forward the original `Host`,
+  set `X-Forwarded-Proto: https`, and preserve the browser's `Sec-Fetch-*` request headers; the
   [headless Linux guide](headless-linux.md#decide-who-can-reach-the-port) has the configuration.
 - **There is one credential and no user accounts.** Everyone who opens the address is the same
   user, with the same files and the same history. Biorouter has no notion of separate accounts
   here.
 - **Restrict who can reach the port.** A host firewall rule or a cloud security group scoped to the
   addresses that need it is worth more than the token alone.
-- **Apps do not open at a plain-HTTP network address.** Opened as `http://192.168.x.y:8765`, the
-  interface works, but every app answers with a page saying apps open only on this machine or over
-  HTTPS. A browser applies the protections that keep one app's script away from another app and
-  from the interface's secret only at a secure address, so the daemon does not serve apps where
-  they would not hold (see [Apps share the interface's origin](#apps-share-the-interfaces-origin)).
+- **The interface and apps require localhost or HTTPS.** Opened as `http://192.168.x.y:8765`,
+  both are refused with TLS or SSH guidance, even with a valid browser token or cookie. A browser
+  applies the protections that keep one app's script away from another app and from the interface's
+  secret only at a secure address. Refusing the interface also protects it from an old app tab left
+  open during an update (see [Apps share the interface's origin](#apps-share-the-interfaces-origin)).
   Use the SSH tunnel below, which opens Biorouter as `localhost`, or the TLS proxy above.
 
 For one person on one remote machine, the safest option is not to expose the port at all — leave
@@ -268,8 +269,8 @@ differs:
 
 Every app you build is served from the same address as the interface, and the interface's page
 holds the daemon's secret. An app's code is written by the agent, so the daemon keeps that page
-away from it: the interface is served only when the browser opens it as a page, never to a
-`fetch` or a frame, it cannot be framed, and it is isolated from any page it opens or that opens
+away from it: in supported modern browsers at a secure address, the interface is served only when
+the browser opens it as a page. Fetches and frames are refused, it cannot be framed, and it is isolated from any page it opens or that opens
 it ([SD-14](serve-decisions.md#sd-14--the-shell-is-served-only-to-a-navigation-while-apps-share-its-origin)).
 An app's own page is served the same way and cannot be framed, its run-state and model routes want
 a token only that page holds, and a page that opens it in a popup is left without a handle on it,
@@ -278,8 +279,11 @@ so one app's script cannot read another app's page.
 All of this depends on the browser treating the address as secure: `localhost` or another loopback
 address, or `https`. At a plain-HTTP network address a browser sends none of the request headers
 these checks read and ignores the opener policy, so an app's script there could read the interface
-and every other app. Apps are therefore not served at such an address at all; open them through an
+and every other app. Neither the interface nor apps are served on browser credentials at such an
+address; open them through an
 SSH tunnel or an HTTPS proxy ([What exposing the port means](#what-exposing-the-port-means)).
+The proxy must preserve Fetch Metadata. `X-Forwarded-Proto: https` alone is refused: an old HTTP
+app tab can forge that header on a fetch, but cannot forge the browser's `Sec-Fetch-*` headers.
 
 Gaps remain even at a secure address: a browser that does not support the `noopener-allow-popups`
 opener policy (Chromium-based browsers do) lets an app read another app's page through a popup, a
@@ -331,7 +335,8 @@ terminal.
 **The page loads but nothing connects.** Check that you are on the address `serve` printed. A
 browser reaching the daemon on a different origin is not the supported configuration — the
 interface is served at the root of the daemon's own origin and nowhere else. Behind a TLS proxy,
-check that it forwards the original `Host` and sets `X-Forwarded-Proto`: the live views are
+check that it forwards the original `Host`, sets `X-Forwarded-Proto: https`, and preserves
+`Sec-Fetch-*` headers: the live views are
 WebSockets, and the daemon admits one only from the scheme, host and port the browser used. The
 daemon logs each refusal as `rejected workspace WS: cross-origin connect rejected`, with the
 origin it was given.
