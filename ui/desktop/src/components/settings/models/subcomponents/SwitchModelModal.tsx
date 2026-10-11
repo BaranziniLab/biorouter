@@ -10,6 +10,7 @@ import { Note } from '../../../ui/note';
 import { QUICKSTART_GUIDE_URL } from '../../providers/modal/constants';
 import { Input } from '../../../ui/input';
 import { Select } from '../../../ui/Select';
+import { errorMessage } from '../../../../utils/conversionUtils';
 import { useConfig } from '../../../ConfigContext';
 import { CREW_MODEL_FIXED_TEXT, useModelAndProvider } from '../../../ModelAndProviderContext';
 import { useChatCrewAccessState } from '../../../crew/access/chatCrewAccess';
@@ -694,9 +695,7 @@ export const SwitchModelModal = ({
       // stayed open, and not one pixel changed. Anything that can throw here —
       // a provider-metadata fetch, an unreachable daemon — now lands in the
       // dialog instead of in the console.
-      setSubmitError(
-        error instanceof Error ? error.message : `The model could not be switched: ${String(error)}`
-      );
+      setSubmitError(errorMessage(error, `The model could not be switched: ${String(error)}`));
     } finally {
       setSwitching(false);
     }

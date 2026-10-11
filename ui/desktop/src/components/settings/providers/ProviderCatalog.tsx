@@ -676,7 +676,9 @@ export default function ProviderCatalog({
       <p className="br-provider-tier-note text-supporting text-text-muted">{group.note}</p>
 
       {group.key === 'commercial' && agentControls.loadError && !agentControls.agents && (
-        <CodingAgentLoadError message={agentControls.loadError} controls={agentControls} />
+        <div className="br-provider-inset mb-4">
+          <CodingAgentLoadError message={agentControls.loadError} controls={agentControls} />
+        </div>
       )}
 
       {group.sections.map((section) => renderSection(group, section))}

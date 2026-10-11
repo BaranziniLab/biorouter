@@ -5,6 +5,7 @@ import CodingAgentInlineCard, {
   CODING_AGENT_TERMINAL_HEIGHT_PX,
   CODING_AGENT_TERMINAL_RESERVE_PX,
 } from './CodingAgentInlineCard';
+import { CODING_AGENT_CHECK_FAILED } from './codingAgentControls';
 import type { CodingAgentAuth, CodingAgentAvailability } from './codingAgentStatus';
 
 const mockFetchStatus = vi.fn();
@@ -388,5 +389,22 @@ describe('CodingAgentInlineCard', () => {
     fireEvent.click(screen.getByTestId('coding-agent-retry'));
 
     expect(await screen.findByText('claude auth login')).toBeInTheDocument();
+  });
+
+  it('reads the message of a failed status that arrives as a parsed body, never "[object Object]"', async () => {
+    // What the generated client throws for a non-2xx status: the response body, not an Error.
+    mockFetchStatus.mockRejectedValueOnce({ message: 'The probe timed out.' });
+    const { unmount } = render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    expect(await screen.findByTestId('coding-agent-load-error')).toHaveTextContent(
+      'The probe timed out.'
+    );
+    unmount();
+
+    // A body with no message says so in words rather than printing the object.
+    mockFetchStatus.mockRejectedValueOnce({ code: 500 });
+    render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    const line = await screen.findByTestId('coding-agent-load-error');
+    expect(line).toHaveTextContent(CODING_AGENT_CHECK_FAILED);
+    expect(line).not.toHaveTextContent('[object Object]');
   });
 });

@@ -157,6 +157,17 @@ describe('LocalModelInventory', () => {
     expect(installed.closest('.br-row-actions-meta')).not.toBeNull();
   });
 
+  it('reads the message of a status failure that arrives as a parsed body, never "[object Object]"', async () => {
+    // The generated client throws the response body for a non-2xx status: an object, not an Error.
+    mockLlamacppStatus.mockRejectedValue({ message: 'The daemon refused the request.' });
+    render(<LocalModelInventory />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The daemon refused the request.');
+    expect(alert).not.toHaveTextContent('[object Object]');
+    // The retry is in the note, and the refresh glyph stays in the header.
+    expect(within(alert).getByRole('button', { name: localModelsCopy.retry })).toBeInTheDocument();
+  });
+
   it('says a model is large for this Mac only when it is above the recommendation', async () => {
     render(<LocalModelInventory />);
     await screen.findByText('Fast · 9.6 GB · 128k context');

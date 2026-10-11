@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
 import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
@@ -141,7 +142,7 @@ export default function LlamaServerInlineCard({
         if (mountedRef.current) setIsConnecting(false);
         toastService.error({
           title: 'Connection failed',
-          msg: `Failed to configure Llama Server: ${error instanceof Error ? error.message : String(error)}`,
+          msg: `Failed to configure Llama Server: ${errorMessage(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });
       }
@@ -204,7 +205,7 @@ export default function LlamaServerInlineCard({
     }
     toastService.error({
       title,
-      msg: error instanceof Error ? error.message : String(error),
+      msg: errorMessage(error),
       traceback: error instanceof Error ? error.stack || '' : '',
     });
   };

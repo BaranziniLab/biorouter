@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
+import { errorMessage } from '../../utils/conversionUtils';
 import { Terminal } from '../icons/app-icons';
 import { CopyField } from '../ui/copy-field';
 import InAppTerminalDock from '../InAppTerminalDock';
@@ -90,6 +91,9 @@ export async function saveCodingAgentCommand(
  */
 export const CODING_AGENT_TERMINAL_HEIGHT_PX = 240;
 export const CODING_AGENT_TERMINAL_RESERVE_PX = 200;
+
+/** What "Could not check" says when the failure carried no message of its own. */
+export const CODING_AGENT_CHECK_FAILED = 'The check for installed coding agents returned an error.';
 
 type PillTone = 'success' | 'warning' | 'info';
 
@@ -228,7 +232,10 @@ export function useCodingAgents(
     } catch (error) {
       console.error('Failed to check coding-agent CLIs:', error);
       if (!mountedRef.current) return;
-      setLoadError(error instanceof Error ? error.message : String(error));
+      // The generated client throws the parsed response body for a failed status, which is an
+      // object (`{ message }`), not an Error: `String()` of it printed "[object Object]" under
+      // "Could not check". `errorMessage` reads the message of both shapes.
+      setLoadError(errorMessage(error, CODING_AGENT_CHECK_FAILED));
     } finally {
       if (mountedRef.current) {
         setIsChecking(false);
@@ -273,7 +280,7 @@ export function useCodingAgents(
       } catch (error) {
         toastService.error({
           title: 'Could not select this provider',
-          msg: `Failed to save ${key}: ${error instanceof Error ? error.message : String(error)}`,
+          msg: `Failed to save ${key}: ${errorMessage(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });
       } finally {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
 import { Progress } from '../ui/progress';
 import {
@@ -102,7 +103,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       console.error('Failed to connect to Ollama:', error);
       toastService.error({
         title: 'Connection failed',
-        msg: `Failed to connect to Ollama: ${error instanceof Error ? error.message : String(error)}`,
+        msg: `Failed to connect to Ollama: ${errorMessage(error)}`,
         traceback: error instanceof Error ? error.stack || '' : '',
       });
       setIsConnecting(false);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { llamacppDelete, llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../../api';
 import { toastService } from '../../../toasts';
+import { errorMessage } from '../../../utils/conversionUtils';
 import {
   checkOllamaStatus,
   deleteOllamaModel,
@@ -186,7 +187,7 @@ export default function LocalModelInventory() {
       if (mountedRef.current) setError(null);
       await llamaServerStore.refresh();
     } catch (err) {
-      if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      if (mountedRef.current) setError(errorMessage(err));
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
@@ -298,7 +299,7 @@ export default function LocalModelInventory() {
           // Still ours: a plain driving-flow failure.
           toastService.error({
             title: 'Local model install failed',
-            msg: err instanceof Error ? err.message : String(err),
+            msg: errorMessage(err),
             traceback: err instanceof Error ? err.stack || '' : '',
           });
         }
@@ -341,7 +342,7 @@ export default function LocalModelInventory() {
         } else if (llamaServerStore.getSnapshot().operation?.id === opId) {
           toastService.error({
             title: 'Local model warm-up failed',
-            msg: err instanceof Error ? err.message : String(err),
+            msg: errorMessage(err),
             traceback: err instanceof Error ? err.stack || '' : '',
           });
         }
@@ -383,7 +384,7 @@ export default function LocalModelInventory() {
       } catch (err) {
         toastService.error({
           title: 'Local model delete failed',
-          msg: err instanceof Error ? err.message : String(err),
+          msg: errorMessage(err),
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
