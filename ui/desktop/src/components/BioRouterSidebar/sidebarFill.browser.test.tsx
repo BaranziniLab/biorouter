@@ -808,9 +808,13 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
 
     /**
      * `total` chats, newest first, under Group by None (line N of the list is chat `s{N + 1}`), or
-     * under Group by Folder with `perFolder` chats in each folder, the folders in the same order.
+     * under Group by Folder with `perFolder` chats in each folder, the folders in the same order,
+     * or under `groupBy` when it is given (Date puts every chat under "Today").
      */
-    const openLongList = (total: number, options: { scale?: number; perFolder?: number } = {}) => {
+    const openLongList = (
+      total: number,
+      options: { scale?: number; perFolder?: number; groupBy?: 'date' } = {}
+    ) => {
       const now = Date.now();
       const all = Array.from({ length: total }, (_, i) => ({
         id: `s${i + 1}`,
@@ -837,7 +841,7 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
       };
       const stored = JSON.stringify({
         v: 1,
-        groupBy: options.perFolder ? 'folder' : 'none',
+        groupBy: options.groupBy ?? (options.perFolder ? 'folder' : 'none'),
         sortBy: 'activity',
       });
       return open('light', false, 'attached', {
@@ -1183,6 +1187,139 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         await tab.focus(`[data-row="${more}"]`);
         await scrollListTo(tab, 0.5);
         expect(await focusedRow(tab), 'Show more keeps focus').toBe(more);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
+     * The pixels of `clip` (page coordinates, whole pixels), one array of [r, g, b] per pixel row:
+     * a mask is paint, so only a screenshot says what it did.
+     */
+    const pixelRows = async (
+      tab: Page,
+      clip: { x: number; y: number; width: number; height: number }
+    ) => {
+      const shot = await tab.screenshot({ clip });
+      return tab.evaluate(
+        async ([b64, width, height]) => {
+          const img = new Image();
+          img.src = 'data:image/png;base64,' + b64;
+          await img.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const g = canvas.getContext('2d')!;
+          g.drawImage(img, 0, 0);
+          const data = g.getImageData(0, 0, width, height).data;
+          return Array.from({ length: height }, (_, y) =>
+            Array.from({ length: width }, (_, x) => {
+              const i = (y * width + x) * 4;
+              return [data[i], data[i + 1], data[i + 2]];
+            })
+          );
+        },
+        [shot.toString('base64'), clip.width, clip.height] as const
+      );
+    };
+    /** How far a pixel row strays from its own last pixel (the ground beside the label's text). */
+    const inkOf = (row: number[][]) => {
+      const ground = row[row.length - 1];
+      return Math.max(...row.map((px) => Math.max(...px.map((c, i) => Math.abs(c - ground[i])))));
+    };
+
+    /**
+     * Vision V1-R4-2. The list faded only its bottom edge, so a little way down the "Today" label
+     * was cut in half under the Chats header: a hard edge through its letters. Once scrolled, the
+     * top edge fades too, with the app's scroll-edge fade (Settings' `--scroll-fade-clear` clear,
+     * then up to `--scroll-fade-top`): the pixel row at the cut carries no ink. At rest nothing at
+     * the top is faded, and scrolled back to the top the fade goes.
+     */
+    it('fades the list’s top edge once it is scrolled, and only then (V1-R4-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openLongList(120, { groupBy: 'date' });
+      const list = '[data-testid="recent-chat-scroll"]';
+      const scrolled = () =>
+        tab.evaluate((l) => document.querySelector(l)!.getAttribute('data-scrolled'), list);
+      const unmasked = (off: boolean) =>
+        tab.evaluate(
+          ([l, o]) => {
+            const el = document.querySelector<HTMLElement>(l)!;
+            el.style.maskImage = o ? 'none' : '';
+            el.style.setProperty('-webkit-mask-image', o ? 'none' : '');
+          },
+          [list, off] as const
+        );
+      try {
+        await away(tab);
+        await settle(tab);
+        const at = await tab.evaluate((l) => {
+          const el = document.querySelector(l)!;
+          const label = el.querySelector('.br-sidebar-bucket')!;
+          const range = document.createRange();
+          range.selectNodeContents(label);
+          const text = range.getBoundingClientRect();
+          const box = el.getBoundingClientRect();
+          return {
+            label: label.textContent,
+            top: box.top,
+            left: box.left,
+            width: box.width,
+            textTop: text.top - box.top,
+            textHeight: text.height,
+            textLeft: text.left,
+            textRight: text.right,
+          };
+        }, list);
+        expect(at.label).toBe('Today');
+
+        // At rest: no fade at the top, so the band is what it is with no mask at all.
+        expect(await scrolled(), 'at rest').toBeNull();
+        const band = {
+          x: Math.ceil(at.left),
+          y: Math.ceil(at.top),
+          width: Math.floor(at.width) - 1,
+          height: 12,
+        };
+        const rest = await tab.screenshot({ clip: band });
+        await unmasked(true);
+        const restBare = await tab.screenshot({ clip: band });
+        await unmasked(false);
+        expect(rest.equals(restBare), 'nothing at the top is faded at rest').toBe(true);
+
+        // Scrolled so the list's top edge runs through the middle of "Today".
+        await tab.evaluate(
+          ([l, y]) => {
+            document.querySelector(l)!.scrollTop = y;
+          },
+          [list, Math.round(at.textTop + at.textHeight / 2)] as const
+        );
+        await expect.poll(scrolled, { timeout: 2_000 }).toBe('true');
+        await settle(tab);
+        const cut = {
+          x: Math.floor(at.textLeft) - 2,
+          y: Math.ceil(at.top),
+          width: Math.ceil(at.textRight - at.textLeft) + 16,
+          height: 1,
+        };
+        await unmasked(true);
+        const bare = inkOf((await pixelRows(tab, cut))[0]);
+        await unmasked(false);
+        const faded = inkOf((await pixelRows(tab, cut))[0]);
+        expect(bare, 'unfaded, the cut runs through the letters').toBeGreaterThan(20);
+        expect(faded, 'faded, the cut carries no ink').toBeLessThanOrEqual(3);
+        if (SHOTS) {
+          await tab.screenshot({
+            path: resolve(SHOTS, 'sidebar-top-fade-light.png'),
+            clip: { x: 0, y: Math.max(0, Math.floor(at.top) - 60), width: 320, height: 140 },
+          });
+        }
+
+        // Back at the top, the fade goes.
+        await tab.evaluate((l) => {
+          document.querySelector(l)!.scrollTop = 0;
+        }, list);
+        await expect.poll(scrolled, { timeout: 2_000 }).toBeNull();
       } finally {
         await tab.close();
       }

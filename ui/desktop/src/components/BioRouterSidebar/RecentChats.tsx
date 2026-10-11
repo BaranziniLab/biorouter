@@ -757,7 +757,9 @@ export function measuredLinePitch(container: HTMLElement): number {
  * Scroll the list just enough to show `row`, and its date bucket or folder
  * header too when it is the first chat under one, so a chat that moved to the
  * top reads under its "Today". Measured against the list itself, never with
- * `scrollIntoView`, which also scrolls every clipped box around it.
+ * `scrollIntoView`, which also scrolls every clipped box around it. The list's
+ * `scroll-padding` (sidebar.css) keeps the row clear of its edge fades, as it
+ * does for the browser's own focus scroll.
  */
 export function scrollRowIntoView(container: HTMLElement, row: HTMLElement): void {
   const section = row.closest('section');
@@ -771,8 +773,25 @@ export function scrollRowIntoView(container: HTMLElement, row: HTMLElement): voi
   const top = (firstInSection && section ? section : row).getBoundingClientRect().top;
   const { bottom } = row.getBoundingClientRect();
   const box = container.getBoundingClientRect();
-  if (top < box.top) container.scrollTop -= box.top - top;
-  else if (bottom > box.bottom) container.scrollTop += bottom - box.bottom;
+  const style = getComputedStyle(container);
+  const from = box.top + (parseFloat(style.scrollPaddingTop) || 0);
+  const to = box.bottom - (parseFloat(style.scrollPaddingBottom) || 0);
+  if (top < from) container.scrollTop -= from - top;
+  else if (bottom > to) container.scrollTop += bottom - to;
+}
+
+/**
+ * Whether the list is scrolled off its top, as `data-scrolled` (vision
+ * V1-R4-2): it fades the list's top edge (sidebar.css), so a date label or a
+ * row cut by the Chats header fades out rather than being sliced through. Set
+ * on the element itself from the scroll handler, so a scroll re-renders
+ * nothing; React does not own the attribute.
+ */
+export function markScrolledOffTop(container: HTMLElement): void {
+  const scrolled = container.scrollTop > 0;
+  if (container.hasAttribute('data-scrolled') === scrolled) return;
+  if (scrolled) container.setAttribute('data-scrolled', 'true');
+  else container.removeAttribute('data-scrolled');
 }
 
 // ── The list ──────────────────────────────────────────────────────────────
@@ -1314,6 +1333,7 @@ export default function RecentChats({
   const handleScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
       const container = event.currentTarget;
+      markScrolledOffTop(container);
       syncDrawRange(container, true);
       const remainingScroll = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (remainingScroll > LOAD_MORE_THRESHOLD_PX) return;
@@ -1375,9 +1395,13 @@ export default function RecentChats({
   // Anything that moves lines without a scroll (a view drawn, a folder opened
   // or closed, rows arriving, the list's box growing) is measured again before
   // the frame paints, so no placeholder is ever left where a row should be.
+  // The top fade is read again too: a list hidden and shown again (Chats
+  // closed and opened) is back at its top with no scroll event to say so.
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
-    if (container) syncDrawRange(container, false);
+    if (!container) return;
+    markScrolledOffTop(container);
+    syncDrawRange(container, false);
   }, [windowed, listHeight, isExpanded, syncDrawRange]);
 
   // The list's own height, so the fill check below runs again when its box

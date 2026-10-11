@@ -283,7 +283,8 @@
 
 /* The scrolling list: an 8px inset on both sides and a 10px fade at the
    bottom edge, so the last row never clips mid-glyph against the footer
-   (F-30). */
+   (F-30). `scroll-padding` keeps a row the keyboard brings into view clear of
+   both fades (the browser's focus scroll and `scrollRowIntoView` read it). */
 .br-sidebar-chats-scroll {
   flex: 1 1 auto;
   min-width: 0;
@@ -291,8 +292,35 @@
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0 8px 10px;
+  scroll-padding-block: var(--scroll-fade-top) 10px;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+}
+
+/* Scrolled off its top (`data-scrolled`, set by `RecentChats` from
+   `scrollTop > 0`), the list fades its top edge as well (vision V1-R4-2), so a
+   date label or a row cut by the Chats header fades out instead of being
+   sliced through. It is the app's scroll-edge fade (`--scroll-fade-clear`
+   fully clear, then up to `--scroll-fade-top`, as in Settings): two clear
+   pixels leave no sliver of a lit row's fill at the cut. At rest the top is not
+   faded: the first label has nothing above it to hide. */
+.br-sidebar-chats-scroll[data-scrolled='true'] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - 10px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - 10px),
+    transparent
+  );
 }
 
 /* While a row's menu is open (the right-click menu or a ⋯; neither is modal,
