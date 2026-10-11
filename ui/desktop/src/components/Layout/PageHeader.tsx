@@ -90,7 +90,9 @@ export function PageHeader({
         <div className="biorouter-page-header-bar">
           {onBack && <PageHeaderAction icon={ArrowLeft} label={backLabel} onClick={onBack} />}
           <div className="biorouter-page-header-title">
-            <h1 className="text-label min-w-0 truncate">{title}</h1>
+            {/* The title names its own ink: Settings wraps the band in a Tabs root that is
+                `text-text-muted`, and an inherited ink read "Settings" as a fourth tab. */}
+            <h1 className="text-label text-text-default min-w-0 truncate">{title}</h1>
             {help ? (
               <InfoTip label={title} side="bottom" align="start">
                 {help}

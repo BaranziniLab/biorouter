@@ -18,6 +18,24 @@ describe('PageHeader', () => {
   });
 
   /**
+   * The title names its own ink. Settings renders the band inside a Tabs root that is
+   * `text-text-muted`, so an inherited ink painted "Settings" like the inactive tabs beside it
+   * (vision round 1, V4-06). jsdom runs no Tailwind, so the contract is the class on the h1
+   * itself: an ancestor's colour cannot beat a utility on the element.
+   */
+  it('gives the title its own default ink so a muted ancestor cannot recolour it', () => {
+    render(
+      <div className="text-text-muted">
+        <PageHeader title="Settings" />
+      </div>
+    );
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toHaveClass(
+      'text-text-default'
+    );
+  });
+
+  /**
    * Principle 2: the explanation is help, not a paragraph. It must still reach a screen reader
    * without a hover, so the info button is described by a node that is always in the DOM.
    */
