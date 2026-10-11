@@ -230,16 +230,21 @@
 }
 
 /* A 48px image thumbnail. The remove control sits in its corner and appears on
-   hover or focus, like a row action. */
+   hover or focus, like a row action.
+
+   No resting outline (R-27): the picture is its own edge, and before it paints
+   (or through a transparent PNG) the tile shows the page ground, one step back
+   from the card's fill, since a fill never sits on a fill. The 1px border stays,
+   transparent, so an error edge moves nothing and forced colours draw the tile. */
 .br-composer-thumb {
   position: relative;
   flex: none;
   width: 48px;
   height: 48px;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
-  background: var(--background-muted);
+  background: var(--background-default);
 }
 
 .br-composer-thumb[data-error] {

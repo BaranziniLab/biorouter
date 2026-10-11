@@ -15,6 +15,7 @@ import { draftReasoningScope, sessionReasoningScope } from '../store/reasoningEf
 import { InfoTip } from './ui/info-tip';
 import { Spinner } from './ui/spinner';
 import { ComposerChips } from './composer/ComposerChips';
+import { composerCardClassName } from './composer/composerCard';
 import { ComposerPlusMenu, type ComposerTrigger } from './composer/ComposerPlusMenu';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
@@ -2783,23 +2784,9 @@ export default function ChatInput({
       onDragLeave={handleLocalDragLeave}
     >
       <div
-        className={cn(
-          'relative flex min-w-0 flex-col rounded-container py-2.5 pr-3 pl-4',
-          // One edge, a hairline at 60% of the token: the field's shape, not an
-          // outline drawn around it.
-          'bg-background-default border border-border-subtle/60',
-          // Its state changes (the focus edge, drag-over) on the motion tokens,
-          // authored in `composer.css`.
-          'br-composer-card',
-          // The focus edge (`:has(textarea:focus)`, full accent) and the working
-          // edge (`[data-working]`) are authored CSS in `main.css`, shared with
-          // Crew's composer.
-          'biorouter-composer-card',
-          // Drag-over is a transient state worth showing; inset, so it costs no
-          // layout.
-          isDraggingOver && 'inset-shadow-accent',
-          isDraggingOver && 'bg-background-medium/80'
-        )}
+        // The subtle fill with no resting outline (R-27); the focus and working
+        // edges ride on its transparent 1px border. `composer/composerCard.ts`.
+        className={composerCardClassName({ isDraggingOver })}
         // THE WORKING EDGE: an attribute, not a class, so the hook is something
         // Tailwind never had to generate. Absent when idle.
         data-working={isWorking ? 'true' : undefined}

@@ -3031,6 +3031,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    simply turns the brand colour. No second edge, no geometry change, and it
    follows the family like every other accent in the app.
 
+   The chat card rests as a subtle fill with that 1px border TRANSPARENT (R-27,
+   fills before lines), so the accent edge is the only line it ever draws;
+   Crew's card keeps its hairline. Unlayered, so it beats the card's
+   `border-transparent` utility.
+
    `:has(textarea:focus)`, not `:focus-within`: the composer contains buttons,
    and focusing Send is not "typing here". */
 .biorouter-composer-card:has(textarea:focus) {
@@ -3065,9 +3070,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
      | focused | working | edge                                            |
      |---------|---------|-------------------------------------------------|
-     | no      | no      | the resting hairline                            |
+     | no      | no      | the resting edge (transparent on the chat card) |
      | yes     | no      | evenly accent  (unchanged, D-15)                |
-     | no      | yes     | hairline + a bright accent segment travelling   |
+     | no      | yes     | resting edge + a bright accent segment moving   |
      | yes     | yes     | accent at 30% + the same segment at full        |
 
    The focused+working case is the one the whole scheme turns on: the base

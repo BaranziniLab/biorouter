@@ -26,6 +26,10 @@ import { describe, expect, it } from 'vitest';
  */
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const CHAT_INPUT = readFileSync(join(__dirname, '../components/ChatInput.tsx'), 'utf8');
+const COMPOSER_CARD = readFileSync(
+  join(__dirname, '../components/composer/composerCard.ts'),
+  'utf8'
+);
 const BASE_CHAT = readFileSync(join(__dirname, '../components/BaseChat.tsx'), 'utf8');
 
 /** The `::after` rule body, which carries the sweep itself. */
@@ -180,7 +184,8 @@ describe('the composer working edge', () => {
      * drift apart silently.
      */
     it('is set on the composer card in ChatInput', () => {
-      expect(CHAT_INPUT).toContain('biorouter-composer-card');
+      expect(COMPOSER_CARD).toContain("'biorouter-composer-card'");
+      expect(CHAT_INPUT).toMatch(/className=\{composerCardClassName\(/);
       expect(CHAT_INPUT).toMatch(/data-working=\{isWorking \? 'true' : undefined\}/);
     });
 

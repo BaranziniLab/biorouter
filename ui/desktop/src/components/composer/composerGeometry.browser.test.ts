@@ -164,6 +164,7 @@ describe('the composer recipes in a real layout engine', () => {
   it('uses the class names the composer really renders', () => {
     const source = [
       read('../ChatInput.tsx'),
+      read('composerCard.ts'),
       read('ComposerChips.tsx'),
       read('../MessageQueue.tsx'),
       read('../QuotedTextChip.tsx'),

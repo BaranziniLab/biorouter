@@ -34,6 +34,10 @@ import { describe, expect, it } from 'vitest';
  */
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const CHAT_INPUT = readFileSync(join(__dirname, '../components/ChatInput.tsx'), 'utf8');
+const COMPOSER_CARD = readFileSync(
+  join(__dirname, '../components/composer/composerCard.ts'),
+  'utf8'
+);
 
 describe('the composer focus edge', () => {
   it('is declared as authored CSS, not left to a Tailwind variant', () => {
@@ -64,6 +68,9 @@ describe('the composer focus edge', () => {
    * pair can drift apart silently.
    */
   it('has its hook on the composer card in ChatInput', () => {
-    expect(CHAT_INPUT).toContain('biorouter-composer-card');
+    // The card's classes live in one module (`composer/composerCard.ts`), which
+    // ChatInput's card renders.
+    expect(COMPOSER_CARD).toContain("'biorouter-composer-card'");
+    expect(CHAT_INPUT).toMatch(/className=\{composerCardClassName\(/);
   });
 });

@@ -154,6 +154,18 @@ describe('the composer is one card and one footer line', () => {
     expect(card().previousElementSibling).toBeNull();
   });
 
+  it('is a subtle fill with no resting outline, and a fill surface for what sits in it (R-27)', () => {
+    renderComposer();
+    const classes = card().classList;
+    expect(classes.contains('bg-background-fill')).toBe(true);
+    // The 1px border stays, transparent: the focus and working edges ride on it.
+    expect(classes.contains('border')).toBe(true);
+    expect(classes.contains('border-transparent')).toBe(true);
+    expect([...classes].some((c) => c.startsWith('border-border-'))).toBe(false);
+    expect(classes.contains('bg-background-default')).toBe(false);
+    expect(classes.contains('br-fill-surface')).toBe(true);
+  });
+
   it('uses no monospace anywhere in the composer', () => {
     const { container } = renderComposer();
     expect(container.querySelector('.font-mono')).toBeNull();
@@ -190,7 +202,9 @@ describe('placeholders', () => {
 describe('Send and Stop', () => {
   it('is quiet while empty and the accent once there is something to send', () => {
     renderComposer();
-    expect(sendButton().className).toContain('bg-background-medium');
+    // The filled primitive's ground (R-27); inside the card it steps back to the
+    // page ground through `.br-fill-surface`.
+    expect(sendButton().className).toContain('br-fill-rest');
     fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'hello' } });
     expect(sendButton().className).toContain('bg-background-accent');
   });
