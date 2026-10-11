@@ -33,6 +33,7 @@ function Harness(props: Partial<SummaryHeaderButtonProps> & { initialOpen?: bool
         railShown={false}
         railRendered={false}
         railId="summary-rail"
+        railStill
         onToggleRail={vi.fn()}
         popoverOpen={open}
         onPopoverOpenChange={setOpen}
@@ -141,5 +142,109 @@ describe('the progress dot', () => {
     const { container } = render(<Harness mode="rail" railShown railRendered />);
     expect(screen.getByRole('button', { name: summaryCopy.title })).toBeInTheDocument();
     expect(container.querySelector('.br-summary-dot')).toBeNull();
+  });
+});
+
+/**
+ * Vision V2-R2-6: dragging the window across the 1344px seam flipped the
+ * pressed fill twice, and the Button's colour transitions played while the rest
+ * of the chat snapped. jsdom runs no transition, so what is asserted here is the
+ * marker the stylesheet keys on (`[data-summary-mode][data-still]`, pinned in
+ * `styles/summaryRail.test.ts`, measured in `summaryRailGeometry.browser.test.ts`).
+ */
+describe('the pressed fill follows the person, not geometry', () => {
+  /** A rail the button really toggles, as `useSummaryRail` does. */
+  function RailHarness({ fits = true, onToggle }: { fits?: boolean; onToggle?: () => void }) {
+    const [shown, setShown] = useState(true);
+    const [still, setStill] = useState(true);
+    const [open, setOpen] = useState(false);
+    return (
+      <SummaryHeaderButton
+        mode={fits ? 'rail' : 'popover'}
+        railShown={fits && shown}
+        railRendered={fits && shown}
+        railId="summary-rail"
+        railStill={still}
+        onToggleRail={() => {
+          onToggle?.();
+          // The hook marks the entrance it plays on open, and only then.
+          setStill(shown);
+          setShown(!shown);
+        }}
+        popoverOpen={open}
+        onPopoverOpenChange={setOpen}
+        progress={null}
+        summary={summary}
+      />
+    );
+  }
+
+  it('snaps when a resize hides the rail at the seam and when it brings it back', async () => {
+    const { rerender } = render(<RailHarness />);
+    expect(button()).toHaveAttribute('aria-expanded', 'true');
+    expect(button()).not.toHaveAttribute('data-still');
+
+    rerender(<RailHarness fits={false} />);
+    expect(button()).toHaveAttribute('aria-expanded', 'false');
+    expect(button()).toHaveAttribute('data-still', '');
+    // Cleared once a frame has drawn it, so a later hover still fades.
+    await waitFor(() => expect(button()).not.toHaveAttribute('data-still'));
+
+    rerender(<RailHarness />);
+    expect(button()).toHaveAttribute('aria-expanded', 'true');
+    expect(button()).toHaveAttribute('data-still', '');
+    await waitFor(() => expect(button()).not.toHaveAttribute('data-still'));
+  });
+
+  it('snaps when the rail hides in rail mode without a press (a preview, the sidebar)', () => {
+    const { rerender } = render(<Harness mode="rail" railShown railRendered />);
+    rerender(<Harness mode="rail" />);
+    expect(button()).toHaveAttribute('aria-expanded', 'false');
+    expect(button()).toHaveAttribute('data-still', '');
+  });
+
+  it('keeps the fade for the person’s own press, both ways', async () => {
+    const user = userEvent.setup();
+    const onToggle = vi.fn();
+    render(<RailHarness onToggle={onToggle} />);
+
+    await user.click(button());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(button()).toHaveAttribute('aria-expanded', 'false');
+    expect(button()).not.toHaveAttribute('data-still');
+
+    await user.click(button());
+    expect(button()).toHaveAttribute('aria-expanded', 'true');
+    expect(button()).not.toHaveAttribute('data-still');
+  });
+
+  it('keeps the fade for the popover, opened by a press and closed by Escape', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(button());
+    await screen.findByRole('dialog');
+    expect(button()).toHaveAttribute('aria-expanded', 'true');
+    expect(button()).not.toHaveAttribute('data-still');
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(button()).toHaveAttribute('aria-expanded', 'false'));
+    expect(button()).not.toHaveAttribute('data-still');
+  });
+
+  it('keeps the fade when the first turn brings the rail in', () => {
+    const { rerender } = render(<Harness mode="rail" />);
+    rerender(<Harness mode="rail" railShown railRendered railStill={false} />);
+    expect(button()).toHaveAttribute('aria-expanded', 'true');
+    expect(button()).not.toHaveAttribute('data-still');
+  });
+
+  it('does not let a press that changed nothing vouch for the next change', async () => {
+    const user = userEvent.setup();
+    // Rail mode before a turn: the press records the preference, nothing shows.
+    const { rerender } = render(<Harness mode="rail" />);
+    await user.click(button());
+    expect(button()).toHaveAttribute('aria-expanded', 'false');
+    rerender(<Harness mode="rail" railShown railRendered />);
+    expect(button()).toHaveAttribute('data-still', '');
   });
 });

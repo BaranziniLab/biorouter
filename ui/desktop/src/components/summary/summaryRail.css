@@ -186,4 +186,12 @@ body.biorouter-sidebar-resizing [data-preview-area='rail'] > .br-summary-card {
 [aria-expanded='true'] > .br-summary-dot {
   box-shadow: 0 0 0 2px var(--background-fill-strong);
 }
+
+/* The header button's pressed fill snaps when geometry flips it (a resize, the
+   sidebar, a preview), as the grid and the card do: `SummaryHeaderButton`
+   stamps `data-still` for that one change. Unlayered, so it beats the Button's
+   layered `transition-[…]` utility. */
+[data-summary-mode][data-still] {
+  transition: none;
+}
 /* @ws WS-SUMMARY end: summary rail */

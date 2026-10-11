@@ -2399,6 +2399,7 @@ function BaseChatContent({
         railShown={summaryRail.shown}
         railRendered={summaryRail.rendered}
         railId={summaryRailId}
+        railStill={summaryRail.still}
         onToggleRail={summaryRail.toggle}
         popoverOpen={reviewOpen}
         onPopoverOpenChange={setReviewOpen}

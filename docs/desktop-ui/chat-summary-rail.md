@@ -94,6 +94,13 @@ stamp its own `aria-expanded` and open the popover in rail mode too. If the wind
 the popover is open, the rail replaces it and the popover closes, and so does a popover left open
 when the button turns into the rail's (the rail was closed, then the window widened).
 
+The pressed fill fades only when the person pressed the button, opened or closed its popover, or
+the first turn brought the rail in. When geometry flips it (a resize across a seam, the sidebar,
+a preview), the button carries `data-still` for that one change and the fill snaps, as the grid
+and the card do; the marker is cleared two frames later, which starts no transition because
+nothing changes then. Before this, dragging the window across 1344px ran the button's colour
+transitions twice while everything else in the chat snapped.
+
 While the rail is hidden and a to-do step is running, the button carries a 6px coral dot and its
 name becomes "Chat summary, 2 of 5 to do items complete". The dot's 2px ring is the ground under
 it: the band at rest, the pressed fill while the popover is open. The terminal button beside it
@@ -193,10 +200,10 @@ or the pointer is over the summary.
 | `hooks/useColumnGlide.test.ts` | No glide while resizing, under reduced motion or under 8px; the composer left to its own FLIP; the scroll anchor |
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
-| `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
+| `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
 | `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
-| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end |
+| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end, and the header button's `data-still` beating the Button's layered transition with its clearing starting none |
 
 ## Related documentation
 

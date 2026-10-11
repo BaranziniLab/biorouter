@@ -216,6 +216,18 @@ describe('rung 0: the card’s motion stays off the grid', () => {
     expect(reduced).toContain('br-summary-rail-fade-in');
     expect(reduced).toContain('br-summary-rail-fade-out');
   });
+
+  it('snaps the header button’s pressed fill when geometry flips it (V2-R2-6)', () => {
+    // Top level and unlayered, so it beats the Button's layered transition utility.
+    expect(property(onlyRule('[data-summary-mode][data-still]').body, 'transition')).toBe('none');
+    // The button stamps it, and BaseChat tells it which changes were the person's.
+    const button = readFileSync(
+      join(__dirname, '../components/summary/SummaryHeaderButton.tsx'),
+      'utf8'
+    );
+    expect(codeWithoutComments(button)).toContain("data-still={stillAt !== 0 ? '' : undefined}");
+    expect(codeWithoutComments(BASE_CHAT)).toContain('railStill={summaryRail.still}');
+  });
 });
 
 describe('rung 0: BaseChat mounts one rail, statically', () => {

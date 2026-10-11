@@ -512,3 +512,84 @@ describe('the rail’s card in a real layout engine', () => {
     expect(at.footer.top).toBeGreaterThan(at.card.top);
   });
 });
+
+/**
+ * Vision V2-R2-6: the header button's pressed fill flipped with a transition
+ * while the window was dragged across the seam. `data-still` (stamped by
+ * `SummaryHeaderButton` for a change the person did not make) must beat the
+ * Button's layered transition utility, and clearing it afterwards must start
+ * nothing, because the colours it governs no longer change then.
+ */
+describe('the summary button’s pressed fill in a real engine', () => {
+  let browser: Browser | null = null;
+  let page: Page | null = null;
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn(
+        'No Chromium found — skipping the summary button motion tests. ' +
+          'Run `npx playwright install chromium` to enable them.'
+      );
+      return;
+    }
+    page = await browser.newPage({ viewport: { width: 400, height: 200 } });
+  }, 120_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  /** Flip the pressed state as React would, and count the transitions that start. */
+  async function flip(still: boolean) {
+    await page!.setContent(
+      '<!doctype html><html><head><style>' +
+        TOKENS +
+        // The Button's own transition utility and the pressed fill, as layered utilities.
+        `@layer utilities {
+          .btn { transition-property: color, background-color; transition-duration: 125ms; background: transparent; color: rgb(110, 110, 110); }
+          .pressed { background: rgb(234, 234, 230); color: rgb(20, 20, 20); }
+        }` +
+        RAIL_CSS +
+        '</style></head><body>' +
+        '<button class="btn pressed" data-summary-mode="rail" aria-expanded="true" id="b">S</button>' +
+        '</body></html>'
+    );
+    return page!.evaluate(async (stamp) => {
+      const button = document.getElementById('b')!;
+      void getComputedStyle(button).backgroundColor;
+      const frame = () => new Promise((done) => requestAnimationFrame(() => done(null)));
+      // The rail hides at the seam: the mode, the pressed state and (when the
+      // change is geometry's) the stamp land in one commit.
+      button.setAttribute('data-summary-mode', 'popover');
+      button.setAttribute('aria-expanded', 'false');
+      button.classList.remove('pressed');
+      if (stamp) button.setAttribute('data-still', '');
+      void getComputedStyle(button).backgroundColor;
+      const started = document.getAnimations().length;
+      await frame();
+      await frame();
+      button.removeAttribute('data-still');
+      void getComputedStyle(button).backgroundColor;
+      return {
+        started,
+        afterClear: document.getAnimations().length,
+        background: getComputedStyle(button).backgroundColor,
+      };
+    }, still);
+  }
+
+  it('snaps a geometric flip, and clearing the stamp starts nothing', async () => {
+    if (!page) return;
+    const result = await flip(true);
+    expect(result.started).toBe(0);
+    expect(result.afterClear).toBe(0);
+    expect(result.background).toBe('rgba(0, 0, 0, 0)');
+  });
+
+  it('fades the same flip when the person made it', async () => {
+    if (!page) return;
+    const result = await flip(false);
+    expect(result.started).toBe(2);
+  });
+});
