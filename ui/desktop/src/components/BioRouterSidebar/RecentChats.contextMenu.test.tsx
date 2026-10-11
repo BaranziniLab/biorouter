@@ -241,6 +241,98 @@ describe('the sidebar chat row menu', () => {
   });
 });
 
+/**
+ * Vision V1-R5-2. Neither row menu is modal (a modal menu restyles the whole window, R-28), so the
+ * list is modal itself while one is open: it does not scroll, its rows take no pointer
+ * (`data-row-menu-open`, sidebar.css; measured in `sidebarFill.browser.test.tsx`) and its rows
+ * hold their order wherever the pointer is. Without it the list scrolled 599px under an open menu
+ * whose Delete still named the chat that had gone off screen.
+ */
+describe('the list under an open row menu (vision V1-R5-2)', () => {
+  const list = () => screen.getByTestId('recent-chat-scroll');
+  /** Whether the list kept a wheel turn from scrolling it. */
+  const wheelKept = () => {
+    const event = new WheelEvent('wheel', { deltaY: 300, bubbles: true, cancelable: true });
+    list().dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const closeMenu = async () => {
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  };
+
+  it('stops scrolling and marks itself while the right-click menu is open', async () => {
+    renderRecents();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept(), 'at rest the wheel scrolls the list').toBe(false);
+
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    expect(list()).toHaveAttribute('data-row-menu-open', 'true');
+    expect(wheelKept(), 'the wheel scrolls nothing under the menu').toBe(true);
+
+    await closeMenu();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept()).toBe(false);
+  });
+
+  it('does the same for the row’s ⋯ menu', async () => {
+    renderRecents();
+    fireEvent.pointerDown(screen.getByTestId('recent-chat-more-20260823_2'), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    expect(list()).toHaveAttribute('data-row-menu-open', 'true');
+    expect(wheelKept()).toBe(true);
+
+    await closeMenu();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept()).toBe(false);
+  });
+
+  it('holds its rows in their order while a row menu is open, wherever the pointer is', async () => {
+    const at = (minutes: number) => new Date(Date.UTC(2026, 7, 23, 12, minutes)).toISOString();
+    const first = { ...session, id: 'a', name: 'Alpha', updated_at: at(10) };
+    const second = { ...session, id: 'b', name: 'Beta', updated_at: at(5) };
+    const draw = (sessions: SessionSummary[]) => (
+      <SidebarProvider>
+        <RecentChats
+          sessions={sessions}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={vi.fn()}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    const order = () =>
+      [...list().querySelectorAll('button[data-row^="chat:"]')].map((row) =>
+        row.getAttribute('data-row')
+      );
+    const { rerender } = render(draw([first, second]));
+    expect(order()).toEqual(['chat:a', 'chat:b']);
+
+    // The menu opens on Beta, and the pointer leaves the list for the menu (or anywhere else).
+    fireEvent.pointerEnter(list());
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-b'));
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    fireEvent.pointerLeave(list());
+
+    // A turn in Beta raises it: with its menu open, nothing moves.
+    rerender(draw([first, { ...second, updated_at: at(20) }]));
+    expect(order()).toEqual(['chat:a', 'chat:b']);
+
+    // The menu closes with the pointer away: the live order applies.
+    await closeMenu();
+    expect(order()).toEqual(['chat:b', 'chat:a']);
+  });
+});
+
 describe('deleting a chat from the sidebar', () => {
   it('requires confirmation and cancel leaves the session intact', async () => {
     renderRecents();

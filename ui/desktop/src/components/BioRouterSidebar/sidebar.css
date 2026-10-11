@@ -295,6 +295,18 @@
   mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
 }
 
+/* While a row's menu is open (the right-click menu or a ⋯; neither is modal,
+   R-28) the list is modal itself (vision V1-R5-2): its rows take no pointer, so
+   no other row lights or opens its hover card over the menu, and the press that
+   closes the menu lands on the list box, so the click it makes opens no chat.
+   The row the menu is about stays lit by `data-menu-open`, and its ⋯ stays by
+   `aria-expanded`. Scoped to the list's own subtree (about 40 drawn rows), not
+   to <body>, which is the restyle the non-modal menu exists to avoid. The list
+   also stops scrolling (`RecentChats`). */
+.br-sidebar-chats-scroll[data-row-menu-open] .br-sidebar-chat-groups {
+  pointer-events: none;
+}
+
 /* A view change re-renders the list at rest and fades it from 0.6; rows never FLIP. */
 .br-sidebar-chat-groups[data-view-changed='true'] {
   animation: br-sidebar-list-settle var(--dur-fast-max) var(--ease-out);

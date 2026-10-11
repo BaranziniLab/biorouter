@@ -211,8 +211,26 @@ The list's right-click menu is not modal (round 4). A modal Radix menu sets `poi
 on `<body>`, an inherited property, so opening it and closing it each restyled every element in the
 window (about 50 ms each way with 2,100 rows drawn, more with a long chat open), and it locked the
 page's scroll, which reads the body's computed style. A row's ⋯ menu, the same menu, was never
-modal; now both behave alike: a click outside closes the menu and lands where it was aimed, and the
-list can scroll under an open menu, its row kept drawn and lit.
+modal; now both behave alike: a click outside the list closes the menu and lands where it was aimed.
+
+The list is modal itself while either menu is open (vision V1-R5-2, round 5). Left free, it
+answered under the menu: the wheel scrolled it 599px and left the menu beside other chats, whose
+Delete still named the chat that had gone off screen; another row lit and drew its hover card over
+the menu, so the first Escape closed the card; and the press that closed the menu opened the chat
+it landed on. Now, while `listMenuOpen` (the right-click menu, or a row's or folder header's `⋯`):
+
+- the wheel and a touch drag scroll nothing (a non-passive listener on the list, not
+  `overflow: hidden`, which takes an always-shown scroll bar away and widens every row);
+- `data-row-menu-open` on `.br-sidebar-chats-scroll` takes the pointer from the list's rows
+  (`sidebar.css`), so no other row lights or opens its card, and the press that closes the menu
+  lands on the list box, so the click it makes opens nothing, as in History, whose right-click
+  menu is modal;
+- the row's own hover card stays shut, and its row stays lit by `data-menu-open`;
+- the rows hold their order wherever the pointer is (`holding`).
+
+That restyles only the list's own subtree, about 40 drawn rows: a right-click measured 5 to 7 ms
+of commit, style and layout with 2,000 chats held (4 to 6 ms before), in a production build. A
+programmatic scroll still moves the list, and the menu's row is still kept drawn for it.
 
 Rows are memoized with stable handlers, so the pointer
 entering the list or a keystroke in a rename re-renders no other row. Each view's arrangement is
@@ -389,10 +407,10 @@ tab stop, so Tab reaches them from the row.
 | `BioRouterSidebar/RecentChats.drawRange.test.tsx` | The right-click menu leaving `<body>` alone (not modal), a list that cannot be measured drawing every line it reaches with no placeholder, and `scrollRowIntoView` showing a header only for its group's first line |
 | `BioRouterSidebar/RecentChats.menuRoots.test.tsx` | No menu root per drawn row: rendering and a key press add a handful of document listeners, not one per row; a `⋯` armed by focus keeps focus and opens from Enter; the one right-click menu opens on the row it came from and on nothing else |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
-| `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
+| `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes; the list under an open right-click or `⋯` menu marking itself, keeping the wheel from scrolling it and holding its rows' order with the pointer gone |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, only the rows near the viewport drawn in a list scrolled to its middle (each visible row on its own line, the list exactly as tall as its lines, no placeholder in view, the right-click menu leaving `<body>` alone, Home reaching the first chat), the same under Larger text (the stylesheet served through the font-scale plugin), and with the list scrolled away under them: ArrowUp and ArrowDown reaching the next line, Tab landing on the current chat, a pointer-opened ⋯ menu staying open, a focused folder header or Show more keeping focus, and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, only the rows near the viewport drawn in a list scrolled to its middle (each visible row on its own line, the list exactly as tall as its lines, no placeholder in view, the right-click menu leaving `<body>` alone, Home reaching the first chat), the same under Larger text (the stylesheet served through the font-scale plugin), and with the list scrolled away under them: ArrowUp and ArrowDown reaching the next line, Tab landing on the current chat, a pointer-opened ⋯ menu staying open, a focused folder header or Show more keeping focus; with a right-click or `⋯` menu open, the wheel scrolling nothing, no other row lit and no hover card, the first Escape closing the menu, a press on another row only closing it, and the list live again after; and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation

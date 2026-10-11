@@ -421,9 +421,12 @@ const RecentChatRow = memo(function RecentChatRow({
   // The hover card is held here so it can be shut when the row stops being
   // seen: no pointer event tells Radix the anchor went away.
   const [cardOpen, setCardOpen] = useState(false);
+  // Nor while the row's own menu is open: the card would draw beside the menu,
+  // and the first Escape would close the card instead of the menu (V1-R5-2).
+  const rowMenuShown = menuOpen || contextMenuOpen;
   useEffect(() => {
-    if (!listShown) setCardOpen(false);
-  }, [listShown]);
+    if (!listShown || rowMenuShown) setCardOpen(false);
+  }, [listShown, rowMenuShown]);
   // The hover card is built when first shown; the ⋯ builds its own label and menu.
   const [built, buildOnOpen] = useBuiltOnOpen<'card'>();
   // Rename was chosen in a menu: start editing once the menu has let go of
@@ -511,8 +514,9 @@ const RecentChatRow = memo(function RecentChatRow({
     >
       <Tooltip
         delayDuration={CHAT_HOVER_CARD_DELAY_MS}
-        open={cardOpen && listShown}
+        open={cardOpen && listShown && !rowMenuShown}
         onOpenChange={(open) => {
+          if (open && rowMenuShown) return;
           if (open && labelRef.current) {
             setTitleIsCut(labelRef.current.scrollWidth > labelRef.current.clientWidth);
           }
@@ -844,8 +848,47 @@ export default function RecentChats({
   const [editing, setEditing] = useState<{ sessionId: string; draft: string } | null>(null);
   const focusAfterEdit = useRef<string | null>(null);
 
-  // Principle 9: while the pointer is over the list (or a row is being renamed)
-  // the rows hold still; the live order applies when it leaves.
+  // The list's right-click menu (one for the list, R-28) and the row or folder
+  // header whose ⋯ menu is open. A ⋯ opened with the pointer never takes focus
+  // (Radix prevents it), and a programmatic scroll can still move the list under
+  // a menu: the line stays drawn while its menu is open, or the menu would vanish.
+  const [menuRowId, setMenuRowId] = useState<string | null>(null);
+  const [rowMenuOpen, setRowMenuOpen] = useState(false);
+  const [lineMenuKey, setLineMenuKey] = useState<string | null>(null);
+  const onLineMenuChange = useCallback(
+    (key: string, open: boolean) =>
+      setLineMenuKey((current) => (open ? key : current === key ? null : current)),
+    []
+  );
+  // A row menu is open: the right-click menu, or a row's or folder header's ⋯.
+  // Neither menu is modal (a modal one restyles the whole window, R-28), so
+  // the list makes itself modal instead, and only itself (vision V1-R5-2):
+  // - it does not scroll (`useEffect` below), so the menu stays beside its row
+  //   and Delete, Rename and Export act on the chat on screen;
+  // - its rows take no pointer (`data-row-menu-open`, sidebar.css): no other
+  //   row lights or opens its hover card over the menu, and the press that
+  //   dismisses the menu lands on the list, not on a row, so it only closes
+  //   the menu, as it does in History;
+  // - its rows hold still, wherever the pointer is (`holding`, below).
+  const listMenuOpen = rowMenuOpen || lineMenuKey !== null;
+  // The wheel and a touch drag scroll nothing while a row menu is open. Not
+  // `overflow: hidden`: with scroll bars always shown, that takes the bar away
+  // and widens every row under the menu.
+  useEffect(() => {
+    const list = scrollContainerRef.current;
+    if (!listMenuOpen || !list) return;
+    const stay = (event: Event) => event.preventDefault();
+    list.addEventListener('wheel', stay, { passive: false });
+    list.addEventListener('touchmove', stay, { passive: false });
+    return () => {
+      list.removeEventListener('wheel', stay);
+      list.removeEventListener('touchmove', stay);
+    };
+  }, [listMenuOpen]);
+
+  // Principle 9: while the pointer is over the list (or a row is being renamed,
+  // or a row's menu is open) the rows hold still; the live order applies when
+  // it leaves.
   //
   // A hold is of the view DRAWN. A view that waits for its full read is not
   // drawn until the read lands (`shownView`), so what is drawn is always right
@@ -857,7 +900,7 @@ export default function RecentChats({
   // drawn rather than as "every row arrives below nothing", which held nothing.
   const [pointerInside, setPointerInside] = useState(false);
   const [held, setHeld] = useState<HeldArrangement | null>(null);
-  const holding = pointerInside || editing !== null;
+  const holding = pointerInside || editing !== null || listMenuOpen;
   const heldApplies =
     holding &&
     held !== null &&
@@ -981,23 +1024,12 @@ export default function RecentChats({
     [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId]
   );
 
-  // A rename the person made, and the list's right-click menu: declared here
-  // because the rows they name are always drawn (below).
+  // A rename the person made: declared here because the row it names is always
+  // drawn (below).
   const [reveal, setReveal] = useState<{ sessionId: string } | null>(null);
-  const [menuRowId, setMenuRowId] = useState<string | null>(null);
-  const [rowMenuOpen, setRowMenuOpen] = useState(false);
   // The row that last had focus in the list, kept drawn so focus is never
   // unmounted from under the person when the list scrolls away from it.
   const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
-  // The row or folder header whose ⋯ menu is open. A ⋯ opened with the pointer
-  // never takes focus (Radix prevents it), and the menu is not modal, so the
-  // list can scroll under it: its line stays drawn, or the menu would vanish.
-  const [lineMenuKey, setLineMenuKey] = useState<string | null>(null);
-  const onLineMenuChange = useCallback(
-    (key: string, open: boolean) =>
-      setLineMenuKey((current) => (open ? key : current === key ? null : current)),
-    []
-  );
 
   // R-28: the list reaches `renderBudget` lines down (the rest wait until it is
   // scrolled near its end), and of those it draws for real only the lines in
@@ -1524,6 +1556,7 @@ export default function RecentChats({
         data-testid="recent-chat-scroll"
         hidden={!isExpanded}
         className="br-sidebar-chats-scroll"
+        data-row-menu-open={listMenuOpen ? 'true' : undefined}
         onScroll={handleScroll}
         onPointerEnter={() => setPointerInside(true)}
         onPointerLeave={() => setPointerInside(false)}
@@ -1544,7 +1577,9 @@ export default function RecentChats({
           // every element in the window (about 50 ms each way with 2,100 rows
           // drawn, more with a long chat open), and it mounted a scroll lock that
           // read the body's computed style. The row's ⋯ menu, the same menu,
-          // was never modal: both now behave alike, and a click outside closes
+          // was never modal: both now behave alike. The LIST is modal while
+          // either is open (`listMenuOpen`, vision V1-R5-2): it holds still and
+          // a press on it only closes the menu; a click outside the list closes
           // the menu and lands where it was aimed.
           <ContextMenu modal={false} onOpenChange={setRowMenuOpen}>
             <ContextMenuTrigger

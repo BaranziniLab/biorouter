@@ -1061,6 +1061,105 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     });
 
     /**
+     * Vision V1-R5-2. Neither row menu is modal, so a modal one's body restyle is not paid (R-28),
+     * but then the list answered under the menu: three wheel turns scrolled it 599px and left the
+     * menu beside other chats, another row lit and drew its hover card over the menu, and the
+     * press that closed the menu opened the chat it landed on. The list is modal itself now, for
+     * both openers: it does not scroll, no other row lights or opens its card, the first Escape
+     * closes the menu, and a press on another row only closes it. Once the menu is gone the list
+     * scrolls and lights again.
+     */
+    it('holds the list still under an open row menu, and a press on it opens nothing (V1-R5-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await openLongList(120);
+      const list = '[data-testid="recent-chat-scroll"]';
+      const row = (id: string) => `[data-testid="recent-chat-${id}"]`;
+      const scrollTop = () => tab.evaluate((l) => document.querySelector(l)!.scrollTop, list);
+      const current = () =>
+        tab.evaluate(
+          (l) => document.querySelector(`${l} [aria-current="page"]`)?.getAttribute('data-row'),
+          list
+        );
+      const cards = () => tab.locator('[data-testid^="recent-chat-summary-"]').count();
+      const openMenu = async (opener: 'right-click' | '⋯') => {
+        if (opener === 'right-click') {
+          await tab.click(row('s4'), { button: 'right' });
+        } else {
+          await tab.hover(row('s4'));
+          await tab.click('[data-testid="recent-chat-more-s4"]');
+        }
+        await tab.getByRole('menuitem', { name: /^Rename/ }).waitFor();
+        // Past the menu's entrance (it zooms in from 95%).
+        await settle(tab);
+      };
+      try {
+        await scrollLongList(tab, 0);
+        expect(await current()).toBe('chat:s2');
+        const other = (await tab.locator(row('s8')).boundingBox())!;
+        const onOther = { x: other.x + 40, y: other.y + other.height / 2 };
+
+        for (const opener of ['right-click', '⋯'] as const) {
+          await openMenu(opener);
+          const rowBefore = await tab.locator(row('s4')).boundingBox();
+          const menuBefore = await tab.getByRole('menu').boundingBox();
+
+          // The wheel over the list scrolls nothing: the menu stays beside its row.
+          await tab.mouse.move(onOther.x, onOther.y);
+          for (let i = 0; i < 3; i++) {
+            await tab.mouse.wheel(0, 300);
+            await tab.waitForTimeout(60);
+          }
+          await settle(tab);
+          expect(await scrollTop(), `${opener}: the list did not scroll`).toBe(0);
+          expect(await tab.locator(row('s4')).boundingBox(), `${opener}: its row`).toEqual(
+            rowBefore
+          );
+          expect(await tab.getByRole('menu').boundingBox(), `${opener}: the menu`).toEqual(
+            menuBefore
+          );
+
+          // Another row under the pointer neither lights nor opens its card (past its 700ms).
+          await tab.waitForTimeout(1_000);
+          expect(await ground(tab, row('s8')), `${opener}: the other row rests`).toBe(
+            'rgba(0, 0, 0, 0)'
+          );
+          expect(await cards(), `${opener}: no hover card`).toBe(0);
+          // The row the menu is about stays lit.
+          expect(await ground(tab, row('s4')), `${opener}: its row lit`).toBe(
+            await paint(tab, 'var(--sidebar-hover)')
+          );
+
+          // A press on another row closes the menu, and opens nothing.
+          await tab.mouse.click(onOther.x, onOther.y);
+          await tab.getByRole('menu').waitFor({ state: 'detached' });
+          await settle(tab);
+          expect(await current(), `${opener}: the current chat is unchanged`).toBe('chat:s2');
+        }
+
+        // The first Escape closes the menu, with the pointer resting on another row.
+        await openMenu('right-click');
+        await tab.mouse.move(onOther.x, onOther.y);
+        await tab.waitForTimeout(1_000);
+        await tab.keyboard.press('Escape');
+        await tab.getByRole('menu').waitFor({ state: 'detached', timeout: 2_000 });
+
+        // With no menu, the list is live again: the row under the pointer lights, the wheel
+        // scrolls, and a click opens the chat.
+        await tab.mouse.move(onOther.x, onOther.y + 1);
+        await settle(tab);
+        expect(await ground(tab, row('s8')), 'the row lights again').toBe(
+          await paint(tab, 'var(--sidebar-hover)')
+        );
+        await tab.mouse.click(onOther.x, onOther.y);
+        await expect.poll(current, { timeout: 2_000 }).toBe('chat:s8');
+        await tab.mouse.wheel(0, 300);
+        await expect.poll(scrollTop, { timeout: 2_000 }).toBeGreaterThan(0);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
      * Group by Folder: a focused folder header and a focused "Show more" are lines too. Folded into
      * a placeholder when the list scrolls away, they dropped focus to the page; they are kept drawn
      * like a focused row, and ArrowDown from the header still reaches the folder's first chat.
