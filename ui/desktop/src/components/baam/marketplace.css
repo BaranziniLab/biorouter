@@ -56,6 +56,17 @@
   background-color: var(--background-strong);
 }
 
+/* A LEADING CHECKBOX is a 16px box in a 24px hit target, so its visible edge sits 4px inside the
+   row's content edge, and with it 4px off the search field, the chips and the group label above
+   it, all of which start on that edge (measured: 421 against 417). The margin pulls the target out
+   by the inset, so the box shares the column's left edge and the name moves with it; the gap
+   between them is unchanged. */
+.br-marketplace-leading {
+  display: flex;
+  flex-shrink: 0;
+  margin-inline-start: -4px;
+}
+
 /* A row's muted fact gives way before its name does. */
 .br-marketplace-row [data-marketplace-title] {
   flex-shrink: 1;

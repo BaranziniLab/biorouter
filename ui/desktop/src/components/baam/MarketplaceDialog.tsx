@@ -224,7 +224,7 @@ export function MarketplaceRow({
       data-disabled={disabled ? '' : undefined}
       data-testid={testId}
     >
-      {leading}
+      {leading != null && <span className="br-marketplace-leading">{leading}</span>}
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2">
           <span data-marketplace-title="" className="min-w-0 truncate text-label text-text-default">

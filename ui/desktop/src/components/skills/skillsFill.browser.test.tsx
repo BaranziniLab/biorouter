@@ -37,6 +37,7 @@ import AddSkillModal from './AddSkillModal';
 import { MarketplaceDialog, MarketplaceRow, MarketplaceSection } from '../baam/MarketplaceDialog';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { Checkbox } from '../ui/Checkbox';
 
 const state = { machineEnabled: true, session: 'default', sessionViaBundle: false, hiddenContext: false, effective: true };
 const skill = (name) => ({
@@ -68,7 +69,8 @@ function Market() {
       <MarketplaceSection label="Core" count={3}>
         {['One', 'Two', 'Three'].map((n) => (
           <MarketplaceRow
-            key={n} title={n} badges={<Badge tone="neutral">Public</Badge>} meta="UCSF · v0.1.0"
+            key={n} title={n} leading={n === 'One' ? <Checkbox aria-label={n} checked={false} onChange={noop} /> : undefined}
+            badges={<Badge tone="neutral">Public</Badge>} meta="UCSF · v0.1.0"
             description="A description on one line"
             trailing={<Button size="sm" variant="secondary" aria-label={'Add ' + n}>Add</Button>}
           />
@@ -332,6 +334,32 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
       } finally {
         await tab.close();
       }
+    }
+  });
+
+  it('starts a leading checkbox’s visible box on the column edge the search, the chips and the group label share', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('market', 'light', { ready: '.br-checkbox-box' });
+    try {
+      const edges = await tab.evaluate(() => {
+        const left = (el: Element | null) => el!.getBoundingClientRect().left;
+        const label = document.querySelector('.br-marketplace-section-label')!;
+        return {
+          search: left(document.querySelector('input[aria-label="Search extensions"]')),
+          // The label's text starts after its own 12px of padding.
+          label: left(label) + parseFloat(getComputedStyle(label).paddingLeft),
+          box: left(document.querySelector('.br-checkbox-box')),
+          title: left(document.querySelector('[data-marketplace-row] [data-marketplace-title]')),
+          boxRight: document.querySelector('.br-checkbox-box')!.getBoundingClientRect().right,
+        };
+      });
+      // The 24px hit target's 4px inset used to leave the box at 421 against 417.
+      expect(edges.box).toBe(edges.search);
+      expect(edges.box).toBe(edges.label);
+      // And the gap from the box to the name is what it was.
+      expect(edges.title - edges.boxRight).toBe(16);
+    } finally {
+      await tab.close();
     }
   });
 
