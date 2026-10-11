@@ -36,11 +36,15 @@ import {
   FIGURE_COPY,
   FIGURE_NAMES,
   TOOL_ROW_COPY,
+  inSentence,
   sentenceStart,
+  spellServerName,
   toolActionPhrase,
+  toolCallNameWords,
   toolNamePhrase,
   toolNameWords,
   toolRowLabel,
+  toolServerName,
   type ToolRowState,
 } from './toolCallCopy';
 
@@ -567,6 +571,27 @@ const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): str
   return `${text.slice(0, keep)}…${text.slice(-keep)}`;
 };
 
+/** Longest query or command a row carries; past it the text is cut at its end. */
+const MAX_LINE_VALUE_LENGTH = 160;
+
+/**
+ * A query or a command, which a row reads left to right. It is cut once, at its
+ * end, and only past a length no row shows, so the row's own CSS ellipsis is
+ * the one a person sees. Cutting its middle as well put two ellipses on one
+ * line ("COUNT(*) AS…BY sample_type ORDER BY n …", V2-R2-5). A single token (a
+ * path, a name) keeps both ends, as {@link compactValue} does.
+ */
+const lineValue = (value: unknown): string => {
+  const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
+  if (!/\s/.test(text)) return compactValue(text);
+  const characters = Array.from(text);
+  if (characters.length <= MAX_LINE_VALUE_LENGTH) return text;
+  return `${characters
+    .slice(0, MAX_LINE_VALUE_LENGTH - 1)
+    .join('')
+    .trimEnd()}…`;
+};
+
 const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
   const text = description.replace(/\s+/g, ' ').trim();
   const placeholder =
@@ -577,16 +602,30 @@ const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
   return placeholder ? sentenceStart(toolNamePhrase(tool)) : text;
 };
 
+/** The verb a script's row carries, so the state reads "Ran …", "Failed to run …". */
+const RUN_SCRIPT = 'Running ';
+
+/**
+ * A coordinated script as the work its plan names, its first and last steps
+ * in the model's own words after the verb: "Running list KBs → active KB",
+ * "Ran …" once done (V2-R2-4). Without the verb the line was the bare
+ * description, lowercase, the one row in a turn with no state on it.
+ */
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
-  const descriptions = graph.map(toolGraphNodeLabel);
+  // Each step follows the verb, so it opens in lowercase unless it starts with a name.
+  const descriptions = graph.map((node) => inSentence(toolGraphNodeLabel(node)));
   const actions = [...new Set(descriptions)];
   const shorten = (text: string, limit: number): string => {
     const characters = Array.from(text);
     return characters.length <= limit ? text : `${characters.slice(0, limit - 1).join('')}…`;
   };
-  if (actions.length === 1) return shorten(actions[0], MAX_SUMMARY_VALUE_LENGTH);
-  const actionLimit = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 3) / 2);
-  return `${shorten(actions[0], actionLimit)} → ${shorten(actions[actions.length - 1], actionLimit)}`;
+  const planLimit = MAX_SUMMARY_VALUE_LENGTH - RUN_SCRIPT.length;
+  if (actions.length === 1) return `${RUN_SCRIPT}${shorten(actions[0], planLimit)}`;
+  const actionLimit = Math.floor((planLimit - 3) / 2);
+  return `${RUN_SCRIPT}${shorten(actions[0], actionLimit)} → ${shorten(
+    actions[actions.length - 1],
+    actionLimit
+  )}`;
 };
 
 /** A web address as a row names it: the host and the path ("ucsf.edu/people"). */
@@ -655,7 +694,7 @@ const summarizeDelegation = (args: Record<string, unknown>): string => {
 
 const summarizeSearchQuery = (value: unknown): string | null => {
   if (!value) return null;
-  if (typeof value === 'string') return compactValue(value);
+  if (typeof value === 'string') return lineValue(value);
   if (Array.isArray(value)) {
     // A plain list of terms (e.g. search_modules' `terms: ["fetch", "http"]`)
     // reads best joined, not JSON-stringified.
@@ -663,16 +702,16 @@ const summarizeSearchQuery = (value: unknown): string | null => {
       value.length > 0 &&
       value.every((item) => typeof item === 'string' || typeof item === 'number')
     ) {
-      return compactValue(value.join(', '));
+      return lineValue(value.join(', '));
     }
     const first = value[0] as Record<string, unknown> | undefined;
-    return first ? compactValue(first.q ?? first.query ?? first.search_query ?? value) : null;
+    return first ? lineValue(first.q ?? first.query ?? first.search_query ?? value) : null;
   }
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    return compactValue(record.q ?? record.query ?? record.search_query ?? value);
+    return lineValue(record.q ?? record.query ?? record.search_query ?? value);
   }
-  return compactValue(value);
+  return lineValue(value);
 };
 
 const namedArgument = (args: Record<string, unknown>, keys: string[]): string | null => {
@@ -1046,10 +1085,20 @@ const summarizeFigureCall = (toolName: string, args: Record<string, unknown>): s
   return null;
 };
 
+/**
+ * The words on a tool's row while it runs ("Reading package.json"); the row's
+ * state conjugates the verb (`toolRowLabel`). A server that prefixes its tools
+ * with its own name keeps that name's spelling ("Listing MedCP clinical
+ * tables", V2-R2-5).
+ */
 export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
+  return spellServerName(describeToolCall(toolCall, toolResult), toolServerName(toolCall.name));
+}
+
+function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
-  const toolWords = toolNameWords(toolName);
+  const toolWords = toolCallNameWords(toolCall.name);
   const hasToolWord = (...words: string[]) => words.some((word) => toolWords.includes(word));
   /**
    * The tool's name without the verb a branch matched, as words that read in a
@@ -1108,7 +1157,7 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
       return `Reading ${targetName ?? 'a knowledge page'}${base ? ` in ${base}` : ''}`;
     }
     if (toolName === 'kb_search') {
-      const query = namedArgument(args, ['query']);
+      const query = summarizeSearchQuery(args.query);
       return `Searching ${base ?? 'knowledge bases'}${query ? ` for ${query}` : ''}`;
     }
   }
@@ -1151,7 +1200,7 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   }
 
   if (toolName === 'shell' || toolName === 'exec_command' || hasToolWord('command')) {
-    return command ? `Running ${compactValue(command)}` : `Running a command`;
+    return command ? `Running ${lineValue(command)}` : `Running a command`;
   }
 
   if (toolName === 'apply_patch') return `Applying a code patch`;

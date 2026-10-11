@@ -1,7 +1,7 @@
 import React from 'react';
 import { toolGlyphFor } from '../utils/toolGlyph';
 import { TranscriptRow } from './TranscriptRow';
-import { TOOL_ROW_COPY, toolNamePhrase } from './toolCallCopy';
+import { TOOL_ROW_COPY, toolCallPhrase } from './toolCallCopy';
 import type { PendingToolCallView } from '../hooks/chatStreamStore';
 
 /**
@@ -19,7 +19,7 @@ import type { PendingToolCallView } from '../hooks/chatStreamStore';
  */
 export const PendingToolCallCard: React.FC<{ pending: PendingToolCallView }> = ({ pending }) => {
   // Inside the sentence "Preparing text editor", so sentence case.
-  const toolSummary = toolNamePhrase(pending.name.split('__').pop() ?? pending.name);
+  const toolSummary = toolCallPhrase(pending.name);
   // No arguments yet, so the ladder answers from the name alone.
   const glyph = toolGlyphFor(pending.name);
   // The same 28px line the real call will draw, static (nothing to open yet)

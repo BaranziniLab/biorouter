@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  inSentence,
   toolActionPhrase,
+  toolCallNameWords,
+  toolCallPhrase,
   toolDisplayName,
+  toolServerName,
   toolNamePhrase,
   toolNameWords,
   toolRowLabel,
@@ -59,6 +63,30 @@ describe('tool names read in sentence case (V2-04)', () => {
     expect(toolNamePhrase('agent_drafter_build_app')).toBe('Agent Drafter build app');
     expect(toolNamePhrase('autovisualiser_kb_sync')).toBe('Auto Visualiser KB sync');
     expect(toolDisplayName('developer__text_editor')).toBe('Text editor');
+  });
+
+  // V2-R2-5: "med cp" was a server's own name split as an identifier.
+  it('keeps the spelling of a server name its tools carry as a prefix', () => {
+    expect(toolServerName('medcp__MedCP-list_clinical_tables')).toBe('MedCP');
+    expect(toolServerName('thirdparty__MedCP-list_clinical_tables')).toBeNull();
+    expect(toolServerName('developer__text_editor')).toBeNull();
+    expect(toolCallNameWords('medcp__MedCP-list_clinical_tables')).toEqual([
+      'medcp',
+      'list',
+      'clinical',
+      'tables',
+    ]);
+    expect(toolCallPhrase('medcp__MedCP-list_clinical_tables')).toBe('MedCP list clinical tables');
+    expect(toolDisplayName('medcp__MedCP-list_clinical_tables')).toBe('MedCP list clinical tables');
+    expect(toolCallPhrase('developer__text_editor')).toBe('text editor');
+  });
+
+  it('writes a step in its own words mid-sentence, keeping names in capitals', () => {
+    expect(inSentence('Read the manifest')).toBe('read the manifest');
+    expect(inSentence('list KBs')).toBe('list KBs');
+    expect(inSentence('KBs in Soul')).toBe('KBs in Soul');
+    expect(inSentence('Agent Drafter build app')).toBe('Agent Drafter build app');
+    expect(inSentence('Biorouter docs')).toBe('Biorouter docs');
   });
 
   it.each([

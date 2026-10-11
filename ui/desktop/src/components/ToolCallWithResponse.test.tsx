@@ -403,7 +403,25 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Read the manifest → Patch the UI');
+    ).toBe('Running read the manifest → patch the UI');
+  });
+
+  // V2-R2-4: a script's row carried the bare plan ("list KBs → active KB"), the
+  // one line in a turn with no verb and a lowercase start.
+  it('puts the state verb before a script plan, the way every other row reads', () => {
+    const summary = summarizeToolCall({
+      name: 'code_execution__execute_code',
+      arguments: {
+        tool_graph: [
+          { tool: 'knowledge/kb_list_bases', description: 'list KBs' },
+          { tool: 'knowledge/kb_get_active', description: 'active KB' },
+        ],
+      },
+    });
+    expect(summary).toBe('Running list KBs → active KB');
+    expect(toolRowLabel(summary, 'done')).toBe('Ran list KBs → active KB');
+    expect(toolRowLabel(summary, 'failed')).toBe('Failed to run list KBs → active KB');
+    expect(toolRowLabel(summary, 'stopped')).toBe('Stopped running list KBs → active KB');
   });
 
   it('uses tool identities when graph descriptions are numbered placeholders', () => {
@@ -417,7 +435,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Agent Drafter build app → Agent Drafter smoke app');
+    ).toBe('Running Agent Drafter build app → Agent Drafter smoke app');
   });
 
   it('does not repeat identical action descriptions in a coordinated label', () => {
@@ -431,7 +449,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Read queue data');
+    ).toBe('Running read queue data');
   });
 
   it.each([
@@ -449,7 +467,7 @@ describe('summarizeToolCall', () => {
         name: 'code_execution__execute_code',
         arguments: { tool_graph: [{ tool: 'files/read', description }] },
       })
-    ).toBe('Files read');
+    ).toBe('Running files read');
   });
 
   it('preserves an ordinal label when it also names substantive work', () => {
@@ -462,7 +480,7 @@ describe('summarizeToolCall', () => {
           ],
         },
       })
-    ).toBe('Step 1 of 3: Read the signed manifest');
+    ).toBe('Running step 1 of 3: Read the signed manifest');
   });
 
   it('ignores malformed graph nodes and falls back for an empty graph', () => {
@@ -484,7 +502,7 @@ describe('summarizeToolCall', () => {
         ],
       },
     });
-    expect(label.startsWith('Read ')).toBe(true);
+    expect(label.startsWith('Running read ')).toBe(true);
     expect(Array.from(label).length).toBeLessThanOrEqual(96);
     expect(() => encodeURIComponent(label)).not.toThrow();
   });
@@ -634,7 +652,7 @@ describe('summarizeToolCall', () => {
     );
 
     fireEvent.click(
-      screen.getByText('Failed: Attempt the command').closest('button') as HTMLElement
+      screen.getByText('Failed to run attempt the command').closest('button') as HTMLElement
     );
 
     const step = screen.getByText('1. Attempt the command');
@@ -970,7 +988,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     // Expand the step row, then the executed-calls section.
     fireEvent.click(
-      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
     );
 
     expect(screen.getByText('Read manifest.json')).toBeInTheDocument();
@@ -1005,7 +1023,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
     );
 
     // The highlighter splits the source into token spans, so assert on the
@@ -1052,7 +1070,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
     );
 
     // The literal markdown source is visible as text…
@@ -1093,7 +1111,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
     );
 
     expect(screen.getByText('3 not recorded')).toBeInTheDocument();
@@ -1129,7 +1147,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
     );
 
     fireEvent.click(
-      screen.getByText(/Read the manifest → List the files/).closest('button') as HTMLElement
+      screen.getByText(/read the manifest → list the files/).closest('button') as HTMLElement
     );
     expect(screen.getByText('2 not recorded')).toBeInTheDocument();
     expect(
@@ -1174,7 +1192,7 @@ describe('ToolCallWithResponse executed-call transparency', () => {
 
     fireEvent.click(
       screen
-        .getByText('Stopped: Agent Drafter build app → Agent Drafter smoke app')
+        .getByText('Stopped running Agent Drafter build app → Agent Drafter smoke app')
         .closest('button') as HTMLElement
     );
     expect(screen.getByText('1. Agent Drafter build app')).toHaveAttribute(
@@ -1280,7 +1298,7 @@ describe('ToolCallWithResponse nested todo metadata', () => {
         onOpenArtifact={noopOpenArtifact}
       />
     );
-    fireEvent.click(screen.getByText(new RegExp(planTitle)).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText(new RegExp(planTitle, 'i')).closest('button') as HTMLElement);
     return rendered;
   };
 
@@ -1934,6 +1952,42 @@ describe('summarizeToolCall: a tool without its own summary still reads as an ac
       expect(summary).not.toMatch(/\b(?:50|120|false|rec-1|u-9|0b8c7a52)\b/);
     }
     expect(summaries[3]).toBe('Creating record · Cohort notes');
+  });
+
+  // V2-R2-5: a server that prefixes its tools with its own name read "Listed
+  // med cp clinical tables"; the name is a product name and keeps its spelling.
+  it('keeps the spelling of a server name its tools carry as a prefix', () => {
+    const tables = label('medcp__MedCP-list_clinical_tables');
+    expect(tables).toBe('Listing MedCP clinical tables');
+    expect(toolRowLabel(tables, 'done')).toBe('Listed MedCP clinical tables');
+    const records = label('medcp__MedCP-query_clinical_records', {
+      sql: 'SELECT person_id FROM person',
+    });
+    expect(records).toBe('Searching MedCP clinical records · SELECT person_id FROM person');
+    // Only the server's own prefix: a hyphenated name from elsewhere splits as before.
+    expect(label('thirdparty__MedCP-list_tables')).toBe('Listing med cp tables');
+  });
+
+  // V2-R2-5: a long query was cut in its middle and then again by the row's CSS
+  // ellipsis: "COUNT(*) AS…BY sample_type ORDER BY n …".
+  it('cuts a long query once, at its end, and leaves the visible cut to the row', () => {
+    const sql =
+      'SELECT sample_type, sample_subtype, COUNT(*) AS n FROM stool_samples WHERE sample_type ' +
+      "IN ('S','Q','Q1','Q2') GROUP BY sample_type, sample_subtype ORDER BY n";
+    const summary = label('msbaseagent__query_database', { query: sql });
+    expect(summary).toBe(`Searching for ${sql}`);
+    expect(summary.match(/…/g)).toBeNull();
+
+    const long = label('msbaseagent__query_database', {
+      query: `${sql} ${'AND x = 1 '.repeat(40)}`,
+    });
+    expect(long.match(/…/g)).toHaveLength(1);
+    expect(long.endsWith('…')).toBe(true);
+    expect(long.startsWith(`Searching for ${sql}`)).toBe(true);
+
+    const command = label('developer__shell', { command: `cargo test ${'-p crate '.repeat(30)}` });
+    expect(command.match(/…/g)).toHaveLength(1);
+    expect(command.endsWith('…')).toBe(true);
   });
 });
 

@@ -5,7 +5,7 @@ import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
 import { TranscriptRow } from './TranscriptRow';
-import { APPROVAL_COPY, sentenceStart, toolNamePhrase } from './toolCallCopy';
+import { APPROVAL_COPY, sentenceStart, toolCallPhrase } from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 import { isBrowserSurface } from '../utils/surface';
 
@@ -52,7 +52,7 @@ type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolC
  * text editor?"). Sentence case: acronyms and product names keep capitals.
  */
 function friendlyToolName(toolName: string): string {
-  return toolNamePhrase(toolName.split('__').pop() ?? toolName);
+  return toolCallPhrase(toolName);
 }
 
 interface ToolConfirmationProps {

@@ -158,9 +158,69 @@ export function sentenceStart(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * Words written mid-sentence: a step a model described in its own words opens
+ * in lowercase ("Read the manifest" → "read the manifest") so it can follow a
+ * verb. Only a plainly capitalized first word moves: "KBs", "SQL" and a
+ * product name ("Biorouter", "Agent Drafter") keep their capitals.
+ */
+export function inSentence(text: string): string {
+  if (!/^[A-Z][a-z]+(?![A-Za-z0-9])/.test(text)) return text;
+  const probe = text.toLowerCase();
+  const named = PRODUCT_NAMES.reduce(
+    (phrase, [pattern, name]) => phrase.replace(pattern, name),
+    probe
+  );
+  return named.charAt(0) === probe.charAt(0) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+}
+
+/**
+ * The name a server gives its own tools when it prefixes them with it:
+ * `medcp__MedCP-list_clinical_tables` → "MedCP". That prefix is a product
+ * name, so a row keeps its spelling ("Listed MedCP clinical tables"); split
+ * as an identifier it read "med cp" (V2-R2-5). Null for any other tool.
+ */
+export function toolServerName(identifier: string): string | null {
+  const parts = identifier.split('__');
+  if (parts.length < 2) return null;
+  const match = /^([A-Za-z][A-Za-z0-9]*)-(?=[A-Za-z0-9])/.exec(parts[parts.length - 1]);
+  if (!match) return null;
+  const key = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return key(match[1]) === key(parts[0]) ? match[1] : null;
+}
+
+/**
+ * A full tool name (`extension__tool`) as the lowercase words of the tool's
+ * own name, with a server prefix ({@link toolServerName}) kept as one word.
+ */
+export function toolCallNameWords(identifier: string): string[] {
+  const tool = identifier.split('__').pop() ?? identifier;
+  const server = toolServerName(identifier);
+  return server
+    ? [server.toLowerCase(), ...toolNameWords(tool.slice(server.length + 1))]
+    : toolNameWords(tool);
+}
+
+/** `text` with the server's name ({@link toolServerName}) back in its own spelling. */
+export function spellServerName(text: string, server: string | null): string {
+  if (!server) return text;
+  // A server name is letters and digits only, so it needs no escaping.
+  const pattern = new RegExp(`(^|[^A-Za-z0-9])${server}(?![A-Za-z0-9])`, 'i');
+  return text.replace(pattern, (_, before: string) => `${before}${server}`);
+}
+
+/**
+ * A full tool name as words for the middle of a sentence ("Run text editor?",
+ * "Preparing MedCP list clinical tables"): {@link toolNamePhrase} with the
+ * server's own spelling kept.
+ */
+export function toolCallPhrase(identifier: string): string {
+  return spellServerName(toolNamePhrase(toolCallNameWords(identifier)), toolServerName(identifier));
+}
+
 /** A tool identifier as a sentence-case name: `developer__text_editor` → "Text editor". */
 export function toolDisplayName(identifier: string): string {
-  return sentenceStart(toolNamePhrase(identifier.split('__').pop() ?? identifier));
+  return sentenceStart(toolCallPhrase(identifier));
 }
 
 /** Base verb → gerund, read off {@link VERB_FORMS} so every gerund it writes conjugates. */
