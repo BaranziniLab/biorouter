@@ -49,11 +49,11 @@ line is privacy information, so it is visible text and never an InfoTip
 ## The rows
 
 A provider is a row on the shared settings-row geometry (`ProviderCard.tsx`, `providers.css`): a name
-over a one-line description (truncated, with a tooltip for the rest), "Configured" as a success
+over a one-line description (truncated, with a tooltip for the rest only while it is cut), "Configured" as a success
 dot and a word, and one action. There is no initial tile. The status and the action share one cell,
 Crew's `meta` recipe (`.br-row-actions-slot`): "Configured" at rest on the right edge, and the action
-(`Configure`, named for its row, as in "Configure Anthropic"; `Launch` for a configured provider on first
-run) in its place while the row is hovered or holds focus, always shown without a hover pointer
+(`Configure`, named for its row, as in "Configure Anthropic"; `Use`, named "Use Anthropic", for a
+configured provider on first run, the verb the open panels use) in its place while the row is hovered or holds focus, always shown without a hover pointer
 (`.br-row-actions`), so the edge never moves. **First run reveals its actions the same way** (vision round
 1, V4-29): it used to keep the button on screen, which made it the one list in the app with permanent row
 actions on a hover-capable display. Its rows act on a click as Settings' do, so the button is the keyboard
@@ -62,13 +62,28 @@ path and a shortcut for the mouse, never the only way in.
 Two first-run refinements (first-run vision round 1):
 
 - **An expandable row on first run has no row action** (FR-R1-5). Its open panel holds the primary for
-  the same choice ("Use Claude Code", "Download and start", "Use Ollama", "Connect"), so a hover "Launch"
-  beside it was a second verb for one decision. "Configured" stays its resting status and no longer
+  the same choice ("Use Claude Code", "Download and start", "Use Ollama", "Connect"), so a hover row action
+  beside it was a second control for one decision. "Configured" stays its resting status and no longer
   gives way under the pointer. Settings keeps the action on its expandable rows.
 - **A description is a Tab stop only while it is cut off** (FR-R1-9), measured as text wider than its
   box and re-measured on resize; the row's action (or an agent's toggle) is described by the full text,
   so a screen reader hears it without the stop. Every description used to be a stop, so the keyboard
   walk was row, description, action for every provider.
+
+Four more from first-run vision round 2:
+
+- **The tooltip opens only while the line is cut off** (FR-R2-7), by the same measure that makes it a
+  Tab stop, and it shows what is cut: the line's own text, in the tooltip's one face. Hovering an agent's
+  short line used to open the daemon's three sentences, `claude` in mono, over the next row.
+- **"Use", not "Launch"** (FR-R2-4): a configured row that does not open in place (every configured API
+  row, Versa API Azure) said "Launch" beside panels that say "Use Claude Code". Settings never shows it.
+- **An accordion row's keyboard focus is the row's** (FR-R2-3): D-15's row focus (`--background-focus`,
+  an inset 2px `--border-focus` edge, the row's radius) on `.biorouter-settings-row:has(> .br-provider-row-toggle:focus-visible)`,
+  and none on the toggle, which used to take the base layer's square box flush against its text
+  (`providerRowFocus.browser.test.tsx`).
+- **Connect follows Detect's rule** (FR-R2-5): the institutional form's Connect is secondary until the
+  keys its gateway needs are in, and coral once it can act. Disabled coral read as a pale coral in light
+  and a muddy brown in dark.
 
 Three details keep one list reading as one list (V4-26):
 
@@ -161,9 +176,13 @@ Chromium, light and dark. The two other native selects in the tree, `components/
 the enum branch of `components/ui/JsonSchemaForm.tsx`, are not this card's and were left alone.
 
 Under the select the panel says one line, the Settings row's facts line (`settings/models/localModelFacts.ts`,
-read by both surfaces: speed, size, context window, and "Large for this Mac" only when the daemon reports the
-model above this machine's recommendation), as the closed summary of a "Details" disclosure. Details holds the
-model's description, the download note, the speed hint, the fit sentence, any memory shortfall, the Ollama tag,
+read by both surfaces: speed, context window, and "Large for this Mac" only when the daemon reports the
+model above this machine's recommendation), as the closed summary of a "Details" disclosure. The panel's line
+leaves out the size (`factsLine(model, { size: false })`), because the option and the button already say it;
+three copies of "7.6 GB" in three lines was FR-R2-6. Details holds the model's description, the download note,
+the speed hint, a Memory row that says the fit in words with the two numbers it rests on ("Fits this Mac (128
+GiB unified memory, 32 GiB recommended)", `fitLine`, from the daemon's `suitability_status`; the daemon's own
+sentence repeated its label and printed `apple_unified`), the Windows RAM caveat on Windows, the Ollama tag,
 the fallback GGUF, the model file and the model store, as sans labels over values, the machine values in mono at
 12px; no box. Then the one action on the 32px rung: "Start", "Download and start (9.6 GB)" or "Resume and start".
 A status shows only with news (running, warm-up needed, binary missing). It used to be a box of seven lines and an
@@ -209,14 +228,19 @@ in one ink, said once, where the page has Back. The band is the shared band's ma
 `ProviderGuard`, because `PageHeader` has no slot for a leading mark, and the root carries
 `.br-provider-page` so the two rules below hold for it too. It used to be a 235px hero that never
 scrolled (a 36px wordmark, a 24px "Welcome to Biorouter", a two-line paragraph, two arrow links in two
-inks, the skip repeated at the foot) on the recessed grey ground. Only its loader keeps that muted
-ground, because the boot splash hands off to it. On a browser served by `biorouter serve` the band is
+inks, the skip repeated at the foot) on the recessed grey ground. Its loader (the frame or two while the
+provider is read) is now empty and on the same page ground: it used to draw the boot splash's 84px BR
+monogram on the muted grey, a second logo and a second ground before the wordmark (FR-R1-7, R-29). The
+splash itself (`index.html`) is the coordinator's. On a browser served by `biorouter serve` the band is
 the wordmark and "Get started", over the host-managed panel, which carries the reason itself.
 
 The catalog opens once, at rest (FR-R1-1). With `holdUntilSettled` (both pages pass it) it draws a quiet
-skeleton at row height, and no tab, until the provider list, the bound provider and, when it can decide
-the tab (no route hint, no bound provider), the coding-agent probe are in; it waits for the probe at
-most `AGENT_PROBE_WAIT_MS` (2.5 s). It then freezes that tab, so a late probe or a refreshed list never
+skeleton at row height, with the three tab labels and none selected, until the provider list, the bound
+provider, the API section's disclosure copy and, when it can decide the tab (no route hint, no bound
+provider), the coding-agent probe are in; it waits for the probe and the copy at most
+`AGENT_PROBE_WAIT_MS` (2.5 s). The copy is fetched when the catalog mounts, whichever tab it opens on: the
+note used to fetch it when it mounted, so Public grew its two-line disclosure 300 ms after it was drawn and
+moved every row under the pointer (FR-R2-1). A tab the person picks during the hold is kept. It then freezes that tab, so a late probe or a refreshed list never
 switches it; a person's click still does. `loading` alone draws the skeleton too, so a list that is still
 in flight never reads as "Nothing here yet.". First run first painted Local with that line, filled it a
 second later and switched itself to Public when the probe answered.
@@ -371,7 +395,7 @@ words of first run are in `onboarding/copy.ts`, which the tests import.
   a key (FR-S-5); a failure is the Note alone.
 - **A coding-agent row's second line is short** ("Your Claude subscription · no API key", from
   `AGENT_SUBSCRIPTION`); the daemon's long sentence, which the row cut mid-word, stays its
-  tooltip and accessible description (FR-R1-8). Each auth state says one instruction with its
+  accessible description (FR-R1-8), and is no longer a hover tooltip over a line that fits (FR-R2-7). Each auth state says one instruction with its
   reason in an InfoTip beside it, then the copyable command and the actions; a ready agent's
   plan and account sit on its version line (FR-S-3).
 - Every status line on first run is the one `StatusPill` on the shared `StatusDot` (FR-S-10), and
