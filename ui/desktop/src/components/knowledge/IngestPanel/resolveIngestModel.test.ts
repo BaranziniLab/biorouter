@@ -12,11 +12,11 @@ describe('resolveIngestModel', () => {
   it("prefers the knowledge base's own default model over the app configuration", () => {
     expect(
       resolveIngestModel(
-        { provider: 'ollama', model: 'qwen3.6:latest' },
+        { provider: 'ollama', model: 'qwen3.8:27b' },
         'versa_azure',
         'gpt-5.5-2026-04-24'
       )
-    ).toEqual({ provider: 'ollama', model: 'qwen3.6:latest' });
+    ).toEqual({ provider: 'ollama', model: 'qwen3.8:27b' });
   });
 
   it('returns null rather than inventing a vendor when nothing resolves', () => {

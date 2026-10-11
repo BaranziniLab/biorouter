@@ -25,6 +25,7 @@ import {
 } from '../../../onboarding/codingAgentControls';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
+import { pickerFitLabel } from '../localModelMemory';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
 import {
   affiliationPresentation,
@@ -76,19 +77,6 @@ const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
-const llamaFitLabel = (model: LlamaCppModel | undefined) => {
-  switch (model?.suitability_status) {
-    case 'suitable':
-      return 'Recommended here';
-    case 'above_recommendation':
-      return `Needs ${model.recommended_gpu_memory_gib} GiB GPU memory`;
-    case 'unknown_resources':
-      return 'VRAM unknown';
-    default:
-      return null;
-  }
-};
-
 const llamaModelOption = (
   modelName: string,
   catalog: Map<string, LlamaCppModel>,
@@ -111,7 +99,7 @@ const llamaModelOption = (
   // download is, whether they already have it, and whether it suits this machine.
   // The fallback state and the raw `owner/repo:QUANT` spec are diagnostics, not
   // selection criteria — LocalModelInventory in Settings is where those belong.
-  const detail = [entry.download_size, llamaDownloadLabel(entry), llamaFitLabel(entry)]
+  const detail = [entry.download_size, llamaDownloadLabel(entry), pickerFitLabel(entry)]
     .filter(Boolean)
     .join(' · ');
 

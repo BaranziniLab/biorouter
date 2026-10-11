@@ -70,14 +70,41 @@ vi.mock('../../InAppTerminalDock', () => ({
 // machine should see. App.test.tsx, App.routing.test.tsx and
 // LocalModelInventory.test.tsx already mock this module; this suite did not.
 vi.mock('../../../utils/ollamaDetection', () => ({
+  DEFAULT_OLLAMA_HOST: 'http://127.0.0.1:11434',
+  // The card asks the daemon (`/ollama/recommended`) for its models and host
+  // through this module, so mocking it here keeps that request off the wire too.
+  getOllamaSetup: vi.fn(async () => ({
+    recommendations: {
+      models: [
+        {
+          tag: 'qwen3.8:27b',
+          display_name: 'Qwen3.8 27B',
+          approx_download_gb: 18,
+          is_default: true,
+        },
+      ],
+      default_model: 'qwen3.8:27b',
+      min_memory_gib: 32,
+      memory_gib: 64,
+      memory_kind: 'apple_unified',
+      suitability: 'suitable',
+      suitability_message: '',
+      base_url: 'http://localhost:11434/',
+      host_configured: false,
+      tier: 'private',
+    },
+    host: 'http://127.0.0.1:11434',
+    reachable: true,
+    private: true,
+  })),
   checkOllamaStatus: vi.fn(async () => ({ isRunning: false, host: 'http://127.0.0.1:11434' })),
   getOllamaModels: vi.fn(async () => []),
   hasModel: vi.fn(async () => false),
-  pullOllamaModel: vi.fn(async () => false),
+  sameOllamaTag: (a: string, b: string) => a === b,
+  pullOllamaModel: vi.fn(async () => ({ ok: false, error: 'not in this test' })),
   deleteOllamaModel: vi.fn(async () => false),
   pollForOllama: vi.fn(() => () => {}),
   getOllamaDownloadUrl: () => 'https://ollama.com/download',
-  getPreferredModel: () => 'gpt-oss:20b',
 }));
 
 type Backend = {

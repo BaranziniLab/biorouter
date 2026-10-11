@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LocalModelInventory from './LocalModelInventory';
 import {
   llamaServerStore,
@@ -21,10 +21,13 @@ vi.mock('../../../api', () => ({
 
 const mockCheckOllamaStatus = vi.fn();
 const mockPullOllamaModel = vi.fn();
+const mockDeleteOllamaModel = vi.fn();
+const mockOllamaTagsForModelFile = vi.fn();
 
 vi.mock('../../../utils/ollamaDetection', () => ({
   checkOllamaStatus: (...args: unknown[]) => mockCheckOllamaStatus(...args),
-  deleteOllamaModel: vi.fn(),
+  deleteOllamaModel: (...args: unknown[]) => mockDeleteOllamaModel(...args),
+  ollamaTagsForModelFile: (...args: unknown[]) => mockOllamaTagsForModelFile(...args),
   pullOllamaModel: (...args: unknown[]) => mockPullOllamaModel(...args),
 }));
 
@@ -38,19 +41,19 @@ vi.mock('../../../toasts', () => ({
 }));
 
 const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
-  name: 'gemma4',
-  display_name: 'Gemma 4 E4B',
-  family: 'Gemma 4',
-  ollama_name: 'gemma4:latest',
-  official_url: 'https://ollama.com/library/gemma4',
-  hf_spec: 'google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0',
-  download_size: '9.6 GB',
-  description: 'Laptop default',
-  min_gpu_memory_gib: 16,
-  recommended_gpu_memory_gib: 16,
-  context_limit: 131072,
-  active_params_b: 4,
-  speed_hint: 'Fast — ~4B active parameters',
+  name: 'qwen3.8-27b',
+  display_name: 'Qwen3.8 27B',
+  family: 'Qwen3.8',
+  ollama_name: 'qwen3.8:27b',
+  official_url: 'https://ollama.com/library/qwen3.8:27b',
+  hf_spec: 'ggml-org/Qwen3.8-27B-GGUF:Q4_K_M',
+  download_size: '19 GB',
+  description: 'Default local model',
+  min_gpu_memory_gib: 32,
+  recommended_gpu_memory_gib: 48,
+  context_limit: 262144,
+  active_params_b: 27,
+  speed_hint: 'Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended',
   is_default: true,
   downloaded: false,
   download_status: 'not_downloaded',
@@ -66,7 +69,8 @@ const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
 
 const statusResponse = (
   sidecar: Record<string, unknown> = {},
-  entry: Record<string, unknown> = {}
+  entry: Record<string, unknown> = {},
+  system: Record<string, unknown> = {}
 ) => ({
   data: {
     sidecar: {
@@ -78,14 +82,18 @@ const statusResponse = (
       ...sidecar,
     },
     catalog: [catalogEntry(entry)],
+    // A discrete-GPU machine by default: there, Install pulls through Ollama
+    // first (the bare tag is the GGUF build). Apple Silicon skips that pull —
+    // see the MLX test below.
     system: {
-      os: 'macos',
+      os: 'linux',
       total_memory_gib: 64,
       accelerator_memory_gib: 64,
-      accelerator_memory_kind: 'apple_unified',
+      accelerator_memory_kind: 'vram',
       default_context_size: 131072,
       model_cache_dir: '/tmp/models',
       model_cache_layout: 'test',
+      ...system,
     },
   },
 });
@@ -106,7 +114,7 @@ describe('LocalModelInventory', () => {
   it('shows the expected-speed hint next to the download size in each row (#35)', async () => {
     render(<LocalModelInventory />);
     const row = await screen.findByText(
-      /Gemma 4 · 9\.6 GB · Fast — ~4B active parameters · 131,072 context/
+      /Qwen3\.8 · 19 GB · Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended · 262,144 context/
     );
     expect(row).toBeInTheDocument();
   });
@@ -116,7 +124,7 @@ describe('LocalModelInventory', () => {
     fireEvent.click(await screen.findByText('View info'));
 
     expect(await screen.findByText('Expected speed')).toBeInTheDocument();
-    expect(screen.getAllByText(/Fast — ~4B active parameters/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/Moderate, dense 27B/).length).toBeGreaterThanOrEqual(2);
   });
 
   /// A model id is a NAME, so it is set in the body font — the way the composer
@@ -152,7 +160,7 @@ describe('LocalModelInventory', () => {
   });
 
   it('renders the busy row for an operation started elsewhere (#34)', async () => {
-    llamaServerStore.beginOperation('start', 'gemma4', 'downloading 42%', { poll: false });
+    llamaServerStore.beginOperation('start', 'qwen3.8-27b', 'downloading 42%', { poll: false });
     render(<LocalModelInventory />);
 
     expect(await screen.findByText('downloading 42%')).toBeInTheDocument();
@@ -228,7 +236,7 @@ describe('LocalModelInventory', () => {
 
   it('a pull that completes after the deadline cannot toast stale success (re-review 2)', async () => {
     mockCheckOllamaStatus.mockResolvedValue({ isRunning: true });
-    let resolvePull!: (value: boolean) => void;
+    let resolvePull!: (value: { ok: boolean }) => void;
     mockPullOllamaModel.mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -256,7 +264,7 @@ describe('LocalModelInventory', () => {
     // success toast, no post-success refresh.
     const statusCalls = mockLlamacppStatus.mock.calls.length;
     await act(async () => {
-      resolvePull(true);
+      resolvePull({ ok: true });
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(mockToastSuccess).not.toHaveBeenCalled();
@@ -287,7 +295,7 @@ describe('LocalModelInventory', () => {
     // call is still in flight; toasted immediately, operation cleared.
     mockLlamacppStatus.mockResolvedValue(
       statusResponse(
-        { state: 'error', model: 'gemma4', detail: 'model blew up' },
+        { state: 'error', model: 'qwen3.8-27b', detail: 'model blew up' },
         { downloaded: true, download_status: 'downloaded' }
       )
     );
@@ -303,7 +311,13 @@ describe('LocalModelInventory', () => {
       resolveWarmup({
         data: {
           output: 'OK',
-          sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+          sidecar: {
+            state: 'ready',
+            warmed: true,
+            build: 'test',
+            model: 'qwen3.8-27b',
+            detail: null,
+          },
         },
       });
       await vi.advanceTimersByTimeAsync(0);
@@ -319,7 +333,13 @@ describe('LocalModelInventory', () => {
     mockLlamacppWarmup.mockResolvedValue({
       data: {
         output: 'OK',
-        sidecar: { state: 'ready', warmed: true, build: 'test', model: 'gemma4', detail: null },
+        sidecar: {
+          state: 'ready',
+          warmed: true,
+          build: 'test',
+          model: 'qwen3.8-27b',
+          detail: null,
+        },
       },
     });
     render(<LocalModelInventory />);
@@ -344,5 +364,154 @@ describe('LocalModelInventory', () => {
       await vi.advanceTimersByTimeAsync(LLAMA_SERVER_OPERATION_TIMEOUT_MS);
     });
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+  /**
+   * On Apple Silicon the bare Ollama tag is a manifest list that resolves to
+   * the MLX build, which llama-server cannot load: the pull "succeeded" and the
+   * row went on reading "Needs download" over ~19 GB the user could not use.
+   */
+  it('never pulls through Ollama on Apple Silicon, where the pull is MLX', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, {}, { os: 'macos', accelerator_memory_kind: 'apple_unified' })
+    );
+    mockCheckOllamaStatus.mockResolvedValue({ isRunning: true });
+    mockLlamacppEnsure.mockResolvedValue(statusResponse({ state: 'starting' }));
+    render(<LocalModelInventory />);
+
+    fireEvent.click(await screen.findByText('Install'));
+
+    await waitFor(() =>
+      expect(mockLlamacppEnsure).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { model: 'qwen3.8-27b' } })
+      )
+    );
+    expect(mockPullOllamaModel).not.toHaveBeenCalled();
+    expect(mockCheckOllamaStatus).not.toHaveBeenCalled();
+  });
+
+  it('says what Ollama said when its pull fails', async () => {
+    mockCheckOllamaStatus.mockResolvedValue({ isRunning: true });
+    mockPullOllamaModel.mockResolvedValue({ ok: false, error: 'unexpected EOF' });
+    render(<LocalModelInventory />);
+
+    fireEvent.click(await screen.findByText('Install'));
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    expect(mockToastError.mock.calls[0][0].msg).toBe(
+      'Ollama could not pull qwen3.8:27b: unexpected EOF'
+    );
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+
+  it('labels a machine below the minimum, and a CPU-only one', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { suitable: false, suitability_status: 'below_minimum' })
+    );
+    const view = render(<LocalModelInventory />);
+    expect(await screen.findByText('Below 32 GiB minimum')).toBeInTheDocument();
+    view.unmount();
+
+    resetLlamaServerStoreForTests();
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { suitable: false, suitability_status: 'cpu_only' })
+    );
+    render(<LocalModelInventory />);
+    expect(await screen.findByText('CPU only (slow)')).toBeInTheDocument();
+  });
+
+  /**
+   * A 64 GiB Intel Mac clears every memory figure. The confirmation follows the
+   * daemon's `cpu_only` verdict, and calls the memory system RAM, not VRAM.
+   */
+  it('asks before installing on a CPU-only machine, whatever its memory', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse(
+        {},
+        { suitable: false, suitability_status: 'cpu_only' },
+        { os: 'macos', accelerator_memory_gib: 64, accelerator_memory_kind: 'cpu_only' }
+      )
+    );
+    render(<LocalModelInventory />);
+
+    fireEvent.click(await screen.findByText('Install'));
+
+    expect(await screen.findByText('Continue anyway?')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Qwen3\.8 27B would run without GPU acceleration on this machine \(64 GiB system RAM\)/
+      )
+    ).toBeInTheDocument();
+    expect(mockCheckOllamaStatus).not.toHaveBeenCalled();
+    expect(mockLlamacppEnsure).not.toHaveBeenCalled();
+  });
+
+  describe('deleting a model Llama Server found in Ollama', () => {
+    /** Apple Silicon: the bare tag is MLX, the file came from the GGUF tag. */
+    const GGUF_BLOB = '/Users/me/.ollama/models/blobs/sha256-f5f1dd89';
+    const fromOllama = () =>
+      statusResponse(
+        {},
+        {
+          downloaded: true,
+          download_status: 'downloaded',
+          download_source: 'ollama',
+          model_path: GGUF_BLOB,
+        },
+        { os: 'macos', accelerator_memory_kind: 'apple_unified' }
+      );
+
+    const confirmDelete = async () => {
+      fireEvent.click(await screen.findByText('Delete'));
+      const dialog = await screen.findByText('Delete this local model?');
+      expect(dialog).toBeInTheDocument();
+      const buttons = screen.getAllByRole('button', { name: 'Delete' });
+      fireEvent.click(buttons[buttons.length - 1]);
+    };
+
+    beforeEach(() => {
+      mockLlamacppStatus.mockResolvedValue(fromOllama());
+      mockCheckOllamaStatus.mockResolvedValue({ isRunning: true });
+      mockDeleteOllamaModel.mockResolvedValue(true);
+    });
+
+    /**
+     * It deleted `ollama_name`: the MLX `qwen3.8:27b` the Ollama provider chats
+     * with went, the GGUF Llama Server uses stayed, and the row still read
+     * installed.
+     */
+    it('deletes the tag that holds the listed file, not the bare tag', async () => {
+      mockOllamaTagsForModelFile.mockResolvedValue(['qwen3.8:27b-q4_K_M']);
+      render(<LocalModelInventory />);
+
+      await confirmDelete();
+
+      await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledTimes(1));
+      expect(mockOllamaTagsForModelFile).toHaveBeenCalledWith(GGUF_BLOB, 'qwen3.8:27b');
+      expect(mockDeleteOllamaModel.mock.calls).toEqual([['qwen3.8:27b-q4_K_M']]);
+      expect(mockToastSuccess.mock.calls[0][0].msg).toMatch(/qwen3\.8:27b-q4_K_M/);
+    });
+
+    it('deletes nothing, and says how, when no tag can be matched to the file', async () => {
+      mockOllamaTagsForModelFile.mockResolvedValue([]);
+      render(<LocalModelInventory />);
+
+      await confirmDelete();
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+      expect(mockDeleteOllamaModel).not.toHaveBeenCalled();
+      expect(mockToastError.mock.calls[0][0].msg).toMatch(/deleted nothing/);
+      expect(mockToastError.mock.calls[0][0].msg).toMatch(/ollama rm/);
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+
+    it('does not name the bare tag in the confirmation', async () => {
+      render(<LocalModelInventory />);
+      fireEvent.click(await screen.findByText('Delete'));
+      await screen.findByText('Delete this local model?');
+      expect(screen.queryByText(/qwen3\.8:27b will be removed/)).toBeNull();
+      expect(
+        screen.getByText(/Qwen3\.8 27B's model file will be deleted from Ollama/)
+      ).toBeInTheDocument();
+    });
   });
 });

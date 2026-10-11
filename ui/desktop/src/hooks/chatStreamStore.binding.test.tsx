@@ -155,7 +155,7 @@ describe('a model switch reaches the row this store holds', () => {
     const controller = new ChatStreamRegistry().getController(sid);
     await controller.loadSession();
 
-    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.6' });
+    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.8:27b' });
 
     expect(controller.getSnapshot().session?.model_config?.context_limit).toBeNull();
   });
@@ -830,7 +830,7 @@ describe('the registry publishes what its stores say a chat is', () => {
     await aFrame();
     const before = registry.getSessionTypesSnapshot();
     // Another notification from the same chat, with the type unchanged.
-    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.6' });
+    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.8:27b' });
     await aFrame();
     stopTiers();
     stopTypes();
@@ -922,7 +922,7 @@ describe('the registry publishes what its stores say a chat is', () => {
 
     // A binding announcement is the cheapest real path that writes the snapshot
     // without carrying a tier of its own.
-    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.6' });
+    announceSessionBinding({ sessionId: sid, provider: 'ollama', model: 'qwen3.8:27b' });
     await aFrame();
 
     expect(registry.getSessionTiersSnapshot()).toEqual({ [sid]: 'private' });

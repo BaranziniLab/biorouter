@@ -79,15 +79,17 @@ describe('isHostManagedConfigKey', () => {
    * ⚠ **A mirror of `CAPABILITY_CONFIG_KEYS` in
    * `crates/biorouter/src/privacy/config_keys.rs`, and it must stay exactly
    * that size.** The generic config editor renders every non-secret key; only
-   * these five 409 on a browser surface. A blanket "disable the page" would
-   * pass a test that only checked the five, so the negative cases below are the
-   * load-bearing half — `BIOROUTER_MODEL` in particular looks like it belongs
-   * and does not: the Rust list names the PROVIDER, never the model.
+   * these six 409 on a browser surface. A blanket "disable the page" would
+   * pass a test that only checked the six, so the negative cases below are the
+   * load-bearing half. `BIOROUTER_MODEL` is in the Rust list since 2026-10,
+   * because `ollama`'s `tier()` reads the model name; the lead model and the
+   * provider were already there.
    */
-  it('names the five keys the daemon refuses, and no others', () => {
+  it('names the six keys the daemon refuses, and no others', () => {
     expect([...HOST_MANAGED_CONFIG_KEYS].sort()).toEqual([
       'BIOROUTER_LEAD_MODEL',
       'BIOROUTER_LEAD_PROVIDER',
+      'BIOROUTER_MODEL',
       'BIOROUTER_PROVIDER',
       'LLAMACPP_EXTERNAL_HOST',
       'OLLAMA_HOST',
@@ -97,9 +99,10 @@ describe('isHostManagedConfigKey', () => {
   it('does not claim ordinary settings are fixed by the host', () => {
     expect(isHostManagedConfigKey('BIOROUTER_PROVIDER')).toBe(true);
     expect(isHostManagedConfigKey('OLLAMA_HOST')).toBe(true);
-    // Not a capability key: `BIOROUTER_MODEL` moves a chat within one
-    // provider's tier, so `/config/upsert` lets it through.
-    expect(isHostManagedConfigKey('BIOROUTER_MODEL')).toBe(false);
+    // A capability key: `ollama`'s `tier()` reads the model name (a `-cloud`
+    // tag is Public even through a loopback OLLAMA_HOST), so `/config/upsert`
+    // refuses it on a browser surface. Until 2026-10 it was let through.
+    expect(isHostManagedConfigKey('BIOROUTER_MODEL')).toBe(true);
     expect(isHostManagedConfigKey('OLLAMA_TIMEOUT')).toBe(false);
     expect(isHostManagedConfigKey('BIOROUTER_CONTEXT_LIMIT')).toBe(false);
   });

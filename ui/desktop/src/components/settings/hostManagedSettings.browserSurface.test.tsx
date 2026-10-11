@@ -207,11 +207,12 @@ describe('Settings > Configuration editor', () => {
   /**
    * ⚠ **The row-level test, and the reason `isHostManagedConfigKey` exists.**
    *
-   * This editor renders every non-secret key, and only five of them 409. Fails
-   * against today's code (no row is ever disabled) — but it would ALSO fail a
-   * lazy fix that disabled the whole page, because `BIOROUTER_MODEL` and
-   * `OLLAMA_TIMEOUT` here must stay editable: neither is a capability key, so
-   * both still save from a browser.
+   * This editor renders every non-secret key, and only six of them 409. Fails
+   * against a code path that never disables a row — but it would ALSO fail a
+   * lazy fix that disabled the whole page, because `OLLAMA_TIMEOUT` here must
+   * stay editable: it is not a capability key, so it still saves from a
+   * browser. `BIOROUTER_MODEL` is frozen since 2026-10, because `ollama`'s
+   * `tier()` reads the model name (a `-cloud` tag is Public).
    */
   it('freezes only the keys the daemon actually refuses', async () => {
     browser();
@@ -227,7 +228,7 @@ describe('Settings > Configuration editor', () => {
     };
     await openEditor();
 
-    for (const frozen of ['BIOROUTER_PROVIDER', 'OLLAMA_HOST']) {
+    for (const frozen of ['BIOROUTER_PROVIDER', 'OLLAMA_HOST', 'BIOROUTER_MODEL']) {
       const note = await screen.findByTestId(`host-managed-config-${frozen}`);
       const row = note.closest('.grid');
       expect(row).not.toBeNull();
@@ -235,12 +236,10 @@ describe('Settings > Configuration editor', () => {
       expect(within(row as HTMLElement).getByRole('button')).toBeDisabled();
     }
 
-    for (const editable of ['BIOROUTER_MODEL', 'OLLAMA_TIMEOUT']) {
-      expect(screen.queryByTestId(`host-managed-config-${editable}`)).toBeNull();
-    }
-    const stillEditable = screen.getByDisplayValue('gpt-5.5');
+    expect(screen.queryByTestId('host-managed-config-OLLAMA_TIMEOUT')).toBeNull();
+    const stillEditable = screen.getByDisplayValue('600');
     expect(stillEditable).toBeEnabled();
-    fireEvent.change(stillEditable, { target: { value: 'gpt-5.6' } });
+    fireEvent.change(stillEditable, { target: { value: '900' } });
     expect(stillEditable).toBeEnabled();
   });
 

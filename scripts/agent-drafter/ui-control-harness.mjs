@@ -981,12 +981,12 @@ async function runSelftest() {
     received.slice(baseMs).some((f) => f.type === "model_status"),
     JSON.stringify(received.slice(baseMs).map((f) => f.type))
   );
-  send({ type: "model_status", provider: "llamacpp", model: "qwen3.5-4b", ready: false, detail: "downloading 42%" });
+  send({ type: "model_status", provider: "llamacpp", model: "qwen3.8-27b", ready: false, detail: "downloading 42%" });
   await waitFor(() => win.eval("window.__ms") != null);
   check(
     "br.model.status() resolves {provider,model,ready,detail} from the reply",
     win.eval("window.__ms && window.__ms.provider") === "llamacpp" &&
-      win.eval("window.__ms.model") === "qwen3.5-4b" &&
+      win.eval("window.__ms.model") === "qwen3.8-27b" &&
       win.eval("window.__ms.ready") === false &&
       /downloading/.test(win.eval("String(window.__ms && window.__ms.detail)")),
     win.eval("JSON.stringify(window.__ms)")
