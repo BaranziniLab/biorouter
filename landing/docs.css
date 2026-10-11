@@ -19,6 +19,17 @@
 }
 .docs-search input::placeholder { color: var(--subtle); }
 .docs-search input:focus { outline: none; border-color: var(--coral); }
+/* The browser's own clear button is blue. It stays (it clears the field and
+   announces itself), drawn as a muted x in the page's ink. */
+.docs-search input::-webkit-search-cancel-button {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; margin: 0; cursor: pointer;
+  background: var(--subtle);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / 12px no-repeat;
+  transition: background var(--dur-fast) var(--ease);
+}
+.docs-search input::-webkit-search-cancel-button:hover { background: var(--ink); }
 .docs-search svg { position: absolute; left: 10px; top: 8px; width: 16px; height: 16px; color: var(--faint); pointer-events: none; }
 .docs-results { list-style: none; margin: 8px 0 0; padding: 0; display: none; }
 .docs-results.open { display: block; }
@@ -61,6 +72,9 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
 
 /* ── Content ─────────────────────────────────────────────── */
 .docs-main { min-width: 0; max-width: 720px; }
+/* One column: the article takes the Contents bar's width, so the header, the
+   bar, the h2 hairlines and the code blocks all end on one edge. */
+@media (max-width: 880px) { .docs-main { max-width: none; } }
 .js .doc-page { display: none; }
 .js .doc-page.active { display: block; }
 .doc-page + .doc-page { margin-top: 96px; }
