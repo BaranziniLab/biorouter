@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform } from 'esbuild';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserServer, type Page } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,11 +54,60 @@ body { margin: 0; background: var(--ground); }
 }
 `;
 
-const launchChromium = async (): Promise<Browser | null> => {
+/**
+ * Every teardown step gets this long and no longer, so the whole afterAll
+ * (disconnect, close, kill and reap: three bounded steps, 15s at worst) ends
+ * well inside the runner's 30s hook limit, which stays a backstop.
+ */
+const TEARDOWN_STEP_MS = 5_000;
+
+/** Resolve `true` if `work` settled within `ms`, `false` if it ran out of time. */
+const settledWithin = async (work: Promise<unknown>, ms: number): Promise<boolean> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<false>((done) => {
+    timer = setTimeout(() => done(false), ms);
+    // The watchdog itself must never hold the loop open.
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+  try {
+    // A rejected close has still settled: what matters here is elapsed time,
+    // and a browser that refused to close is handled by the caller's next step.
+    return (
+      (await Promise.race([
+        work.then(
+          () => true,
+          () => true
+        ),
+        expired,
+      ])) !== false
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/**
+ * Launch whichever Chromium build this machine has.
+ *
+ * `launchServer` + `connect`, not `launch`, because of teardown. A `Browser`
+ * from `chromium.launch()` has no handle on its process, so `close()` is the
+ * only way to end it, and on a saturated machine (the full suite starts a
+ * Chromium per browser file, load average 115 to 240) that call blocked past
+ * the 30s hook limit after all four tests had passed: the file failed with
+ * zero failing tests. A `BrowserServer` hands back `process()`, so the last
+ * resort is a SIGKILL rather than an unbounded await. Same recipe as
+ * `utils/artifactCdnAssets.browser.test.ts`.
+ */
+const launchChromium = async (): Promise<{ server: BrowserServer; browser: Browser } | null> => {
   for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
+    let server: BrowserServer | null = null;
     try {
-      return await chromium.launch(options);
+      server = await chromium.launchServer(options);
+      return { server, browser: await chromium.connect(server.wsEndpoint()) };
     } catch {
+      // Launched but not connected: end it here rather than leave a Chromium
+      // running beside the next attempt.
+      if (server) await settledWithin(server.close(), TEARDOWN_STEP_MS);
       // try the next build
     }
   }
@@ -69,11 +118,14 @@ type Flip = { useHelper: boolean; mode?: 'dark' | 'light'; family?: string };
 
 describe('a theme change lands in one frame', () => {
   let browser: Browser | null = null;
+  let server: BrowserServer | null = null;
   let page: Page;
   let motionBundle = '';
 
   beforeAll(async () => {
-    browser = await launchChromium();
+    const launched = await launchChromium();
+    browser = launched?.browser ?? null;
+    server = launched?.server ?? null;
     if (!browser) {
       console.warn(
         'No Chromium found — skipping the theme switch tests. ' +
@@ -88,7 +140,19 @@ describe('a theme change lands in one frame', () => {
   });
 
   afterAll(async () => {
-    await browser?.close();
+    const connection = browser;
+    const launched = server;
+    browser = null;
+    server = null;
+
+    if (connection) await settledWithin(connection.close(), TEARDOWN_STEP_MS);
+    if (!launched) return;
+
+    if (await settledWithin(launched.close(), TEARDOWN_STEP_MS)) return;
+
+    // Still up. Stop asking.
+    launched.process().kill('SIGKILL');
+    await settledWithin(launched.close(), TEARDOWN_STEP_MS);
   });
 
   beforeEach(async () => {
