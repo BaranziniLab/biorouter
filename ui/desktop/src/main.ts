@@ -34,6 +34,7 @@ import { isIP } from 'node:net';
 import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
+import { createRequire } from 'node:module';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
@@ -47,6 +48,7 @@ import {
   getBiorouterCliBinaryPath,
   type SharedDaemonLink,
 } from './biorouterd';
+import { loadNodePtyFrom, type NodePtyModule } from './nodePtyLoader';
 import {
   TerminalSessionRegistry,
   maxTerminalSessionsPerOwner,
@@ -4755,12 +4757,11 @@ type TerminalSession = RegisteredTerminalSession & {
   resize: (cols: number, rows: number) => void;
 };
 
-type NodePtyModule = typeof import('node-pty');
-
 const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
   log.warn('[terminal] failed to dispose session:', error)
 );
 let nodePtyModule: NodePtyModule | null | undefined;
+let nodePtyLoading: Promise<NodePtyModule | null> | undefined;
 const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
 const crewAuthenticationPending = new Set<string>();
 
@@ -4902,12 +4903,31 @@ function ensureSpawnHelperExecutable(): void {
   }
 }
 
+// V1-R3-1: the CommonJS loader goes first. `await import('node-pty')` alone can
+// resolve to a module namespace that lists `spawn` and holds `undefined` for it,
+// which surfaced as "pty.spawn is not a function" on every dock tab while the
+// pipe fallback (which only runs on a thrown import) never got a turn. See
+// `nodePtyLoader.ts`. The import stays as a second chance, and a candidate only
+// counts once it has a `spawn` function.
 async function loadNodePty(): Promise<NodePtyModule | null> {
   if (nodePtyModule !== undefined) return nodePtyModule;
-  try {
-    nodePtyModule = await import('node-pty');
-    ensureSpawnHelperExecutable();
-  } catch (error) {
+  // One load for concurrent callers (several dock tabs restore at once), so the
+  // verdict is logged once.
+  nodePtyLoading ??= (async () => {
+    const { module, via, problems } = await loadNodePtyFrom([
+      { via: 'require', load: () => createRequire(__filename)('node-pty') },
+      { via: 'import', load: () => import('node-pty') },
+    ]);
+    if (module) {
+      for (const problem of problems) log.warn(`[terminal] node-pty ${problem}`);
+      if (problems.length > 0) log.warn(`[terminal] node-pty loaded through ${via} instead`);
+      try {
+        ensureSpawnHelperExecutable();
+      } catch (error) {
+        log.warn('[terminal] could not check the node-pty spawn helper:', error);
+      }
+      return module;
+    }
     // In a packaged app this is a packaging regression, not a missing optional
     // feature: node-pty is a declared dependency that forge.config.ts keeps out
     // of `packagerConfig.ignore` precisely so it ships. The pipe fallback below
@@ -4915,9 +4935,12 @@ async function loadNodePty(): Promise<NodePtyModule | null> {
     // — so it looks like a broken terminal rather than a broken build. Log it
     // loudly enough that the next person greps for it.
     const level = app.isPackaged ? 'error' : 'warn';
-    log[level]('[terminal] node-pty unavailable; falling back to process pipes:', error);
-    nodePtyModule = null;
-  }
+    log[level](
+      `[terminal] node-pty unavailable; falling back to process pipes: ${problems.join('; ')}`
+    );
+    return null;
+  })();
+  nodePtyModule = await nodePtyLoading;
   return nodePtyModule;
 }
 
