@@ -5,6 +5,7 @@ import {
   loadChatGroupsOrInitial,
   chatGroupsStorageKey,
   getWindowId,
+  renameSavedTabs,
 } from './chatGroupsStorage';
 import { createInitialChatGroupsState, chatGroupsReducer } from './chatGroupsReducer';
 import { ChatGroupsState, leafGroupIds } from './chatGroupsTypes';
@@ -254,5 +255,90 @@ describe('chatGroupsStorage — a persisted SPLIT round-trips and is reconciled'
       })
     );
     expect(loadChatGroups(getWindowId())).toBeNull();
+  });
+});
+
+describe('chatGroupsStorage — renameSavedTabs (V2-R3-1)', () => {
+  /** grp-1[s1, s3] | grp-2[s2], saved the way the provider saves it. */
+  function saved(): ChatGroupsState {
+    const three = [
+      { sessionId: 's1', title: 'Cohort' },
+      { sessionId: 's2', title: 'Other chat' },
+      { sessionId: 's3', title: 'Third chat' },
+    ].reduce(
+      (state, payload) => chatGroupsReducer(state, { type: 'openTab', payload }),
+      createInitialChatGroupsState()
+    );
+    const split = chatGroupsReducer(three, {
+      type: 'moveTabToGroup',
+      tabId: three.groups['grp-1'].tabs[1].tabId,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    saveChatGroups(split, 'w1');
+    return loadChatGroups('w1')!;
+  }
+  const tabsOf = (state: ChatGroupsState) =>
+    Object.values(state.groups).flatMap((group) => group.tabs);
+
+  it("renames the chat's saved tab, and changes nothing else", () => {
+    const before = saved();
+    expect(renameSavedTabs('w1', 's1', 'Cohort, renamed', true)).toBe(true);
+
+    const after = loadChatGroups('w1')!;
+    const s1 = tabsOf(after).find((tab) => tab.sessionId === 's1');
+    expect(s1?.title).toBe('Cohort, renamed');
+    expect(s1?.userSetName).toBe(true);
+    expect(tabsOf(after).find((tab) => tab.sessionId === 's2')?.title).toBe('Other chat');
+    expect(tabsOf(after).find((tab) => tab.sessionId === 's3')?.title).toBe('Third chat');
+    // Titles only: the layout, the focus and the tab order are as they were.
+    expect(after.layout).toEqual(before.layout);
+    expect(after.activeGroupId).toBe(before.activeGroupId);
+    expect(tabsOf(after).map((tab) => tab.tabId)).toEqual(tabsOf(before).map((tab) => tab.tabId));
+  });
+
+  it('renames a tab in the other half of a split too', () => {
+    const before = saved();
+    const otherHalf = Object.values(before.groups).find((group) => group.groupId !== 'grp-1')!;
+    expect(otherHalf.tabs.map((tab) => tab.sessionId)).toEqual(['s2']);
+
+    expect(renameSavedTabs('w1', 's2', 'Other chat, renamed')).toBe(true);
+    const after = loadChatGroups('w1')!;
+    expect(after.groups[otherHalf.groupId].tabs[0].title).toBe('Other chat, renamed');
+  });
+
+  it('writes nothing when the saved title already reads the name', () => {
+    saved();
+    const raw = localStorage.getItem(chatGroupsStorageKey('w1'));
+    expect(renameSavedTabs('w1', 's1', 'Cohort')).toBe(false);
+    expect(localStorage.getItem(chatGroupsStorageKey('w1'))).toBe(raw);
+  });
+
+  it("touches only this window's record", () => {
+    saveChatGroups(seeded(), 'w1');
+    saveChatGroups(seeded(), 'w2');
+    renameSavedTabs('w1', 's1', 'Renamed in w1', true);
+    expect(loadChatGroups('w1')?.groups['grp-1'].tabs[0].title).toBe('Renamed in w1');
+    expect(loadChatGroups('w2')?.groups['grp-1'].tabs[0].title).toBe('Cohort');
+  });
+
+  it('leaves a missing or unreadable record alone', () => {
+    expect(renameSavedTabs('w1', 's1', 'Anything')).toBe(false);
+    expect(localStorage.getItem(chatGroupsStorageKey('w1'))).toBeNull();
+
+    localStorage.setItem(chatGroupsStorageKey('w1'), '{not json');
+    expect(renameSavedTabs('w1', 's1', 'Anything')).toBe(false);
+    expect(localStorage.getItem(chatGroupsStorageKey('w1'))).toBe('{not json');
+  });
+
+  it('keeps a saved tab that has no chat yet, for the provider to decide', () => {
+    // Pruning sessionless tabs is the provider's job when it loads. A rename
+    // must not run it early and drop a tab holding an unsent message.
+    const state = chatGroupsReducer(seeded(), { type: 'openTab', payload: { sessionId: '' } });
+    saveChatGroups(state, 'w1');
+    renameSavedTabs('w1', 's1', 'Renamed', true);
+    const raw = JSON.parse(localStorage.getItem(chatGroupsStorageKey('w1'))!) as ChatGroupsState;
+    expect(raw.groups['grp-1'].tabs.map((tab) => tab.sessionId)).toEqual(['s1', '']);
+    expect(raw.groups['grp-1'].tabs[0].title).toBe('Renamed');
   });
 });

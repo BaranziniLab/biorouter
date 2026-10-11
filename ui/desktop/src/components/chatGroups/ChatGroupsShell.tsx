@@ -388,7 +388,12 @@ function useSessionPrivacyTiers(
  *      synchronously, so there is nothing here for this hook to add, and
  *      skipping makes the snap-back structurally impossible rather than merely
  *      unlikely. (`sessionListCache` guards the other half of that race — a list
- *      response that was issued BEFORE the rename it would undo.)
+ *      response that was issued BEFORE the rename it would undo.) "Every tab"
+ *      includes the tabs of a `/pair` that is not mounted: the app root's
+ *      `useSavedTabTitleSync` writes each rename into the saved tabs, which is
+ *      what the provider mounts from. Before it, a rename made from a sidebar
+ *      row on History came back to `/pair` under the old name, and this rule
+ *      kept it there (V2-R3-1).
  *   2. **Downgrade a named tab to the placeholder.** A row still reading "New
  *      chat" is a lower bound, never a correction, so it is never adopted over a
  *      title that already has a real name.

@@ -28,6 +28,7 @@ import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext'
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
 import { useEmptyPairRedirect } from './components/chatGroups/useEmptyPairRedirect';
 import { useNewChatTabRequests } from './components/chatGroups/useNewChatTabRequests';
+import { useSavedTabTitleSync } from './components/chatGroups/useSavedTabTitleSync';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
@@ -399,6 +400,10 @@ export function AppInner() {
   const { pathname, search } = useLocation();
   // Spec 3.16: the main column fades in once when the route changes.
   useRouteFade(pathname);
+  // A rename made on any route reaches this window's saved tabs, so /pair
+  // comes back with the name the sidebar shows (V2-R3-1). Here, and not in
+  // ChatGroupsProvider, because that provider mounts with /pair only.
+  useSavedTabTitleSync();
   const screen = `${pathname}${search}`;
   const shownScreen = useRef(screen);
   useEffect(() => {
