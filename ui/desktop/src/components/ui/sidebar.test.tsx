@@ -1265,40 +1265,54 @@ describe('tooltips inside the app shell wait for the app delay', () => {
 });
 
 /**
- * Vision V3-02. `AppLayout` answers a resize with two bubbling listeners: the first flips the
- * compact class and calls `setOpen` across the 1120 rung, the second marks `<body>` resizing.
- * React commits a `setOpen` from a `resize` listener in the microtask after that listener, so a
- * layout read in the commit resolved styles before the class landed and the gap eased its width
- * against the drag. The provider marks `<body>` from a CAPTURING listener, which runs before every
- * bubbling one at the window, so a listener registered earlier still finds the class.
+ * The provider marks `<body>` resizing on every window resize, so the motion rule holds wherever
+ * it is mounted. It promises nothing about listeners registered before it. Vision V3-02 made it a
+ * CAPTURING listener and pinned here that an earlier listener found the class: jsdom runs capture
+ * listeners first at the target, as the DOM spec says, but Chromium fires window `resize`
+ * listeners in registration order whatever their capture flag (measured in Chrome 155, vision
+ * V1-R4-1, for a real resize and for `dispatchEvent` alike). So that case passed here while the
+ * first crossing of the 1120 rung after a load slid in the app. Whatever moves the sidebar on a
+ * resize holds the window itself (`AppLayout`'s width watcher; the real ordering is pinned in
+ * Chromium by `Layout/sidebarAutoCollapseMotion.browser.test.tsx`).
  */
-describe('a window resize marks <body> before anything the resize changes', () => {
+describe('a window resize marks <body> resizing', () => {
   afterEach(() => {
     document.body.classList.remove('biorouter-window-resizing');
   });
 
-  it('has the resizing class on <body> inside an earlier bubbling resize listener', () => {
-    const seen: boolean[] = [];
-    function EarlierListener() {
-      // A child's effect runs before its provider's, so this registers first, like AppLayout's.
+  it('marks <body> in registration order, as Chromium does, with no capture-phase claim', () => {
+    const seen: Array<[string, boolean]> = [];
+    const record = (name: string) => () =>
+      seen.push([name, document.body.classList.contains('biorouter-window-resizing')]);
+    function Listener({ name }: { name: string }) {
       useEffect(() => {
-        const onResize = () =>
-          seen.push(document.body.classList.contains('biorouter-window-resizing'));
+        const onResize = record(name);
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
-      }, []);
+      }, [name]);
       return null;
+    }
+    function LaterListener() {
+      // The provider's own effect runs after its children's; this one runs after the provider's.
+      const [mounted, setMounted] = useState(false);
+      useEffect(() => setMounted(true), []);
+      return mounted ? <Listener name="later" /> : null;
     }
     render(
       <SidebarProvider>
-        <EarlierListener />
+        <Listener name="earlier" />
+        <LaterListener />
       </SidebarProvider>
     );
 
     act(() => {
       window.dispatchEvent(new Event('resize'));
     });
-    expect(seen).toEqual([true]);
+    // A capturing marker would make jsdom answer [earlier, true] here, which Chromium never does.
+    expect(seen).toEqual([
+      ['earlier', false],
+      ['later', true],
+    ]);
   });
 
   it('lifts the class once the resize settles, and on unmount', () => {

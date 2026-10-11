@@ -277,18 +277,20 @@ function SidebarProvider({
     };
   }, []);
 
-  // A window resize must reach the motion rule BEFORE anything the same resize
-  // changes in the sidebar (principle 9; vision V3-02). `AppLayout` answers a
-  // resize with two listeners, registered in this order: the first flips the
-  // compact class and calls `setOpen` across the 1120 rung, the second marks
-  // `<body>` resizing. React treats `resize` as a discrete event and commits that
-  // `setOpen` in the microtask after the FIRST listener, and a layout read in the
-  // commit then resolves styles with the sidebar collapsed and no resizing class,
-  // so the gap started its 175ms width transition and the content glided against
-  // the person's drag. A capturing listener on `window` runs before every
-  // bubbling one at the target, so the class is on `<body>` first. It lifts the
-  // class after the same settle as `AppLayout` (`MOTION.resizeSettleMs`), so it
-  // also holds where `AppLayout` is not mounted.
+  // Mark `<body>` resizing on every window resize and lift the class after the
+  // same settle as `AppLayout` (`MOTION.resizeSettleMs`), so `main.css`'s "layout
+  // snaps while the window moves" rule holds wherever the provider is mounted,
+  // `AppLayout` or not (the sidebar's own browser tests mount it alone).
+  //
+  // This listener runs AFTER every `resize` listener registered before it, a
+  // child's effect included, so it cannot mark the window ahead of a resize that
+  // moves the sidebar. Chromium fires window `resize` listeners in registration
+  // order whatever their capture flag (measured in Chrome 155, vision V1-R4-1).
+  // It was a capturing listener on the claim that it ran first (V3-02); it never
+  // did, and the first crossing of the 1120 rung after a load still slid. So
+  // whatever moves the sidebar on a resize holds the window still ITSELF, first:
+  // `AppLayout`'s width watcher calls its `holdWindowStill` before it collapses
+  // or restores the sidebar (`Layout/sidebarAutoCollapseMotion.browser.test.tsx`).
   React.useEffect(() => {
     let settle: number | undefined;
     const markResizing = () => {
@@ -299,9 +301,9 @@ function SidebarProvider({
         document.body.classList.remove(WINDOW_RESIZING_CLASS);
       }, MOTION.resizeSettleMs);
     };
-    window.addEventListener('resize', markResizing, { capture: true });
+    window.addEventListener('resize', markResizing);
     return () => {
-      window.removeEventListener('resize', markResizing, { capture: true });
+      window.removeEventListener('resize', markResizing);
       if (settle !== undefined) {
         window.clearTimeout(settle);
         document.body.classList.remove(WINDOW_RESIZING_CLASS);
