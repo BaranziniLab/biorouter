@@ -1,4 +1,5 @@
 import { useFontSize } from '../hooks/useFontSize';
+import { suspendTransitionsForThemeChange } from '../styles/motion';
 import { THEME_FAMILY_IDS } from '../styles/themes.generated';
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 
@@ -95,9 +96,14 @@ function saveThemePreference(preference: ThemePreference): void {
 }
 
 function applyThemeToDocument(theme: ResolvedTheme): void {
+  const root = document.documentElement;
+  // A theme change is a jump, not an element changing: still every transition for the frame it
+  // lands in, or buttons and rows walk to the new colours over 95 to 125ms (vision V4-15). Only
+  // when the mode really changes, so a mount and the effect that follows a click start none.
+  if (!root.classList.contains(theme)) suspendTransitionsForThemeChange(root);
   const toRemove = theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.classList.add(theme);
-  document.documentElement.classList.remove(toRemove);
+  root.classList.add(theme);
+  root.classList.remove(toRemove);
 }
 
 function loadThemeFamily(): ThemeFamily {
@@ -113,7 +119,10 @@ function applyFamilyToDocument(family: ThemeFamily): void {
   // `data-theme` sits alongside the `.dark`/`.light` class; main.css scopes the
   // Alma Mater token overrides to `[data-theme='alma-mater']`. Parchment has no
   // matching rules, so the bare `:root`/`.dark` defaults render.
-  document.documentElement.setAttribute('data-theme', family);
+  const root = document.documentElement;
+  // Same as the mode: a palette change is a jump (vision V4-15), and only a real change counts.
+  if (root.getAttribute('data-theme') !== family) suspendTransitionsForThemeChange(root);
+  root.setAttribute('data-theme', family);
 }
 
 interface ThemeProviderProps {
