@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
 import { Field } from '../ui/field';
 import { Textarea } from '../ui/textarea';
 import { ModalShell } from '../ModalShell';
+import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
 import { CUSTOM_SKILL_COPY } from './copy';
@@ -38,6 +39,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
   const [content, setContent] = useState(TEMPLATE);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSave = async () => {
     if (isSaving) return;
@@ -84,6 +86,10 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         if (!open && !isSaving) onClose();
       }}
       size="lg"
+      // First focus lands in the editor, not on the help glyph beside its label. Not `autoFocus`:
+      // with focus already inside, Radix never announces the open, the dialog never records
+      // which control opened it, and Escape leaves focus on the page (see `focusFieldOnOpen`).
+      onOpenAutoFocus={focusFieldOnOpen(editorRef)}
       // Typed instructions survive a stray backdrop click; nothing dismisses a
       // write in flight.
       purpose={isSaving ? 'required' : 'form'}
@@ -114,8 +120,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         info={CUSTOM_SKILL_COPY.help}
       >
         <Textarea
-          // First focus lands in the editor, not on the help glyph beside its label.
-          autoFocus
+          ref={editorRef}
           rows={14}
           className="p-3 font-mono text-code"
           value={content}

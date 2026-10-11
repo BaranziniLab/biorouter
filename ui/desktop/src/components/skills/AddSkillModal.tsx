@@ -6,6 +6,7 @@ import { Note } from '../ui/note';
 import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Upload } from '../icons/app-icons';
 import { ModalShell } from '../ModalShell';
+import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { toastSuccess, toastError } from '../../toasts';
 import { ADD_SKILL_COPY } from './copy';
 import { installSkillPackage, previewSkillPackage } from '../../api';
@@ -39,6 +40,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const urlFieldRef = useRef<HTMLInputElement>(null);
   const repositoryHelpId = useInfoTipId();
 
   const errorText = (err: unknown) =>
@@ -142,6 +144,10 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         if (!open && !busy) onClose();
       }}
       size="lg"
+      // First focus lands on the field, not on the help glyph beside its label. Not `autoFocus`:
+      // with focus already inside, Radix never announces the open, the dialog never records
+      // which control opened it, and Escape leaves focus on the page (see `focusFieldOnOpen`).
+      onOpenAutoFocus={focusFieldOnOpen(urlFieldRef)}
       // A typed URL survives a stray backdrop click; nothing is dismissible
       // while a preview or an install is in flight.
       purpose={busy ? 'required' : 'form'}
@@ -193,9 +199,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         <div className="flex gap-2">
           <Input
             id="skill-source-url"
-            // First focus lands on the field, not on the help glyph beside its
-            // label (Radix keeps a focus already inside the dialog).
-            autoFocus
+            ref={urlFieldRef}
             type="text"
             placeholder={ADD_SKILL_COPY.repositoryPlaceholder}
             aria-describedby={repositoryHelpId}

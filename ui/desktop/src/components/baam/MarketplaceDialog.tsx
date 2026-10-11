@@ -8,6 +8,7 @@ import { Search } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { catalogFreshnessLine } from './registry';
 import { MARKETPLACE_COPY } from './copy';
+import { focusFieldOnOpen } from './focusFieldOnOpen';
 
 /**
  * The one shell both BAAM browse dialogs render through (implementation spec
@@ -83,6 +84,7 @@ export function MarketplaceDialog({
   children,
 }: MarketplaceDialogProps) {
   const freshness = catalogFreshnessLine({ live, fetchedAt });
+  const searchRef = React.useRef<HTMLInputElement>(null);
 
   return (
     <ModalShell
@@ -93,6 +95,10 @@ export function MarketplaceDialog({
       size="lg"
       purpose={busy ? 'required' : 'info'}
       anchor="top"
+      // First focus lands in the search box. Not `autoFocus`: with focus already inside, Radix
+      // never announces the open, the dialog never records which control opened it, and Escape
+      // leaves focus on the page (see `focusFieldOnOpen`).
+      onOpenAutoFocus={focusFieldOnOpen(searchRef)}
       title={title}
       subtitle={
         <span className="inline-flex flex-wrap items-center gap-x-1">
@@ -114,8 +120,8 @@ export function MarketplaceDialog({
             className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted"
           />
           <Input
+            ref={searchRef}
             type="text"
-            autoFocus
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder={MARKETPLACE_COPY.searchPlaceholder}
