@@ -157,6 +157,11 @@ function page(catalog: RegistryLoad, columnWidth = 712): string {
         <div class="br-ext-group-label"><h2 id="label" class="truncate text-caps text-text-muted">Enabled <span class="tabular-nums">6</span></h2></div>
         <div class="biorouter-list-shell" id="list">${rows}</div>
       </section>
+      <section>
+        <!-- The control: the shared row recipe without the extension marker, so a test can tell a
+             rule this page removed from a recipe the sheet never drew. -->
+        <div class="biorouter-list-shell" id="plain"><div class="biorouter-list-row" id="plain-first">A</div><div class="biorouter-list-row">B</div></div>
+      </section>
     </div>
   </body></html>`;
 }
@@ -391,26 +396,59 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
     }
   });
 
-  it('draws the hairline straight and inset, and none under the last row', async (ctx) => {
+  it('draws no line under a row: rows are told apart by space and the hover wash (R-27)', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      const lines = await tab.evaluate(() =>
+      const rows = await tab.evaluate(() =>
         [...document.querySelectorAll('[data-extension-row]')].map((row) => {
-          const after = getComputedStyle(row, '::after');
+          const style = getComputedStyle(row);
           return {
-            content: after.content,
-            inset: after.insetInlineStart,
-            radius: getComputedStyle(row).borderBottomLeftRadius,
+            content: getComputedStyle(row, '::after').content,
+            // The recipe's 1px of transparent border stays: no row moves for losing its line.
+            border: style.borderBottomWidth,
+            borderColor: style.borderBottomColor,
           };
         })
       );
-      for (const line of lines.slice(0, -1)) {
-        expect(line.content).not.toBe('none');
-        // Inset by the row radius, so the line ends where the hover wash starts to curve.
-        expect(line.inset).toBe('8px');
+      expect(rows.length).toBeGreaterThan(1);
+      for (const row of rows) {
+        expect(row.content).toBe('none');
+        expect(row.border).toBe('1px');
+        expect(row.borderColor).toBe('rgba(0, 0, 0, 0)');
       }
-      expect(lines[lines.length - 1].content).toBe('none');
+      // Two rows touch with nothing between them, so the 20px of padding is the whole gap.
+      const [first, second] = await tab.evaluate(() =>
+        [...document.querySelectorAll('[data-extension-row]')]
+          .slice(0, 2)
+          .map((row) => row.getBoundingClientRect())
+          .map((rect) => ({ top: rect.top, bottom: rect.bottom }))
+      );
+      expect(second.top - first.bottom).toBe(0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('leaves the shared row recipe its straight, inset hairline everywhere else', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      // The control is a row of another list: the sheet draws its line, so the page's `none`
+      // above is this folder's rule and not a recipe that stopped drawing one.
+      const line = await tab.evaluate(() => {
+        const row = document.getElementById('plain-first') as HTMLElement;
+        const after = getComputedStyle(row, '::after');
+        return {
+          content: after.content,
+          inset: after.insetInlineStart,
+          radius: getComputedStyle(row).borderBottomLeftRadius,
+        };
+      });
+      expect(line.content).not.toBe('none');
+      // Inset by the row radius, so the line ends where the hover wash starts to curve.
+      expect(line.inset).toBe('8px');
+      expect(line.radius).toBe('8px');
     } finally {
       await tab.close();
     }
