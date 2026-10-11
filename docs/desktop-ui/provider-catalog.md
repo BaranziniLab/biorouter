@@ -90,11 +90,9 @@ A hovered row is a washed row, and the shared rows block already steps a control
 the paint of the row. The shared wash is the page ink at 5%: in light it lands on the rest fill's value,
 but in dark on the canvas it lands at rgb(30, 30, 29), where the Configure button resting on the page
 ground (rgb(27, 27, 25)) is 1.03:1 off its row and has no box. The row therefore paints the card fill
-(`--background-fill`, the strong step on the first-run ground), which leaves the button 1.10:1 off it
-(measured in Chromium, `firstRunFill.browser.test.tsx`). On the first-run ground the row is already the
-strong step, so a button in it hovers one step deeper, on `--background-strong`, as it does anywhere else
-on that ground; the strong step there would be the row's own value and erase the button under the
-pointer. Settings paints its hovered rows with the same idea (`settings.css`); the two are separate
+(`--background-fill`), which leaves the button 1.10:1 off it (measured in Chromium,
+`firstRunFill.browser.test.tsx`). First run stands on the same page ground, so one recipe serves both
+surfaces. Settings paints its hovered rows with the same idea (`settings.css`); the two are separate
 rules because the catalog root and Settings' reading column each carry `.br-rows-flat`, and the
 catalog's selector (`.br-provider-catalog.br-rows-flat`, two classes on one element) out-ranks Settings'
 one-class paint by specificity, so the order the style sheets are bundled in does not matter.
@@ -166,8 +164,28 @@ would see the defect.
 band, as every other page is: Back as the band's 32px icon action, a 14px title ("Provider configuration",
 or "Choose a provider" on first run) whose InfoTip says where keys are kept (first run adds "You can
 switch providers any time in Settings."), and Local, Institutional and Public on the title's line. The
-catalog draws its tabs into the band's slot (`ProviderCatalog`'s `tabsHost`, a portal; omitted, as in
-`ProviderGuard`, the list sits at the top of the catalog). There is no paragraph under the title.
+catalog draws its tabs into the band's slot (`ProviderCatalog`'s `tabsHost`, a portal; omitted, the list
+sits at the top of the catalog). There is no paragraph under the title.
+
+The first-run page (`ProviderGuard`, what a person sees on a fresh install) is the same page with two
+differences and no others (R-34, first-run vision round 1, FR-R1-2 and FR-S-4). Its band leads with the
+wordmark, the logo (R-29), at the sidebar's 20px scale and at rest (no entrance animation); and its
+trailing edge holds the two ways out, "Explore Biorouter first" and "Open Crew", as ghost `sm` buttons
+in one ink, said once, where the page has Back. The band is the shared band's markup written out in
+`ProviderGuard`, because `PageHeader` has no slot for a leading mark, and the root carries
+`.br-provider-page` so the two rules below hold for it too. It used to be a 235px hero that never
+scrolled (a 36px wordmark, a 24px "Welcome to Biorouter", a two-line paragraph, two arrow links in two
+inks, the skip repeated at the foot) on the recessed grey ground. Only its loader keeps that muted
+ground, because the boot splash hands off to it. On a browser served by `biorouter serve` the band is
+the wordmark and "Get started", over the host-managed panel, which carries the reason itself.
+
+The catalog opens once, at rest (FR-R1-1). With `holdUntilSettled` (both pages pass it) it draws a quiet
+skeleton at row height, and no tab, until the provider list, the bound provider and, when it can decide
+the tab (no route hint, no bound provider), the coding-agent probe are in; it waits for the probe at
+most `AGENT_PROBE_WAIT_MS` (2.5 s). It then freezes that tab, so a late probe or a refreshed list never
+switches it; a person's click still does. `loading` alone draws the skeleton too, so a list that is still
+in flight never reads as "Nothing here yet.". First run first painted Local with that line, filled it a
+second later and switched itself to Public when the probe answered.
 
 Both routes are **outside the app shell** (`routeOwnsTopBand`), so they have no sidebar and none of the
 shell's top-band bookkeeping, and the page does that bookkeeping itself. The band starts at **y=0** and is
@@ -204,29 +222,17 @@ The taxonomy strings themselves are the design of record in
 [`docs/security/privacy-tiers.md`](../security/privacy-tiers.md) §14.5 and are pinned by
 `ProviderCatalog.privacy.test.tsx`.
 
-## First run's ground and boxes
+## First run's boxes
 
-`ProviderGuard` paints first run on `--background-muted` (the boot splash hands off to it), where the
-rest fill IS the ground (1.00:1): a field, a select or a secondary button resting on `--background-fill`
-there would have no box at all. The page root is a recessed ground, so it carries the shared class
-`.br-ground-recessed` (the grounds note in `main.css`, [shared-controls.md](shared-controls.md)): the
-control ground steps to `--background-fill-strong` (1.10:1 off the page, design.md 9.11 rule 2), a filled
-button hovers one step deeper again, and a neutral track (the Institutional gateway switch, a progress
-bar) steps in, so every filled control inside follows with no class of its own and no rule of first run's.
-The root also carries `.br-first-run-ground`, the name of the page itself, which the two rules that are
-first run's own are scoped to (`onboarding/onboarding.css` and `providers/providers.css`).
-
-A box inside an open row (the selected model's facts, a progress line, the embedded terminal) is
-`.br-first-run-box`: a subtle fill with a transparent 1px edge that rests where a field would on the same
-ground, so it is `--background-fill` on the canvas (the provider page in onboarding mode) and the strong
-step on the first-run page. A box that holds a control also carries `.br-fill-surface`, so the button in
-it rests on the page ground and never sits fill on fill. A progress track inside a box is the
-strong step by the shared rule (`.br-progress-track` reads the track ground a filled box hands its
-children); on the first-run page the box is itself the strong step, so the track rests one step deeper,
-on `--background-strong`, through the one rule `onboarding.css` keeps. The standalone card chrome
-(`OnboardingCardShell` with `chrome="card"`, which only tests render today) is `.br-first-run-card`, the
-same fill at the container radius. No first-run box draws an outline; the header's rule is the scroll
-edge of the body under it, and the first-run CTAs are on the control ladder (`size="lg"`, 36px).
+First run stands on the page ground, as the provider page does, so a box rests where a field would
+there: a box inside an open row (a progress line, the embedded terminal) is `.br-first-run-box`, the
+rest fill (`--background-fill`) with a transparent 1px edge at the element radius. A box that holds a
+control also carries `.br-fill-surface`, so the button in it rests on the page ground and never sits fill
+on fill, and a progress track in it rests one step in by the shared rule (`.br-progress-track` reads the
+track ground a filled box hands its children). The host-managed panel on a browser surface is
+`.br-first-run-card`, the same fill at the container radius. No first-run box draws an outline. Until
+R-34 the page was `--background-muted`, where the rest fill is the ground itself, and it needed the
+recessed-ground class and two rules of its own; they went with the muted ground.
 
 ## Ordering rules
 
@@ -363,8 +369,7 @@ Sign-in is not folded into `is_configured`: learning it spawns the CLI, and
 
 ## Entering without a provider
 
-"Explore Biorouter first →" (under the header and repeated at the foot of the first-run
-screen) writes `BIOROUTER_ONBOARDING_SKIPPED = true`, and the guard renders the application
+"Explore Biorouter first" (a ghost button in the first-run band) writes `BIOROUTER_ONBOARDING_SKIPPED = true`, and the guard renders the application
 when `BIOROUTER_PROVIDER` is empty **and** that key is true.
 
 - It is a **config key**, not `localStorage`: a user who skipped setup yesterday must not
@@ -417,9 +422,9 @@ renders normally.
 | `ui/desktop/src/components/settings/providers/subcomponents/ProviderCard.tsx` | One row definition, click-to-configure or accordion |
 | `ui/desktop/src/components/settings/providers/copy.ts`, `providers.css` | The catalog's words (tests import them) and its row geometry |
 | `ui/desktop/src/components/settings/providers/ProviderSettingsPage.tsx` | The `configure-providers` and `welcome` routes |
-| `ui/desktop/src/components/ProviderGuard.tsx` | The first-run wall, and the way past it |
+| `ui/desktop/src/components/ProviderGuard.tsx` | The first-run page (its band, the catalog under it) and the way past it |
 | `ui/desktop/src/components/onboarding/OnboardingCardShell.tsx` | `card` / `bare` chrome around one body |
-| `ui/desktop/src/components/onboarding/onboarding.css` | The first-run ground, the fill boxes and the progress track on them |
+| `ui/desktop/src/components/onboarding/onboarding.css` | The first-run boxes and the band's wordmark |
 | `ui/desktop/src/components/onboarding/codingAgentControls.tsx` | The coding-agent probe, guidance and connect write |
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
 | `crates/biorouter/src/providers/base.rs` | `ProviderMetadata::institutions`, `with_institution` |

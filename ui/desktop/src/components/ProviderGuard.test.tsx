@@ -1,7 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createPortal } from 'react-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProviderGuard, { ONBOARDING_SKIPPED_KEY } from './ProviderGuard';
 import { persistDetectedProviderSetup } from './onboarding/CommercialSetupCard';
+import { firstRunCopy } from './onboarding/copy';
+import { providerPageCopy } from './settings/providers/copy';
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(),
@@ -36,11 +39,13 @@ vi.mock('./settings/providers/ProviderCatalog', () => ({
     onLocalComplete,
     loading,
     holdUntilSettled,
+    tabsHost,
   }: {
     onCommercialSuccess?: (setup: unknown) => void | Promise<void>;
     onLocalComplete?: () => void;
     loading?: boolean;
     holdUntilSettled?: boolean;
+    tabsHost?: HTMLElement | null;
   }) => (
     <div
       data-testid="catalog-stub"
@@ -63,6 +68,8 @@ vi.mock('./settings/providers/ProviderCatalog', () => ({
         Complete detection
       </button>
       <button onClick={() => onLocalComplete?.()}>Local ready</button>
+      {/* The catalog draws its tabs into the band's slot; a marker proves where the slot is. */}
+      {tabsHost ? createPortal(<span data-testid="tabs-marker" />, tabsHost) : null}
     </div>
   ),
 }));
@@ -116,32 +123,58 @@ describe('ProviderGuard', () => {
     expect(screen.queryByText('Application')).toBeNull();
   });
 
-  it('sits on the muted ground and tells the page its controls rest one step deeper (R-27)', async () => {
+  // R-34, vision FR-R1-2 / FR-S-1 / FR-S-4: the first-run page is the redesigned app's page, one
+  // 44px band and then the column on the page ground, as the `#/welcome` page and Settings are.
+  it('stands on the page ground under one band, not a hero header on the recessed ground', async () => {
     const { container } = renderGuard();
     await screen.findByText('CATALOG');
-    // The boot splash hands off to this ground, so it stays muted. The rest fill IS the muted
-    // value there, so the page is a recessed ground (the shared class, `main.css`): its controls
-    // rest on the strong step, a button hovers one deeper and a neutral track steps in. Without
-    // it a field and a secondary button would have no box. `br-first-run-ground` names the page
-    // for the rules that are first run's own (`onboarding.css`, `providers.css`).
     const root = container.firstElementChild as HTMLElement;
-    expect(root.className).toContain('bg-background-muted');
-    expect(root.className).toContain('br-ground-recessed');
-    expect(root.className).toContain('br-first-run-ground');
+    expect(root.className).toContain('bg-background-canvas');
+    expect(root.className).not.toContain('bg-background-muted');
+    expect(root.className).not.toContain('br-ground-recessed');
+    // The provider page's chrome rules: the band's lead clears the traffic lights, and the
+    // titlebar strip stops taking the band's clicks (`providers.css`).
+    expect(root.className).toContain('br-provider-page');
+
+    const band = screen.getByTestId('first-run-band');
+    expect(band).toHaveAttribute('data-band');
+    expect(band).toHaveClass('biorouter-page-header');
   });
 
-  it('starts the header and the body on one left edge: the padding sits inside the measure in both', async () => {
+  it('puts the wordmark, a 14px title with its help, the tabs and the two ways out in the band', async () => {
     renderGuard();
-    const title = await screen.findByRole('heading', { name: 'Welcome to Biorouter' });
-    const headerColumn = title.closest('.max-w-measure-chat') as HTMLElement;
-    const bodyColumn = screen.getByText('CATALOG').closest('.max-w-measure-chat') as HTMLElement;
-    expect(headerColumn).not.toBe(bodyColumn);
-    // Outside the measure the header stood 24px left of the tabs once the window was wider than
-    // the column; `px-5 sm:px-6` on the column itself keeps both on the same edge.
-    for (const column of [headerColumn, bodyColumn]) {
-      expect(column.className).toContain('px-5');
-      expect(column.className).toContain('sm:px-6');
-    }
+    await screen.findByText('CATALOG');
+    const band = screen.getByTestId('first-run-band');
+
+    // The wordmark is the logo (R-29), at rest: no entrance animation on a launch (FR-S-15).
+    const mark = within(band).getByTestId('first-run-wordmark');
+    expect(mark.closest('.biorouter-icon-animation')).toBeNull();
+
+    const title = within(band).getByRole('heading', { level: 1 });
+    expect(title).toHaveTextContent(firstRunCopy.title);
+    expect(title).toHaveClass('text-label');
+    // The lead is the InfoTip's, as on `#/welcome`; no paragraph under the title.
+    const tip = within(band).getByRole('button', { name: `About ${firstRunCopy.title}` });
+    expect(tip).toHaveAccessibleDescription(
+      expect.stringContaining(providerPageCopy.onboardingHelp)
+    );
+    expect(screen.queryByText(/integrated research environment/)).toBeNull();
+
+    // The catalog's tabs are drawn into the band's slot.
+    expect(within(band).getByTestId('tabs-marker')).toBeInTheDocument();
+
+    // The ways out are buttons in one ink, with words and no arrow, and the skip is said once.
+    const skip = within(band).getByRole('button', { name: firstRunCopy.skip });
+    const crew = within(band).getByRole('button', { name: firstRunCopy.openCrew });
+    for (const exit of [skip, crew]) expect(exit.textContent).not.toMatch(/→/);
+    expect(screen.getAllByRole('button', { name: firstRunCopy.skip })).toHaveLength(1);
+    expect(screen.queryByTestId('onboarding-skip-foot')).toBeNull();
+  });
+
+  it('opens Crew from the band', async () => {
+    renderGuard();
+    fireEvent.click(await screen.findByRole('button', { name: firstRunCopy.openCrew }));
+    expect(mocks.navigate).toHaveBeenCalledWith('/crew');
   });
 
   // FR-R1-1: the catalog is told the list is still in flight, so it draws its skeleton rather

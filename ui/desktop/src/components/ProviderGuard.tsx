@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, type CSSProperties } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
 import { BioRouterMark } from './icons/BioRouterMark';
@@ -11,7 +11,13 @@ import { ProviderDetails } from '../api';
 import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
-import { HOST_SERVE_COMMAND } from './privacy/hostManagedModelCopy';
+import { getTitlebarControlInset } from './Layout/TitlebarControls';
+import { InfoTip } from './ui/info-tip';
+import { Button } from './ui/button';
+import { ScrollArea } from './ui/scroll-area';
+import { firstRunCopy } from './onboarding/copy';
+import { providerPageCopy } from './settings/providers/copy';
+import { KEY_STORAGE_NOTICE } from './settings/providers/modal/subcomponents/SecureStorageNotice';
 import './onboarding/onboarding.css';
 
 /**
@@ -41,6 +47,9 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const [userInActiveSetup, setUserInActiveSetup] = useState(false);
   // `null` until the daemon has answered: the catalog draws its skeleton, never an empty tab.
   const [providers, setProviders] = useState<ProviderDetails[] | null>(null);
+  // The band's tab slot, which the catalog draws Local, Institutional and Public into
+  // (`ProviderCatalog.tabsHost`). State, not a ref: the catalog re-renders once it exists.
+  const [tabsHost, setTabsHost] = useState<HTMLElement | null>(null);
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
@@ -195,97 +204,108 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
      * are refused with a 409 whose body is addressed to an AI agent. Offering
      * the picker and then refusing it is the exact failure SD-1 rules out, so
      * the browser gets the one instruction that actually works — go and run it
-     * on the host — and the catalog is not rendered at all.
+     * on the host — and the catalog is not rendered at all. The panel carries the
+     * reason itself, so the band adds no sentence of its own above it (FR-S-13).
      */
     const hostManaged = isBrowserSurface();
-    /**
-     * The skip is offered for the desktop application only. On a browser surface
-     * there is nothing to explore *and* nothing the user can do about it from
-     * here: the host owns the choice, and a "continue without a provider" that
-     * led to a chat which can never be configured from this tab would be a
-     * second dead end dressed as an escape.
-     */
-    /**
-     * ⚠ Rendered TWICE — under the header and again at the foot — so the way out
-     * is visible from wherever the user stopped reading rather than only from
-     * the top. Each instance carries its own test id: one shared id would make
-     * every `getByTestId` in the suites throw "found multiple elements", which
-     * reads as a bug in the test rather than as two deliberate copies.
-     */
-    const skipAction = (placement: 'header' | 'foot') =>
-      hostManaged ? null : (
-        <button
-          type="button"
-          onClick={() => void handleSkip()}
-          data-testid={`onboarding-skip-${placement}`}
-          className="text-body text-text-muted transition-colors hover:text-text-default"
-        >
-          Explore Biorouter first →
-        </button>
-      );
+    const title = hostManaged ? firstRunCopy.hostTitle : firstRunCopy.title;
 
-    // The page stays on `--background-muted` (the boot splash hands off to it), where the rest
-    // fill is the ground itself. `br-ground-recessed` steps every filled control, a button's hover
-    // and a neutral track one step in; `br-first-run-ground` names the page for the two rules
-    // that are first run's own (`onboarding/onboarding.css`, `settings/providers/providers.css`).
+    /**
+     * The first-run page is the redesigned app's page (R-34, vision FR-R1-2): one 44px band, then
+     * the reading column on the page ground, as Settings and the `#/welcome` page are. It used to
+     * be a 235px hero (a 36px wordmark, a 24px title, a two-line paragraph and two arrow links)
+     * that never scrolled, on the recessed grey ground the boot splash uses.
+     *
+     * The band is the shared page band (`.biorouter-page-header[data-band]`, `PageHeader`'s
+     * markup), written out here only because it leads with the wordmark, which is the logo
+     * (R-29) and which `PageHeader` has no slot for: the 14px title with its InfoTip, the
+     * catalog's three tabs drawn into its slot (`ProviderCatalog.tabsHost`), and the two ways out
+     * as ghost buttons at its trailing edge. The page is outside the app shell like the provider
+     * page, so it carries `.br-provider-page` for the same two rules (`providers.css`): the band's
+     * lead clears the macOS traffic lights, and the 32px titlebar strip stops taking the band's
+     * clicks. The loader above stays on the muted ground the boot splash hands off to.
+     */
+    const bandLead = {
+      '--br-provider-band-lead': `${getTitlebarControlInset(
+        (window?.electron?.platform || 'darwin') === 'darwin'
+      )}px`,
+    } as CSSProperties;
+
     return (
-      <div className="br-first-run-ground br-ground-recessed flex h-screen w-full flex-col overflow-hidden bg-background-muted">
-        {/* Flat page header, on the same reading column as the panels below: the padding sits
-            INSIDE the measure here, as the body's does, so the wordmark and the title start on
-            the tabs' left edge at every window width (outside it they stood 24px to the left of
-            it once the window was wider than the column). The rule under it is the scroll edge of
-            the body. */}
-        <div className="flex-shrink-0 border-b border-border-subtle">
-          <div className="mx-auto max-w-measure-chat px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
-            <div className="mb-4 sm:mb-5 biorouter-icon-animation origin-bottom-left">
-              <BioRouterWordmark className="h-9 w-auto" />
+      <div
+        className="br-provider-page br-first-run flex h-screen w-full flex-col bg-background-canvas text-text-default"
+        style={bandLead}
+      >
+        <header
+          className="biorouter-page-header br-ground-recessed"
+          data-band=""
+          data-testid="first-run-band"
+        >
+          <div className="biorouter-page-header-bar">
+            {/* At rest on every mount: the page appears because of a launch or a return from
+                Crew, and principle 9 has such a surface appear still (FR-S-15). */}
+            <BioRouterWordmark className="br-first-run-wordmark" data-testid="first-run-wordmark" />
+            <div className="biorouter-page-header-title">
+              <h1 className="min-w-0 truncate text-label text-text-default">{title}</h1>
+              {hostManaged ? null : (
+                <InfoTip label={title} side="bottom" align="start">
+                  {`${providerPageCopy.onboardingHelp} ${KEY_STORAGE_NOTICE}`}
+                </InfoTip>
+              )}
             </div>
-            <h1 className="text-title text-text-default">Welcome to Biorouter</h1>
-            <p className="text-body text-text-muted mt-1.5">
-              {hostManaged
-                ? `Biorouter is being served to this browser by ${HOST_SERVE_COMMAND}. One more step is needed on that machine before you can start a chat.`
-                : 'An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.'}
-            </p>
-            {!hostManaged && (
-              <div className="mt-4 flex gap-5">
-                {skipAction('header')}
-                <button
-                  type="button"
-                  className="text-body text-text-default"
-                  onClick={() => navigate('/crew')}
-                >
-                  Open Crew →
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Scrollable body */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-background-muted">
-          <div className="mx-auto max-w-measure-chat px-5 py-6 sm:px-6">
-            {hostManaged ? (
-              <HostManagedModelPanel />
-            ) : (
+            {hostManaged ? null : (
               <>
-                <ProviderCatalog
-                  providers={providers ?? []}
-                  loading={providers === null}
-                  holdUntilSettled
-                  refreshProviders={refreshProviders}
-                  mode="onboarding"
-                  setView={setView}
-                  onModelSelected={handleModelSelected}
-                  onLocalComplete={handleLocalComplete}
-                  onStartTesting={() => setUserInActiveSetup(true)}
-                  onCommercialSuccess={handleCommercialSuccess}
-                  configuredProvider={null}
-                />
-                <div className="mt-8">{skipAction('foot')}</div>
+                <div ref={setTabsHost} className="br-provider-band-tabs-host" />
+                {/* The skip is offered for the desktop application only. On a browser surface
+                    there is nothing to explore *and* nothing the user can do about it from here:
+                    the host owns the choice, and a "continue without a provider" that led to a
+                    chat which can never be configured from this tab would be a second dead end
+                    dressed as an escape. Said once, in the band: the foot copy is gone. */}
+                <div className="biorouter-page-header-actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    data-testid="onboarding-skip-header"
+                    onClick={() => void handleSkip()}
+                  >
+                    {firstRunCopy.skip}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    data-testid="onboarding-open-crew"
+                    onClick={() => navigate('/crew')}
+                  >
+                    {firstRunCopy.openCrew}
+                  </Button>
+                </div>
               </>
             )}
           </div>
-        </div>
+        </header>
+
+        <ScrollArea className="w-full flex-1">
+          <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
+            {hostManaged ? (
+              <HostManagedModelPanel />
+            ) : (
+              <ProviderCatalog
+                tabsHost={tabsHost}
+                providers={providers ?? []}
+                loading={providers === null}
+                holdUntilSettled
+                refreshProviders={refreshProviders}
+                mode="onboarding"
+                setView={setView}
+                onModelSelected={handleModelSelected}
+                onLocalComplete={handleLocalComplete}
+                onStartTesting={() => setUserInActiveSetup(true)}
+                onCommercialSuccess={handleCommercialSuccess}
+                configuredProvider={null}
+              />
+            )}
+          </div>
+        </ScrollArea>
       </div>
     );
   }

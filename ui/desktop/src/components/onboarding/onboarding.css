@@ -1,23 +1,14 @@
 /*
  * First run and provider setup on the fill system (owner message 13, R-27, design.md 9.11).
  *
- * A box here is a subtle solid fill with no resting outline, and it rests where a FIELD would on
- * the same ground. That is one rule for two grounds:
- *
- *   - on the page canvas (the provider page in onboarding mode) a field rests on `--background-fill`,
- *     so the box does too;
- *   - on `--background-muted` (`ProviderGuard`, the page the boot splash hands off to) the rest fill
- *     IS the ground (1.00:1), so everything rests one step deeper, on `--background-fill-strong`
- *     (1.10:1): design.md 9.11 rule 2. That page is a RECESSED GROUND, and says so with the shared
- *     class (`.br-ground-recessed`, the grounds note in `main.css`): the control ground, a filled
- *     button's hover and the track ground all step in once, and every filled primitive inside it (a
- *     field, the model select, a secondary button, the gateway switch's track, a copy field) follows
- *     with no class of its own. This file keeps only what the shared class cannot know: the root
- *     also carries `.br-first-run-ground`, the name of the page itself, which the two first-run
- *     rules below (and `providers.css`) are scoped to.
+ * The first-run page (`ProviderGuard`) stands on the page ground, as the `#/welcome` page and
+ * Settings do (R-34, vision FR-R1-2): only its loader keeps the muted ground the boot splash hands
+ * off to. So a box here rests where a FIELD would on that ground, the rest fill
+ * (`--background-fill`), with no resting outline.
  *
  * A box that holds controls also carries `.br-fill-surface` (the shared primitives block), so the
- * field or button inside it steps back to the page ground and never sits fill on fill.
+ * field or button inside it steps back to the page ground and never sits fill on fill, and a
+ * progress track inside it takes the shared track ground one step in.
  *
  * Authored here, not as Tailwind strings: a newly written utility can silently fail to generate
  * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry"), and which ground a box rests on is
@@ -33,23 +24,22 @@
   background-color: var(--br-control-ground, var(--background-fill));
 }
 
-/* An inline box inside an open row: the model's facts, a progress line, a check. */
+/* An inline box inside an open row: a progress line, a terminal. */
 .br-first-run-box {
   border-radius: var(--radius-element);
 }
 
-/* The standalone onboarding card (`OnboardingCardShell` with its own chrome). */
+/* A standalone card: the host-managed panel on a browser surface. */
 .br-first-run-card {
   border-radius: var(--radius-container);
 }
 
-/* A progress track inside a box on the first-run page. A box that holds a control carries
-   `.br-fill-surface`, which already puts the track on the strong step in a canvas box (the shared
-   `.br-progress-track`, `--br-track-ground`), so there is no rule for that case here. On the
-   first-run page the box itself rests on the strong step, which is the track's own value, so the
-   track would vanish in the box it reports on: no shared rule guesses that, so it rests one step
-   deeper, on `--background-strong`. The fill (the information) is the tone's own and is not
-   touched. */
-.br-first-run-ground .br-first-run-box .br-progress {
-  background-color: var(--background-strong);
+/* The wordmark leading the first-run band: the logo (R-29), at the sidebar's scale (20px tall,
+   `.br-sidebar-wordmark`), 16px before the title (8px here plus the band's 8px gap). Drawn at
+   rest: no entrance animation on a page that appears because of a launch (FR-S-15). */
+.br-first-run-wordmark {
+  flex: none;
+  width: auto;
+  height: calc(20px * var(--app-font-scale, 1));
+  margin-inline-end: 8px;
 }
