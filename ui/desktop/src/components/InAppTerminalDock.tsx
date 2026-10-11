@@ -11,6 +11,7 @@ import { onTerminalRunRequest } from '../utils/terminalRunChannel';
 import { terminalInputForCommand } from '../utils/shellCommandBlock';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
+import { tildePath } from './BioRouterSidebar/sidebarChatView';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -73,9 +74,10 @@ function basename(path?: string) {
 
 function formatCwd(cwd?: string) {
   if (!cwd) return 'Chat terminal';
+  // The sidebar's boundary-safe shortening: `~` only when the home folder ends
+  // at a path separator, so `/Users/wgu2/work` never reads `~2/work`.
   const home = window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined;
-  if (home && cwd.startsWith(home)) return cwd.replace(home, '~');
-  return cwd;
+  return tildePath(cwd, home);
 }
 
 function makePaneTitle(workingDir: string | undefined, index: number) {
