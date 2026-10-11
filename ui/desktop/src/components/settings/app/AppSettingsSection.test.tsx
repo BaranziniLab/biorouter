@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 
@@ -72,6 +72,80 @@ describe('General switches', () => {
     expect(sleep).toHaveAccessibleDescription(generalCopy.preventSleepHelp);
     // No description paragraph under any row label.
     expect(container.querySelectorAll('.biorouter-settings-row p')).toHaveLength(0);
+  });
+});
+
+/**
+ * The three switches whose value the main process holds are read after the page mounts. Until it
+ * answers they are held at their place and not painted, so a person who turned "Prevent sleep"
+ * off never sees it on (vision V4-01: the coral ON track showed for two frames on every open of
+ * the App tab, then snapped to off).
+ */
+describe('switches read from the main process', () => {
+  /** The switch in the row with this label, whether or not it is in the accessibility tree yet. */
+  function switchInRow(label: string): HTMLElement {
+    const row = Array.from(document.querySelectorAll('[data-slot="setting-row"]')).find(
+      (candidate) => candidate.querySelector('label')?.textContent === label
+    );
+    return row!.querySelector('[data-slot="switch"]') as HTMLElement;
+  }
+
+  /** Every `aria-checked` the named switch carried from the first render on. */
+  function watchChecked(element: HTMLElement) {
+    const seen = new Set([element.getAttribute('aria-checked')]);
+    const observer = new MutationObserver(() => seen.add(element.getAttribute('aria-checked')));
+    observer.observe(element, { attributes: true, attributeFilter: ['aria-checked'] });
+    return { seen, stop: () => observer.disconnect() };
+  }
+
+  it('never paints a stored "off" as on, and only offers the switch once it knows', async () => {
+    let answer: (enabled: boolean) => void = () => {};
+    window.electron.getWakelockState = vi.fn(
+      () => new Promise<boolean>((resolve) => (answer = resolve))
+    );
+    render(<AppSettingsSection />);
+
+    // The switch is in the row from the first render, holding its place.
+    const held = switchInRow(generalCopy.preventSleep);
+    expect(held).toHaveAttribute('data-pending');
+    expect(screen.queryByRole('switch', { name: generalCopy.preventSleep })).toBeNull();
+    expect(held).toHaveAttribute('aria-checked', 'false');
+    const record = watchChecked(held);
+
+    await act(async () => answer(false));
+
+    const sleep = await screen.findByRole('switch', { name: generalCopy.preventSleep });
+    expect(sleep).toBe(held);
+    expect(sleep).not.toBeChecked();
+    expect(record.seen).toEqual(new Set(['false']));
+    record.stop();
+  });
+
+  it('shows a stored "on" as on once it is read, as the same node', async () => {
+    let answer: (enabled: boolean) => void = () => {};
+    window.electron.getWakelockState = vi.fn(
+      () => new Promise<boolean>((resolve) => (answer = resolve))
+    );
+    render(<AppSettingsSection />);
+    const held = switchInRow(generalCopy.preventSleep);
+    await act(async () => answer(true));
+    expect(await screen.findByRole('switch', { name: generalCopy.preventSleep })).toBe(held);
+    expect(held).toBeChecked();
+  });
+
+  it('leaves the setting at its default, on, when its state cannot be read', async () => {
+    window.electron.getWakelockState = vi.fn().mockRejectedValue(new Error('no main process'));
+    render(<AppSettingsSection />);
+    expect(await screen.findByRole('switch', { name: generalCopy.preventSleep })).toBeChecked();
+  });
+
+  it('holds all three, Dock included, until each has been read', async () => {
+    render(<AppSettingsSection />);
+    expect(document.querySelectorAll('[data-pending]')).toHaveLength(3);
+    for (const name of [generalCopy.menuBar, generalCopy.dock, generalCopy.preventSleep]) {
+      expect(await screen.findByRole('switch', { name })).toBeChecked();
+    }
+    expect(document.querySelectorAll('[data-pending]')).toHaveLength(0);
   });
 });
 
