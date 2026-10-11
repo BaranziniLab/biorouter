@@ -113,6 +113,17 @@ holds it**: a person who has already tabbed to Cancel stays on Cancel. The opene
 runs, so Escape and Cancel still return focus to the row's button. `ProviderConfigurationModal.focus.test.tsx`
 and `LeadWorkerSettings.focus.test.tsx` hold it, and each line that makes it true was checked by removing it.
 
+**After a pointer open, only a text field takes the hand-off** (V4-R4-1). A focus a script moves after a mouse
+click can match `:focus-visible` in Chromium (it decides from the menu item the pointer just picked), so the
+Lead/worker switch wore the inset grey ring after "Lead and worker..." was clicked. `restOnDialog` records
+whether the last input was a key (`lastInputWasKey` from `ui/inputTrail`, the tracker `ui/dialog.tsx` already
+reads for its own quiet open), and `useHandFocusOnReady` skips a control that is not a text entry when it was
+not: focus stays on the dialog box, which draws none, and the next Tab reaches the first control. A Configure
+dialog opened with the mouse still lands in its first key field, because a text field is always ringed and wants
+the cursor. A keyboard open hands focus on as before. jsdom has no `:focus-visible`, so
+`LeadWorkerSettings.focusRing.browser.test.tsx` drives the real menu with Playwright's mouse and keyboard in
+Chromium and reads `:focus-visible` off the focused node; it fails against the previous `dialogFocus.ts`.
+
 ## How the Configure dialog names a field
 
 One function, `providerFieldName` in `DefaultProviderSetupForm.tsx`, names a key for its label, its
