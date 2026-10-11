@@ -4,6 +4,7 @@ import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
 import { Check, Copy, Terminal } from '../icons/app-icons';
 import InAppTerminalDock from '../InAppTerminalDock';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import {
   AGENT_COMMAND_CONFIG,
   METERED_SIBLING,
@@ -407,11 +408,11 @@ function RecheckButton({
     <Button
       type="button"
       variant="secondary"
-      size="lg"
+      size="sm"
       shape="pill"
       onClick={() => void controls.refresh(false)}
       disabled={controls.isRechecking}
-      className="w-full px-4 sm:w-auto"
+      className="w-full sm:w-auto"
       data-testid={`coding-agent-recheck-${agent.providerId}`}
     >
       {controls.isRechecking ? 'Checking…' : recheckLabel(agent.auth)}
@@ -532,7 +533,7 @@ export function CodingAgentBody({
           <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
             <Button
               type="button"
-              size="lg"
+              size="sm"
               shape="pill"
               onClick={() =>
                 onRetryConfiguration ? onRetryConfiguration() : void controls.connect(agent)
@@ -540,7 +541,7 @@ export function CodingAgentBody({
               disabled={
                 isRetrying || controls.connectingProviderId !== null || controls.isRechecking
               }
-              className="w-full px-4 sm:w-auto"
+              className="w-full sm:w-auto"
               data-testid={`coding-agent-connect-${agent.providerId}`}
             >
               {isRetrying
@@ -582,13 +583,32 @@ export function CodingAgentBody({
   }
 }
 
-/** The version/path line, when the probe resolved either. */
+/**
+ * The version line, when the probe resolved a version or a path. The version is what a person
+ * reads; where the CLI lives is a path, so it sits behind the line's tooltip (principle 10, V4-26)
+ * instead of on the row in mono. The line takes focus, like a provider's description, so the
+ * tooltip is reachable by keyboard. With a path and no version the line says only that the CLI was
+ * found.
+ */
 export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailability }) {
   if (!agent.version && !agent.path) return null;
-  return (
-    <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
-      {[agent.version, agent.path].filter(Boolean).join(' · ')}
+  const line = (
+    <p
+      tabIndex={agent.path ? 0 : undefined}
+      data-testid={`coding-agent-version-${agent.providerId}`}
+      className="min-w-0 cursor-default break-words rounded-element text-supporting text-text-muted biorouter-focus-surface"
+    >
+      {agent.version ?? 'Installed'}
     </p>
+  );
+  if (!agent.path) return line;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{line}</TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-96 break-all text-wrap font-mono">
+        {agent.path}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -612,11 +632,11 @@ export function CodingAgentLoadError({
       <Button
         type="button"
         variant="secondary"
-        size="lg"
+        size="sm"
         shape="pill"
         onClick={() => void controls.refresh(false)}
         disabled={controls.isRechecking}
-        className="w-full px-4 sm:w-auto"
+        className="w-full sm:w-auto"
         data-testid="coding-agent-retry"
       >
         {controls.isRechecking ? 'Checking…' : 'Try again'}

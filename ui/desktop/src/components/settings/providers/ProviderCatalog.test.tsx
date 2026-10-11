@@ -362,15 +362,35 @@ describe('ProviderCatalog — AI agents', () => {
     );
   };
 
+  // The ready pill is not in this table: on a CONFIGURED agent it would be the same news as
+  // "Configured" (see 'says one status'), so it is asserted on a row that is not set up yet.
   it.each([
     ['not_installed', 'Not installed'],
     ['signed_out', 'Installed · not signed in'],
     ['signed_in_with_api_key', 'Signed in with an API key'],
-    ['signed_in_subscription', 'Ready · signed in on your subscription'],
   ] as const)('renders the %s pill on the agent row', async (state, label) => {
     withAgents([agent('claude_code', { state } as CodingAgentAuth)]);
     clickTab('commercial');
     expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it('invites setup with the ready pill on an agent that is not configured yet', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('claude_code', { state: 'signed_in_subscription' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('claude_code', { is_configured: false }, 'Claude Code')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('commercial');
+    const row = await screen.findByTestId('provider-card-claude_code');
+    expect(
+      await within(row).findByText('Ready · signed in on your subscription')
+    ).toBeInTheDocument();
+    expect(within(row).queryByText('Configured')).toBeNull();
   });
 
   it('renders the indeterminate pill and its detail', async () => {
@@ -453,10 +473,12 @@ describe('ProviderCatalog — AI agents', () => {
     render(<CatalogWithLiveList />);
     clickTab('commercial');
     const row = await screen.findByTestId('provider-card-codex');
-    await within(row).findByText('Ready · signed in on your subscription');
+    // The row opens only once the probe has been read, so the probe is in before the status is.
+    fireEvent.click(await screen.findByTestId('provider-row-toggle-codex'));
+    // One status: a configured, ready agent says "Configured" and nothing else.
     expect(within(row).getByText('Configured')).toBeInTheDocument();
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('provider-row-toggle-codex'));
     fireEvent.click(screen.getByTestId('coding-agent-recheck-codex'));
 
     await within(row).findByText('Not installed');
@@ -537,8 +559,13 @@ describe('ProviderCatalog — AI agents', () => {
     fireEvent.click(within(row).getByRole('button', { name: catalogCopy.configureRow('Codex') }));
     fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
 
-    await within(row).findByText('Ready · signed in on your subscription');
-    expect(within(row).getByText('Configured')).toBeInTheDocument();
+    // The corrected command re-probed: the stale "Not installed" is gone, and the ready agent
+    // says "Configured" alone.
+    await waitFor(() => {
+      expect(within(row).getByText('Configured')).toBeInTheDocument();
+      expect(within(row).queryByText('Not installed')).toBeNull();
+    });
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
     expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
     expect(screen.getByTestId('switch-model-modal')).toBeInTheDocument();
     expect(mocks.fetchCodingAgentStatus).toHaveBeenCalledTimes(3);
@@ -569,13 +596,45 @@ describe('ProviderCatalog — AI agents', () => {
     expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
   });
 
-  /** The control: a usable agent keeps its check, so the case above is not "never show it". */
-  it('keeps the Configured check on an agent that is ready', async () => {
+  /**
+   * The control: a usable agent keeps its check, so the case above is not "never show it". And it
+   * keeps it ALONE (V4-26): a ready, configured agent used to say "Ready · signed in…" beside
+   * "Configured", the same news twice on one row.
+   */
+  it('says one status on an agent that is ready and configured', async () => {
     withAgents([agent('claude_code', { state: 'signed_in_subscription' })]);
     clickTab('commercial');
     const row = await screen.findByTestId('provider-card-claude_code');
-    await within(row).findByText('Ready · signed in on your subscription');
+    // The toggle exists only once the probe has been read.
+    await screen.findByTestId('provider-row-toggle-claude_code');
     expect(within(row).getByText('Configured')).toBeInTheDocument();
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
+  });
+
+  it('draws the daemon’s backticked command as inline code, not with the marks', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
+    const row = provider('claude_code', {}, 'Claude Code');
+    row.metadata.description = 'Uses your own installed `claude` command-line app.';
+    render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+    clickTab('commercial');
+    const description = await screen.findByTestId('provider-description-claude_code');
+    expect(description).toHaveTextContent('Uses your own installed claude command-line app.');
+    expect(description.querySelector('code')).toHaveTextContent('claude');
+  });
+
+  it('puts the disclosure chevron after the name, so every title starts on one x', async () => {
+    withAgents([agent('claude_code', { state: 'signed_out' })]);
+    clickTab('commercial');
+    const toggle = await screen.findByTestId('provider-row-toggle-claude_code');
+    const name = within(toggle).getByText('Claude Code');
+    const chevron = toggle.querySelector('.br-provider-chevron');
+    expect(chevron).not.toBeNull();
+    // The name comes first in the toggle's DOM, and nothing precedes it.
+    expect(toggle.querySelector('p, svg')).toBe(name);
+    expect(name.compareDocumentPosition(chevron!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chevron).toHaveAttribute('data-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(chevron).toHaveAttribute('data-expanded', 'true');
   });
 
   it('puts the agents ahead of the pinned API providers, in their fixed order', async () => {

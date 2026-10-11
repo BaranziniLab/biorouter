@@ -8,14 +8,6 @@
  * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
  */
 
-/* The row's text block and its right-hand cluster. */
-.br-provider-row-end {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 12px;
-}
-
 /* "Configured": a success dot and a word, as the Scheduler's status does. */
 .br-provider-configured {
   display: inline-flex;
@@ -31,18 +23,19 @@
   min-inline-size: 0;
   flex: 1 1 auto;
   align-items: center;
-  gap: 12px;
   text-align: start;
 }
 
+/* The disclosure glyph follows the name, so every title starts on the same x. It points down at
+   rest ("opens") and turns over when the row is open. */
 .br-provider-chevron {
   flex: none;
   color: var(--text-muted);
   transition: transform var(--dur-fast-max) var(--ease-out);
 }
 
-.br-provider-chevron[data-expanded='false'] {
-  transform: rotate(-90deg);
+.br-provider-chevron[data-expanded='true'] {
+  transform: rotate(180deg);
 }
 
 /* What an open row reveals, on the row's own inset. */
@@ -60,5 +53,46 @@
   display: flex;
   align-items: center;
   margin-block-start: 12px;
+  padding-inline: 12px;
+}
+
+/*
+ * The provider page's own chrome (`ProviderSettingsPage`). The page is outside the app shell, so
+ * the 32px titlebar drag strip stays over its top edge and the 44px band starts below it; the
+ * strip's room is this spacer, on the page's own ground. The band is drawn on that same ground
+ * (the shared band's `--sidebar` ground is there to meet the sidebar's titlebar band, and this
+ * page has no sidebar). Authored here, not as Tailwind strings, because a newly written utility
+ * can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+.br-provider-page-strip {
+  flex: none;
+  height: var(--titlebar-drag-height);
+}
+
+.br-provider-page .biorouter-page-header[data-band] {
+  background: transparent;
+}
+
+/* The band's tab slot: the catalog draws Local, Institutional and Public into it. The tabs sit
+   on the title's line (the list stretches to the band and each trigger fills it, so the underline
+   lands on the band's hairline), 16px after the title. */
+.br-provider-band-tabs-host {
+  display: flex;
+  min-inline-size: 0;
+  align-self: stretch;
+  margin-inline-start: 16px;
+}
+
+.br-provider-band-tabs {
+  align-self: stretch;
+}
+
+.br-provider-band-tabs > [role='tab'] {
+  height: 100%;
+}
+
+/* First run's setup forms sit on the rows' text inset, so a field starts where a row's name does
+   and ends where a row's button does (V4-29). */
+.br-provider-inset {
   padding-inline: 12px;
 }

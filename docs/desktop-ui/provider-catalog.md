@@ -50,13 +50,50 @@ line is privacy information, so it is visible text and never an InfoTip
 
 A provider is a row on the shared settings-row geometry (`ProviderCard.tsx`, `providers.css`): a name
 over a one-line description (truncated, with a focusable tooltip for the rest), "Configured" as a success
-dot and a word, and one action. There is no initial tile. In settings the status and the action share one
-cell, Crew's `meta` recipe (`.br-row-actions-slot`): "Configured" at rest on the right edge, and the action
-(`Configure`, named for its row, as in "Configure Anthropic") in its place while the row is hovered or holds
-focus, always shown without a hover pointer (`.br-row-actions`), so the edge never moves. On first run the
-action is always shown, and a configured provider's is `Launch`; there the status and the button sit side by
-side. An accordion row (the coding agents, and the local providers on first run) and its panel are two
+dot and a word, and one action. There is no initial tile. The status and the action share one cell,
+Crew's `meta` recipe (`.br-row-actions-slot`): "Configured" at rest on the right edge, and the action
+(`Configure`, named for its row, as in "Configure Anthropic"; `Launch` for a configured provider on first
+run) in its place while the row is hovered or holds focus, always shown without a hover pointer
+(`.br-row-actions`), so the edge never moves. **First run reveals its actions the same way** (vision round
+1, V4-29): it used to keep the button on screen, which made it the one list in the app with permanent row
+actions on a hover-capable display. Its rows act on a click as Settings' do, so the button is the keyboard
+path and a shortcut for the mouse, never the only way in.
+
+Three details keep one list reading as one list (V4-26):
+
+- **The disclosure chevron follows the name** ("Claude Code ⌄", as Codex draws a group), so every title
+  starts on the same x. It points down at rest and turns over when the row is open.
+- **One status per row.** A coding agent that is ready *and* configured is said by "Configured" alone; its
+  pill ("Ready · signed in on your subscription") would be the same news twice. Every state that needs
+  attention keeps its pill, and so does a ready agent that is not set up yet, because the pill is what
+  invites the "Use" in its panel.
+- **The daemon's backticks are drawn as inline code** (`InlineCodeText`): a description it serves as
+  ``…installed `claude` command-line app`` shows `claude` in mono, not with the marks. Only a closed pair on
+  one line counts, and nothing is interpreted as markup.
+
+An open agent's panel keeps its buttons at the `sm` size and shows the CLI's version as a line; where the
+CLI lives is a path, so it is the line's tooltip (principle 10), not a mono line on the row.
+
+An accordion row (the coding agents, and the local providers on first run) and its panel are two
 siblings in the list, never one wrapper, because the list's hairline recipe drops the last child's rule.
+
+## The page band
+
+`ProviderSettingsPage.tsx` (`#/configure-providers`, and `#/welcome` on first run) is one 44px `PageHeader`
+band, as every other page is: Back as the band's 32px icon action, a 14px title ("Provider configuration",
+or "Choose a provider" on first run) whose InfoTip says where keys are kept (first run adds "You can
+switch providers any time in Settings."), and Local, Institutional and Public on the title's line. The
+catalog draws its tabs into the band's slot (`ProviderCatalog`'s `tabsHost`, a portal; omitted, as in
+`ProviderGuard`, the list sits at the top of the catalog). There is no paragraph under the title.
+
+Both routes are **outside the app shell** (`routeOwnsTopBand`), so `App.tsx`'s 32px titlebar drag strip
+stays over the top of the page and the band starts below it, clear of the window controls
+(`.br-provider-page-strip`). The shared band's `--sidebar` ground is there to meet the sidebar's
+titlebar band, and this page has no sidebar, so the band is drawn on the page's own ground. The mouse's
+Back button still leaves the page (`useMouseBackButton`, the listener `ui/BackButton` carried).
+
+First run's setup forms (`InstitutionalSetupCard`, `CommercialSetupCard`) sit on the rows' 12px text inset
+(`.br-provider-inset`), so a field starts where a row's name does and ends where a row's button does.
 
 A section is a `SettingSection`: a caps heading with, where there is a reason to give, an InfoTip beside
 it (`OrderedProviderSection.help`: the agents' subscription billing, a gateway with no named

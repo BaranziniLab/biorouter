@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ScrollArea } from '../../ui/scroll-area';
-import BackButton from '../../ui/BackButton';
-import { InfoTip } from '../../ui/info-tip';
+import { PageHeader } from '../../Layout/PageHeader';
 import { Skeleton } from '../../ui/skeleton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
@@ -12,6 +11,8 @@ import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCa
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import { KEY_STORAGE_NOTICE } from './modal/subcomponents/SecureStorageNotice';
 import { providerPageCopy } from './copy';
+import { useMouseBackButton } from './useMouseBackButton';
+import './providers.css';
 
 interface ProviderSettingsProps {
   onClose: () => void;
@@ -41,6 +42,10 @@ export default function ProviderSettings({
   const [providers, setProviders] = useState<ProviderDetails[]>([]);
   const [configuredProvider, setConfiguredProvider] = useState<string | null>(null);
   const initialLoadDone = useRef(false);
+  // The band's tab slot, which the catalog draws its tabs into (`ProviderCatalog.tabsHost`). State
+  // rather than a ref: the catalog must re-render when the element exists.
+  const [tabsHost, setTabsHost] = useState<HTMLElement | null>(null);
+  useMouseBackButton(onClose);
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
   const tabHint = useMemo(() => new URLSearchParams(search).get('tab'), [search]);
@@ -111,31 +116,29 @@ export default function ProviderSettings({
   );
 
   const heading = isOnboarding ? providerPageCopy.onboardingTitle : providerPageCopy.title;
+  // The band's InfoTip: where a key is kept, which the key field says again where one is typed.
+  // First run adds the one thing worth knowing before choosing: the choice is not final.
+  const help = isOnboarding
+    ? `${providerPageCopy.onboardingHelp} ${KEY_STORAGE_NOTICE}`
+    : KEY_STORAGE_NOTICE;
 
   return (
     // The same ground as every other view (`MainPanelLayout`'s canvas), not a muted one: this
     // page used to be a shade darker than the Settings it was opened from.
-    <div className="flex h-screen w-full flex-col bg-background-canvas text-text-default">
+    <div className="br-provider-page flex h-screen w-full flex-col bg-background-canvas text-text-default">
+      {/* One 44px band, as every other page has (principle 1): Back as a 32px icon action, the
+          14px title with its help, and the three tabs on its line. The page is outside the app
+          shell (`routeOwnsTopBand`), so the 32px titlebar drag strip `App.tsx` paints stays over
+          the top of it and the band starts below that, clear of the window controls. The
+          strip is the page's own space, not a second band. */}
+      <div className="br-provider-page-strip" aria-hidden />
+      <PageHeader
+        title={heading}
+        info={help}
+        onBack={onClose}
+        tabs={<div ref={setTabsHost} className="br-provider-band-tabs-host" />}
+      />
       <ScrollArea className="flex-1 w-full">
-        {/* Flat page header, on the chat measure — the same reading column the
-            rest of the app uses, rather than this page's own width. Where a key is kept is the
-            heading's InfoTip: it is said once, and the key field says it again where a key is
-            typed. First run keeps its one lead-in line, the only text on the screen. */}
-        <div className="mx-auto w-full max-w-measure-chat border-b border-border-subtle px-6 pb-4 pt-10">
-          <div className="no-drag mb-4 flex items-center">
-            <BackButton onClick={onClose} />
-          </div>
-          <div className="flex items-center">
-            <h1 className="text-title" data-testid="provider-selection-heading">
-              {heading}
-            </h1>
-            <InfoTip label={heading} help={KEY_STORAGE_NOTICE} />
-          </div>
-          {isOnboarding && (
-            <p className="mt-1 text-secondary text-text-muted">{providerPageCopy.onboardingLead}</p>
-          )}
-        </div>
-
         <div className="mx-auto w-full max-w-measure-chat px-6 py-6">
           {loading ? (
             <div
@@ -150,6 +153,7 @@ export default function ProviderSettings({
             </div>
           ) : (
             <ProviderCatalog
+              tabsHost={tabsHost}
               providers={providers}
               mode={isOnboarding ? 'onboarding' : 'settings'}
               refreshProviders={refreshProviders}

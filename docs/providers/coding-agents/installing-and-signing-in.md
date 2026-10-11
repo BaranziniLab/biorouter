@@ -156,6 +156,10 @@ instead of offering a provider whose bind would fail. Fix the path, or install t
 **Check again**, and both come back — the re-check re-reads the provider list as well as the
 status.
 
+A row says one thing about itself. A ready agent that is configured shows **Configured** alone; the
+**Ready** pill shows until the agent is set up, and every state that needs attention keeps its pill.
+In an open row the CLI's version is a line of its own, and where the CLI lives is that line's tooltip.
+
 Sign-in is deliberately **not** part of "configured". Learning it means running the CLI, and
 `GET /config/providers` runs for every provider on every settings open, under the three-second
 budget described below. The pill says whether you are signed in; a turn that reaches a signed-out

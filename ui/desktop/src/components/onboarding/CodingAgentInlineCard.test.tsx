@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import CodingAgentInlineCard, {
   CODING_AGENT_TERMINAL_HEIGHT_PX,
   CODING_AGENT_TERMINAL_RESERVE_PX,
@@ -267,10 +268,46 @@ describe('CodingAgentInlineCard', () => {
       render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
 
       expect(await screen.findByText(/Plan: max · Account: ada@example.edu/)).toBeInTheDocument();
-      expect(
-        screen.getByText('2.1.4 (Claude Code) · /opt/homebrew/bin/claude')
-      ).toBeInTheDocument();
+      // The version is the line; where the CLI lives is a path, behind that line's tooltip
+      // (principle 10), so it is not drawn on the card.
+      const version = screen.getByTestId('coding-agent-version-claude_code');
+      expect(version).toHaveTextContent('2.1.4 (Claude Code)');
+      expect(screen.queryByText(/\/opt\/homebrew\/bin\/claude/)).toBeNull();
       expect(screen.getByText('Ready · signed in on your subscription')).toBeInTheDocument();
+    });
+
+    it('opens the CLI path from the version line, by keyboard', async () => {
+      respondWith(
+        claude(
+          { state: 'signed_in_subscription', plan: null, account: null },
+          { version: '2.1.4 (Claude Code)', path: '/opt/homebrew/bin/claude' }
+        )
+      );
+      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+
+      const version = await screen.findByTestId('coding-agent-version-claude_code');
+      // The line is a Tab stop only because it has something to open.
+      expect(version).toHaveAttribute('tabindex', '0');
+      // The tooltip opens on focus that arrived by Tab (a programmatic focus never opens it).
+      const user = userEvent.setup();
+      for (let i = 0; i < 6 && document.activeElement !== version; i += 1) await user.tab();
+      expect(version).toHaveFocus();
+      expect(
+        await screen.findByRole('tooltip', { name: /\/opt\/homebrew\/bin\/claude/ })
+      ).toBeInTheDocument();
+    });
+
+    it('says the CLI was found when the probe read a path and no version', async () => {
+      respondWith(
+        claude(
+          { state: 'signed_in_subscription', plan: null, account: null },
+          { version: null, path: '/opt/homebrew/bin/claude' }
+        )
+      );
+      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      expect(await screen.findByTestId('coding-agent-version-claude_code')).toHaveTextContent(
+        'Installed'
+      );
     });
 
     it('persists the defaulted command key, and only that, then hands off', async () => {

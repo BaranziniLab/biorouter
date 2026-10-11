@@ -61,20 +61,45 @@ describe('ProviderCard keyboard access', () => {
     expect(slot).toContainElement(screen.getByTestId('provider-actions-versa_azure'));
   });
 
-  it('shows the actions at all times during first run', () => {
-    render(
+  // V4-29: first run reveals a row's action the way Settings does (principle 6), so the two
+  // surfaces are one list. The row acts on a click there too, so a button at opacity 0 is never
+  // the only way in.
+  it('reveals the action the same way during first run, and the row itself acts', async () => {
+    const user = userEvent.setup();
+    const onConfigure = vi.fn();
+    const onLaunch = vi.fn();
+    const { rerender } = render(
       <TooltipProvider>
         <ProviderCard
           provider={provider(true)}
-          onConfigure={vi.fn()}
-          onLaunch={vi.fn()}
+          onConfigure={onConfigure}
+          onLaunch={onLaunch}
           isOnboarding
         />
       </TooltipProvider>
     );
-    expect(screen.getByTestId('provider-actions-versa_azure')).not.toHaveClass('br-row-actions');
-    // There the status and the button sit side by side: nothing is swapped.
-    expect(screen.getByText(catalogCopy.configured)).not.toHaveClass('br-row-actions-meta');
+    expect(screen.getByTestId('provider-actions-versa_azure')).toHaveClass('br-row-actions');
+    expect(screen.getByText(catalogCopy.configured)).toHaveClass('br-row-actions-meta');
+    expect(screen.getByText(catalogCopy.configured).closest('.br-row-actions-slot')).not.toBeNull();
+
+    // A configured provider is launched, as its button says.
+    await user.click(screen.getByTestId('provider-card-versa_azure'));
+    expect(onLaunch).toHaveBeenCalledTimes(1);
+    expect(onConfigure).not.toHaveBeenCalled();
+
+    // One that is not set up is configured.
+    rerender(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(false)}
+          onConfigure={onConfigure}
+          onLaunch={onLaunch}
+          isOnboarding
+        />
+      </TooltipProvider>
+    );
+    await user.click(screen.getByTestId('provider-card-versa_azure'));
+    expect(onConfigure).toHaveBeenCalledTimes(1);
   });
 
   it('is text: no initial tile, and "Configured" is a success dot and a word', () => {

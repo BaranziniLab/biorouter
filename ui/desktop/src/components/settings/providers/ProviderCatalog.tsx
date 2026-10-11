@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
@@ -129,6 +130,14 @@ interface ProviderCatalogProps {
    * starts on. Ignored when {@link chatSessionId} is set.
    */
   heldChatTabId?: string | null;
+  /**
+   * The element the tab list is drawn into: the page band's tab slot (`ProviderSettingsPage`),
+   * so Local, Institutional and Public sit on the title's line like Settings' three tabs do.
+   * Omitted, the list is drawn at the top of the catalog (first run's `ProviderGuard`, which has
+   * its own welcome header). `null` means the slot is not mounted yet: nothing is drawn, and the
+   * tabs appear the moment it is.
+   */
+  tabsHost?: HTMLElement | null;
 }
 
 /**
@@ -244,6 +253,7 @@ export default function ProviderCatalog({
   chatSessionId = null,
   chatPrivacyTier,
   heldChatTabId = null,
+  tabsHost,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
   const { read } = useConfig();
@@ -546,6 +556,14 @@ export default function ProviderCatalog({
         </Note>
       ) : null;
 
+    // One status per row (principle 4, V4-26). A configured agent that is ready is said by
+    // "Configured" alone: its pill ("Ready · signed in on your subscription") would be the same
+    // news twice. Every state that needs attention keeps its pill, and so does a ready agent that
+    // has not been set up yet, because the pill is what invites the "Use" in its panel.
+    const agentPill = agent ? pillFor(agent.auth) : null;
+    const showAgentPill =
+      agentPill !== null && !(provider.is_configured && agentPill.tone === 'success');
+
     return (
       <React.Fragment key={provider.name}>
         <ProviderCard
@@ -561,8 +579,8 @@ export default function ProviderCatalog({
           expanded={expandable && openRow === provider.name}
           onToggle={() => toggleRow(provider.name)}
           statusSlot={
-            agent ? (
-              <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+            showAgentPill ? (
+              <StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>
             ) : undefined
           }
         >
@@ -615,7 +633,7 @@ export default function ProviderCatalog({
           rows is theirs.
         */}
         {isOnboarding && isApiSection && (
-          <div className="mb-4">
+          <div className="br-provider-inset mb-4">
             <CommercialSetupCard
               chrome="bare"
               onSuccess={handleCommercialDetected}
@@ -638,7 +656,7 @@ export default function ProviderCatalog({
           <div className="biorouter-settings-list">{rows}</div>
         )}
         {hostsInstitutionalSetup && (
-          <div className="mt-4 border-t border-border-subtle pt-4">
+          <div className="br-provider-inset mt-4 border-t border-border-subtle pt-4">
             <InstitutionalSetupCard
               chrome="bare"
               onSuccess={handleProviderReady}
@@ -709,6 +727,28 @@ export default function ProviderCatalog({
         ? customProviderCopy.edit(editingName)
         : customProviderCopy.configure(editingName);
 
+  const tabsList = (
+    <TabsList
+      aria-label={catalogCopy.tabsLabel}
+      className={tabsHost === undefined ? 'mb-4' : 'br-provider-band-tabs border-b-0'}
+    >
+      {groups.map((group) => (
+        <TabsTrigger
+          key={group.key}
+          value={group.key}
+          className="gap-2"
+          data-testid={`catalog-tab-${group.key}`}
+        >
+          <span
+            className={`size-1.5 ${group.accentClassName} flex-shrink-0 rounded-full`}
+            aria-hidden
+          />
+          {group.tabLabel}
+        </TabsTrigger>
+      ))}
+    </TabsList>
+  );
+
   return (
     <>
       {/*
@@ -726,23 +766,9 @@ export default function ProviderCatalog({
         className="flex flex-col"
       >
         {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
-            colour that says private from public at a glance. */}
-        <TabsList className="mb-4">
-          {groups.map((group) => (
-            <TabsTrigger
-              key={group.key}
-              value={group.key}
-              className="gap-2"
-              data-testid={`catalog-tab-${group.key}`}
-            >
-              <span
-                className={`size-1.5 ${group.accentClassName} flex-shrink-0 rounded-full`}
-                aria-hidden
-              />
-              {group.tabLabel}
-            </TabsTrigger>
-          ))}
-        </TabsList>
+            colour that says private from public at a glance. In the page band they sit on the
+            title's line, as Settings' do, and the band's own hairline is the one rule. */}
+        {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
 
         {groups.map((group) => (
           <TabsContent key={group.key} value={group.key} className="mt-0">

@@ -12,12 +12,18 @@ export const providerPageCopy = {
   /** The heading outside onboarding. */
   title: 'Provider configuration',
   onboardingTitle: 'Choose a provider',
-  /** First run only: where the person is and what they can do next. */
-  onboardingLead: 'Pick where your models run. You can switch providers any time in settings.',
+  /**
+   * First run's help, ahead of where keys are kept, in the title's InfoTip. It used to be a
+   * visible line under the title that restated it (V4-29): the title says what to do, and the one
+   * thing worth adding is that the choice is not final.
+   */
+  onboardingHelp: 'You can switch providers any time in Settings.',
   loading: 'Loading providers…',
 } as const;
 
 export const catalogCopy = {
+  /** The tab list's name: Local, Institutional, Public. */
+  tabsLabel: 'Provider groups',
   addCustom: 'Add custom provider',
   /** The model dialog's title after a provider was just set up. */
   chooseModel: 'Choose model',
