@@ -304,11 +304,13 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           </>
         }
       >
-        {/* The dialog's body edge is 4px outside the row's own edge and 16px outside the
-            checkbox's box, so the two lines of text that frame the list take the box's edge as
-            theirs (`pl-4`): the count, the checkboxes and the permanence line share one left edge.
-            The rows carry no hairline (`br-rows-flat`, main.css): each has its checkbox as its
-            anchor, and the hover fill says which one the pointer is on. */}
+        {/* The dialog body's content edge is the rows' own edge, and the checkbox's box sits 16px
+            inside it (12px of row padding, 4px of air in the 24px target), so the two lines of
+            text that frame the list take the box's edge as theirs (`pl-4`): the count, the
+            checkboxes and the permanence line share one left edge (measured in Chromium: all
+            three at 16px from the content edge). The rows carry no hairline (`br-rows-flat`,
+            main.css): each has its checkbox as its anchor, and the hover fill says which one the
+            pointer is on. */}
         <div className="flex items-center justify-between gap-2 pb-2">
           <span className="pl-4 text-supporting tabular-nums text-text-muted">
             {resetCopy.selectedCount(selectedCategories.length, ALL_CATEGORIES.length)}

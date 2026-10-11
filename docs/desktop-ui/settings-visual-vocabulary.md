@@ -5,7 +5,7 @@
 > **Audience:** contributors working on the desktop renderer.
 
 Settings is a column of labelled rows. Almost everything in it is a section header over a
-hairline list, a row with one control on its trailing edge, or an in-place note. Since the
+list of flat rows, a row with one control on its trailing edge, or an in-place note. Since the
 Codex simplicity redesign (2026-10-09, `docs/design/codex-simplicity-redesign/`) a row
 carries no paragraph: its explanation is an InfoTip. Every rule below exists because a call site painted one of
 those four things itself instead of reaching for the shared one, and the drift became
@@ -35,7 +35,7 @@ appears in the cascade — see rule 1.
 `.biorouter-settings-row` owns its background, and it owns it for one purpose: the
 hover/`focus-within` wash. A component may not paint a second fill on top to say "this one
 is on" or "this one is selected". The switch, the radio dot or the checkbox states the
-state; a fill restates it in a weaker language and turns a hairline list into a striped
+state; a fill restates it in a weaker language and turns a list of rows into a striped
 one.
 
 > design.md **P3** — "no coloured hover fills, no accent-tinted card backgrounds. Hover is
@@ -106,17 +106,32 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   line, 9 and the edge, 40px exactly, with a name and a chevron and nothing else. A checkbox
   list row (Reset data) takes `br-reset-option`, which is `8px 12px 7px` around the 24px target,
   also 40px. `settings/dialogRowsGeometry.browser.test.tsx` measures both in Chromium.
-- **Text that frames a checkbox list starts where the boxes do.** The dialog body is 16px in,
-  the row's hairline 8px further and its padding 12px more, so the box's visible edge is 16px
-  past the body edge (its 24px target has 4px of air). The count above the list and the
-  permanence line below it take `pl-4`, so the three share one left edge.
+- **Text that frames a checkbox list starts where the boxes do.** The dialog body is 16px in
+  and the rows start at its content edge, so the box's visible edge is 16px past that edge (12px
+  of row padding, and the 24px target has 4px of air). The count above the list and the
+  permanence line below it take `pl-4`, so the three share one left edge (measured in Chromium,
+  all at 16px from the content edge).
+- **Rows draw no hairline between them, and a hovered row is a fill.** Spacing separates 40px
+  rows, and the pointer's row is washed (owner message 13, R-27). The line is switched off by
+  `.br-rows-flat`, which `main.css` defines once (`@ws WS-PRIMITIVES begin: rows`) and which
+  gives the line back under forced colours, where every fill is gone. The Settings reading column
+  carries it, and so does each list a Settings dialog draws in a portal outside that column
+  (Reset data, the two Tool permissions lists). Settings repeats none of it: a copy of the rule
+  in `settings.css`, which loads after `main.css` at the same specificity, beat the
+  forced-colours half and left every row with no separator. The one thing `settings.css` adds is
+  the hovered row's paint, the card fill `--background-fill` and not the shared wash. On the
+  canvas in dark the wash alone lands a stepped-back control 1.03:1 off its row, so the control
+  loses its box while the pointer is on the row; the fill leaves it 1.10:1.
+  `settings/settingsRowsFlat.browser.test.tsx` measures the line, the forced-colours restore and
+  the control's box in Chromium, light and dark, and fails for each rule removed.
 
 Rows are **direct children** of `.biorouter-settings-list`. This is not tidiness: the row's
-hairline is drawn by `::after` and suppressed on `:last-child`, which is relative to a row's
-own parent, so a per-item wrapper breaks the hairline in one of two directions. One row per
-wrapper makes *every* row the last child and suppresses every hairline in the section; several
-rows in one wrapper hides the wrapper's last hairline mid-list. A component that contributes
-rows to a section therefore returns a **fragment** of rows rather than a box.
+hairline (where a list keeps it: the default, and forced colours) is drawn by `::after` and
+suppressed on `:last-child`, which is relative to a row's own parent, so a per-item wrapper
+breaks the hairline in one of two directions. One row per wrapper makes *every* row the last
+child and suppresses every hairline in the section; several rows in one wrapper hides the
+wrapper's last hairline mid-list. A component that contributes rows to a section therefore
+returns a **fragment** of rows rather than a box.
 
 ### 3. One section header, one section rhythm
 
