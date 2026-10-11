@@ -564,22 +564,29 @@ const stringifySummaryValue = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+/**
+ * A name (a path, an id, a file) bounded by keeping both ends. Counted and cut
+ * by character, not UTF-16 unit, so an emoji is never split into a lone half.
+ */
 const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): string => {
   const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
-  if (text.length <= maxLength) return text;
+  const characters = Array.from(text);
+  if (characters.length <= maxLength) return text;
   const keep = Math.max(12, Math.floor((maxLength - 1) / 2));
-  return `${text.slice(0, keep)}…${text.slice(-keep)}`;
+  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
 };
 
 /** Longest query or command a row carries; past it the text is cut at its end. */
 const MAX_LINE_VALUE_LENGTH = 160;
 
 /**
- * A query or a command, which a row reads left to right. It is cut once, at its
- * end, and only past a length no row shows, so the row's own CSS ellipsis is
- * the one a person sees. Cutting its middle as well put two ellipses on one
- * line ("COUNT(*) AS…BY sample_type ORDER BY n …", V2-R2-5). A single token (a
- * path, a name) keeps both ends, as {@link compactValue} does.
+ * Words a row reads left to right: a query, a command, a to-do item. It is cut
+ * once, at its end, and only past a length no row shows, so the row's own CSS
+ * ellipsis is the one a person sees. Cutting its middle as well put two
+ * ellipses on one line ("COUNT(*) AS…BY sample_type ORDER BY n …", V2-R2-5),
+ * and cut a to-do item at 96 characters in a row with room for the rest
+ * (V2-R3-2). A single token (a path, a name) keeps both ends, as
+ * {@link compactValue} does.
  */
 const lineValue = (value: unknown): string => {
   const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
@@ -714,9 +721,10 @@ const summarizeSearchQuery = (value: unknown): string | null => {
   return lineValue(value);
 };
 
+/** An argument as a row shows it: words cut at their end, a single token at its middle. */
 const namedArgument = (args: Record<string, unknown>, keys: string[]): string | null => {
   const value = firstPresent(args, keys);
-  return value === undefined ? null : compactValue(value);
+  return value === undefined ? null : lineValue(value);
 };
 
 const namedEntity = (args: Record<string, unknown>, keys: string[]): string | null => {
@@ -744,20 +752,13 @@ const todoTaskTitle = (args: Record<string, unknown>, toolResult: unknown): stri
     try {
       const task = recordOf(recordOf(JSON.parse(item.text))?.task);
       if (task?.id === id && typeof task.text === 'string' && task.text.trim()) {
-        return compactValue(task.text);
+        return lineValue(task.text);
       }
     } catch {
       // Older transcripts contain a plain-text acknowledgement, without task details.
     }
   }
   return null;
-};
-
-const compactExecutedTaskTitle = (title: string): string => {
-  const characters = Array.from(title.replace(/\s+/g, ' ').trim());
-  if (characters.length <= MAX_SUMMARY_VALUE_LENGTH) return characters.join('');
-  const keep = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 1) / 2);
-  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
 };
 
 const summarizeTodoCall = (
@@ -786,10 +787,12 @@ const summarizeTodoCall = (
   const title = executedTitle ?? todoTaskTitle(args, toolResult);
   const task = title ? `“${title}”` : id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
   const status = namedArgument(args, ['status']);
-  if (status === 'completed') return `Marking ${task} complete`;
+  // The outcome is the verb, ahead of the item: a long item runs to the row's
+  // end ellipsis, which would take a trailing "complete" or "blocked" with it.
+  if (status === 'completed') return `Completing ${task}`;
   if (status === 'in_progress') return `Starting ${task}`;
   if (status === 'pending') return `Returning ${task} to pending`;
-  if (status === 'blocked') return `Marking ${task} blocked`;
+  if (status === 'blocked') return `Blocking ${task}`;
   if (namedArgument(args, ['text'])) return `Renaming ${task}`;
   return `Updating ${task}`;
 };
@@ -1788,12 +1791,7 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
 function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const parsedArgs = parsedCallArguments(call.args);
   const taskSummary = call.todoTask
-    ? summarizeTodoCall(
-        'todo_update',
-        parsedArgs ?? {},
-        undefined,
-        compactExecutedTaskTitle(call.todoTask.title)
-      )
+    ? summarizeTodoCall('todo_update', parsedArgs ?? {}, undefined, lineValue(call.todoTask.title))
     : null;
   const summary =
     taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });

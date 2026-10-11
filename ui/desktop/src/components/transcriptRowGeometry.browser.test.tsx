@@ -17,7 +17,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
-import { Terminal } from './icons/app-icons';
+import { summarizeToolCall } from './ToolCallWithResponse';
+import { toolRowLabel } from './toolCallCopy';
+import { ListTodo, Terminal } from './icons/app-icons';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COLUMN = 760;
@@ -209,6 +211,57 @@ describe('TranscriptRow in a real layout engine', () => {
     expect(g.label.clipped).toBe(true);
     expect(g.label.height).toBe(18);
     expect(g.meta!.clipped).toBe(false);
+  });
+
+  // V2-R3-2: a to-do item was cut in its middle at 96 characters in a row with
+  // room for all of it. The row's CSS ellipsis is now the only cut.
+  const todoLabel = (status: string, text: string) =>
+    toolRowLabel(
+      summarizeToolCall(
+        { name: 'todo__todo_update', arguments: { id: '#12', status } },
+        {
+          status: 'success',
+          value: {
+            content: [{ type: 'text', text: JSON.stringify({ task: { id: '12', text } }) }],
+          },
+        }
+      ),
+      'done'
+    );
+
+  it('shows a to-do item that fits the column whole, with no cut at all', async () => {
+    if (!browser) return;
+    // 98 characters: past the old 96-character cut, well inside the column.
+    const item =
+      'BLOCKED (2nd time): design intent still not received, the follow-up had only the header. ' +
+      'Paste it.';
+    const label = todoLabel('in_progress', item);
+    expect(label).toBe(`Started “${item}”`);
+    const g = await layOut(
+      <TranscriptRow icon={ListTodo} label={label}>
+        <pre>x</pre>
+      </TranscriptRow>
+    );
+    expect(g.label.clipped).toBe(false);
+    expect(g.label.right).toBeLessThan(COLUMN);
+  });
+
+  it('lets the column cut a long to-do item once, at its end, after the outcome', async () => {
+    if (!browser) return;
+    const label = todoLabel(
+      'completed',
+      'Audit git state under ~/Desktop/kdps-build, confirmed: kdps-build is not a repo; only ' +
+        'kdps holds history (shallow clone, branch main, 98ccee1, clean tree)'
+    );
+    expect(label.startsWith('Completed “Audit git state')).toBe(true);
+    expect(label).not.toContain('…');
+    const g = await layOut(
+      <TranscriptRow icon={ListTodo} label={label}>
+        <pre>x</pre>
+      </TranscriptRow>
+    );
+    expect(g.label.clipped).toBe(true);
+    expect(g.head.right).toBeLessThanOrEqual(COLUMN + 0.5);
   });
 
   it('sets the meta one word space after the label, the chevron 8px after the meta', async () => {

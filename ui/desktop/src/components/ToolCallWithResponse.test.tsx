@@ -63,7 +63,7 @@ describe('summarizeToolCall', () => {
         name: 'todo__todo_update',
         arguments: { id: '#1', status: 'completed' },
       })
-    ).toBe('Marking task #1 complete');
+    ).toBe('Completing task #1');
     expect(
       summarizeToolCall({
         name: 'todo__todo_update',
@@ -216,18 +216,18 @@ describe('summarizeToolCall', () => {
         ],
       },
     };
-    expect(summarizeToolCall(call, result)).toBe('Marking “Verify browser access” complete');
+    expect(summarizeToolCall(call, result)).toBe('Completing “Verify browser access”');
     expect(
       summarizeToolCall({ ...call, arguments: { id: '#3', status: 'completed' } }, result)
-    ).toBe('Marking task #3 complete');
+    ).toBe('Completing task #3');
     expect(
       summarizeToolCall(call, {
         status: 'success',
         value: { content: [{ type: 'text', text: 'Updated item #2' }] },
       })
-    ).toBe('Marking task #2 complete');
+    ).toBe('Completing task #2');
     expect(summarizeToolCall(call, { ...result, value: { ...result.value, isError: true } })).toBe(
-      'Marking task #2 complete'
+      'Completing task #2'
     );
     expect(
       summarizeToolCall({
@@ -238,6 +238,36 @@ describe('summarizeToolCall', () => {
         },
       })
     ).toBe('Renaming “Check database connectivity”');
+  });
+
+  it('never cuts a to-do item or a query in its middle (V2-R3-2)', () => {
+    const item =
+      'BLOCKED (2nd time): design intent still not received. The follow-up message had ' +
+      'only the header with nothing beneath it. Nothing can start until it is pasted.';
+    const result = {
+      status: 'success',
+      value: {
+        content: [{ type: 'text', text: JSON.stringify({ task: { id: '12', text: item } }) }],
+      },
+    };
+    expect(
+      summarizeToolCall(
+        { name: 'todo__todo_update', arguments: { id: '#12', status: 'in_progress' } },
+        result
+      )
+    ).toBe(`Starting “${item}”`);
+    expect(
+      summarizeToolCall({ name: 'todo__todo_update', arguments: { id: '#12', text: item } })
+    ).toBe(`Renaming “${item}”`);
+    const query =
+      'single cell RNA sequencing differential expression pathway enrichment for multiple ' +
+      'sclerosis lesions';
+    expect(
+      summarizeToolCall({
+        name: 'skills__searchMarketplaceSkills',
+        arguments: { query },
+      })
+    ).toBe(`Searching skills for ${query}`);
   });
 
   it('renders the task title on a collapsed completed todo card', () => {
@@ -1312,17 +1342,19 @@ describe('ToolCallWithResponse nested todo metadata', () => {
 
   it.each([
     { status: 'in_progress', expected: 'Started “Verify actual nested task 🧬”' },
-    { status: 'completed', expected: 'Marked “Verify actual nested task 🧬” complete' },
+    { status: 'completed', expected: 'Completed “Verify actual nested task 🧬”' },
     { status: 'pending', expected: 'Returned “Verify actual nested task 🧬” to pending' },
   ])('names a successful $status row from the matching task metadata', ({ status, expected }) => {
     renderNestedCalls([{ ...record, args: JSON.stringify({ id: '#1', status }) }]);
     expect(screen.getByText(expected)).toBeInTheDocument();
-    expect(screen.queryByText(new RegExp(`(?:Started|Marked|Returned) “${planTitle}”`))).toBeNull();
+    expect(
+      screen.queryByText(new RegExp(`(?:Started|Completed|Returned) “${planTitle}”`))
+    ).toBeNull();
   });
 
   it('keeps an earlier successful task title when a later call fails the outer step', () => {
     renderNestedCalls([record], true);
-    expect(screen.getByText('Marked “Verify actual nested task 🧬” complete')).toBeInTheDocument();
+    expect(screen.getByText('Completed “Verify actual nested task 🧬”')).toBeInTheDocument();
   });
 
   it.each([
@@ -1345,8 +1377,8 @@ describe('ToolCallWithResponse nested todo metadata', () => {
   ])('falls back to the task number for $label', ({ patch }) => {
     renderNestedCalls([{ ...record, ...patch }]);
     // A failed record says so in its verb; every other fallback reads as done.
-    expect(screen.getByText(/^(?:Marked|Failed to mark) task #1 complete$/)).toBeInTheDocument();
-    expect(screen.queryByText(/(?:Marked|mark) “/)).toBeNull();
+    expect(screen.getByText(/^(?:Completed|Failed to complete) task #1$/)).toBeInTheDocument();
+    expect(screen.queryByText(/(?:Completed|complete) “/)).toBeNull();
     expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
   });
 
@@ -1368,14 +1400,14 @@ describe('ToolCallWithResponse nested todo metadata', () => {
   it('renders a task title as text, never links, images, or HTML', () => {
     const title = '[link](https://evil.invalid) ![pixel](https://evil.invalid/x) <img src=x>';
     const { container } = renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);
-    expect(screen.getByText(`Marked “${title}” complete`)).toBeInTheDocument();
+    expect(screen.getByText(`Completed “${title}”`)).toBeInTheDocument();
     expect(container.querySelector('a')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
   });
 
   it('shortens Unicode titles without creating lone surrogate code units', () => {
     renderNestedCalls([{ ...record, todo_task: { id: '1', title: '🧬'.repeat(110) } }]);
-    const label = screen.getByText(/^Marked “/).textContent ?? '';
+    const label = screen.getByText(/^Completed “/).textContent ?? '';
     expect(Array.from(label).length).toBeLessThanOrEqual(115);
     expect(label).toContain('…');
     expect(
@@ -1384,6 +1416,39 @@ describe('ToolCallWithResponse nested todo metadata', () => {
         return character.length === 1 && code >= 0xd800 && code <= 0xdfff;
       })
     ).toBe(false);
+  });
+
+  // V2-R3-2: a to-do item is prose, so it is never cut in its middle; the row's
+  // CSS ellipsis is the one cut, and the outcome leads so that cut cannot take it.
+  const auditTitle =
+    'Audit git state under ~/Desktop/kdps-build — confirmed: kdps-build is not a repo; ' +
+    'only .git is kdps/.git (shallow clone, branch main, 98ccee1, clean tree)';
+
+  it('keeps a long to-do item whole, with the outcome ahead of it', () => {
+    renderNestedCalls([{ ...record, todo_task: { id: '1', title: auditTitle } }]);
+    const label = screen.getByText(/^Completed “Audit git state/).textContent ?? '';
+    expect(label).toBe(`Completed “${auditTitle}”`);
+    expect(label).not.toContain('…');
+  });
+
+  it('says blocked in the verb, not after the item', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({ id: '#1', status: 'blocked' }),
+        todo_task: { id: '1', title: auditTitle },
+      },
+    ]);
+    expect(screen.getByText(`Blocked “${auditTitle}”`)).toBeInTheDocument();
+  });
+
+  it('cuts an item past any row width once, at its end', () => {
+    const title = `${auditTitle} ${auditTitle}`;
+    renderNestedCalls([{ ...record, todo_task: { id: '1', title } }]);
+    const label = screen.getByText(/^Completed “Audit git state/).textContent ?? '';
+    expect(label.match(/…/g)).toHaveLength(1);
+    expect(label.endsWith('…”')).toBe(true);
+    expect(label.startsWith(`Completed “${auditTitle}`)).toBe(true);
   });
 });
 

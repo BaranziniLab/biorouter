@@ -27,6 +27,13 @@ describe('toolRowLabel: the verb carries the state', () => {
     expect(toolRowLabel('Running npm test', 'failed')).toBe('Failed to run npm test');
   });
 
+  it('carries a to-do outcome in the verb (V2-R3-2)', () => {
+    expect(toolRowLabel('Completing “Draft #2”', 'done')).toBe('Completed “Draft #2”');
+    expect(toolRowLabel('Completing “Draft #2”', 'failed')).toBe('Failed to complete “Draft #2”');
+    expect(toolRowLabel('Blocking “Draft #2”', 'done')).toBe('Blocked “Draft #2”');
+    expect(toolRowLabel('Blocking “Draft #2”', 'failed')).toBe('Failed to block “Draft #2”');
+  });
+
   it('keeps everything after the verb byte for byte', () => {
     expect(toolRowLabel('Marking “Draft #2” complete', 'done')).toBe('Marked “Draft #2” complete');
     expect(toolRowLabel('Delegating: read the logs', 'done')).toBe('Delegated: read the logs');
