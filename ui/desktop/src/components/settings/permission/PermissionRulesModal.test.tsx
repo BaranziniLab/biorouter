@@ -52,11 +52,17 @@ describe('PermissionRulesModal', () => {
 
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
-    const developer = await screen.findByRole('button', { name: /Developer/ });
-    // One truncated line of description, so a long one cannot grow the row (principle 4).
+    const developer = await screen.findByRole('button', { name: 'Developer' });
+    // The row is a name and a chevron. The daemon's description is raw data (em dashes, the old
+    // spelling of the product, sentences cut off mid-word) and twelve of them made a two-line
+    // column (vision V4-09), so it is not drawn at all.
     expect(
-      screen.getByText('A very long description that must remain inside the permission row.')
-    ).toHaveClass('truncate');
+      screen.queryByText('A very long description that must remain inside the permission row.')
+    ).not.toBeInTheDocument();
+    expect(developer).toHaveTextContent(/^Developer$/);
+    expect(developer.querySelectorAll('span.text-supporting')).toHaveLength(0);
+    // It is the settings row's box, which is what makes it 40px (10 + a 20px line + 9 + 1).
+    expect(developer).toHaveClass('br-setting-row');
     expect(screen.queryByText('Synthetic internal grouping')).not.toBeInTheDocument();
     expect(screen.queryByText('Disabled extension')).not.toBeInTheDocument();
 

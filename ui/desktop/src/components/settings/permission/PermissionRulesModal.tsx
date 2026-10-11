@@ -15,26 +15,27 @@ export function getConfigurableExtensions(extensions: FixedExtensionEntry[]) {
 }
 
 /**
- * One enabled extension: a row that opens its tool rules. A name and at most one truncated line
- * of description (principle 4), then a chevron; no icon tile.
+ * One enabled extension: a 40px row that opens its tool rules. The name and a chevron, nothing
+ * else. The daemon's description of the extension used to sit under the name, and it is raw data
+ * (em dashes, "BioRouter", whole sentences that cut off mid-word), twelve of them in a column
+ * (vision V4-09). The Extensions page holds it; this list only needs to say which one opens.
+ *
+ * The row is `.br-setting-row`'s box (10px, a 20px line, 9px and the 1px hairline room, so 40px
+ * exactly) around a button's worth of content, the same row a `SettingRow` is.
  */
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const title = getFriendlyTitle(extension);
-  const description = 'description' in extension ? extension.description || '' : '';
 
   return (
     <>
       <button
         type="button"
-        className="biorouter-settings-row flex w-full min-w-0 items-center gap-3 px-3 py-2.5 text-left"
+        className="biorouter-settings-row br-setting-row w-full text-left"
         onClick={() => setIsModalOpen(true)}
       >
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-label text-text-default">{title}</span>
-          {description && (
-            <span className="block truncate text-supporting text-text-muted">{description}</span>
-          )}
+        <span className="br-setting-row-text">
+          <span className="br-setting-row-label text-label text-text-default">{title}</span>
         </span>
         <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-text-muted" />
       </button>
