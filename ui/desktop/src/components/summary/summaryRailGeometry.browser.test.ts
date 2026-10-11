@@ -11,8 +11,11 @@
  *
  * The real `summaryRail.css` and rung 2's block of `main.css` are loaded into
  * Chromium over markup shaped like BaseChat's split box (the area markers, the
- * transcript's `px-1` root and `paddingX={6}` viewport, the composer bar's 24px
- * gutters), with the app's Tailwind classes standing in as layered utilities.
+ * transcript's `px-1` root and `paddingX={6}` viewport, the composer bar's
+ * gutters of half `CHAT_COLUMN_CHROME`, the subagent line's `px-1` wrapper around
+ * its own `px-6`), with the app's Tailwind classes standing in as layered
+ * utilities. `BaseChat.summaryRail.test.ts` pins those values at BaseChat's
+ * source, so a stand-in here cannot quietly differ from the app.
  * Each case asks `summaryRailFit` for its answer and stamps it the way
  * `useSummaryRail` does, so the decision and the stylesheet are tested together.
  */
@@ -21,7 +24,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CHAT_MEASURE, summaryRailFit, type SummaryRailFit } from '../Layout/yieldLadder';
+import {
+  CHAT_COLUMN_CHROME,
+  CHAT_MEASURE,
+  summaryRailFit,
+  type SummaryRailFit,
+} from '../Layout/yieldLadder';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RAIL_CSS = readFileSync(resolve(here, 'summaryRail.css'), 'utf8');
@@ -48,7 +56,10 @@ const UTILITIES = `@layer utilities {
   .transcript { position: relative; flex: 1 1 0%; min-height: 0; padding-left: 4px; padding-right: 4px; }
   .viewport { height: 100%; padding-left: 24px; padding-right: 24px; }
   .chat-column { width: 100%; max-width: var(--measure-chat); margin-left: auto; margin-right: auto; height: 40px; }
-  .composer-bar { flex-shrink: 0; padding: 28px 24px 24px; }
+  .composer-bar { flex-shrink: 0; padding: 28px ${CHAT_COLUMN_CHROME / 2}px 24px; }
+  .subheader { flex-shrink: 0; padding-left: 4px; padding-right: 4px; }
+  .subagent-header { padding-left: 24px; padding-right: 24px; }
+  .subagent-line { width: 100%; max-width: var(--measure-chat); margin-left: auto; margin-right: auto; height: 32px; }
   .composer-shell { width: 100%; max-width: var(--measure-chat); margin-left: auto; margin-right: auto; height: 96px; }
 }`;
 
@@ -91,9 +102,16 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-type Layout = { pane: number; preview?: number; fit: SummaryRailFit; card?: string };
+type Layout = {
+  pane: number;
+  preview?: number;
+  fit: SummaryRailFit;
+  card?: string;
+  /** A subagent's tab: the 32px line under the header (`SubagentTabHeader`). */
+  subagent?: boolean;
+};
 
-function markup({ pane, preview, fit, card }: Layout): string {
+function markup({ pane, preview, fit, card, subagent }: Layout): string {
   const split: string[] = ['data-preview-split=""', 'class="split"', 'id="split"'];
   const style: string[] = [`width: ${pane}px`, `height: ${HEIGHT}px`];
   if (preview) {
@@ -109,6 +127,10 @@ function markup({ pane, preview, fit, card }: Layout): string {
     '<div data-preview-area="column" class="column">' +
     '<div data-preview-area="body" class="body">' +
     '<div data-preview-area="header" class="header" id="header"></div>' +
+    (subagent
+      ? '<div data-preview-area="subheader" class="subheader" id="subheader">' +
+        '<div class="subagent-header"><div class="subagent-line" id="line"></div></div></div>'
+      : '') +
     '<div data-preview-area="transcript" data-preview-transcript="" class="transcript" id="transcript">' +
     '<div class="viewport"><div class="chat-column biorouter-chat-column" id="column"></div></div>' +
     '</div></div>' +
@@ -138,6 +160,8 @@ async function boxes(page: Page): Promise<Record<string, Box | null>> {
     return {
       split: read('split'),
       header: read('header'),
+      subheader: read('subheader'),
+      line: read('line'),
       transcript: read('transcript'),
       column: read('column'),
       shell: read('shell'),
@@ -266,6 +290,54 @@ describe('rung 0 in a real layout engine', () => {
     expect(at.preview!.width).toBe(783);
     expect(at.preview!.right).toBe(1632);
   });
+
+  // V2-R2-1: above an 816px cell both boxes cap at 760 and any gutter looks
+  // right; these cells are narrower, where only equal chrome keeps the edges.
+  it.each([
+    ['a 640px pane', 640, undefined],
+    ['a 700px pane', 700, undefined],
+    ['a 640px cell beside a side preview', 1152, 512],
+    ['a 584px cell beside a side preview (1100 window)', 1072, 488],
+  ] as const)(
+    'keeps the composer on the column’s edges below the full measure: %s',
+    async (_name, pane, preview) => {
+      if (!page) return;
+      const { fit, at } = await lay({ pane, preview });
+      expect(fit.fits).toBe(false);
+      const cell = at.transcript!.width;
+      expect(cell).toBeLessThan(CHAT_MEASURE + CHAT_COLUMN_CHROME);
+      expect(at.column!.width).toBe(cell - CHAT_COLUMN_CHROME);
+      expect(Math.abs(at.shell!.left - at.column!.left)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(at.shell!.right - at.column!.right)).toBeLessThanOrEqual(0.5);
+    }
+  );
+
+  // V2-R2-3: the subagent line starts on the column's left edge, rail or not.
+  it.each([
+    ['the rail docked (1440 window)', 1152, undefined],
+    ['no rail, a 640px pane', 640, undefined],
+    ['a side preview, a 640px cell', 1152, 512],
+    ['a side preview and the rail (ultrawide)', 2272, 920],
+  ] as const)(
+    'starts the subagent line on the column’s left edge: %s',
+    async (_name, pane, preview) => {
+      if (!page) return;
+      const { fit, at } = await lay({ pane, preview, subagent: true });
+      const line = at.line!;
+      const column = at.column!;
+      expect(Math.abs(line.left - column.left)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(line.width - column.width)).toBeLessThanOrEqual(0.5);
+      // The line sits under the header and above the transcript, in every grid.
+      expect(at.subheader!.top).toBe(44);
+      expect(at.transcript!.top).toBe(44 + 32);
+      if (!fit.fits) return;
+      // The rail starts beside the line, directly under the header, as it does
+      // in a chat with no line, and the line never runs under it.
+      const rail = at.rail!;
+      expect(rail.top).toBe(44);
+      expect(at.subheader!.right).toBeLessThanOrEqual(rail.left);
+    }
+  );
 });
 
 /**

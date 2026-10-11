@@ -92,6 +92,42 @@ describe('BaseChat: the summary button and the rail', () => {
   });
 });
 
+/**
+ * The values `summary/summaryRailGeometry.browser.test.ts` stands in for, which
+ * Chromium then measures: the composer and the subagent line take the
+ * transcript's own chrome, so their edges are the column's at every width.
+ */
+describe('BaseChat: one left edge for the column, the composer and the subagent line', () => {
+  /** The opening tag of the one element carrying `data-preview-area="<area>"`. */
+  const openingTag = (area: string) => {
+    const marker = `data-preview-area="${area}"`;
+    expect(code.split(marker), area).toHaveLength(2);
+    const at = code.indexOf(marker);
+    return code.slice(code.lastIndexOf('<', at), code.indexOf('>', at) + 1);
+  };
+
+  it('gives the composer bar half the column chrome a side, from the constant (V2-R2-1)', () => {
+    const bar = openingTag('composer');
+    expect(bar).toContain('style={{ paddingInline: CHAT_COLUMN_CHROME / 2 }}');
+    // No utility can override or race it: a responsive `px-4 sm:px-6` made the
+    // composer 8px wider than the column below an 816px cell.
+    expect(bar).not.toMatch(/\bp[xlr]-|\bsm:p[xlr]-/);
+    expect(code).toMatch(
+      /import \{\s*CHAT_COLUMN_CHROME,[\s\S]*?\} from '\.\/Layout\/yieldLadder';/
+    );
+  });
+
+  it('wraps the subagent line in the scroll root’s px-1 around its own px-6 (V2-R2-3)', () => {
+    expect(openingTag('subheader')).toMatch(/className="flex-shrink-0 px-1"/);
+    // The other half lives in SubagentTabHeader: its root takes the viewport's 24px.
+    const header = readFileSync(
+      path.join(process.cwd(), 'src', 'components', 'subagent', 'SubagentTabHeader.tsx'),
+      'utf8'
+    );
+    expect(header).toMatch(/<Collapsible[\s\S]*?className="px-6"\s*>/);
+  });
+});
+
 describe('BaseChat: the edits it applies for other areas', () => {
   it('moves the composer by translate only, on the motion tokens', () => {
     expect(code).not.toMatch(/scaleX/);

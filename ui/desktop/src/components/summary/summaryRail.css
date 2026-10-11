@@ -17,6 +17,12 @@
  * override the stack on source order. Beside a SIDE preview the rail takes its
  * own column between the conversation and the preview (an ultrawide pane only).
  *
+ * The subagent line (`subheader`) is part of the conversation, not the pane:
+ * it sits on the transcript's track and the rail starts beside it, directly
+ * under the header, as it does in every other chat. Spanning both tracks
+ * centred the line's 760px box on the pane, 140px right of the column it
+ * belongs to (vision V2-R2-3).
+ *
  * `styles/summaryRail.test.ts` pins these templates and keeps the geometry rules
  * free of transitions, animations and container or media conditions: the seam
  * is decided in JS, once, and a second seam here would drift from it.
@@ -32,7 +38,7 @@
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   grid-template-areas:
     'header header'
-    'subheader subheader'
+    'subheader rail'
     'transcript rail'
     'composer rail';
 }
@@ -50,6 +56,7 @@
 
 [data-preview-split][data-summary-rail]:not([data-preview-layout]) [data-preview-area='subheader'] {
   grid-area: subheader;
+  min-width: 0;
 }
 
 [data-preview-split][data-summary-rail]:not([data-preview-layout])
@@ -67,7 +74,7 @@
   grid-template-columns: minmax(440px, 1fr) var(--summary-rail-width) var(--preview-panel-width);
   grid-template-areas:
     'header header preview'
-    'subheader subheader preview'
+    'subheader rail preview'
     'transcript rail preview'
     'composer rail preview';
 }

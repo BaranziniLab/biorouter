@@ -122,7 +122,10 @@ import type {
   RawResource,
   ResourceContents,
 } from '../api';
-import { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './Layout/yieldLadder';
+import {
+  CHAT_COLUMN_CHROME,
+  SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
+} from './Layout/yieldLadder';
 import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
 import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
@@ -2861,8 +2864,12 @@ function BaseChatContent({
               </div>
               {subagent.isSubagent && subagent.parentSessionId && (
                 // Wrapped so rung 2's grid places the subagent's second header
-                // band as one item under the first.
-                <div data-preview-area="subheader" className="flex-shrink-0">
+                // band as one item under the first. The grids put this cell on
+                // the transcript's track only (never across the rail), and its
+                // `px-1` is the scroll root's: with the header's own `px-6` the
+                // line gets the transcript's 28px a side, so it starts on the
+                // column's left edge at every width (vision V2-R2-3).
+                <div data-preview-area="subheader" className="flex-shrink-0 px-1">
                   <SubagentTabHeader
                     sessionId={sessionId}
                     parentSessionId={subagent.parentSessionId}
@@ -2995,9 +3002,19 @@ function BaseChatContent({
               // apart from the conversation. On the bar rather than in the
               // scroll content, because the bar's padding holds at every scroll
               // position and a spacer inside the transcript scrolls away.
+              //
+              // Its side gutters are the transcript's chrome, to the pixel:
+              // half of `CHAT_COLUMN_CHROME` (the scroll root's `px-1` plus the
+              // viewport's `px-6`, 28px a side). Both boxes cap at the 760px
+              // measure, so above an 816px cell any gutter looked right; below
+              // it the bar's old 24px made the composer 8px wider than the
+              // column and 4px left of it (vision V2-R2-1). Inline, from the
+              // constant, so the two cannot drift and no new utility class has
+              // to be generated.
               <div
                 data-preview-area="composer"
-                className="biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas"
+                className="biorouter-chat-composer-bar flex-shrink-0 pb-6 pt-7 bg-background-canvas"
+                style={{ paddingInline: CHAT_COLUMN_CHROME / 2 }}
               >
                 {renderChatInput()}
               </div>

@@ -24,7 +24,7 @@ yields first: the rail goes before the sidebar, the preview or a split give up a
 
 | Quantity | Value | Where it comes from |
 |---|---|---|
-| Column chrome | 56px | The transcript's ScrollArea root `px-1` (2 × 4) plus its viewport `paddingX={6}` (2 × 24), both in `BaseChat.tsx` |
+| Column chrome | 56px | The transcript's ScrollArea root `px-1` (2 × 4) plus its viewport `paddingX={6}` (2 × 24), both in `BaseChat.tsx`. The composer bar takes the same 28px a side (`paddingInline: CHAT_COLUMN_CHROME / 2`), and a subagent's line the same (a `px-1` wrapper around its own `px-6`), so all three share the column's left edge below the full measure too |
 | Full-measure cell | 816px | 760 (`--measure-chat`) + 56 |
 | Rail width | 240px to 280px | `clamp(available − 816, 240, 280)` |
 | Show threshold | 1056px | 816 + 240 |
@@ -173,8 +173,10 @@ or the pointer is over the summary.
   the same flatten-and-place grid as rung 2: the split box becomes one grid, its column and body
   are flattened with `display: contents`, and each piece is placed by its `data-preview-area`.
   The rail-only template is keyed on `[data-summary-rail]:not([data-preview-layout])`; beside a
-  side preview the rail takes a column between the conversation and the preview. The rail cell
-  is padded 12px except on the transcript's side.
+  side preview the rail takes a column between the conversation and the preview. A subagent's
+  line (`subheader`) sits on the transcript's track, not across the rail, so its 760px box is
+  centred on the column it belongs to; the rail starts beside it, directly under the header, as
+  in every other chat. The rail cell is padded 12px except on the transcript's side.
 - **State**: `hooks/useSummaryRail.ts` (measurement, timing, entrance and exit),
   `Layout/summaryRailPreference.ts` (the viewer's choice).
 - **Wiring**: `BaseChat.tsx` spreads `summaryRail.splitPaneProps` beside the artifact panel's,
@@ -193,8 +195,8 @@ or the pointer is over the summary.
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, no hairline in the content, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
-| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's left edge on the column's, the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
+| `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's edges on the column's (also in cells under 816px, with and without a side preview), the subagent line on the column's left edge (with the rail, without it, beside a preview), the column moving by half the rail, 28px rows, the long list scrolling inside the card, the card's fill with no visible edge or inner hairline, and the scroll-edge fades at rest, mid-way and at the end |
 
 ## Related documentation
 

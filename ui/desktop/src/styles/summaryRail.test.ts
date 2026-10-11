@@ -108,8 +108,11 @@ describe('rung 0: the summary rail’s grid agrees with the ladder', () => {
       'minmax(0, 1fr) var(--summary-rail-width)'
     );
     expect(property(rail.body, 'grid-template-rows')).toBe('auto auto minmax(0, 1fr) auto');
+    // The subagent line sits on the transcript's track, so its box is centred
+    // on the column it belongs to; the rail starts beside it, under the header
+    // (vision V2-R2-3).
     expect(property(rail.body, 'grid-template-areas')).toBe(
-      "'header header' 'subheader subheader' 'transcript rail' 'composer rail'"
+      "'header header' 'subheader rail' 'transcript rail' 'composer rail'"
     );
   });
 
@@ -148,7 +151,7 @@ describe('rung 0: the summary rail’s grid agrees with the ladder', () => {
       `minmax(${READABLE_CHAT_WIDTH}px, 1fr) var(--summary-rail-width) var(--preview-panel-width)`
     );
     expect(property(both.body, 'grid-template-areas')).toBe(
-      "'header header preview' 'subheader subheader preview' 'transcript rail preview' 'composer rail preview'"
+      "'header header preview' 'subheader rail preview' 'transcript rail preview' 'composer rail preview'"
     );
   });
 
