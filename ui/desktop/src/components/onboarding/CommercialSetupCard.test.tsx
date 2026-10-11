@@ -35,7 +35,7 @@ describe('CommercialSetupCard', () => {
   });
 
   it('says what it detects, from the backend list, in the key field’s InfoTip', async () => {
-    render(<CommercialSetupCard onSuccess={vi.fn()} chrome="bare" />);
+    render(<CommercialSetupCard onSuccess={vi.fn()} />);
     const field = screen.getByLabelText(commercialCopy.apiKey);
     await waitFor(() =>
       expect(field).toHaveAccessibleDescription(commercialCopy.help('OpenAI, Anthropic'))
@@ -47,7 +47,7 @@ describe('CommercialSetupCard', () => {
   // FR-R1-11 / FR-S-11: an empty field's Detect was a disabled coral fill, a second coral button
   // beside an open agent's "Use".
   it('keeps Detect secondary until there is a key', () => {
-    render(<CommercialSetupCard onSuccess={vi.fn()} chrome="bare" />);
+    render(<CommercialSetupCard onSuccess={vi.fn()} />);
     const detect = screen.getByRole('button', { name: commercialCopy.detect });
     expect(detect).toBeDisabled();
     expect(detect.className).not.toContain('bg-background-accent');

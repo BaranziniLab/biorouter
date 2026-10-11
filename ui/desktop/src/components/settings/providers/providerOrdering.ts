@@ -298,7 +298,7 @@ function institutionalSections(providers: ProviderDetails[]): OrderedProviderSec
  * AI agents first because they are the commonest path on a machine that already
  * pays for a coding-agent plan: they need no key at all, so offering them before
  * the section that asks for a secret is the cheaper question asked first. The
- * same reasoning already put `CodingAgentInlineCard` above `CommercialSetupCard`
+ * same reasoning that put the old coding-agent card above `CommercialSetupCard`
  * in the old onboarding stack.
  */
 function commercialSections(providers: ProviderDetails[]): OrderedProviderSection[] {

@@ -29,7 +29,7 @@
   border-radius: var(--radius-element);
 }
 
-/* A standalone card: the host-managed panel on a browser surface. */
+/* A standalone card: the host-managed panel on a browser surface (`privacy/HostManagedModelPanel`). */
 .br-first-run-card {
   border-radius: var(--radius-container);
 }

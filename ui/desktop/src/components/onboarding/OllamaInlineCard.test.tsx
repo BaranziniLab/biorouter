@@ -42,7 +42,7 @@ describe('OllamaInlineCard', () => {
 
   it('offers to install Ollama when it is not running, as an ordinary button', async () => {
     mocks.checkOllamaStatus.mockResolvedValue({ isRunning: false });
-    render(<OllamaInlineCard onSuccess={vi.fn()} chrome="bare" />);
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
     const install = await screen.findByRole('link', { name: ollamaCopy.install });
     expect(install.className).not.toContain('w-full');
     expect(install.className).not.toContain('h-control-lg');
@@ -52,7 +52,7 @@ describe('OllamaInlineCard', () => {
   it('says what a download is without naming the model id on the button', async () => {
     mocks.checkOllamaStatus.mockResolvedValue({ isRunning: true });
     mocks.hasModel.mockResolvedValue(false);
-    render(<OllamaInlineCard onSuccess={vi.fn()} chrome="bare" />);
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
     const download = await screen.findByRole('button', { name: ollamaCopy.downloadModel });
     expect(download).not.toHaveTextContent('gpt-oss');
     // The model is named once, on the status line.
@@ -65,7 +65,7 @@ describe('OllamaInlineCard', () => {
     mocks.checkOllamaStatus.mockResolvedValue({ isRunning: true });
     mocks.hasModel.mockResolvedValue(true);
     const onSuccess = vi.fn();
-    render(<OllamaInlineCard onSuccess={onSuccess} chrome="bare" />);
+    render(<OllamaInlineCard onSuccess={onSuccess} />);
     fireEvent.click(await screen.findByRole('button', { name: ollamaCopy.use }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     const [toast] = mocks.toastSuccess.mock.calls[0] as [{ title: string }];

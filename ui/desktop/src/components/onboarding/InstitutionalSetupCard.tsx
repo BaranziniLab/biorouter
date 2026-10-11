@@ -7,7 +7,6 @@ import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { Spinner } from '../ui/spinner';
 import { institutionalCopy } from './copy';
 
@@ -16,8 +15,6 @@ interface InstitutionalSetupCardProps {
   flavor: VersaFlavor;
   onSuccess: (provider: string) => void;
   onStartTesting?: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
 export type VersaFlavor = 'azure' | 'bedrock';
@@ -71,7 +68,6 @@ export default function InstitutionalSetupCard({
   flavor,
   onSuccess,
   onStartTesting,
-  chrome = 'card',
 }: InstitutionalSetupCardProps) {
   const { upsert } = useConfig();
   const [bedrockAccessKey, setBedrockAccessKey] = useState('');
@@ -143,14 +139,7 @@ export default function InstitutionalSetupCard({
   };
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="institutional-setup-title"
-      category="institutional"
-      label="Institutional · UCSF Versa API"
-      title="UCSF-hosted models"
-      description="Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates."
-    >
+    <div className="min-w-0">
       {flavor === 'azure' ? (
         <Field id="versa-azure-api-key" label={institutionalCopy.apiKey}>
           <Input
@@ -277,6 +266,6 @@ export default function InstitutionalSetupCard({
           {error}
         </Note>
       )}
-    </OnboardingCardShell>
+    </div>
   );
 }

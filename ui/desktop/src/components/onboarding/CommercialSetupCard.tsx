@@ -5,15 +5,12 @@ import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import { AlertTriangle, Check } from '../icons/app-icons';
 import { Field } from '../ui/field';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { Spinner } from '../ui/spinner';
 import { commercialCopy } from './copy';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
   onStartTesting?: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
 export interface DetectedProviderSetup {
@@ -85,7 +82,6 @@ function messageForReason(
 export default function CommercialSetupCard({
   onSuccess,
   onStartTesting,
-  chrome = 'card',
 }: CommercialSetupCardProps) {
   const [apiKey, setApiKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -168,14 +164,7 @@ export default function CommercialSetupCard({
   const failure = errorReason ? messageForReason(errorReason, supportedLabel) : null;
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="commercial-setup-title"
-      category="commercial"
-      label="Commercial APIs"
-      title="Auto-detect from API key"
-      description={commercialCopy.help(supportedLabel)}
-    >
+    <div className="min-w-0">
       {/* A labelled field, the Institutional form's recipe: "API key" with what is detected in its
           InfoTip (FR-S-5). It was an unlabelled 36px box whose placeholder was its only words, and
           the supported list appeared only after a failure. */}
@@ -232,6 +221,6 @@ export default function CommercialSetupCard({
           </Note>
         )}
       </div>
-    </OnboardingCardShell>
+    </div>
   );
 }

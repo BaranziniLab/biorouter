@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import CodingAgentInlineCard, {
+import {
+  CODING_AGENT_CHECK_FAILED,
   CODING_AGENT_TERMINAL_HEIGHT_PX,
   CODING_AGENT_TERMINAL_RESERVE_PX,
-} from './CodingAgentInlineCard';
-import { CODING_AGENT_CHECK_FAILED } from './codingAgentControls';
+  CodingAgentBody,
+  CodingAgentLoadError,
+  CodingAgentProvenance,
+  StatusPill,
+  pillFor,
+  useCodingAgents,
+} from './codingAgentControls';
 import { agentCopy } from './copy';
 import type { CodingAgentAuth, CodingAgentAvailability } from './codingAgentStatus';
 
@@ -71,7 +77,36 @@ const codex = (auth: CodingAgentAuth, over: Partial<CodingAgentAvailability> = {
 const respondWith = (...agents: CodingAgentAvailability[]) =>
   mockFetchStatus.mockResolvedValue({ agents });
 
-describe('CodingAgentInlineCard', () => {
+/**
+ * The agent controls, hosted the way the provider catalog hosts them: one probe for the surface,
+ * then per agent its pill, its version line and its state's body. (This suite used to drive a
+ * standalone onboarding card that nothing rendered; the catalog's Public tab is the one host now,
+ * FR-S-12, and `ProviderCatalog.test.tsx` covers the rows around these controls.)
+ */
+function AgentsHost({ onSuccess }: { onSuccess: (providerId: string) => void }) {
+  const controls = useCodingAgents(onSuccess);
+  if (controls.isChecking) return <p>Checking</p>;
+  if (controls.loadError && !controls.agents) {
+    return <CodingAgentLoadError message={controls.loadError} controls={controls} />;
+  }
+  return (
+    <div>
+      {(controls.agents ?? []).map((agent) => {
+        const pill = pillFor(agent.auth);
+        return (
+          <div key={agent.providerId} data-testid={`coding-agent-row-${agent.providerId}`}>
+            <p>{agent.displayName}</p>
+            <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
+            <CodingAgentProvenance agent={agent} />
+            <CodingAgentBody agent={agent} controls={controls} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+describe('the coding-agent controls', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUpsert.mockResolvedValue(undefined);
@@ -99,7 +134,7 @@ describe('CodingAgentInlineCard', () => {
       codex({ state: 'signed_in_subscription' })
     );
     const onSuccess = vi.fn();
-    render(<CodingAgentInlineCard onSuccess={onSuccess} />);
+    render(<AgentsHost onSuccess={onSuccess} />);
 
     const use = await screen.findByRole('button', { name: /Use Claude Code/i });
     fireEvent.click(use);
@@ -115,7 +150,7 @@ describe('CodingAgentInlineCard', () => {
   });
 
   it('renders a row for every agent the daemon reports', async () => {
-    render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    render(<AgentsHost onSuccess={vi.fn()} />);
     expect(await screen.findByTestId('coding-agent-row-claude_code')).toBeInTheDocument();
     expect(screen.getByTestId('coding-agent-row-codex')).toBeInTheDocument();
     // Display names come from the wire, never from a literal in the component.
@@ -126,7 +161,7 @@ describe('CodingAgentInlineCard', () => {
   describe('not_installed', () => {
     it('shows the install hint as a copyable command and never offers to run it', async () => {
       respondWith(claude({ state: 'not_installed' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       expect(
         await screen.findByText('npm install -g @anthropic-ai/claude-code@latest')
@@ -145,7 +180,7 @@ describe('CodingAgentInlineCard', () => {
 
     it('copies the install hint to the clipboard', async () => {
       respondWith(claude({ state: 'not_installed' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       const copy = await screen.findByRole('button', {
         name: 'Copy npm install -g @anthropic-ai/claude-code@latest',
@@ -161,7 +196,7 @@ describe('CodingAgentInlineCard', () => {
 
     it('re-fetches status from "Check again"', async () => {
       respondWith(claude({ state: 'not_installed' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       const recheck = await screen.findByTestId('coding-agent-recheck-claude_code');
       expect(recheck).toHaveTextContent('Check again');
@@ -179,7 +214,7 @@ describe('CodingAgentInlineCard', () => {
   describe('signed_out', () => {
     it('shows the login command and says Biorouter never brokers the credential', async () => {
       respondWith(claude({ state: 'signed_out' }, { path: '/opt/homebrew/bin/claude' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       expect(await screen.findByText('claude auth login')).toBeInTheDocument();
       expect(screen.getByText('Installed · not signed in')).toBeInTheDocument();
@@ -194,7 +229,7 @@ describe('CodingAgentInlineCard', () => {
 
     it('offers an in-app terminal alongside the copyable command, not instead of it', async () => {
       respondWith(claude({ state: 'signed_out' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       const toggle = await screen.findByTestId('coding-agent-terminal-toggle-claude_code');
       expect(screen.queryByTestId('in-app-terminal-dock')).not.toBeInTheDocument();
@@ -211,7 +246,7 @@ describe('CodingAgentInlineCard', () => {
 
     it('mounts the dock in a box taller than the visible region by exactly the reserve', async () => {
       respondWith(claude({ state: 'signed_out' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       fireEvent.click(await screen.findByTestId('coding-agent-terminal-toggle-claude_code'));
 
@@ -229,7 +264,7 @@ describe('CodingAgentInlineCard', () => {
   describe('signed_in_with_api_key', () => {
     it('is not presented as a failure, and names both ways out', async () => {
       respondWith(claude({ state: 'signed_in_with_api_key' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       // Reads as a billing mismatch, not an error: no "not installed"/"failed"
       // framing, and the info dot rather than the warning one.
@@ -251,7 +286,7 @@ describe('CodingAgentInlineCard', () => {
 
     it('names the right metered sibling for Codex', async () => {
       respondWith(codex({ state: 'signed_in_with_api_key' }));
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       expect(await screen.findByText('OpenAI')).toBeInTheDocument();
       expect(screen.queryByText('Anthropic')).not.toBeInTheDocument();
@@ -269,7 +304,7 @@ describe('CodingAgentInlineCard', () => {
           }
         )
       );
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       expect(await screen.findByText(/Plan: max · Account: ada@example.edu/)).toBeInTheDocument();
       // The version is the line; where the CLI lives is a path, behind that line's tooltip
@@ -287,7 +322,7 @@ describe('CodingAgentInlineCard', () => {
           { version: '2.1.4 (Claude Code)', path: '/opt/homebrew/bin/claude' }
         )
       );
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       const version = await screen.findByTestId('coding-agent-version-claude_code');
       // The line is a Tab stop only because it has something to open.
@@ -308,7 +343,7 @@ describe('CodingAgentInlineCard', () => {
           { version: null, path: '/opt/homebrew/bin/claude' }
         )
       );
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
       expect(await screen.findByTestId('coding-agent-version-claude_code')).toHaveTextContent(
         'Installed'
       );
@@ -317,7 +352,7 @@ describe('CodingAgentInlineCard', () => {
     it('persists the defaulted command key, and only that, then hands off', async () => {
       const onSuccess = vi.fn();
       respondWith(claude({ state: 'signed_in_subscription', plan: null, account: null }));
-      render(<CodingAgentInlineCard onSuccess={onSuccess} />);
+      render(<AgentsHost onSuccess={onSuccess} />);
 
       fireEvent.click(await screen.findByTestId('coding-agent-connect-claude_code'));
 
@@ -342,7 +377,7 @@ describe('CodingAgentInlineCard', () => {
     it('writes CODEX_COMMAND for Codex', async () => {
       const onSuccess = vi.fn();
       respondWith(codex({ state: 'signed_in_subscription', plan: 'plus', account: null }));
-      render(<CodingAgentInlineCard onSuccess={onSuccess} />);
+      render(<AgentsHost onSuccess={onSuccess} />);
 
       fireEvent.click(await screen.findByTestId('coding-agent-connect-codex'));
 
@@ -354,7 +389,7 @@ describe('CodingAgentInlineCard', () => {
       const onSuccess = vi.fn();
       respondWith(claude({ state: 'signed_in_subscription', plan: null, account: null }));
       mockUpsert.mockRejectedValueOnce(new Error('keyring locked'));
-      render(<CodingAgentInlineCard onSuccess={onSuccess} />);
+      render(<AgentsHost onSuccess={onSuccess} />);
 
       fireEvent.click(await screen.findByTestId('coding-agent-connect-claude_code'));
 
@@ -368,7 +403,7 @@ describe('CodingAgentInlineCard', () => {
       respondWith(
         claude({ state: 'indeterminate', detail: 'credentials.json parsed but had no plan field' })
       );
-      render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+      render(<AgentsHost onSuccess={vi.fn()} />);
 
       expect(await screen.findByTestId('coding-agent-detail-claude_code')).toHaveTextContent(
         'credentials.json parsed but had no plan field'
@@ -384,7 +419,7 @@ describe('CodingAgentInlineCard', () => {
 
   it('offers a retry when the status route itself fails', async () => {
     mockFetchStatus.mockRejectedValueOnce(new Error('404 Not Found'));
-    render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    render(<AgentsHost onSuccess={vi.fn()} />);
 
     expect(await screen.findByTestId('coding-agent-load-error')).toHaveTextContent('404 Not Found');
 
@@ -397,7 +432,7 @@ describe('CodingAgentInlineCard', () => {
   it('reads the message of a failed status that arrives as a parsed body, never "[object Object]"', async () => {
     // What the generated client throws for a non-2xx status: the response body, not an Error.
     mockFetchStatus.mockRejectedValueOnce({ message: 'The probe timed out.' });
-    const { unmount } = render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    const { unmount } = render(<AgentsHost onSuccess={vi.fn()} />);
     expect(await screen.findByTestId('coding-agent-load-error')).toHaveTextContent(
       'The probe timed out.'
     );
@@ -405,7 +440,7 @@ describe('CodingAgentInlineCard', () => {
 
     // A body with no message says so in words rather than printing the object.
     mockFetchStatus.mockRejectedValueOnce({ code: 500 });
-    render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
+    render(<AgentsHost onSuccess={vi.fn()} />);
     const line = await screen.findByTestId('coding-agent-load-error');
     expect(line).toHaveTextContent(CODING_AGENT_CHECK_FAILED);
     expect(line).not.toHaveTextContent('[object Object]');

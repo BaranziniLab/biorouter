@@ -71,14 +71,15 @@ export async function saveCodingAgentCommand(
 
 /**
  * The coding-agent status probe, the per-state guidance, and the "use this
- * agent" write — extracted from `CodingAgentInlineCard` so the **provider
- * catalog** hosts the identical UI rather than a second copy of it.
+ * agent" write, hosted by the **provider catalog**'s accordion rows (Public's
+ * "AI agents" section, on first run and in Settings) and by the configure
+ * dialog's recovery panel.
  *
- * ⚠ The extraction is the point. The two surfaces differ only in their *shell*
- * (the onboarding card's `<section>` and heading vs. the catalog's accordion
- * row); every state machine, every sentence and every `data-testid` below has
- * exactly one definition, so a fix to the `signed_in_with_api_key` copy cannot
- * land on one screen and not the other.
+ * ⚠ One definition is the point. Every state machine, every sentence and every
+ * `data-testid` below exists once, so a fix to the `signed_in_with_api_key` copy
+ * cannot land on one screen and not the other. (A standalone onboarding card used
+ * to wrap these too; nothing rendered it, and it was deleted with its chrome,
+ * FR-S-12. Its tests moved to `codingAgentControls.test.tsx`.)
  */
 
 /**

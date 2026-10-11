@@ -78,8 +78,8 @@ export type ProviderCatalogMode = 'settings' | 'onboarding';
  * had five bespoke cards for five providers and no way to reach the other
  * twenty-three. They are one surface now, and the mode changes only what a row
  * *does* when it opens: settings opens the configure modal; onboarding opens the
- * provider's own setup UI, which is the same component the cards used, rendered
- * without its card chrome (see `OnboardingCardShell`).
+ * provider's own setup UI, opened in place under the row (the onboarding components,
+ * which have no card of their own).
  *
  * ## What is deliberately NOT keyed on a provider name here
  *
@@ -599,7 +599,6 @@ export default function ProviderCatalog({
     if (gateway && !provider.is_configured) {
       return (
         <InstitutionalSetupCard
-          chrome="bare"
           flavor={gateway}
           onSuccess={handleProviderReady}
           onStartTesting={onStartTesting}
@@ -608,9 +607,9 @@ export default function ProviderCatalog({
     }
     switch (ONBOARDING_SETUP[provider.name]) {
       case 'llamacpp':
-        return <LlamaServerInlineCard chrome="bare" onSuccess={handleLocalComplete} />;
+        return <LlamaServerInlineCard onSuccess={handleLocalComplete} />;
       case 'ollama':
-        return <OllamaInlineCard chrome="bare" onSuccess={handleLocalComplete} />;
+        return <OllamaInlineCard onSuccess={handleLocalComplete} />;
       default:
         return null;
     }
@@ -715,7 +714,6 @@ export default function ProviderCatalog({
         {isOnboarding && isApiSection && (
           <div className="br-provider-inset mb-4">
             <CommercialSetupCard
-              chrome="bare"
               onSuccess={handleCommercialDetected}
               onStartTesting={onStartTesting}
             />

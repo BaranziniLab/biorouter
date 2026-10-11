@@ -11,7 +11,6 @@ import { Field } from '../ui/field';
 import { localModelsCopy } from '../settings/models/copy';
 import { factsLine } from '../settings/models/localModelFacts';
 import { llamaCopy } from './copy';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Spinner } from '../ui/spinner';
@@ -19,8 +18,6 @@ import { StatusPill } from './StatusPill';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
 type ModelOption = { value: string; label: string };
@@ -105,10 +102,7 @@ function DetailRow({
   );
 }
 
-export default function LlamaServerInlineCard({
-  onSuccess,
-  chrome = 'card',
-}: LlamaServerInlineCardProps) {
+export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const { upsert } = useConfig();
   const { status, operation, lastError } = useLlamaServer();
   // Skip the "Checking…" state when the shared store already has a status
@@ -380,14 +374,7 @@ export default function LlamaServerInlineCard({
 
   return (
     <>
-      <OnboardingCardShell
-        chrome={chrome}
-        titleId="llamacpp-setup-title"
-        category="local"
-        label="Local · Run on your computer"
-        title="Llama Server"
-        description="Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing else to install."
-      >
+      <div className="min-w-0">
         {isChecking ? (
           <div className="flex items-center gap-2 text-supporting text-text-muted">
             <Spinner size={14} />
@@ -536,7 +523,7 @@ export default function LlamaServerInlineCard({
             </div>
           </div>
         )}
-      </OnboardingCardShell>
+      </div>
       <ConfirmationModal
         isOpen={pendingModelStart !== null}
         title={`Load ${selectedEntry?.display_name ?? 'this model'} anyway?`}

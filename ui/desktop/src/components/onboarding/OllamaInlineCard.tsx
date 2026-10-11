@@ -13,7 +13,6 @@ import {
   getPreferredModel,
   type PullProgress,
 } from '../../utils/ollamaDetection';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import './onboarding.css';
 import { Spinner } from '../ui/spinner';
 import { ollamaCopy } from './copy';
@@ -21,13 +20,11 @@ import { StatusPill } from './StatusPill';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
 type ModelStatus = 'checking' | 'available' | 'not-available' | 'downloading';
 
-export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaInlineCardProps) {
+export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   const { upsert } = useConfig();
   const [isChecking, setIsChecking] = useState(true);
   const [ollamaDetected, setOllamaDetected] = useState(false);
@@ -119,14 +116,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   const notDetectedPill = <StatusPill tone="warning">{ollamaCopy.notDetected}</StatusPill>;
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="ollama-setup-title"
-      category="local"
-      label="Local · Run on your computer"
-      title="Ollama"
-      description="Run open-source models on your own machine. Free, private, offline."
-    >
+    <div className="min-w-0">
       {isChecking ? (
         <div className="flex items-center gap-2 text-supporting text-text-muted">
           <Spinner size={14} />
@@ -217,6 +207,6 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
           </div>
         </div>
       )}
-    </OnboardingCardShell>
+    </div>
   );
 }
