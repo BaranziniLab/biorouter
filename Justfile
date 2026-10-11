@@ -21,6 +21,8 @@ check-everything:
     ./scripts/check-version-consistency.sh
     @echo "  → Checking Biorouter name and logo consistency..."
     ./scripts/check-brand-consistency.sh
+    @echo "  → Checking the tracked tree names neither the retired upstream nor its publisher (NOTICE excepted)..."
+    ./scripts/check-no-goose-block.sh
     @echo "  → Checking the capability is called Biorouter Copilot everywhere a person reads it..."
     ./scripts/check-computer-use-naming.sh
     ./scripts/check-vendored-computer-use.sh

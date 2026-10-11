@@ -30,6 +30,11 @@ check "no .html files in docs/" \
 check "no .mp4/.mp3 files in docs/" \
   "find '$DOCS' \( -name '*.mp4' -o -name '*.mp3' \) 2>/dev/null"
 
+# The tripwire lives in its own script so the Justfile and this file read one definition.
+# It writes only on failure, so the check passes on an empty result.
+check "no retired-upstream or publisher names in tracked files or file names (NOTICE excepted)" \
+  "'$REPO/scripts/check-no-goose-block.sh' 2>&1 >/dev/null | head -5"
+
 check "no recipe/recipes references in markdown (outside superpowers/)" \
   "grep -ril '\brecipe\b\|\brecipes\b' '$DOCS' --include='*.md' 2>/dev/null \
    | grep -v 'superpowers/' || true"
