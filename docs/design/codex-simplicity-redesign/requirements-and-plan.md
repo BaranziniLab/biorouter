@@ -64,6 +64,14 @@ the prefix `WS-`. Both schemes are local to this folder.
 | R-23 | Verify with real screenshots read by a vision model: every surface, light and dark, several window sizes, and the interactions above. Repeat until no problems remain. |
 | R-24 | Keep this requirements document and the [progress tracker](progress.md) in the repository and update them until the work is finished. |
 
+### Owner follow ups (2026-10-10)
+
+| ID | Requirement |
+|----|-------------|
+| R-25 | In the composer's Tools popover, the Extensions, Skills and Knowledge switcher sits at the bottom, at a fixed place near the Tools button, so it does not move when the list length or the window height changes. |
+| R-26 | The Effort choice in the model menu is a slider with three stops (Quick, Normal, Deep) instead of three menu rows. |
+| R-27 | Cards, panels, buttons, chips, tabs and fields use a subtle solid fill instead of an outline, as in the summary box. Lines remain only where they are structural and on floating surfaces. Every surface gets a careful review for subtle polish. |
+
 ## Owner decisions
 
 | Decision | Choice |

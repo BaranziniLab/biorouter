@@ -80,6 +80,9 @@ spec's tables are authoritative where this summary is shorter.
 | R-22 | Website revision | WS-LANDING | In progress |
 | R-23 | Vision verification loops | coordinator (vision loop) | In progress |
 | R-24 | Requirements and progress documents | coordinator | Done |
+| R-25 | Tools popover switcher at the bottom | WS-PICKERS | Not started |
+| R-26 | Effort slider | WS-PRIMITIVES, WS-PICKERS | Not started |
+| R-27 | Fill over lines, plus a polish review | WS-TOKENS, WS-PRIMITIVES, all | Not started |
 
 ## Log
 
@@ -134,6 +137,15 @@ spec's tables are authoritative where this summary is shorter.
 - Vision loop started: four sandboxed app instances (shell and Home, chat, component views,
   Settings with dialogs and a Crew regression check) and the website, each reviewed from real
   screenshots in light and dark at several widths.
+- Vision round 1 (five reviewers on four sandboxed app instances and the website) found 107
+  problems, 45 of them high or medium. Fixes for about half landed (tabs grow in, the sidebar
+  slides with its gap, the rail survives StrictMode and rescales, find in chat stays pinned, the
+  History list no longer re-sorts in front of the reader, dates and stats read cleanly) before the
+  usage limit stopped the rest.
+- Owner message 13 added R-25 (Tools popover switcher at the bottom), R-26 (Effort slider) and
+  R-27 (subtle solid fills instead of outlines, plus a polish review). Spec principle 8 now reads
+  "fills come before lines", and spec section 9 holds the rulings. The vision loop was stopped so
+  that reviewers and fixers aim at the new rule; it resumes after the fill sweep.
 
 ## Related documentation
 

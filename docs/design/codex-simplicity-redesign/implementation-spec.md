@@ -123,10 +123,11 @@ mark.
    icon report; message 12 "keep … the coral lock badges"), the Update row's download glyph, and
    the landing site's coral rule segment. Hover is always neutral. Do not grey the app out
    (message 10).
-8. **Borders come before shadows.** Use a 1px `--border-subtle` hairline plus a step of ground
-   colour. Shadows are allowed only on menus, popovers, toasts, dialogs and the composer
-   (design.md P1). Hairlines are straight: no `border-bottom` on a rounded row. Use Crew's inset
-   hairline.
+8. **Fills come before lines (owner message 13, section 9).** In-page cards, panels, buttons,
+   chips, tabs and fields use a subtle solid fill (`--background-fill`) with no resting outline.
+   Lines stay only where they are structural (the band edge, pane dividers, table rules inside a
+   filled table) and on floating surfaces (menus, popovers, toasts, dialogs), which keep a hairline
+   and a shadow. Crew keeps its own recipes. This replaces the earlier "borders before shadows".
 9. **Layout snaps and content glides.** Animate only `transform`, `opacity` and `clip-path`, and
    use tokens only. The named exceptions, and no others [motion §3.1]: the Disclosure's height
    (`.biorouter-disclosure-panel`, which the tool rows reuse), the Progress fill's width,
@@ -3224,6 +3225,47 @@ references are at `f2ff06132`.
   Slack block unless it duplicates the header on the same screen; prefer keeping it. About shows
   the newest 5 updates plus an "Earlier updates" disclosure that still contains all of them.
 - Sidebar active row: keep the 2px coral rail (principle 7) even though Codex has none.
+
+
+## 9. Owner message 13 rulings (2026-10-10, binding)
+
+The owner asked for three changes after vision round 1. They supersede any earlier section where
+they differ.
+
+- **R-25 Tools popover tabs at the bottom.** The Extensions, Skills and Knowledge segmented control
+  moves to the bottom of the popover, directly above the Tools chip (the popover opens upward), at a
+  fixed position relative to the chip whatever the list length or window height. The list, its
+  search field and the "New chats · Disable all" row sit above it and scroll. Switching tabs never
+  moves the control under the pointer; the popover grows upward from its fixed bottom edge.
+  Owner: WS-PICKERS.
+- **R-26 Effort slider.** The model menu's Effort section becomes one horizontal slider with three
+  snapping stops (Quick, Normal, Deep), the current label beside "Effort", a mark for each stop,
+  the thumb and filled track in the accent. Left, Right, Home and End move it; a click on a stop or
+  a drag sets it; `role="slider"` with `aria-valuetext`. Per level descriptions move into an
+  InfoTip or the accessible description. A change applies at once through the same store and scope
+  as the radio rows did. The slider is a new primitive, `components/ui/slider.tsx` (WS-PRIMITIVES),
+  built in house: `@radix-ui/react-slider` is not a direct dependency and no install is allowed.
+- **R-27 Fill over lines.** In-page containers and controls use a subtle solid fill instead of a
+  1px outline.
+  - Cards and boxed panels (the summary rail card, the Home usage card, approval, elicitation and
+    secret request cards, artifact cards, notes, empty-state boxes, boxed settings groups, code
+    blocks, table frames, tool wells): fill `--background-fill`, no border, same radius; hover and
+    pressed states use `--background-fill-strong`. WS-TOKENS defines both tokens for light and dark
+    in the shared neutrals, with contrast assertions that the fill is visible against each ground.
+  - Secondary and outline buttons, chips, the tab strip's tabs, the segmented track, filter and
+    search inputs, text fields and selects: filled at rest with no outline; focus keeps the
+    existing treatment (D-15, the accent edge); forced colours keep borders.
+  - The composer card: the subtle fill with no resting outline; the coral focus edge stays.
+  - Row lists drop the hairlines between rows where spacing and the hover fill already separate
+    them.
+  - Lines stay where they are structural (the 44px band edge, pane dividers, resize handles, table
+    rules inside a filled table) and on floating surfaces (menus, popovers, tooltips, dialogs,
+    toasts), which keep a hairline and a shadow so they stay visible in dark mode.
+  - Crew is not converted; shared tokens may reach it.
+  - Text inputs lose their resting border. They stay identifiable by their fill, their label or
+    placeholder and the focus edge, and forced colours draws borders. design.md Part 9 records this
+    trade-off.
+  - Every workstream reviews its own surfaces for subtle polish under these rules.
 
 ## Related documentation
 
