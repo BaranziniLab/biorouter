@@ -289,6 +289,13 @@ jobs:
         working-directory: .
         run: node --test landing/scripts/baam-privacy-facet.test.mjs
 
+      # The site's pages painted in the same chromium (R-27): subtle fills with
+      # no visible edge at 1440 and 390 wide. look-rules.test.mjs (the registry
+      # job) reads the same rule from the stylesheets; this reads the paint.
+      - name: Site paints fills, not outlines
+        working-directory: .
+        run: node --test landing/scripts/fill-rules.browser.test.mjs
+
   # ── Unit tests ────────────────────────────────────────────────────────────
   unit:
     name: Unit tests (vitest)

@@ -91,6 +91,13 @@ jobs:
       - name: Check the BAAM shelf's privacy badges and facet in a browser
         run: node --test landing/scripts/baam-privacy-facet.test.mjs
 
+      # Fills before lines (owner message 13, R-27). look-rules.test.mjs above
+      # reads the stylesheets as text; this reads what the pages PAINT at 1440
+      # and 390 wide, so a rule that is written right and still loses the
+      # cascade, or a box the animations build from script, fails here.
+      - name: Check the site paints fills, not outlines, in a browser
+        run: node --test landing/scripts/fill-rules.browser.test.mjs
+
   deploy:
     needs: check
     runs-on: ubuntu-latest
