@@ -521,6 +521,22 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
   );
 }
 
+/**
+ * Scroll the list just enough to show `row`, and its date bucket or folder
+ * header too when it is the first chat under one, so a chat that moved to the
+ * top reads under its "Today". Measured against the list itself, never with
+ * `scrollIntoView`, which also scrolls every clipped box around it.
+ */
+export function scrollRowIntoView(container: HTMLElement, row: HTMLElement): void {
+  const section = row.closest('section');
+  const firstInSection = section?.querySelector('[data-row^="chat:"]') === row;
+  const top = (firstInSection && section ? section : row).getBoundingClientRect().top;
+  const { bottom } = row.getBoundingClientRect();
+  const box = container.getBoundingClientRect();
+  if (top < box.top) container.scrollTop -= box.top - top;
+  else if (bottom > box.bottom) container.scrollTop += bottom - box.bottom;
+}
+
 // ── The list ──────────────────────────────────────────────────────────────
 
 interface RecentChatsProps {
@@ -732,17 +748,38 @@ export default function RecentChats({
     setEditing(null);
   };
 
+  // Ruling 16 (R-30): a person's own rename moves its chat AT ONCE, with the
+  // pointer still over the list (vision V1-R2-4). The hold is there so a row
+  // never moves under a click the person is about to make; the move a rename
+  // makes is the one they just asked for, and the usual way to rename (row
+  // menu, type, Enter) leaves the pointer on the list, so held, the move almost
+  // never showed. A committed rename lets go of the hold twice: when the new
+  // name is announced (a name sort moves the row then), and when the daemon has
+  // saved it (`activityAt` raises the row under "Last activity") or refused it
+  // (the old name comes back). Each time the list is held again from the new
+  // order, and the row is kept in view.
+  const [reveal, setReveal] = useState<{ sessionId: string } | null>(null);
+  const revealed = useRef<{ sessionId: string } | null>(null);
+  const showOwnRename = useCallback((sessionId: string) => {
+    setHeld(null);
+    setReveal({ sessionId });
+  }, []);
+
   const commitRename = (sessionId: string, value: string) => {
     const session = sessions.find((candidate) => candidate.id === sessionId);
     finishRename(sessionId);
     if (!session) return;
+    const name = normalizeSessionName(value);
     // A chat with no name is drawn "Untitled chat", and that is the text the
     // editor opens with: Enter on it, unchanged, must not name the chat that.
-    if (!session.name.trim() && normalizeSessionName(value) === sidebarCopy.chats.untitled) return;
+    if (!session.name.trim() && name === sidebarCopy.chats.untitled) return;
+    // No call for an empty or unchanged name (the helper's own rule), so no move.
+    if (!name || name === session.name) return;
+    showOwnRename(sessionId);
     void renameSessionOptimistically(sessionId, value, {
       name: session.name,
       userSetName: session.user_set_name ?? false,
-    });
+    }).then(() => showOwnRename(sessionId));
   };
 
   // Focus returns to the row button after a rename ends.
@@ -754,6 +791,32 @@ export default function RecentChats({
       ?.querySelector<HTMLElement>(`[data-row="${CSS.escape(chatKey(sessionId))}"]`)
       ?.focus();
   }, [editing]);
+
+  // The renamed row, where it has moved to: drawn (a name sort can put it past
+  // the lines drawn so far, R-28), scrolled into view, and focused again when
+  // the move took focus with it (a row that changes date bucket remounts, and
+  // focus falls to the page). Focus the person put somewhere else stays there.
+  useLayoutEffect(() => {
+    if (!reveal || revealed.current === reveal) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const row = container.querySelector<HTMLElement>(
+      `[data-row="${CSS.escape(chatKey(reveal.sessionId))}"]`
+    );
+    if (!row) {
+      const needed = linesToDrawRow(shown, reveal.sessionId, headerLines);
+      if (needed !== null && needed > renderBudget) {
+        setRenderBudget(needed);
+        return;
+      }
+      revealed.current = reveal;
+      return;
+    }
+    revealed.current = reveal;
+    const focused = document.activeElement;
+    if (!focused || focused === document.body) row.focus({ preventScroll: true });
+    scrollRowIntoView(container, row);
+  }, [reveal, windowed, shown, renderBudget]);
 
   // ⌘⌥R (Ctrl+Alt+R) renames the chat you are in, when its row is listed.
   useEffect(() => {

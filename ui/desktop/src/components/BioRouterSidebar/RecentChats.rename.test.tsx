@@ -4,12 +4,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type { SessionSummary } from '../../api';
 import {
+  laterActivity,
   RENAME_FAILED_TOAST_TITLE,
   subscribeSessionNameChanges,
 } from '../../utils/sessionNameSync';
 import { chatRowCopy } from '../chats/copy';
 import { SIDEBAR_OVERLAY_BODY_CLASS, Sidebar, SidebarInset, SidebarProvider } from '../ui/sidebar';
-import RecentChats from './RecentChats';
+import RecentChats, { scrollRowIntoView } from './RecentChats';
 import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const mocks = vi.hoisted(() => ({
@@ -379,5 +380,131 @@ describe('Escape in the editor inside the overlay sidebar', () => {
     );
     expect(row()).toHaveTextContent('Cohort pull');
     expect(mocks.updateSessionName).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Vision V1-R2-4 and ruling 16: a rename is activity, and the renderer shows its move at once. The
+ * usual rename (row menu, type, Enter) leaves the pointer on the list, where the hold of principle
+ * 9 kept the row in place until the pointer left; History had moved it within a second. The
+ * person's own rename is the move they asked for, so it is not held.
+ */
+describe('a rename moves its chat at once, under the pointer too', () => {
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const chat = (id: string, name: string, updatedAt: string): SessionSummary => ({
+    ...SESSION,
+    id,
+    name,
+    created_at: updatedAt,
+    updated_at: updatedAt,
+  });
+  const START = [
+    chat('a', 'Atlas', minutesAgo(1)),
+    chat('b', 'Biopsy', minutesAgo(2)),
+    // Ten days old: under an older bucket than Today.
+    chat('c', 'Cohort', minutesAgo(10 * 24 * 60)),
+  ];
+  const order = () =>
+    Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((node) =>
+      node.getAttribute('data-row')
+    );
+
+  /** The list with names AND a saved rename's activity kept live, as `useSidebarSessions` does. */
+  function ActiveRecents({ raise }: { raise?: { id: string; at: string } }) {
+    const [sessions, setSessions] = useState(START);
+    useEffect(
+      () =>
+        subscribeSessionNameChanges(({ sessionId, name, userSetName, activityAt }) =>
+          setSessions((current) =>
+            current.map((session) =>
+              session.id === sessionId
+                ? {
+                    ...session,
+                    name,
+                    user_set_name: userSetName,
+                    updated_at: laterActivity(session.updated_at, activityAt),
+                  }
+                : session
+            )
+          )
+        ),
+      []
+    );
+    const shown = raise
+      ? sessions.map((session) =>
+          session.id === raise.id ? { ...session, updated_at: raise.at } : session
+        )
+      : sessions;
+    return (
+      <RecentChats
+        sessions={shown}
+        runningSessionIds={new Set()}
+        hasMore={false}
+        isLoadingMore={false}
+        onLoadMore={vi.fn()}
+        onOpen={vi.fn()}
+        onViewAll={vi.fn()}
+        view={DEFAULT_SIDEBAR_CHAT_VIEW}
+        onViewChange={vi.fn()}
+      />
+    );
+  }
+
+  it('moves the renamed chat to the top while the pointer rests on the list, and keeps focus on it', async () => {
+    const { rerender } = render(
+      <SidebarProvider>
+        <ActiveRecents />
+      </SidebarProvider>
+    );
+    expect(order()).toEqual(['chat:a', 'chat:b', 'chat:c']);
+    const list = screen.getByTestId('recent-chat-scroll');
+    fireEvent.pointerEnter(list);
+
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-c'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.rename }));
+    const editor = await screen.findByRole('textbox');
+    fireEvent.change(editor, { target: { value: 'IRB cohort' } });
+    fireEvent.keyDown(editor, { key: 'Enter' });
+
+    // Saved: the chat moves from its old bucket to the top under Today, with the pointer still in.
+    await waitFor(() => expect(order()).toEqual(['chat:c', 'chat:a', 'chat:b']));
+    // The move remounted the row under Today; focus went with it, not to the page.
+    expect(screen.getByTestId('recent-chat-c')).toHaveFocus();
+
+    // Only the person's own rename goes through: a turn elsewhere still waits for the pointer.
+    rerender(
+      <SidebarProvider>
+        <ActiveRecents raise={{ id: 'b', at: new Date(Date.now() + 60_000).toISOString() }} />
+      </SidebarProvider>
+    );
+    expect(order()).toEqual(['chat:c', 'chat:a', 'chat:b']);
+    fireEvent.pointerLeave(list);
+    expect(order()).toEqual(['chat:b', 'chat:c', 'chat:a']);
+  });
+
+  it('scrolls the list just enough to show a row, with its bucket when it is the first one', () => {
+    const container = document.createElement('div');
+    const section = document.createElement('section');
+    const first = document.createElement('button');
+    first.setAttribute('data-row', 'chat:first');
+    const later = document.createElement('button');
+    later.setAttribute('data-row', 'chat:later');
+    section.append(first, later);
+    container.append(section);
+    const rect = (top: number, height: number) => ({ top, bottom: top + height }) as DOMRect;
+    container.getBoundingClientRect = () => rect(100, 300);
+    section.getBoundingClientRect = () => rect(20, 80);
+    first.getBoundingClientRect = () => rect(44, 28);
+    later.getBoundingClientRect = () => rect(420, 28);
+
+    container.scrollTop = 500;
+    // Above the list: up to the section's top, so "Today" shows over the row.
+    scrollRowIntoView(container, first);
+    expect(container.scrollTop).toBe(420);
+
+    container.scrollTop = 0;
+    // Below it: down just far enough for the row's bottom edge.
+    scrollRowIntoView(container, later);
+    expect(container.scrollTop).toBe(48);
   });
 });
