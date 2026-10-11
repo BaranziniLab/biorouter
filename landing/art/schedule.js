@@ -1,6 +1,6 @@
 /* Scheduling tile.
-   One schedule in the Scheduler: its name, its status, cronstrue's sentence for
-   `0 0 7 * * 1` ("At 07:00 AM, only on Monday", as SchedulesView renders it) and
+   One schedule in the Scheduler: its name, its status, the app's phrase for
+   `0 0 7 * * 1` ("Every Monday at 7:00 AM", as cronPhrase.ts renders it) and
    its "Last run" line. The loop opens on Monday 07:00: Monday's dot fills, the
    status reads Running, and a new chat ("Scheduled job: <id>", the name
    scheduler.rs gives every run) joins Recent runs. When the run finishes the
@@ -11,7 +11,7 @@
   'use strict';
 
   var ID = 'weekly-digest';
-  var CRON_WORDS = 'At 07:00 AM, only on Monday';
+  var CRON_WORDS = 'Every Monday at 7:00 AM';
   var DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var VISIBLE = 2;

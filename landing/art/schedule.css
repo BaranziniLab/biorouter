@@ -1,6 +1,6 @@
 /* Scheduling tile. One job in the Scheduler, the week it waits through, and the
    chats its runs leave behind. Vocabulary from ui/desktop/src/components/schedule:
-   the Clock row, the status dot plus word, cronstrue's sentence, the "Last run"
+   the Clock row, the status dot plus word, the cron phrase, the "Last run"
    line with its date, the "Recent runs" section and the Clock
    glyph of a scheduled run. */
 

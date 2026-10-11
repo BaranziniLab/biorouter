@@ -381,7 +381,7 @@
       '<div class="bw-sched"><div class="body">' +
       '<div class="top"><span class="nm">Daily Meditation</span>' +
       '<span class="badge" title="Built into Biorouter.">Built-in</span></div>' +
-      '<div class="cron">At 03:00 AM, digests recent sessions into the Soul knowledge base</div>' +
+      '<div class="cron">Every day at 3:00 AM, digests recent sessions into the Soul knowledge base</div>' +
       '<div class="last">Last run: Jun 20, 2026, 3:00 AM</div></div>' +
       '<div class="acts"><span class="a">' + svg(I.edit) + '</span>' +
       '<span class="a">' + svg(I.pause) + '</span>' +
