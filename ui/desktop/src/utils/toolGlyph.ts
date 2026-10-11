@@ -242,6 +242,18 @@ const EXACT: Record<string, ToolGlyphKind> = {
   code_execution__read_module: 'read',
   code_execution__search_modules: 'search',
   agent_drafter__consult: 'agent',
+  // History. Biorouter Copilot used to be the legacy `computercontroller`
+  // server, and its web, document and cache tools moved to `webdocuments`
+  // while its scripting tool was removed. A chat saved before that still names
+  // them under the old key, and the family row below would draw all of them as
+  // desktop control (V2-18). `computer_control` is not listed: it WAS desktop
+  // control, and the Copilot family already draws it.
+  computercontroller__web_scrape: 'web',
+  computercontroller__cache: 'archive',
+  computercontroller__pdf_tool: 'document',
+  computercontroller__docx_tool: 'document',
+  computercontroller__xlsx_tool: 'spreadsheet',
+  computercontroller__automation_script: 'shell',
 };
 
 /** 3. Built-in families that ARE one Biorouter concept: every tool draws it. */

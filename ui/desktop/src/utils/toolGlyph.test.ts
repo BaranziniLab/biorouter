@@ -200,6 +200,35 @@ describe('the ladder', () => {
     expect(toolGlyphKind('acme__Read')).toBe('extension');
   });
 
+  /**
+   * V2-18. A chat saved before the Copilot rename names the web, document and
+   * cache tools under `computercontroller`; the family row alone would draw a
+   * web scrape as desktop control.
+   */
+  it('draws a legacy computercontroller web or document call by what it did', () => {
+    const legacy: Record<string, ToolGlyphKind> = {
+      computercontroller__web_scrape: 'web',
+      computercontroller__cache: 'archive',
+      computercontroller__pdf_tool: 'document',
+      computercontroller__docx_tool: 'document',
+      computercontroller__xlsx_tool: 'spreadsheet',
+      computercontroller__automation_script: 'shell',
+    };
+    for (const [name, kind] of Object.entries(legacy)) {
+      expect(toolGlyphKind(name), name).toBe(kind);
+      // The bridge prefix of a coding-agent child changes nothing.
+      expect(toolGlyphKind(`mcp__biorouter__${name}`), name).toBe(kind);
+      // And each legacy row draws the glyph its `webdocuments` successor draws.
+      const successor = name.replace('computercontroller__', 'webdocuments__');
+      if (!name.endsWith('automation_script'))
+        expect(toolGlyphKind(successor), successor).toBe(kind);
+    }
+    // The tool that was always desktop control, and the card, still say so.
+    expect(toolGlyphKind('computercontroller__computer_control')).toBe('copilot');
+    expect(toolGlyphKind('computercontroller__click')).toBe('copilot');
+    expect(extensionGlyphFor('computercontroller').kind).toBe('copilot');
+  });
+
   it('falls back to the extension glyph, then to the wrench', () => {
     expect(toolGlyphKind('acme__do_something')).toBe('extension');
     expect(toolGlyphKind('mcp__github__create_issue')).toBe('extension');
