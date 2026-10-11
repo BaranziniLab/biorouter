@@ -280,10 +280,14 @@ function HistoryLoading() {
 }
 
 /**
- * One cell of a History row's stats: a 14px glyph 4px before its figure, both
- * on the cell's right edge, and for the screen reader "Messages: 6". The cell's
- * width is the column's (`history.css`), so this never sizes itself to its
- * content.
+ * One cell of a History row's stats: the figure, then a 14px glyph 4px after it
+ * on the cell's right edge, and for the screen reader "Messages: 6". The glyph
+ * comes AFTER the figure so that it, a fixed 14px, is what touches the column's
+ * edge: every glyph then sits at the same x down the list and every figure ends
+ * at the same x, whatever its digit count. Before the figure, the glyph moved
+ * with the figure's width and the glyphs did not form columns (vision V1-R6-2).
+ * The cell's width is the column's (`history.css`), so this never sizes itself
+ * to its content.
  *
  * `detail` is what a sighted person gets from the hover tooltip and a screen
  * reader would otherwise miss (the extensions' names, the lower-bound caveat on
@@ -306,10 +310,10 @@ function HistoryStat({
 }) {
   const cell = (
     <span className="br-history-stat">
-      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="sr-only">{label}: </span>
       <span className="whitespace-nowrap">{value}</span>
       {detail ? <span className="sr-only"> ({detail})</span> : null}
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
     </span>
   );
   if (!tooltip) return cell;
@@ -521,7 +525,7 @@ const HistoryRow = React.memo(function HistoryRow({
           </button>
 
           {/* The stats are three fixed columns, the same in every row: sans and
-              tabular, each figure on its column's right edge with its glyph
+              tabular, each glyph on its column's right edge with its figure
               just before it. A row with no token figure or no extensions
               leaves its cell empty rather than letting the others slide, so
               the columns read straight down the list. */}

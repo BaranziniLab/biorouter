@@ -74,7 +74,19 @@ button { font: inherit; border: 0; background: none; padding: 0; }
 .min-w-0 { min-width: 0; }
 .flex { display: flex; }
 .items-center { align-items: center; }
-.gap-2 { gap: 8px; }`;
+.gap-2 { gap: 8px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+}`;
+
+/**
+ * One stat cell in the component's DOM order (`HistoryStat`): the screen reader's label, the
+ * figure, then the glyph. `SessionListView.test.tsx` pins that order on the real component, so
+ * this mirror and the row it stands for cannot drift apart unnoticed.
+ */
+const stat = (id: string, figure: string) =>
+  `<span class="br-history-stat" id="${id}"><span class="sr-only">Stat: </span><span class="figure">${figure}</span><svg width="14" height="14" style="flex:none"></svg></span>`;
 
 const row = (
   id: string,
@@ -90,17 +102,9 @@ const row = (
       <span class="br-history-row-meta text-supporting"><span>3:18 PM</span><span>· data</span></span>
     </button>
     <div class="br-history-row-stats text-supporting" id="${id}-stats">
-      <span class="br-history-stat" id="${id}-messages"><svg width="14" height="14" style="flex:none"></svg><span>${stats[0]}</span></span>
-      ${
-        stats[1]
-          ? `<span class="br-history-stat" id="${id}-tokens"><svg width="14" height="14" style="flex:none"></svg><span>${stats[1]}</span></span>`
-          : '<span aria-hidden="true"></span>'
-      }
-      ${
-        stats[2]
-          ? `<span class="br-history-stat" id="${id}-ext"><svg width="14" height="14" style="flex:none"></svg><span>${stats[2]}</span></span>`
-          : '<span aria-hidden="true"></span>'
-      }
+      ${stat(`${id}-messages`, stats[0])}
+      ${stats[1] ? stat(`${id}-tokens`, stats[1]) : '<span aria-hidden="true"></span>'}
+      ${stats[2] ? stat(`${id}-ext`, stats[2]) : '<span aria-hidden="true"></span>'}
     </div>
     <div class="br-row-actions-slot">
       <div class="br-row-actions" data-state="closed" id="${id}-actions">
@@ -110,16 +114,23 @@ const row = (
     </div>
   </div>`;
 
-function page(css: string) {
+const DEFAULT_ROWS = [
+  row('a', 'A short chat'),
+  row('c', 'A chat with no token figure and no extensions', ['7', '', '']),
+  row('d', 'A chat with enormous figures', ['123,456', '1,234,567,890,123', '12']),
+  row(
+    'b',
+    'A chat whose name is long enough that it can never fit beside its stats and actions in a 712 pixel row'
+  ),
+].join('');
+
+function page(css: string, rows = DEFAULT_ROWS) {
   return `<!doctype html><html><head><style>${TOKENS}\n${baseFocusRule()}\n${primitiveBlocks()}\n${css}</style></head><body>
     <main style="width:760px;padding:0 24px">
       <section>
         <h2 class="br-history-bucket text-supporting" id="bucket">Today</h2>
         <div class="biorouter-list-shell">
-          ${row('a', 'A short chat')}
-          ${row('c', 'A chat with no token figure and no extensions', ['7', '', ''])}
-          ${row('d', 'A chat with enormous figures', ['123,456', '1,234,567,890,123', '12'])}
-          ${row('b', 'A chat whose name is long enough that it can never fit beside its stats and actions in a 712 pixel row')}
+          ${rows}
         </div>
       </section>
     </main>
@@ -420,32 +431,88 @@ describe('Chat history rows in a real layout engine', () => {
     }
   });
 
+  /** A stat cell's own box, its glyph and the ink of its figure. */
+  const statCell = (tab: Page, id: string) =>
+    tab.evaluate((el) => {
+      const node = document.getElementById(el)!;
+      const r = node.getBoundingClientRect();
+      const glyph = node.querySelector('svg')!.getBoundingClientRect();
+      const figure = node.querySelector('.figure')!.getBoundingClientRect();
+      return {
+        left: r.left,
+        right: r.right,
+        width: r.width,
+        glyphLeft: glyph.left,
+        glyphRight: glyph.right,
+        figureLeft: figure.left,
+        figureRight: figure.right,
+        figureWidth: figure.width,
+      };
+    }, id);
+
   it('reads the stats as three fixed columns, whatever a row holds', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      const edge = (id: string) =>
-        tab.evaluate((el) => {
-          const node = document.getElementById(el)!;
-          const r = node.getBoundingClientRect();
-          const glyph = node.querySelector('svg')!.getBoundingClientRect();
-          const figure = node.querySelector('span')!.getBoundingClientRect();
-          return { left: r.left, width: r.width, glyph: glyph.left, figureRight: figure.right };
-        }, id);
       // Row `a` holds every figure (a 10-digit token count); row `c` holds only
-      // the message count. The message column must not move, and its figures
-      // line up on its right edge.
-      const a = await edge('a-messages');
-      const c = await edge('c-messages');
+      // the message count. The message column must not move, its glyph sits on
+      // the column's right edge, and its figures end at one x.
+      const a = await statCell(tab, 'a-messages');
+      const c = await statCell(tab, 'c-messages');
       expect(c.left).toBe(a.left);
       expect(c.width).toBe(a.width);
       expect(c.figureRight).toBe(a.figureRight);
-      expect(a.figureRight).toBeCloseTo(a.left + a.width, 0);
-      // The token column of the full row sits after it, 12px on, and its figure
-      // ends at the cell's right edge.
-      const tokens = await edge('a-tokens');
-      expect(tokens.left - (a.left + a.width)).toBe(12);
-      expect(tokens.figureRight).toBeCloseTo(tokens.left + tokens.width, 0);
+      expect(a.glyphRight).toBeCloseTo(a.right, 0);
+      // The token column of the full row sits after it, 12px on, with its glyph
+      // on that cell's right edge.
+      const tokens = await statCell(tab, 'a-tokens');
+      expect(tokens.left - a.right).toBe(12);
+      expect(tokens.glyphRight).toBeCloseTo(tokens.right, 0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * Vision V1-R6-2. With the glyph before its figure, the glyph moved with the figure's width:
+   * the message glyph at x=633, 634 or 639 and the token glyph at 711 or 717, so the glyphs
+   * did not form columns. The figures here are the review's own rows (one digit or two, five
+   * digits or six, a lower bound), plus a row with no token figure and no extensions.
+   */
+  it('lines every glyph up in its column and every figure on one edge, whatever its digits', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser!.newPage({
+      viewport: { width: 1000, height: 600 },
+      reducedMotion: 'reduce',
+    });
+    try {
+      const figures: [string, string, string][] = [
+        ['14', '168,273', '12'],
+        ['8', '84,348', '7'],
+        ['24', '292,745', '12'],
+        ['4', '≥4,096', '7'],
+        ['2', '24,676', '7'],
+        ['7', '', ''],
+      ];
+      const ids = figures.map((_, i) => `r${i}`);
+      await tab.setContent(
+        page(css, figures.map((stats, i) => row(ids[i], `Chat ${i + 1}`, stats)).join(''))
+      );
+      for (const stat of ['messages', 'tokens', 'ext']) {
+        const cells = [];
+        for (const id of ids) {
+          if (await tab.$(`#${id}-${stat}`)) cells.push(await statCell(tab, `${id}-${stat}`));
+        }
+        // The instrument: the figures really differ in width, so equal edges below are the
+        // stylesheet's doing and not identical text.
+        expect(new Set(cells.map((cell) => cell.figureWidth)).size, stat).toBeGreaterThan(1);
+        expect(new Set(cells.map((cell) => cell.glyphLeft)), stat).toEqual(
+          new Set([cells[0].glyphLeft])
+        );
+        expect(new Set(cells.map((cell) => cell.figureRight)), stat).toEqual(
+          new Set([cells[0].figureRight])
+        );
+      }
     } finally {
       await tab.close();
     }
@@ -453,43 +520,32 @@ describe('Chat history rows in a real layout engine', () => {
 
   /**
    * Vision V1-L1: with each glyph at its cell's LEFT edge, the token glyph sat
-   * 12px after the message count and 57px before its own figure, so it read as
-   * part of the message column. Each glyph sits 4px before its own figure, and
-   * is further from the figure before it than from its own.
+   * 12px after the message count and 57px before its own value, so it read as
+   * part of the message column. Each glyph sits 4px after its own figure, and
+   * is further from the next column's figure than from its own.
    */
-  it('puts each glyph directly before its own figure', async (ctx) => {
+  it('puts each glyph directly after its own figure', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      const cell = (id: string) =>
-        tab.evaluate((el) => {
-          const node = document.getElementById(el)!;
-          const glyph = node.querySelector('svg')!.getBoundingClientRect();
-          const figure = node.querySelector('span')!.getBoundingClientRect();
-          return {
-            glyphLeft: glyph.left,
-            glyphRight: glyph.right,
-            figureLeft: figure.left,
-            figureRight: figure.right,
-          };
-        }, id);
       for (const row of ['a', 'c', 'd']) {
         for (const stat of ['messages', 'tokens', 'ext']) {
           const id = `${row}-${stat}`;
           if (!(await tab.$(`#${id}`))) continue;
-          const { glyphRight, figureLeft } = await cell(id);
-          expect(figureLeft - glyphRight, id).toBeCloseTo(4, 0);
+          const { glyphLeft, figureRight } = await statCell(tab, id);
+          expect(glyphLeft - figureRight, id).toBeCloseTo(4, 0);
         }
+        if (row === 'c') continue;
+        const messages = await statCell(tab, `${row}-messages`);
+        const tokens = await statCell(tab, `${row}-tokens`);
+        const extensions = await statCell(tab, `${row}-ext`);
+        expect(tokens.figureLeft - messages.glyphRight, row).toBeGreaterThan(
+          messages.glyphLeft - messages.figureRight
+        );
+        expect(extensions.figureLeft - tokens.glyphRight, row).toBeGreaterThan(
+          tokens.glyphLeft - tokens.figureRight
+        );
       }
-      const messages = await cell('a-messages');
-      const tokens = await cell('a-tokens');
-      const extensions = await cell('a-ext');
-      expect(tokens.glyphLeft - messages.figureRight).toBeGreaterThan(
-        tokens.figureLeft - tokens.glyphRight
-      );
-      expect(extensions.glyphLeft - tokens.figureRight).toBeGreaterThan(
-        extensions.figureLeft - extensions.glyphRight
-      );
     } finally {
       await tab.close();
     }
@@ -499,15 +555,9 @@ describe('Chat history rows in a real layout engine', () => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      const gap = (id: string) =>
-        tab.evaluate((el) => {
-          const node = document.getElementById(el)!;
-          const glyph = node.querySelector('svg')!.getBoundingClientRect();
-          const figure = node.querySelector('span')!.getBoundingClientRect();
-          return figure.left - glyph.right;
-        }, id);
       for (const id of ['d-messages', 'd-tokens', 'd-ext']) {
-        expect(await gap(id), id).toBeGreaterThanOrEqual(0);
+        const { glyphLeft, figureRight } = await statCell(tab, id);
+        expect(glyphLeft - figureRight, id).toBeGreaterThanOrEqual(0);
       }
     } finally {
       await tab.close();

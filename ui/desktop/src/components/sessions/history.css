@@ -125,11 +125,15 @@
   column-gap: 12px;
 }
 
-/* One right-aligned cell per stat: the glyph sits 4px before its own figure,
-   and the figures line up on the column's right edge. With the glyph at the
-   cell's LEFT edge, the token glyph sat 12px after the message count and 57px
-   before its own value, so it read as part of the message column (vision
-   V1-L1). */
+/* One right-aligned cell per stat, the figure then its glyph (the component's
+   DOM order): the glyph, a fixed 14px, sits on the column's right edge, and the
+   figure ends 4px before it. So the glyphs form a column down the list and the
+   figures line up on one right edge, whatever their digit count. With the glyph
+   BEFORE the figure it moved with the figure's width, 6px from row to row
+   (vision V1-R6-2). With the glyph at the cell's LEFT edge, the token glyph sat
+   12px after the message count and 57px before its own value, so it read as
+   part of the message column (vision V1-L1); after the figure, a glyph is 4px
+   from its own figure and at least 12px from the next column's. */
 .br-history-stat {
   display: flex;
   min-width: 0;

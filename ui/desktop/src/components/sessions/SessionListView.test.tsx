@@ -733,6 +733,51 @@ describe('SessionListView stat column sizing', () => {
   });
 });
 
+// Vision V1-R6-2. `history.css` lines the glyphs up in columns by putting each
+// one, a fixed 14px, on its column's right edge AFTER its figure; before the
+// figure it moved with the figure's width. That is a property of the DOM order,
+// which `historyRow.browser.test.ts` measures over a mirror of this markup, so
+// the order is pinned here on the real component.
+describe('SessionListView stat cell order', () => {
+  it('draws each figure first and its glyph last, in every stat cell', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'session-1',
+            name: 'Ordered stats',
+            message_count: 24,
+            extension_data: {
+              'enabled_extensions.v0': { extensions: [{ name: 'developer' }] },
+            },
+            accumulated_total_tokens: 292_745,
+          } as never),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Ordered stats');
+
+    const cells = [...document.querySelectorAll('.br-history-stat')];
+    expect(cells).toHaveLength(3);
+    for (const cell of cells) {
+      const drawn = [...cell.children].filter((child) => !child.classList.contains('sr-only'));
+      expect(drawn.map((child) => child.tagName.toLowerCase())).toEqual(['span', 'svg']);
+      expect(drawn[1].getAttribute('aria-hidden')).toBe('true');
+    }
+    expect(cells.map((cell) => cell.textContent)).toEqual([
+      'Messages: 24',
+      'Billed tokens: 292,745',
+      'Extensions: 1 (Developer)',
+    ]);
+  });
+});
+
 // Principle 12: what a sighted person gets from a stat's hover tooltip (which
 // extensions, and that a token figure is only a floor) is not hover-only, so it
 // is part of the cell's spoken text as well.
