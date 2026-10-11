@@ -197,6 +197,30 @@ function drawerPage(css: string): string {
   </body></html>`;
 }
 
+/**
+ * The two workspace panels as `KnowledgeView` mounts them: the Tabs primitive's `animate-in fade-in`
+ * (a keyframe in the utilities LAYER, as Tailwind emits it) on each, `hidden` or `flex` from React,
+ * inside the pane container. `enter` is the keyframe `tw-animate-css` names; its opacity is all
+ * that matters here, because the question is whether any animation exists.
+ */
+function panelsPage(css: string, paneWidth: number): string {
+  return `<!doctype html><html><head><style>${TOKENS}
+@keyframes enter { from { opacity: 0; } to { opacity: 1; } }
+@layer utilities {
+  .animate-in { animation: enter 175ms linear both; }
+  .flex { display: flex; }
+  .hidden { display: none; }
+}
+${css}</style></head><body>
+    <div class="br-knowledge-pane" id="pane" style="width:${paneWidth}px;height:400px">
+      <div class="br-knowledge-body" style="height:400px">
+        <div id="sources" class="br-knowledge-sources br-tabs-content animate-in hidden"></div>
+        <div id="graph" class="br-knowledge-graph br-tabs-content animate-in flex"></div>
+      </div>
+    </div>
+  </body></html>`;
+}
+
 type Box = { left: number; right: number; top: number; bottom: number; width: number };
 
 describe('the Knowledge band in a real layout engine', () => {
@@ -370,5 +394,71 @@ describe('the Knowledge band in a real layout engine', () => {
     };
     expect(await shadow(760)).toBe('none');
     expect(await shadow(940)).toMatch(/inset/);
+  });
+
+  // V3-01: dragging the window across the 860px step flips the Sources panel from `display: none`
+  // to shown, and the browser restarts a panel's animation whenever its `display` leaves `none`.
+  describe('the tab panels\u2019 enter animation', () => {
+    const settle = (tab: Page) =>
+      tab.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done()))
+          )
+      );
+    const running = (tab: Page, id: string) =>
+      tab.evaluate(
+        (panel) =>
+          document
+            .getElementById(panel)!
+            .getAnimations()
+            .map((a) => a.id || 'css'),
+        id
+      );
+    const resize = (tab: Page, width: number) =>
+      tab.evaluate((w) => {
+        document.getElementById('pane')!.style.width = `${w}px`;
+      }, width);
+
+    it('plays on no panel while the pane crosses the step, in either direction', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+      try {
+        await tab.setContent(panelsPage(css, 760));
+        await settle(tab);
+        // Narrow to wide: the container forces Sources on.
+        await resize(tab, 940);
+        await settle(tab);
+        expect(await visible(tab, '#sources')).toBe(true);
+        expect(await running(tab, 'sources')).toEqual([]);
+        expect(await running(tab, 'graph')).toEqual([]);
+        // And back: the panel that stays shown must not restart either.
+        await resize(tab, 760);
+        await settle(tab);
+        expect(await running(tab, 'sources')).toEqual([]);
+        expect(await running(tab, 'graph')).toEqual([]);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('still plays for the panel a person just picked', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+      try {
+        await tab.setContent(panelsPage(css, 760));
+        await settle(tab);
+        // What React writes when the Sources tab is picked: shown, and marked as entering.
+        await tab.evaluate(() => {
+          const sources = document.getElementById('sources')!;
+          sources.setAttribute('data-entering', '');
+          sources.classList.replace('hidden', 'flex');
+        });
+        expect(await running(tab, 'sources')).toHaveLength(1);
+        expect(await running(tab, 'graph')).toEqual([]);
+      } finally {
+        await tab.close();
+      }
+    });
   });
 });

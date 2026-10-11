@@ -1,5 +1,5 @@
 // ui/desktop/src/components/knowledge/KnowledgeView.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type AnimationEvent } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import {
@@ -37,6 +37,8 @@ import { useKnowledgeBases } from './hooks/useKnowledgeBases';
 import { kbFormatLabel, LEGACY_FORMAT_TITLE } from './kbFormat';
 import { knowledgeCopy } from './copy';
 
+type CompactView = 'digest' | 'graph';
+
 export default function KnowledgeView() {
   return <KnowledgeViewInner />;
 }
@@ -72,7 +74,13 @@ function KnowledgeViewInner() {
   const [previewSha, setPreviewSha] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [compactView, setCompactView] = useState<'digest' | 'graph'>('graph');
+  const [compactView, setCompactView] = useState<CompactView>('graph');
+  // The tab a PERSON just picked, until its enter animation has played. A tab panel fades in only
+  // for that (principle 9): the layout can also flip a panel from `display: none` to shown (the
+  // 860px step forces both on, and the narrow step hides one again), and the browser restarts a
+  // panel's animation every time its `display` leaves `none`, so without this a window drag across
+  // the step replayed the Sources fade.
+  const [enteringTab, setEnteringTab] = useState<CompactView | null>(null);
 
   const { refresh, bases, primaryKb, primaryKbId, registerGraphRefresh } = useKnowledge();
   const { graph, loading, error, refresh: refreshGraph } = useKnowledgeGraph(primaryKbId);
@@ -139,6 +147,12 @@ function KnowledgeViewInner() {
 
   const noBasesAtAll = bases.length === 0;
 
+  // `animationend` bubbles from anything animating inside the panel (a spinner, a skeleton), and
+  // only the panel's own enter ends the flag.
+  function endEnter(event: AnimationEvent<HTMLDivElement>) {
+    if (event.target === event.currentTarget) setEnteringTab(null);
+  }
+
   // Every destructive action stays behind the one `⋯` (ROWS-3); the read-only check and the
   // refresh are the two visible actions.
   const menuItems: RowActionItem[] = [
@@ -192,7 +206,10 @@ function KnowledgeViewInner() {
         */}
         <Tabs
           value={compactView}
-          onValueChange={(v) => setCompactView(v as 'digest' | 'graph')}
+          onValueChange={(v) => {
+            setCompactView(v as CompactView);
+            setEnteringTab(v as CompactView);
+          }}
           className="flex min-h-0 flex-1 flex-col text-text-default"
         >
           <PageHeader
@@ -337,6 +354,8 @@ function KnowledgeViewInner() {
                   forceMount
                   value="digest"
                   data-testid="knowledge-digest-panel"
+                  data-entering={enteringTab === 'digest' ? '' : undefined}
+                  onAnimationEnd={endEnter}
                   className={`br-knowledge-sources ${compactView === 'digest' ? 'flex' : 'hidden'} mt-0 min-h-0 flex-col`}
                 >
                   <SourcesRail className="flex-1" />
@@ -346,6 +365,8 @@ function KnowledgeViewInner() {
                   forceMount
                   value="graph"
                   data-testid="knowledge-graph-panel"
+                  data-entering={enteringTab === 'graph' ? '' : undefined}
+                  onAnimationEnd={endEnter}
                   className={`br-knowledge-graph ${compactView === 'graph' ? 'flex' : 'hidden'} mt-0 min-h-0 min-w-0`}
                 >
                   <KnowledgeGraphPanel

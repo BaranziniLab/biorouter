@@ -4094,6 +4094,22 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   min-width: 0;
   min-height: 0;
 }
+/* @ws WS-KNOWLEDGE begin: tab panels */
+/* A panel fades in only when a PERSON picks its tab (`data-entering`, which
+   `KnowledgeView` sets on that pick and clears on the panel's `animationend`).
+   The Tabs primitive gives every panel `animate-in fade-in`, and a panel that
+   was `display: none` restarts that animation whenever its `display` changes
+   back, which the layout does on its own: the 860px step forces both panels on
+   and the narrow step hides one again. Dragging the window across the step
+   replayed the Sources fade (V3-01, 18 frames sampled mid-resize).
+   `data-motion-layout` would not cure it: it only holds the animation off while
+   the body says the window is resizing, and the animation named by the utility
+   starts as soon as that class goes, so the fade would play right after the
+   drag instead of during it. Unlayered, so it beats the utility layer. */
+.br-knowledge-body > .br-tabs-content:not([data-entering]) {
+  animation: none;
+}
+/* @ws WS-KNOWLEDGE end: tab panels */
 /* ⚠ THE SOURCES PANEL'S NARROW VISIBILITY IS REACT'S, NOT THIS FILE'S. Below
    the two-column step the Sources/Graph tab pair decides which panel shows, and
    `KnowledgeView` writes `flex`/`hidden` for that. These rules are UNLAYERED and

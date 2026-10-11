@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -145,6 +145,32 @@ describe('KnowledgeView compact workspace', () => {
     expect(graphTab).toHaveAttribute('aria-selected', 'true');
     expect(graphPanel).toHaveClass('flex');
     expect(digestPanel).toHaveClass('hidden');
+  });
+
+  // V3-01: a panel fades in for a PICK only. The layout also flips a panel from hidden to shown
+  // (the 860px step), and the browser would replay the fade then, so `data-entering` is what the
+  // animation rule in `main.css` keys on (`knowledgeBand.browser.test.tsx` measures the rule).
+  it('marks a panel as entering only for a tab a person picked, until its own animation ends', async () => {
+    render(<KnowledgeView />);
+    const digestPanel = screen.getByTestId('knowledge-digest-panel');
+    const graphPanel = screen.getByTestId('knowledge-graph-panel');
+    expect(digestPanel).not.toHaveAttribute('data-entering');
+    expect(graphPanel).not.toHaveAttribute('data-entering');
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+    expect(digestPanel).toHaveAttribute('data-entering');
+    expect(graphPanel).not.toHaveAttribute('data-entering');
+
+    // Something animating INSIDE the panel is not the panel's enter.
+    fireEvent.animationEnd(within(digestPanel).getByText('Digest workspace'));
+    expect(digestPanel).toHaveAttribute('data-entering');
+
+    fireEvent.animationEnd(digestPanel);
+    expect(digestPanel).not.toHaveAttribute('data-entering');
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+    expect(graphPanel).toHaveAttribute('data-entering');
+    expect(digestPanel).not.toHaveAttribute('data-entering');
   });
 
   // ⚠ This is why the `Tabs` root spans the subject band AND the workspace. The
