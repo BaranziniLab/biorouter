@@ -182,7 +182,7 @@ fn with_path_root_restores_the_previous_value_on_panic() {
 }
 
 /// The three resolvers must sit under one config root — not, as before, under
-/// two different app-strategy tuples (`Block/Block/biorouter` vs `io/biorouter/biorouter`).
+/// two different app-strategy tuples (the crate's own vs a hand-rolled `io/biorouter/biorouter`).
 #[test]
 #[serial]
 fn all_mcp_stores_share_one_config_root() {

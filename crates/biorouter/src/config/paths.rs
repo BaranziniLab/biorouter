@@ -24,7 +24,7 @@ impl Paths {
             }
         } else {
             let strategy = choose_app_strategy(AppStrategyArgs {
-                top_level_domain: "Block".to_string(),
+                top_level_domain: "edu".to_string(),
                 author: "Block".to_string(),
                 app_name: "biorouter".to_string(),
             })

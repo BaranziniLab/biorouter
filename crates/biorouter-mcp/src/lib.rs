@@ -4,7 +4,7 @@ use rmcp::{ServerHandler, ServiceExt};
 use std::collections::HashMap;
 
 pub static APP_STRATEGY: Lazy<AppStrategyArgs> = Lazy::new(|| AppStrategyArgs {
-    top_level_domain: "Block".to_string(),
+    top_level_domain: "edu".to_string(),
     author: "Block".to_string(),
     app_name: "biorouter".to_string(),
 });

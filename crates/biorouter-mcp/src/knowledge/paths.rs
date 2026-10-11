@@ -36,7 +36,7 @@ pub enum KbIdError {
 /// This used to hand-roll `choose_app_strategy` with an `io/biorouter/biorouter`
 /// tuple — a *third* app-strategy in the codebase, and one that ignored the
 /// sandbox override, so an isolated run read and wrote the user's global KBs.
-/// It now shares the crate resolver (`Block/Block/biorouter`, matching
+/// It now shares the crate resolver (`crate::APP_STRATEGY`, matching
 /// `biorouter::config::Paths`). The two tuples resolve identically on XDG and on
 /// macOS; they differ only on Windows, where the old path was never the one the
 /// rest of Biorouter used anyway.
