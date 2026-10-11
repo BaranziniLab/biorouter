@@ -84,9 +84,12 @@
 
 /*
  * The card: a Codex-style summary card in the docked column. One radius (12),
- * one hairline, the default ground (a step above the canvas in dark), and a
- * scrolling body over a pinned footer (components/summary/chatSummary.css).
- * Its own motion, never the grid's:
+ * the subtle fill with no outline (fills before lines, owner message 13, R-27):
+ * `--background-fill` on the canvas, 1.10:1 in light and 1.18:1 in dark. The
+ * 1px border stays, transparent, so nothing moves and forced colours still draw
+ * the card's edge in the system ink. A scrolling body over a pinned footer
+ * (components/summary/chatSummary.css), separated by space and a scroll-edge
+ * fade, never by a hairline. Its own motion, never the grid's:
  *
  *   opened by the person, or the first turn  12px slide + fade, 175ms after 60ms
  *   closed by the person                      8px slide + fade out, 125ms
@@ -99,10 +102,13 @@
   max-height: 100%;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
-  background: var(--background-default);
+  background: var(--background-fill);
   contain: layout paint;
+  /* The progress track's ground inside this fill (chatSummary.css): one step
+     off it, the hover step every filled box uses. */
+  --br-summary-track: var(--background-fill-strong);
 }
 
 .br-summary-card[data-state='open']:not([data-entered]) {
@@ -155,7 +161,9 @@ body.biorouter-sidebar-resizing [data-preview-area='rail'] > .br-summary-card {
   }
 }
 /* The header button's progress dot: shown while the rail is folded away and a
-   to-do step is running. One of the accent's few deliberate moments. */
+   to-do step is running. One of the accent's few deliberate moments. Its 2px
+   knockout ring is the ground under it: the band (`--sidebar`) at rest, the
+   pressed fill while the popover it opens is showing. */
 .br-summary-dot {
   position: absolute;
   top: 6px;
@@ -166,5 +174,9 @@ body.biorouter-sidebar-resizing [data-preview-area='rail'] > .br-summary-card {
   background: var(--background-accent);
   box-shadow: 0 0 0 2px var(--sidebar);
   pointer-events: none;
+}
+
+[aria-expanded='true'] > .br-summary-dot {
+  box-shadow: 0 0 0 2px var(--background-fill-strong);
 }
 /* @ws WS-SUMMARY end: summary rail */

@@ -273,3 +273,88 @@ describe('the summary’s type: two sizes only, 13 and 12', () => {
     expect(CONTENT_CSS).toMatch(/\.br-summary \.br-summary__action \{[^}]*font-size/);
   });
 });
+
+describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
+  const CONTENT_CODE = readFileSync(
+    join(__dirname, '../components/summary/chatSummary.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const BUTTON_TSX = codeWithoutComments(
+    readFileSync(join(__dirname, '../components/summary/SummaryHeaderButton.tsx'), 'utf8')
+  );
+
+  /** The body of the one top-level rule for `selector` in the content stylesheet. */
+  function contentRule(selector: string): string {
+    const wanted = selector.replace(/\s+/g, ' ').trim();
+    const pattern = /([^{}]+)\{([^{}]*)\}/g;
+    const found: string[] = [];
+    for (let match = pattern.exec(CONTENT_CODE); match; match = pattern.exec(CONTENT_CODE)) {
+      if (match[1].replace(/\s+/g, ' ').trim() === wanted) found.push(match[2]);
+    }
+    if (found.length !== 1)
+      throw new Error(`expected one rule for ${selector}, got ${found.length}`);
+    return found[0];
+  }
+
+  it('fills the rail card and keeps its 1px border, transparent', () => {
+    const card = onlyRule('.br-summary-card').body;
+    expect(property(card, 'background')).toBe('var(--background-fill)');
+    // Transparent, never removed: nothing moves, and forced colours still draw it.
+    expect(property(card, 'border')).toBe('1px solid transparent');
+    expect(property(card, 'border-radius')).toBe('var(--radius-container)');
+    // The card is a filled box, so a filled control inside steps back to the page.
+    expect(codeWithoutComments(RAIL_TSX)).toMatch(/className="br-summary-card br-fill-surface"/);
+  });
+
+  it('parts the to-do list, the statistics and the footer by space, never by a hairline', () => {
+    expect(CONTENT_CODE).not.toMatch(/border(-top|-bottom)?\s*:/);
+    expect(property(contentRule('.br-summary__stats[data-after-todos]'), 'margin-top')).toBe(
+      '12px'
+    );
+    expect(property(contentRule('.br-summary__footer'), 'padding')).toBe('4px');
+  });
+
+  it('grounds the progress track one step off the card’s fill, where the primitive’s would vanish', () => {
+    // The primitive's track is --background-muted, which IS --background-fill.
+    expect(property(onlyRule('.br-summary-card').body, '--br-summary-track')).toBe(
+      'var(--background-fill-strong)'
+    );
+    expect(property(contentRule('.br-summary .br-summary__progress'), 'background-color')).toBe(
+      'var(--br-summary-track, var(--background-muted))'
+    );
+  });
+
+  it('fades a scroll edge only where rows are hidden, from the body’s own scroll position', () => {
+    for (const name of ['--br-summary-fade-top', '--br-summary-fade-bottom']) {
+      expect(CONTENT_CODE).toMatch(
+        new RegExp(`@property ${name} \\{[^}]*syntax: '<length>';[^}]*initial-value: 0px;`)
+      );
+    }
+    const supports = CONTENT_CODE.slice(CONTENT_CODE.indexOf('@supports (animation-timeline'));
+    expect(supports).toMatch(/animation-timeline: scroll\(self\), scroll\(self\);/);
+    expect(supports.replace(/\s+/g, ' ')).toContain(
+      'animation-range: 0 16px, calc(100% - 16px) 100%;'
+    );
+    expect(supports).toMatch(/mask-image: linear-gradient\(/);
+    // A focused body draws its focus edge whole.
+    expect(supports.replace(/\s+/g, ' ')).toMatch(
+      /\.br-summary__body:focus-visible \{ -webkit-mask-image: none; mask-image: none; \}/
+    );
+    // The running step is kept clear of the fades when scrolled into view.
+    expect(CONTENT_CODE).toMatch(/\n\.br-summary__body \{[^}]*scroll-padding-block: 16px;/);
+  });
+
+  it('presses the header button on the band’s fill step, and rings the dot in the ground under it', () => {
+    expect(BUTTON_TSX).toContain("expanded && 'bg-background-fill-strong text-text-default'");
+    expect(BUTTON_TSX).not.toContain('bg-background-medium');
+    expect(codeWithoutComments(BASE_CHAT)).toContain(
+      "isTerminalDockOpen && 'bg-background-fill-strong text-text-default'"
+    );
+    expect(property(onlyRule('.br-summary-dot').body, 'box-shadow')).toBe(
+      '0 0 0 2px var(--sidebar)'
+    );
+    expect(property(onlyRule("[aria-expanded='true'] > .br-summary-dot").body, 'box-shadow')).toBe(
+      '0 0 0 2px var(--background-fill-strong)'
+    );
+  });
+});

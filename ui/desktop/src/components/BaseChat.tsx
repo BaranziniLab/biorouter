@@ -2376,7 +2376,9 @@ function BaseChatContent({
             shape="round"
             className={cn(
               'no-drag text-text-muted hover:text-text-default',
-              isTerminalDockOpen && 'bg-background-medium text-text-default'
+              // Pressed while the dock is open: the band's fill step (R-27),
+              // the same as the summary button beside it.
+              isTerminalDockOpen && 'bg-background-fill-strong text-text-default'
             )}
             aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
           >

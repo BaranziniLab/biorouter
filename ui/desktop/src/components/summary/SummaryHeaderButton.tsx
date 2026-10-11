@@ -78,9 +78,12 @@ export function SummaryHeaderButton({
                 type="button"
                 variant="ghost"
                 shape="round"
+                // Pressed (the rail shown, or its popover open) is the band's
+                // fill step, the one every filled control hovers and presses on
+                // (R-27); the band is a recessed ground (`--sidebar`).
                 className={cn(
                   'no-drag relative text-text-muted hover:text-text-default',
-                  expanded && 'bg-background-medium text-text-default'
+                  expanded && 'bg-background-fill-strong text-text-default'
                 )}
                 aria-label={
                   progress

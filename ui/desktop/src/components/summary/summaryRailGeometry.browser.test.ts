@@ -59,6 +59,10 @@ const TOKENS = `:root {
   --radius-container: 12px;
   --border-subtle: rgb(200, 200, 200);
   --background-default: rgb(255, 255, 255);
+  --background-fill: rgb(244, 244, 242);
+  --background-fill-strong: rgb(234, 234, 230);
+  --background-muted: rgb(244, 244, 242);
+  --scroll-fade-clear: 2px;
   --dur-fast: 125ms;
   --dur-fast-max: 175ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
@@ -361,6 +365,66 @@ describe('the rail’s card in a real layout engine', () => {
     // A short list does not scroll, and the card is only as tall as it needs.
     expect(at.bodyScrolls).toBe(false);
     expect(at.card.height).toBeLessThan(at.rail.height - 24);
+  });
+
+  it('fills the card with no visible edge and no hairline inside it (R-27)', async () => {
+    if (!page) return;
+    await layCard(3);
+    const at = await page.evaluate(() => {
+      const style = (id: string) => getComputedStyle(document.getElementById(id)!);
+      const stats = getComputedStyle(document.querySelector('.br-summary__stats')!);
+      return {
+        background: style('card').backgroundColor,
+        edge: `${style('card').borderTopWidth} ${style('card').borderTopColor}`,
+        footerEdge: style('footer').borderTopWidth,
+        statsEdge: stats.borderTopWidth,
+        statsGap: stats.marginTop,
+      };
+    });
+    expect(at.background).toBe('rgb(244, 244, 242)');
+    // The 1px border is kept, transparent: forced colours draw it in the system ink.
+    expect(at.edge).toBe('1px rgba(0, 0, 0, 0)');
+    expect(at.footerEdge).toBe('0px');
+    expect(at.statsEdge).toBe('0px');
+    expect(at.statsGap).toBe('12px');
+  });
+
+  it('fades a scroll edge only while it hides rows, following the body’s own scroll', async () => {
+    if (!page) return;
+    const fades = async (scrollTop?: number) =>
+      page!.evaluate(async (top) => {
+        const body = document.getElementById('body')!;
+        if (top !== undefined) body.scrollTop = top;
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        const style = getComputedStyle(body);
+        return `${style.getPropertyValue('--br-summary-fade-top').trim()} ${style
+          .getPropertyValue('--br-summary-fade-bottom')
+          .trim()}`;
+      }, scrollTop);
+
+    // A list that fits has no fade at either edge.
+    await layCard(3);
+    expect(await fades()).toBe('0px 0px');
+
+    // A long one fades only its bottom at rest, both edges mid-way, and only
+    // its top at the end. The top fade grows over the first 16px of scroll.
+    await layCard(60);
+    expect(await fades()).toBe('0px 16px');
+    expect(await fades(8)).toBe('8px 16px');
+    expect(await fades(200)).toBe('16px 16px');
+    expect(await fades(1e6)).toBe('16px 0px');
+
+    // A focused body drops the mask, so its focus edge is drawn whole.
+    const masked = await page.evaluate(() => {
+      const body = document.getElementById('body')!;
+      const before = getComputedStyle(body).maskImage;
+      // `focusVisible` is newer than this TypeScript's DOM types.
+      body.focus({ focusVisible: true } as unknown as Parameters<HTMLElement['focus']>[0]);
+      return [before, getComputedStyle(body).maskImage, body.matches(':focus-visible')];
+    });
+    expect(masked[0]).toMatch(/^linear-gradient/);
+    expect(masked[2]).toBe(true);
+    expect(masked[1]).toBe('none');
   });
 
   it('keeps a long list inside the rail: the body scrolls and the footer stays pinned in view', async () => {

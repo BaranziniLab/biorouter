@@ -82,8 +82,10 @@ export function ChatSummaryRail({
       aria-label={summaryCopy.title}
       className="br-summary-rail"
     >
+      {/* A filled box (`.br-fill-surface`): any filled control placed inside
+          steps back to the page ground, so a fill never sits on a fill. */}
       <div
-        className="br-summary-card"
+        className="br-summary-card br-fill-surface"
         data-state={state}
         data-entered={entered ? '' : undefined}
         data-motion-layout=""

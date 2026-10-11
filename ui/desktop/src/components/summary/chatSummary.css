@@ -9,6 +9,11 @@
  *
  * Two sizes only: 13/18 for rows and actions (`--text-secondary`), 12/16 for
  * labels and counts (`--text-supporting`). Rows are 28px.
+ *
+ * Fills before lines (owner message 13, R-27): the parts are told apart by
+ * space, never by a hairline. The to-do list, the statistics and the footer
+ * each sit 12px apart (22px between their text, against 10px between rows),
+ * and the body's scroll edges fade instead of meeting a rule.
  */
 .br-summary {
   display: flex;
@@ -23,6 +28,80 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 8px 12px;
+  /* Keeps the running step clear of the 16px fades when it is scrolled into
+     view (`scrollIntoView({ block: 'nearest' })` honours the scrollport). */
+  scroll-padding-block: 16px;
+}
+
+/* THE SCROLL EDGES. Where the list overflows, an edge that hides rows fades over
+   16px: the bottom one while there is more below, the top one once the list has
+   scrolled. A list that fits has no fade and no mask at all. Driven by the
+   body's own scroll position (a scroll timeline), so it needs no listener and
+   no re-render, and it moves nothing: only the mask's two stops change. The
+   first 2px stay clear (`--scroll-fade-clear`, main.css), so a row cut on its
+   last pixel is gone rather than left as a faint rule.
+
+   A focused body drops the mask, so the focus region's inset edge
+   (`.biorouter-focus-region`) is drawn whole. */
+@property --br-summary-fade-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --br-summary-fade-bottom {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@supports (animation-timeline: scroll()) {
+  .br-summary__body {
+    animation:
+      br-summary-fade-top linear both,
+      br-summary-fade-bottom linear both;
+    animation-timeline: scroll(self), scroll(self);
+    animation-range:
+      0 16px,
+      calc(100% - 16px) 100%;
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent min(var(--scroll-fade-clear, 2px), var(--br-summary-fade-top)),
+      #000 var(--br-summary-fade-top),
+      #000 calc(100% - var(--br-summary-fade-bottom)),
+      transparent calc(100% - min(var(--scroll-fade-clear, 2px), var(--br-summary-fade-bottom)))
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent min(var(--scroll-fade-clear, 2px), var(--br-summary-fade-top)),
+      #000 var(--br-summary-fade-top),
+      #000 calc(100% - var(--br-summary-fade-bottom)),
+      transparent calc(100% - min(var(--scroll-fade-clear, 2px), var(--br-summary-fade-bottom)))
+    );
+  }
+
+  .br-summary__body:focus-visible {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+@keyframes br-summary-fade-top {
+  from {
+    --br-summary-fade-top: 0px;
+  }
+  to {
+    --br-summary-fade-top: 16px;
+  }
+}
+
+@keyframes br-summary-fade-bottom {
+  from {
+    --br-summary-fade-bottom: 16px;
+  }
+  to {
+    --br-summary-fade-bottom: 0px;
+  }
 }
 
 .br-summary__heading {
@@ -45,9 +124,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The bar itself is the primitive's `size="thin"` (4px); only its gap is ours. */
+/* The bar itself is the primitive's `size="thin"` (4px); only its gap and its
+   track's ground are ours. The primitive's track is `--background-muted`, which
+   IS `--background-fill` in both modes, so on the rail's filled card it would
+   vanish (1.00:1): the card names a ground one step off its own fill
+   (`--br-summary-track`, summaryRail.css). The popover keeps the primitive's. */
 .br-summary .br-summary__progress {
   margin-bottom: 4px;
+  background-color: var(--br-summary-track, var(--background-muted));
 }
 
 .br-summary__todos {
@@ -143,9 +227,7 @@
 }
 
 .br-summary__stats[data-after-todos] {
-  margin-top: 8px;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 8px;
+  margin-top: 12px;
 }
 
 .br-summary__stat {
@@ -173,13 +255,14 @@
   white-space: nowrap;
 }
 
-/* The footer never scrolls: two full-width ghost rows over a hairline. */
+/* The footer never scrolls: two full-width ghost rows, 12px under the body's
+   last row (its 8px padding and this 4px). The actions' leading glyphs, which
+   no statistic has, mark them as actions; no hairline. */
 .br-summary__footer {
   display: flex;
   flex: none;
   flex-direction: column;
   gap: 0;
-  border-top: 1px solid var(--border-subtle);
   padding: 4px;
 }
 
