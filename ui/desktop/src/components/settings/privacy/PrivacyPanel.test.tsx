@@ -93,6 +93,11 @@ describe('Settings > Privacy', () => {
     expect(dialog).not.toHaveTextContent(/Commercial models/);
     expect(dialog).toHaveTextContent(/stops recording which chats touched private/i);
     expect(dialog).toHaveTextContent(/cannot go back and mark anything that happened/i);
+    // The box is a fill and not an outline (owner message 13, R-27): the subtle fill, an edge kept
+    // transparent (forced colours still draw it, nothing moves) and the surface class that rests the
+    // phrase field and Cancel one ground back, so neither is fill on fill.
+    expect(dialog).toHaveClass('bg-background-fill', 'border-transparent', 'br-fill-surface');
+    expect(dialog).not.toHaveClass('border-border-subtle');
   });
 
   it('compares the phrase exactly, then writes with the confirmation', async () => {

@@ -332,15 +332,19 @@ export default function PrivacyPanel() {
         property: the refusal is reported, the switch shows what is TRUE, and
         both controls come back out of `busy`.
 
-        So the box is corrected in place instead — a real border token, the
-        element radius, the type roles, and both footer buttons on the 32px
-        rung. `border-borderStandard` was not a token at all; it rendered only
-        because of the `@layer base` `border-color` fallback.
+        So the box is corrected in place instead: the element radius, the type
+        roles, both footer buttons on the 32px rung, and the subtle fill every
+        in-page box wears now (owner message 13, R-27) in place of an outline.
+        It is the neutral Note's recipe by hand, because a Note folds past eight
+        lines and this box must show all of its words: `bg-background-fill`, the
+        1px edge kept TRANSPARENT (forced colours draw it; nothing moves), and
+        `br-fill-surface`, so the phrase field and Cancel rest one ground back on
+        the page instead of fill on fill.
       */}
       {confirming && (
         <div
           data-testid="privacy-disable-confirm"
-          className="mt-3 space-y-2 rounded-element border border-border-subtle px-3 py-2.5"
+          className="br-fill-surface mt-3 space-y-2 rounded-element border border-transparent bg-background-fill px-3 py-2.5"
         >
           <p className="text-label text-text-default">
             This turns off <strong>every</strong> privacy guardrail on this machine, for every chat.
