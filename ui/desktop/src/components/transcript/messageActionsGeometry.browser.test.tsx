@@ -534,4 +534,95 @@ describe('message actions between the rows of a transcript', () => {
       await plain.close();
     }
   });
+
+  /*
+   * WS-TOOLS-3: the last entry is an OPEN Explored group, `ExploredRow`'s DOM
+   * (`ToolCallRows.tsx`): a row whose plain body holds one closed row per call.
+   * The rule's selector reaches every line in the entry, so the nested rows
+   * all end 192px short, not only the bottom one. Kept on purpose: the rows of
+   * one list then share one right edge, whereas freeing the upper ones would
+   * leave the row at the bottom clipped 192px earlier than its siblings at
+   * rest, which reads as a glitch (a child chain cannot pick out the bottom
+   * line: a call's row sits under varying wrappers, and an open well below it
+   * would defeat a `:last-child` chain). Pinned here so a change to the
+   * selector is a choice, not an accident.
+   */
+  const READ_PATH = (name: string) =>
+    `Read /Users/wgu/Desktop/BioRouter/.claude/worktrees/crew-landing-redesign-91b46e/ui/desktop/src/components/${name}`;
+
+  const exploredGroup = (labels: string[]) =>
+    `<div class="flex w-full flex-col gap-1"><div class="biorouter-message-tool">` +
+    renderToStaticMarkup(
+      <TranscriptRow
+        icon={Glyph}
+        glyph="explored"
+        label="Explored"
+        meta="· 3 files"
+        body="plain"
+        defaultOpen
+      >
+        <div className="flex min-w-0 flex-col gap-1">
+          {labels.map((label) => (
+            <div key={label} className="min-w-0">
+              <TranscriptRow icon={Glyph} glyph="read" label={label}>
+                <p>output</p>
+              </TranscriptRow>
+            </div>
+          ))}
+        </div>
+      </TranscriptRow>
+    ) +
+    `</div></div>`;
+
+  const underExploredGroup = (labels: string[], marked: boolean) =>
+    lay(
+      row('user', 'first', 'mt-0 pt-7', user('u1', 'Look around')) +
+        row(
+          'assistant',
+          'turn',
+          'mt-6',
+          exploredGroup(labels),
+          marked ? ' data-actions-below' : ''
+        ) +
+        row('assistant', 'block', 'mt-2', answer(FULL_LINE, '12/31/2026 12:59 PM'))
+    );
+
+  it('an open Explored group: the nested rows end short together and the last clears the cluster', async () => {
+    if (!browser) return;
+    const labels = ['A.tsx', 'B.tsx', 'C.tsx'].map(READ_PATH);
+    const marked = await underExploredGroup(labels, true);
+    const plain = await underExploredGroup(labels, false);
+    try {
+      const g = await toolGeometry(marked);
+      const free = await toolGeometry(plain);
+      // The group's own line, then the three calls under it.
+      expect(g.rows).toHaveLength(4);
+      const nested = g.rows.slice(1);
+      const last = nested[nested.length - 1];
+      // The instrument: the cluster really reaches the last nested row's band,
+      // and without the mark it lands on that row's chevron.
+      expect(g.cluster.top).toBeLessThan(last.head.bottom);
+      expect(overlaps(free.cluster, free.rows[3].chevron)).toBe(true);
+      // With it, the last call's label end, chevron and head are clear.
+      expect(last.truncated).toBe(true);
+      expect(
+        overlaps(g.cluster, { ...last.labelBox, top: last.ink.top, bottom: last.ink.bottom })
+      ).toBe(false);
+      expect(overlaps(g.cluster, last.chevron)).toBe(false);
+      expect(overlaps(g.cluster, last.head)).toBe(false);
+      expect(g.cluster.left - last.head.right).toBeGreaterThanOrEqual(8);
+      // The decision: every nested row shares that right edge.
+      for (const call of nested) {
+        expect(call.truncated).toBe(true);
+        expect(call.head.right).toBeCloseTo(last.head.right, 1);
+      }
+      // And the unmarked group runs its calls the whole column.
+      for (const call of free.rows.slice(1)) {
+        expect(call.head.right).toBeGreaterThan(last.head.right + 150);
+      }
+    } finally {
+      await marked.close();
+      await plain.close();
+    }
+  });
 });

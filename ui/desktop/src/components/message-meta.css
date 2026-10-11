@@ -67,7 +67,15 @@
    widest time, "12/31/2026 12:59 PM", two 24px buttons and the paddings) and
    8px of air to the row's head, the box its hover wash fills. Only that row;
    the rows above it keep the full column, and a row with a short label looks
-   the same either way. */
+   the same either way.
+
+   The selector reaches every line inside that last entry, so an OPEN Explored
+   group ends all of its nested rows short, not only the bottom one (WS-TOOLS-3).
+   Kept: the calls then share one right edge, where freeing the upper ones would
+   leave the bottom call's path clipped 192px earlier than its siblings at rest.
+   A child chain cannot pick out the bottom line either (a call's row sits under
+   varying wrappers, and an open well below it would defeat a `:last-child`
+   chain). `messageActionsGeometry.browser.test.tsx` pins it. */
 [data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line {
   padding-inline-end: 192px;
 }
