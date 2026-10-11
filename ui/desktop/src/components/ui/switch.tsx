@@ -11,8 +11,8 @@ import { cn } from '../../utils';
  * - Knob 16px, inset 2px on every side in BOTH states, travel 12px, and it does not grow (the
  *   old 16 → 20px growth left the off knob 2px from the side and 4px from the top and bottom).
  *   Off: `--background-default` ringed by `--border-control` (3:1 against the off track; the old
- *   white knob on `--background-strong` measured 1.38:1), with `--text-muted` as the dark fill.
- *   On: `--text-on-accent`.
+ *   white knob on `--background-strong` measured 1.38:1), the same in dark: a `--text-muted` dark
+ *   knob read as the brighter, "on" state (coordinator ruling 8). On: `--text-on-accent`.
  * - A 24px hit target: the 20px track carries a 2px invisible extension above and below. In a
  *   `<label>` row (or a `SettingRow`), the whole row toggles it.
  * - Motion: knob `transform` and track `background-color` over 125ms `--ease-out`. A value that

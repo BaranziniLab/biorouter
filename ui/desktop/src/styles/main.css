@@ -5190,8 +5190,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 /* Switch (`ui/switch.tsx`): a 32×20 track, a 16px knob inset 2px in both states, travel 12px,
-   no growth. The off knob is ringed by `--border-control` so it reads at 3:1 on the off track
-   in every family. A 2px invisible extension above and below makes the hit target 24px. */
+   no growth. The off knob is the page ground ringed by `--border-control`, so it reads at 3:1 on
+   the off track in every family, the same in dark: a lighter `--text-muted` dark knob read as the
+   brighter, "on" state (coordinator ruling 8), so the accent track alone carries "on". A 2px
+   invisible extension above and below makes the hit target 24px. */
 .br-switch {
   position: relative;
   display: inline-flex;
@@ -5246,12 +5248,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   transition: transform var(--dur-fast) var(--ease-out);
 }
 
-.dark .br-switch-thumb {
-  background-color: var(--text-muted);
-}
-
-.br-switch-thumb[data-state='checked'],
-.dark .br-switch-thumb[data-state='checked'] {
+.br-switch-thumb[data-state='checked'] {
   background-color: var(--text-on-accent);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
   transform: translateX(14px);
@@ -5796,16 +5793,14 @@ input[type='radio']:checked ~ .br-radio-dot {
     opacity: 1;
   }
 
-  .br-switch-thumb,
-  .dark .br-switch-thumb {
+  .br-switch-thumb {
     forced-color-adjust: none;
     background-color: CanvasText;
     box-shadow: none;
     transform: translateX(1px);
   }
 
-  .br-switch-thumb[data-state='checked'],
-  .dark .br-switch-thumb[data-state='checked'] {
+  .br-switch-thumb[data-state='checked'] {
     background-color: HighlightText;
     transform: translateX(13px);
   }

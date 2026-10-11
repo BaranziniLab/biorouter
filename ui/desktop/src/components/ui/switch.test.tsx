@@ -38,16 +38,19 @@ describe('Switch geometry and colour (authored in main.css)', () => {
     expect(knob).toMatch(/inline-size: 16px;/);
     expect(knob).toMatch(/block-size: 16px;/);
     expect(knob).toMatch(/transform: translateX\(2px\);/);
-    const on = rule(
-      ".br-switch-thumb[data-state='checked'],\n.dark .br-switch-thumb[data-state='checked']"
-    );
+    const on = rule(".br-switch-thumb[data-state='checked']");
     expect(on).toMatch(/transform: translateX\(14px\);/);
     expect(on).not.toMatch(/size|width|height/);
   });
 
-  it('rings the off knob with --border-control and fills it with --text-muted in dark', () => {
-    expect(rule('.br-switch-thumb')).toMatch(/0 0 0 1px var\(--border-control\)/);
-    expect(rule('.dark .br-switch-thumb')).toMatch(/background-color: var\(--text-muted\);/);
+  it('fills the off knob with the page ground ringed by --border-control, the same in dark', () => {
+    const knob = rule('.br-switch-thumb');
+    expect(knob).toMatch(/background-color: var\(--background-default\);/);
+    expect(knob).toMatch(/0 0 0 1px var\(--border-control\)/);
+    // Coordinator ruling 8: a lighter dark knob (`--text-muted`) read as the brighter, "on"
+    // state, so no dark rule restates the knob's fill; the accent track alone carries "on".
+    const blanked = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(blanked).not.toMatch(/\.dark[^{,]*\.br-switch-thumb/);
   });
 
   it('moves the knob and the track over --dur-fast with --ease-out, and lands at rest when still', () => {
