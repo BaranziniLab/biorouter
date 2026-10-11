@@ -34,6 +34,10 @@ A setting row is 40px at minimum with the label, an optional InfoTip, an optiona
 
 The divider is a straight line drawn with `::after` and inset by the row radius. A bottom border on a rounded box curls up at both ends, and forced colours show it plainly.
 
+A list whose rows read apart by air and the hover wash drops the divider with `.br-rows-flat` on its shell or any ancestor (R-27: "row lists drop inter-row hairlines where spacing and the hover fill already separate rows"). Only the `::after` goes, so no row moves. Forced colours repaint the wash as Canvas, so the divider comes back there, and the last row still has none. The divider stays the default because it is Crew's recipe (`styles/crewParity.test.ts`); Workflows, the Scheduler, Built apps and the Settings dialogs opt out.
+
+A washed row (under the pointer, or holding keyboard focus) is a fill, so its controls step back one ground, as they do in a filled card: a secondary button or a Select in it rests on the page ground and hovers on the strong step, and a neutral progress track in it steps one in. The wash is the page ink at 5%, which lands on the rest fill's own value in light, so without this a button lost its box the moment the pointer reached its row. The privacy pills (`PrivacyBadge`, `AffiliationBadge`) rest on `--background-muted`, the same value, and step to the strong fill on a washed list row; not on a settings row, where Crew draws its one-piece "Private · UCSF" chip.
+
 A row washes and firms its line for keyboard focus only: `:focus-visible` on the row, or `:has(:focus-visible)` inside it. It was `:focus-within`, which is true for a switch the person has just clicked, so the row stayed washed and its line dark until focus moved. A click on a switch leaves nothing; Tab, an arrow key and a click into a text field still show the treatment. A row's `disabled` disables its control and dims only the row's words, because the control already dims itself to 50% and the two together put a locked switch at 25%.
 
 `RowActions` shows its buttons when the row is hovered, holds focus, or has its menu open, and always under `(hover: none)`. Only opacity changes, so the buttons stay in the tab order. The optional `meta` (a relative time) shares the buttons' grid cell and fades out as they fade in. It must keep `pointer-events: none`: below opacity 1 it becomes a stacking context that paints above the opacity-1 buttons, and the invisible time ate the click on the `⋯` button.
@@ -45,6 +49,8 @@ One row for the dropdown, the context menu, the command list and the Select opti
 A menu opens with opacity, a scale from .97 and a 4px move toward its trigger, from the trigger's own transform origin, over 175ms. It closes with opacity alone over 125ms. The Select menu is not a Radix surface, so it plays the same values as a keyframe (`.br-select-menu`).
 
 After a pointer pick the menu does not hand focus back to its trigger. Radix does that after the picked item unmounts, and Chromium then reads it as keyboard focus and draws the focus surface on the trigger. A key pick, Escape and a Tab out still return focus.
+
+A dropdown menu opened with the pointer rings no row. The trigger opens on a cancelled `pointerdown`, so Radix's script focus on each row the pointer crosses read as keyboard focus and the row wore the 2px inset ring. The menu surface records how it is driven, `data-menu-input="pointer"` or `"key"` (from `ui/inputTrail.ts` when it opens, then from the keys and presses inside it), and a pointer menu's rows keep only their hover highlight. The first key pressed in the menu brings the ring back; a menu opened with Enter, Space or an arrow keeps it; `prefers-contrast: more` and forced colours keep their outline. A right-click context menu never had the problem and is unchanged.
 
 ## Motion
 
@@ -76,16 +82,18 @@ Focus is a surface shift plus an inset 2px edge, never a ring. Four rules keep i
 
 ## Fills before lines
 
-Since owner message 13 (R-27, [design.md 9.11](../../design.md)) the in-page controls are a subtle solid fill with no resting outline. Floating surfaces (menus, popovers, tooltips, dialogs, toasts) keep their hairline and shadow, and the row lists keep their straight hairline, which is Crew's recipe.
+Since owner message 13 (R-27, [design.md 9.11](../../design.md)) the in-page controls are a subtle solid fill with no resting outline. Floating surfaces (menus, popovers, tooltips, dialogs, toasts) keep their hairline and shadow, and the row lists keep their straight hairline, which is Crew's recipe, unless a list opts out with `.br-rows-flat` (Rows and row actions, above).
 
 | Control | At rest | Hover and press | Edge |
 |---|---|---|---|
 | `Input`, `Textarea`, `FilterInput`, `SecretInput`, the `Select` trigger | `--br-control-ground` | `--background-fill-strong`, but not while focused or disabled | 1px, transparent; `--border-focus` while focused, `--border-danger` while invalid (it wins) |
 | Button `secondary`, and `outline` (now the same box) | `--br-control-ground` (`.br-fill-rest`) | `--background-fill-strong` (`.br-fill-hover`), with the 0.98 press | none; `outline` keeps a transparent 1px border so nothing that used it reflows |
 | `Badge` `neutral` | `--background-fill-strong` | | none |
-| `Card`, a neutral `Note`, `EmptyState`'s tile, `.biorouter-modal-panel` and `-row` | `--background-fill` | | 1px, transparent |
-| `SegmentedControl` track | `--background-fill` (the value `--background-muted` had) | | none; the thumb stays the raised surface |
-| `CopyField` | `--background-well` | | 1px, transparent |
+| `Card`, a neutral `Note`, `.biorouter-modal-panel` and `-row` | `--background-fill` | | 1px, transparent |
+| `EmptyState`'s mark tile (`.br-empty-tile`) | `--br-control-ground` | | 1px, transparent |
+| `SegmentedControl` track | `--br-track-ground`, else `--background-fill` (the value `--background-muted` had) | | none; the thumb stays the raised surface |
+| `Progress` neutral track (`.br-progress-track`) | `--br-track-ground`, else `--background-muted` | | none |
+| `CopyField` | `--br-control-ground`, else `--background-well` | | 1px, transparent |
 
 `--br-control-ground` is a private variable, `--background-fill` unless something sets it. A fill never sits on a fill: a `Card`, every `Note`, a dialog's inner panel and row, and any filled box that adds the class `br-fill-surface` set it to `--background-default` for their children, so a field or a secondary button inside rests one step back on the page ground and needs no class of its own. It is a private variable because the shared fill tokens are declared once per mode and nowhere else (`styles/themeNeutrals.test.ts`). Inside a dark popover the strong step is re-pointed one step deeper than the popover ground, which is why the filled button steps between two tokens instead of taking `tint-interactive`'s ink overlay: an overlay would lighten it into the ground.
 
@@ -93,7 +101,17 @@ The neutral badge rests on the strong step, not the rest fill, because a badge s
 
 Every edge that is kept transparent is still a border, never `border-0`: forced colours repaint the fill as Canvas and draw a transparent border in the system ink, so the box keeps its outline there, and nothing moves when an edge appears. A field is not found by its fill alone: its label or placeholder and its focus edge carry it, which is the trade-off design.md 9.11 records.
 
-A recessed ground (the sidebar, a `--background-muted` pane) makes the rest fill invisible (1.00:1). The surface's owner sets `--br-control-ground: var(--background-fill-strong)` on it, or passes a ground of its own, and chooses a hover.
+Three private variables say what a ground asks of the primitives on it, and each primitive reads them with its old value as the fallback, so a plain page draws what it drew:
+
+| Variable | Read by | Filled box (`Card`, `Note`, modal panel and row, `.br-fill-surface`, a washed row) | Recessed ground (`.br-ground-recessed`) |
+|---|---|---|---|
+| `--br-control-ground` | fields, the Select trigger, `secondary` and `outline` buttons, `CopyField`, `EmptyState`'s tile | `--background-default`, one step back | `--background-fill-strong`, one step in |
+| `--br-control-hover` | a filled button's hover and press (`.br-fill-hover`) | `--background-fill-strong` | `--background-strong`, one deeper again |
+| `--br-track-ground` | the segmented track, a neutral progress track | `--background-fill-strong`, one step in | `--background-fill-strong` |
+
+A track goes one step in rather than back because a raised or coloured mark rides it: a white track would hide the white segmented thumb. A field's hover stays on the strong step on a recessed ground, where it equals the field's rest, because no deeper neutral keeps the placeholder at 4.5:1.
+
+A recessed ground is one where the rest fill is the ground itself: the sidebar (1.03:1), `--background-muted` (1.00:1: first run, the Knowledge graph canvas, the terminal dock) and the page band. Put `.br-ground-recessed` on the ground; a filled box inside it sets its own grounds again for its children. `ui/groundsAndRows.browser.test.tsx` measures every cell of the table in light and dark.
 
 Crew is not converted. Its own recipes (`crew-*` classes) keep their lines; the shared primitives it renders take the fill like everywhere else.
 
@@ -118,6 +136,8 @@ jsdom lays nothing out and runs no Tailwind, so a component test can only read c
 - `ui/controlsGeometry.browser.test.tsx` bundles the real components with esbuild, styles them with the authored blocks of `main.css`, and measures the switch, the menu row, the segmented thumb, the InfoTip, the tabs, the setting rows and the `⋯` hit target. Several cases strip the rule they guard from the stylesheet and expect the defect, so the instrument is proved.
 - `ui/filledPrimitives.browser.test.tsx` compiles the real `main.css` with Tailwind (the classes the bundle uses) and paints the filled primitives in light, dark and forced colours: the rest fill and the hover step, the focus and danger edges, the step back to the page ground inside a filled box, a badge on a hovered row, a button in a dark popover, the transparent border drawn in forced colours at no cost in size, and a note's action level with its first line. Each assertion was proved by removing the rule it guards from the compiled sheet.
 - `ui/dialogFromMenu.browser.test.tsx` bundles the real menus and dialogs and drives them with Playwright's keyboard and mouse: where focus lands when a dialog that a menu item opened closes, and whether its first stop wears a ring after a mouse pick.
+- `ui/menuPointerRing.browser.test.tsx` drives a dropdown menu, a submenu and a context menu with the real mouse and keys under the compiled `main.css`: no ring on a row the pointer crosses, the ring back on the first key, kept for a keyboard-opened menu and for `prefers-contrast: more` and forced colours. Its first case runs without the rule and sees the ring.
+- `ui/groundsAndRows.browser.test.tsx` compiles `main.css` the same way and measures the grounds table above on a page, in a card, on a recessed ground and in a card on it, a button and a pill in a washed row, and the flat rows' divider in light and forced colours. `ui/privacyPill.test.ts` holds the pill's one rule off settings rows.
 - `styles/crewParity.test.ts` holds each promoted recipe to its Crew original, with the differences the redesign made on purpose written down.
 - `ui/controlsSourceGuard.test.ts` fails on a hand-rolled checkbox, radio or switch, an `@radix-ui/themes` import, a `title=` on a menu item and a Switch `variant` outside `ui/`. The `variant` prop itself is gone, so the type checker refuses it too. A file waiting on its owner is listed in `PENDING`, and the list only shrinks; it is empty now.
 
