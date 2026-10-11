@@ -28,7 +28,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 
 - **BAAM.** `baam.html`'s static cards are the input of `scripts/build-registry.mjs`, which writes `registry.json`, the desktop app's bundled copy and the Rust privacy list. After any card change run `node landing/scripts/build-registry.mjs`; in CI `--check` fails if the three copies differ. The browser tests in `scripts/baam-privacy-facet.test.mjs` and `scripts/baam-search.test.mjs` hold the rendered page to the same contract.
 - **Docs.** Edit the sources in [`docs/website/`](../docs/website/README.md), then run `node landing/scripts/assemble-docs.mjs` from the repository root. Do not hand edit `docs.html`. `scripts/check-docs-privacy.mjs` reads the "Extension agents in the marketplace" table, and `../scripts/check-crew-manual.mjs` reads the Crew page and the browser table. Both match markup byte for byte.
-- **Versions.** `scripts/release.sh` rewrites the version in `index.html`, `download.html` and `docs.html` only, and expects `about.html`'s `news-list` to start with the new release.
+- **Versions.** `scripts/release.sh` rewrites the version in `index.html`, `download.html` and `docs.html` only, and expects `about.html`'s `news-list` to start with the new release. That list holds the newest five rows, so adding a row means moving the oldest one into `.news-list-earlier`; `check-consistency.mjs` counts the five. A row's date is the day GitHub shows for the release (UTC), the same day the Download page shows.
 
 ## Look rules
 

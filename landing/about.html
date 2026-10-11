@@ -115,14 +115,15 @@
 
   <!-- Updates. The release pipeline reads the first list (scripts/release.sh cmd_landing):
        keep the class="news-list" container, newest first, and add each new release
-       as a row above the first one, in the same markup. The newest five rows stay in
-       that list; older rows live in the "Earlier updates" list below it, and nothing
-       is removed. -->
+       as a row above the first one, in the same markup. Dates are the day GitHub shows
+       for the release (UTC), the day the Download page shows. The newest five rows stay
+       in that list, so adding a sixth moves the oldest into the "Earlier updates" list
+       below it; nothing is removed. check-consistency.mjs counts the five. -->
   <section class="about-section wrap" id="updates" aria-labelledby="updates-h">
     <div class="rule-line reveal"><h2 id="updates-h">Updates</h2></div>
     <div class="news-list">
       <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.1" class="news-row">
-        <div class="news-date"><span class="day">5</span><span class="mon">Oct</span></div>
+        <div class="news-date"><span class="day">6</span><span class="mon">Oct</span></div>
         <div class="news-body">
           <h3>Biorouter v1.92.1: current UCSF Versa models</h3>
           <p>Versa API Azure adds GPT-5.6 Sol, Terra and Luna. Versa API Bedrock now lists only the Claude models UCSF serves, including Sonnet 5.</p>

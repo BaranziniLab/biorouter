@@ -139,6 +139,14 @@ includes(download, `v${landingVersion}`, 'download fallback badge should match t
 includes(download, `Biorouter-${landingVersion}-arm64.dmg`, 'download macOS arm64 fallback should match release asset');
 includes(download, `Biorouter-win32-x64-${landingVersion}.zip`, 'download Windows fallback should match release asset');
 includes(about, `releases/tag/v${landingVersion}`, 'about news should link to the latest published release');
+// The release step adds a row at the top of the list but does not move the
+// oldest one into "Earlier updates", so the visible list would grow by a row a
+// release. The newest five stay visible; the rest sit inside the disclosure.
+const visibleNews = (about.split('<details class="news-more">')[0].split('class="news-list">')[1] || '').match(/class="news-row"/g) || [];
+check(
+  visibleNews.length === 5,
+  `about.html lists ${visibleNews.length} updates before "Earlier updates"; keep the newest five there and move the oldest into .news-list-earlier`
+);
 for (const page of [index, download, docs, about, content]) {
   check(!page.includes('1.88.2'), 'landing content should not advertise the retracted 1.88.2 release');
 }
