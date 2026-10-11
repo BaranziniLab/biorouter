@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { ChangeKind, HistoryEntry } from '../../../api/types.gen';
 import { AlertCircle, Eye, History, RotateCcw } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
@@ -12,6 +12,7 @@ import { useHistory } from '../hooks/useHistory';
 import { ChangeKindChip } from './ChangeKindChip';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { toastError } from '../../../toasts';
+import { rowTime, rowTimeTitle } from '../../workflows/shared/rowTime';
 
 interface Props {
   open: boolean;
@@ -22,18 +23,25 @@ interface Props {
 
 const ALL_KINDS: ChangeKind[] = ['ingest', 'link', 'flag', 'query', 'lint', 'restore', 'manual'];
 
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  const diff = Date.now() - t;
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
+/**
+ * An entry's time in the one compact form every list meta uses ("now", "5m", "3h", "4d", then
+ * "Oct 7"), with the full date in its tooltip (V3-22). It is `rowTime`, shared with the
+ * Workflows and Built apps rows; the drawer used to spell its own "11m ago".
+ */
+function entryTime(iso: string): ReactNode | undefined {
+  const when = new Date(iso);
+  const text = rowTime(when);
+  // `undefined`, not an empty element: RowActions reserves its meta slot for any truthy node.
+  if (!text) return undefined;
+  return (
+    <time
+      className="tabular-nums"
+      dateTime={when.toISOString()}
+      title={rowTimeTitle(when) ?? undefined}
+    >
+      {text}
+    </time>
+  );
 }
 
 /**
@@ -206,7 +214,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                   <RowActions
                     className="ml-auto"
                     size="sm"
-                    meta={relativeTime(entry.timestamp)}
+                    meta={entryTime(entry.timestamp)}
                     primary={
                       <IconAction
                         icon={Eye}

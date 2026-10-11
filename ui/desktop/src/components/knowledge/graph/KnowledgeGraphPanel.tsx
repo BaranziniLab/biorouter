@@ -142,7 +142,14 @@ export function KnowledgeGraphPanel({
                 title="Could not load the graph"
                 description={error}
                 actions={
-                  <Button variant="secondary" onClick={onRefresh}>
+                  // The canvas ground is `--background-muted`, the very value the resting fill
+                  // has (1.00:1), so a filled control here rests on the strong step instead, with
+                  // the transparent border forced colours draw (R-27, design.md 9.11).
+                  <Button
+                    variant="secondary"
+                    className="border border-transparent bg-background-fill-strong"
+                    onClick={onRefresh}
+                  >
                     Try again
                   </Button>
                 }

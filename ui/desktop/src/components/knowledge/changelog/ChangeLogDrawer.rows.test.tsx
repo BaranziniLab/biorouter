@@ -124,6 +124,57 @@ describe('ChangeLogDrawer entries', () => {
   });
 });
 
+describe('ChangeLogDrawer entry times', () => {
+  const NOW = new Date('2026-10-10T20:00:00Z');
+  const at = (sha: string, summary: string, when: string) => ({
+    ...commit(sha, 'ingest', summary),
+    timestamp: when,
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  // V3-22: the Workflows and Built apps rows read "2m", "3h", "4d", "Oct 7"; the change log
+  // used to read "11m ago". One format, `rowTime`, with the full date in the tooltip.
+  it('reads in the compact form every list meta uses, never "ago"', () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: NOW });
+    mocks.history = [
+      at('a1', 'just now entry', '2026-10-10T19:59:40Z'),
+      at('a2', 'minutes entry', '2026-10-10T19:49:00Z'),
+      at('a3', 'hours entry', '2026-10-10T17:00:00Z'),
+      at('a4', 'days entry', '2026-10-06T20:00:00Z'),
+      at('a5', 'dated entry', '2026-09-10T19:30:00Z'),
+    ];
+    drawer();
+
+    const timeOf = (summary: string) =>
+      entryRow(summary).querySelector('.br-row-actions-meta time') as HTMLTimeElement;
+    expect(timeOf('just now entry').textContent).toBe('now');
+    expect(timeOf('minutes entry').textContent).toBe('11m');
+    expect(timeOf('hours entry').textContent).toBe('3h');
+    expect(timeOf('days entry').textContent).toBe('4d');
+    expect(timeOf('dated entry').textContent).toMatch(/^Sep 10$/);
+    for (const row of document.querySelectorAll('.biorouter-list-row')) {
+      expect(row.textContent).not.toMatch(/\bago\b/);
+    }
+
+    // The full date is the tooltip (AppTooltipLayer turns `title` into one), and the machine
+    // value is the commit's own instant.
+    const minutes = timeOf('minutes entry');
+    expect(minutes.getAttribute('datetime')).toBe('2026-10-10T19:49:00.000Z');
+    expect(minutes.getAttribute('title')).toMatch(/2026/);
+    expect(minutes.getAttribute('title')).toMatch(/Oct/);
+  });
+
+  it('draws no time, and reserves no slot for it, when the timestamp is unreadable', () => {
+    mocks.history = [at('b1', 'unreadable entry', 'not a date')];
+    drawer();
+    const row = entryRow('unreadable entry');
+    expect(row.querySelector('time')).toBeNull();
+    expect(row.querySelector('.br-row-actions-meta')).toBeNull();
+    expect(row.textContent).not.toMatch(/NaN|Invalid/);
+  });
+});
+
 describe('ChangeLogDrawer kind chips', () => {
   const chip = (name: string) => screen.getByRole('button', { name });
 
