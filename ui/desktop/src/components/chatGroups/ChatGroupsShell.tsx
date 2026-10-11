@@ -1388,7 +1388,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // always replaced rather than filled: the key above changes when the
         // real tab lands, which unmounts this whole subtree. Drawing a greeting
         // it will throw away made a new window show one heading, drop it, and
-        // unroll a different one.
+        // fade in a different one.
         suppressGreeting={activeTab === undefined}
         sessionId={activeTab?.sessionId ?? ''}
         initialMessage={activeTab?.pendingInitialMessage}
