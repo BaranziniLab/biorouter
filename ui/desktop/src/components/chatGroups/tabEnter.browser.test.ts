@@ -87,11 +87,12 @@ describe('a new tab grows in from its left edge', () => {
       `<!doctype html><html><head><style>${TOKENS}</style><style>${TAB_CSS}</style></head>` +
         `<body><div class="strip" id="strip"><div class="br-tab" id="a">One</div></div></body></html>`
     );
-  });
+  }, 180_000);
 
+  // Closing Chromium under a loaded full run overran the 30 s default hook budget.
   afterAll(async () => {
     await browser?.close();
-  });
+  }, 120_000);
 
   /** Add tab B as `ChatTabStrip` does for an opened tab, and freeze its animations at `t` ms. */
   const openTab = (active: boolean, t: number) =>

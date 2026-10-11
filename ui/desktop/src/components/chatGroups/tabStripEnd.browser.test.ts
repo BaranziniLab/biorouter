@@ -120,11 +120,12 @@ describe('the "+" stays reachable once the tabs overflow', () => {
       return;
     }
     page = await browser.newPage({ viewport: { width: 800, height: 200 } });
-  });
+  }, 180_000);
 
+  // Closing Chromium under a loaded full run overran the 30 s default hook budget.
   afterAll(async () => {
     await browser?.close();
-  });
+  }, 120_000);
 
   /** Mount the strip, reveal the LAST tab as `revealActiveTab` does, and hit-test. */
   const probe = async (plus: 'inside' | 'outside'): Promise<Probe> => {

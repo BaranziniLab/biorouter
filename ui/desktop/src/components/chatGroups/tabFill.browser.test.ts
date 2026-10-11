@@ -147,6 +147,22 @@ describe('the document tabs are fills, not lines (R-27)', () => {
     await browser?.close();
   }, 120_000);
 
+  /**
+   * Wait until every finite animation and transition on the page has ended, so a
+   * measurement reads the tab at rest. A fixed 250 ms was not enough at a load
+   * average of 168: the selected tab's settle had not run yet, and the tab measured
+   * 0.97 of its 32px.
+   */
+  const settle = (page: Page) =>
+    page.evaluate(() =>
+      Promise.all(
+        document
+          .getAnimations()
+          .filter((a) => Number.isFinite(a.effect?.getComputedTiming().endTime))
+          .map((a) => a.finished.catch(() => undefined))
+      ).then(() => undefined)
+    );
+
   async function open(mode: 'light' | 'dark', forcedColors = false): Promise<Page> {
     const page = await browser!.newPage({ viewport: { width: 960, height: 400 } });
     if (forcedColors) await page.emulateMedia({ forcedColors: 'active' });
@@ -154,7 +170,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
       `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
         `<body style="margin:0;background:var(--background-default)">${MARKUP}</body></html>`
     );
-    await page.waitForTimeout(250);
+    await settle(page);
     return page;
   }
 
@@ -263,7 +279,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
         const selected = await paint(page, 'var(--background-fill-strong)');
         for (const strip of STRIPS) {
           await page.hover(`#${strip}-idle`);
-          await page.waitForTimeout(250);
+          await settle(page);
           const t = await look(page, `#${strip}-idle`);
           const ground = await band(page, strip);
           expect(t.ground, `${mode} ${strip}: the ghost hover`).toBe(hover);
@@ -279,14 +295,14 @@ describe('the document tabs are fills, not lines (R-27)', () => {
           const close = `#${strip}-idle-close`;
           expect(await page.$eval(close, (el) => getComputedStyle(el).opacity)).toBe('1');
           await page.hover(close);
-          await page.waitForTimeout(250);
+          await settle(page);
           const x = await look(page, close);
           expect(x.ground, `${mode} ${strip}: the close hover`).toBe(hover);
           await page.mouse.move(950, 390);
         }
         // On the selected fill too: the close hover is a step, not the fill again.
         await page.hover('#chat-active-close');
-        await page.waitForTimeout(250);
+        await settle(page);
         const strong = await paint(page, 'var(--background-fill-strong)');
         const x = await look(page, '#chat-active-close');
         expect(
@@ -309,7 +325,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
         expect(t.image).toBe('none');
         expect(t.weight).toBe('400');
         await page.hover('#unfocused-active');
-        await page.waitForTimeout(250);
+        await settle(page);
         expect((await look(page, '#unfocused-active')).ground).toBe(
           await paint(page, 'var(--background-fill-strong)')
         );
@@ -327,7 +343,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
         const strong = await paint(page, 'var(--background-fill-strong)');
         for (const id of ['#chat-new', '#preview-more']) {
           await page.hover(id);
-          await page.waitForTimeout(250);
+          await settle(page);
           expect((await look(page, id)).ground, `${mode} ${id}`).toBe(strong);
         }
       } finally {

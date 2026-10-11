@@ -131,11 +131,12 @@ describe('find in chat floats over the transcript', () => {
       viewport: { width: 1100, height: 700 },
       reducedMotion: 'reduce',
     });
-  });
+  }, 180_000);
 
+  // Closing Chromium under a loaded full run overran the 30 s default hook budget.
   afterAll(async () => {
     await browser?.close();
-  });
+  }, 120_000);
 
   const load = async (
     variant: 'none' | 'bar' | 'note',
