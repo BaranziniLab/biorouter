@@ -233,8 +233,6 @@ Source: `/Users/wgu/Desktop/biorouter/documentation/architecture.md`
 - Search box (filters agent cards in real-time)
 
 ### Agent Cards
-Design reference: https://block.github.io/goose/extensions/ — but more aesthetic, cohesive with landing design.
-
 Each card contains:
 - Agent icon (emoji)
 - Agent name
