@@ -527,7 +527,7 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     const add = within(dialog).getByRole('button', { name: 'Add to Analysis Lab' });
     // The primary, focused action; Done — which dropped the ticked channels — is not offered.
     await waitFor(() => expect(add).toHaveFocus());
-    expect(add).not.toHaveClass('bg-background-medium');
+    expect(add).not.toHaveClass('br-fill-rest');
     expect(within(dialog).queryByRole('button', { name: 'Done' })).toBeNull();
 
     update(joinedFrame());
@@ -554,7 +554,7 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     update(joinedFrame());
     const dialog = await screen.findByRole('dialog');
     const notNow = within(dialog).getByRole('button', { name: letInCopy.notNow });
-    expect(notNow).toHaveClass('bg-background-medium');
+    expect(notNow).toHaveClass('br-fill-rest');
     expect(notNow).not.toHaveFocus();
     fireEvent.click(notNow);
     expect(onClose).toHaveBeenCalled();
@@ -590,9 +590,9 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     const dialog = await screen.findByRole('dialog');
     const lab = within(dialog).getByRole('button', { name: 'Add Eve to Analysis Lab' });
     const img = within(dialog).getByRole('button', { name: 'Add Eve to Imaging' });
-    for (const button of [lab, img]) expect(button).not.toHaveClass('bg-background-medium');
+    for (const button of [lab, img]) expect(button).not.toHaveClass('br-fill-rest');
     const notNow = within(dialog).getByRole('button', { name: letInCopy.notNow });
-    expect(notNow).toHaveClass('bg-background-medium');
+    expect(notNow).toHaveClass('br-fill-rest');
     expect(notNow).not.toHaveFocus();
     // Each team's channels are labelled by their team.
     expect(
@@ -606,9 +606,7 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     // The next team still to do takes the focus the added one's button had.
     const next = await within(dialog).findByRole('button', { name: 'Add Eve to Imaging' });
     await waitFor(() => expect(next).toHaveFocus());
-    expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveClass(
-      'bg-background-medium'
-    );
+    expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveClass('br-fill-rest');
     await act(async () => {
       fireEvent.click(next);
     });
@@ -629,7 +627,7 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     expect(within(channels).getByRole('checkbox', { name: /#general/ })).toBeChecked();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).not.toBeChecked();
     const add = within(dialog).getByRole('button', { name: 'Add Eve to Analysis Lab' });
-    expect(add).toHaveClass('bg-background-medium');
+    expect(add).toHaveClass('br-fill-rest');
     await act(async () => {
       fireEvent.click(add);
     });

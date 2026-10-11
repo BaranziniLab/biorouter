@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Input } from './input';
 import { Checkbox } from './Checkbox';
 import { Button } from './button';
+import { cn } from '../../utils';
 
 interface JsonSchemaProperty {
   type?: string;
@@ -150,9 +151,12 @@ export default function JsonSchemaForm({
           disabled={disabled}
           // The native <select> is a text field wearing a different tag, so it
           // takes the <Input> chrome exactly (§3.2): the 32px md rung, an 8px
-          // inset, the `--border-control` edge (`.br-field`) and the inset-ring
-          // hover whisper. `.br-field` also restates the focus edge.
-          className="br-field flex h-8 w-full rounded-element border bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0 disabled:cursor-not-allowed disabled:opacity-50"
+          // inset and the filled field (`.br-field`, R-27): the rest fill, the
+          // hover step, and the focus and invalid edges.
+          className={cn(
+            'br-field flex h-8 w-full rounded-element border px-2 text-label transition-[color,background-color,border-color] disabled:cursor-not-allowed disabled:opacity-50',
+            error && 'border-border-danger'
+          )}
         >
           {!isRequired && <option value="">Select…</option>}
           {prop.enum.map((option) => (

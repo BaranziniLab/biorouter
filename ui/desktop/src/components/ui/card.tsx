@@ -2,12 +2,18 @@ import * as React from 'react';
 
 import { cn } from '../../utils';
 
+/**
+ * A card is a subtle solid fill, not an outline (owner message 13, R-27, design.md 9.11):
+ * `--background-fill` with the 1px border kept but transparent (no geometry moves, and forced
+ * colours still draw the edge in the system ink). `.br-fill-surface` steps the controls inside it
+ * back to the page ground, so a field or a secondary button never sits fill on fill.
+ */
 function Card({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="card"
       className={cn(
-        'bg-background-card text-text-default flex flex-col gap-4 rounded-container border border-border-subtle py-4',
+        'br-fill-surface bg-background-fill text-text-default flex flex-col gap-4 rounded-container border border-transparent py-4',
         className
       )}
       {...props}

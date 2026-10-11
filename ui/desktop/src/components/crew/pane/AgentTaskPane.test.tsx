@@ -1231,7 +1231,7 @@ describe('AgentTaskPane', () => {
         );
         expect(note.closest('.crew-pane-footer')).toBeNull();
         expect(note.closest('.crew-pane-body')).not.toBeNull();
-        expect(note).toHaveClass('bg-background-muted', 'text-text-muted');
+        expect(note).toHaveClass('bg-background-fill', 'text-text-muted');
         expect(note).not.toHaveClass('bg-wash-info');
         expect(note).not.toHaveClass('text-text-info');
         expect(startButton()).toHaveAccessibleDescription(words);

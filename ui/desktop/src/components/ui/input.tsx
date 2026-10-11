@@ -11,21 +11,20 @@ import { cn } from '../../utils';
  * for a field with no leading icon; the type role is `text-label` (14/20/500),
  * the one every control shares.
  *
- * The resting edge is `--border-control` (spec 2.3): ink at 24% (`--border-emphasized`)
- * measured 1.6:1 on white, under the 3:1 a control's boundary owes, so an empty field read
- * as a smudge. It is authored in `main.css` (`.br-field`), which also restates the focus and
- * invalid edges, because an unlayered edge would otherwise out-rank them.
+ * FILLS BEFORE LINES (owner message 13, R-27, design.md 9.11). The field is a
+ * subtle solid fill with no resting outline: the control ground at rest
+ * (`--background-fill`), `--background-fill-strong` under the pointer, and the
+ * 1px border kept but transparent, so nothing moves when an edge appears. The
+ * whole look is authored
+ * in `main.css` (`.br-field`, layered so a caller's utility still wins), because
+ * the edges it draws are load-bearing: `--border-focus` while focused (D-15: a
+ * field firms an edge, never a ring), `--border-danger` while invalid, and the
+ * system ink in forced colours, which draw the transparent border. Disabled is
+ * the same fill at half opacity.
  *
- * Hover is a whisper, not a colour jump. `inset-ring-2` at 30% of that same edge
- * thickens the boundary from the inside, so nothing shifts and the field does not
- * change hue before you have even committed to it; the old
- * `hover:border-border-strong` swapped one neutral for another and read as a
- * state change the pointer had not earned yet.
- *
- * Focus is deliberately NOT specified here. `main.css` owns it globally for every
- * text field (D-15: focus is a surface shift, never a ring) — the field deepens
- * its own fill and firms its existing edge. All this file does is stand the
- * hover whisper down (`focus:inset-ring-0`) so the two treatments never stack.
+ * Inside a filled box (a Note, a Card, a dialog's inner panel, a caller's
+ * `.br-fill-surface`) the fill steps back to the page ground by itself, so a field
+ * never sits fill on fill.
  */
 const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<'input'>>(
   ({ className, type, ...props }, ref) => {
@@ -33,10 +32,9 @@ const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<'input'>>(
       <input
         type={type}
         className={cn(
-          'br-field flex h-control-md w-full rounded-element border bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow]',
+          'br-field flex h-control-md w-full rounded-element border px-2 text-label transition-[color,background-color,border-color]',
           'file:border-0 file:bg-transparent file:text-label file:text-text-default placeholder:text-text-muted',
-          'hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0',
-          'aria-invalid:border-border-danger disabled:cursor-not-allowed disabled:bg-background-muted disabled:opacity-50',
+          'aria-invalid:border-border-danger disabled:cursor-not-allowed disabled:opacity-50',
           className
         )}
         ref={ref}

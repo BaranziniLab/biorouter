@@ -74,9 +74,34 @@ Focus is a surface shift plus an inset 2px edge, never a ring. Four rules keep i
 
 `Button` writes `data-slot="button"` after the props it receives. A Button wrapped by `<DropdownMenuTrigger asChild>`, `TooltipTrigger`, `DialogTrigger` or any other trigger is handed that trigger's own `data-slot` through Radix's Slot, and a slot written before the spread lost to it. The element was drawn as a button but no longer matched `[data-slot='button']`, which is where `main.css` puts the forced-colours edge, the link underline and the copy field's footer, so a filled trigger had no boundary in Windows High Contrast (about sixty sites). Nothing keys on a trigger's slot, so a Button is always a button. `button.test.tsx` pins the order of the two.
 
+## Fills before lines
+
+Since owner message 13 (R-27, [design.md 9.11](../../design.md)) the in-page controls are a subtle solid fill with no resting outline. Floating surfaces (menus, popovers, tooltips, dialogs, toasts) keep their hairline and shadow, and the row lists keep their straight hairline, which is Crew's recipe.
+
+| Control | At rest | Hover and press | Edge |
+|---|---|---|---|
+| `Input`, `Textarea`, `FilterInput`, `SecretInput`, the `Select` trigger | `--br-control-ground` | `--background-fill-strong`, but not while focused or disabled | 1px, transparent; `--border-focus` while focused, `--border-danger` while invalid (it wins) |
+| Button `secondary`, and `outline` (now the same box) | `--br-control-ground` (`.br-fill-rest`) | `--background-fill-strong` (`.br-fill-hover`), with the 0.98 press | none; `outline` keeps a transparent 1px border so nothing that used it reflows |
+| `Badge` `neutral` | `--background-fill-strong` | | none |
+| `Card`, a neutral `Note`, `EmptyState`'s tile, `.biorouter-modal-panel` and `-row` | `--background-fill` | | 1px, transparent |
+| `SegmentedControl` track | `--background-fill` (the value `--background-muted` had) | | none; the thumb stays the raised surface |
+| `CopyField` | `--background-well` | | 1px, transparent |
+
+`--br-control-ground` is a private variable, `--background-fill` unless something sets it. A fill never sits on a fill: a `Card`, every `Note`, a dialog's inner panel and row, and any filled box that adds the class `br-fill-surface` set it to `--background-default` for their children, so a field or a secondary button inside rests one step back on the page ground and needs no class of its own. It is a private variable because the shared fill tokens are declared once per mode and nowhere else (`styles/themeNeutrals.test.ts`). Inside a dark popover the strong step is re-pointed one step deeper than the popover ground, which is why the filled button steps between two tokens instead of taking `tint-interactive`'s ink overlay: an overlay would lighten it into the ground.
+
+The neutral badge rests on the strong step, not the rest fill, because a badge sits on rows that wash on hover and the hover wash has the rest fill's value. On the rest fill a "Built-in" badge vanished into its row the moment the pointer arrived.
+
+Every edge that is kept transparent is still a border, never `border-0`: forced colours repaint the fill as Canvas and draw a transparent border in the system ink, so the box keeps its outline there, and nothing moves when an edge appears. A field is not found by its fill alone: its label or placeholder and its focus edge carry it, which is the trade-off design.md 9.11 records.
+
+A recessed ground (the sidebar, a `--background-muted` pane) makes the rest fill invisible (1.00:1). The surface's owner sets `--br-control-ground: var(--background-fill-strong)` on it, or passes a ground of its own, and chooses a hover.
+
+Crew is not converted. Its own recipes (`crew-*` classes) keep their lines; the shared primitives it renders take the fill like everywhere else.
+
 ## Fields and the cascade
 
-Text fields rest on `--border-control`, which clears 3:1 on every ground. The edge, and the defaults of a textarea (three rows, vertical resize), sit in `@layer components`. That matters in both directions. A layered rule lets a caller's `border-border-danger`, `min-h-*` or `resize-none` win, as a caller expects. An unlayered rule outranks every utility whatever its specificity: the first version of the edge hid the red border four forms pass in, and the first `.br-textarea` ignored `resize-none` and kept the workflow editors at three rows. The `Field` wrapper is `.br-form-field`, not `.br-field`, which belongs to the input alone.
+The field's fill and edges, and the defaults of a textarea (three rows, vertical resize), sit in `@layer components`. That matters in both directions. A layered rule lets a caller's `border-border-danger`, `bg-*`, `min-h-*` or `resize-none` win, as a caller expects. An unlayered rule outranks every utility whatever its specificity: the first version of the edge hid the red border four forms pass in, and the first `.br-textarea` ignored `resize-none` and kept the workflow editors at three rows. A caller's `bg-*` on a filled control also beats the layered hover, so a control given its own ground needs its own hover. The `Field` wrapper is `.br-form-field`, not `.br-field`, which belongs to the input alone.
+
+The Select's trigger is react-select's, which moves focus to a hidden input, so `.br-field` cannot reach it: its fill, its hover and its edges are written in the styles API, as Emotion's unlayered rules.
 
 react-select draws its own filled chevron and cross, which read heavier than every other glyph. The Select replaces both with the app's 16px stroke 1.5 icons (`ChevronDown`, `X`) through its `components` prop, ahead of whatever a caller passes, and the clear mark is muted until the pointer is over it.
 

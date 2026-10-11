@@ -130,9 +130,7 @@ describe('JoinDialog', () => {
     expect(dialog).toHaveAttribute('data-anchor', 'top');
     expect(dialog).toHaveClass('crew-dialog');
     // One Cancel style across Crew's dialogs (Q2-26): secondary, not ghost.
-    expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass(
-      'bg-background-medium'
-    );
+    expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass('br-fill-rest');
 
     await paste();
     await waitFor(() =>

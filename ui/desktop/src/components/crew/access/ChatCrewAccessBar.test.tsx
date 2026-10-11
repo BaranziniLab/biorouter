@@ -201,7 +201,7 @@ describe('the ordinary chat’s Crew access', () => {
     installDaemon({ grants: () => [grantRow({ session_id: 'chat-1' })] });
     renderChat();
     const revoke = await screen.findByRole('button', { name: accessCopy.revokeButton });
-    expect(revoke.className).toMatch(/\bbg-background-medium\b/);
+    expect(revoke.className).toMatch(/\bbr-fill-rest\b/);
     expect(revoke.className).not.toMatch(/\bbg-transparent\b/);
     expect(revoke.className).toMatch(/\bh-control-sm\b/);
   });

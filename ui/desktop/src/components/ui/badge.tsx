@@ -20,10 +20,17 @@ import { cn } from '../../utils';
  *
  * Tone is one formula, not six hand-picked pairs: the hue at 22% behind that same
  * hue's saturated ink (§2.5). `neutral` is the exception on purpose — it has no
- * hue to wash, so it takes a real surface step instead.
+ * hue to wash, so it takes a solid fill, never an outline (R-27), and the
+ * STRONG step of the two (`--background-fill-strong`), not the rest fill a field
+ * or a secondary button takes. A badge sits on rows that wash on hover, and the
+ * hover wash is the rest fill's value: on the rest fill a "Built-in" badge
+ * vanished into the row it labels the moment the pointer arrived (measured in
+ * the primitives gallery, 2026-10-10). The strong step stays a step off the
+ * page, the hovered row and a filled card, and inside a dark popover it is
+ * re-pointed one step deeper than the ground, so the badge reads there too.
  */
 const toneClass = {
-  neutral: 'bg-background-medium text-text-muted',
+  neutral: 'bg-background-fill-strong text-text-muted',
   accent: 'bg-background-accent/22 text-text-accent',
   info: 'bg-background-info/22 text-text-info',
   success: 'bg-background-success/22 text-text-success',
@@ -51,7 +58,7 @@ export interface BadgeProps extends React.ComponentProps<'span'> {
    *
    * ⚠ This is not a convenience. The global focus rule (design system D-15)
    * paints `background-color: var(--background-focus)` on the focused
-   * `<button>`, and `tone="neutral"` is `bg-background-medium` — an OPAQUE fill.
+   * `<button>`, and `tone="neutral"` is `bg-background-fill-strong` — an OPAQUE fill.
    * A `<button><Badge/></button>` therefore covers its own focus surface
    * completely and a keyboard user gets no focus indication at all. With
    * `asChild` the fill and the focus surface are the same box, so the focus

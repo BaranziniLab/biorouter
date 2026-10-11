@@ -2710,17 +2710,18 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 /* The inset white highlight had no dark override — it drew a glare line across
    the top of every dark panel (DR-12). Flat surfaces need no highlight at all. */
-.biorouter-modal-panel {
-  background: var(--background-muted);
-  border: 1px solid var(--border-subtle);
-  box-shadow: none;
-}
-
+/* @ws WS-PRIMITIVES begin: dialog inner boxes */
+/* A dialog's inner box is a subtle fill, not an outline (R-27, design.md 9.11): `--background-fill`
+   (the value `--background-muted` had, in both modes) with the 1px border kept TRANSPARENT, so no
+   geometry moves and forced colours still draw the edge in the system ink. A control inside steps
+   back to the page ground (`.br-fill-surface`, the primitives block). */
+.biorouter-modal-panel,
 .biorouter-modal-row {
-  background: var(--background-muted);
-  border: 1px solid var(--border-subtle);
+  background: var(--background-fill);
+  border: 1px solid transparent;
   box-shadow: none;
 }
+/* @ws WS-PRIMITIVES end: dialog inner boxes */
 
 /* ============================================================
    PROGRESS — ONE primitive (Astryx §10 "Progress").
@@ -4923,7 +4924,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   max-inline-size: 100%;
   padding: 2px;
   border-radius: var(--radius-element);
-  background: var(--background-muted);
+  /* The track is a field-like fill (R-27): the same `--background-fill` a field and a secondary
+     button rest on (it has the value `--background-muted` had, in both modes, so no pixel moves).
+     The thumb stays the raised surface above it. */
+  background: var(--background-fill);
   -webkit-app-region: no-drag;
 }
 
@@ -5457,14 +5461,56 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   appearance: none;
 }
 
-/* Text fields (`Input`, `Textarea`; the Select trigger sets the same edge through Emotion): the
-   resting edge is `--border-control` (3:1), not the 1.6:1 `--border-emphasized` utility.
-   Layered (`components`), so a caller's own edge utility still wins (the forms pass
-   `border-border-danger` for an invalid field); and because `components` out-ranks the
-   `@layer base` text-field focus rule, the focus and invalid edges are restated here. */
+/* THE CONTROL GROUND. A filled control (a field, the Select trigger, a secondary or outline button)
+   rests on `--br-control-ground`, which is `--background-fill` everywhere except
+   inside a filled box: there A FILL NEVER SITS ON A FILL (design.md 9.11), so the controls step one
+   ground back toward the page and rest on `--background-default`, still hovering on
+   `--background-fill-strong`. A Note (every tone), a Card, a dialog's inner panel and row, and any
+   caller's filled card that adds `.br-fill-surface` set it for their CHILDREN (custom properties
+   inherit), so the box keeps its own fill and the controls need no class of their own. A private
+   variable rather than a re-pointed `--background-fill`: the shared fill tokens are declared once
+   per mode and nowhere else (`themeNeutrals.test.ts`). */
+.br-fill-surface > *,
+.biorouter-modal-panel > *,
+.biorouter-modal-row > * {
+  --br-control-ground: var(--background-default);
+}
+
+/* Text fields (`Input`, `Textarea`, the schema form's field; the Select trigger draws the same look
+   through Emotion): FILLS BEFORE LINES (owner message 13, R-27, design.md 9.11). A field rests on
+   the control ground with its 1px border kept but TRANSPARENT, steps to `--background-fill-strong`
+   under the pointer, and draws an edge only when it means something: `--border-focus` while
+   focused (D-15: a field firms an edge, it never takes a ring) and `--border-danger` while invalid,
+   which wins over focus. The border is never `border-0`: nothing moves between rest and focus, and
+   forced colours repaint the fill as Canvas and draw the transparent border in the system ink, so
+   the field keeps its outline there with no rule of its own (`styles/fillTokens.browser.test.ts`).
+   The fill is not the only cue: a field is also found by its label or placeholder
+   (`--text-muted`, 4.5:1 or more on both fills) and its place in the form (design.md 9.11).
+   Hover leaves a focused or disabled field alone, so the box a person is typing in does not change
+   under the pointer.
+
+   The filled BUTTON (`secondary`, `outline`) takes the same ground from `.br-fill-rest`, and its
+   hover and press step from `.br-fill-hover`. A neutral badge is NOT on the control ground: it
+   rests on the strong step so it still reads on a row that washes under the pointer (badge.tsx).
+
+   Layered (`components`), so a caller's own utility still wins (the forms pass
+   `border-border-danger` for an invalid field, a toolbar its own `bg-*`); and because `components`
+   out-ranks the `@layer base` text-field focus rule, the focus and invalid edges are restated
+   here. */
 @layer components {
+  .br-field,
+  .br-fill-rest {
+    background-color: var(--br-control-ground, var(--background-fill));
+  }
+
   .br-field {
-    border-color: var(--border-control);
+    border-color: transparent;
+  }
+
+  .br-field:hover:not(:focus, :disabled),
+  .br-fill-hover:hover,
+  .br-fill-hover:active {
+    background-color: var(--background-fill-strong);
   }
 
   .br-field:focus,
@@ -8068,6 +8114,9 @@ code [class~='token'] {
    Copy button hugging the right edge. The value carries 4px block padding so
    one 20px line centres against the 28px button, which is also what lets the
    multi-line form keep its first line level with a top-right Copy. */
+/* @ws WS-PRIMITIVES begin: copy-field well */
+/* A well, not an outline (R-27): the 1px border stays, TRANSPARENT, so the 32px geometry above
+   holds and forced colours still draw the edge; the well alone sets the box off the page. */
 .biorouter-copy-field {
   display: flex;
   align-items: center;
@@ -8075,10 +8124,11 @@ code [class~='token'] {
   min-width: 0;
   padding-block: 1px;
   padding-inline: 12px 1px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   background-color: var(--background-well);
 }
+/* @ws WS-PRIMITIVES end: copy-field well */
 
 .biorouter-copy-field[data-multiline='true'] {
   align-items: flex-start;

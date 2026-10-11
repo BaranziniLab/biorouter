@@ -22,8 +22,8 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
 /**
  * The shared select (design.md §4.8).
  *
- * The trigger is visually identical to <Input>: same height, radius, border and
- * focus treatment. The menu is the shared popover surface.
+ * The trigger is visually identical to <Input>: same height, radius, fill and
+ * focus edge (the filled field of R-27). The menu is the shared popover surface.
  *
  * Layering: every call site lives inside a modal, and the menu is NOT portalled by
  * default — react-select renders it as an absolutely-positioned sibling. It
@@ -121,21 +121,15 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         container: () => 'w-full cursor-pointer relative',
         indicatorSeparator: () => 'h-0',
         // The trigger IS the <Input> chrome, class for class (§3.2): the 32px md
-        // rung, 8px text inset, the `--border-control` edge (set in `styles.control`
-        // below, where Emotion writes it unlayered, as `.br-field` does for Input) and the
-        // same inset-ring hover whisper. react-select gives us no `:focus` to
-        // hang the global rule on — it moves focus to a hidden input — so the
-        // focused branch reproduces main.css's surface shift by hand, and stands
-        // the whisper down at the same time so the two never stack.
-        control: ({ isFocused, isDisabled }) =>
+        // rung, 8px text inset, and the filled field of R-27 (design.md 9.11).
+        // react-select gives us no `:focus` to hang `.br-field` on — it moves
+        // focus to a hidden input — so the fill and the edge are set by state in
+        // `styles.control` below.
+        control: ({ isDisabled }) =>
           [
-            'flex h-control-md w-full items-center rounded-element border bg-background-default px-2',
-            'text-label text-text-default transition-[color,background-color,border-color,box-shadow]',
+            'flex h-control-md w-full items-center rounded-element border px-2',
+            'text-label text-text-default transition-[color,background-color,border-color]',
             isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-            isFocused ? 'border-border-focus bg-background-focus' : '',
-            !isDisabled && !isFocused
-              ? 'hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
-              : '',
           ].join(' '),
         placeholder: () => 'text-text-muted',
         singleValue: () => 'text-text-default',
@@ -212,13 +206,20 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // renders this and reads `height` sees nothing either way. `Select.test.ts`
         // asserts the override AT THE SOURCE instead of pretending to measure.
         //
-        // The edge is set here too (spec 2.3): `--border-control` at rest, `--border-focus` while
-        // focused. An unlayered declaration, like `.br-field` on Input, so no utility can pull it
-        // back to the 1.6:1 `--border-emphasized`.
+        // The filled field (R-27), in Emotion's unlayered rules so no utility can put a resting
+        // line back: the control ground at rest (`--background-fill`, or the page ground inside a
+        // filled box, as `.br-field` resolves it), a 1px border kept TRANSPARENT (forced colours
+        // still paint it in the system ink), `--border-focus` while focused (a field firms an edge
+        // under D-15), and `--background-fill-strong` under the pointer unless the trigger is
+        // focused or disabled, as a focused field keeps its fill while the person types.
         control: (base, state) => ({
           ...base,
           minHeight: 0,
-          borderColor: state.isFocused ? 'var(--border-focus)' : 'var(--border-control)',
+          borderColor: state.isFocused ? 'var(--border-focus)' : 'transparent',
+          backgroundColor: 'var(--br-control-ground, var(--background-fill))',
+          ...(state.isFocused || state.isDisabled
+            ? {}
+            : { '&:hover': { backgroundColor: 'var(--background-fill-strong)' } }),
         }),
         menu: (base) => ({ ...base, pointerEvents: 'auto', zIndex: MENU_Z }),
         // The same tier, carried out to a portalled menu. react-select's own

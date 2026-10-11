@@ -31,7 +31,9 @@ export function DependencyErrorBanner({
 }: DependencyErrorBannerProps) {
   return (
     <div
-      className={`rounded-element border border-border-danger/40 bg-background-danger/10 p-3 ${className}`}
+      // A tint, not an outline (R-27): the 1px border stays transparent for forced colours, and
+      // the Debug button inside steps back to the page ground (`.br-fill-surface`).
+      className={`br-fill-surface rounded-element border border-transparent bg-background-danger/10 p-3 ${className}`}
     >
       <div className="flex min-w-0 items-start justify-between gap-3">
         {/* min-w-0 so a long single-token error (a path, a URL) wraps inside the

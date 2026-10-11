@@ -37,7 +37,7 @@ export function ErrorUI({ error }: { error: string }) {
           <p className="text-body text-text-muted mb-2">An error occurred.</p>
         )}
 
-        <pre className="text-text-danger text-code dark:text-white p-4 bg-muted rounded-element w-full overflow-auto border border-border whitespace-pre-wrap">
+        <pre className="w-full overflow-auto whitespace-pre-wrap rounded-element border border-transparent bg-background-well p-4 text-code text-text-danger">
           {error}
         </pre>
 

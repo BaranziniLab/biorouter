@@ -221,7 +221,7 @@ Add any other context about the problem here.
       <DialogContent dismissible={!isBusy} className="sm:max-w-lg">
         <DialogHeader className="mb-0">
           <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-container border border-border-subtle bg-background-warning/40 text-text-warning">
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-container bg-wash-warning text-text-warning">
               <AlertTriangle size={20} />
             </div>
             <div className="min-w-0 flex-1">
@@ -255,7 +255,7 @@ Add any other context about the problem here.
           </p>
           {isPrivateChat && (
             <p
-              className="rounded-container border border-border-subtle bg-background-warning/40 px-3 py-2.5 text-text-default"
+              className="rounded-container bg-wash-warning px-3 py-2.5 text-text-default"
               data-testid="diagnostics-private-warning"
             >
               <strong>This chat is private.</strong> The diagnostics file includes its messages and
@@ -266,7 +266,7 @@ Add any other context about the problem here.
         </div>
         {isDownloading && (
           <div
-            className="flex items-center gap-3 rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-body text-text-muted"
+            className="flex items-center gap-3 rounded-container bg-background-fill px-3 py-2.5 text-body text-text-muted"
             role="status"
           >
             <Spinner />

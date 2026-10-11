@@ -34,16 +34,28 @@ describe('the shared Select', () => {
   });
 
   /**
-   * Spec 2.3: the trigger rests on `--border-control` (3:1), like Input's `.br-field`, and firms
-   * to `--border-focus` while focused. Emotion writes it unlayered, so no utility can pull it
-   * back to the 1.6:1 `--border-emphasized`.
+   * R-27 (design.md 9.11): the trigger is Input's filled field. It rests on the control ground
+   * (`--background-fill`, or the page ground inside a filled box) with a TRANSPARENT edge (forced
+   * colours still paint it), steps to `--background-fill-strong` under the pointer unless focused
+   * or disabled, and firms to `--border-focus` while focused. Emotion writes all of it unlayered,
+   * so no utility can put a resting line back.
    */
-  it('rests on the control edge and firms on focus, in the styles API', () => {
+  it('rests filled with no outline and firms an edge on focus', () => {
     const stylesBlock = SELECT.match(/styles=\{\{([\s\S]*?)\n {6}\}\}/)?.[1] ?? '';
     expect(stylesBlock).toMatch(
-      /borderColor:\s*state\.isFocused\s*\?\s*'var\(--border-focus\)'\s*:\s*'var\(--border-control\)'/
+      /borderColor:\s*state\.isFocused\s*\?\s*'var\(--border-focus\)'\s*:\s*'transparent'/
     );
-    expect(SELECT).not.toMatch(/'border-border-emphasized'/);
+    expect(stylesBlock).toMatch(
+      /backgroundColor:\s*'var\(--br-control-ground, var\(--background-fill\)\)'/
+    );
+    expect(stylesBlock).toMatch(
+      /state\.isFocused \|\| state\.isDisabled\s*\?\s*\{\}\s*:\s*\{ '&:hover': \{ backgroundColor: 'var\(--background-fill-strong\)' \} \}/
+    );
+    const control = SELECT.match(/control: \(\{ isDisabled \}\) =>([\s\S]*?)\.join/)?.[1];
+    expect(control).toMatch(/'flex h-control-md w-full items-center rounded-element border px-2'/);
+    // No resting line, no inset-ring whisper, no ground utility to fight the styles above.
+    expect(control).not.toMatch(/inset-ring|bg-background-/);
+    expect(SELECT).not.toMatch(/'border-border-emphasized'|var\(--border-control\)/);
   });
 
   /**

@@ -455,12 +455,14 @@ export default function DependencySetupModal() {
         {/* Biorouter CLI install card */}
         {(showCli || cliState === 'done') && (
           <div
-            className={`rounded-container border px-4 py-3 ${
+            // A fill, never an outline (R-27): the status tints carry the state, the 1px border
+            // stays transparent so forced colours still draw each box.
+            className={`br-fill-surface rounded-container border border-transparent px-4 py-3 ${
               cliState === 'done'
-                ? 'border-border-success/40 bg-background-success/10'
+                ? 'bg-background-success/10'
                 : cliState === 'error'
-                  ? 'border-border-danger/30 bg-background-danger/5'
-                  : 'biorouter-modal-panel bg-background-medium/20'
+                  ? 'bg-background-danger/10'
+                  : 'biorouter-modal-panel'
             }`}
           >
             <div className="flex items-center justify-between">
@@ -491,7 +493,7 @@ export default function DependencySetupModal() {
               )}
             </div>
             {cliOutput && (
-              <div className="mt-2 font-mono text-supporting text-text-muted bg-background-medium/40 rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+              <div className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                 {cliOutput}
               </div>
             )}
@@ -517,12 +519,12 @@ export default function DependencySetupModal() {
           return (
             <div
               key={info.name}
-              className={`rounded-container border px-4 py-3 ${
+              className={`br-fill-surface rounded-container border border-transparent px-4 py-3 ${
                 installed
-                  ? 'border-border-success/40 bg-background-success/10'
+                  ? 'bg-background-success/10'
                   : installState === 'error'
-                    ? 'border-border-danger/30 bg-background-danger/5'
-                    : 'border-border-subtle bg-background-medium/20'
+                    ? 'bg-background-danger/10'
+                    : 'biorouter-modal-panel'
               }`}
             >
               <div className="flex items-center justify-between">
@@ -587,7 +589,7 @@ export default function DependencySetupModal() {
                   ref={(el) => {
                     outputRefs.current[info.name] = el;
                   }}
-                  className="mt-2 font-mono text-supporting text-text-muted bg-background-medium/40 rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
+                  className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
                 >
                   {output}
                 </div>

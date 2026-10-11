@@ -52,7 +52,7 @@ export function WorkflowWarningModal({
 
         {hasSecurityWarnings && (
           <div className="px-6">
-            <div className="rounded-container border border-border-warning/40 bg-background-warning/10 p-4">
+            <div className="rounded-container bg-wash-warning p-4">
               <div className="flex items-start">
                 <div className="ml-3">
                   <div className="mt-2 text-body text-text-warning">

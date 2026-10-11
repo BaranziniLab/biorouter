@@ -129,7 +129,7 @@ describe('YouRow', () => {
     const menu = await screen.findByRole('menu');
     const header = menu.querySelector('[data-crew-menu-header]') as HTMLElement;
     const badge = within(header).getByText(copy.devProfile('alice')).parentElement as HTMLElement;
-    expect(badge.className).toContain('bg-background-medium');
+    expect(badge.className).toContain('bg-background-fill-strong');
   });
 
   it('shows no profile badge in a built app, even one launched with a dev profile (Q2-43)', async () => {

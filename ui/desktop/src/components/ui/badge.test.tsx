@@ -14,7 +14,7 @@ describe('Badge', () => {
    *
    * The global focus rule (design system D-15) paints
    * `background-color: var(--background-focus)` on the focused `<button>`, and
-   * `tone="neutral"` is `bg-background-medium` — an OPAQUE fill. A
+   * `tone="neutral"` is `bg-background-fill-strong` — an OPAQUE fill. A
    * `<button><Badge/></button>` therefore covers its own focus surface
    * completely, and a keyboard user gets no focus indication at all on any
    * toggle chip. With `asChild` the fill and the focus surface are the same box.
@@ -37,7 +37,7 @@ describe('Badge', () => {
     // The chip height, the neutral tone and the call site's own class all land
     // on the button itself — there is no wrapper between them.
     expect(button.className).toContain('h-6');
-    expect(button.className).toContain('bg-background-medium');
+    expect(button.className).toContain('bg-background-fill-strong');
     expect(button.className).toContain('tint-selected');
     expect(button.querySelector('span')).toBeNull();
   });

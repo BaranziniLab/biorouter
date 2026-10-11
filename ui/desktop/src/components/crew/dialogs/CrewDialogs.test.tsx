@@ -457,7 +457,7 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
       snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }),
     });
     const cancel = await screen.findByRole('button', { name });
-    expect(cancel).toHaveClass('bg-background-medium');
+    expect(cancel).toHaveClass('br-fill-rest');
     expect(cancel).not.toHaveClass('border-border-emphasized');
   });
 
