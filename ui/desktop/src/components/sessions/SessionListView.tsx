@@ -38,7 +38,7 @@ import {
   groupSessionsByDate,
   type DateGroup,
 } from '../../utils/dateUtils';
-import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
+import { groupSessionsByParent, sortByActivity, withoutSubagents } from './sessionGrouping';
 import {
   ChatRowContextMenuContent,
   ChatRowDropdownMenuContent,
@@ -630,6 +630,12 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     () => (showSubagents ? sessions : withoutSubagents(sessions)),
     [sessions, showSubagents]
   );
+
+  // One order for the same data (V1-R2-8): the sidebar's, last activity newest first with
+  // `id` ascending among chats that share a second. The daemon's list orders by
+  // `updated_at` alone, so ties came back in scan order and a chat sat at one place here
+  // and another in the sidebar.
+  const orderedSessions = useMemo(() => sortByActivity(visibleSessions), [visibleSessions]);
 
   const filteredSessions = useMemo(
     () =>

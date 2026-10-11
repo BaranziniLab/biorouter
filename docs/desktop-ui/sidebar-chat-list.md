@@ -40,7 +40,11 @@ the clock, so every combination is tested without a DOM:
 
 Date buckets come from `utils/chatDateBuckets.ts`, which History also uses. Name sort is
 `localeCompare` with numeric ordering, case ignored, and default names ("New chat") last. Ties break
-on the chat id, so a re-render never reorders equal rows.
+on the chat id, so a re-render never reorders equal rows. History breaks its ties the same way:
+`GET /sessions` orders by `updated_at` alone, so chats sharing a second came back in scan order and
+the two lists drew them differently (vision V1-R2-8). `sortByActivity` in
+`components/sessions/sessionGrouping.ts` sorts History by last activity, then id ascending, and a
+test pins it to `sortSidebarChats(…, 'activity')`.
 
 The view is stored in `biorouter:sidebar-chat-view` as `{"v":1,"groupBy":"date","sortBy":"activity"}`.
 It is clamped field by field on read, every storage access is wrapped, and a change in one window
