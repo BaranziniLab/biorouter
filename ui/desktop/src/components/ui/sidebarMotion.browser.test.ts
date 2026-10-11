@@ -60,6 +60,18 @@ const COMPACT_GAP = `
 body.biorouter-sidebar-compact [data-slot='sidebar-gap'] { width: 0 !important; }
 `;
 
+/** The global reduced-motion reset, word for word (it carries no block marker). */
+const REDUCED_MOTION = `@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}`;
+
 const PAGE =
   '<!doctype html><html><head><style>' +
   [
@@ -68,6 +80,7 @@ const PAGE =
     )} ${token('--z-sticky')} }`,
     UTILITIES,
     COMPACT_GAP,
+    REDUCED_MOTION,
     block('WS-SIDEBAR', 'sidebar open and close motion'),
     block('WS-SIDEBAR', 'overlay shadow only while open'),
     block('WS-TOKENS', 'resize rule'),
@@ -142,6 +155,10 @@ describe('the sidebar opens and closes in a real engine', () => {
     expect(SIDEBAR_TSX).toContain('group-data-[collapsible=offcanvas]:translate-x-[-100%]');
   });
 
+  it('models the reduced-motion reset main.css really has', () => {
+    expect(MAIN_CSS).toContain(REDUCED_MOTION);
+  });
+
   it('slides the panel with the gap: out over 175ms, in over 300ms', async () => {
     if (!browser) return;
     const tab = await open();
@@ -204,5 +221,68 @@ describe('the sidebar opens and closes in a real engine', () => {
     } finally {
       await tab.close();
     }
+  });
+
+  /**
+   * Vision V1-R2-9. Keyed on the state alone, the shadow went in the first collapsed frame while
+   * the panel was still at x=0, so the overlay's edge went flat in one frame and the panel slid out
+   * flat. Closing, the shadow now stays until the slide ends; opening, it is there at once.
+   */
+  describe('the overlay keeps its shadow while it slides out', () => {
+    const shadow = (tab: Page) =>
+      tab.evaluate(
+        () => getComputedStyle(document.querySelector('[data-slot="sidebar-container"]')!).boxShadow
+      );
+    const compact = (tab: Page) =>
+      tab.evaluate(() => document.body.classList.add('biorouter-sidebar-compact'));
+
+    it('drops the shadow only once the panel has left, and wears it from the first frame open', async () => {
+      if (!browser) return;
+      const tab = await open();
+      try {
+        await compact(tab);
+        // Open and drawn, lifted off the page (this also settles the style a close starts from).
+        expect(await shadow(tab)).not.toBe('none');
+        await setState(tab, 'collapsed');
+        // The first collapsed frame: the panel has barely moved, and its edge is still lifted.
+        expect(await shadow(tab)).not.toBe('none');
+        await tab.waitForTimeout(80);
+        const midway = await panelX(tab);
+        expect(midway).toBeLessThan(0);
+        expect(midway).toBeGreaterThan(-288);
+        expect(await shadow(tab)).not.toBe('none');
+        await tab.waitForTimeout(250);
+        expect(await panelX(tab)).toBe(-288);
+        expect(await shadow(tab)).toBe('none');
+
+        await setState(tab, 'expanded');
+        expect(await shadow(tab)).not.toBe('none');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('drops it with the panel when nothing slides: a resize, or reduced motion', async () => {
+      if (!browser) return;
+      for (const setup of ['resizing', 'reduced'] as const) {
+        const tab = await open();
+        try {
+          await compact(tab);
+          expect(await shadow(tab), setup).not.toBe('none');
+          if (setup === 'resizing') {
+            await tab.evaluate(() => document.body.classList.add('biorouter-window-resizing'));
+          } else {
+            await tab.emulateMedia({ reducedMotion: 'reduce' });
+          }
+          await setState(tab, 'collapsed');
+          await tab.waitForTimeout(40);
+          // Well inside the 175ms a slide would take: the panel is gone, and so is its shadow.
+          expect(await panelX(tab), setup).toBe(-288);
+          expect(await shadow(tab), setup).toBe('none');
+        } finally {
+          await tab.close();
+        }
+      }
+    });
   });
 });

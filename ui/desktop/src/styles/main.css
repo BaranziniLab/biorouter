@@ -6414,6 +6414,25 @@ body.biorouter-sidebar-compact
   > [data-slot='sidebar-container'] {
   box-shadow: var(--shadow-popover);
 }
+
+/* …and it keeps that shadow while it slides out (vision V1-R2-9). Keyed on
+   the state alone, the shadow went in the first collapsed frame, with the panel
+   still at x=0, so its edge went flat in one frame and the panel slid out flat
+   over the page. Closing, the shadow now goes in ONE step at the end of the
+   slide (`step-end` over the slide's own duration), never faded: principle 9
+   animates transform, opacity and clip-path, and a shadow is none of them.
+   A duration, not a delay: WS-TOKENS' resize rule and the reduced-motion reset
+   shorten durations and leave delays alone, so a delayed shadow would linger
+   on a panel that had already snapped away; this one goes with it.
+   Opening needs nothing: the expanded state names no shadow transition, so the
+   shadow is there from the first frame. */
+body.biorouter-sidebar-compact
+  [data-slot='sidebar'][data-state='collapsed']
+  > [data-slot='sidebar-container'] {
+  transition-property: translate, transform, box-shadow;
+  transition-duration: var(--dur-fast-max);
+  transition-timing-function: var(--ease-out), var(--ease-out), step-end;
+}
 /* @ws WS-SIDEBAR end: overlay shadow only while open */
 
 /* …and it has an EDGE where it meets the page (QA Q3-60). The rule above
