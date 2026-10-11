@@ -69,7 +69,14 @@ export interface SidebarSessionsState {
   sessions: SessionSummary[];
   hasMore: boolean;
   isLoading: boolean;
-  /** True while a `loadAll` read is still paging through the list. */
+  /**
+   * True while a `loadAll` view's list is read for the FIRST time: until then it
+   * holds only the pages the default view scrolled through, and any arrangement
+   * of them but the default one is wrong (vision V1-R3-3). A list read to its end
+   * (or to the cap) once stays whole: a later re-read of the tail, which a head
+   * refresh asks for when the daemon has more rows than the head page, only
+   * brings in a row that newly appeared with an old date, so it is not reported.
+   */
   isLoadingAll: boolean;
   loadMore: () => void;
 }
@@ -133,6 +140,10 @@ export default function useSidebarSessions(
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
+  // Set once a read has reached the end of the list or the cap (see
+  // `isLoadingAll`), and never cleared: rows are only added or removed by id
+  // after that, so the list stays whole. A failed read does not set it.
+  const [readToEnd, setReadToEnd] = useState(false);
   const sessionsRef = useRef<SessionSummary[]>([]);
   const nextCursorRef = useRef<string | null>(null);
   const hasMoreRef = useRef(true);
@@ -220,6 +231,7 @@ export default function useSidebarSessions(
       hasMoreRef.current = pageHasMore;
       hasLoadedRef.current = true;
       setHasMore(pageHasMore);
+      if (!pageHasMore) setReadToEnd(true);
     } catch {
       hasMoreRef.current = false;
       setHasMore(false);
@@ -416,6 +428,7 @@ export default function useSidebarSessions(
 
     let cursor = nextCursorRef.current;
     let more: boolean = hasMoreRef.current;
+    let failed = false;
     try {
       while (more && loadAllRef.current && mountedRef.current) {
         const read = sessionsRef.current.length + (pendingAllRef.current?.length ?? 0);
@@ -444,6 +457,7 @@ export default function useSidebarSessions(
     } catch {
       // As `loadPage` does: a failed page ends the list where it is.
       more = false;
+      failed = true;
     } finally {
       const fetched = pendingAllRef.current ?? [];
       pendingAllRef.current = null;
@@ -456,6 +470,9 @@ export default function useSidebarSessions(
         hasMoreRef.current = more;
         setSessions(merged);
         setHasMore(more);
+        if (!failed && (!more || merged.length >= SIDEBAR_SESSION_LOAD_ALL_CAP)) {
+          setReadToEnd(true);
+        }
         setIsLoading(false);
         if (refreshQueuedRef.current) {
           refreshQueuedRef.current = false;
@@ -475,7 +492,7 @@ export default function useSidebarSessions(
     sessions,
     hasMore,
     isLoading,
-    isLoadingAll: wantsMoreForAll,
+    isLoadingAll: wantsMoreForAll && !readToEnd,
     loadMore,
   };
 }

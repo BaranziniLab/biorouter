@@ -208,17 +208,19 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
   }, 120_000);
 
   /**
-   * `list` swaps the chat list the daemon serves (`serve` answers each `/sessions/sidebar` URL)
-   * and the window size, for the cases that watch the list itself rather than its paint.
+   * `list` swaps the chat list the daemon serves (`serve` answers each `/sessions/sidebar` URL,
+   * and may take its time), the window size, and a script run before the app's own (`init`), for
+   * the cases that watch the list itself rather than its paint.
    */
   async function open(
     mode: 'light' | 'dark',
     forcedColors = false,
     daemon: 'attached' | 'lost' = 'attached',
-    list: { serve?: (url: string) => unknown; height?: number } = {}
+    list: { serve?: (url: string) => unknown; height?: number; init?: string } = {}
   ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1200, height: list.height ?? 900 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
+    if (list.init) await tab.addInitScript(list.init);
     const html =
       `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
       `<body style="margin:0"><div id="root"></div>` +
@@ -233,7 +235,11 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify(
-            list.serve?.(url) ?? { sessions: sessions(), has_more: false, next_cursor: null }
+            (await list.serve?.(url)) ?? {
+              sessions: sessions(),
+              has_more: false,
+              next_cursor: null,
+            }
           ),
         });
       } else {
@@ -782,6 +788,115 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
             clip: { x: 0, y: 0, width: 600, height: 700 },
           });
         }
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
+     * Vision V1-R3-3. A view that sorts or groups the whole list was drawn from the part already
+     * read (the first page, or the ten rows the default view had paged in), and reordered when the
+     * rest landed 0.2 to 0.4 s later, under a resting pointer. Every order the list paints, frame
+     * by frame, must now be the complete arrangement, or the default one before a switch.
+     */
+    it('paints a view that needs every chat only once its read has landed (V1-R3-3)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const now = Date.now();
+      const TOTAL = 120;
+      // Names out of activity order (37 is prime to 120), so no part of the list sorts by name
+      // into the start of the whole list's name order: that starts "Chat 000", the oldest chat.
+      const all = Array.from({ length: TOTAL }, (_, i) => ({
+        id: `s${i + 1}`,
+        name: `Chat ${String(((i + 1) * 37) % TOTAL).padStart(3, '0')}`,
+        created_at: new Date(now - i * 60_000).toISOString(),
+        updated_at: new Date(now - i * 60_000).toISOString(),
+        working_dir: '/Users/me/projects/cohort',
+        message_count: 2,
+        user_set_name: true,
+        privacy_tier: 'public',
+      }));
+      const byName = [...all]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((row) => `chat:${row.id}`);
+      const byActivity = all.map((row) => `chat:${row.id}`);
+      // The daemon pages from an opaque cursor; the rest of a full read takes a while.
+      const serve = async (url: string) => {
+        const query = new URL(url).searchParams;
+        const from = Number(query.get('cursor') ?? 0);
+        const limit = Number(query.get('limit') ?? 10);
+        if (from > 0 && limit > 50) await new Promise((done) => setTimeout(done, 600));
+        const rows = all.slice(from, from + limit);
+        const next = from + rows.length;
+        return {
+          sessions: rows,
+          has_more: next < TOTAL,
+          next_cursor: next < TOTAL ? String(next) : null,
+        };
+      };
+      // Every distinct order of drawn rows, sampled each frame from before the app starts.
+      const recorder = (stored: string | null) => `
+        ${stored ? `localStorage.setItem('biorouter:sidebar-chat-view', ${JSON.stringify(stored)});` : ''}
+        window.__orders = [];
+        (function tick() {
+          const rows = Array.from(
+            document.querySelectorAll('[data-testid="recent-chat-scroll"] [data-row^="chat:"]'),
+            (el) => el.getAttribute('data-row')
+          );
+          const last = window.__orders[window.__orders.length - 1];
+          if (!last || last.join() !== rows.join()) window.__orders.push(rows);
+          requestAnimationFrame(tick);
+        })();
+      `;
+      const painted = (tab: Page) =>
+        tab.evaluate(() =>
+          (window as unknown as { __orders: string[][] }).__orders.filter((o) => o.length > 0)
+        );
+      const startsOf = (whole: string[]) => (order: string[]) =>
+        order.every((id, index) => whole[index] === id);
+      const topRow = async (tab: Page) => {
+        const orders = await painted(tab);
+        return orders[orders.length - 1]?.[0];
+      };
+
+      // A reload with None / Name stored.
+      const stored = JSON.stringify({ v: 1, groupBy: 'none', sortBy: 'name' });
+      let tab = await open('light', false, 'attached', { serve, init: recorder(stored) });
+      try {
+        await expect.poll(() => topRow(tab)).toBe(byName[0]);
+        const orders = await painted(tab);
+        expect
+          .soft(
+            orders.filter((order) => !startsOf(byName)(order)),
+            'every order painted on the reload is the complete name order'
+          )
+          .toEqual([]);
+      } finally {
+        await tab.close();
+      }
+
+      // The default view, then Sort by Name through the real menu.
+      tab = await open('light', false, 'attached', { serve, init: recorder(null) });
+      tab.setDefaultTimeout(8_000);
+      try {
+        await tab.click('[data-testid="sidebar-view-options"]');
+        await tab.locator('[data-testid="sidebar-view-sort-by"]').hover();
+        await tab.getByRole('menuitemradio', { name: 'Name' }).click();
+        await tab.waitForSelector('[data-testid="recent-chat-loading"]');
+        await expect.poll(() => topRow(tab), { timeout: 5_000 }).toBe(byName[0]);
+        const orders = await painted(tab);
+        const firstNamed = orders.findIndex((order) => order[0] !== byActivity[0]);
+        expect
+          .soft(
+            orders.slice(0, firstNamed).filter((order) => !startsOf(byActivity)(order)),
+            'before the read lands, the default order'
+          )
+          .toEqual([]);
+        expect
+          .soft(
+            orders.slice(firstNamed).filter((order) => !startsOf(byName)(order)),
+            'after it, only the complete name order'
+          )
+          .toEqual([]);
       } finally {
         await tab.close();
       }

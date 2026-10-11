@@ -695,3 +695,61 @@ describe('loadAll shows the whole list at once', () => {
     expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Vision V1-R3-3. The list does not draw a non-default view while `isLoadingAll`, so the flag
+ * must mean "this list is still only part of the list", not "a request is running". Once read to
+ * its end the list stays whole: a head refresh that finds more rows than its page re-reads the
+ * tail, and reporting that read would hide a view the person already had, every time the window
+ * came back to the front.
+ */
+describe('loadAll reports only the first full read', () => {
+  const page = (from: number, count: number) =>
+    Array.from({ length: count }, (_, index) => makeSummary(from + index));
+
+  it('does not report the re-read a head refresh starts after the list was read to its end', async () => {
+    let tail: (value: unknown) => void = () => {};
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' } })
+      .mockResolvedValueOnce({
+        data: { sessions: page(50, 20), has_more: false, next_cursor: null },
+      })
+      // The head refresh: more rows than its page, so the tail is read again.
+      .mockResolvedValueOnce({ data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' } })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          tail = resolve;
+        })
+      );
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(result.current.sessions).toHaveLength(70));
+    expect(result.current.isLoadingAll).toBe(false);
+
+    act(() => notifySessionListChanged());
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(4));
+    expect(result.current.sessions).toHaveLength(70);
+    expect(result.current.isLoadingAll).toBe(false);
+
+    await act(async () => {
+      tail({ data: { sessions: page(50, 20), has_more: false, next_cursor: null } });
+    });
+    expect(result.current.isLoadingAll).toBe(false);
+  });
+
+  it('reports the read after a failed one, which did not reach the end', async () => {
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' } })
+      .mockRejectedValueOnce(new Error('daemon gone'))
+      .mockResolvedValueOnce({ data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' } })
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.hasMore).toBe(false));
+
+    act(() => notifySessionListChanged());
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(4));
+    expect(result.current.isLoadingAll).toBe(true);
+  });
+});

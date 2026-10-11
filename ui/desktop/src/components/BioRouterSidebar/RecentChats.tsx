@@ -626,7 +626,10 @@ interface RecentChatsProps {
   runningSessionIds: ReadonlySet<string>;
   hasMore: boolean;
   isLoadingMore: boolean;
-  /** True while a non-default view is still reading every page. */
+  /**
+   * True while a non-default view reads the whole list for the first time. The
+   * view is not drawn until it lands (vision V1-R3-3): see `shownView`.
+   */
   isLoadingAll?: boolean;
   onLoadMore: () => void;
   onOpen: (sessionId: string, title?: string, userSetName?: boolean) => void;
@@ -656,10 +659,31 @@ export default function RecentChats({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const { diverge } = useDiverge();
 
+  // The view the list DRAWS (vision V1-R3-3). A view that sorts or groups the
+  // whole list is not drawn from part of it: until its first full read lands,
+  // the list keeps drawing the view it drew before (the default, the only one
+  // a part of the list can be drawn in), or, on a first load with that view
+  // stored, no rows and only "Loading chats…". Drawn from its first page, a
+  // name sort put the wrong 50 chats in name order and then reordered them all
+  // when the read landed, 0.2 to 0.4 s later, under a resting pointer. The view
+  // menu shows the choice at once; the rows change once, to the complete list.
+  const viewReady = !isLoadingAll;
+  const [lastReadyView, setLastReadyView] = useState<SidebarChatView | null>(
+    viewReady ? view : null
+  );
+  if (
+    viewReady &&
+    (lastReadyView?.groupBy !== view.groupBy || lastReadyView?.sortBy !== view.sortBy)
+  ) {
+    setLastReadyView(view);
+  }
+  const shownView = viewReady ? view : lastReadyView;
+
   // Kept per view while this list is held: switching back is a lookup (R-28).
   const arranged = useMemo(
-    () => arrangeSidebarChatsCached(sessions, view, Date.now(), { homeDir }),
-    [sessions, view, homeDir]
+    () =>
+      shownView ? arrangeSidebarChatsCached(sessions, shownView, Date.now(), { homeDir }) : [],
+    [sessions, shownView, homeDir]
   );
 
   // Rename in place. The draft lives here, keyed by session id, so a head
@@ -670,41 +694,38 @@ export default function RecentChats({
   // Principle 9: while the pointer is over the list (or a row is being renamed)
   // the rows hold still; the live order applies when it leaves.
   //
-  // ⚠ Only a COMPLETE list is held past its read (vision V1-R2-3). A non-default
-  // view shows its first page while the rest is read. A hold taken from that
-  // page keeps its rows still during the read (V1-H2), and gives way to the
-  // complete arrangement the moment the read lands: one move, at the end. Kept
-  // as it was, it held the first page's order (50 rows sorted by name, the
-  // wrong 50) for as long as the pointer rested on the list. Nothing is held
+  // A hold is of the view DRAWN. A view that waits for its full read is not
+  // drawn until the read lands (`shownView`), so what is drawn is always right
+  // for its view and a hold taken from it can stand (V1-R2-3 had to let go of a
+  // hold taken from a first page, which was the wrong 50 rows in name order).
+  // When the read lands the drawn view changes, the old hold stops applying,
+  // and the list is held again from the complete arrangement. Nothing is held
   // while the list is empty either, so a first load's first page is held as
   // drawn rather than as "every row arrives below nothing", which held nothing.
-  const listComplete = !isLoadingAll;
   const [pointerInside, setPointerInside] = useState(false);
-  const [held, setHeld] = useState<{ arrangement: HeldArrangement; complete: boolean } | null>(
-    null
-  );
+  const [held, setHeld] = useState<HeldArrangement | null>(null);
   const holding = pointerInside || editing !== null;
   const heldApplies =
     holding &&
     held !== null &&
-    held.arrangement.view.groupBy === view.groupBy &&
-    held.arrangement.view.sortBy === view.sortBy &&
-    (held.complete || !listComplete);
+    shownView !== null &&
+    held.view.groupBy === shownView.groupBy &&
+    held.view.sortBy === shownView.sortBy;
   const groups = useMemo(
-    () => (heldApplies && held ? applyHeldArrangement(held.arrangement, arranged) : arranged),
+    () => (heldApplies && held ? applyHeldArrangement(held, arranged) : arranged),
     [heldApplies, held, arranged]
   );
   // Take the hold from what is drawn: whenever the list is held and no hold
-  // applies (none yet, another view's, or a partial one the full read has
-  // replaced), the rows on screen ARE the live arrangement.
+  // applies (none yet, or another view's), the rows on screen ARE the live
+  // arrangement.
   useEffect(() => {
     if (!holding) {
       setHeld(null);
       return;
     }
-    if (heldApplies || arranged.length === 0) return;
-    setHeld({ arrangement: holdArrangement(arranged, view), complete: listComplete });
-  }, [holding, heldApplies, arranged, view, listComplete]);
+    if (heldApplies || !shownView || arranged.length === 0) return;
+    setHeld(holdArrangement(arranged, shownView));
+  }, [holding, heldApplies, arranged, shownView]);
 
   // The list's own height (a ResizeObserver below keeps it): how many lines a
   // view draws at first, and when the fill check runs again.
@@ -718,13 +739,16 @@ export default function RecentChats({
   // order was first drawn under the old key and the old budget, then every row
   // was mounted a second time under the new key, so a switch paid for its rows
   // twice (and once more for every line scrolled into view before it).
-  const viewKey = `${view.groupBy}/${view.sortBy}`;
+  //
+  // The first view a list draws is not a change: a first load whose stored
+  // view waited for its full read (`shownView` null until then) draws at rest.
+  const viewKey = shownView ? `${shownView.groupBy}/${shownView.sortBy}` : null;
   const [drawn, setDrawn] = useState({ viewKey, generation: 0, budget: SIDEBAR_RENDER_WINDOW });
-  if (drawn.viewKey !== viewKey) {
+  if (drawn.viewKey !== viewKey && viewKey !== null) {
     setDrawn({
       viewKey,
-      generation: drawn.generation + 1,
-      budget: sidebarRenderWindow(listHeight),
+      generation: drawn.viewKey === null ? drawn.generation : drawn.generation + 1,
+      budget: drawn.viewKey === null ? drawn.budget : sidebarRenderWindow(listHeight),
     });
   }
   const viewGeneration = drawn.generation;
