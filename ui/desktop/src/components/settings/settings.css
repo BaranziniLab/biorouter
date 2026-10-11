@@ -22,3 +22,48 @@
 .biorouter-settings-tabs > [role='tab'] {
   height: 100%;
 }
+
+/*
+ * Reset data's rows: a 24px checkbox target before the label, which the standard row's 10px
+ * padding wrapped into a 45px line (24 + 20 + the 1px transparent edge), against the 40px every
+ * other row in Settings is (vision V4-22). 24 + 8 + 7 + the 1px edge is 40 again, and the box
+ * still sits on the row's centre line. Authored here, not as a utility, because a newly written
+ * Tailwind class can silently fail to generate under `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop
+ * shell geometry"); the 12px side padding is the row recipe's own, so the checkbox's box lands
+ * 16px in from the dialog body, where the count above and the permanence line below start.
+ */
+.br-reset-option {
+  padding: 8px 12px 7px;
+}
+
+/*
+ * The settings select's edge in forced colours (vision V4-24). The trigger is a filled `Button`
+ * slotted into a `DropdownMenuTrigger`; the trigger's `data-slot` replaces the button's, so the
+ * shared `[data-slot='button'] { border: 1px solid ButtonText }` in `main.css` does not match it,
+ * and forced colours (which repaint the fill as Canvas) left a value and a chevron with no
+ * boundary, in the row above a Max turns field that has one. At rest it stays a fill with no
+ * outline (R-27); only forced colours draw the edge, in the system colours, and the box is
+ * `box-sizing: border-box` at a fixed height, so the edge costs no geometry.
+ */
+@media (forced-colors: active) {
+  .br-setting-select {
+    border: 1px solid ButtonText;
+  }
+
+  .br-setting-select:disabled {
+    border-color: GrayText;
+  }
+}
+
+/*
+ * The band's title is not a fourth tab (vision V4-06). `SettingsView` wraps the page header in
+ * `<Tabs>`, whose root sets `text-text-muted`, so the `<h1>` inherited the very ink the inactive
+ * tabs wear and "Settings Models Chat App" read as four tabs, the first one unselected. The
+ * title takes the default ink, which is also what the active tab wears, so the one muted pair
+ * left in the band is the two tabs that are not open. Scoped by the band's own tab list, so no
+ * other page's header changes; if the Tabs root ever stops painting its text muted this rule
+ * says the same thing twice and can go.
+ */
+.biorouter-page-header:has(.biorouter-settings-tabs) h1 {
+  color: var(--text-default);
+}

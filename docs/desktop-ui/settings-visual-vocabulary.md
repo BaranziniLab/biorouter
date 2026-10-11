@@ -99,8 +99,17 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   loaded={false}`). Approval mode drawing "Autonomous" first and "Manual" a moment later was the
   case that made this a rule.
 - No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
-  row (a checkbox list inside a dialog, a row that is itself a button) uses the same
-  `biorouter-settings-row` class with `px-3 py-2.5`.
+  row is still 40px, and the padding that makes it so is not `px-3 py-2.5`: that is 10 above, 10
+  below, a 20px line and the 1px transparent edge, which is 41px, and 45px around a 24px
+  checkbox target (measured, vision V4-22). A row that is itself a button (Tool permissions'
+  extension list) takes `br-setting-row` with the `biorouter-settings-row` class: 10, a 20px
+  line, 9 and the edge, 40px exactly, with a name and a chevron and nothing else. A checkbox
+  list row (Reset data) takes `br-reset-option`, which is `8px 12px 7px` around the 24px target,
+  also 40px. `settings/dialogRowsGeometry.browser.test.tsx` measures both in Chromium.
+- **Text that frames a checkbox list starts where the boxes do.** The dialog body is 16px in,
+  the row's hairline 8px further and its padding 12px more, so the box's visible edge is 16px
+  past the body edge (its 24px target has 4px of air). The count above the list and the
+  permanence line below it take `pl-4`, so the three share one left edge.
 
 Rows are **direct children** of `.biorouter-settings-list`. This is not tidiness: the row's
 hairline is drawn by `::after` and suppressed on `:last-child`, which is relative to a row's
@@ -337,6 +346,17 @@ tree through `aria-describedby`. `SettingRow help` and `SettingSection help` mou
 - Plain text, at most two sentences, no links, no buttons, no bold. Anything longer belongs
   in a dialog or a `Disclosure`.
 - Never `title=`: `AppTooltipLayer` copies a title into the control's name.
+- **A daemon's description of a thing is data, not copy.** An extension's description arrives
+  with em dashes, "BioRouter", whole sentences and a cut-off tail, and twelve of them drew a
+  two-line column in Tool permissions (V4-09). A row shows the name; the description lives on
+  the page that is about that thing (Extensions), not in a list that only needs to say which
+  one opens.
+- **A path is behind an action, not on a line.** The Project hints dialog says "New
+  .biorouterhints file" in one family and offers Copy path, with the whole path in the
+  button's tooltip (V4-23); a path in mono inside a sans sentence is two families in one line.
+- **A status line says a difference.** "Restart to apply" is true only while the switch
+  differs from what the window started with, so turning Spellcheck off and on again clears it
+  (V4-21).
 
 Enforced by **V9** in `settingsVocabulary.test.ts` (no `max-w-md text-supporting` description
 paragraph in a row).
@@ -353,6 +373,11 @@ paragraph in a row).
 | Pick several | `Checkbox` on the left of its label, inside a dialog (Reset data) | checkboxes on the page |
 | A number | `Input type="number"`, `w-20` | a disclosure hiding one field |
 | Open an editor | `secondary sm` button, "Edit…" | an icon-tile card |
+
+A select's trigger is a filled button with no outline at rest. Under forced colours the fill
+is repainted as Canvas, so `.br-setting-select` (`settings.css`) draws the system edge: a
+`Button` slotted into a `DropdownMenuTrigger` loses its own `data-slot`, and with it the shared
+`[data-slot='button']` edge (V4-24; the root cause is filed with the primitives' owner).
 
 The segmented thumb and the select's check are neutral; coral marks only a switch's on
 state, a checked checkbox and the one committing button. Enforced by **V10** (no native

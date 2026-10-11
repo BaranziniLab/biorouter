@@ -304,8 +304,11 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           </>
         }
       >
+        {/* The dialog's body edge is 8px outside the row's hairline and 16px outside the
+            checkbox's box, so the two lines of text that frame the list take the box's edge as
+            theirs (`pl-4`): the count, the checkboxes and the permanence line share one left edge. */}
         <div className="flex items-center justify-between gap-2 pb-2">
-          <span className="text-supporting tabular-nums text-text-muted">
+          <span className="pl-4 text-supporting tabular-nums text-text-muted">
             {resetCopy.selectedCount(selectedCategories.length, ALL_CATEGORIES.length)}
           </span>
           <Button
@@ -327,7 +330,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
               <li
                 key={category.id}
                 data-testid={`reset-option-${category.id}`}
-                className="biorouter-settings-row flex min-w-0 items-center gap-2 px-3 py-2.5"
+                className="biorouter-settings-row br-reset-option flex min-w-0 items-center gap-2"
               >
                 <Checkbox
                   id={checkboxId}
@@ -353,7 +356,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
         </ul>
 
         {/* Essential, so it stays visible at the moment of decision (principle 2). */}
-        <p className="pt-3 text-supporting text-text-muted">{resetCopy.permanence}</p>
+        <p className="pt-3 pl-4 text-supporting text-text-muted">{resetCopy.permanence}</p>
 
         {error && (
           <Note tone="danger" role="alert" className="mt-3">
