@@ -178,7 +178,9 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       }
     >
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-1">
+        {/* The label row `Field` draws (`flex items-center`, no gap): the InfoTip carries its own
+            air, so a gap here put this glyph 4px further from its label than "Write a skill"'s. */}
+        <div className="flex min-w-0 items-center">
           <label htmlFor="skill-source-url" className="text-label text-text-default">
             {ADD_SKILL_COPY.repositoryLabel}
           </label>

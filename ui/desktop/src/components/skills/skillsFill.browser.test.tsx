@@ -34,6 +34,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
+import CustomSkillModal from './CustomSkillModal';
 import { MarketplaceDialog, MarketplaceRow, MarketplaceSection } from '../baam/MarketplaceDialog';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -82,7 +83,7 @@ function Market() {
 
 const page = location.hash.slice(1);
 createRoot(document.getElementById('root')).render(
-  page === 'rows' ? <Rows /> : page === 'market' ? <Market /> : <AddSkillModal onClose={noop} onSaved={noop} />
+  page === 'rows' ? <Rows /> : page === 'market' ? <Market /> : page === 'write' ? <CustomSkillModal onClose={noop} onSaved={noop} /> : <AddSkillModal onClose={noop} onSaved={noop} />
 );
 `;
 
@@ -163,7 +164,7 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
   }, 120_000);
 
   async function open(
-    hash: 'rows' | 'market' | 'add',
+    hash: 'rows' | 'market' | 'add' | 'write',
     mode: 'light' | 'dark',
     options: { forcedColors?: boolean; ready: string }
   ): Promise<Page> {
@@ -436,6 +437,32 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
     } finally {
       await tab.close();
     }
+  });
+
+  it('sets the help glyph the same distance from its label in both skill dialogs', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const gaps: number[] = [];
+    for (const [hash, ready] of [
+      ['add', '#skill-source-url'],
+      ['write', '#custom-skill-md'],
+    ] as const) {
+      const tab = await open(hash, 'light', { ready });
+      try {
+        gaps.push(
+          await tab.evaluate(() => {
+            const label = document.querySelector('[role="dialog"] label')!;
+            const range = document.createRange();
+            range.selectNodeContents(label);
+            const glyph = document.querySelector('[role="dialog"] button[aria-label^="About"]')!;
+            return glyph.getBoundingClientRect().left - range.getBoundingClientRect().right;
+          })
+        );
+      } finally {
+        await tab.close();
+      }
+    }
+    // "From a repository" used to sit 4px further from its glyph than "SKILL.md" (`gap-1`).
+    expect(gaps[0]).toBe(gaps[1]);
   });
 
   it('tells the lookup result from the drop zone by space, and holds its skills in one scrolling well', async (ctx) => {
