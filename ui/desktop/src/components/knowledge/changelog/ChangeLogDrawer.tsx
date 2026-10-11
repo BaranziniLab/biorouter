@@ -175,7 +175,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
           })}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto px-2 py-1">
           {loading && (
             <EmptyState
               compact
@@ -205,7 +205,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             filtered.map((entry) => (
               <div
                 key={entry.commit_sha}
-                className="biorouter-list-row flex flex-col gap-1 px-4 py-3"
+                className="biorouter-list-row flex flex-col gap-1 px-2 py-3"
               >
                 {/* No commit id on the row (principle 10: ids stay off everyday
                     rows). Previewing a commit names it in the graph's banner. */}

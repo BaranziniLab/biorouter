@@ -158,14 +158,29 @@ describe('the filter strip', () => {
   });
 
   /**
-   * ⚠ **A solid accent fill cannot take the grey focus surface** (white `--text-on-accent` over
-   * `--background-focus`). An engaged facet that has focus keeps its accent, brightened, framed
-   * in the on-accent ink: the design system's own `.biorouter-focus-surface-accent` recipe.
+   * ⚠ **An engaged facet is NEUTRAL now (R-27), and that is what keeps it readable under focus.**
+   * It was a solid accent fill, which cannot take the grey focus surface (white `--text-on-accent`
+   * over `--background-focus`) and needed its own restated focus rule. The strong fill under the
+   * selected wash carries the default ink on every ground, so there is no accent and no on-accent
+   * ink to protect, and the wash is a background-IMAGE, so the focus ground (a background-colour)
+   * still reads under it. A rule that painted a facet accent again, or restated its focus ground,
+   * would bring the old failure back.
    */
   it('keeps an engaged facet readable under keyboard focus', () => {
-    const rule = CSS.match(/\.br-facet\[data-engaged='true'\]:focus-visible\s*\{([^}]*)\}/);
-    expect(rule, 'an engaged facet needs its own focus-visible rule').not.toBeNull();
-    expect(rule![1]).toContain('background: var(--background-accent-hover)');
-    expect(rule![1]).toContain('inset 0 0 0 2px var(--text-on-accent)');
+    const from = CSS.indexOf('/* @ws WS-KNOWLEDGE begin: filter facet */');
+    const to = CSS.indexOf('/* @ws WS-KNOWLEDGE end: filter facet */');
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const block = CSS.slice(from, to);
+    const rule = block.match(/\.br-facet\[data-engaged='true'\]\s*\{([^}]*)\}/);
+    expect(rule, 'an engaged facet needs its own rule').not.toBeNull();
+    expect(rule![1]).toContain('background-color: var(--background-fill-strong)');
+    expect(rule![1]).toContain('background-image: linear-gradient(var(--overlay-selected)');
+    // Neutral: no accent ground and no accent ink anywhere in the facet block.
+    expect(block.replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(
+      /--background-accent|--text-on-accent/
+    );
+    // And no focus rule of its own: the global focus surface reads through the wash.
+    expect(block.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain(':focus-visible');
   });
 });

@@ -44,7 +44,7 @@ export function StagedList({ items, onRemove, onClear }: Props) {
           Clear
         </Button>
       </div>
-      <div className="biorouter-list-shell">
+      <div className="biorouter-list-shell br-rows-flat">
         {items.map((s) => {
           const Icon =
             s.kind === 'file' || s.kind === 'path'

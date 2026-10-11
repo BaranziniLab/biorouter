@@ -420,7 +420,11 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                 description="Try a different name or id."
               />
             ) : (
-              <div className="biorouter-list-shell" role="listbox" aria-label="Knowledge bases">
+              <div
+                className="biorouter-list-shell br-rows-flat"
+                role="listbox"
+                aria-label="Knowledge bases"
+              >
                 {filtered.map((base) => {
                   const isPrimary = primaryKbId === base.id;
                   const isBusy = busyId === base.id;

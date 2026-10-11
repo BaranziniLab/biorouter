@@ -257,7 +257,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto">
           {/* Two different reasons for one null, and only the second is a gap
               in the user's setup. Sending a coding-agent user to the Sources
               rail is the dead end described above: that picker lists nothing
@@ -331,42 +331,46 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               const Icon = SEVERITY_ICON[severity];
               return (
                 <section key={severity} aria-label={SEVERITY_LABEL[severity]}>
-                  <h3 className="flex items-center gap-2 border-b border-border-subtle bg-background-muted px-4 py-1.5 text-caps text-text-muted">
+                  <h3 className="flex items-center gap-2 bg-background-fill px-4 py-1.5 text-caps text-text-muted">
                     <Icon aria-hidden="true" className="h-icon-row w-icon-row" />
                     {SEVERITY_LABEL[severity]}
                     <span className="tabular-nums">{rows.length}</span>
                   </h3>
-                  {rows.map((d, i) => (
-                    <div
-                      key={`${d.rule}-${d.subject}-${i}`}
-                      data-testid="knowledge-lint-diagnostic"
-                      className="biorouter-list-row flex flex-col gap-1 px-4 py-3"
-                    >
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        {/* The RULE ID, not the message. It is stable across
-                            releases and the message is prose that will be
-                            reworded — so it is the half a user can search for,
-                            quote in an issue, or match a fix against. */}
-                        <span className="shrink-0 font-mono text-supporting text-text-muted">
-                          {d.rule}
-                        </span>
-                        {/* WRAPPED, not truncated. The subject is a page's
-                            identifier or a whole edge rendered as
-                            `<subject> -<predicate>-> <object>`; clipped to one
-                            line, the half that names what the finding is about
-                            is the half that disappears. */}
-                        <span className="min-w-0 break-words text-label text-text-default">
-                          {d.subject}
-                        </span>
+                  {/* The rows sit 8px in from the drawer's edges, so the hover wash is a rounded row
+                      and not a full-bleed slab; their text stays on the header's 16px edge. */}
+                  <div className="px-2">
+                    {rows.map((d, i) => (
+                      <div
+                        key={`${d.rule}-${d.subject}-${i}`}
+                        data-testid="knowledge-lint-diagnostic"
+                        className="biorouter-list-row flex flex-col gap-1 px-2 py-3"
+                      >
+                        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          {/* The RULE ID, not the message. It is stable across
+                              releases and the message is prose that will be
+                              reworded — so it is the half a user can search for,
+                              quote in an issue, or match a fix against. */}
+                          <span className="shrink-0 font-mono text-supporting text-text-muted">
+                            {d.rule}
+                          </span>
+                          {/* WRAPPED, not truncated. The subject is a page's
+                              identifier or a whole edge rendered as
+                              `<subject> -<predicate>-> <object>`; clipped to one
+                              line, the half that names what the finding is about
+                              is the half that disappears. */}
+                          <span className="min-w-0 break-words text-label text-text-default">
+                            {d.subject}
+                          </span>
+                        </div>
+                        <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
+                        {d.path && (
+                          <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
+                            {d.path}
+                          </p>
+                        )}
                       </div>
-                      <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
-                      {d.path && (
-                        <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
-                          {d.path}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </section>
               );
             })}
@@ -376,7 +380,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               {/* The count joins the caps run, and the one-line hint is the
                   heading's InfoTip (spec 3.12): a sibling of the `<h3>`, so the
                   heading's name stays the list's name. */}
-              <div className="flex items-center gap-1 border-b border-border-subtle bg-background-muted px-4 py-1.5">
+              <div className="flex items-center gap-1 bg-background-fill px-4 py-1.5">
                 <h3 className="flex items-center gap-2 text-caps text-text-muted">
                   {l.label}
                   <span className="tabular-nums">{l.entries.length}</span>

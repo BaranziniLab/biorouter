@@ -165,7 +165,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
               arbitrary alpha on an opaque surface STEP, which is a colour no
               token names; and `text-sm font-medium` / `text-xs` were the raw
               Tailwind spellings of `text-label` / `text-supporting`. */}
-          <div className="rounded-element border border-border-subtle bg-background-muted p-3">
+          <div className="rounded-element border border-transparent bg-background-fill p-3">
             <p className="truncate text-label text-text-default" title={kb.name}>
               {kb.name}
             </p>

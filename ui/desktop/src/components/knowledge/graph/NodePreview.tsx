@@ -247,41 +247,51 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
 
       <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
         <div className="space-y-4">
-          {facts.length > 0 && (
-            <div data-testid="knowledge-node-facts" className="flex flex-wrap items-center gap-1">
-              {facts.map((fact) =>
-                fact.tone ? (
-                  <Badge
-                    key={fact.key}
-                    tone={fact.tone}
-                    className={fact.strike ? 'line-through' : undefined}
-                  >
-                    {fact.text}
-                  </Badge>
-                ) : (
-                  <span key={fact.key} className="text-supporting text-text-muted">
-                    {fact.text}
-                  </span>
-                )
+          {/* The node's facts and its provenance are one group, on one line while they fit and
+              8px apart when they wrap, and the 16px of the body's rhythm is kept for what follows
+              them. Two single-chip lines 16px apart read as two unrelated things. */}
+          {(facts.length > 0 || showsProvenance) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {facts.length > 0 && (
+                <div
+                  data-testid="knowledge-node-facts"
+                  className="flex flex-wrap items-center gap-1"
+                >
+                  {facts.map((fact) =>
+                    fact.tone ? (
+                      <Badge
+                        key={fact.key}
+                        tone={fact.tone}
+                        className={fact.strike ? 'line-through' : undefined}
+                      >
+                        {fact.text}
+                      </Badge>
+                    ) : (
+                      <span key={fact.key} className="text-supporting text-text-muted">
+                        {fact.text}
+                      </span>
+                    )
+                  )}
+                </div>
+              )}
+              {/* §4.8 item 3. Identity and provenance come off the graph node, which
+                is already in memory, so they paint immediately and do not wait on
+                the page fetch below. */}
+              {showsProvenance && (
+                <section aria-label="Provenance" className="flex flex-wrap items-center gap-2">
+                  {ringKey && <CredibilityRing tier={ringKey} mode={mode} />}
+                  {node.credibility_tier && (
+                    // ⚠ `tone="neutral"` — app ink on an app surface. The tier hue
+                    // stays in the ring and NEVER behind these words: the seven ring
+                    // colours are solved for a 1.6px arc against the graph ground,
+                    // and as a text background they are neither legible nor a
+                    // passing pair.
+                    <Badge tone="neutral">{TIER_LABEL[node.credibility_tier]}</Badge>
+                  )}
+                  {node.retracted && <Badge tone="danger">Retracted</Badge>}
+                </section>
               )}
             </div>
-          )}
-          {/* §4.8 item 3. Identity and provenance come off the graph node, which
-              is already in memory, so they paint immediately and do not wait on
-              the page fetch below. */}
-          {showsProvenance && (
-            <section aria-label="Provenance" className="flex flex-wrap items-center gap-2">
-              {ringKey && <CredibilityRing tier={ringKey} mode={mode} />}
-              {node.credibility_tier && (
-                // ⚠ `tone="neutral"` — app ink on an app surface. The tier hue
-                // stays in the ring and NEVER behind these words: the seven ring
-                // colours are solved for a 1.6px arc against the graph ground,
-                // and as a text background they are neither legible nor a
-                // passing pair.
-                <Badge tone="neutral">{TIER_LABEL[node.credibility_tier]}</Badge>
-              )}
-              {node.retracted && <Badge tone="danger">Retracted</Badge>}
-            </section>
           )}
 
           {loading && <span className="text-text-muted">Loading page…</span>}
@@ -294,13 +304,13 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
                 // raw text when it is not, because frontmatter that fails to
                 // parse is still frontmatter the user may need to SEE to fix.
                 (rows ? (
-                  <div className="overflow-hidden rounded-element bg-background-muted px-3 py-1">
+                  <div className="overflow-hidden rounded-element bg-background-fill px-3 py-1">
                     {rows.map((row) => (
                       <FrontmatterRowView key={row.key} row={row} />
                     ))}
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-element bg-background-muted">
+                  <div className="overflow-hidden rounded-element bg-background-fill">
                     <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
                       <FileCode2 className="h-icon-chip w-icon-chip" aria-hidden="true" />
                       Unparsed frontmatter
@@ -323,7 +333,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
         </div>
       </div>
 
-      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 font-mono text-supporting break-all text-text-muted">
+      <div className="bg-background-fill px-4 py-2 font-mono text-supporting break-all text-text-muted">
         {node.path}
       </div>
     </div>

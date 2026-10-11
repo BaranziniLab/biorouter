@@ -236,7 +236,7 @@ export function IngestModelPicker({
               disabled={disabled}
               aria-label={triggerName}
               aria-expanded={open}
-              className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
+              className="br-fill-rest br-fill-hover biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-transparent px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] disabled:cursor-not-allowed disabled:opacity-60"
             >
               <span
                 className={`min-w-0 flex-1 truncate ${value ? 'text-text-default' : 'text-text-muted'}`}

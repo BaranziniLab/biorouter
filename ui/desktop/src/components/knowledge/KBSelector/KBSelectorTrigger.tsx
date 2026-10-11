@@ -19,14 +19,14 @@ interface Props {
    * How the trigger presents itself.
    *
    * `field` (the default) is the Select-shaped control described below: a
-   * full-width bordered box, for a form or a rail where it sits among other
+   * full-width filled box, for a form or a rail where it sits among other
    * fields.
    *
    * `subject` is the Knowledge section's subject bar (R-01), where this control
-   * IS the page's statement of what it is about. A bordered field there would
+   * IS the page's statement of what it is about. A filled field there would
    * read as one input among several and compete with the `h1` directly above
-   * it; the name is set in the band's own label type and the chrome appears on
-   * hover, so the row reads as an identity that happens to be actionable.
+   * it; the name is set in the band's own label type and the ghost wash appears
+   * on hover, so the row reads as an identity that happens to be actionable.
    */
   variant?: 'field' | 'subject';
 }
@@ -37,14 +37,12 @@ interface Props {
  *
  * Three corrections over the bespoke field it replaces:
  *
- * - **`border-border-emphasized`, not `border-border-input`.** That token is
- *   darker than `--border-strong` in light and lighter in dark, so the old
- *   `hover:border-border-strong` measurably WEAKENED the edge on hover in both
- *   modes (light 1.66 → 1.52; dark 1.91 → 1.59). Hover is now the Input
- *   primitive's whisper — an inset ring — and nothing shifts hue. (This is a
- *   repair, not compliance: the resting edge still measures 1.62–1.66 light /
- *   2.04–2.10 dark against SC 1.4.11's 3:1, which is an app-wide `Input` token
- *   change tracked outside this section.)
+ * - **A filled field, not an outlined one** (R-27, design.md 9.11). `field` rests on the control
+ *   ground (`.br-fill-rest`, the subtle fill, or the page ground inside a filled box) and steps
+ *   to the strong fill under the pointer (`.br-fill-hover`), with a 1px TRANSPARENT border so
+ *   forced colours draw the edge and nothing moves. `subject` stays transparent and takes the
+ *   ghost wash (`tint-interactive`) like every other control in the band. The old resting edge
+ *   (`--border-emphasized`) and the hover inset ring are gone with the outline.
  * - **It opens an anchored picker, not a 760px modal.** Clicking a selector
  *   should show you the list, not a management console.
  * - **The `KB` badge is dropped**, so the control needs an accessible name of
@@ -93,8 +91,8 @@ export function KBSelectorTrigger({
                   ? // Borderless at rest, content-sized, with the band's own label
                     // type. `min-w-0` so a long base name truncates rather than
                     // pushing the badges and counts out of the row.
-                    'biorouter-focus-surface flex h-control-md min-w-0 max-w-[22rem] items-center gap-2 rounded-element border border-transparent px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:border-border-subtle hover:bg-background-medium'
-                  : 'biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-control bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
+                    'biorouter-focus-surface tint-interactive flex h-control-md min-w-0 max-w-[22rem] items-center gap-2 rounded-element border border-transparent px-2 text-label transition-colors'
+                  : 'br-fill-rest br-fill-hover biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-transparent px-3 text-label transition-[color,background-color,border-color,box-shadow]'
               }
             >
               <KbDot color={primaryKb?.color} />

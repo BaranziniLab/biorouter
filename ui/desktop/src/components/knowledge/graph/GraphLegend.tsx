@@ -242,7 +242,7 @@ function LegendSection({
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   return (
-    <section className="border-b border-border-subtle px-3 py-1.5 last:border-b-0">
+    <section className="px-3 py-2">
       <div className="mb-1 flex items-center gap-1">
         <button
           type="button"

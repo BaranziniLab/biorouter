@@ -145,10 +145,12 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
           />
         ) : (
           // An endpoint outside this bundle has no node and therefore no mark.
-          // Drawing a default one would assert a type it does not have.
+          // Drawing a default one would assert a type it does not have. The dot is a step
+          // darker than the card (the strong ground, not the medium one, which is 1.1:1 off
+          // it and reads as no dot at all).
           <span
             aria-hidden="true"
-            className="h-2 w-2 flex-none rounded-full bg-background-medium"
+            className="h-2 w-2 flex-none rounded-full bg-background-strong"
           />
         )}
         <span className="min-w-0 truncate text-body">{label(id)}</span>
@@ -162,7 +164,7 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
       <button
         type="button"
         onClick={() => onSelectNode(node)}
-        className="flex min-w-0 items-center gap-2 rounded-inner py-1 text-left"
+        className="tint-interactive -mx-1 flex min-w-0 items-center gap-2 rounded-inner px-1 py-1 text-left transition-colors"
       >
         {body}
       </button>

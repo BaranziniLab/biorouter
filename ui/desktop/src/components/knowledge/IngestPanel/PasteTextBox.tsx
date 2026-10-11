@@ -22,8 +22,11 @@ interface Props {
  *   gesture.
  * - **Detected URLs are `Badge variant="chip"` toggles**, not hand-rolled
  *   `py-0.5` spans. `asChild` so the chip IS the button and takes the global
- *   focus fill; without it an opaque `bg-background-medium` span would sit on
+ *   focus fill; without it an opaque neutral-badge span would sit on
  *   top of its own focus surface and a keyboard user would see nothing.
+ * - **The box is the filled card** (R-27, design.md 9.11): the subtle fill with a transparent
+ *   1px edge and no outline. `br-fill-surface` makes its fields and its Stage button rest one
+ *   ground back, on the page's, because a fill never sits on a fill.
  */
 export function PasteTextBox({ onStage, onCancel }: Props) {
   const [text, setText] = useState('');
@@ -59,7 +62,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-container border border-border-subtle bg-background-default p-3">
+    <div className="br-fill-surface flex flex-col gap-2 rounded-container border border-transparent bg-background-fill p-3">
       <Input
         type="text"
         value={title}
