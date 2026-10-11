@@ -4937,6 +4937,142 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   transition: none;
 }
 
+/* Slider (`ui/slider.tsx`, owner ruling R-26): discrete stops on a 4px track. A 24px hit target;
+   the rail is inset 8px each side, so the 16px thumb never overhangs the box. The track and the
+   fill are two 6px layers of the same box: each draws its 4px bar and a 6px mark at every stop,
+   and the fill (accent bar, accent marks) is clipped to the value. The thumb rides a slot as
+   wide as the rail, translated by the value's share of its own width, so only `transform` and
+   `clip-path` move (principle 9), on one curve, and the fill ends under the thumb's centre. */
+.br-slider {
+  --br-slider-sign: 1;
+  position: relative;
+  display: block;
+  inline-size: 100%;
+  min-inline-size: 64px;
+  block-size: 24px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.br-slider[dir='rtl'],
+[dir='rtl'] .br-slider:not([dir='ltr']) {
+  --br-slider-sign: -1;
+}
+
+.br-slider[data-dragging] {
+  cursor: grabbing;
+}
+
+.br-slider[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.br-slider-rail {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: 8px;
+}
+
+.br-slider-track,
+.br-slider-fill {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 50%;
+  block-size: 6px;
+  margin-block-start: -3px;
+  pointer-events: none;
+}
+
+.br-slider-track::before,
+.br-slider-fill::before {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 1px;
+  block-size: 4px;
+  border-radius: var(--radius-full);
+  background-color: var(--control-track-off);
+}
+
+.br-slider-mark {
+  position: absolute;
+  inset-block-start: 0;
+  inline-size: 6px;
+  block-size: 6px;
+  margin-inline-start: -3px;
+  border-radius: var(--radius-full);
+  background-color: var(--border-control);
+}
+
+.br-slider-fill::before,
+.br-slider-fill > .br-slider-mark {
+  background-color: var(--background-accent);
+}
+
+/* Revealed from the start edge to the value; 4px of slack above, below and behind the start so
+   the end marks keep their round caps. */
+.br-slider-fill {
+  clip-path: inset(-4px calc((1 - var(--br-slider-fraction, 0)) * 100%) -4px -4px);
+  transition: clip-path var(--dur-fast-max) var(--ease-out);
+}
+
+.br-slider[dir='rtl'] .br-slider-fill,
+[dir='rtl'] .br-slider:not([dir='ltr']) .br-slider-fill {
+  clip-path: inset(-4px -4px -4px calc((1 - var(--br-slider-fraction, 0)) * 100%));
+}
+
+.br-slider-thumb-slot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform: translateX(calc(var(--br-slider-fraction, 0) * var(--br-slider-sign) * 100%));
+  transition: transform var(--dur-fast-max) var(--ease-out);
+}
+
+/* A 16px accent disc, cut out of the track by a 2px ring of the ground it sits on (inside a
+   dark popover that ground is re-pointed to the surface's own). */
+.br-slider-thumb {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 0;
+  inline-size: 16px;
+  block-size: 16px;
+  margin-block-start: -8px;
+  margin-inline-start: -8px;
+  border-radius: var(--radius-full);
+  background-color: var(--background-accent);
+  box-shadow: 0 0 0 2px var(--background-default);
+  outline: none;
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.br-slider[data-dragging] .br-slider-thumb {
+  cursor: grabbing;
+}
+
+.br-slider[data-disabled] .br-slider-thumb {
+  cursor: not-allowed;
+}
+
+/* D-15's edge for a disc with no surface to shift: `--border-focus` around the ground ring,
+   where it contrasts with the ground. Not after a press (`data-pointer-focus`, until a key). */
+.br-slider-thumb:focus-visible:not([data-pointer-focus]) {
+  box-shadow:
+    0 0 0 2px var(--background-default),
+    0 0 0 4px var(--border-focus);
+}
+
+/* A value that arrived without the person lands at rest (`ui/slider.tsx`). */
+.br-slider-fill[data-motion-still],
+.br-slider-thumb-slot[data-motion-still] {
+  transition: none;
+}
+
 /* Switch (`ui/switch.tsx`): a 32×20 track, a 16px knob inset 2px in both states, travel 12px,
    no growth. The off knob is ringed by `--border-control` so it reads at 3:1 on the off track
    in every family. A 2px invisible extension above and below makes the hit target 24px. */
@@ -5529,6 +5665,47 @@ input[type='radio']:checked ~ .br-radio-dot {
     background-color: Highlight;
   }
 
+  /* Slider: the track and its marks in the text colour, the fill and the thumb in Highlight, the
+     thumb's ring in Canvas; keyboard focus outlines the thumb. */
+  .br-slider-track::before,
+  .br-slider-track > .br-slider-mark,
+  .br-slider-fill::before,
+  .br-slider-fill > .br-slider-mark,
+  .br-slider-thumb {
+    forced-color-adjust: none;
+  }
+
+  .br-slider-track::before,
+  .br-slider-track > .br-slider-mark {
+    background-color: CanvasText;
+  }
+
+  .br-slider-fill::before,
+  .br-slider-fill > .br-slider-mark,
+  .br-slider-thumb {
+    background-color: Highlight;
+  }
+
+  .br-slider-thumb {
+    box-shadow: 0 0 0 2px Canvas;
+  }
+
+  .br-slider-thumb:focus-visible:not([data-pointer-focus]) {
+    box-shadow: 0 0 0 2px Canvas;
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+
+  .br-slider[data-disabled] {
+    opacity: 1;
+  }
+
+  .br-slider[data-disabled] .br-slider-fill::before,
+  .br-slider[data-disabled] .br-slider-fill > .br-slider-mark,
+  .br-slider[data-disabled] .br-slider-thumb {
+    background-color: GrayText;
+  }
+
   /* Progress: an outlined track and a Highlight fill. */
   .br-progress {
     forced-color-adjust: none;
@@ -5569,6 +5746,8 @@ input[type='radio']:checked ~ .br-radio-dot {
   .br-radio-dot,
   .br-segmented-thumb,
   .br-segmented-item,
+  .br-slider-fill,
+  .br-slider-thumb-slot,
   .br-row-actions,
   .br-row-actions-meta,
   .br-info-tip {
