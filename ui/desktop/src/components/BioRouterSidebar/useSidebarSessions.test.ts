@@ -149,9 +149,11 @@ describe('useSidebarSessions', () => {
 });
 
 /**
- * Round 1, V1-M8. Opening a chat raises its `updated_at` on the daemon and
- * announces nothing, so the sidebar kept the chat under September while History
- * (a fresh fetch) listed it under Today.
+ * Round 1, V1-M8. Opening a chat used to raise its `updated_at` on the daemon
+ * and announce nothing, so the sidebar kept the chat under September while
+ * History (a fresh fetch) listed it under Today. Since R-30 opening is not
+ * activity and the daemon stamps nothing on it; these reads stay for a daemon
+ * from before that and for rows moved elsewhere.
  */
 describe('the head is read again when something else raised a chat', () => {
   const headPage = (name: string) => ({

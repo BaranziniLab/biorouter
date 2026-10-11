@@ -378,6 +378,58 @@ describe('chatHoverDetail', () => {
 });
 
 /**
+ * R-30. Under Last activity a chat moves only when something happens in it, and opening one is
+ * not that. The list draws the order the daemon gave it and keeps no recency of its own, so
+ * making a chat the open one, or clicking its row, moves no row.
+ */
+describe('opening a chat is not activity', () => {
+  const order = () =>
+    Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((row) =>
+      row.getAttribute('data-row')
+    );
+
+  it('leaves every row where the daemon put it when another chat becomes the open one', () => {
+    const currentTime = Date.now();
+    const sessions = [
+      makeSession(0, currentTime),
+      makeSession(1, currentTime),
+      makeSession(2, currentTime),
+    ];
+    const onOpen = vi.fn();
+    const draw = (activeSessionId: string | null) => (
+      <SidebarProvider>
+        <RecentChats
+          sessions={sessions}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={onOpen}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+          activeSessionId={activeSessionId}
+        />
+      </SidebarProvider>
+    );
+    const { rerender } = render(draw(null));
+    const asDrawn = order();
+    expect(asDrawn).toEqual(['chat:session-0', 'chat:session-1', 'chat:session-2']);
+
+    // The oldest chat is clicked, and the shell makes it the open one.
+    fireEvent.click(screen.getByTestId('recent-chat-session-2'));
+    expect(onOpen).toHaveBeenCalledWith('session-2', 'Chat 2', false);
+    rerender(draw('session-2'));
+    expect(screen.getByTestId('recent-chat-session-2')).toHaveAttribute('aria-current', 'page');
+    expect(order()).toEqual(asDrawn);
+
+    // Switching to another one moves nothing either.
+    rerender(draw('session-1'));
+    expect(order()).toEqual(asDrawn);
+  });
+});
+
+/**
  * Vision V1-H2, the list's half. A non-default view's full read lands all at once, and it can
  * land while the pointer is over the list: the hold covers it as it covers a live re-sort, so
  * rows that sort above the ones under the pointer wait until it leaves.

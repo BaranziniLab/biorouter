@@ -22,8 +22,12 @@ export const SIDEBAR_SESSION_LOAD_ALL_CAP = 2_000;
 
 /**
  * How long after a chat is opened the list reads its head a second time. The
- * first read follows the open by 250 ms; the daemon stamps the chat's
- * `updated_at` when the resume binds its model, which can land after that.
+ * first read follows the open by 250 ms. Opening a chat used to raise its
+ * `updated_at` when the resume bound its model, and that could land after the
+ * first read. Since R-30 opening is not activity and the daemon stamps nothing
+ * on an open, so the second read normally finds the same order. It stays
+ * because it costs one head page and because a daemon from before R-30 (an
+ * older `biorouter serve` host or dev binary) still stamps the open.
  */
 const OPEN_REFRESH_FOLLOW_UP_MS = 2_000;
 
@@ -47,11 +51,14 @@ export interface SidebarSessionsOptions {
    */
   loadAll?: boolean;
   /**
-   * The chat the person is in. Opening or resuming a chat raises its
+   * The chat the person is in. Opening or resuming a chat used to raise its
    * `updated_at` on the daemon without announcing a list change, so a list that
    * only re-read on a finished turn or a new chat put it under September while
-   * History, fetched fresh, put it under Today (round 1, V1-M8). A change of
-   * this re-reads the head. Leaving for a page that is not a chat reads nothing.
+   * History, fetched fresh, put it under Today (round 1, V1-M8). Since R-30
+   * opening moves nothing, so a change of this finds the order the list already
+   * had; it still re-reads the head, which keeps the list right against a
+   * daemon from before R-30 and picks up a turn or a rename made elsewhere.
+   * Leaving for a page that is not a chat reads nothing.
    */
   openSessionId?: string | null;
 }
@@ -269,11 +276,12 @@ export default function useSidebarSessions(
       setSessions(next);
     });
 
-    // Other writers raise `updated_at` without announcing a list change: a chat
-    // resumed in another window, a row rewritten by the CLI or a schedule (the
-    // session-meta channel reports those for the chats this window has open),
-    // and this window coming back to the front. A head page is cheap (a 10 to 50
-    // row read), and `scheduleRefresh` coalesces a burst of them into one.
+    // Other writers raise `updated_at` without announcing a list change: a turn
+    // or a rename in another window, a row rewritten by the CLI or a schedule
+    // (the session-meta channel reports those for the chats this window has
+    // open), and this window coming back to the front. Opening a chat is not one
+    // of them since R-30. A head page is cheap (a 10 to 50 row read), and
+    // `scheduleRefresh` coalesces a burst of them into one.
     const onVisible = () => {
       if (!document.hidden) scheduleRefresh();
     };
@@ -298,8 +306,11 @@ export default function useSidebarSessions(
     };
   }, [loadPage]);
 
-  // A chat opened (or switched to) raises its `updated_at` on the daemon. Read
-  // the head again now, and once more after the resume has had time to finish.
+  // A chat opened (or switched to) used to raise its `updated_at` (the resume's
+  // model bind stamped it); since R-30 it does not, so these reads normally find
+  // the same order. They are kept for a daemon from before R-30 and for a turn
+  // or a rename made elsewhere while this window was away. Read the head now,
+  // and once more after the resume has had time to finish.
   const openedRef = useRef(openSessionId);
   useEffect(() => {
     if (openedRef.current === openSessionId) return;
