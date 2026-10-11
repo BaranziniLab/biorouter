@@ -19,6 +19,7 @@ import {
  * slider of three stops, Quick, Normal and Deep, where it had three radio rows.
  */
 const mocks = vi.hoisted(() => ({
+  model: 'gpt-5.6-sol-2026-07-09',
   read: vi.fn(async () => ''),
   getProviders: vi.fn(async () => [] as unknown[]),
   getPrivacyDisclosure: vi.fn(),
@@ -39,13 +40,13 @@ vi.mock('../../../ConfigContext', () => ({
 }));
 vi.mock('../../../ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({
-    currentModel: 'gpt-5.6-sol-2026-07-09',
+    currentModel: mocks.model,
     currentProvider: 'versa_azure',
     getCurrentModelAndProviderForDisplay: async () => ({
-      model: 'gpt-5.6-sol-2026-07-09',
+      model: mocks.model,
       provider: 'Versa API Azure',
     }),
-    getCurrentModelDisplayName: async () => 'gpt-5.6-sol-2026-07-09',
+    getCurrentModelDisplayName: async () => mocks.model,
     getCurrentProviderDisplayName: async () => 'Versa API Azure',
   }),
 }));
@@ -74,6 +75,7 @@ async function openMenu() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.model = 'gpt-5.6-sol-2026-07-09';
   localStorage.clear();
   resetReasoningEffortForTests();
   __resetDisclosureStoreForTests();
@@ -106,6 +108,18 @@ describe('the model and effort chip', () => {
     expect(chip).toHaveAccessibleName(/^Current model: gpt-5\.6-sol-2026-07-09/);
     // The padlock is the one mark, and the model's tier drives it.
     expect(await screen.findByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+  });
+
+  it('names a Bedrock model, not its inference-profile id (V2-R6-2)', async () => {
+    mocks.model = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
+    renderChip();
+    const chip = await screen.findByTestId('model-chip');
+    await waitFor(() => expect(chip).toHaveTextContent('claude-sonnet-4-5'));
+    expect(chip).not.toHaveTextContent('us.anthropic');
+    expect(chip).not.toHaveTextContent('v1:0');
+    expect(chip).toHaveAccessibleName(
+      /^Current model: us\.anthropic\.claude-sonnet-4-5-20250929-v1:0/
+    );
   });
 
   it('draws no Brain glyph and no affiliation glyph on the chip', async () => {
