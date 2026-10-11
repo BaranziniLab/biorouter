@@ -330,3 +330,56 @@ describe('ConfigSettings under the fill rule', async () => {
     expect(value.className).not.toMatch(/bg-background-muted|\bborder-0\b/);
   });
 });
+
+// V4-R2-6: the rows followed config.yaml's key order, so the same rows came back in a different
+// order after an unrelated write (the approval mode). They sort by the label shown.
+describe('ConfigSettings row order', () => {
+  const ordinary: ConfigData = {
+    BIOROUTER_PROVIDER: 'versa_azure',
+    BIOROUTER_MODEL: 'gpt-5.6',
+    BIOROUTER_MODE: 'auto',
+    BIOROUTER_AUTO_COMPACT_THRESHOLD: '0.8',
+    BIOROUTER_BRSDK_TRACING: 'false',
+    AWS_ENDPOINT_URL_BEDROCK: 'http://localhost:4566',
+  };
+
+  const rowLabels = (dialog: HTMLElement) =>
+    within(dialog)
+      .getAllByRole('textbox')
+      .map((field) => (field as HTMLInputElement).labels?.[0]?.textContent ?? '');
+
+  const expected = Object.keys(ordinary)
+    .map((key) => configFieldLabel(key))
+    .sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true }));
+
+  it('lists the rows by label, whatever order the file keeps its keys in', async () => {
+    mocks.config = { ...ordinary };
+    const dialog = await openEditor();
+    expect(rowLabels(dialog)).toEqual(expected);
+  });
+
+  it('draws the same order when the file comes back with its keys reversed', async () => {
+    mocks.config = Object.fromEntries(Object.entries(ordinary).reverse()) as ConfigData;
+    const dialog = await openEditor();
+    expect(rowLabels(dialog)).toEqual(expected);
+  });
+
+  it('keeps the order when a write rewrites the cached config in another key order', async () => {
+    mocks.config = { ...ordinary };
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<ConfigSettings />);
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Edit configuration/ }));
+    expect(rowLabels(screen.getByRole('dialog'))).toEqual(expected);
+
+    // The approval mode was saved: the cache is a new object with its keys in a new order.
+    mocks.config = Object.fromEntries(
+      Object.entries({ ...ordinary, BIOROUTER_MODE: 'approve' }).reverse()
+    ) as ConfigData;
+    await act(async () => {
+      view.rerender(<ConfigSettings />);
+    });
+    expect(rowLabels(screen.getByRole('dialog'))).toEqual(expected);
+  });
+});

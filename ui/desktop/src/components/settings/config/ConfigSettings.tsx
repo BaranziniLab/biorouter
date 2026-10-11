@@ -61,6 +61,21 @@ function refusalText(error: unknown): string | null {
   return text && text.trim() ? text.trim() : null;
 }
 
+/**
+ * The order of the editor's rows: by the label a person reads, ignoring case, then by key.
+ *
+ * The file's own key order is not a stable thing to show: it follows whatever wrote the file last,
+ * so the same eight rows came back in a different order after an unrelated setting (the approval
+ * mode) was saved. A name a person looks for should stay where it was.
+ */
+function compareConfigKeys(a: string, b: string): number {
+  const byLabel = configFieldLabel(a).localeCompare(configFieldLabel(b), 'en', {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  return byLabel !== 0 ? byLabel : a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** A value this editor can show and save as text: a string, number or boolean. */
 function isEditableValue(value: ConfigValue | undefined): boolean {
   return value === undefined || value === null || typeof value !== 'object';
@@ -76,25 +91,19 @@ export default function ConfigSettings() {
   // The editor opens from state, with no Dialog.Trigger, so Radix would leave focus on <body> when
   // it closes. The Edit button takes it back.
   const editButtonRef = useRef<HTMLButtonElement>(null);
-  const [originalKeyOrder, setOriginalKeyOrder] = useState<string[]>([]);
+  // The keys this editor has seen, in no particular order: the rows are sorted by label when they
+  // are drawn. The set only grows while the editor is mounted, so a key a write briefly drops from
+  // the cached config does not make its row vanish and come back.
+  const [knownKeys, setKnownKeys] = useState<string[]>([]);
 
   useEffect(() => {
     setConfigValues(typedConfig);
     setModifiedKeys(new Set());
 
-    // Capture the original key order only on first load or when new keys are added
     const currentKeys = Object.keys(typedConfig);
-    setOriginalKeyOrder((prevOrder) => {
-      if (prevOrder.length === 0) {
-        // First load - capture the initial order
-        return currentKeys;
-      } else if (currentKeys.length > prevOrder.length) {
-        // New keys have been added - add them to the end while preserving existing order
-        const newKeys = currentKeys.filter((key) => !prevOrder.includes(key));
-        return [...prevOrder, ...newKeys];
-      }
-      // Don't reorder when keys are just updated/saved - preserve the original order
-      return prevOrder;
+    setKnownKeys((previous) => {
+      const added = currentKeys.filter((key) => !previous.includes(key));
+      return added.length > 0 ? [...previous, ...added] : previous;
     });
   }, [typedConfig]);
 
@@ -246,7 +255,7 @@ export default function ConfigSettings() {
     const currentProviderPrefixes = providerPrefixes[currentProvider] || [];
     const allProviderPrefixes = Object.values(providerPrefixes).flat();
 
-    return originalKeyOrder
+    return knownKeys
       .filter((key) => {
         // skip secrets and internal/hidden keys
         if (
@@ -273,8 +282,9 @@ export default function ConfigSettings() {
 
         return true;
       })
-      .map((key) => [key, configValues[key]]);
-  }, [originalKeyOrder, configValues, currentProvider]);
+      .map((key): [string, ConfigValue] => [key, configValues[key]])
+      .sort(([a], [b]) => compareConfigKeys(a, b));
+  }, [knownKeys, configValues, currentProvider]);
 
   return (
     <SettingSection id={SETTINGS_SECTION_IDS.configuration} title={configCopy.section}>
