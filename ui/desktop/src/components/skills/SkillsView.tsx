@@ -81,7 +81,11 @@ export default function SkillsView() {
     // One matcher, shared with the composer's picker, the Browse modals and the
     // model's own search — see `searchCatalog.ts`. The filter here used to ask
     // whether the WHOLE query occurred inside one field (QA finding F5).
-    const visible = rankCatalogEntries(entries, searchTerm).hits.map((hit) => hit.entry);
+    // `typeahead`: the word being typed matches the start of a name, so `gg` finds
+    // `ggplot` instead of a "No matching skills" that reads as broken (V3-23).
+    const visible = rankCatalogEntries(entries, searchTerm, { typeahead: true }).hits.map(
+      (hit) => hit.entry
+    );
 
     // ⚠ **A search is one ranked list, not the provenance headings.** The
     // headings are a grouping, and a grouping discards the rank: a Biorouter

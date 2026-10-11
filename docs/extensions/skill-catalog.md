@@ -261,6 +261,16 @@ skill (three of the four words), the R-scripting skill (two), then any skill
 matching one. Add a catalog search by calling `rank` with that catalog's fields,
 never by writing another matcher.
 
+The Skills page filter reads the same rules with one addition that the model's
+search does not have. A filter is typed into, so the last word, while nothing
+follows it, also matches the start of a word in a skill's name (or in a package's
+member names), ranked below the whole word. `gg` finds `ggplot`, `r` lists
+`r-scripting` first and `ralph` after it, and `gg ` with a space holds the word
+to whole words again. Descriptions are never read by prefix. The composer's skill
+picker keeps the whole-word floor, because its Enable all button writes every row
+the filter leaves on screen. The rule lives in `typeahead` of `baam/search.ts`
+and is asked for by `skills/SkillsView.tsx` alone.
+
 ## Debugging a skill that is installed but not usable
 
 1. `biorouter skill list` — if it is absent, discovery never saw it. Check the

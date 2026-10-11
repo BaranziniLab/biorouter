@@ -62,6 +62,14 @@
  * - **Filler words are dropped** ("a skill about R" is `r`), because in a union
  *   a word like `for` or `and` inflates the term count of every entry whose
  *   prose happens to use it, which ranks noise above the real hit.
+ *
+ * ⚠ **One opt-in exception, and it is not a rule change.** A list filter the
+ * person types into is read while the last word is still being written, so
+ * {@link RankOptions.typeahead} lets that one word match the start of a name when
+ * it is too short for the rules above (`gg` finds `ggplot`). Off by default, and
+ * the two Browse modals, the model-facing matcher and the website never turn it
+ * on, so the three-file rule above is untouched: a full word is read the same
+ * everywhere. Only `skills/searchCatalog.ts` asks for it.
  */
 
 /** How much a match in one field says about an entry. */
@@ -160,6 +168,9 @@ const MIN_PARTIAL_CHARS = 3;
  * however long the word. Below it, {@link substantialInfix} asks for half.
  */
 const MIN_INFIX_CHARS = 4;
+
+/** What the start of a word scores: below the whole word (3), above anywhere inside it (1). */
+const PREFIX_STRENGTH = 2;
 
 /** The best a single term can score: a whole-word match (3) in a name (3). */
 const MAX_TERM_QUALITY = 3 * Weight.Name;
@@ -354,7 +365,7 @@ export function substantialInfix(term: string, word: string): boolean {
 function strength(term: string, word: string): number {
   if (word === term) return 3;
   if (charCount(term) < MIN_PARTIAL_CHARS) return 0;
-  if (word.startsWith(term)) return 2;
+  if (word.startsWith(term)) return PREFIX_STRENGTH;
   if (word.includes(term)) return substantialInfix(term, word) ? 1 : 0;
   return 0;
 }
@@ -377,10 +388,43 @@ export interface SearchQuery {
   phrase: string;
   /** Its distinct words, without filler. See {@link searchTerms}. */
   terms: string[];
+  /**
+   * The term still being typed, when the caller asked for {@link RankOptions.typeahead}
+   * and the query ends in a letter or digit; otherwise absent. It is always one of
+   * {@link SearchQuery.terms}.
+   */
+  typeaheadTerm?: string;
 }
 
-export function parseQuery(query: string, noise: readonly string[] = []): SearchQuery {
-  return { phrase: query.trim().toLowerCase(), terms: searchTerms(query, noise) };
+/** How a caller wants a query read, beyond the shared rules. All off by default. */
+export interface RankOptions {
+  /**
+   * Read the query as one still being typed. The LAST word, when nothing follows
+   * it (no trailing space), may match the start of a word in a name or label even
+   * if it is under {@link MIN_PARTIAL_CHARS} characters, so every prefix of a
+   * skill's name finds it: `g`, `gg`, then `ggp`. A description is still read
+   * by whole words, and a word the person has finished (`gg ` or `gg plot`) is
+   * held to the shared rules.
+   *
+   * ⚠ Opt-in and TypeScript-only: the model calls the Rust matcher with complete
+   * words, and the Browse modals have a Browse button, not a cursor in the
+   * middle of a word. See `skills/searchCatalog.ts`.
+   */
+  typeahead?: boolean;
+}
+
+export function parseQuery(
+  query: string,
+  noise: readonly string[] = [],
+  options: RankOptions = {}
+): SearchQuery {
+  const terms = searchTerms(query, noise);
+  const parsed: SearchQuery = { phrase: query.trim().toLowerCase(), terms };
+  if (options.typeahead && isWordChar(Array.from(query).pop())) {
+    const last = words(query).pop();
+    if (last !== undefined && terms.includes(last)) parsed.typeaheadTerm = last;
+  }
+  return parsed;
 }
 
 /** How one entry matched one query. */
@@ -419,9 +463,17 @@ export function scoreEntry(query: SearchQuery, fields: readonly SearchField[]): 
   const matchedTerms: string[] = [];
   let quality = 0;
   for (const term of query.terms) {
+    // Only the word being typed, and only when it is short enough that the shared
+    // rules would read it as whole-word-only. A longer term already matches a
+    // prefix (and is graded as one), so this adds nothing for it.
+    const typing = term === query.typeaheadTerm && charCount(term) < MIN_PARTIAL_CHARS;
     let best = 0;
     for (const { word, weight } of entryWords) {
-      best = Math.max(best, termStrength(term, word) * weight);
+      let fit = termStrength(term, word);
+      if (fit === 0 && typing && weight !== Weight.Prose && word.startsWith(term)) {
+        fit = PREFIX_STRENGTH;
+      }
+      best = Math.max(best, fit * weight);
     }
     if (best > 0) {
       matchedTerms.push(term);
@@ -455,15 +507,17 @@ export interface SearchResult<T> {
 /**
  * Rank `entries` against `query`. `fields` names the text of one entry that is
  * searched, and what a match there counts for; `noise` is the catalog's own
- * filler (every entry in the skills catalog is a skill).
+ * filler (every entry in the skills catalog is a skill); `options` are the
+ * caller's opt-ins, none of which the marketplace uses.
  */
 export function rankEntries<T>(
   query: string,
   noise: readonly string[],
   entries: readonly T[],
-  fields: (entry: T) => readonly SearchField[]
+  fields: (entry: T) => readonly SearchField[],
+  options: RankOptions = {}
 ): SearchResult<T> {
-  const parsed = parseQuery(query, noise);
+  const parsed = parseQuery(query, noise, options);
   if (parsed.phrase === '') {
     // Browsing reads no field at all — nor did the matcher this replaced — so
     // an entry too malformed to search is still listed.

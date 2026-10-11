@@ -42,10 +42,15 @@ function pack(name: string, members: string[], displayName = name): SkillCatalog
   return { kind: 'bundle', key: name, bundle, enabled: true };
 }
 
+const label = (entry: SkillCatalogEntry) =>
+  entry.kind === 'single' ? entry.skill.name : entry.bundle.displayName;
+
 const names = (entries: readonly SkillCatalogEntry[], query: string) =>
-  rankCatalogEntries(entries, query).hits.map((hit) =>
-    hit.entry.kind === 'single' ? hit.entry.skill.name : hit.entry.bundle.displayName
-  );
+  rankCatalogEntries(entries, query).hits.map((hit) => label(hit.entry));
+
+/** The Settings list's reading: the word being typed is not a finished word. */
+const typed = (entries: readonly SkillCatalogEntry[], query: string) =>
+  rankCatalogEntries(entries, query, { typeahead: true }).hits.map((hit) => label(hit.entry));
 
 describe('installed-catalog search fields', () => {
   /**
@@ -88,6 +93,64 @@ describe('installed-catalog search', () => {
   it('holds a one-letter query to whole words', () => {
     const entries = [single('markdown-render'), single('r-scripting')];
     expect(names(entries, 'R')).toEqual(['r-scripting']);
+  });
+
+  /**
+   * V3-23. The Settings list is typed into: `gg` on the way to `ggplot` listed
+   * nothing (and read as a broken list) while `ggp` found it. With `typeahead`,
+   * every prefix of a name finds it, and the whole word still ranks first. The
+   * composer's picker does not pass the option (see `searchCatalog.ts`), which
+   * the first test below pins as the default.
+   */
+  describe('while the last word is still being typed', () => {
+    it('is off unless asked for, so the composer picker keeps its whole-word floor', () => {
+      const entries = [single('bb-cli'), single('ggplot')];
+      expect(names(entries, 'gg')).toEqual([]);
+      expect(names(entries, 'ggp')).toEqual(['ggplot']);
+    });
+
+    it('finds a skill from the first one or two letters of its name', () => {
+      const entries = [single('bb-cli'), single('ggplot'), single('pdf')];
+      expect(typed(entries, 'g')).toEqual(['ggplot']);
+      expect(typed(entries, 'gg')).toEqual(['ggplot']);
+      expect(typed(entries, 'ggp')).toEqual(['ggplot']);
+      expect(typed(entries, 'ggplot')).toEqual(['ggplot']);
+    });
+
+    it('matches the start of any word of the name, not only the first', () => {
+      expect(typed([single('hpc-ucsf')], 'uc')).toEqual(['hpc-ucsf']);
+    });
+
+    it('ranks the whole word above a prefix, and reads no description by prefix', () => {
+      const entries = [
+        single('ralph'),
+        single('markdown-render'),
+        single('r-scripting'),
+        // `r` starts a word of the sentence but of no name: whole words only there.
+        single('pdf', 'Read and rewrite documents'),
+        // Inside a word, not at its start.
+        single('carbon'),
+      ];
+      expect(typed(entries, 'r')).toEqual(['r-scripting', 'ralph', 'markdown-render']);
+    });
+
+    it('finds a package by the start of a member it contains', () => {
+      const entries = [single('pdf'), pack('tidyverse', ['ggplot', 'dplyr'], 'Tidyverse')];
+      expect(typed(entries, 'gg')).toEqual(['Tidyverse']);
+    });
+
+    it('holds a finished word to whole words again', () => {
+      const entries = [single('ggplot'), single('gg')];
+      expect(typed(entries, 'gg')).toEqual(['gg', 'ggplot']);
+      // A space after it says the word is done, so it is no longer a prefix.
+      expect(typed(entries, 'gg ')).toEqual(['gg']);
+    });
+
+    it('gives the allowance to the last word only', () => {
+      const entries = [single('r-scripting'), single('ralph'), single('ggplot')];
+      // `r` is finished (a whole word, so `ralph` is out); `gg` is being typed.
+      expect(typed(entries, 'r gg')).toEqual(['r-scripting', 'ggplot']);
+    });
   });
 
   it('finds a package by a skill it contains', () => {

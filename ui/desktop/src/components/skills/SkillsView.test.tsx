@@ -612,17 +612,46 @@ describe('SkillsView search', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('holds a one-letter query to whole words', async () => {
-    serve({ skills: [skill('markdown-render'), skill('r-scripting')] });
+  /**
+   * V3-23. The filter is typed into, so the word under the cursor is read as the
+   * START of a name: `gg` on the way to `ggplot` used to list nothing and look
+   * broken, while `ggp` found it. See `searchCatalog.ts`, decision 3.
+   */
+  it('finds a skill from the first letters of its name', async () => {
+    serve({ skills: [skill('bb-cli'), skill('ggplot'), skill('pdf')] });
+    render(<SkillsView />);
+    await screen.findByText('ggplot');
+
+    search('gg');
+
+    await waitFor(() => expect(groupHeading(SKILLS_COPY.groups.matches, 1)).toBeInTheDocument());
+    expect(screen.getByText('ggplot')).toBeInTheDocument();
+    expect(screen.queryByText('No matching skills')).not.toBeInTheDocument();
+    expect(screen.queryByText('bb-cli')).not.toBeInTheDocument();
+    expect(screen.queryByText('pdf')).not.toBeInTheDocument();
+  });
+
+  it('reads a one-letter query as the start of a name, not the middle of a word', async () => {
+    serve({
+      skills: [
+        skill('markdown-render'),
+        skill('r-scripting'),
+        // `r` is inside this name and starts a word of this description: neither counts.
+        skill('carbon'),
+        skill('pdf', { description: 'Read documents' }),
+      ],
+    });
     render(<SkillsView />);
     await screen.findByText('r-scripting');
 
     search('R');
 
-    await waitFor(() => expect(groupHeading(SKILLS_COPY.groups.matches, 1)).toBeInTheDocument());
-    expect(screen.getByText('r-scripting')).toBeInTheDocument();
-    // `markdown-render` holds the letter twice and means nothing by it.
-    expect(screen.queryByText('markdown-render')).not.toBeInTheDocument();
+    await waitFor(() => expect(groupHeading(SKILLS_COPY.groups.matches, 2)).toBeInTheDocument());
+    const text = groupHeading(SKILLS_COPY.groups.matches, 2)!.parentElement!.textContent ?? '';
+    // The whole word `r` ranks above the start of `render`.
+    expect(text.indexOf('r-scripting')).toBeLessThan(text.indexOf('markdown-render'));
+    expect(screen.queryByText('carbon')).not.toBeInTheDocument();
+    expect(screen.queryByText('pdf')).not.toBeInTheDocument();
   });
 
   /**
