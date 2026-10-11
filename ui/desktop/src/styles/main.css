@@ -3747,9 +3747,16 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    (1.28:1 on the sidebar, 1.23:1 on a card) and `--border-strong` the edge (1.65:1 and 1.59:1),
    the raised-thumb rule of the segmented control. The token is re-pointed INSIDE the surface, so
    a field or list in a popover that paints `--background-default` rides the same ground instead
-   of reading as a dark well. `ui/popoverSurface.test.ts` measures every family. */
+   of reading as a dark well. `ui/popoverSurface.test.ts` measures every family.
+   The hairlines INSIDE (a menu's separator, a command palette's input rule) step up with the ground:
+   `--border-subtle` (#302f2c) measured 1.29:1 on the old #1b1b19 ground and 1.05:1 on the lifted one,
+   so a separator vanished (polish round, R-27). `--border-strong` on the lifted ground is the same
+   1.29:1 step it had, and light's 1.26:1. `--border-default` aliases `--border-subtle` at the root,
+   which an inherited value does not follow, so it is re-pointed too. */
 .dark .biorouter-popover-surface {
   --background-default: var(--background-medium);
+  --border-subtle: var(--border-strong);
+  --border-default: var(--border-strong);
   border-color: var(--border-strong);
   background-color: var(--background-default);
 }
@@ -5430,6 +5437,19 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   display: inline-flex;
   flex: none;
   align-items: center;
+}
+
+/* A Note's action (Retry, Reconnect, a dismiss mark) is centred on the note's FIRST line rather than
+   hung from the top of the box, where a 28px button sat 6px below the words beside it. The slot is a
+   `--control-sm` row pulled in by half its difference from the 12/16 line on both sides, so a 28px
+   button lines up with a one-line note's words, the note stays as tall as one with no action (36px),
+   a smaller control is centred in the same row, and a wrapping group of buttons still grows it. */
+.br-note-action {
+  display: flex;
+  flex: none;
+  align-items: center;
+  min-block-size: var(--control-sm);
+  margin-block: calc((var(--text-supporting--line-height) - var(--control-sm)) / 2);
 }
 
 /* FilterInput: a 28px field with a leading 16px search glyph. */

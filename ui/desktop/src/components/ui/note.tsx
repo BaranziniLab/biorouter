@@ -165,7 +165,8 @@ export function Note({
           </Button>
         )}
       </div>
-      {action ? <div className="flex shrink-0 items-center">{action}</div> : null}
+      {/* Centred on the FIRST line, not hung from the top of the box (`.br-note-action`). */}
+      {action ? <div className="br-note-action">{action}</div> : null}
     </div>
   );
 }

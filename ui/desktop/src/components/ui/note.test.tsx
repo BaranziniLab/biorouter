@@ -111,7 +111,11 @@ describe('Note', () => {
         body
       </Note>
     );
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    // Centred on the note's first line by `.br-note-action` (main.css; measured in Chromium by
+    // filledPrimitives.browser.test.tsx).
+    expect(screen.getByRole('button', { name: 'Retry' }).parentElement).toHaveClass(
+      'br-note-action'
+    );
   });
 
   /**

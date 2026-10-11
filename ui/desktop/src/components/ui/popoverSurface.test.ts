@@ -103,6 +103,24 @@ describe('the floating surface in dark (V1-M5)', () => {
     ).toBeGreaterThanOrEqual(4.5);
   });
 
+  /**
+   * The lines inside a dark popover step up with its ground (polish round, R-27): a menu separator
+   * in `--border-subtle` measured 1.05:1 on the lifted ground and vanished, where it had 1.29:1 on
+   * the old one.
+   */
+  it.each(darkScopes)('%s: a hairline inside keeps the step it had on the page', (name, scope) => {
+    const rule = darkRule();
+    expect(tokenOf(rule['--border-subtle'])).toBe('--border-strong');
+    expect(tokenOf(rule['--border-default'])).toBe('--border-strong');
+    const ground = tokens.resolveHex('--background-medium', scope)!;
+    const line = tokens.resolveHex('--border-strong', scope)!;
+    // Measured 1.29 on 2026-10-10, the step `--border-subtle` has on the page ground.
+    expect(
+      tokens.contrast(line, ground),
+      `${name}: separator over the popover`
+    ).toBeGreaterThanOrEqual(1.2);
+  });
+
   it('leaves light alone: there the shadow and the hairline already lift it', () => {
     expect(css).not.toMatch(/\n:root \.biorouter-popover-surface \{/);
     expect(css).not.toMatch(/\n\.light \.biorouter-popover-surface \{/);

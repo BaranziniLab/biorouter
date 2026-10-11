@@ -97,6 +97,10 @@ A recessed ground (the sidebar, a `--background-muted` pane) makes the rest fill
 
 Crew is not converted. Its own recipes (`crew-*` classes) keep their lines; the shared primitives it renders take the fill like everywhere else.
 
+A `Note`'s action is centred on the note's first line (`.br-note-action`): a 28px row pulled in by half its difference from the 12/16 line, so a one-line note with a Retry is as tall as one without (36px) and the words sit level with the button instead of 6px above its centre.
+
+Inside a dark popover the ground is lifted to `--background-medium`, so the hairlines inside it are lifted too: `--border-subtle` and `--border-default` point at `--border-strong` there. On the lifted ground the old separator measured 1.05:1 and vanished; `--border-strong` gives back the 1.29:1 it had on the page.
+
 ## Fields and the cascade
 
 The field's fill and edges, and the defaults of a textarea (three rows, vertical resize), sit in `@layer components`. That matters in both directions. A layered rule lets a caller's `border-border-danger`, `bg-*`, `min-h-*` or `resize-none` win, as a caller expects. An unlayered rule outranks every utility whatever its specificity: the first version of the edge hid the red border four forms pass in, and the first `.br-textarea` ignored `resize-none` and kept the workflow editors at three rows. A caller's `bg-*` on a filled control also beats the layered hover, so a control given its own ground needs its own hover. The `Field` wrapper is `.br-form-field`, not `.br-field`, which belongs to the input alone.
@@ -112,6 +116,7 @@ react-select writes its own `display: block` on an option in an unlayered style 
 jsdom lays nothing out and runs no Tailwind, so a component test can only read class names. The acceptance numbers are measured in Chromium:
 
 - `ui/controlsGeometry.browser.test.tsx` bundles the real components with esbuild, styles them with the authored blocks of `main.css`, and measures the switch, the menu row, the segmented thumb, the InfoTip, the tabs, the setting rows and the `⋯` hit target. Several cases strip the rule they guard from the stylesheet and expect the defect, so the instrument is proved.
+- `ui/filledPrimitives.browser.test.tsx` compiles the real `main.css` with Tailwind (the classes the bundle uses) and paints the filled primitives in light, dark and forced colours: the rest fill and the hover step, the focus and danger edges, the step back to the page ground inside a filled box, a badge on a hovered row, a button in a dark popover, the transparent border drawn in forced colours at no cost in size, and a note's action level with its first line. Each assertion was proved by removing the rule it guards from the compiled sheet.
 - `ui/dialogFromMenu.browser.test.tsx` bundles the real menus and dialogs and drives them with Playwright's keyboard and mouse: where focus lands when a dialog that a menu item opened closes, and whether its first stop wears a ring after a mouse pick.
 - `styles/crewParity.test.ts` holds each promoted recipe to its Crew original, with the differences the redesign made on purpose written down.
 - `ui/controlsSourceGuard.test.ts` fails on a hand-rolled checkbox, radio or switch, an `@radix-ui/themes` import, a `title=` on a menu item and a Switch `variant` outside `ui/`. The `variant` prop itself is gone, so the type checker refuses it too. A file waiting on its owner is listed in `PENDING`, and the list only shrinks; it is empty now.
