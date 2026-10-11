@@ -15,7 +15,12 @@ import { cn } from '../../utils';
 import { isWindowResizing, prefersReducedMotion } from '../../styles/motion';
 import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
-import { useTabStripOverflow, useTabStripScrolledEdges } from '../Layout/useTabStripOverflow';
+import {
+  tabEdgeFadeOf,
+  tabRevealScrollLeft,
+  useTabStripOverflow,
+  useTabStripScrolledEdges,
+} from '../Layout/useTabStripOverflow';
 import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
 import { ChatRowContextMenuContent } from '../chats/ChatRowContextMenu';
 import {
@@ -500,13 +505,20 @@ export function ChatTabStrip({
     if (!strip || !tab || strip.clientWidth === 0) return;
     const available = Math.max(0, strip.clientWidth - 8);
     strip.style.setProperty('--chat-tab-available-width', `${available}px`);
-    // Measure the whole tab, including its close control, in scroll coordinates.
-    // offsetLeft is unaffected by the reorder/selection animation transforms.
-    const left = tab.offsetLeft;
-    const right = left + tab.offsetWidth;
     revealedAtRef.current = revealedAt(strip, tab);
-    if (left < strip.scrollLeft) strip.scrollLeft = left;
-    else if (right > strip.scrollLeft + available) strip.scrollLeft = right - available;
+    // The whole tab, its close control included, clear of the end fade on the
+    // side it is revealed from (V2-R4-4: it stopped 8px from the end, inside
+    // the 32px fade). Scroll coordinates: offsetLeft is unaffected by the
+    // reorder/selection animation transforms.
+    const left = tabRevealScrollLeft({
+      tabLeft: tab.offsetLeft,
+      tabWidth: tab.offsetWidth,
+      scrollLeft: strip.scrollLeft,
+      clientWidth: strip.clientWidth,
+      scrollWidth: strip.scrollWidth,
+      fade: tabEdgeFadeOf(strip),
+    });
+    if (left !== null) strip.scrollLeft = left;
   }, []);
 
   // A render reveals the active tab only when something that should move the

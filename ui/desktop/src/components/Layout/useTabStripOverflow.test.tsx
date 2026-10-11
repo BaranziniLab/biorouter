@@ -1,7 +1,12 @@
 import { act, render } from '@testing-library/react';
 import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useTabStripOverflow, useTabStripScrolledEdges } from './useTabStripOverflow';
+import {
+  tabEdgeFadeOf,
+  tabRevealScrollLeft,
+  useTabStripOverflow,
+  useTabStripScrolledEdges,
+} from './useTabStripOverflow';
 
 /**
  * The scrolled-past ends of a tab strip, which drive the strip's edge fade. jsdom
@@ -195,5 +200,79 @@ describe('a tab strip list that mounts after the hook, or is replaced', () => {
     const before = disconnected;
     unmount();
     expect(disconnected - before).toBe(2);
+  });
+});
+
+/**
+ * Where a reveal scrolls a strip (vision V2-R4-4). 15 tabs 136px wide every 144px from 8, the
+ * strip 728px wide with 8px end padding, fading 32px at an end with tabs past it: the geometry
+ * the finding measured (1100x760, the strip 172..900).
+ */
+describe('tabRevealScrollLeft', () => {
+  const STRIP = { clientWidth: 728, scrollWidth: 8 + 14 * 144 + 136 + 8, fade: 32 };
+  const at = (index: number, scrollLeft: number, over: Partial<typeof STRIP> = {}) =>
+    tabRevealScrollLeft({
+      ...STRIP,
+      ...over,
+      tabLeft: 8 + index * 144,
+      tabWidth: 136,
+      scrollLeft,
+    });
+
+  it('stops a tab straddling the end 32px short of it, outside the fade', () => {
+    // Tab 5 is 728..864: the end is at 728.
+    const left = at(5, 0)!;
+    expect(left + STRIP.clientWidth - STRIP.fade).toBe(8 + 5 * 144 + 136);
+  });
+
+  it('stops a tab straddling the start 32px past it', () => {
+    // Tab 9 is 1304..1440, the strip scrolled to 1340.
+    expect(at(9, 1340)).toBe(8 + 9 * 144 - 32);
+  });
+
+  it('moves a tab inside the box but under a fade', () => {
+    // Tab 5 is 728..864; at 150 the box is 150..878 and the end fade 846..878.
+    expect(at(5, 150)).toBe(864 - 728 + 32);
+    // At 168 its right edge meets the fade's inner edge: nothing to do.
+    expect(at(5, 168)).toBeNull();
+  });
+
+  it('takes the last tab to the end and the first to the start, where nothing fades', () => {
+    const max = STRIP.scrollWidth - STRIP.clientWidth;
+    expect(at(14, 0)).toBe(max);
+    expect(at(0, max)).toBe(0);
+  });
+
+  it('leaves a tab that is already clear where it is', () => {
+    expect(at(2, 0)).toBeNull();
+    expect(at(7, 600)).toBeNull();
+  });
+
+  it('a strip without a fade reveals to its edge', () => {
+    expect(at(5, 0, { fade: 0 })).toBe(864 - 728);
+  });
+
+  it('a tab too wide to clear both fades lands whole, and stays put once shown', () => {
+    // A 200px split strip whose tabs are at their cap (192px): no scroll clears both fades.
+    const narrow = { clientWidth: 200, scrollWidth: 8 + 4 * 195 + 192 + 8, fade: 32 };
+    const reveal = (index: number, scrollLeft: number) =>
+      tabRevealScrollLeft({ ...narrow, tabLeft: 8 + index * 195, tabWidth: 192, scrollLeft });
+    const middle = reveal(2, 0)!;
+    expect(middle).toBeGreaterThanOrEqual(8 + 2 * 195 + 192 - 200);
+    expect(middle).toBeLessThanOrEqual(8 + 2 * 195);
+    expect(reveal(2, middle)).toBeNull();
+    // The last tab: at the end only its start fades, so the end is the scroll that hides least.
+    const max = narrow.scrollWidth - narrow.clientWidth;
+    expect(reveal(4, 0)).toBe(max);
+    expect(reveal(4, max)).toBeNull();
+  });
+
+  it('reads the fade from the strip, and 0 when it declares none', () => {
+    const el = document.createElement('div');
+    document.body.appendChild(el);
+    expect(tabEdgeFadeOf(el)).toBe(0);
+    el.style.setProperty('--tab-edge-fade', '32px');
+    expect(tabEdgeFadeOf(el)).toBe(32);
+    el.remove();
   });
 });

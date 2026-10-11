@@ -113,6 +113,102 @@ export interface TabStripScrolledEdges {
 const NOT_SCROLLED: TabStripScrolledEdges = { start: false, end: false };
 
 /**
+ * Which ends of a strip would have tabs scrolled past them at `scrollLeft`. The
+ * one definition of "this end fades": the edge-fade hook below reads it from the
+ * strip as it is, and {@link tabRevealScrollLeft} asks it of a scroll it has not
+ * made yet, so a reveal and the fade can never disagree about which ends fade.
+ *
+ * 1px of slack: a fractional scroll width can leave scrollLeft a hair short of its
+ * maximum, which must still read as "at the end".
+ */
+export function scrolledEdgesAt(
+  scrollLeft: number,
+  clientWidth: number,
+  scrollWidth: number
+): TabStripScrolledEdges {
+  return { start: scrollLeft > 1, end: scrollLeft + clientWidth < scrollWidth - 1 };
+}
+
+/**
+ * The strip's edge fade in px: its `--tab-edge-fade` (the chat strip's and the
+ * preview panel's 32px), or 0 for a strip that declares none.
+ */
+export function tabEdgeFadeOf(strip: HTMLElement): number {
+  const fade = parseFloat(getComputedStyle(strip).getPropertyValue('--tab-edge-fade'));
+  return Number.isFinite(fade) && fade > 0 ? fade : 0;
+}
+
+/** What {@link tabRevealScrollLeft} reads: one tab and the strip that scrolls it. */
+export interface TabRevealGeometry {
+  /** The tab's start and width in the strip's scroll coordinates (`offsetLeft`, `offsetWidth`). */
+  tabLeft: number;
+  tabWidth: number;
+  scrollLeft: number;
+  clientWidth: number;
+  scrollWidth: number;
+  /** The strip's edge fade ({@link tabEdgeFadeOf}). */
+  fade: number;
+}
+
+/**
+ * Where a strip should scroll so a tab is seen whole, or null when it already is.
+ *
+ * "Whole" means clear of the edge fade as well as inside the box: an end with
+ * tabs scrolled past it fades over `fade` px, so a tab revealed only to the box's
+ * edge ends under the fade, its close slot and the end of its accent strip faded
+ * out (vision V2-R4-4: revealed to 8px from the end of a strip whose end fades
+ * over 32). A reveal therefore puts the tab's near end at the fade's inner edge.
+ * A reveal that reaches the end of the strip turns that end's fade off, and the
+ * tab then sits at the end; {@link scrolledEdgesAt} says which ends fade at each
+ * candidate scroll.
+ *
+ * A tab too wide to clear both fades (a narrow split pane) still lands whole
+ * inside the box, with as little of it under a fade as the strip allows. Ties go
+ * to the smaller move, and a tab already shown as well as it can be is left where
+ * it is: revealing the same tab twice never moves the strip twice.
+ */
+export function tabRevealScrollLeft(g: TabRevealGeometry): number | null {
+  const max = Math.max(0, g.scrollWidth - g.clientWidth);
+  const clamp = (left: number) => Math.min(max, Math.max(0, left));
+  const tabRight = g.tabLeft + g.tabWidth;
+  const shown = (from: number, to: number) =>
+    Math.max(0, Math.min(tabRight, to) - Math.max(g.tabLeft, from));
+  // At scroll `s`: how much of the tab is out of the box, and how much of what
+  // is in it sits under a fade.
+  const costAt = (s: number) => {
+    const edges = scrolledEdgesAt(s, g.clientWidth, g.scrollWidth);
+    const inBox = shown(s, s + g.clientWidth);
+    const clear = shown(
+      s + (edges.start ? g.fade : 0),
+      s + g.clientWidth - (edges.end ? g.fade : 0)
+    );
+    return { s, outside: g.tabWidth - inBox, faded: inBox - clear };
+  };
+  type Cost = ReturnType<typeof costAt>;
+  // Out of the box is worse than faded (a faded close slot can still be seen
+  // and clicked), then less faded, then the smaller move. Half a pixel of slack
+  // for the rounding in offsetLeft and offsetWidth.
+  const better = (a: Cost, b: Cost) => {
+    if (Math.abs(a.outside - b.outside) > 0.5) return a.outside < b.outside;
+    if (Math.abs(a.faded - b.faded) > 0.5) return a.faded < b.faded;
+    return Math.abs(a.s - g.scrollLeft) < Math.abs(b.s - g.scrollLeft);
+  };
+  const here = costAt(g.scrollLeft);
+  if (here.outside <= 0.5 && here.faded <= 0.5) return null;
+  let best = here;
+  for (const left of [
+    clamp(g.tabLeft - g.fade),
+    clamp(tabRight - g.clientWidth + g.fade),
+    clamp(g.tabLeft),
+    clamp(tabRight - g.clientWidth),
+  ]) {
+    const cost = costAt(left);
+    if (better(cost, best)) best = cost;
+  }
+  return best === here || best.s === g.scrollLeft ? null : best.s;
+}
+
+/**
  * The scrolled-past ends of a tab strip, for the edge fade: a tab cut off at an
  * edge fades into it, so it reads as "more this way" rather than as a clipped
  * word beside the ▾ (vision V2-16 gave the preview panel's strip this; the chat
@@ -136,10 +232,7 @@ export function useTabStripScrolledEdges(
   const measure = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    // 1px of slack: a fractional scroll width can leave scrollLeft a hair short
-    // of its maximum, which must still read as "at the end".
-    const start = el.scrollLeft > 1;
-    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    const { start, end } = scrolledEdgesAt(el.scrollLeft, el.clientWidth, el.scrollWidth);
     setEdges((current) =>
       current.start === start && current.end === end ? current : { start, end }
     );

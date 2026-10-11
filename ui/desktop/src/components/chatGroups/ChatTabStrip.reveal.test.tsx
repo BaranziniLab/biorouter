@@ -48,12 +48,22 @@ afterEach(() => {
   globalThis.ResizeObserver = originalResizeObserver;
 });
 
+/**
+ * Tabs 117px wide every 120px from 0, the strip's 8px end padding after the last, and the
+ * strip's 32px edge fade (chat-tabs.css, which jsdom does not load). jsdom lays nothing out and
+ * never clamps scrollLeft, so the reveal's own clamp to [0, scrollWidth - clientWidth] is what
+ * the numbers below read.
+ */
 function geometry(container: HTMLElement, width = 160) {
   const strip = container.querySelector('[role="tablist"]') as HTMLElement;
+  const tabs = [...container.querySelectorAll<HTMLElement>('[data-tab-id]')];
   Object.defineProperty(strip, 'clientWidth', { configurable: true, value: width });
-  for (const [index, el] of [
-    ...container.querySelectorAll<HTMLElement>('[data-tab-id]'),
-  ].entries()) {
+  Object.defineProperty(strip, 'scrollWidth', {
+    configurable: true,
+    value: (tabs.length - 1) * 120 + 117 + 8,
+  });
+  strip.style.setProperty('--tab-edge-fade', '32px');
+  for (const [index, el] of tabs.entries()) {
     Object.defineProperty(el, 'offsetLeft', { configurable: true, value: index * 120 });
     Object.defineProperty(el, 'offsetWidth', { configurable: true, value: 117 });
   }
@@ -86,10 +96,14 @@ describe('the complete active tab is brought into view', () => {
     const strip = geometry(container, 100);
     fireEvent.click(container.querySelector('[data-tab-id="tab-3"] button[role="tab"]')!);
     expect(strip.style.getPropertyValue('--chat-tab-available-width')).toBe('92px');
-    expect(strip.scrollLeft).toBe(265);
+    // 117px of tab in a 100px strip (jsdom ignores the 92px cap): some of it is out of the box
+    // wherever it scrolls, so the reveal keeps its start, the glyph and the title, in view.
+    expect(strip.scrollLeft).toBe(240);
     geometry(container, 200);
     resize();
-    expect(strip.scrollLeft).toBe(240);
+    // The strip's end now: scrollWidth 365 - clientWidth 200. (jsdom never clamps the 265 a
+    // 100px strip held, so the reveal's own clamp is what brings it back.)
+    expect(strip.scrollLeft).toBe(165);
   });
   it('reveals the selected tab when keyboard focus returns to the strip', () => {
     const { container } = renderStrip();
@@ -143,7 +157,6 @@ describe('the complete active tab is brought into view', () => {
   describe('a scroll the person made holds', () => {
     function scrollable(container: HTMLElement) {
       const strip = geometry(container);
-      Object.defineProperty(strip, 'scrollWidth', { configurable: true, value: 357 });
       resize();
       expect(strip.scrollLeft).toBe(205);
       return strip;
@@ -185,6 +198,7 @@ describe('the complete active tab is brought into view', () => {
       // A rename before the active tab moves it: revealed again.
       const active = container.querySelector<HTMLElement>('[data-tab-id="tab-3"]')!;
       Object.defineProperty(active, 'offsetLeft', { configurable: true, value: 260 });
+      Object.defineProperty(strip, 'scrollWidth', { configurable: true, value: 385 });
       rerender(
         <ChatTabStrip
           {...props}
@@ -197,6 +211,64 @@ describe('the complete active tab is brought into view', () => {
       Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 140 });
       resize();
       expect(strip.scrollLeft).toBe(245);
+    });
+  });
+
+  // Vision V2-R4-4: a tab revealed from an end stopped 8px from it, inside the 32px fade, so its
+  // last 24px, the close slot and the end of its accent strip were faded out. Five tabs in a
+  // 300px strip: tab-3 is 240..357, the strip's end is 605, so it scrolls 0..305.
+  describe('a revealed tab clears the edge fade on the side it comes from', () => {
+    const FIVE = [
+      ...TABS,
+      tab({ tabId: 'tab-4', sessionId: 's4', title: 'Fourth' }),
+      tab({ tabId: 'tab-5', sessionId: 's5', title: 'Fifth' }),
+    ];
+    function five(activeTabId: string) {
+      const rendered = renderStrip({ tabs: FIVE, activeTabId });
+      const strip = geometry(rendered.container, 300);
+      resize();
+      return { ...rendered, strip };
+    }
+    const select = (container: HTMLElement, id: string) =>
+      fireEvent.click(container.querySelector(`[data-tab-id="${id}"] button[role="tab"]`)!);
+
+    it('a tab straddling the end stops 32px short of it, not 8px', () => {
+      const { strip, rerender, props } = five('tab-1');
+      expect(strip.scrollLeft).toBe(0);
+      rerender(<ChatTabStrip {...props} activeTabId="tab-3" />);
+      // Its right edge (357) at the end fade's inner edge: 89 + 300 - 32.
+      expect(strip.scrollLeft).toBe(89);
+    });
+
+    it('a tab straddling the start stops 32px past it', () => {
+      const { strip, rerender, props } = five('tab-1');
+      act(() => {
+        strip.scrollLeft = 150;
+        fireEvent.scroll(strip);
+      });
+      rerender(<ChatTabStrip {...props} activeTabId="tab-2" />);
+      // Its left edge (120) at the start fade's inner edge.
+      expect(strip.scrollLeft).toBe(88);
+    });
+
+    it('the active tab inside the box but under the fade is revealed when clicked', () => {
+      const { strip, container } = five('tab-3');
+      expect(strip.scrollLeft).toBe(89);
+      act(() => {
+        strip.scrollLeft = 70;
+        fireEvent.scroll(strip);
+      });
+      // 240..357 is inside 70..370, but the fade covers 338..370.
+      select(container, 'tab-3');
+      expect(strip.scrollLeft).toBe(89);
+      // Shown clear already: a second click does not move the strip.
+      select(container, 'tab-3');
+      expect(strip.scrollLeft).toBe(89);
+    });
+
+    it('the last tab goes to the end, where the strip stops fading', () => {
+      const { strip } = five('tab-5');
+      expect(strip.scrollLeft).toBe(305);
     });
   });
 

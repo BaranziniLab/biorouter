@@ -191,6 +191,120 @@ describe('a chat tab strip that overflows scrolls, and the scroll holds (V1-R5-1
       [STRIP, tabId] as const
     );
 
+  /** Where a tab sits against the strip's box, and the fade the strip declares and wears. */
+  const placement = (page: Page, tabId: string) =>
+    page.evaluate(
+      ([s, id]) => {
+        const el = document.querySelector<HTMLElement>(s)!;
+        const strip = el.getBoundingClientRect();
+        const tab = document.querySelector(`[data-tab-id="${id}"]`)!.getBoundingClientRect();
+        return {
+          fade: parseFloat(getComputedStyle(el).getPropertyValue('--tab-edge-fade')),
+          start: el.hasAttribute('data-scrolled-start'),
+          end: el.hasAttribute('data-scrolled-end'),
+          fromStart: tab.left - strip.left,
+          toEnd: strip.right - tab.right,
+        };
+      },
+      [STRIP, tabId] as const
+    );
+
+  /** The tab an edge of the strip cuts through as it sits now, and the middle of its visible part. */
+  const cutBy = (page: Page, edge: 'start' | 'end') =>
+    page.evaluate(
+      ([s, side]) => {
+        const strip = document.querySelector<HTMLElement>(s)!.getBoundingClientRect();
+        const line = side === 'end' ? strip.right : strip.left;
+        for (const el of document.querySelectorAll<HTMLElement>(`${s} [data-tab-id]`)) {
+          const tab = el.getBoundingClientRect();
+          if (tab.left < line - 4 && tab.right > line + 4) {
+            const from = Math.max(tab.left, strip.left);
+            const to = Math.min(tab.right, strip.right);
+            return { id: el.dataset.tabId!, x: (from + to) / 2, y: tab.top + tab.height / 2 };
+          }
+        }
+        return null;
+      },
+      [STRIP, edge] as const
+    );
+
+  // Vision V2-R4-4: selecting a tab the strip's end cut through revealed it to 8px from the end,
+  // inside the 32px end fade, so its last 24px, the close slot and the end of its accent strip
+  // were faded out (1100x760, 15 tabs).
+  it('a tab selected where an end cuts it is revealed clear of that end fade', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open(15, 830);
+    try {
+      await page.evaluate((s) => (document.querySelector<HTMLElement>(s)!.scrollLeft = 0), STRIP);
+      await settle(page);
+      const cut = await cutBy(page, 'end');
+      expect(cut, 'the strip end cuts through a tab').not.toBeNull();
+      await page.mouse.click(cut!.x, cut!.y);
+      await settle(page);
+      const shown = await placement(page, cut!.id);
+      expect(shown.fade, 'the strip fades its ends over 32px').toBe(32);
+      expect(shown.end, 'tabs remain past the end, so the end still fades').toBe(true);
+      expect(shown.toEnd, 'the tab ends at the fade, not inside it').toBeGreaterThanOrEqual(31.5);
+      expect(shown.toEnd, 'and no further than it needs to').toBeLessThanOrEqual(32.5);
+      expect(shown.fromStart, 'its start is clear of the start fade').toBeGreaterThanOrEqual(31.5);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('a tab selected where the start cuts it is revealed clear of the start fade', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open(15, 830);
+    try {
+      // Opened at the end (the last tab is active); scroll back until the start cuts a tab.
+      await page.evaluate(
+        (s) => (document.querySelector<HTMLElement>(s)!.scrollLeft -= 300),
+        STRIP
+      );
+      await settle(page);
+      const cut = await cutBy(page, 'start');
+      expect(cut, 'the strip start cuts through a tab').not.toBeNull();
+      await page.evaluate(
+        (id) => (window as unknown as { __select: (id: string) => void }).__select(id),
+        cut!.id
+      );
+      await settle(page);
+      const shown = await placement(page, cut!.id);
+      expect(shown.start).toBe(true);
+      expect(shown.fromStart, 'the tab starts at the fade, not inside it').toBeGreaterThanOrEqual(
+        31.5
+      );
+      expect(shown.fromStart).toBeLessThanOrEqual(32.5);
+      expect(shown.toEnd, 'its end is clear of the end fade').toBeGreaterThanOrEqual(31.5);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('the last tab is revealed at the end, where the strip stops fading', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open(15, 830);
+    try {
+      await page.evaluate((s) => (document.querySelector<HTMLElement>(s)!.scrollLeft = 0), STRIP);
+      await settle(page);
+      await page.evaluate(() =>
+        (window as unknown as { __select: (id: string) => void }).__select('tab-13')
+      );
+      await settle(page);
+      await page.evaluate(() =>
+        (window as unknown as { __select: (id: string) => void }).__select('tab-14')
+      );
+      await settle(page);
+      const { scrollLeft, overflow } = await geometry(page);
+      expect(scrollLeft).toBe(overflow);
+      const shown = await placement(page, 'tab-14');
+      expect(shown.end, 'nothing past the end, so it does not fade').toBe(false);
+      expect(shown.toEnd).toBeGreaterThanOrEqual(-0.5);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('reveals the active tab on open, then holds a scroll set on the strip', async (ctx) => {
     if (!browser) return ctx.skip();
     const page = await open(10, 1100);
