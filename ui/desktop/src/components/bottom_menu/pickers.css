@@ -81,20 +81,27 @@
   display: inline-flex;
 }
 
-/* The Tools popover: one column, the segmented control on top. */
+/*
+ * The Tools popover: one column, the list on top and the segmented control on
+ * the bottom edge, directly above the chip (R-25). Radix pins a `side="top"`
+ * popover by its bottom edge, so the height may change with the list and the
+ * control stays where it is. The cap is the room above the chip (Radix's `size`
+ * middleware, which runs with collisions off and honours `collisionPadding`),
+ * so a short window shortens the list instead of flipping the popover.
+ */
 .br-picker-popover {
   display: flex;
   flex-direction: column;
   width: 320px;
   max-width: calc(100vw - 32px);
-  max-height: min(480px, 70vh);
+  max-height: min(480px, var(--radix-popover-content-available-height, 70vh));
   padding: 0;
   overflow: hidden;
 }
 
 .br-picker-popover__tabs {
   flex: none;
-  padding: 8px 8px 4px;
+  padding: 4px 8px 8px;
 }
 
 .br-picker-panel {
@@ -124,8 +131,12 @@
   min-width: 0;
 }
 
+/* The part that gives way: it scrolls, and shrinks first when the room is short. */
 .br-picker-panel__list {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 320px;
+  overflow-y: auto;
 }
 
 .br-picker-panel__empty {

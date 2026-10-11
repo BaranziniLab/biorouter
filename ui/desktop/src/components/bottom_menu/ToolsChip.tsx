@@ -13,8 +13,26 @@ import { TOOLS_COPY } from './copy';
 /**
  * The composer's Tools chip (spec 3.7): one control, labelled "Tools" and the
  * sum of the extensions, skills and knowledge bases this chat can reach. It
- * opens one popover: a segmented control (Extensions, Skills, Knowledge) over
- * one list at a time, each a search field, a scope line and switch rows.
+ * opens one popover over the chip: one list at a time (a search field, a scope
+ * line and switch rows) with the segmented control (Extensions, Skills,
+ * Knowledge) under it, directly above the chip.
+ *
+ * ⚠ **The segmented control never moves (R-25, owner message 13).** It is the
+ * popover's LAST child, so it sits on the popover's bottom edge, and that edge
+ * is pinned 6px above the chip: Radix places a `side="top"` popover by its
+ * bottom, so a longer or shorter list grows or shrinks the popover UPWARD.
+ * Two things would still move it, and both are switched off here:
+ * - collision handling: Radix flips a popover to the side with more room and
+ *   slides it along the chip. `avoidCollisions={false}` rules both out, and
+ *   the height is capped by the room above instead (`max-height` reads
+ *   Radix's available-height variable in `pickers.css`), so a long list
+ *   scrolls and the popover never needs to go anywhere else;
+ * - a control at the top: the old layout, where every tab switch moved the
+ *   control by the change in the list's height, under the pointer that had
+ *   just clicked it.
+ * `toolsPopover.browser.test.tsx` measures it in Chromium across the three
+ * lists and two window heights. The DOM order is the visual order (search,
+ * scope line, list, control), so Tab walks the popover top to bottom.
  *
  * ⚠ The props are the wave-0 contract (WS-PICKERS). `ChatInput` places this
  * inside the composer card and owns nothing below it.
@@ -45,6 +63,13 @@ const SEGMENTS: ReadonlyArray<SegmentedOption<ToolsSegment>> = [
     testId: 'tools-segment-knowledge',
   },
 ];
+
+/**
+ * How close the popover may come to the window's edges. The top clears the 44px
+ * band (`--chrome-height`) with 8px to spare; Radix's `size` middleware turns it
+ * into the available height that caps the popover.
+ */
+export const TOOLS_POPOVER_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, left: 8 } as const;
 
 export function ToolsChip({ sessionId }: ToolsChipProps) {
   const [open, setOpen] = useState(false);
@@ -102,6 +127,12 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
       <PopoverContent
         side="top"
         align="start"
+        // Never flipped below the chip and never slid: the bottom edge, and the
+        // segmented control on it, stay put (R-25). The room above caps the height.
+        avoidCollisions={false}
+        // Off the 44px band at the top of a chat, a window-drag region that would
+        // eat clicks on the search field (CLAUDE.md, "Toasts"); 8px elsewhere.
+        collisionPadding={TOOLS_POPOVER_COLLISION_PADDING}
         aria-label={TOOLS_COPY.chip}
         data-testid="composer-tools-popover"
         className="br-picker-popover"
@@ -118,7 +149,13 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
           closedByKeyboard.current = false;
         }}
       >
-        <div className="br-picker-popover__tabs">
+        {segment === 'extensions' && <ExtensionsPanel picker={extensions} inputRef={inputRef} />}
+        {segment === 'skills' && <SkillsPanel picker={skills} inputRef={inputRef} />}
+        {segment === 'knowledge' && (
+          <KnowledgePanel picker={knowledge} inChat={sessionId !== null} inputRef={inputRef} />
+        )}
+        {/* Last, on the bottom edge: the one place in the popover that does not move. */}
+        <div className="br-picker-popover__tabs" data-testid="composer-tools-tabs">
           <SegmentedControl
             fill
             aria-label={TOOLS_COPY.segmentsLabel}
@@ -127,11 +164,6 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
             onValueChange={setSegment}
           />
         </div>
-        {segment === 'extensions' && <ExtensionsPanel picker={extensions} inputRef={inputRef} />}
-        {segment === 'skills' && <SkillsPanel picker={skills} inputRef={inputRef} />}
-        {segment === 'knowledge' && (
-          <KnowledgePanel picker={knowledge} inChat={sessionId !== null} inputRef={inputRef} />
-        )}
       </PopoverContent>
     </Popover>
   );

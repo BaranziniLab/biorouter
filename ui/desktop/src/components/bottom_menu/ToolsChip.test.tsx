@@ -128,6 +128,35 @@ describe('ToolsChip', () => {
     expect(await screen.findByTestId('knowledge-panel')).toHaveAttribute('data-in-chat', 'true');
   });
 
+  it('puts the segmented control last, under the list, where Tab reaches it after the list (R-25)', async () => {
+    const user = userEvent.setup();
+    render(<ToolsChip sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-tools-chip'));
+
+    // The control is the popover's last child: it sits on the bottom edge, which
+    // is the edge pinned above the chip (geometry: toolsPopover.browser.test.tsx).
+    const popover = await screen.findByTestId('composer-tools-popover');
+    const tabs = screen.getByTestId('composer-tools-tabs');
+    expect(popover.lastElementChild).toBe(tabs);
+    const search = screen.getByTestId('extensions-panel');
+    expect(search.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The DOM order is the visual order: the search first, the control after it.
+    await waitFor(() => expect(search).toHaveFocus());
+    await user.tab();
+    expect(screen.getByRole('radio', { name: 'Extensions' })).toHaveFocus();
+
+    // One Tab stop; the arrow keys switch lists, and the new list comes up above.
+    // Held, as a person's key is: Radix selects on the focus an arrow key moves.
+    await user.keyboard('{ArrowRight>}');
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: 'Skills' })).toHaveAttribute('aria-checked', 'true')
+    );
+    await user.keyboard('{/ArrowRight}');
+    expect(await screen.findByTestId('skills-panel')).toBeInTheDocument();
+    expect(popover.lastElementChild).toBe(tabs);
+  });
+
   it('puts focus in the search field when it opens', async () => {
     render(<ToolsChip sessionId="chat-1" />);
     fireEvent.click(screen.getByTestId('composer-tools-chip'));
