@@ -13,6 +13,16 @@
  * - The body starts 24px in: the glyph (16) plus the gap (8), so the well's
  *   left edge is the label's left edge.
  *
+ * Another file leans on three names here. `message-meta.css` (WS-TRANSCRIPT)
+ * ends the last tool row of a message short, so the answer's hover actions
+ * never cover a full-width label or its chevron:
+ * `[data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line`.
+ * It needs `.biorouter-message-tool` (the wrapper `ToolCallRows` draws),
+ * `.br-transcript-row-line` (the flex line that holds the head), and the head's
+ * max-width resolving against that line's CONTENT box, which is why the line
+ * is the element that takes the padding. Rename or restructure any of the three
+ * and `transcript/messageActionsGeometry.browser.test.tsx` goes red.
+ *
  * Authored CSS, not Tailwind strings: a newly written utility can silently fail
  * to generate under BIOROUTER_NO_HMR, and these rules are load-bearing.
  */
