@@ -231,7 +231,9 @@ scrolled (a 36px wordmark, a 24px "Welcome to Biorouter", a two-line paragraph, 
 inks, the skip repeated at the foot) on the recessed grey ground. Its loader (the frame or two while the
 provider is read) is now empty and on the same page ground: it used to draw the boot splash's 84px BR
 monogram on the muted grey, a second logo and a second ground before the wordmark (FR-R1-7, R-29). The
-splash itself (`index.html`) is the coordinator's. On a browser served by `biorouter serve` the band is
+splash itself (`index.html`) now draws the wordmark at rest on the page canvas, with no mark and no
+entrance (FR-R1-7, round 3; design.md, "The boot splash"), so the frame before this page is the same logo on
+the same ground. On a browser served by `biorouter serve` the band is
 the wordmark and "Get started", over the host-managed panel, which carries the reason itself.
 
 The catalog opens once, at rest (FR-R1-1). With `holdUntilSettled` (both pages pass it) it draws a quiet

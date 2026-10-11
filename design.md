@@ -407,31 +407,43 @@ re-invented as literals, which is how the scrim and the code ground got duplicat
 
 #### The boot splash
 
-The splash paints **before the app** — before React, before `main.css` — so it cannot read a token.
-Its four values are therefore literals, generated into a `THEMES:GENERATED:SPLASH` region in
-[`ui/desktop/index.html`](ui/desktop/index.html) from each family's `splash` block, and cross-checked
-against `THEME_FAMILIES` by `boot-splash.test.ts` so a new family cannot silently miss this screen.
+The splash paints **before the app**, before React and before `main.css`, so it cannot read a token.
+Its values are therefore literals, generated into a `THEMES:GENERATED:SPLASH` region in
+[`ui/desktop/index.html`](ui/desktop/index.html) and cross-checked against `THEME_FAMILIES` by
+`boot-splash.test.ts` so a new family cannot silently miss this screen.
 
-| Token | Parchment light | Parchment dark | Role |
+**What it draws (2026-10-11, first-run vision FR-R1-7, R-29, R-34).** The Biorouter wordmark, at rest, centred, with
+a thin sweep under it. It used to draw the BR monogram with a staggered blur-slide entrance, which made the
+monogram the first logo a new person saw and a second logo before the wordmark the first-run page leads with.
+The lockup is static geometry (a viewBox, two bar rects and a text element in the bundled Inter at weight 600)
+copied from a rendered `<BioRouterWordmark/>` at 160 by 49, and `bootSplash.browser.test.ts` holds it to the
+component's measured numbers and to the same pixels. The splash waits for Inter (up to 250 ms) before it shows, so
+the first frame is the whole logo rather than a bar with letters following. A launch that finishes inside 400 ms
+shows nothing.
+
+| Token | Light | Dark | Role |
 |---|---|---|---|
-| `--br-bg` | `#f4f4f2` | `#232320` | The ground — tracks `--background-muted`. **Shared**: every family's splash paints these. |
-| `--br-navy` | `#052049` | `#18a3ac` | The `Bio` letter + the left half of the underline (D-39). Per family. |
-| `--br-coral` | `#b85a32` | `#b85a32` | The `Router` letter + the right half of the underline. Per family. |
-| `--br-track` | `#e4e4e0` | `#302f2c` | The 120×2px sweep track under the mark — a hairline, so **shared** (`--border-subtle`). |
+| `--br-bg` | `#ffffff` | `#131312` | The ground, **`--background-canvas`**: the ground the first-run page, Home and the loader paint, so the splash fades onto its own colour. It was `--background-muted`, one step off the page, and a launch that crossed the threshold flashed grey before the white. Shared by every family. |
+| `--br-navy` | `#052049` | `#18a3ac` | The `Bio` letters and the left half of the underline (D-39). **The same in every family**: it is the base family's mark ink. |
+| `--br-coral` | `#b85a32` | `#b85a32` | The `Router` letters and the right half of the underline. The same in every family. |
+| `--br-track` | `#e4e4e0` | `#302f2c` | The 120 by 2px sweep track, a hairline, so shared (`--border-subtle`). |
 
-Since 2026-08-08 the splash is the unification in miniature: **the ground and the track are the same in
-all three families, and only the mark's two inks tell them apart** — exactly the axis that distinguishes
-them in the booted app. `--br-track` used to be Parchment's bone `#e8e1d2` in *both* modes for *every*
-family, which was a leftover rather than a decision.
+**The inks do not follow the family, because the wordmark does not.** `BioRouterWordmark.tsx` is deliberately fixed to
+the brand colours. A splash that took Alma Mater's teal or Roche Limit's orange from the family's own mark would hand
+off to a differently coloured logo one frame later, so the generator gives every family the base family's mark inks
+and the family's own `mark` now drives only the in-app BR monogram. `boot-splash.test.ts` reads the wordmark's
+`NAVY`, `CORAL` and `TEAL` constants from its source and fails if a splash rule disagrees. The generator still
+asserts the navy half at 3:1 against the splash ground, now each family's canvas (Parchment dark: 6.08:1, light: 16.04:1).
 
-**Drift found while documenting this, since fixed.** `--br-navy` did not flip for dark mode in any
-family, and the mark sits directly on `--br-bg` with **no cream plate** — so on every dark boot splash
-the navy half was invisible: `#052049` measured **1.02:1** on Parchment dark `#282217`, **1.12:1** on Alma
-Mater dark `#0d2a50`, **1.02:1** on Roche Limit dark `#232320` (the grounds of the day). The user saw a
-lone coral `R` above half an underline. **D-39 had already decided this case** — "on a dark app surface
-UCSF navy all but vanishes, so the navy role becomes UCSF teal `#18A3AC`" — and `<BioRouterMark>` honoured
-it; the splash, a separate literal path predating the generator, did not. The dark inks now flip, and the
-generator asserts the navy half at 3:1 against the splash ground (Parchment dark: **5.16:1**). `DR-61`.
+**Drift found while documenting this, since fixed (`DR-61`).** `--br-navy` did not flip for dark mode in any family,
+and the mark sits directly on `--br-bg` with **no cream plate**, so on every dark boot splash the navy half was
+invisible: `#052049` measured **1.02:1** on Parchment dark `#282217`, **1.12:1** on Alma Mater dark `#0d2a50`,
+**1.02:1** on Roche Limit dark `#232320` (the grounds of the day). The user saw a lone coral `R` above half an
+underline. **D-39 had already decided this case**: "on a dark app surface UCSF navy all but vanishes, so the navy
+role becomes UCSF teal `#18A3AC`". The dark inks now flip, and the generator holds the line.
+
+Motion: the lockup has none. The sweep is a CSS animation on `transform` alone and stops under
+`prefers-reduced-motion`; under forced colours both inks take `CanvasText`, as the in-app wordmark does.
 
 ---
 

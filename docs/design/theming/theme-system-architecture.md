@@ -183,7 +183,8 @@ These are exactly the values that used to be typed in two-to-four places and dri
 |---|---|
 | `terminal.background`, `terminal.cursorAccent` | the family's own `terminalGround` token |
 | code ground (`CODE_BG*`) | `--background-code` |
-| boot-splash `--br-bg` | `--background-muted` |
+| boot-splash `--br-bg` | `--background-canvas`, the page's own ground (it was `--background-muted` until 2026-10-11, one step off the page, which flashed grey on a slow launch) |
+| boot-splash `--br-navy`, `--br-coral` | the **base** family's `mark` inks, in every family: the splash draws the wordmark, which does not follow the family |
 | picker label + swatch, family list | the definition's `label` / `swatch` / `id` |
 
 `terminalGround` is **per family on purpose**. Parchment dark paints `--background-code`; Alma Mater
@@ -298,7 +299,7 @@ means recovering it from there, with fresh eyes on what it reads.
 ## 7 · Still open
 
 - The `index.html` comment claiming tokens "do not exist as runtime custom properties" is wrong
-  (§4). The splash grounds are now generated from `--background-muted`, so the duplication is gone,
+  (§4). The splash grounds are now generated from `--background-canvas`, so the duplication is gone,
   but the comment's reasoning should be corrected.
 - `--sidebar-icon` on a navy sidebar, and the scoped `<div data-theme>` live preview for settings,
   remain unbuilt.

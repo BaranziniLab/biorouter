@@ -97,9 +97,10 @@ source text. Each sits beside the Markdown companion that explains it.
 
 - `design-system-gallery.html` — the design system rendered as a gallery of every token,
   element and state; the companion artifact to the root [design system](../../design.md).
-- `boot-splash-studio.html` — the studio for the boot splash, the centred `BR` mark that
-  assembles itself before the app paints. Replays the animation, switches theme families, and
-  puts every timing value on a drag handle. Its written companion is the
+- `boot-splash-studio.html` — the studio for the original boot splash, the centred `BR` mark that
+  assembled itself before the app painted. Historical: since 2026-10-11 the splash draws the
+  wordmark at rest instead (see [The boot splash](../../design.md#the-boot-splash)), so the studio's
+  cascade, blur and timing handles describe a design that no longer ships. Its written companion is the
   [boot splash design](../history/dashboard-mode/2026-07-18-boot-splash-design.md).
 - `branding/logo-wordmark-studio.html` and `branding/logo-icon-studio.html` — interactive
   studios for the wordmark and for centring the `BR` icon, with dials for position, mark

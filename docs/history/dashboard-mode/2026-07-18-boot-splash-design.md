@@ -5,7 +5,9 @@
 > word "Loading…" in the corner.
 > **Status:** Historical record (completed 2026-07-18). Approved and built on branch
 > `feat/boot-splash-mark-cascade`; the splash markup and its per-family CSS are generated into
-> `index.html` by `npm run themes`.
+> `index.html` by `npm run themes`. **Superseded 2026-10-11:** the splash no longer draws the BR
+> monogram or cascades it in. It draws the Biorouter wordmark at rest on the page canvas (first-run
+> vision FR-R1-7, R-29); the current design is under "The boot splash" in the root `design.md`.
 > **Audience:** developers working on the desktop app's boot path, and on theme generation.
 
 The splash is pre-React markup in `index.html`, because that is the only placement that can
