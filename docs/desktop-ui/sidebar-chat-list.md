@@ -290,6 +290,17 @@ Two moves are not held:
   scrolled into view with its date bucket (`scrollRowIntoView`, measured against the list, never
   `scrollIntoView`), and focused again if the move took focus with it: a row that changes bucket
   remounts. A move that is not the person's own, such as a turn in another chat, still waits.
+- **History does the same, by lifting rather than releasing** (vision V1-R6-1). History's hold is
+  taken on the list's `pointerenter`, and its rename dialog is modal, so the list sees the pointer
+  leave when the dialog opens and enter again when it closes: a second hold, taken from the order
+  before the move, which then withheld the person's own rename for as long as the pointer rested
+  there. Now a saved rename the person made (name channel, origin `user`, with `activityAt`) is
+  lifted to the top of its bucket in the held order (`liftHeldRow`), so a chat that arrived from
+  elsewhere still waits and only their own move is let through. The move is also remembered until
+  the live list has caught up with it (`pendingOwnMoves`, dropped after 5 s at the latest), so a
+  hold taken in between lifts it too. When the live row reflects the rename, the row is scrolled
+  into view and, if focus was lost with the move, focused again (`historyReveal.ts`). A rename the
+  model made (origin `llm`) is not the person's own and waits for the pointer.
 
 ## A row
 

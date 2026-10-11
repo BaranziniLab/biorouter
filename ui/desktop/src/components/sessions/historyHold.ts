@@ -18,6 +18,12 @@ import type { DateGroup } from '../../utils/dateUtils';
  * wheel), none of which shift anything above them. A row that would arrive above
  * or between held rows, or a new run under a held parent, waits.
  *
+ * One move is let through on purpose: a person's own saved rename (R-30, ruling
+ * 16). Renaming is activity in the chat, so it belongs at the top at once, and
+ * the person just asked for it; `liftHeldRow` puts it there in the held order.
+ * Every other move still waits (a turn in another chat, an arrival, a rename
+ * that came from the model).
+ *
  * Pure, so it is tested without a DOM.
  */
 
@@ -49,6 +55,71 @@ export function holdHistory(
     })),
     children,
   };
+}
+
+/** Where a person's own saved rename now belongs: its id and the bucket its new time falls in. */
+export interface OwnMove {
+  id: string;
+  key: string;
+  label: string;
+}
+
+/** An own move the live list has not caught up with yet, and when it was recorded. */
+export interface PendingOwnMove extends OwnMove {
+  /** The saved rename's time (an ISO string); the live row has caught up once its own is at least this. */
+  activityAt: string;
+  at: number;
+}
+
+/** A move the live list never reflects (a chat it does not hold) stops applying after this long. */
+export const OWN_MOVE_TTL_MS = 5_000;
+
+/**
+ * The own moves still waiting for the live list, as the hold must apply them. An entry older than
+ * {@link OWN_MOVE_TTL_MS} is dropped from `moves` here, so a row the list never reflected cannot
+ * lift itself above newer chats at some later hold.
+ */
+export function pendingOwnMoves(moves: Map<string, PendingOwnMove>, now: number): OwnMove[] {
+  const pending: OwnMove[] = [];
+  for (const [id, move] of moves) {
+    if (now - move.at > OWN_MOVE_TTL_MS) moves.delete(id);
+    else pending.push(move);
+  }
+  return pending;
+}
+
+/**
+ * A person's own saved rename, shown at once: `move.id` goes first in the bucket its new time falls
+ * in (a new first bucket when the hold has none for it, which is the usual case: the bucket is
+ * "now", and the newest bucket always leads). A nested run goes first among its parent's runs; the
+ * parent itself does not move. A row the hold does not hold, or one already first, returns `held`
+ * itself.
+ *
+ * It lifts in the HELD order rather than releasing the hold, so a chat that arrived while the
+ * pointer was here still waits: only the person's own move is let through.
+ */
+export function liftHeldRow(held: HeldHistory, { id, key, label }: OwnMove): HeldHistory {
+  if (held.groups.some((group) => group.ids.includes(id))) {
+    const first = held.groups[0];
+    if (first && first.key === key && first.ids[0] === id) return held;
+    const groups = held.groups.map((group) => ({
+      ...group,
+      ids: group.ids.filter((candidate) => candidate !== id),
+    }));
+    const target = groups.find((group) => group.key === key);
+    if (target) target.ids.unshift(id);
+    else groups.unshift({ key, label, ids: [id] });
+    return { ...held, groups: groups.filter((group) => group.ids.length > 0) };
+  }
+  for (const [parentId, runs] of Object.entries(held.children)) {
+    if (!runs.includes(id)) continue;
+    if (runs[0] === id) return held;
+    return {
+      ...held,
+      children: { ...held.children, [parentId]: [id, ...runs.filter((run) => run !== id)] },
+    };
+  }
+  return held;
 }
 
 /**

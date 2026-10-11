@@ -12,8 +12,9 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
-import { clearSessionListCache } from '../../utils/sessionListCache';
-import { renameSessionOptimistically } from '../../utils/sessionNameSync';
+import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
+import { renameSession, renameSessionOptimistically } from '../../utils/sessionNameSync';
+import { RENAME_PLACEHOLDER, RENAME_TITLE } from './copy';
 import type { Session } from '../../api';
 
 const daemon = vi.hoisted(() => ({
@@ -100,6 +101,9 @@ async function renderHistory(onSelectSession = vi.fn()) {
   return document.querySelector('[data-history-layer="content"]') as HTMLElement;
 }
 
+/** A timestamp later than any rename these tests make, as an ISO string. */
+const nextSecond = () => new Date(Date.now() + 1_000).toISOString();
+
 const renameOldest = () =>
   act(async () => {
     await renameSessionOptimistically('s3', 'Renamed oldest', {
@@ -136,18 +140,137 @@ describe('Chat history shows a rename as activity', () => {
     expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat']);
   });
 
-  it('waits for the pointer to leave before the renamed chat moves (principle 9)', async () => {
+  it("moves a person's own rename at once, with the pointer on the list (V1-R6-1)", async () => {
     const list = await renderHistory();
     fireEvent.pointerEnter(list);
 
     await renameOldest();
-    // The name changes in place; the row does not move under the pointer.
-    expect(rowNames()).toEqual(['Newest chat', 'Middle chat', 'Renamed oldest']);
+
+    // Ruling 16: the row they renamed is where its new activity puts it, not where it was.
+    expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat']);
+  });
+
+  it("still holds every other move while it lets the person's own through", async () => {
+    const list = await renderHistory();
+    fireEvent.pointerEnter(list);
+    await renameOldest();
+
+    // A chat that arrives from elsewhere, newer than the rename, waits for the pointer.
+    const arrival = { ...session('s4', 'Arrived elsewhere', 0), updated_at: nextSecond() };
+    act(() => updateCachedSessionList((current) => [arrival, ...current]));
+    expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat']);
 
     fireEvent.pointerLeave(list);
     await waitFor(() =>
-      expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat'])
+      expect(rowNames()).toEqual([
+        'Arrived elsewhere',
+        'Renamed oldest',
+        'Newest chat',
+        'Middle chat',
+      ])
     );
+  });
+
+  it("does not lift a move that is not the person's: the model's rename waits for the pointer", async () => {
+    const list = await renderHistory();
+    fireEvent.pointerEnter(list);
+
+    await act(async () => {
+      await renameSession('s3', 'Named by the model', 'llm');
+    });
+    expect(rowNames()).toEqual(['Newest chat', 'Middle chat', 'Named by the model']);
+
+    fireEvent.pointerLeave(list);
+    await waitFor(() =>
+      expect(rowNames()).toEqual(['Named by the model', 'Newest chat', 'Middle chat'])
+    );
+  });
+
+  describe('renamed in the dialog, with the pointer resting on the list', () => {
+    /**
+     * The sequence the vision pass measured: the dialog is modal, so the list sees the pointer
+     * LEAVE when it opens and ENTER again when it closes, and that second enter takes a hold
+     * from the order the list had.
+     */
+    async function openDialogAndSave(list: HTMLElement, name: string) {
+      fireEvent.pointerEnter(list);
+      fireEvent.click(screen.getByRole('button', { name: 'Rename Oldest chat' }));
+      fireEvent.pointerLeave(list);
+      const field = await screen.findByPlaceholderText(RENAME_PLACEHOLDER);
+      fireEvent.change(field, { target: { value: name } });
+      fireEvent.keyDown(field, { key: 'Enter' });
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: RENAME_TITLE })).toBeNull());
+    }
+
+    /** A daemon that answers the rename when told to. */
+    function slowDaemon() {
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      daemon.updateSessionName.mockImplementationOnce(
+        async ({ path, body }: { path: { session_id: string }; body: { name: string } }) => {
+          await gate;
+          const row = daemon.rows.find((candidate) => candidate.id === path.session_id);
+          if (row) {
+            row.name = body.name;
+            row.updated_at = new Date().toISOString();
+          }
+          return { data: undefined };
+        }
+      );
+      return release;
+    }
+
+    it('moves the row at once when the dialog closes before the daemon has answered', async () => {
+      const release = slowDaemon();
+      const list = await renderHistory();
+      await openDialogAndSave(list, 'Renamed oldest');
+
+      // The dialog is gone and the pointer is over the list again: the hold is taken now.
+      fireEvent.pointerEnter(list);
+      expect(rowNames()).toEqual(['Newest chat', 'Middle chat', 'Renamed oldest']);
+
+      await act(async () => release());
+      await waitFor(() =>
+        expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat'])
+      );
+    });
+
+    it('moves the row at once when the pointer comes back before the list has caught up', async () => {
+      const release = slowDaemon();
+      const list = await renderHistory();
+      await openDialogAndSave(list, 'Renamed oldest');
+
+      // The daemon answers and the pointer enters in the same breath, so the hold is taken from
+      // the list as it was a moment ago: the order from before the move.
+      await act(async () => {
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        fireEvent.pointerEnter(list);
+      });
+      await waitFor(() =>
+        expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat'])
+      );
+    });
+
+    it('gives the moved row its focus back', async () => {
+      const release = slowDaemon();
+      const list = await renderHistory();
+      await openDialogAndSave(list, 'Renamed oldest');
+      fireEvent.pointerEnter(list);
+      // The dialog has handed focus back to where it came from; the move then takes it away.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(document.activeElement).toBe(document.body);
+
+      await act(async () => release());
+      await waitFor(() =>
+        expect(rowNames()).toEqual(['Renamed oldest', 'Newest chat', 'Middle chat'])
+      );
+      const moved = screen.getByRole('button', { name: 'Open chat Renamed oldest' });
+      expect(document.activeElement).toBe(moved);
+    });
   });
 
   it('moves nothing for a rename the daemon refused', async () => {

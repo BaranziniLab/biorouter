@@ -66,11 +66,24 @@ import {
   subscribeSessionList,
   updateCachedSessionList,
 } from '../../utils/sessionListCache';
-import { renameSessionOptimistically, SESSION_NAME_MAX_LENGTH } from '../../utils/sessionNameSync';
+import {
+  renameSessionOptimistically,
+  SESSION_NAME_MAX_LENGTH,
+  subscribeSessionNameChanges,
+} from '../../utils/sessionNameSync';
+import { chatDateBucket } from '../../utils/chatDateBuckets';
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
 import { folderName, historyRowTitle } from './historyRow';
-import { applyHeldHistory, holdHistory, type HeldHistory } from './historyHold';
+import {
+  applyHeldHistory,
+  holdHistory,
+  liftHeldRow,
+  pendingOwnMoves,
+  type HeldHistory,
+  type PendingOwnMove,
+} from './historyHold';
+import { findHistoryRow, refocusHistoryRow, scrollHistoryRowIntoView } from './historyReveal';
 import {
   BILLED_TOKENS_EXACT,
   BILLED_TOKENS_LOWER_BOUND,
@@ -683,9 +696,38 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const holdScope = `${debouncedFilter}\u0000${showSubagents}`;
   const [pointerInside, setPointerInside] = useState(false);
   const [held, setHeld] = useState<{ scope: string; order: HeldHistory } | null>(null);
-  const captureHold = useCallback(
-    () => setHeld({ scope: holdScope, order: holdHistory(liveDateGroups, liveChildrenByParentId) }),
-    [holdScope, liveDateGroups, liveChildrenByParentId]
+  // A person's own saved rename is the one move the hold lets through (R-30, ruling 16): they
+  // just asked for it, and the sidebar has already moved the chat. It is lifted in the HELD
+  // order when it is saved (`liftHeldRow`), and kept here until the live list reflects it, so a
+  // hold taken in between (the `pointerenter` a closing dialog causes can land before the
+  // list has caught up, V1-R6-1) lifts it too instead of freezing the order from before the
+  // move.
+  const ownMoves = useRef(new Map<string, PendingOwnMove>());
+  const captureHold = useCallback(() => {
+    let order = holdHistory(liveDateGroups, liveChildrenByParentId);
+    for (const move of pendingOwnMoves(ownMoves.current, Date.now())) {
+      order = liftHeldRow(order, move);
+    }
+    setHeld({ scope: holdScope, order });
+  }, [holdScope, liveDateGroups, liveChildrenByParentId]);
+  useEffect(
+    () =>
+      subscribeSessionNameChanges(({ sessionId, origin, activityAt }) => {
+        // The person's rename once the daemon has saved it. The model's own rename of a chat
+        // (`llm`), and a rollback (`sync`, no `activityAt`), are not theirs and still wait.
+        if (origin !== 'user' || !activityAt) return;
+        const stamp = Date.parse(activityAt);
+        if (Number.isNaN(stamp)) return;
+        const now = Date.now();
+        const { key, label } = chatDateBucket(stamp, now);
+        ownMoves.current.set(sessionId, { id: sessionId, key, label, activityAt, at: now });
+        setHeld((current) =>
+          current
+            ? { ...current, order: liftHeldRow(current.order, { id: sessionId, key, label }) }
+            : current
+        );
+      }),
+    []
   );
   useEffect(() => {
     if (pointerInside && held && held.scope !== holdScope) captureHold();
@@ -766,6 +808,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   // (vision V1-L2). Layout, not passive: the reset happens before the results
   // paint, so they never show at the old offset first.
   const scrollAreaRef = useRef<ScrollAreaHandle>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const queryRendered = useRef(debouncedFilter);
   useLayoutEffect(() => {
     if (queryRendered.current === debouncedFilter) return;
@@ -773,6 +816,30 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     const viewport = scrollAreaRef.current?.viewportRef.current;
     if (viewport) viewport.scrollTop = 0;
   }, [debouncedFilter]);
+
+  // A person's own rename, once the live list has caught up with it: the chat is at the top, so
+  // bring it into view and give back the focus the move took (V1-R6-1, ruling 16). The entry
+  // leaves `ownMoves` here, which ends its lift in any hold taken from now on, because the live
+  // order already holds the move. A chat the list does not hold has nothing to show.
+  useLayoutEffect(() => {
+    if (ownMoves.current.size === 0) return;
+    let reflected: string | null = null;
+    for (const [id, move] of ownMoves.current) {
+      const row = sessions.find((candidate) => candidate.id === id);
+      if (!row) {
+        ownMoves.current.delete(id);
+      } else if (Date.parse(row.updated_at) >= Date.parse(move.activityAt)) {
+        ownMoves.current.delete(id);
+        reflected = id;
+      }
+    }
+    const content = contentRef.current;
+    const row = reflected && content ? findHistoryRow(content, reflected) : null;
+    if (!row) return;
+    refocusHistoryRow(row);
+    const viewport = scrollAreaRef.current?.viewportRef.current;
+    if (viewport) scrollHistoryRowIntoView(viewport, row);
+  }, [sessions, dateGroups]);
 
   const loadSessions = useCallback(async () => {
     const hasCachedSessions = getCachedSessionList() !== null;
@@ -1064,6 +1131,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
                   cached ones, so a click must not open a chat nobody can see,
                   and a hold must not capture an order nobody saw. */}
               <div
+                ref={contentRef}
                 data-history-layer="content"
                 className={`br-history-layer relative ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
                 onPointerEnter={() => {
