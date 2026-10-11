@@ -2560,6 +2560,21 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   backdrop-filter: blur(8px);
 }
 
+/* @ws WS-PRIMITIVES begin: nested modal stacking */
+/* A dialog opened from a dialog dims the one beneath it (vision round 1, V4-08). The scrim used
+   to sit on `--z-overlay` (300) under every surface on `--z-modal` (400), so a nested dialog's
+   scrim went UNDER the first dialog: Settings > Chat's per-extension permissions dialog sat on an
+   undimmed tool list that ran on below its footer, and the two read as one broken dialog. On the
+   surfaces' own layer, Radix's portal order decides: a dialog's scrim comes before its surface,
+   and a dialog opened later is portalled after the one it was opened from, so each scrim covers
+   everything earlier and nothing later. Nothing else sits between 300 and 400, so no other layer
+   changes order. Unlayered, so it beats the `z-*` utility on the overlay.
+   `ui/dialogStacking.browser.test.tsx` hit-tests it in Chromium. */
+.biorouter-modal-overlay {
+  z-index: var(--z-modal);
+}
+/* @ws WS-PRIMITIVES end: nested modal stacking */
+
 
 .biorouter-modal-surface {
   background: var(--background-default);
@@ -2576,12 +2591,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   border-radius: var(--radius-container);
   box-shadow: var(--shadow-modal);
   /* Structural safety floor: a modal surface must always stack ABOVE its scrim.
-     Radix's Dialog renders the overlay (--z-overlay) and the content as
-     SIBLINGS, so a content that keeps a stale/low z-index (as WorkflowWarningModal
+     Radix's Dialog renders the overlay and the content as SIBLINGS, the overlay
+     first, so a content that keeps a stale/low z-index (as WorkflowWarningModal
      once did with z-50) would sit UNDER the full-screen, pointer-eating overlay
      and soft-lock the entire app — it reads as "the whole app froze." This
-     unlayered rule beats Tailwind's z-* utilities, guaranteeing --z-modal
-     (> --z-overlay) for every surface so that class of bug cannot recur. It is
+     unlayered rule beats Tailwind's z-* utilities, guaranteeing --z-modal for
+     every surface; the overlay shares that layer (`nested modal stacking`,
+     V4-08) and comes first, so the surface paints over it. It is
      inert on the statically-positioned surfaces of the nested-overlay modals
      (z-index only affects positioned elements), so those are unaffected. */
   z-index: var(--z-modal);

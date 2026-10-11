@@ -16,7 +16,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dial
  * primitive still owns the portal, the scrim, the focus trap and the ×. In
  * particular `DialogContent` carries `.biorouter-modal-surface`, whose
  * unlayered `z-index: var(--z-modal)` is the structural floor that keeps a
- * modal above its own `--z-overlay` scrim. A shell that paints its own
+ * modal above its own scrim (which shares that layer and precedes it, so a
+ * dialog opened from a dialog dims the first one: V4-08). A shell that paints its own
  * full-screen overlay has no such floor, which is how a modal once ended up
  * *under* the pointer-eating scrim and read as "the whole app froze". Nothing
  * here sets a `z-*` class, on purpose.

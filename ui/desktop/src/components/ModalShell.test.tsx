@@ -37,8 +37,14 @@ describe('ModalShell — the structural guarantee', () => {
     const zClasses = Array.from(content.classList).filter((c) => /^z-/.test(c));
     expect(zClasses).toEqual(['z-[var(--z-modal)]']);
 
+    // The scrim shares the surface's layer and comes before it, so portal order stacks a dialog
+    // over its own scrim and a dialog opened from it over both (V4-08,
+    // `ui/dialogStacking.browser.test.tsx`).
     const overlay = document.querySelector('[data-slot="dialog-overlay"]')!;
-    expect(overlay).toHaveClass('z-[var(--z-overlay)]');
+    expect(overlay).toHaveClass('z-[var(--z-modal)]');
+    expect(
+      overlay.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
   });
 });
 
