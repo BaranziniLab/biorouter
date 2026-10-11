@@ -49,7 +49,7 @@ Memories are plain files on your machine, organized by category. There are two s
 
 | Scope | Location |
 |-------|----------|
-| Global (user-wide) | `~/.config/biorouter/memory/` on macOS and Linux; `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory` on Windows |
+| Global (user-wide) | `~/.config/biorouter/memory/` on macOS and Linux; `%APPDATA%\UCSF\biorouter\config\memory` on Windows |
 | Local (project-specific) | `.biorouter/memory/` inside the working directory |
 
 Because they are ordinary files, **you** can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned. You do not have to, though — the desktop app lists both stores and lets you prune them.

@@ -234,7 +234,7 @@ You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which dis
 When the keyring is disabled, secrets are stored here:
 
 - macOS/Linux: `~/.config/biorouter/secrets.yaml`
-- Windows: `%APPDATA%\Biorouter\config\secrets.yaml`
+- Windows: `%APPDATA%\UCSF\biorouter\config\secrets.yaml`
 
 ## Extensions and package runners
 
@@ -482,9 +482,13 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 #### Data locations
 
-- **Configuration and Data**: `%APPDATA%\Biorouter\`
-- **Local Application Data**: `%LOCALAPPDATA%\Biorouter\`
+- **Configuration, data and logs**: `%APPDATA%\UCSF\biorouter\`
+- **Cache**: `%LOCALAPPDATA%\UCSF\biorouter\`
+- **Desktop app state**: `%APPDATA%\Biorouter\`
+- **Command line tool and helper programs**: `%LOCALAPPDATA%\Biorouter\`
 - **Secrets**: Windows Credential Manager
+
+Earlier releases kept the first two folders under a different author folder in the same two places. The first launch of a newer release moves them to the folders above.
 
 #### Removal steps
 
@@ -496,6 +500,8 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 3. Remove data directories:
 
    ```text
+   rmdir /s /q "%APPDATA%\UCSF\biorouter"
+   rmdir /s /q "%LOCALAPPDATA%\UCSF\biorouter"
    rmdir /s /q "%APPDATA%\Biorouter"
    rmdir /s /q "%LOCALAPPDATA%\Biorouter"
    ```

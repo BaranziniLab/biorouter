@@ -212,7 +212,7 @@ The main configuration file is at:
 
 ```text
 ~/.config/biorouter/config.yaml                  (macOS / Linux)
-%APPDATA%\biorouter\config\config.yaml           (Windows)
+%APPDATA%\UCSF\biorouter\config\config.yaml      (Windows)
 ```
 
 This file stores provider settings, extension configurations, and model preferences. It is shared between the Desktop app and the CLI.

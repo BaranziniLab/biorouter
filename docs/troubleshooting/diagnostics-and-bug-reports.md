@@ -156,7 +156,7 @@ When certain types of error occur in biorouter Desktop (such as failures to acti
 
 For issues not resolved by diagnostics:
 
-- **Session and system logs**: `~/.local/state/biorouter/logs/` on macOS and Linux (`%LOCALAPPDATA%\biorouter\logs` on Windows) — the LLM request logs at its root, and the CLI and daemon's own logs under `cli/` and `server/`. The desktop app's main-process log is separate, under Electron's own application-support directory. The bundle above collects the relevant ones under `logs/` and says in `logs-summary.txt` what it took.
+- **Session and system logs**: `~/.local/state/biorouter/logs/` on macOS and Linux (`%APPDATA%\UCSF\biorouter\data\logs` on Windows) — the LLM request logs at its root, and the CLI and daemon's own logs under `cli/` and `server/`. The desktop app's main-process log is separate, under Electron's own application-support directory. The bundle above collects the relevant ones under `logs/` and says in `logs-summary.txt` what it took.
 - **[Telemetry export](../configuration/environment-variables.md#observability)**: configure telemetry for performance analysis and production monitoring.
 
 ## Related documentation

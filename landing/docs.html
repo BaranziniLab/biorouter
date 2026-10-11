@@ -121,7 +121,7 @@
   <li><strong>Chats.</strong> <code>sessions.db</code> in <code>~/.local/share/biorouter/sessions/</code></li>
   <li><strong>Logs.</strong> <code>~/.local/state/biorouter/logs/</code></li>
 </ul>
-<p>On Windows they sit under <code>%APPDATA%</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
+<p>On Windows they sit under <code>%APPDATA%\UCSF\biorouter</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
 
 <h2 id="getstarted-next">Next steps</h2>
 <ul>
@@ -1857,7 +1857,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
 
 <h2 id="config-files">Where files live</h2>
-<p>The paths below are for macOS and Linux. On Windows, the settings sit in a <code>config</code> folder and everything else, logs included, in a <code>data</code> folder, both under <code>%APPDATA%</code>. <code>biorouter info</code> prints the paths on your computer.</p>
+<p>The paths below are for macOS and Linux. On Windows, the settings sit in <code>%APPDATA%\UCSF\biorouter\config</code>, everything else, logs included, in <code>%APPDATA%\UCSF\biorouter\data</code>, and the cache in <code>%LOCALAPPDATA%\UCSF\biorouter\cache</code>. Earlier releases used a different folder on Windows; the first launch of a newer release moves it there and updates the paths saved inside it. <code>biorouter info</code> prints the paths on your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>What</th><th>Path</th></tr></thead>
   <tbody>

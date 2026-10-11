@@ -7,7 +7,7 @@
 biorouter reads its persistent settings from YAML files in your user config directory. The primary file is:
 
 * macOS/Linux: `~/.config/biorouter/config.yaml`
-* Windows: `%APPDATA%\biorouter\config\config.yaml`
+* Windows: `%APPDATA%\UCSF\biorouter\config\config.yaml`
 
 These files let you set default behaviours, configure language models, set tool permissions, and manage extensions. Many of the same settings can be supplied as [environment variables](environment-variables.md) instead; the config files are the persistent form of the same surface.
 
