@@ -50,7 +50,7 @@ import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { importSession, Session, ExtensionConfig, ExtensionData } from '../../api';
-import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ModalShell } from '../ModalShell';
@@ -115,7 +115,9 @@ function getSessionExtensionNames(extensionData: ExtensionData): string[] {
       | undefined;
     if (!enabledExtensionData?.extensions) return [];
 
-    return enabledExtensionData.extensions.map((ext) => formatExtensionName(ext.name));
+    // The entry, not its name: an installed one (stdio, http) is then never renamed as a bundled
+    // capability. Not `.map(extensionDisplayName)`, whose index would land in `registry`.
+    return enabledExtensionData.extensions.map((ext) => extensionDisplayName(ext));
   } catch {
     return [];
   }
