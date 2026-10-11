@@ -18,7 +18,7 @@ The subsystem's owner files are `crates/biorouter/src/context_mgmt/mod.rs`,
 
 ## Overview
 
-BioRouter has a **single-shot, summarize-everything** compaction strategy (the same approach Goose used),
+BioRouter has a **single-shot, summarize-everything** compaction strategy,
 not a sliding-window / keep-recent-verbatim scheme. When the running conversation is projected to
 exceed a fraction of the model's context window, the entire agent-visible history is fed to an LLM
 that produces one long structured summary. The original messages are **kept in the DB but flipped
@@ -311,7 +311,7 @@ review cite as `compaction.md gap #N`; the numbering below is that scheme and is
 ## Related documentation
 
 - [Context injection and system prompt construction](context-injection-and-system-prompt.md) — the other half of context handling: how the prompt and message array are assembled each turn.
-- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how this summarize-everything design measures against nine other coding agents.
+- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how this summarize-everything design measures against eight other coding agents.
 - [State, awareness, todos, goals and version control](state-awareness-and-version-control.md) — the SQLite session schema and the `extension_data` state that survives compaction.
 - [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-10, BR-11, BR-14, BR-15, BR-16) that these gaps became.
 - [Wave 1 compaction report](../../agent-loop-campaign/wave-reports/wave-1-compaction.md) — what was actually built and merged in response.

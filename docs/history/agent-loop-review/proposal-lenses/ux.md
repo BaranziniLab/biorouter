@@ -144,7 +144,7 @@ this file's cross-lens duplicates.
 ### P-6: Revive read-only auto-approve so SmartApprove ≠ Approve
 - **Problem:** `PermissionInspector`'s `readonly_tools`/`regular_tools` sets are constructed **empty with no setter**, and the LLM permission judge is **dead code** — so SmartApprove behaves identically to Approve and over-prompts on every read (`internal/guardrails-permissions.md` gaps #1/#2; `compare/safety.md`).
 - **Proposal:** Populate `readonly_tools` from the extension manager's `read_only_hint` annotations so reads auto-pass; adopt OpenHands' per-action `security_risk` + `ConfirmRisky(threshold)` for the "smart" tier rather than resurrecting the dead judge.
-- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`), Goose (`read_only` annotations).
+- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`).
 - **Affected code:** `crates/biorouter/src/agents/agent.rs:348-351`; `permission/permission_inspector.rs:135-138`; `extension_manager.rs` (annotation plumbing).
 - **Impact:** high — makes the advertised "smart" mode actually reduce prompts.
 - **Effort:** M

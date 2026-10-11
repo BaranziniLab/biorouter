@@ -207,7 +207,7 @@ this file's cross-lens duplicates.
 ## Checkpoints and undo of agent edits
 
 ### P-12: Shadow-git checkpoint & task-level undo of agent edits
-- **Problem:** There is no git checkpointing, no shadow git, no session-level undo. The only rollback is `text_editor`'s in-memory, per-file, per-process LIFO — it dies with the process, misses shell/`write_file`/other-extension writes, and offers no "revert the whole task" (`internal/state-awareness.md` #2/#3, `compare/safety.md` behind #9 — called the single biggest gap in both Goose and Claude Code external reviews).
+- **Problem:** There is no git checkpointing, no shadow git, no session-level undo. The only rollback is `text_editor`'s in-memory, per-file, per-process LIFO — it dies with the process, misses shell/`write_file`/other-extension writes, and offers no "revert the whole task" (`internal/state-awareness.md` #2/#3, `compare/safety.md` behind #9 — called the single biggest gap in the Claude Code external review).
 - **Proposal:** Add a shadow-repo (private git object DB or `git stash`-style snapshot) that checkpoints the workspace before each risky turn/tool batch, with a "revert this turn / this task" surface. Covers all writers, not just `text_editor`.
 - **Inspired by:** Cline shadow-git, OpenCode private git-object DB, Gemini/Claude Code shadow-repo + rewind, Aider commit-per-edit.
 - **Affected code:** new module in `crates/biorouter/src/`, hooks in `agents/agent.rs` tool dispatch; `git2` already a dependency.
@@ -276,7 +276,7 @@ this file's cross-lens duplicates.
 ### P-19: Wire read-only auto-approve and per-action risk grading
 - **Problem:** `PermissionInspector`'s `readonly_tools`/`regular_tools` sets are constructed empty with no setter, so the read-only short-circuit never fires and every non-user-configured tool requires approval; the LLM permission judge (`check_tool_permissions`) has zero callers — so `SmartApprove` is behaviorally identical to `Approve` (`internal/guardrails-permissions.md` #1/#2, `compare/safety.md` behind #2).
 - **Proposal:** Populate `readonly_tools`/`regular_tools` from the extension manager's `read_only_hint` annotations (the comment says this was intended), and adopt OpenHands' per-action `security_risk` (LOW/MED/HIGH/UNKNOWN) + `ConfirmRisky(threshold, confirm_unknown)` shape rather than resurrecting the dead judge. Delete the unreachable `check_tool_permissions` path.
-- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`, read-only exempt, fail-safe HIGH), Goose live `PermissionJudge`, Claude Code auto-mode.
+- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`, read-only exempt, fail-safe HIGH), Claude Code auto-mode.
 - **Affected code:** `crates/biorouter/src/permission/permission_inspector.rs:106-188`, `agent.rs:348-351`, `permission/permission_judge.rs`.
 - **Impact:** high — makes the "smart" tier actually smart and stops over-prompting reads.
 - **Effort:** M

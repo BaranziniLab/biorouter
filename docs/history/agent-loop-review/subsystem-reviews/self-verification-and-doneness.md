@@ -333,7 +333,7 @@ review cite as `verification.md gap #N`; the numbering below is that scheme and 
 ## Related documentation
 
 - [Loop detection, repetition and stuck states](loop-and-stuck-detection.md) — the sibling review covering the `/goal` stall logic and repetition inspection from the loop-safety side; the two overlap on no-progress detection.
-- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how BioRouter's thin verification story measures against nine other coding agents.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how BioRouter's thin verification story measures against eight other coding agents.
 - [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — where the no-tool-call termination decision described here actually lives.
 - [Verify-and-checkpoint stop hook](../../../agent-loop/hooks/verify-and-checkpoint-stop-hook.md) — the living, hook-based answer to "nothing enforces done-ness".
 - [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-47 to BR-50) these gaps became.

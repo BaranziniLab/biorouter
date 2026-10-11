@@ -3,7 +3,7 @@
 > **What this is.** Chapter 3 of the four-part competitive comparison in the
 > 2026-07 agentic-loop review: how BioRouter's tool dispatch and result flow,
 > background processes, subagents, checkpoints/undo/git integration, and
-> self-verification compared against nine other open-source coding agents.
+> self-verification compared against eight other open-source coding agents.
 > **Status:** Superseded — the BioRouter column no longer describes the system. Its
 > two loudest claims were fixed after the review: "no checkpoints/undo" by BR-43
 > (`crates/biorouter/src/checkpoint/`) and "no automatic post-edit verification" by
@@ -41,32 +41,32 @@ Three conventions used throughout:
 
 The reviewed BioRouter commit was not recorded in the original document.
 
-## Comparison across ten agents
+## Comparison across nine agents
 
-The table has one column per agent, in this order: BioRouter, Goose,
-Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
+The table has one column per agent, in this order: BioRouter, Cline,
+OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
-> **Note.** The BioRouter column is superseded — see the status header. The nine
+> **Note.** The BioRouter column is superseded — see the status header. The eight
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Tool dispatch model | Function-calling (MCP), name-routed | Function-calling (MCP) | Function-calling + apply-patch | Function-calling (typed parts) | Function-calling, 7 built-ins | **Plain-text edit formats**, parsed locally | Function-calling (event stream) | Function-calling (Responses API) | Function-calling (scheduler) | Function-calling, named built-ins |
-| Parallel tool exec | Yes, unbounded `select_all` | Yes, `select_all` | Yes (prompt-driven batching) | Subagents run **sequential**; tools parallel | Preflight-then-concurrent | No (one edit batch/turn) | Yes, `ParallelToolExecutor` | Yes, **R/W-lock gated** | Yes, batched w/ ordering rules | Yes, batch + `PostToolBatch` |
-| Result streaming | Yes, SSE deltas | Yes | Yes | Yes (SSE parts) | Yes (decoupled stream) | Yes (terminal) | Yes (`on_token`) | Yes (Responses SSE) | Yes | Yes |
-| Oversized tool output | Temp-file dump >200k chars, no preview | Background tool-pair summarize (cutoff 10) | Output-limits handling | Prune tool bodies before summarize | Truncate to 2000 chars on compact | Fed inline | Truncated by condenser | `TruncationPolicy` truncation | **Truncate to disk + summary ref** | **Cap ~30KB → file + head preview** |
-| Per-tool timeout | No; per-extension 300s only | — | 5-min approval timeout | maxLines/maxBytes caps | bash optional timeout | Sync blocking | — | background max 1h awaiter | `inactivityTimeout` on bg shell | Bash 2-min default/10-min ceiling |
-| Background shell jobs | **Yes** (`background=true`, exit-truth) | Docs pattern | Yes (bg processes) | Experimental bg subagents | **No** (use tmux) | No (watch mode only) | Sandbox terminal | **Yes**, `awaiter` poller | Yes (`is_background`, PIDs) | **Yes**, `run_in_background`+Monitor |
-| Process tracking / orphan cleanup | 3 disjoint registries, **in-mem, no reaping** | — | — | task_status only | — | — | — | thread-store | Background PIDs surfaced | `/tasks`, TaskStop |
-| Subagents | Yes, blocking, sem-capped (8/64) | Yes, isolated, max_turns 25 | `spawn_agent`, read-only, non-recursive | `task`, sequential, 30-min TTL bg | **No** (spawn `pi` via bash) | No (architect/editor split) | `spawn`/`delegate`, parallel threads, max 5 | `spawn_agent` family + CSV fan-out | subagents, sep context, no recursion | `Agent` tool, **bg by default**, summary-only |
-| Subagent result | Last text msg (lossy) or schema | Full/summary | text + token usage | child session | — | — | join() results | wait_agent | separate loop | 400-token summary |
-| Checkpoints / undo | **None** | **None** (git-commit pattern) | **Shadow-git, 3 restore modes** | **Git-object-DB snapshots, /undo/redo** | Session-tree branching | git `/undo` per-commit | Event-store replay/fork | Git-aware, refuse destructive | **Shadow-git + /rewind** | **Auto checkpoints + rewind** |
-| Git integration of edits | None documented | Manual commit-after pattern | Shadow repo, real .git untouched | Private object DB, no commits | Extension use-case | **Auto-commit per edit + attribution** | Workspace layer | `apply_patch` diffs, no auto-undo | shadow repo in home | Checkpoints + worktrees |
-| Post-edit verification | **None automatic** (`analyze` manual) | None (recipe opt-in) | Prompt-driven | **LSP diagnostics + auto-format** | None | **Auto-lint + auto-test scoped to edits** | Critic/judge | Prompt: run tests after edit | Hook-composed | **LSP after-edit + PostToolUse hooks** |
-| Enforced test-gate | Workflow-only success-checks | Recipe `SuccessCheck` | YOLO test-until-green | Model-judged | None | **Reflection loop (lint/test/malformed)** | Critic + goal-judge | Goal completion audit | `AfterAgent` hook forces retry | Stop-hook test gate |
-| Done-ness | Model stops + optional Stop-hook/`/goal` | Model stops + stop-hook | No-tool-call = done | Model-judged | Model says done | Well-formed edit lints/tests clean or cap 3 | Critic/goal-judge + Stop-hook veto | Goals audit, evidence-based | Model stops, bounded | Model stops or Stop-hook gate |
-| Structured-output validation | `final_output` JSON-Schema (workflows) | recipe `json_schema` | `submit_and_exit` | — | — | — | FinishTool | — | — | — |
+| Aspect | BioRouter | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+|---|---|---|---|---|---|---|---|---|---|
+| Tool dispatch model | Function-calling (MCP), name-routed | Function-calling + apply-patch | Function-calling (typed parts) | Function-calling, 7 built-ins | **Plain-text edit formats**, parsed locally | Function-calling (event stream) | Function-calling (Responses API) | Function-calling (scheduler) | Function-calling, named built-ins |
+| Parallel tool exec | Yes, unbounded `select_all` | Yes (prompt-driven batching) | Subagents run **sequential**; tools parallel | Preflight-then-concurrent | No (one edit batch/turn) | Yes, `ParallelToolExecutor` | Yes, **R/W-lock gated** | Yes, batched w/ ordering rules | Yes, batch + `PostToolBatch` |
+| Result streaming | Yes, SSE deltas | Yes | Yes (SSE parts) | Yes (decoupled stream) | Yes (terminal) | Yes (`on_token`) | Yes (Responses SSE) | Yes | Yes |
+| Oversized tool output | Temp-file dump >200k chars, no preview | Output-limits handling | Prune tool bodies before summarize | Truncate to 2000 chars on compact | Fed inline | Truncated by condenser | `TruncationPolicy` truncation | **Truncate to disk + summary ref** | **Cap ~30KB → file + head preview** |
+| Per-tool timeout | No; per-extension 300s only | 5-min approval timeout | maxLines/maxBytes caps | bash optional timeout | Sync blocking | — | background max 1h awaiter | `inactivityTimeout` on bg shell | Bash 2-min default/10-min ceiling |
+| Background shell jobs | **Yes** (`background=true`, exit-truth) | Yes (bg processes) | Experimental bg subagents | **No** (use tmux) | No (watch mode only) | Sandbox terminal | **Yes**, `awaiter` poller | Yes (`is_background`, PIDs) | **Yes**, `run_in_background`+Monitor |
+| Process tracking / orphan cleanup | 3 disjoint registries, **in-mem, no reaping** | — | task_status only | — | — | — | thread-store | Background PIDs surfaced | `/tasks`, TaskStop |
+| Subagents | Yes, blocking, sem-capped (8/64) | `spawn_agent`, read-only, non-recursive | `task`, sequential, 30-min TTL bg | **No** (spawn `pi` via bash) | No (architect/editor split) | `spawn`/`delegate`, parallel threads, max 5 | `spawn_agent` family + CSV fan-out | subagents, sep context, no recursion | `Agent` tool, **bg by default**, summary-only |
+| Subagent result | Last text msg (lossy) or schema | text + token usage | child session | — | — | join() results | wait_agent | separate loop | 400-token summary |
+| Checkpoints / undo | **None** | **Shadow-git, 3 restore modes** | **Git-object-DB snapshots, /undo/redo** | Session-tree branching | git `/undo` per-commit | Event-store replay/fork | Git-aware, refuse destructive | **Shadow-git + /rewind** | **Auto checkpoints + rewind** |
+| Git integration of edits | None documented | Shadow repo, real .git untouched | Private object DB, no commits | Extension use-case | **Auto-commit per edit + attribution** | Workspace layer | `apply_patch` diffs, no auto-undo | shadow repo in home | Checkpoints + worktrees |
+| Post-edit verification | **None automatic** (`analyze` manual) | Prompt-driven | **LSP diagnostics + auto-format** | None | **Auto-lint + auto-test scoped to edits** | Critic/judge | Prompt: run tests after edit | Hook-composed | **LSP after-edit + PostToolUse hooks** |
+| Enforced test-gate | Workflow-only success-checks | YOLO test-until-green | Model-judged | None | **Reflection loop (lint/test/malformed)** | Critic + goal-judge | Goal completion audit | `AfterAgent` hook forces retry | Stop-hook test gate |
+| Done-ness | Model stops + optional Stop-hook/`/goal` | No-tool-call = done | Model-judged | Model says done | Well-formed edit lints/tests clean or cap 3 | Critic/goal-judge + Stop-hook veto | Goals audit, evidence-based | Model stops, bounded | Model stops or Stop-hook gate |
+| Structured-output validation | `final_output` JSON-Schema (workflows) | `submit_and_exit` | — | — | — | FinishTool | — | — | — |
 
 ## Where BioRouter was ahead
 
@@ -77,7 +77,7 @@ wide and scrolls horizontally.
   cursor** so `shell_output` returns only new bytes (400KB cap), and `shell_wait`
   parks race-free on a `watch` channel with a bounded timeout that does *not* kill
   on expiry. The review explicitly notes this mirrors Claude Code and Codex. This
-  is ahead of Goose (which only documents the pattern), Pi (no background
+  is ahead of Pi (no background
   bash at all — tmux is the workaround), Aider (no background manager), and
   OpenCode (background subagents still experimental with no intermediate output
   streaming). Only Claude Code and Codex CLI clearly match it.
@@ -103,7 +103,7 @@ wide and scrolls horizontally.
 - **Resource-aware scheduler deferral.** Per the long-running review, scheduled
   firings defer while rate-limited or while a user is interacting — a genuinely
   good property for a shared-provider research agent that competitors' cron
-  systems (Cline, Goose, Codex Cloud) don't document.
+  systems (Cline, Codex Cloud) don't document.
 
 ## Where BioRouter was behind
 
@@ -254,8 +254,8 @@ background subagents (`task(background=true)` + `task_status`) and Codex's
   sits mid-pack: bounded and safe but blocking and lossy.
 
 - **Checkpoints / undo.** *Best:* **Cline** (three restore axes) and **OpenCode**
-  (private git-object-DB, cleanest isolation). *Worst:* **BioRouter and
-  Goose**: neither has any file snapshot or rewind; this is the single starkest
+  (private git-object-DB, cleanest isolation). *Worst:* **BioRouter**,
+  which has no file snapshot or rewind; this is the single starkest
   deficit, and every external report that covers it flags the absence
   explicitly.
 
@@ -285,7 +285,7 @@ proposals, not as an open work queue. The register's BR-NN number is noted where
 the mapping is one-to-one.
 
 1. **Add file checkpoints + `/rewind` — the highest-value gap** (became
-   **BR-43**). BioRouter, like Goose, has no undo at all, and its
+   **BR-43**). BioRouter has no undo at all, and its
    daemon/SQLite architecture is well-suited to OpenCode's model: snapshot the
    worktree before/after each model step (or each edit) into a **private git
    object DB in the app data dir** — no commits, no branch moves, no touching the

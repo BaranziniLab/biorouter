@@ -416,6 +416,6 @@ failing approach" or "no progress" outside the opt-in goal system.
 
 - [Self-verification, output validation and done-ness](self-verification-and-doneness.md) — the sibling review that covers the `/goal` judge and no-progress detection from the verification side; the two overlap on stall detection.
 - [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector chain the `RepetitionInspector` runs inside, and where a denial's reason gets swallowed.
-- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how these loop bounds measure against nine other coding agents.
+- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how these loop bounds measure against eight other coding agents.
 - [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — the loop whose iterations `max_turns` counts.
 - [Wave 2 loop detection report](../../agent-loop-campaign/wave-reports/wave-2-loop-detection.md) — what was actually built in response to these gaps.

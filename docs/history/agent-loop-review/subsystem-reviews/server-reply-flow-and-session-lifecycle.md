@@ -272,6 +272,6 @@ review cite as `server-flow.md gap #N`; the numbering below is that scheme and i
 
 - [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — what `agent.reply(...)` does once this route hands off to it.
 - [Long-running tasks, background processes and scheduling](long-running-tasks-and-scheduling.md) — the `ActionRequiredManager` elicitation path this review contrasts with tool-permission confirmation.
-- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this reply pipeline measures against nine other coding agents.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this reply pipeline measures against eight other coding agents.
 - [Sessions guide](../../../getting-started/managing-sessions.md) — the current, living reference for session creation, resume and export.
 - [Wave 2 server cancellation report](../../agent-loop-campaign/wave-reports/wave-2-server-cancellation.md) — what was actually built in response to gaps #1 to #4.

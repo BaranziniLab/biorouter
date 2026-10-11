@@ -273,7 +273,7 @@ Each entry carries **Problem / Proposal / Inspired by / Affected code / Impact /
 - **Lens:** P + R + U (performance P-39, robustness P-19, ux P-6); `competitive-comparison/safety-and-guardrails.md`.
 - **Problem:** `PermissionInspector`'s `readonly_tools`/`regular_tools` sets are constructed empty with no setter, so the read-only short-circuit never fires; the LLM permission judge (`check_tool_permissions`) has **zero callers** — so `SmartApprove` is behaviorally identical to `Approve` and over-prompts on every read (`subsystem-reviews/guardrails-and-permissions.md` gaps #1/#2).
 - **Proposal:** Populate `readonly_tools`/`regular_tools` from the extension manager's `read_only_hint` annotations (a free, no-LLM signal) so reads auto-pass; adopt OpenHands' per-action `security_risk` (LOW/MED/HIGH/UNKNOWN) + `ConfirmRisky(threshold, confirm_unknown)` for the smart tier rather than resurrecting the dead judge; delete the unreachable `check_tool_permissions` path.
-- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`, read-only exempt, fail-safe HIGH), Goose live `PermissionJudge`, Claude Code auto-mode.
+- **Inspired by:** OpenHands (`security_risk` + `ConfirmRisky`, read-only exempt, fail-safe HIGH), Claude Code auto-mode.
 - **Affected code:** `crates/biorouter/src/permission/permission_inspector.rs:106-188`, `agent.rs:348-351`, `permission/permission_judge.rs`, `extension_manager.rs` (annotation plumbing).
 - **Impact:** High — makes the "smart" tier actually smart and stops over-prompting reads.
 - **Effort:** M.
@@ -821,7 +821,7 @@ so it remains individually actionable.
 
 ## Related documentation
 
-- [Agentic loop review](README.md) — the executive report this register belongs to: how the loop worked at review time and how it compared to nine other agents.
+- [Agentic loop review](README.md) — the executive report this register belongs to: how the loop worked at review time and how it compared to eight other agents.
 - [Agent-loop fix campaign](../agent-loop-campaign/README.md) — the plan of record that turned these 67 proposals into dependency-ordered waves.
 - [Campaign commit log](../agent-loop-campaign/commit-log.md) — one line per commit, mapping each commit to the `BR-NN` it implements; the closest thing to a per-proposal status column.
 - [Campaign outcome report](../agent-loop-campaign/outcome-report.md) — what landed, the test progression, and the honest caveat list.

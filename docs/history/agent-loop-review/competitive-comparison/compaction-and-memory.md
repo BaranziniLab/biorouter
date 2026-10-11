@@ -3,7 +3,7 @@
 > **What this is.** Chapter 2 of the four-part competitive comparison in the
 > 2026-07 agentic-loop review: how BioRouter's compaction triggers and strategy,
 > what survives summarization, token counting, cross-session memory, and session
-> persistence/resume compared against nine other open-source coding agents.
+> persistence/resume compared against eight other open-source coding agents.
 > **Status:** Superseded — the BioRouter column no longer describes the system. The
 > headline finding "no recent-turn verbatim window" was fixed by BR-10, synchronous
 > compaction cost by BR-12, oversized tool output by BR-6, and large-result
@@ -13,7 +13,7 @@
 > **Audience:** developers working on the agent loop and context management.
 
 This chapter was written on 2026-07-12 as part of the agentic-loop review. It
-compares BioRouter against nine open-source coding agents on a single axis: what
+compares BioRouter against eight open-source coding agents on a single axis: what
 happens to conversation history as it grows past the model's context window, and
 what the agent remembers between sessions. Read it as a snapshot of the state of
 the art at that date and of BioRouter's position in it — not as a description of
@@ -41,31 +41,31 @@ Four conventions used throughout:
 
 The reviewed BioRouter commit was not recorded in the original document.
 
-## Comparison across ten agents
+## Comparison across nine agents
 
-The table has one column per agent, in this order: BioRouter, Goose,
-Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
+The table has one column per agent, in this order: BioRouter, Cline,
+OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
-> **Note.** The BioRouter column is superseded — see the status header. The nine
+> **Note.** The BioRouter column is superseded — see the status header. The eight
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **Auto-compact trigger** | 0.8 of context limit | 0.8 (`GOOSE_AUTO_COMPACT_THRESHOLD`) | ratio of resolved `maxInputTokens` | overflow = window − reserve(32k) − buffer(20k) | `contextTokens > window − reserve(16384)` | `too_big()` vs `max_tokens` budget | `EVENTS`>80 msgs / `TOKENS` / `REQUEST` | auto when context fills + mid/pre-turn | 0.5 of window | ~83.5% of window |
-| **Reactive on overflow** | Yes, capped 2 attempts | Yes (`GOOSE_CONTEXT_STRATEGY` ladder) | rule-based fallback | `isOverflow` hard path | auto-compact + retry aborted turn | breaks, warns `/drop` | `CondensationRequest` + 5× hard-reset | escalation via lifecycle | inflation-guard discard | offloading + compact |
-| **Recent-turn verbatim window** | No — summarizes everything | recent user msgs kept | `preserveRecentTokens` (agentic) | protects last 2 turns | `keepRecentTokens` (20k) | tail kept verbatim (~half budget) | recent tail + `keep_first=4` head | handoff keeps progress | last 30% verbatim | keeps recent, drops verbatim |
-| **Summary structure** | 9-section schema (agent-facing) | `compaction.md` template | incremental note + Files section | Goal/Constraints/Progress/… | fixed Goal/…/Critical-Context | weak-model prose summary | structured, preserves task IDs | handoff schema | `<state_snapshot>` + verify pass | named schema (intent/files/errors/…) |
-| **Targeted tool-output pruning** | Only during summarizer overflow (whole responses, middle-out) | Background `GOOSE_TOOL_CALL_CUTOFF=10` | basic-compaction truncates tool results | prune-first (>40k, protect last 2, skip skills) | truncate tool results to 2000 chars | no (re-injects files fresh) | per-event 0.8× shrink | `TruncationPolicy` | reverse-budget: old >50k → 30 lines | Bash output → file + head preview |
-| **Single oversized message** | Hard fail → "start new session" | truncate/clear fallback | rule-based trim | media→placeholder | "split turn" mid-turn cut | suggests `/drop`,`/clear` | `hard_context_reset` shrink | `new_context_window` | truncate old responses | offload to file |
-| **Token counting** | tiktoken `o200k_base`, one encoding all providers | context_mgmt module | per-model `maxInputTokens` | tokens vs usable window | `contextTokens` vs window | tokenizer vs `max_tokens` | condenser `max_tokens` | model-callable `get_context_remaining` | streamed usage | window-usage % |
-| **Provider-truth first** | Yes (`session.total_tokens`), tiktoken cold path | provider usage | model-info limits | provider usage | provider usage | model input limit | provider usage | provider + server-side | provider usage | provider usage |
-| **Compaction model** | fast/weak (`complete_fast`) | summarization LLM | agentic (same) / rule fallback | summary agent + "no-LLM" memory path | main or cheaper via hook | weak model | summarization LLM | model or remote | LLM + verify pass | main model |
-| **Cross-session memory** | 3 disjoint: chatrecall (LIKE), Knowledge KB (git wiki, opt-in), ingest | Memory MCP (tagged, agent-writable) | Memory Bank (`.clinerules` convention) | AGENTS.md | files (`TODO.md`) + session tree | git history + `CONVENTIONS.md` | event store + AGENTS.md | `~/.codex/memories/` ranked, self-maintained | GEMINI.md + Auto Memory inbox | CLAUDE.md + Auto memory (`MEMORY.md`) |
-| **Auto-promoted memory** | No (Soul opt-in per query) | on-demand by tag | manual | no | no | no | no | Yes (consolidation sub-agent) | Yes (idle-mining → review inbox) | Yes (first 200 lines auto-load) |
-| **Session store** | SQLite, append-only messages + `extension_data` JSON | data-dir JSON | disk sessions + snapshots | SQLite (Drizzle) | JSONL session tree | `.aider.chat.history.md` | persisted event store | rollout files `~/.codex/` | session JSON | session store |
-| **Resume / branching** | Load full history each turn; `diverged_from` | resume | versioning/snapshots | SSE replay | `/tree` `/fork` `/clone` branching | restore prior msgs | replay + fork | resume + replay | rewind across compression | rewind + worktrees |
-| **Compaction hooks** | Pre/PostCompact | Pre/PostCompact | `PreCompact` | `session.compacted` | `session_before_compact` (override) | none | condenser pluggable | Pre/Post-Compact (can abort) | `PreCompress` | Pre/PostCompact (can block) |
+| Aspect | BioRouter | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+|---|---|---|---|---|---|---|---|---|---|
+| **Auto-compact trigger** | 0.8 of context limit | ratio of resolved `maxInputTokens` | overflow = window − reserve(32k) − buffer(20k) | `contextTokens > window − reserve(16384)` | `too_big()` vs `max_tokens` budget | `EVENTS`>80 msgs / `TOKENS` / `REQUEST` | auto when context fills + mid/pre-turn | 0.5 of window | ~83.5% of window |
+| **Reactive on overflow** | Yes, capped 2 attempts | rule-based fallback | `isOverflow` hard path | auto-compact + retry aborted turn | breaks, warns `/drop` | `CondensationRequest` + 5× hard-reset | escalation via lifecycle | inflation-guard discard | offloading + compact |
+| **Recent-turn verbatim window** | No — summarizes everything | `preserveRecentTokens` (agentic) | protects last 2 turns | `keepRecentTokens` (20k) | tail kept verbatim (~half budget) | recent tail + `keep_first=4` head | handoff keeps progress | last 30% verbatim | keeps recent, drops verbatim |
+| **Summary structure** | 9-section schema (agent-facing) | incremental note + Files section | Goal/Constraints/Progress/… | fixed Goal/…/Critical-Context | weak-model prose summary | structured, preserves task IDs | handoff schema | `<state_snapshot>` + verify pass | named schema (intent/files/errors/…) |
+| **Targeted tool-output pruning** | Only during summarizer overflow (whole responses, middle-out) | basic-compaction truncates tool results | prune-first (>40k, protect last 2, skip skills) | truncate tool results to 2000 chars | no (re-injects files fresh) | per-event 0.8× shrink | `TruncationPolicy` | reverse-budget: old >50k → 30 lines | Bash output → file + head preview |
+| **Single oversized message** | Hard fail → "start new session" | rule-based trim | media→placeholder | "split turn" mid-turn cut | suggests `/drop`,`/clear` | `hard_context_reset` shrink | `new_context_window` | truncate old responses | offload to file |
+| **Token counting** | tiktoken `o200k_base`, one encoding all providers | per-model `maxInputTokens` | tokens vs usable window | `contextTokens` vs window | tokenizer vs `max_tokens` | condenser `max_tokens` | model-callable `get_context_remaining` | streamed usage | window-usage % |
+| **Provider-truth first** | Yes (`session.total_tokens`), tiktoken cold path | model-info limits | provider usage | provider usage | model input limit | provider usage | provider + server-side | provider usage | provider usage |
+| **Compaction model** | fast/weak (`complete_fast`) | agentic (same) / rule fallback | summary agent + "no-LLM" memory path | main or cheaper via hook | weak model | summarization LLM | model or remote | LLM + verify pass | main model |
+| **Cross-session memory** | 3 disjoint: chatrecall (LIKE), Knowledge KB (git wiki, opt-in), ingest | Memory Bank (`.clinerules` convention) | AGENTS.md | files (`TODO.md`) + session tree | git history + `CONVENTIONS.md` | event store + AGENTS.md | `~/.codex/memories/` ranked, self-maintained | GEMINI.md + Auto Memory inbox | CLAUDE.md + Auto memory (`MEMORY.md`) |
+| **Auto-promoted memory** | No (Soul opt-in per query) | manual | no | no | no | no | Yes (consolidation sub-agent) | Yes (idle-mining → review inbox) | Yes (first 200 lines auto-load) |
+| **Session store** | SQLite, append-only messages + `extension_data` JSON | disk sessions + snapshots | SQLite (Drizzle) | JSONL session tree | `.aider.chat.history.md` | persisted event store | rollout files `~/.codex/` | session JSON | session store |
+| **Resume / branching** | Load full history each turn; `diverged_from` | versioning/snapshots | SSE replay | `/tree` `/fork` `/clone` branching | restore prior msgs | replay + fork | resume + replay | rewind across compression | rewind + worktrees |
+| **Compaction hooks** | Pre/PostCompact | `PreCompact` | `session.compacted` | `session_before_compact` (override) | none | condenser pluggable | Pre/Post-Compact (can abort) | `PreCompress` | Pre/PostCompact (can block) |
 
 ## Where BioRouter was ahead
 
@@ -124,10 +124,7 @@ wide and scrolls horizontally.
   prune-first** is the best compaction-layer variant: scan newest→oldest, protect
   the last 2 turns, prune tool bodies only when total tool output >40k and ≥20k is
   reclaimable, never prune `skill` outputs. **Gemini's reverse-budget** truncates
-  old tool responses >50k tokens down to 30 lines before summarizing. **Goose**
-  already added background summarization of tool pairs older than
-  `GOOSE_TOOL_CALL_CUTOFF=10`, a gap compared with Goose that BioRouter has not
-  closed.
+  old tool responses >50k tokens down to 30 lines before summarizing.
 - **Individual over-window message is a dead end.** No head/tail truncation of a
   single oversized payload; BioRouter tells the user to start a new session
   (compaction review, gap #3 — `agent.rs:1967-1975`). Pi's "split turn" (cut
@@ -224,8 +221,7 @@ the mapping is one-to-one.
    in the shell/`text_editor` tools: cap output, spill the remainder to a session
    file, return path + head preview. Complement with OpenCode-style
    prune-before-summarize (protect last N turns, prune only bodies above a token
-   floor, never prune skill/critical outputs). Goose's background tool pair
-   summarization is a ready design to adopt.
+   floor, never prune skill/critical outputs).
 
 3. **Fix token accounting.** At minimum, include the system prompt and tool
    schemas in the cold-path estimate; ideally add per-provider tokenizers (or a

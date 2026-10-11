@@ -356,7 +356,7 @@ review cite as `long-running.md gap #N`; the numbering below is that scheme and 
 ## Related documentation
 
 - [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — the turn these mechanisms hang off, including the per-extension timeout that bounds a blocking subagent call.
-- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this background-job and subagent design measures against nine other coding agents.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this background-job and subagent design measures against eight other coding agents.
 - [Subagents guide](../../../agent-loop/subagents.md) — the current, living reference for the `subagent` tool.
 - [Scheduled jobs guide](../../../workflows/scheduled-jobs.md) — the current, living reference for `/schedule` and `/loop`.
 - [Wave 1 processes report](../../agent-loop-campaign/wave-reports/wave-1-processes.md) — what was actually built in response to these gaps.
