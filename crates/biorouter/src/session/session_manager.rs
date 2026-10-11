@@ -3094,25 +3094,32 @@ impl SessionManager {
 
         // Prefer the LLM-generated, content-derived name. The naming call is
         // best-effort: if the provider errors (rate limit, auth, model issue)
-        // or hands back an empty/whitespace string, fall back to a
-        // deterministic title derived from the first user message so a session
-        // is NEVER left as "New chat" after a real exchange.
-        let name = match provider.generate_session_name(&conversation).await {
-            Ok(name) if !name.trim().is_empty() => name,
+        // or hands back an empty/whitespace string, a session still on the
+        // placeholder falls back to a deterministic title derived from the
+        // first user message, so it is NEVER left as "New chat" after a real
+        // exchange.
+        //
+        // A session that already wears a real name keeps it. The fallback is a
+        // worse title than the one it would overwrite (the first eight words of
+        // the first message), and the failure that triggers it, an expired key
+        // or a rate limit, is exactly when the next turn would otherwise
+        // quietly replace a good generated title with that snippet. A name
+        // changes only by a person's rename or a successful generation.
+        let generated = match provider.generate_session_name(&conversation).await {
+            Ok(name) if !name.trim().is_empty() => Some(name),
             Ok(_) => {
-                warn!(
-                    "Session name generation for {} returned an empty name; using fallback",
-                    id
-                );
-                Self::fallback_session_name(&conversation)
+                warn!("Session name generation for {} returned an empty name", id);
+                None
             }
             Err(e) => {
-                warn!(
-                    "Session name generation for {} failed ({}); using fallback",
-                    id, e
-                );
-                Self::fallback_session_name(&conversation)
+                warn!("Session name generation for {} failed ({})", id, e);
+                None
             }
+        };
+        let name = match generated {
+            Some(name) => name,
+            None if !still_default => return Ok(()),
+            None => Self::fallback_session_name(&conversation),
         };
 
         // Both the LLM and the fallback produced nothing usable (e.g. the first
