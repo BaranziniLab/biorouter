@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
@@ -674,5 +675,220 @@ describe('IngestPanel held-file state', () => {
     fireEvent.dragLeave(digest, transfer);
     expect(rail).not.toHaveAttribute('data-dragging');
     expect(box).not.toHaveAttribute('data-dragging');
+  });
+});
+
+/**
+ * V3-R6-1: a keyboard user keeps their place in the rail.
+ *
+ * Stage, Cancel, a row's Remove, Clear, a warning's Dismiss and Retry failed each UNMOUNT the button
+ * the person just pressed, and a removed focused element hands focus to `<body>` (jsdom and
+ * Chromium alike), so the person was back at the top of the Tab order every time. Each case presses
+ * the control from the keyboard and asserts where focus is, never only that it is not `<body>`:
+ * the target is the rule (`railFocus.ts`), and a focus that landed somewhere arbitrary would pass
+ * a bare "not body" check. The layout half (the ring a keyboard arrival draws, and none after a
+ * click) is measured in Chromium in `sourcesRail.browser.test.tsx`.
+ */
+describe('IngestPanel keeps keyboard focus when a control leaves (V3-R6-1)', () => {
+  const pasteButton = () => screen.getByTestId('knowledge-ingest-paste-text');
+  const rows = () => screen.queryAllByTestId('knowledge-staged-item');
+  const removeOf = (row: HTMLElement) =>
+    row.querySelector<HTMLElement>('[data-testid="knowledge-staged-remove"]')!;
+
+  /** Paste text > type > Tab to Stage > Enter, with the keyboard only. Returns the user. */
+  async function stageFromKeyboard(
+    user: ReturnType<typeof userEvent.setup>,
+    text: string,
+    title?: string
+  ) {
+    pasteButton().focus();
+    await user.keyboard('{Enter}');
+    const textarea = screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder);
+    expect(textarea).toHaveFocus();
+    if (title)
+      fireEvent.change(screen.getByLabelText('Title for the pasted source'), {
+        target: { value: title },
+      });
+    await user.keyboard(text);
+    // Cancel is next (after a chip for each URL the text listed), then Stage.
+    const stage = screen.getByRole('button', { name: 'Stage' });
+    for (let i = 0; i < 6 && document.activeElement !== stage; i++) await user.tab();
+    expect(stage).toHaveFocus();
+    await user.keyboard('{Enter}');
+  }
+
+  it('Stage puts focus on the staged row, and Tab goes on to its Remove', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'some knowledge');
+
+    const [row] = rows();
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(row).toHaveFocus();
+    // Announced by what it holds, and never a tab stop of its own.
+    expect(row).toHaveAccessibleName('Pasted knowledge');
+    expect(row).toHaveAttribute('tabindex', '-1');
+    await user.tab();
+    expect(removeOf(row)).toHaveFocus();
+  });
+
+  it('Stage lands on the pasted text, not on a URL it listed', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'see https://example.org/a for more', 'Notes');
+
+    expect(rows()).toHaveLength(2);
+    expect(rows()[0]).toHaveAttribute('data-label', 'Notes');
+    expect(rows()[0]).toHaveFocus();
+  });
+
+  it('Cancel returns to Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    pasteButton().focus();
+    await user.keyboard('{Enter}');
+    await user.tab(); // from the textarea to Cancel
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+
+    expect(screen.queryByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toBeNull();
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('Remove goes to the next row’s Remove, else the previous, else Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    for (const title of ['One', 'Two', 'Three']) {
+      await stageFromKeyboard(user, `text ${title}`, title);
+    }
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One', 'Two', 'Three']);
+
+    // The middle row goes: the one that takes its place is the next.
+    removeOf(rows()[1]).focus();
+    await user.keyboard('{Enter}');
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One', 'Three']);
+    expect(removeOf(rows()[1])).toHaveFocus();
+
+    // The last row goes: nothing is below it, so the one above.
+    await user.keyboard('{Enter}');
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One']);
+    expect(removeOf(rows()[0])).toHaveFocus();
+
+    // The only row goes: the rail's first control.
+    await user.keyboard('{Enter}');
+    expect(rows()).toHaveLength(0);
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('Clear returns to Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'one', 'One');
+    await stageFromKeyboard(user, 'two', 'Two');
+
+    screen.getByRole('button', { name: 'Clear' }).focus();
+    await user.keyboard('{Enter}');
+    expect(rows()).toHaveLength(0);
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('a click moves focus the same way', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    stageSomeText();
+    expect(rows()[0]).toHaveFocus();
+    await user.click(removeOf(rows()[0]));
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('leaves focus alone when nothing was pressed', async () => {
+    // A queued target is consumed by the commit it was queued for, never by a later render.
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    stageSomeText();
+    const digest = screen.getByTestId('knowledge-digest-button');
+    digest.focus();
+    fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
+    await user.keyboard('x');
+    expect(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toHaveFocus();
+  });
+
+  describe('warnings', () => {
+    /** Drop two files the rail sets aside, which makes two warnings. */
+    async function dropTwoUnsuitableFiles() {
+      const rail = screen.getByTestId('knowledge-ingest-rail');
+      const files = [new File(['x'], 'a.exe'), new File(['x'], 'b.dmg')];
+      fireEvent.drop(rail, { dataTransfer: { files, getData: () => '', types: ['Files'] } });
+      await screen.findByText(/2 warnings/);
+      fireEvent.click(screen.getByText(/2 warnings/));
+      return screen.findAllByRole('button', { name: /^Dismiss / });
+    }
+
+    it('Dismiss goes to the next warning’s Dismiss, else the previous, else Paste text', async () => {
+      const user = userEvent.setup();
+      render(<IngestPanel />);
+      const [first] = await dropTwoUnsuitableFiles();
+
+      first.focus();
+      await user.keyboard('{Enter}');
+      const rest = screen.getAllByRole('button', { name: /^Dismiss / });
+      expect(rest).toHaveLength(1);
+      expect(rest[0]).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(screen.queryAllByRole('button', { name: /^Dismiss / })).toHaveLength(0);
+      expect(pasteButton()).toHaveFocus();
+    });
+
+    it('Clear returns to Paste text', async () => {
+      const user = userEvent.setup();
+      render(<IngestPanel />);
+      await dropTwoUnsuitableFiles();
+
+      // The warnings' own Clear is the first of the rail's Clear buttons (the staged list has none
+      // while it is empty).
+      screen.getByRole('button', { name: 'Clear' }).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.queryByText(/2 warnings/)).toBeNull();
+      expect(pasteButton()).toHaveFocus();
+    });
+  });
+
+  describe('a failed digest', () => {
+    async function failOneSource() {
+      mocks.modelAndProvider.currentProvider = 'versa_azure';
+      mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+      mocks.start.mockResolvedValueOnce({ status: 'error', error: 'boom' });
+      render(<IngestPanel />);
+      stageSomeText();
+      fireEvent.click(screen.getByTestId('knowledge-digest-button'));
+      return screen.findByRole('button', { name: 'Retry failed' });
+    }
+
+    it('Retry failed hands focus to the Digest button, now Stop', async () => {
+      const user = userEvent.setup();
+      mocks.start.mockReturnValue(new Promise(() => undefined));
+      const retry = await failOneSource();
+      mocks.start.mockReturnValue(new Promise(() => undefined));
+
+      retry.focus();
+      await user.keyboard('{Enter}');
+      const digest = screen.getByTestId('knowledge-digest-button');
+      await waitFor(() => expect(digest).toHaveTextContent('Stop'));
+      expect(screen.queryByRole('button', { name: 'Retry failed' })).toBeNull();
+      expect(digest).toHaveFocus();
+    });
+
+    it('Clear failed returns to Paste text', async () => {
+      const user = userEvent.setup();
+      const retry = await failOneSource();
+      expect(retry).toBeInTheDocument();
+
+      screen.getByRole('button', { name: 'Clear failed' }).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.queryByRole('button', { name: 'Clear failed' })).toBeNull();
+      expect(pasteButton()).toHaveFocus();
+    });
   });
 });

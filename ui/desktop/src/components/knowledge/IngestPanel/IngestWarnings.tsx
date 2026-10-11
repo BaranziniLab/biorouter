@@ -71,6 +71,8 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
                   shape="round"
                   size="sm"
                   onClick={() => onDismiss(warning.id)}
+                  // The panel moves focus to a neighbour's Dismiss when this one goes (`railFocus.ts`).
+                  data-warning-id={warning.id}
                   aria-label={`Dismiss "${warning.title}"`}
                 >
                   <X aria-hidden="true" />

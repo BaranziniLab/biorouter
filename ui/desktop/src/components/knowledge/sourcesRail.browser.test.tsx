@@ -597,4 +597,193 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
     },
     CASE_TIMEOUT
   );
+
+  // ---- V3-R6-1: a keyboard user keeps their place in the rail --------------------------------
+
+  /** What holds focus, and whether the browser calls it the keyboard's (`:focus-visible`). */
+  const focused = (tab: Page) =>
+    tab.evaluate(() => {
+      const el = document.activeElement as HTMLElement;
+      const rail = document.querySelector('[data-testid="knowledge-ingest-rail"]')!;
+      const row = el.closest('[data-testid="knowledge-staged-item"]');
+      const style = getComputedStyle(el);
+      return {
+        inRail: rail.contains(el),
+        body: el === document.body,
+        testid: el.getAttribute('data-testid'),
+        // The label of the staged row the element is (or is inside), to tell one row's Remove apart.
+        row: row?.getAttribute('data-label') ?? null,
+        focusVisible: el.matches(':focus-visible'),
+        boxShadow: style.boxShadow,
+        outlineStyle: style.outlineStyle,
+        background: style.backgroundColor,
+      };
+    });
+
+  /**
+   * Paste text > type > Stage, from the keyboard. The row is told apart by its title, set with
+   * `fill` (which moves focus to the field), so focus is put back in the text before typing.
+   */
+  async function stageByKeyboard(tab: Page, text: string, title = text) {
+    await tab.focus('[data-testid="knowledge-ingest-paste-text"]');
+    await tab.keyboard.press('Enter');
+    await tab.waitForSelector('textarea');
+    await tab.fill('input[aria-label="Title for the pasted source"]', title);
+    await tab.focus('textarea');
+    await tab.keyboard.type(text);
+    await tab.keyboard.press('Tab'); // Cancel
+    await tab.keyboard.press('Tab'); // Stage
+    await tab.keyboard.press('Enter');
+  }
+
+  const rowCount = (tab: Page) => tab.locator('[data-testid="knowledge-staged-item"]').count();
+
+  it(
+    'keeps a keyboard user in the rail through Stage, Remove and Cancel, and draws where they are',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open(1152);
+      try {
+        // Stage: focus lands on the row the paste became, and the keyboard's mark is drawn on it.
+        await stageByKeyboard(tab, 'first note');
+        let at = await focused(tab);
+        expect(at.body, 'Stage leaves focus on <body>').toBe(false);
+        expect(at.testid).toBe('knowledge-staged-item');
+        expect(at.focusVisible, 'the row shows the keyboard focus mark').toBe(true);
+        // The list row's own treatment (the focus fill and a 2px inset edge), and the browser's
+        // outline is not drawn on top of it.
+        expect(at.boxShadow, 'the row’s inset focus edge').not.toBe('none');
+        expect(at.outlineStyle, 'no UA outline on the row').toBe('none');
+        // The fill eases in over the row's own short transition: wait for it, do not read it
+        // part-way.
+        const focusFill = (await paint(tab, 'var(--background-focus)')).join(', ');
+        await tab.waitForFunction(
+          (want) => getComputedStyle(document.activeElement!).backgroundColor === `rgb(${want})`,
+          focusFill,
+          { timeout: 3000 }
+        );
+        if (SHOTS) await shoot(tab, 'rail-focus-staged-row');
+
+        // The next Tab is the row's own Remove: the row is never a tab stop of its own.
+        await tab.keyboard.press('Tab');
+        expect((await focused(tab)).testid).toBe('knowledge-staged-remove');
+        // …and going back skips the row too (a `tabindex="-1"` element is in neither direction of
+        // the Tab order), to the control above it, still in the rail.
+        await tab.keyboard.press('Shift+Tab');
+        at = await focused(tab);
+        expect(at.inRail, 'Shift+Tab stays in the rail').toBe(true);
+        expect(at.testid).not.toBe('knowledge-staged-item');
+        expect(at.testid).not.toBe('knowledge-staged-remove');
+
+        // Two more rows, then Remove from the middle: the next row's Remove, then the previous.
+        await stageByKeyboard(tab, 'second note');
+        await stageByKeyboard(tab, 'third note');
+        expect(await rowCount(tab)).toBe(3);
+        await tab.locator('[data-testid="knowledge-staged-remove"]').nth(1).focus();
+        await tab.keyboard.press('Enter');
+        expect(await rowCount(tab)).toBe(2);
+        at = await focused(tab);
+        expect(at.testid, 'the next row’s Remove').toBe('knowledge-staged-remove');
+        expect(at.row).toBe('third note');
+        expect(at.focusVisible).toBe(true);
+        await tab.keyboard.press('Enter');
+        at = await focused(tab);
+        expect(at.row, 'nothing below: the previous row’s Remove').toBe('first note');
+        await tab.keyboard.press('Enter');
+        at = await focused(tab);
+        expect(await rowCount(tab)).toBe(0);
+        expect(at.testid, 'the last row gone: Paste text').toBe('knowledge-ingest-paste-text');
+        expect(at.focusVisible).toBe(true);
+
+        // Cancel closes the box and returns to Paste text.
+        await tab.keyboard.press('Enter');
+        await tab.waitForSelector('textarea');
+        await tab.keyboard.press('Tab');
+        await tab.keyboard.press('Enter');
+        await tab.waitForSelector('textarea', { state: 'detached' });
+        at = await focused(tab);
+        expect(at.testid, 'Cancel returns to Paste text').toBe('knowledge-ingest-paste-text');
+        expect(at.focusVisible).toBe(true);
+        expect(at.body).toBe(false);
+      } finally {
+        await tab.close();
+      }
+    },
+    CASE_TIMEOUT
+  );
+
+  it(
+    'brings Paste text back into view after Clear on a long scrolled list',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open(1152, { staged: 30 });
+      try {
+        // Scrolled to the end, where the box is far above the Clear that stays at the list's head.
+        await tab.evaluate(() => {
+          const zone = document.querySelector('[data-testid="knowledge-ingest-dropzone"]')!;
+          zone.parentElement!.scrollTop = zone.parentElement!.scrollHeight;
+        });
+        await tab.getByRole('button', { name: 'Clear', exact: true }).focus();
+        await tab.keyboard.press('Enter');
+        await tab.waitForFunction(
+          () => document.querySelectorAll('[data-testid="knowledge-staged-item"]').length === 0
+        );
+        expect((await focused(tab)).testid).toBe('knowledge-ingest-paste-text');
+        const visible = await tab.evaluate(() => {
+          const button = document.activeElement!.getBoundingClientRect();
+          const scroller = document
+            .querySelector('[data-testid="knowledge-ingest-dropzone"]')!
+            .parentElement!.getBoundingClientRect();
+          return button.top >= scroller.top && button.bottom <= scroller.bottom;
+        });
+        expect(visible, 'Paste text is scrolled into view').toBe(true);
+      } finally {
+        await tab.close();
+      }
+    },
+    CASE_TIMEOUT
+  );
+
+  it(
+    'moves focus after a click too, and draws nothing for it',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open(1152);
+      try {
+        await tab.click('[data-testid="knowledge-ingest-paste-text"]');
+        await tab.waitForSelector('textarea');
+        await tab.fill('textarea', 'pasted with the pointer');
+        await tab.getByRole('button', { name: 'Stage', exact: true }).click();
+        await tab.waitForSelector('[data-testid="knowledge-staged-item"]');
+        const focusFill = (await paint(tab, 'var(--background-focus)')).join(', ');
+
+        // Focus is on the row (a screen reader's click lands the same way), and `:focus-visible` is
+        // the keyboard's verdict, which a pointer press does not earn: no ring, no fill.
+        // (A wait lets any fill finish easing in, so "none yet" cannot pass for "none".)
+        await tab.waitForTimeout(400);
+        let at = await focused(tab);
+        expect(at.testid).toBe('knowledge-staged-item');
+        expect(at.focusVisible, 'a click earns no focus mark').toBe(false);
+        expect(at.boxShadow, 'a staged row reached by a click wears nothing').toBe('none');
+        // (The pointer may rest over the new row, and the row's hover wash is a different fill.)
+        expect(at.background, 'no focus fill on the row after a click').not.toBe(
+          `rgb(${focusFill})`
+        );
+
+        await tab.locator('[data-testid="knowledge-staged-remove"]').click();
+        await tab.waitForFunction(
+          () => document.querySelectorAll('[data-testid="knowledge-staged-item"]').length === 0
+        );
+        await tab.waitForTimeout(400);
+        at = await focused(tab);
+        expect(at.testid).toBe('knowledge-ingest-paste-text');
+        expect(at.focusVisible, 'Paste text after a click').toBe(false);
+        expect(at.boxShadow).toBe('none');
+        expect(at.background, 'no focus fill after a click').not.toBe(`rgb(${focusFill})`);
+      } finally {
+        await tab.close();
+      }
+    },
+    CASE_TIMEOUT
+  );
 });

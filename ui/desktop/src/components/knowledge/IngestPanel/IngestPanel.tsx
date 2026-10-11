@@ -19,6 +19,7 @@ import { IngestModelPicker } from './IngestModelPicker';
 import { IngestWarnings } from './IngestWarnings';
 import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
+import { neighbourOf, railFocusElement, type RailFocusTarget } from './railFocus';
 import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
 import { resolveIngestModel } from './resolveIngestModel';
@@ -59,7 +60,41 @@ export function IngestPanel() {
   // The summoned box and the strip that would otherwise cover it.
   const pasteBoxRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
   const quietReasonId = useId();
+
+  /**
+   * Keep a keyboard user's place when the control they pressed leaves the rail (V3-R6-1).
+   *
+   * Stage, Cancel, a row's Remove, Clear, a warning's Dismiss and Retry failed each unmount the
+   * button that held focus, and Chromium hands that to `<body>`: the person was back at the top of
+   * the page's Tab order after every one. A press names where focus goes (`placeFocus`, see
+   * `railFocus.ts` for the rule), and the first commit after it moves focus there, in a LAYOUT
+   * effect so it lands before the frame paints and there is no frame with focus on nothing.
+   *
+   * The tick is state only so a commit is certain to follow the press: the target is a ref, which
+   * would not render, and a target left waiting for some unrelated later render would move focus
+   * for no reason. It is consumed by the commit it queued, found or not, and falls back to "Paste
+   * text" (the rail's first control) when what it named is no longer there.
+   *
+   * It moves focus after a CLICK too, not only a key: a screen-reader user's activation is a click,
+   * and `:focus-visible` is the keyboard's verdict, so a pointer press that ends with focus on a
+   * button draws nothing (measured in Chromium, `sourcesRail.browser.test.tsx`).
+   */
+  const pendingFocus = useRef<RailFocusTarget | null>(null);
+  const [, setFocusTick] = useState(0);
+  function placeFocus(target: RailFocusTarget) {
+    pendingFocus.current = target;
+    setFocusTick((tick) => tick + 1);
+  }
+  useLayoutEffect(() => {
+    const target = pendingFocus.current;
+    if (!target) return;
+    pendingFocus.current = null;
+    const rail = railRef.current;
+    if (!rail) return;
+    (railFocusElement(rail, target) ?? railFocusElement(rail, { to: 'paste' }))?.focus();
+  });
 
   /**
    * The digest log belongs to the base it ran against.
@@ -262,6 +297,20 @@ export function IngestPanel() {
       }
       add({ kind: 'file', id: genId(), file: file.file, label: file.label, status: 'pending' });
     }
+  }
+
+  /** Remove one staged row; focus goes to the row that takes its place, else the one above, else Paste text. */
+  function removeStaged(id: string) {
+    const next = neighbourOf(items, id);
+    placeFocus(next ? { to: 'staged-remove', id: next.id } : { to: 'paste' });
+    remove(id);
+  }
+
+  /** Dismiss one warning, with the same rule. */
+  function dismissWarning(id: string) {
+    const next = neighbourOf(warnings, id);
+    placeFocus(next ? { to: 'warning-dismiss', id: next.id } : { to: 'paste' });
+    setWarnings((current) => current.filter((warning) => warning.id !== id));
   }
 
   async function onPathPickRequested() {
@@ -521,6 +570,7 @@ export function IngestPanel() {
     // `main.css`). The box yields its room to the staged list, and a long list scrolls it out of
     // view: a file held over the rail then lit nothing anywhere on screen.
     <div
+      ref={railRef}
       className="br-knowledge-rail flex min-h-0 flex-1 flex-col"
       data-testid="knowledge-ingest-rail"
       data-dragging={fileDrop.dragging ? 'true' : undefined}
@@ -544,10 +594,11 @@ export function IngestPanel() {
         />
         <IngestWarnings
           warnings={warnings}
-          onDismiss={(id) =>
-            setWarnings((current) => current.filter((warning) => warning.id !== id))
-          }
-          onClear={() => setWarnings([])}
+          onDismiss={dismissWarning}
+          onClear={() => {
+            placeFocus({ to: 'paste' });
+            setWarnings([]);
+          }}
         />
 
         {showPasteBox && (
@@ -555,17 +606,30 @@ export function IngestPanel() {
           // made it necessary, see the effect above)
           <div ref={pasteBoxRef}>
             <PasteTextBox
-              onCancel={() => setShowPasteBox(false)}
+              onCancel={() => {
+                setShowPasteBox(false);
+                placeFocus({ to: 'paste' });
+              }}
               onStage={(text, title, urls) => {
-                add({ kind: 'text', id: genId(), text, title, status: 'pending' });
+                const textId = genId();
+                add({ kind: 'text', id: textId, text, title, status: 'pending' });
                 for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
                 setShowPasteBox(false);
+                // The row the paste became (the URLs it listed follow it).
+                placeFocus({ to: 'staged-row', id: textId });
               }}
             />
           </div>
         )}
 
-        <StagedList items={items} onRemove={remove} onClear={clear} />
+        <StagedList
+          items={items}
+          onRemove={removeStaged}
+          onClear={() => {
+            placeFocus({ to: 'paste' });
+            clear();
+          }}
+        />
 
         {/* State 3. Determinate on the queue — `value`/`max` are the two numbers
             the loop already knows — with `indeterminate` reserved for the
@@ -594,7 +658,10 @@ export function IngestPanel() {
               variant="secondary"
               size="sm"
               onClick={() => {
-                if (!nothingToDigest) void onDigest();
+                if (nothingToDigest) return;
+                // This button leaves with the strip the moment the run starts; Digest becomes Stop.
+                placeFocus({ to: 'digest' });
+                void onDigest();
               }}
             >
               Retry failed
@@ -604,6 +671,7 @@ export function IngestPanel() {
               variant="ghost"
               size="sm"
               onClick={() => {
+                placeFocus({ to: 'paste' });
                 for (const item of failed) remove(item.id);
               }}
             >
