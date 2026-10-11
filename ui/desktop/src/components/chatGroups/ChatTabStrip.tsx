@@ -30,6 +30,7 @@ import { renameSessionOptimistically } from '../../utils/sessionNameSync';
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import type { ChatKindSource } from '../chats/chatKind';
+import { historyRowTitle } from '../sessions/historyRow';
 import type { SessionClassification, SessionType } from '../../api';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useTabBandWindowGesture } from './useTabBandWindowGesture';
@@ -86,6 +87,26 @@ function tabKindSource(
     // a rename that its title prefix does not.
     working_dir: rowWorkingDir ?? null,
   };
+}
+
+/**
+ * The title a tab SHOWS: its stored title minus what its glyph already says, from
+ * the one resolver History and the sidebar use (`historyRowTitle`; principle 2, say
+ * it once; principle 10, names not IDs; vision V1-R2-10 and V1-R3-6).
+ *
+ * Given what {@link tabKindSource} builds, two kinds change: a sub-agent's tab reads
+ * "Reply with ALPHA" beside the robot glyph instead of "Subagent: Reply with ALPHA",
+ * and an app's chat reads "Living news router" instead of `app:living-news-router`.
+ * A scheduled run keeps "Scheduled job: <id>": the strip does not take `scheduled`
+ * from the row, so the tab draws the plain chat glyph and the prefix is the only
+ * thing that says what it is. If that ever changes, the title follows on its own,
+ * because both read the same source.
+ *
+ * Display only. The stored `tab.title` is what the rename field starts from and what
+ * the rename rolls back to, and the overflow filter matches it as well as this.
+ */
+function tabShownTitle(source: ChatKindSource): string {
+  return historyRowTitle(source);
 }
 
 /**
@@ -298,6 +319,16 @@ export function ChatTabStrip({
   const { draggedTabId, dragOverTabId, beginDrag, guardClick } = sharedDrag ?? ownDrag;
   const activeTabRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
+
+  // One kind source per tab for the glyph AND the shown title, so the two can
+  // never disagree about what a tab is (the overflow menu reads the same pair).
+  const kindSourceOf = (tab: ChatTab): ChatKindSource =>
+    tabKindSource(
+      tab,
+      tabAnnotations[tab.sessionId],
+      sessionTypes[tab.sessionId],
+      sessionWorkingDirs[tab.sessionId]
+    );
 
   // The empty part of the band is a titlebar: drag moves the window,
   // double-click zooms. Done with pointer events and IPC, NOT by giving the
@@ -725,6 +756,10 @@ export function ChatTabStrip({
         {tabs.map((tab, index) => {
           const isActive = tab.tabId === activeTabId;
           const isRunning = runningSessionIds.includes(tab.sessionId);
+          const kindSource = kindSourceOf(tab);
+          // What the tab says, everywhere it says it: label, tooltip, drag ghost
+          // and the accessible names. `tab.title` stays the stored name.
+          const shownTitle = tabShownTitle(kindSource);
           return (
             <div
               key={tab.tabId}
@@ -768,17 +803,14 @@ export function ChatTabStrip({
                   onPointerDown={(event) => event.stopPropagation()}
                 >
                   <ChatKindIcon
-                    session={tabKindSource(
-                      tab,
-                      tabAnnotations[tab.sessionId],
-                      sessionTypes[tab.sessionId],
-                      sessionWorkingDirs[tab.sessionId]
-                    )}
+                    session={kindSource}
                     tier={privacyTiers[tab.sessionId]}
                     className="h-4 w-4 br-tab__privacy-dot"
                   />
+                  {/* The field is labelled with the shown title; its draft
+                      (startRename) is the stored name, as in the sidebar. */}
                   <ChatRowRenameInput
-                    title={tab.title}
+                    title={shownTitle}
                     value={editing.draft}
                     onChange={(draft) => setEditing({ tabId: tab.tabId, draft })}
                     onCommit={(value) => commitRename(tab, value)}
@@ -794,13 +826,13 @@ export function ChatTabStrip({
                       role="tab"
                       aria-selected={isActive}
                       tabIndex={isActive ? 0 : -1}
-                      title={tab.title}
+                      title={shownTitle}
                       // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
                       // here was the last arbitrary one in the strip — a document tab
                       // and a nav row now measure the same distance from glyph to
                       // word. `gap-2` is the token, not a magic number.
                       className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
-                      onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
+                      onPointerDown={(event) => beginDrag(event, tab.tabId, shownTitle, groupId)}
                       onFocus={isActive ? revealActiveTab : undefined}
                       onKeyDown={(event) => handleKeyDown(event, index)}
                       onClick={() => {
@@ -826,16 +858,11 @@ export function ChatTabStrip({
                       as a robot glyph in the same slot as every other kind,
                       instead of a word competing with the title for width. */}
                       <ChatKindIcon
-                        session={tabKindSource(
-                          tab,
-                          tabAnnotations[tab.sessionId],
-                          sessionTypes[tab.sessionId],
-                          sessionWorkingDirs[tab.sessionId]
-                        )}
+                        session={kindSource}
                         tier={privacyTiers[tab.sessionId]}
                         className="h-4 w-4 br-tab__privacy-dot"
                       />
-                      <span className="br-tab__label">{tab.title}</span>
+                      <span className="br-tab__label">{shownTitle}</span>
                     </button>
                   </ContextMenuTrigger>
                   <ChatRowContextMenuContent
@@ -874,7 +901,7 @@ export function ChatTabStrip({
                   />
                   <button
                     type="button"
-                    aria-label={chatTabStripCopy.close(tab.title)}
+                    aria-label={chatTabStripCopy.close(shownTitle)}
                     data-testid={`chat-tab-close-${tab.tabId}`}
                     className={TAB_CLOSE_CLASS}
                     onPointerDown={(event) => event.stopPropagation()}
@@ -889,7 +916,7 @@ export function ChatTabStrip({
               ) : (
                 <button
                   type="button"
-                  aria-label={chatTabStripCopy.close(tab.title)}
+                  aria-label={chatTabStripCopy.close(shownTitle)}
                   data-testid={`chat-tab-close-${tab.tabId}`}
                   className={TAB_CLOSE_CLASS}
                   onPointerDown={(event) => event.stopPropagation()}
@@ -943,16 +970,13 @@ export function ChatTabStrip({
             // The overflow menu draws the SAME glyph as the strip: a tab that
             // scrolls out of view must not change what it is.
             <ChatKindIcon
-              session={tabKindSource(
-                tab,
-                tabAnnotations[tab.sessionId],
-                sessionTypes[tab.sessionId],
-                sessionWorkingDirs[tab.sessionId]
-              )}
+              session={kindSourceOf(tab)}
               tier={privacyTiers[tab.sessionId]}
               className="h-4 w-4"
             />
           )}
+          // ...and the same title, from the same source.
+          titleOf={(tab) => tabShownTitle(kindSourceOf(tab))}
         />
       )}
     </div>
@@ -965,6 +989,8 @@ interface TabOverflowMenuProps {
   runningSessionIds: readonly string[];
   onSelectTab: (tabId: ChatTabId) => void;
   renderGlyph: (tab: ChatTab) => React.ReactNode;
+  /** The title a row shows: the strip's own shown title for that tab. */
+  titleOf: (tab: ChatTab) => string;
 }
 
 /**
@@ -985,14 +1011,22 @@ function TabOverflowMenu({
   runningSessionIds,
   onSelectTab,
   renderGlyph,
+  titleOf,
 }: TabOverflowMenuProps) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const filterRef = useRef<HTMLInputElement | null>(null);
   const showFilter = tabs.length >= TAB_MENU_FILTER_MIN;
+  // Matches the stored name AND the shown title, as History's filter does: a
+  // sub-agent's tab is found by "Subagent" as well as by the words it shows.
   const visible = useMemo(
-    () => (showFilter ? tabs.filter((tab) => tabMatchesFilter(tab.title, filter)) : tabs),
-    [showFilter, tabs, filter]
+    () =>
+      showFilter
+        ? tabs.filter(
+            (tab) => tabMatchesFilter(tab.title, filter) || tabMatchesFilter(titleOf(tab), filter)
+          )
+        : tabs,
+    [showFilter, tabs, filter, titleOf]
   );
 
   const onOpenChange = (next: boolean) => {
@@ -1103,7 +1137,7 @@ function TabOverflowMenu({
               onSelect={() => onSelectTab(tab.tabId)}
             >
               {renderGlyph(tab)}
-              <span className="min-w-0 flex-1 truncate">{tab.title}</span>
+              <span className="min-w-0 flex-1 truncate">{titleOf(tab)}</span>
               {isRunning || isActive ? (
                 <span className={MENU_ROW_TRAILING_CLASS_NAME}>
                   {isRunning ? (
