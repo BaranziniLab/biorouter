@@ -99,6 +99,18 @@ rules because the catalog root and Settings' reading column each carry `.br-rows
 catalog's selector (`.br-provider-catalog.br-rows-flat`, two classes on one element) out-ranks Settings'
 one-class paint by specificity, so the order the style sheets are bundled in does not matter.
 
+## Where the Configure dialog puts focus
+
+A row's action opens `ProviderConfigurationModal`, whose key fields load after the dialog mounts (the
+form says "Loading…" until the saved values are in). Radix picks the first tabbable control at mount, which
+was the footer's **Remove** on a configured provider, or Cancel on a new one, so a keyboard user opened
+the dialog on a destructive button. The dialog now rests focus on its own box (`restOnDialog`; the box draws
+no ring and a screen reader reads the title there), and `DefaultProviderSetupForm` moves it to the first
+enabled field once the values are in, **only while the box still holds it**: a person who has already
+tabbed to Cancel stays on Cancel. The opener is recorded before either runs, so Escape and Cancel still
+return focus to the row's button. `ProviderConfigurationModal.focus.test.tsx` holds all three, and each
+was checked by removing the line that makes it true.
+
 ## The page band
 
 `ProviderSettingsPage.tsx` (`#/configure-providers`, and `#/welcome` on first run) is one 44px `PageHeader`

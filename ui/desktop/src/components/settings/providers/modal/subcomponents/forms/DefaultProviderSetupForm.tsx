@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
@@ -166,6 +166,21 @@ export default function DefaultProviderSetupForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The fields exist only once the saved values are in, and the dialog around them is already
+  // open by then, so Radix could not put focus on one. The Configure dialog leaves focus on its
+  // own box (no ring) and this hands it to the first field, but only while the box still holds
+  // it: a person who has already moved on (Tab to Cancel, a click) is left where they went.
+  const fieldsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isLoading) return;
+    const fields = fieldsRef.current;
+    const dialog = fields?.closest('[role="dialog"]');
+    if (!fields || !dialog || document.activeElement !== dialog) return;
+    fields
+      .querySelector<HTMLInputElement>('input:not([disabled]):not([type="hidden"])')
+      ?.focus({ preventScroll: true });
+  }, [isLoading]);
+
   const getPlaceholder = (parameter: ConfigKey): string => {
     if (parameter.secret) {
       const serverValue = configValues[parameter.name]?.serverValue;
@@ -272,7 +287,7 @@ export default function DefaultProviderSetupForm({
   }`;
 
   return (
-    <div className="flex flex-col gap-4 py-1">
+    <div ref={fieldsRef} className="flex flex-col gap-4 py-1">
       {hasHostOwnedField && (
         <div id={HOST_OWNED_NOTE_ID}>
           <HostManagedModelNote topic="destination" testId="host-managed-destination-note" />

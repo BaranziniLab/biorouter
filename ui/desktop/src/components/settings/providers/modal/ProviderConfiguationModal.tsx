@@ -28,6 +28,21 @@ interface ProviderConfigurationModalProps {
   onConfigured?: (provider: ProviderDetails) => void;
 }
 
+/**
+ * The fields load after the dialog mounts (`DefaultProviderSetupForm` shows "Loading…" first), so
+ * Radix's pick of the first tabbable control was the footer's Remove, or Cancel on a provider
+ * with nothing saved: a keyboard user opened Configure on a destructive button. Focus rests on
+ * the dialog box instead (it draws no ring, and a screen reader reads the title there) and the
+ * form moves it to the first field once the values are in. The opener is recorded before this
+ * runs, so closing still returns focus to it.
+ */
+function restOnDialog(event: Event) {
+  const dialog = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (!dialog) return;
+  event.preventDefault();
+  dialog.focus({ preventScroll: true });
+}
+
 export default function ProviderConfigurationModal({
   provider,
   onClose,
@@ -247,6 +262,7 @@ export default function ProviderConfigurationModal({
       <ModalShell
         open={!error}
         onOpenChange={(open) => !open && onClose()}
+        onOpenAutoFocus={restOnDialog}
         size="md"
         purpose="form"
         scrollBody
