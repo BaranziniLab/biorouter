@@ -7473,22 +7473,21 @@ impl SessionStorage {
         self.list_sessions_by_types_maybe_empty(types, false).await
     }
 
-    /// `list_sessions_by_types`, with the `messages` join selectable.
+    /// `list_sessions_by_types`, with message-less chats selectable.
     ///
     /// ⚠ **`include_empty` exists because a subagent that produced nothing was
-    /// invisible.** The historical query INNER JOINs `messages`, so a row with no
-    /// message is not returned at all — and that is right for History (an
+    /// invisible.** The historical query INNER JOINed `messages`, so a row with
+    /// no message was not returned at all — and that is right for History (an
     /// "Untitled chat" placeholder must not appear in the sidebar) but wrong for
     /// `biorouter session list --subagents`, which is the **only** surface that
     /// can show a subagent run at all. A child that was spawned and died before
     /// its first message simply vanished there, so the one place a user could
     /// have gone looking for it reported that it never existed.
     ///
-    /// `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields `message_count
-    /// = 0` rather than 1 — the same reasoning `list_session_summaries`'
-    /// `include_empty` already records.
+    /// The join is gone (see [`Self::full_listing_sql`]): `false` keeps the
+    /// `EXISTS` probe and `true` drops it, and an empty chat counts 0.
     ///
-    /// The historical entry point above delegates with `false`, byte for byte,
+    /// The historical entry point above delegates with `false`,
     /// so the sidebar route (`biorouter-server`'s `/sessions`) and
     /// `commands/term.rs` are unchanged and no caller outside this file had to
     /// move.
@@ -7501,35 +7500,7 @@ impl SessionStorage {
             return Ok(Vec::new());
         }
 
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
-        } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
-        };
-        let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        // `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
-        // listing does (`summary_listing_sql`). `updated_at` has one-second
-        // granularity and a bulk write stamps hundreds of chats with the same
-        // second; without the tie-break SQLite's sorter handed them back in id
-        // DESC order, so History and the sidebar drew the same chats in two
-        // orders under "Last activity" (vision V3-R2-3, R-28/R-30).
-        let query = format!(
-            r#"
-            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
-                   s.total_tokens, s.input_tokens, s.output_tokens,
-                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
-                   s.schedule_id, s.workflow_json, s.user_workflow_values_json,
-                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
-                   s.privacy_tier, s.privacy_reason,
-                   COUNT(m.id) as message_count
-            FROM sessions s
-            {join}
-            WHERE s.session_type IN ({placeholders})
-            GROUP BY s.id
-            ORDER BY s.updated_at DESC, s.id ASC
-            "#
-        );
-
+        let query = Self::full_listing_sql(types.len(), include_empty);
         let mut q = sqlx::query_as::<_, Session>(&query);
         for t in types {
             q = q.bind(t.to_string());
@@ -7542,6 +7513,61 @@ impl SessionStorage {
     async fn list_sessions(&self) -> Result<Vec<Session>> {
         self.list_sessions_by_types(&[SessionType::User, SessionType::Scheduled])
             .await
+    }
+
+    /// The SQL behind the full listing (`GET /sessions`, which History reads,
+    /// and `biorouter session list`): every column of every listed chat, with
+    /// `types_len` placeholders for the session types.
+    ///
+    /// ⚠ **Shaped like [`Self::summary_listing_sql`], and for the same measured
+    /// reason (R-28, vision V1-R3-2, 2026-10-11).** It used to `JOIN messages …
+    /// GROUP BY s.id` and count with `COUNT(m.id)`. That visits every message of
+    /// every listed chat and builds two temporary B-trees, one for the
+    /// grouping and one for the order, each carrying the whole fat row
+    /// (`extension_data` alone is about 1.8 MB over 5,542 chats). On a copy of a
+    /// real store (11,780 chats) it took 290 to 420 ms; History waited for it on
+    /// every visit, and the release daemon answered `GET /sessions` in 0.4 to
+    /// 0.56 s with most of that here. Now "has a message" is an `EXISTS` probe
+    /// and the count a correlated `COUNT(*)`, both answered from the
+    /// `idx_messages_session` covering index, and the type term is written
+    /// `+s.session_type` so the rows come off `idx_sessions_updated` already in
+    /// order: 16 to 26 ms for the same rows in the same order with the same
+    /// counts, in all four shapes (with and without sub-agents, with and without
+    /// empty chats). `COUNT(m.id)` ignored the NULL a LEFT JOIN produced, and
+    /// the correlated count is 0 for a chat with no message, so the empty-chat
+    /// listing counts the same too. `the_full_listing_walks_the_updated_index`
+    /// pins the plan.
+    ///
+    /// `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
+    /// listing does. `updated_at` has one-second granularity and a bulk write
+    /// stamps hundreds of chats with the same second; without the tie-break the
+    /// tied group came back in id DESC order, so History and the sidebar drew
+    /// the same chats in two orders under "Last activity" (vision V3-R2-3).
+    fn full_listing_sql(types_len: usize, include_empty: bool) -> String {
+        let placeholders = vec!["?"; types_len].join(", ");
+        // History hides message-less chats so "Untitled chat" placeholders never
+        // appear; `biorouter session list --subagents` asks for them, because a
+        // subagent that died before its first message exists nowhere else.
+        let non_empty = if include_empty {
+            ""
+        } else {
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+        };
+        format!(
+            r#"
+            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
+                   s.total_tokens, s.input_tokens, s.output_tokens,
+                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+                   s.schedule_id, s.workflow_json, s.user_workflow_values_json,
+                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
+                   s.privacy_tier, s.privacy_reason,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+            FROM sessions s
+            WHERE +s.session_type IN ({placeholders})
+            {non_empty}
+            ORDER BY s.updated_at DESC, s.id ASC
+            "#
+        )
     }
 
     /// The SQL behind both summary listings: one projection, one set of filters,
@@ -9972,8 +9998,8 @@ mod tests {
             "the childless subagent is still invisible: {ids:?}"
         );
         assert!(ids.contains(&spoke.id));
-        // `COUNT(m.id)` ignores NULLs, so the LEFT JOIN must report 0 rather
-        // than the 1 a naive count of joined rows would give.
+        // A chat with no message counts 0, not the 1 a naive count of joined
+        // rows would give (the listing's correlated `COUNT(*)` since R-28).
         let silent_row = widened.iter().find(|s| s.id == silent.id).unwrap();
         assert_eq!(silent_row.message_count, 0);
         let spoke_row = widened.iter().find(|s| s.id == spoke.id).unwrap();
@@ -13799,6 +13825,89 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// R-28, vision V1-R3-2: the full listing (`GET /sessions`, History) reads
+    /// its rows off `idx_sessions_updated` in order, with no grouping and no
+    /// sort of the whole fat row set, and still counts each chat's messages.
+    /// The `JOIN messages … GROUP BY` it replaced took 290 to 420 ms on a copy
+    /// of a real store where this shape takes 16 to 26 ms; see
+    /// [`SessionStorage::full_listing_sql`].
+    #[tokio::test]
+    async fn the_full_listing_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Each seeded turn is a question and an answer: six messages and two.
+        let six = seed_session_with_messages(&sm, 3).await;
+        let two = seed_session_with_messages(&sm, 1).await;
+        let empty = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "nothing yet".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let pool = sm.storage.pool().await.unwrap();
+
+        for types_len in [1, 2, 3] {
+            for include_empty in [false, true] {
+                let sql = SessionStorage::full_listing_sql(types_len, include_empty);
+                let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                let mut query = sqlx::query(&explain);
+                for t in ["user", "scheduled", "sub_agent"].iter().take(types_len) {
+                    query = query.bind(*t);
+                }
+                let plan: Vec<String> = query
+                    .fetch_all(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                    .collect();
+                let shape = format!("types={types_len} include_empty={include_empty}: {plan:?}");
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("idx_sessions_updated")),
+                    "the full listing no longer walks idx_sessions_updated ({shape})"
+                );
+                assert!(
+                    !plan
+                        .iter()
+                        .any(|step| step.contains("GROUP BY")
+                            || step == "USE TEMP B-TREE FOR ORDER BY"),
+                    "the full listing groups or sorts every row again ({shape})"
+                );
+            }
+        }
+
+        let counts = |sessions: Vec<Session>| -> Vec<(String, usize)> {
+            sessions
+                .into_iter()
+                .map(|s| (s.id, s.message_count))
+                .collect()
+        };
+        let mut listed = counts(sm.list_sessions().await.unwrap());
+        listed.sort();
+        let mut expected = vec![(six.id.clone(), 6), (two.id.clone(), 2)];
+        expected.sort();
+        assert_eq!(
+            listed, expected,
+            "History lists chats with a message, counted"
+        );
+
+        let mut with_empty = counts(
+            sm.list_sessions_by_types_including_empty(&[SessionType::User])
+                .await
+                .unwrap(),
+        );
+        with_empty.sort();
+        let mut expected = vec![(six.id, 6), (two.id, 2), (empty.id, 0)];
+        expected.sort();
+        assert_eq!(
+            with_empty, expected,
+            "the empty chat is listed and counts 0"
+        );
     }
 
     #[test]
