@@ -97,6 +97,8 @@ It is explicitly **not** a consumer chat app. The chat surface is an instrument 
 Each principle is stated with the concrete rule it forces. A principle that forces nothing is a platitude.
 
 ### P1 — Surfaces, not elevation
+> **Hairline superseded 2026-10 ([Part 9.11](#911--fills-before-lines-owner-message-13)).** In-page cards, panels and controls are now a subtle solid fill with no resting outline (`--background-fill`). Lines stay on structural edges and on floating surfaces, which keep a hairline and a shadow. The no-shadow half of P1 still holds.
+
 Depth is communicated by a **1px hairline and a change of ground colour**, not by a shadow.
 **Forces:** cards, rows, page sections, panels, and tab bars carry `border: 1px solid var(--border-subtle)` and **zero** box-shadow. Shadow is permitted on exactly four things: the modal surface, the popover/dropdown surface, the toast, and the floating chat composer. Nothing else. ([Elevation scale](#25--elevation))
 
@@ -1806,8 +1808,9 @@ The original backlog, as audited:
 > [`docs/design/codex-simplicity-redesign/implementation-spec.md`](docs/design/codex-simplicity-redesign/implementation-spec.md)
 > (sections 0, 1 and 2, plus the owner decisions in section 6), and the requirement list `R-01` to
 > `R-24` in
-> [`requirements-and-plan.md`](docs/design/codex-simplicity-redesign/requirements-and-plan.md). Numbers
-> below were checked against `main.css` and the contrast checker when this part was written.
+> [`requirements-and-plan.md`](docs/design/codex-simplicity-redesign/requirements-and-plan.md), plus the
+> owner message 13 rulings (spec section 9, `R-25` to `R-27`), recorded in 9.11. Numbers below were
+> checked against `main.css` and the contrast checker when this part was written.
 
 The owner's brief, in one line: **simplicity above all**, Codex's structure and restraint, Biorouter's
 coral accent and personality kept, Crew as the in-house reference, the website's Arial face with few
@@ -1866,9 +1869,12 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
    composer's working sweep, links, text selection, the heatmap ramp, "New" or unread marks, the lock
    badge on private chat glyphs, the Update row's download glyph, and the landing site's coral rule.
    Hover is always neutral.
-8. **Borders come before shadows.** A 1px `--border-subtle` hairline plus a step of ground colour.
-   Shadows only on menus, popovers, toasts, dialogs and the composer. Hairlines are straight: no
-   `border-bottom` on a rounded row.
+8. **Fills come before lines** (owner message 13; 9.11). In-page cards, panels, buttons, chips, tabs and
+   fields rest on a subtle solid fill (`--background-fill`) with no resting outline. Lines stay only where
+   they are structural (the band edge, pane dividers, resize handles, table rules inside a filled table)
+   and on floating surfaces (menus, popovers, tooltips, toasts, dialogs), which keep a hairline and a
+   shadow. Hairlines are straight: no `border-bottom` on a rounded row. This replaces the first wording,
+   "borders come before shadows".
 9. **Layout snaps and content glides.** Animate only `transform`, `opacity` and `clip-path`, with tokens
    only. The named exceptions, and no others: the Disclosure's height, the Progress fill's width,
    absolutely positioned indicators that move no other box (the segmented thumb, the tab underline), the
@@ -1949,11 +1955,14 @@ wave 2 and before the vision loop, so the loop reviews the final sizes.
   Light is unchanged at `#eeeeea`. Each family's dark `--heat-1` moved one step where the lifted zero would
   have swallowed it (Parchment `#573e2a`, Roche Limit `#5c3410`), so the first active step stays 1.2:1 or
   more above zero.
+- `--background-fill` and `--background-fill-strong` are the fills of 9.11: `#f4f4f2` and `#eaeae6` in light,
+  `#232320` and `#2c2c29` in dark. Shared neutrals, hex, declared once per mode in the base blocks like the
+  two above, with `bg-background-fill` and `bg-background-fill-strong` utilities.
 - New assertions in `scripts/check-contrast.mjs`, all six scopes: control edge on the default and card
   grounds at 3:1; the off knob ring on its track at 3:1; the off track a step off the page; the on knob on
   the accent at 3:1; the zero day on the card (1.3 dark, 1.1 light); the first heat step above zero (1.2
   dark, 1.1 light); the lock badge ink (`--text-accent`) on `--sidebar`, `--sidebar-active` and
-  `--background-default` at 3:1.
+  `--background-default` at 3:1; and the fill set listed in 9.11.
 - Any new colour a Tailwind utility names needs a `--color-*` mirror in `@theme inline`
   (`npm run check:tokens`). Prefer authored CSS for controls.
 
@@ -2004,10 +2013,10 @@ opens on focus only after a Tab.
   over 95ms. The label sits 8px to the right.
 - **Radio.** A 16px ring on the same edge token with a 6px dot that scales from 0.6 to 1 over 125ms.
 - **SegmentedControl.** `role="radiogroup"` with roving arrow keys. Track 28px tall, 2px padding,
-  `--radius-element`, `--background-muted`, no border. Segment 24px tall, radius 6, `text-secondary`,
-  resting ink `--text-muted`, selected ink `--text-default`. One thumb (`--background-default`,
-  `--shadow-raised`, `--inset-hairline`) slides with `translate` over 175ms `--ease-spring`. It never uses
-  coral, and its first placement does not animate.
+  `--radius-element`, `--background-fill` (9.11; the same value `--background-muted` had), no border.
+  Segment 24px tall, radius 6, `text-secondary`, resting ink `--text-muted`, selected ink `--text-default`.
+  One thumb (`--background-default`, `--shadow-raised`, `--inset-hairline`) slides with `translate` over
+  175ms `--ease-spring`. It never uses coral, and its first placement does not animate.
 - **Menus.** One row for DropdownMenu, ContextMenu, Command, Select options and composer popups. Surface
   `.biorouter-popover-surface`, radius 12, 4px padding, no row gap, width 180 to 320. Row 32px, padding 0 12px,
   radius 8, `text-secondary`, a muted leading 16px icon, highlight `--overlay-hover` over 95ms. A selected item
@@ -2027,7 +2036,8 @@ opens on focus only after a Tab.
 - **RowActions.** A primary icon plus `⋯`, revealed over 95ms on row hover, `:focus-within` and an open menu,
   always shown under `(hover: none)`. The same items open as a context menu on right-click.
 - **Fields and buttons.** `Input`, `Select` and `Textarea` are 32px tall (textarea at least three rows),
-  radius 8, rest edge `--border-control`. Buttons keep the 24, 28, 32 and 36px ladder, radius 8, 12px
+  radius 8, resting on `--background-fill` with a transparent 1px border (9.11); the focus treatment
+  draws the edge. Checkboxes, radios and the switch knob keep their `--border-control` edge. Buttons keep the 24, 28, 32 and 36px ladder, radius 8, 12px
   padding and `text-label`; `secondary` is the default secondary action and `destructive` is a 22% danger wash
   with danger ink.
 - **Dialogs and sheets.** A `ModalShell` takes Crew's placement by default: its top edge is pinned at
@@ -2077,6 +2087,9 @@ opens on focus only after a Tab.
 | §4.18 chat headings | No accent bar; chat h1 and h2 are 17px, document h1 is 24px at 400 |
 | D-12 | The sidebar row is 28px; content rows are unchanged at `--row-height` |
 | §4 message timestamps and actions | A floating cluster above the message instead of a reserved footer; see 9.7 |
+| P1 surfaces, and 9.2 principle 8 as first written | Fills before lines: in-page boxes and controls are a subtle fill with no resting outline; see 9.11 |
+| 9.1 code block and table frames, §4.17 note | The code well and the table frame take the fill with no frame; the table's internal rules stay; see 9.11 |
+| 9.7 fields, SegmentedControl track | Fields rest on the fill with a transparent border; the track is the fill |
 
 ### 9.10 · Open at the time of writing (2026-10-10)
 
@@ -2086,5 +2099,68 @@ file may carry a legacy type class or a px font size; `ModelAndProviderContext.t
 files are out of scope). `body` moved from 16px to `var(--text-body)` (9.3) before the vision loop, which is
 the visual sweep the move waited for. `.claude/commands/frontend-design.md` was regenerated from Parts 1 to 3
 and Part 9 at the end of wave 2 (2026-10-10), with the coordinator's approval, and brought in line again
-after the body move and the dialog placement ruling; if the vision loop changes this part, bring that file
-back in line with it.
+after the body move and the dialog placement ruling, and again for the fill rule (9.11); if the vision loop
+changes this part, bring that file back in line with it.
+
+### 9.11 · Fills before lines (owner message 13)
+
+The owner, after vision round 1: use "more subtle solid fill rather than these line draw ui". The coordinator's
+ruling R-27 (spec section 9) makes it a general rule, and it replaces 9.2 principle 8 as first written.
+
+**What takes the fill, with no outline:**
+- Cards and boxed panels: the summary rail card, the Home usage card, approval, elicitation and secret request
+  cards, artifact cards, notes, empty-state boxes, boxed settings groups, code blocks, table frames and tool
+  wells. Same radius as before.
+- Controls: secondary and outline buttons, chips, the tab strip's tabs, the segmented track, filter and search
+  inputs, text fields and selects.
+- The composer card. Its coral focus edge stays.
+- Row lists drop the hairlines between rows wherever spacing and the hover fill already separate them.
+
+**What keeps a line:** structural edges (the 44px band's bottom edge, pane dividers, resize handles, table
+rules inside a filled table) and floating surfaces (menus, popovers, tooltips, dialogs and toasts keep a
+hairline and a shadow, so they stay visible in dark). Crew is the reference and is not converted; shared
+tokens may reach it.
+
+**The tokens.** Two shared neutrals, declared once per mode in the base `:root` and `.dark` blocks
+(`theme-contract.mjs` lists them as structural, so no family restates them):
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--background-fill` | `#f4f4f2` | `#232320` | The resting fill on the page grounds (canvas, default surface, card) |
+| `--background-fill-strong` | `#eaeae6` | `#2c2c29` | Hover and press; the resting fill on a recessed ground |
+
+The step was matched in lightness, not in ratio: the fill sits about 3.9 CIELAB L* off the card in both modes
+(1.10:1 in light, 1.09:1 in dark), because contrast ratios compress toward black and an equal ratio is a smaller
+visible step in dark. On the dark canvas the transcript paints, the fill is 1.18:1.
+
+**How to apply it:**
+- Write `bg-background-fill border border-transparent`, and `hover:bg-background-fill-strong` where the box
+  responds to the pointer. Keep the 1px border and make it transparent, never `border-0`: no geometry moves
+  between the bordered and the filled look, and forced colours draw a transparent border in the system ink.
+- On a recessed ground (the sidebar, `--background-muted`), rest on `--background-fill-strong`: the rest fill
+  equals the muted value there (1.00:1, and 1.03:1 on the sidebar), the strong step is 1.10:1 and 1.12:1 off
+  them.
+- A box never sits inside a box, so a fill never sits on a fill. A control inside a filled card (a field or
+  a secondary button in an approval card) rests on `--background-default`, one step back toward the page, and
+  hovers on `--background-fill-strong`.
+- A dark popover re-points `--background-default` to `--background-medium`, which equals the dark strong step;
+  a field there rests on the fill as a quiet well, 1.13:1 below the popover ground.
+- Opaque on purpose: a sticky table head, a fade that ends at the fill and anything that sits over content
+  need a solid ground, which a translucent ink would not give them.
+
+**Held by `scripts/check-contrast.mjs`** in all six scopes: the fill is at least 1.08:1 and at most 1.35:1 off
+the canvas, the default surface and the card; the strong step is at least 1.08:1 off the fill, the sidebar and
+`--background-muted`, and at most 1.5:1 on the page; the focus fill is 1.05:1 off the strong step; default and
+muted ink clear 4.5:1 on both fills (lowest 5.06:1), `--text-subtle` on the rest fill (lowest 5.06:1); the
+control edge and the focus edge clear 3:1 on both fills (lowest 3.10:1 and 4.55:1); the off switch track is a
+step off the fill. `styles/themeNeutrals.test.ts` keeps both tokens shared, and
+`styles/fillTokens.browser.test.ts` measures the forced colours claim in Chromium.
+
+**The accessibility trade-off.** Text inputs and selects lose their resting border. A fill of 1.08 to 1.35:1 is
+below the 3:1 a boundary owes when it is the only cue, so it is not the only cue: a field is identified by its
+fill, its visible label or placeholder (`--text-subtle` clears 4.5:1 on the fill) and its position, and the
+focused field by the focus edge (D-15, 3:1 or more on both fills). Checkboxes, radios and the switch keep their
+3:1 edges, because their boundary is the control. Under forced colours the fill is repainted as Canvas and the
+transparent border is drawn in the system ink, so every filled box keeps its outline there (measured: the
+border reads `rgb(0, 0, 0)` and the box keeps its size). A box that drops its border with `border-0` has no
+edge in forced colours, which is why the rule above says keep it.

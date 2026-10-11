@@ -15,8 +15,10 @@ wave 2. When they disagree, `design.md` wins, and its Part 9 wins over every ear
 - **Say it once, then hide the explanation.** A visible line is a label, a value or a state word;
   explanations go in an `InfoTip`. Errors, refusals, privacy disclosures, the consequence of a
   destructive action and empty-state one-liners always stay visible.
-- **Rows, not cards.** Anything enumerable is a hairline row list, one primary line and at most one
+- **Rows, not cards.** Anything enumerable is a row list, one primary line and at most one
   secondary line. A card is for something that asks the person to act. Never a box inside a box.
+- **Fills come before lines.** In-page cards, panels, buttons, chips, tabs and fields rest on a
+  subtle fill with no resting outline. Lines stay on structural edges and floating surfaces.
 - **One job, one control, one look.** A variant lives in the primitive, never in a `className`
   override. Show names, not IDs: machine IDs and paths go behind a "Copy …" item or a tooltip.
 - **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by
@@ -32,10 +34,12 @@ Mater, Roche Limit); a family varies only its ink, accent and status hues. Value
 | `bg-background-canvas` | `#ffffff` | `#131312` | Main panel |
 | `bg-background-default` | `#ffffff` | `#1b1b19` | Cards, popovers, dialogs |
 | `bg-background-muted` | `#f4f4f2` | `#232320` | Page ground, one real step off the canvas |
-| `bg-background-well` | `#f5f5f3` | `#232320` | Code blocks, inline code |
+| `bg-background-well` | `#f5f5f3` | `#232320` | Inline code, and code wells in the preview paper |
+| `bg-background-fill` | `#f4f4f2` | `#232320` | The resting fill of cards, buttons, chips, tabs, fields, the composer |
+| `bg-background-fill-strong` | `#eaeae6` | `#2c2c29` | Hover and press on a fill; the resting fill on the sidebar or a muted ground |
 | `tint-interactive` | ink at 5% | ink at 5% | Hover (`--overlay-hover`); press is 10% plus scale 0.98 |
-| `border-border-subtle` | `#e4e4e0` | `#302f2c` | The default hairline |
-| `border-border-control` | `#86847f` | `#817f7a` | Resting edge of inputs, checkboxes, radios, selects |
+| `border-border-subtle` | `#e4e4e0` | `#302f2c` | Structural edges and floating surfaces |
+| `border-border-control` | `#86847f` | `#817f7a` | Resting edge of checkboxes, radios and the switch knob |
 | `text-text-default` | `#2a2520` | `#f4f0e6` | Primary text |
 | `text-text-muted` | `#635c54` | `#b0a892` | Secondary text, metadata |
 | `text-text-subtle` | `#6e6760` | `#9c937b` | Quietest text, the InfoTip glyph at rest |
@@ -46,10 +50,16 @@ Status is a wash with its own ink: `bg-wash-danger` with `text-text-danger`, and
 success, warning and info. A colour a utility names needs a `--color-*` mirror in `@theme inline`.
 Families are generated from `ui/desktop/themes/*.theme.mjs` by `npm run themes`.
 
-## Shadow policy
+## Fills, lines and shadows
 
-Depth is a 1px `--border-subtle` hairline plus a step of ground colour. Hairlines are straight: no
-`border-bottom` on a rounded row.
+Fills come before lines (design.md 9.11). Write `bg-background-fill border border-transparent`, and
+`hover:bg-background-fill-strong` where it responds to the pointer: keep the 1px border transparent,
+never `border-0`, so nothing moves and forced colours still draw the edge. On the sidebar or a muted
+ground, rest on `bg-background-fill-strong`. A control inside a filled card rests on
+`bg-background-default`. Lines stay only on structural edges (the band edge, pane dividers, resize
+handles, rules inside a filled table) and on floating surfaces, which keep a hairline and a shadow.
+Row lists drop the hairline between rows when spacing and the hover fill separate them. Hairlines are
+straight: no `border-bottom` on a rounded row. Crew keeps its own recipes.
 
 | Token | Use |
 |---|---|
@@ -107,7 +117,8 @@ Use the primitive in `components/ui/`, never a raw `<button>` or `<input>` with 
   or options that need a line each. `CustomRadio` only in dialogs and forms. Underline `Tabs`.
 - Menus: 32px rows at 13px, a trailing check on the selected item, sentence-case group labels.
 - `Button`: `default` is the one coral button per view, `secondary` the usual second action,
-  `ghost` for icon actions, `destructive` a danger wash. Fields are 32px with the control edge.
+  `ghost` for icon actions, `destructive` a danger wash. Fields are 32px, filled, with no resting
+  edge; the focus treatment draws it.
 - `InfoTip` for help: a 14px glyph visible at rest, plain text, at most two sentences, never inside a
   `<label>`. Help text never goes in `title=`.
 - `SettingRow` and `SettingSection`: a label, an InfoTip, one control at the trailing edge; a
