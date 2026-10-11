@@ -22,7 +22,7 @@ Only completed checks are marked passed. Source review is not runtime evidence.
 | Check | Result |
 |---|---|
 | Independent review of all original open implementation findings | Closed; dispositions are in the four reports |
-| Combined `CARGO_BUILD_JOBS=2 just check-everything` | First combined pass passed; final checkpoint rerun in progress |
+| Combined `CARGO_BUILD_JOBS=2 just check-everything` | Passed twice; second run covered every integrated source correction |
 | UI repository Prettier check, Node 24.10.0 | Passed |
 | SDK DOM/WebSocket control harness (jsdom) | 167 assertions passed; this does not execute figure scripts in Chrome |
 | Pinned esbuild packaging regressions | 6 passed |
