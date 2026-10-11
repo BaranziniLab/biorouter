@@ -45,6 +45,6 @@ describe('ImportWorkflowForm', () => {
 
   it('draws Cancel as the filled secondary', () => {
     renderForm();
-    expect(screen.getByRole('button', { name: copy.cancel })).toHaveClass('bg-background-medium');
+    expect(screen.getByRole('button', { name: copy.cancel })).toHaveClass('br-fill-rest');
   });
 });

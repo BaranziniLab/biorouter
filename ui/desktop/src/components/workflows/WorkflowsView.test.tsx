@@ -303,16 +303,14 @@ describe('WorkflowsView dialogs and rows after vision round 1', () => {
     await chooseFromRowMenu('Cohort Review', copy.slashCommandItem);
     let dialog = await screen.findByRole('dialog');
     const cancel = within(dialog).getByRole('button', { name: copy.cancel });
-    expect(cancel).toHaveClass('bg-background-medium');
+    expect(cancel).toHaveClass('br-fill-rest');
     expect(cancel).not.toHaveClass('bg-transparent');
     fireEvent.click(cancel);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     await chooseFromRowMenu('Cohort Review', copy.scheduleItem);
     dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass(
-      'bg-background-medium'
-    );
+    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass('br-fill-rest');
   });
 
   it('opens the Schedule dialog on the dialog, not on a closed Select (V3-20)', async () => {

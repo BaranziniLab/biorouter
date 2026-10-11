@@ -36,9 +36,7 @@ describe('CreateEditWorkflowModal', () => {
 
     const dialog = screen.getByRole('dialog');
     // Cancel is the filled secondary here as in every other dialog (V3-06), never ghost.
-    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass(
-      'bg-background-medium'
-    );
+    expect(within(dialog).getByRole('button', { name: copy.cancel })).toHaveClass('br-fill-rest');
     expect(within(dialog).getByRole('button', { name: copy.save })).not.toHaveClass(
       'bg-background-accent'
     );
