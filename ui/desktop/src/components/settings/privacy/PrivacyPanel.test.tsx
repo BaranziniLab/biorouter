@@ -142,6 +142,111 @@ describe('Settings > Privacy', () => {
     );
   });
 
+  /**
+   * Vision round 2, V4-R2-1. The loading branch used to be a 64px skeleton that the loaded section
+   * (header, the served statement, the switch row: about 250px) replaced when the daemon answered,
+   * so every row below it moved on each open of the App tab. The section is now the same tree from
+   * its first render: nothing mounts, unmounts or reorders when the answer lands, and the switch
+   * is held at its place unpainted. jsdom computes no layout, so this pins the structure that makes
+   * the geometry equal; the measured shift is in the workstream notes.
+   */
+  describe('before the daemon has answered', () => {
+    /** A `read` that waits for `release()`, so a render can be inspected before the answer. */
+    function holdReads() {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mocks.read.mockImplementation(async () => {
+        await gate;
+        return mocks.value;
+      });
+      return release;
+    }
+
+    /** The section's children, by what they are, in the order they sit. */
+    const landmarks = () => {
+      const section = document.querySelector('[data-privacy-panel]')!;
+      return {
+        section,
+        heading: screen.queryByRole('heading', { level: 2, name: 'Privacy' }),
+        statement: screen.queryByTestId('non-private-model-statement'),
+        row: section.querySelector('[data-slot="setting-row"]'),
+        order: Array.from(section.querySelectorAll('h2, [data-testid], [data-slot="setting-row"]'))
+          .map((node) => node.getAttribute('data-testid') ?? node.getAttribute('data-slot') ?? 'h2')
+          .join(' > '),
+      };
+    };
+
+    it('is already the loaded layout, with no stand-in block', async () => {
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      // The served statement arrives on its own request, not on the switch's.
+      await screen.findByTestId('non-private-model-statement');
+
+      const before = landmarks();
+      expect(before.heading).not.toBeNull();
+      expect(before.row).not.toBeNull();
+      expect(before.row).toHaveTextContent('Privacy tiers');
+      expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+      expect(before.order).toBe('h2 > non-private-model-statement > setting-row');
+
+      release();
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked()
+      );
+
+      // The same nodes, the same order: nothing was swapped for something taller.
+      const after = landmarks();
+      expect(after.section).toBe(before.section);
+      expect(after.heading).toBe(before.heading);
+      expect(after.statement).toBe(before.statement);
+      expect(after.row).toBe(before.row);
+      expect(after.order).toBe(before.order);
+    });
+
+    it('holds the switch at its place unpainted, and never shows it as on', async () => {
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      await screen.findByTestId('non-private-model-statement');
+
+      const held = document.querySelector('[data-slot="switch"]') as HTMLElement;
+      expect(held).not.toBeNull();
+      expect(held).toHaveAttribute('data-pending');
+      expect(held).toBeDisabled();
+      expect(held.style.visibility).toBe('hidden');
+      expect(held).toHaveAttribute('aria-checked', 'false');
+      // Out of the accessibility tree and the tab order until it has a value.
+      expect(screen.queryByRole('switch', { name: /Privacy tiers/ })).toBeNull();
+
+      release();
+      const live = await screen.findByRole('switch', { name: /Privacy tiers/ });
+      expect(live).toBe(held);
+      expect(live).not.toHaveAttribute('data-pending');
+      expect(live).toBeEnabled();
+    });
+
+    it('claims nothing about enforcement being off until it has heard that it is', async () => {
+      mocks.value = 'off';
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      await screen.findByTestId('non-private-model-statement');
+
+      // `enabled` is unknown, which is not off: no strip, and the statement's "not being stopped
+      // right now" line is not printed over a machine that may be protected.
+      expect(screen.queryByTestId('privacy-enforcement-off-strip')).toBeNull();
+      expect(screen.getByTestId('non-private-model-statement')).not.toHaveTextContent(
+        /not being stopped/i
+      );
+
+      release();
+      expect(await screen.findByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
+      expect(screen.getByTestId('non-private-model-statement')).toHaveTextContent(
+        /not being stopped/i
+      );
+    });
+  });
+
   it('a refused write leaves the switch showing what is true, not what was asked', async () => {
     const user = userEvent.setup();
     mocks.upsert.mockRejectedValue(new Error('403 Forbidden'));

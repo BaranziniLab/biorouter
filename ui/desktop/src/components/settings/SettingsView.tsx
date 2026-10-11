@@ -9,6 +9,7 @@ import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import ChatSettingsSection from './chat/ChatSettingsSection';
 import PrivacyPanel from './privacy/PrivacyPanel';
+import { readDisclosureAcknowledgement } from '../privacy/disclosureCopy';
 import { CONFIGURATION_ENABLED } from '../../updates';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader } from '../Layout/PageHeader';
@@ -85,6 +86,15 @@ export default function SettingsView({
     // `showTab` only reads refs and a setter, so a change of `section` is the one trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewOptions.section]);
+
+  // Fetch the served non-private-model statement while Settings opens, not when the App tab does.
+  // That statement is the tallest thing in Privacy (about 100px at 1440 wide) and arrives over its
+  // own request; fetched by the panel itself it popped in 100ms after the tab opened and moved
+  // every row below it (vision round 2, V4-R2-1). Held once for the whole app, so a chat that
+  // already asked for it makes this a no-op. The answer is not used here.
+  useEffect(() => {
+    void readDisclosureAcknowledgement();
+  }, []);
 
   // The highlighted row and what clears it. Held outside the scroll effect: that effect re-runs
   // (and cleans up) the moment it clears `pendingSection`, which must not cancel the highlight's

@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Switch } from '../../ui/switch';
+import { StoredSwitch } from '../StoredSwitch';
 import { SettingRow } from '../../ui/setting-row';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
-import { Skeleton } from '../../ui/skeleton';
 import { useConfig } from '../../ConfigContext';
 import { disclosureTitle, useDisclosure } from '../../privacy/disclosureCopy';
 import { DisclosureProse } from '../../privacy/DisclosureProse';
@@ -134,20 +133,10 @@ export default function PrivacyPanel() {
     [upsert, read, readRecord, refresh]
   );
 
-  if (enabled === null) {
-    // The loading branch keeps the root AND `data-privacy-panel`: SettingsView's
-    // suite reads that attribute to assert where this panel sits among its
-    // siblings, and a branch that drops it makes the panel look unmounted.
-    return (
-      <section
-        id={SETTINGS_SECTION_IDS.privacy}
-        className="biorouter-settings-section"
-        data-privacy-panel
-      >
-        <Skeleton className="h-16 w-full" />
-      </section>
-    );
-  }
+  // `null` until the daemon has answered. This is NOT "off": every branch below that means off
+  // asks `off`, never `!enabled`, so a panel that has not heard yet claims nothing about the
+  // switch (it draws no enforcement-off strip and no "not being stopped" line).
+  const off = enabled === false;
 
   const offCopy = privacyTiersOffCopy(record);
 
@@ -160,6 +149,7 @@ export default function PrivacyPanel() {
       aria-labelledby={`${SETTINGS_SECTION_IDS.privacy}-title`}
       className="biorouter-settings-section"
       data-privacy-panel
+      aria-busy={enabled === null || undefined}
     >
       {/* No description paragraph under the heading. Its two visible siblings on
           this tab (Workspace, Appearance) are heading-only, and inventing
@@ -180,7 +170,7 @@ export default function PrivacyPanel() {
       </div>
 
       <div className="space-y-3">
-        {!enabled && (
+        {off && (
           // H3: the headline, the HOW and the path are the composer note's own
           // (`privacyTiersOffCopy`) — its one control lands here, and the two
           // must not tell the user different stories. The consequence stays
@@ -249,7 +239,7 @@ export default function PrivacyPanel() {
               text={disclosure.settings ?? disclosure.long}
               paragraphClassName="min-w-0 [overflow-wrap:anywhere]"
             />
-            {!enabled && (
+            {off && (
               // The served copy names three things Biorouter "does stop". With
               // the master switch off it stops none of them, so reprinting that
               // paragraph unqualified would be a false statement on the very
@@ -276,8 +266,15 @@ export default function PrivacyPanel() {
             Private is defined by the rule, not by naming a provider. The words are kept; only
             their place moved, from a paragraph under the label into the row's InfoTip (spec
             §3.13), which the switch also hears through `aria-describedby`. */}
+        {/* While the daemon has not answered, the row is already here with its switch held at its
+            place and not painted (`StoredSwitch`). The panel used to stand in a 64px skeleton for
+            the whole section and swap it for about 250px of header, statement and row when the
+            answer came, which moved every row below it on each open of the App tab (vision round 2,
+            V4-R2-1). The header and the served statement do not wait on the switch: the statement
+            renders in both positions, and only the strip, the "not being stopped" line and the
+            switch's value depend on the answer. */}
         <SettingRow label={privacyRowCopy.label} help={privacyRowCopy.help}>
-          <Switch
+          <StoredSwitch
             checked={enabled}
             disabled={busy}
             onCheckedChange={(next) => {

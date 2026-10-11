@@ -40,6 +40,20 @@ vi.mock('../ConfigContext', () => ({
   }),
 }));
 
+// The served privacy statement is asked for when Settings opens, not when the App tab does. The
+// real function runs (the panel's own hook shares its store); this only counts the asks.
+const disclosureAsks = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../privacy/disclosureCopy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../privacy/disclosureCopy')>();
+  return {
+    ...actual,
+    readDisclosureAcknowledgement: () => {
+      disclosureAsks.count += 1;
+      return actual.readDisclosureAcknowledgement();
+    },
+  };
+});
+
 const renderSettings = (viewOptions = {}) =>
   render(<SettingsView onClose={() => {}} setView={() => {}} viewOptions={viewOptions} />);
 
@@ -62,6 +76,19 @@ afterEach(() => {
 });
 
 describe('SettingsView', () => {
+  /**
+   * Vision round 2, V4-R2-1. The statement is the tallest thing in Privacy and arrives on its own
+   * request, so a panel that fetched it only when the App tab opened pushed every row below it
+   * down 100px a moment after the tab appeared. Settings asks for it while it opens, on a tab that
+   * is not the App tab, so the answer is waiting when the person gets there.
+   */
+  it('asks for the privacy statement on open, before the App tab is visited', () => {
+    disclosureAsks.count = 0;
+    renderSettings();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    expect(disclosureAsks.count).toBe(1);
+  });
+
   /**
    * ⚠ **Privacy is a SECTION of App, not a tab.** It shipped as a fourth tab,
    * which made it read as a separate product rather than a property of this
