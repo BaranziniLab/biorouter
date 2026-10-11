@@ -6396,10 +6396,13 @@ body.biorouter-headless-browser .biorouter-chat-composer {
   max-width: min(760px, calc(100vw - 32px)) !important;
 }
 
-body.biorouter-headless-browser .biorouter-chat-composer-bar {
-  padding-left: clamp(16px, 2vw, 32px) !important;
-  padding-right: clamp(16px, 2vw, 32px) !important;
-}
+/* @ws WS-TOKENS begin: browser composer gutter */
+/* No gutter override for `.biorouter-chat-composer-bar` here, on purpose. The bar's inline side
+   padding is the transcript's own chrome (half `CHAT_COLUMN_CHROME`, BaseChat.tsx), and this
+   surface leaves the transcript's padding alone, so the composer keeps the column's edges at every
+   width. A `clamp(16px, 2vw, 32px)` override used to sit here and moved the composer up to 12px
+   off the column below an 816px cell (WS-SUMMARY-1). styles/browserSurfaceGutter.browser.test.ts. */
+/* @ws WS-TOKENS end: browser composer gutter */
 
 body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/pair'],
 body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/'] {
