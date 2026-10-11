@@ -655,3 +655,24 @@ describe('IngestPanel stopping', () => {
     expect(mocks.abort).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('IngestPanel held-file state', () => {
+  it('tells the rail as well as the box while a file is held anywhere on it', () => {
+    render(<IngestPanel />);
+    const rail = screen.getByTestId('knowledge-ingest-rail');
+    const box = screen.getByTestId('knowledge-ingest-dropzone');
+    const digest = screen.getByTestId('knowledge-digest-button');
+    const transfer = { dataTransfer: { files: [], getData: () => '', types: ['Files'] } };
+    expect(rail).not.toHaveAttribute('data-dragging');
+
+    // Held over the footer, far from the box: the rail answers (`.br-knowledge-rail` draws its
+    // edge, measured in `sourcesRail.browser.test.tsx`), and so does the box.
+    fireEvent.dragEnter(digest, transfer);
+    expect(rail).toHaveAttribute('data-dragging', 'true');
+    expect(box).toHaveAttribute('data-dragging', 'true');
+
+    fireEvent.dragLeave(digest, transfer);
+    expect(rail).not.toHaveAttribute('data-dragging');
+    expect(box).not.toHaveAttribute('data-dragging');
+  });
+});

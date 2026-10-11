@@ -4495,7 +4495,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    scroller has left, and yields that room to the paste box, the staged list and the digest
    progress as they appear, down to a 240px floor; below the floor the scroller scrolls instead, so
    the target never shrinks to a strip. Basis 0, so its own content never decides its height.
-   Measured in `knowledge/knowledgeBand.browser.test.tsx` ("the Sources rail"). */
+   Measured on the real rail in `knowledge/sourcesRail.browser.test.tsx`. */
 .br-knowledge-dropzone {
   flex: 1 1 0%;
   min-height: 240px;
@@ -4525,6 +4525,29 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 
 .br-knowledge-dropzone[data-dragging='true'] .br-knowledge-drop-plate {
   color: var(--text-default);
+}
+
+/* The rail is the drop target (V3-12), so the rail answers a held file as well as the box. The box
+   yields its room to the staged list and the paste box (R-33), and a long list scrolls it out of
+   view; a file held over the rail then lit nothing on screen. While a file is held anywhere on the
+   rail, the rail draws the box's own drag edge (1px of `--border-strong`, inset) around itself.
+   A border on a pseudo-element laid over the rail's children, not an inset shadow on the rail:
+   the footer paints its own ground and would cover a shadow on its parent, and forced colours keep
+   a border where they drop a shadow. It takes no pointer, so the drop lands on what is under it.
+   `isolation` keeps its z-index inside the rail. Measured in
+   `knowledge/sourcesRail.browser.test.tsx`. */
+.br-knowledge-rail {
+  position: relative;
+  isolation: isolate;
+}
+
+.br-knowledge-rail[data-dragging='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 1px solid var(--border-strong);
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

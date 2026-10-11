@@ -17,9 +17,9 @@
  * provider list). Sources are staged the way a person stages them, by dropping files on the rail,
  * and the paste box is summoned by pressing "Paste text".
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -115,6 +115,12 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
+/** Set to a directory to also save the held-file screenshots a review reads. */
+const SHOTS = process.env.SOURCES_RAIL_SHOTS;
+
+/** Each case opens several pages; a loaded machine (four workers, other Chromiums) needs room. */
+const CASE_TIMEOUT = 120_000;
+
 type Box = {
   left: number;
   right: number;
@@ -131,6 +137,8 @@ type Options = {
   staged?: number;
   /** Press "Paste text". */
   paste?: boolean;
+  mode?: 'light' | 'dark';
+  forcedColors?: boolean;
 };
 
 type Measure = {
@@ -191,16 +199,18 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
   /** The rail in a pane `paneWidth` wide, with `staged` files dropped and the paste box open. */
   async function open(
     paneWidth: number,
-    { height = 760, staged = 0, paste = false }: Options = {}
+    { height = 760, staged = 0, paste = false, mode = 'light', forcedColors = false }: Options = {}
   ) {
     const tab = await browser!.newPage({
       viewport: { width: 1600, height: 1000 },
       reducedMotion: 'reduce',
     });
+    if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     const errors: string[] = [];
     tab.on('pageerror', (error) => errors.push(error.message));
     await tab.setContent(
-      `<!doctype html><html><head><style>${css}</style></head>` +
+      `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}">` +
+        `<head><style>${css}</style></head>` +
         `<body style="margin:0;background:var(--background-default)">` +
         `<div style="display:flex;flex-direction:column;width:${paneWidth}px;height:${height}px">` +
         `<div id="root" style="display:flex;flex:1 1 0%;min-height:0;flex-direction:column"></div>` +
@@ -333,76 +343,241 @@ describe('the Sources rail, the real tree in Chromium (R-33)', () => {
     { pane: 812, column: 812 },
   ];
 
-  it('fills the rail’s free height with the dropzone, like a side panel', async (ctx) => {
-    if (!browser) return ctx.skip();
-    for (const { pane, column } of COLUMNS) {
-      const m = await measured(pane);
-      const label = `${pane}px pane`;
-      expect(m.rail.width, `${label}: the column`).toBe(column);
-      expectFramed(m, label);
-      expectOneGrower(m, label);
-      expect(Math.abs(m.zone.height - m.free), `${label}: dropzone height`).toBeLessThan(2);
-      // V3-12's box was about 160px; this rail's scroller is over 600px tall.
-      expect(m.zone.height, `${label}: dropzone height`).toBeGreaterThan(500);
-      expect(m.zone.width, `${label}: dropzone width`).toBe(column - 32);
-      expect(m.zone.top - m.scroller.top, `${label}: dropzone at the top`).toBeCloseTo(m.padTop, 0);
-      expect(m.scrolls, `${label}: scrolls`).toBe(false);
-      // The plate, the two lines and Paste text sit in the middle of the box, as one group.
-      const mid = (m.zone.top + m.zone.bottom) / 2;
-      expect(Math.abs((m.content.top + m.content.bottom) / 2 - mid), label).toBeLessThan(2);
-    }
-  });
+  it(
+    'fills the rail’s free height with the dropzone, like a side panel',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      for (const { pane, column } of COLUMNS) {
+        const m = await measured(pane);
+        const label = `${pane}px pane`;
+        expect(m.rail.width, `${label}: the column`).toBe(column);
+        expectFramed(m, label);
+        expectOneGrower(m, label);
+        expect(Math.abs(m.zone.height - m.free), `${label}: dropzone height`).toBeLessThan(2);
+        // V3-12's box was about 160px; this rail's scroller is over 600px tall.
+        expect(m.zone.height, `${label}: dropzone height`).toBeGreaterThan(500);
+        expect(m.zone.width, `${label}: dropzone width`).toBe(column - 32);
+        expect(m.zone.top - m.scroller.top, `${label}: dropzone at the top`).toBeCloseTo(
+          m.padTop,
+          0
+        );
+        expect(m.scrolls, `${label}: scrolls`).toBe(false);
+        // The plate, the two lines and Paste text sit in the middle of the box, as one group.
+        const mid = (m.zone.top + m.zone.bottom) / 2;
+        expect(Math.abs((m.content.top + m.content.bottom) / 2 - mid), label).toBeLessThan(2);
+      }
+    },
+    CASE_TIMEOUT
+  );
 
-  it('yields its room to the paste box and the staged list, and stays a generous target', async (ctx) => {
-    if (!browser) return ctx.skip();
-    const empty = await measured(1152);
+  it(
+    'yields its room to the paste box and the staged list, and stays a generous target',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      const empty = await measured(1152);
 
-    // The paste box opens under it: the box gives back exactly the box and one gap.
-    const paste = await measured(1152, { paste: true });
-    expectFramed(paste, 'paste');
-    expectOneGrower(paste, 'paste');
-    expect(given(paste) - given(empty), 'the paste box and its gap').toBeGreaterThan(200);
-    expect(Math.abs(paste.zone.height - (empty.zone.height - yielded(empty, paste)))).toBeLessThan(
-      2
-    );
-    expect(paste.scrolls).toBe(false);
+      // The paste box opens under it: the box gives back exactly the box and one gap.
+      const paste = await measured(1152, { paste: true });
+      expectFramed(paste, 'paste');
+      expectOneGrower(paste, 'paste');
+      expect(given(paste) - given(empty), 'the paste box and its gap').toBeGreaterThan(200);
+      expect(
+        Math.abs(paste.zone.height - (empty.zone.height - yielded(empty, paste)))
+      ).toBeLessThan(2);
+      expect(paste.scrolls).toBe(false);
 
-    // The paste box and three staged rows together, in the rail a 900px window gives (856px): no
-    // scroll, and still over the floor.
-    const tall = await measured(1152, { height: 856 });
-    const both = await measured(1152, { paste: true, staged: 3, height: 856 });
-    expectFramed(both, 'paste and three rows');
-    expectOneGrower(both, 'paste and three rows');
-    expect(Math.abs(both.zone.height - (tall.zone.height - yielded(tall, both)))).toBeLessThan(2);
-    expect(both.zone.height).toBeGreaterThan(240);
-    expect(both.scrolls).toBe(false);
+      // The paste box and three staged rows together, in the rail a 900px window gives (856px): no
+      // scroll, and still over the floor.
+      const tall = await measured(1152, { height: 856 });
+      const both = await measured(1152, { paste: true, staged: 3, height: 856 });
+      expectFramed(both, 'paste and three rows');
+      expectOneGrower(both, 'paste and three rows');
+      expect(Math.abs(both.zone.height - (tall.zone.height - yielded(tall, both)))).toBeLessThan(2);
+      expect(both.zone.height).toBeGreaterThan(240);
+      expect(both.scrolls).toBe(false);
 
-    // A long list: the box stops at its 240px floor and the scroller scrolls instead, starting at
-    // the box (an overflow that started above the scroller could never be scrolled to).
-    const long = await measured(1152, { staged: 30 });
-    expectFramed(long, 'thirty rows');
-    expectOneGrower(long, 'thirty rows');
-    expect(Math.round(long.zone.height)).toBe(240);
-    expect(long.scrolls).toBe(true);
-    expect(long.zone.top - long.scroller.top).toBeCloseTo(long.padTop, 0);
+      // A long list: the box stops at its 240px floor and the scroller scrolls instead, starting at
+      // the box (an overflow that started above the scroller could never be scrolled to).
+      const long = await measured(1152, { staged: 30 });
+      expectFramed(long, 'thirty rows');
+      expectOneGrower(long, 'thirty rows');
+      expect(Math.round(long.zone.height)).toBe(240);
+      expect(long.scrolls).toBe(true);
+      expect(long.zone.top - long.scroller.top).toBeCloseTo(long.padTop, 0);
 
-    // A short window with the paste box open: the floor holds there too.
-    const short = await measured(1152, { paste: true, height: 520 });
-    expectFramed(short, 'short window');
-    expect(Math.round(short.zone.height)).toBe(240);
-    expect(short.scrolls).toBe(true);
-  });
+      // A short window with the paste box open: the floor holds there too.
+      const short = await measured(1152, { paste: true, height: 520 });
+      expectFramed(short, 'short window');
+      expect(Math.round(short.zone.height)).toBe(240);
+      expect(short.scrolls).toBe(true);
+    },
+    CASE_TIMEOUT
+  );
 
-  it('caps the model field and Digest at one column, left with the dropzone', async (ctx) => {
-    if (!browser) return ctx.skip();
-    // The two-column step's rail: the cap does nothing and the column is the rail's width.
-    const rail = await measured(900);
-    expect(rail.digest.width).toBe(264 - 32);
-    expect(rail.picker.width).toBe(rail.digest.width);
-    // The narrow Sources tab: the rail is the whole pane, and Digest stops at 360px.
-    const wide = await measured(812);
-    expect(wide.digest.width).toBeLessThanOrEqual(360);
-    expect(wide.picker.width).toBe(wide.digest.width);
-    expect(wide.digest.left).toBe(wide.zone.left);
-  });
+  it(
+    'caps the model field and Digest at one column, left with the dropzone',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      // The two-column step's rail: the cap does nothing and the column is the rail's width.
+      const rail = await measured(900);
+      expect(rail.digest.width).toBe(264 - 32);
+      expect(rail.picker.width).toBe(rail.digest.width);
+      // The narrow Sources tab: the rail is the whole pane, and Digest stops at 360px.
+      const wide = await measured(812);
+      expect(wide.digest.width).toBeLessThanOrEqual(360);
+      expect(wide.picker.width).toBe(wide.digest.width);
+      expect(wide.digest.left).toBe(wide.zone.left);
+    },
+    CASE_TIMEOUT
+  );
+  /** The colour Chromium painted at one viewport pixel, read back from a screenshot. */
+  async function pixel(tab: Page, x: number, y: number): Promise<number[]> {
+    const png = await tab.screenshot({ clip: { x, y, width: 1, height: 1 } });
+    return tab.evaluate(async (b64) => {
+      const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+      const canvas = new OffscreenCanvas(1, 1);
+      const context = canvas.getContext('2d')!;
+      context.drawImage(await createImageBitmap(blob), 0, 0);
+      return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+    }, png.toString('base64'));
+  }
+
+  /** What a token paints in this document, as [r, g, b]. */
+  const paint = (tab: Page, value: string) =>
+    tab.evaluate((v) => {
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = v;
+      document.body.append(probe);
+      const out = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return (out.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+    }, value);
+
+  const near = (a: number[], b: number[]) => a.every((v, i) => Math.abs(v - b[i]) <= 2);
+
+  /** A file held over (or taken off) the last staged row, as the browser reports a drag. */
+  const hold = (tab: Page, type: 'dragenter' | 'dragleave') =>
+    tab.evaluate((t) => {
+      const rows = document.querySelectorAll('[data-testid="knowledge-staged-item"]');
+      const files = new DataTransfer();
+      files.items.add(new File(['notes'], 'held.md', { type: 'text/markdown' }));
+      rows[rows.length - 1].dispatchEvent(
+        new DragEvent(t, { bubbles: true, cancelable: true, dataTransfer: files })
+      );
+    }, type);
+
+  /** The rail's column as a PNG, and the same rail scrolled back to its box. */
+  async function shoot(tab: Page, name: string) {
+    mkdirSync(SHOTS!, { recursive: true });
+    const clip = await tab.evaluate(() => {
+      const r = document.querySelector('#sources')!.getBoundingClientRect();
+      return { x: r.left, y: r.top, width: r.width, height: r.height };
+    });
+    await tab.screenshot({ path: join(SHOTS!, `${name}.png`), clip });
+    const scroller =
+      'document.querySelector(\'[data-testid="knowledge-ingest-dropzone"]\').parentElement';
+    await tab.evaluate(`${scroller}.scrollTop = 0`);
+    await tab.screenshot({ path: join(SHOTS!, `${name.replace('scrolled', 'top')}.png`), clip });
+    await tab.evaluate(`${scroller}.scrollTop = ${scroller}.scrollHeight`);
+  }
+
+  /** The rail with a long list, scrolled to its end, so the box is out of view above it. */
+  async function scrolledAway(options: Options) {
+    const tab = await open(1152, { staged: 30, ...options });
+    const geometry = await tab.evaluate(() => {
+      const zone = document.querySelector('[data-testid="knowledge-ingest-dropzone"]')!;
+      const scroller = zone.parentElement!;
+      scroller.scrollTop = scroller.scrollHeight;
+      const rail = document.querySelector('[data-testid="knowledge-ingest-rail"]')!;
+      const r = rail.getBoundingClientRect();
+      const s = scroller.getBoundingClientRect();
+      const rows = document.querySelectorAll('[data-testid="knowledge-staged-item"]');
+      const row = rows[rows.length - 1].getBoundingClientRect();
+      return {
+        zoneBottom: zone.getBoundingClientRect().bottom,
+        scrollerTop: s.top,
+        // One pixel on each of the rail's four edges: the left and right in the scroller's
+        // middle, the top over the scrolled list, the bottom over the footer's own ground.
+        edges: {
+          left: [Math.round(r.left), Math.round((s.top + s.bottom) / 2)],
+          right: [Math.round(r.right) - 1, Math.round((s.top + s.bottom) / 2)],
+          top: [Math.round((r.left + r.right) / 2), Math.round(r.top)],
+          bottom: [Math.round((r.left + r.right) / 2), Math.round(r.bottom) - 1],
+        } as Record<string, [number, number]>,
+        // One pixel in, on the scroller's padding: the edge is one pixel and no more.
+        inside: [Math.round(r.left) + 2, Math.round((s.top + s.bottom) / 2)] as [number, number],
+        row: [Math.round(row.left + 40), Math.round((row.top + row.bottom) / 2)] as [
+          number,
+          number,
+        ],
+      };
+    });
+    return { tab, ...geometry };
+  }
+
+  it(
+    'answers a held file on the rail itself, with the box scrolled out of view',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      for (const mode of ['light', 'dark'] as const) {
+        const { tab, zoneBottom, scrollerTop, edges, inside, row } = await scrolledAway({ mode });
+        try {
+          // The case the finding names: the box is above the scroller's top, out of view.
+          expect(zoneBottom, `${mode}: the box is out of view`).toBeLessThanOrEqual(scrollerTop);
+          const edge = await paint(tab, 'var(--border-strong)');
+          const ground = await paint(tab, 'var(--background-default)');
+          // At rest the rail draws no edge of its own on the left, top and bottom.
+          for (const side of ['left', 'top', 'bottom']) {
+            const [x, y] = edges[side];
+            expect(near(await pixel(tab, x, y), ground), `${mode}: ${side} at rest`).toBe(true);
+          }
+
+          await hold(tab, 'dragenter');
+          await tab.waitForSelector('[data-testid="knowledge-ingest-rail"][data-dragging="true"]');
+          for (const side of Object.keys(edges)) {
+            const [x, y] = edges[side];
+            const got = await pixel(tab, x, y);
+            expect(near(got, edge), `${mode}: ${side} edge while held, got ${got}`).toBe(true);
+          }
+          expect(near(await pixel(tab, ...inside), ground), `${mode}: one pixel`).toBe(true);
+          // The edge takes no pointer: a file let go on a row still lands on the row.
+          const hit = await tab.evaluate(
+            ([x, y]) =>
+              document.elementFromPoint(x, y)?.closest('[data-testid="knowledge-staged-item"]') !==
+              null,
+            row
+          );
+          expect(hit, `${mode}: the row is still the drop's target`).toBe(true);
+          if (SHOTS) await shoot(tab, `rail-held-scrolled-${mode}`);
+
+          await hold(tab, 'dragleave');
+          await tab.waitForSelector('[data-testid="knowledge-ingest-rail"]:not([data-dragging])');
+          const [x, y] = edges.left;
+          expect(near(await pixel(tab, x, y), ground), `${mode}: gone on leaving`).toBe(true);
+        } finally {
+          await tab.close();
+        }
+      }
+    },
+    CASE_TIMEOUT
+  );
+
+  it(
+    'keeps the held-file edge in forced colours',
+    async (ctx) => {
+      if (!browser) return ctx.skip();
+      const { tab, edges } = await scrolledAway({ forcedColors: true });
+      try {
+        const [x, y] = edges.left;
+        const rest = await pixel(tab, x, y);
+        await hold(tab, 'dragenter');
+        await tab.waitForSelector('[data-testid="knowledge-ingest-rail"][data-dragging="true"]');
+        const held = await pixel(tab, x, y);
+        expect(near(held, rest), `forced colours: ${rest} at rest, ${held} held`).toBe(false);
+      } finally {
+        await tab.close();
+      }
+    },
+    CASE_TIMEOUT
+  );
 });

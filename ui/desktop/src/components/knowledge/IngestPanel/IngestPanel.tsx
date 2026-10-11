@@ -517,9 +517,13 @@ export function IngestPanel() {
   const fileDrop = useFileDrop(onFiles);
 
   return (
+    // ⚠ **The rail answers a held file too, not only the box** (`.br-knowledge-rail` in
+    // `main.css`). The box yields its room to the staged list, and a long list scrolls it out of
+    // view: a file held over the rail then lit nothing anywhere on screen.
     <div
-      className="flex min-h-0 flex-1 flex-col"
+      className="br-knowledge-rail flex min-h-0 flex-1 flex-col"
       data-testid="knowledge-ingest-rail"
+      data-dragging={fileDrop.dragging ? 'true' : undefined}
       {...fileDrop.dropProps}
     >
       {/* ⚠ **The dropzone is the ONE child that grows** (R-33). It takes the
