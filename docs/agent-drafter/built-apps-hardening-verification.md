@@ -22,19 +22,24 @@ Only completed checks are marked passed. Source review is not runtime evidence.
 | Check | Result |
 |---|---|
 | Independent review of all original open implementation findings | Closed; dispositions are in the four reports |
-| Combined `CARGO_BUILD_JOBS=2 just check-everything` | Passed twice; second run covered every integrated source correction |
+| Combined `CARGO_BUILD_JOBS=2 just check-everything` | Passed three times; latest run includes the browser console-window census correction |
 | UI repository Prettier check, Node 24.10.0 | Passed |
 | SDK DOM/WebSocket control harness (jsdom) | 167 assertions passed; this does not execute figure scripts in Chrome |
 | Pinned esbuild packaging regressions | 6 passed |
 | Export appcheck regressions | 3 passed |
-| Full Rust library suites | Pending |
+| Full Rust library suites | First combined run completed; 4 targets failed. The external shared test profile caused sandbox guard failures; an HTTP export bundle filter and the export Node-server fixture are under correction. A clean rerun is required |
 | UI full Vitest suite | Pending; the earlier interrupted partial run is not a pass |
 | UI examples, privacy wiring and real socket retirement integrations | Pending |
 | Real daemon CSP/browser regression | Pending on rebuilt final binary |
 | Electron Launch, build chat, in-chat preview and browser opening | Pending |
 | Native Launcher, Full and Full + bundled daemon exports | Pending |
 | Fresh recipient execution and real agent responses | Pending |
-| Platform CI, including Windows PowerShell | Pending |
+| Platform CI, including Windows PowerShell | [PR #392](https://github.com/BaranziniLab/biorouter/pull/392) is open as a draft. Three frontend failures (assembled documentation, visible browser census and a formatting-sensitive credential test) have local corrections; current-head CI is required |
+
+The source-based console census passes all 31 checks. The captured launch credentials
+are now checked structurally, and the focused credential suites pass all 15 tests.
+The assembled website generator also passes its check. These corrections do not
+substitute for the full UI suite or the native acceptance checks below.
 
 ## Controlled live profile
 
