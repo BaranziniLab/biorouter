@@ -3673,6 +3673,26 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-ICONS end: chat kind glyph and lock badge */
 
+/* @ws WS-ICONS begin: wordmark forced colours */
+/* THE WORDMARK IS ONE INK IN FORCED COLOURS (principle 12, vision round 2, V4-R2-7).
+   `BioRouterWordmark` draws its two words and the two halves of the bar with SVG `fill`
+   attributes, and Chromium does not force a `fill` it was given as a colour: under
+   `forced-colors: active` on a black canvas the navy "Bio" and its half of the bar kept
+   their authored ink (about 1.3:1) and nearly vanished, with the coral beside them
+   unchanged. `CanvasText` is the one colour the person's own palette guarantees against
+   their canvas, so the whole lockup takes it; a logo may be a single ink, and two brand
+   colours cannot be promised legible on a ground the person chose. Every part carries
+   `.br-wordmark-ink` (a presentation attribute has no specificity, so this beats it, and
+   the lockup's inks and its light/dark flip are untouched outside the media query).
+   Authored here, never a Tailwind class at the call site, for the reason in the rules
+   above. `BioRouterWordmark.browser.test.tsx` measures it in a real engine. */
+@media (forced-colors: active) {
+  .br-wordmark-ink {
+    fill: CanvasText;
+  }
+}
+/* @ws WS-ICONS end: wordmark forced colours */
+
 @keyframes br-tab-pulse {
   0%,
   100% {
@@ -3999,6 +4019,21 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   padding-top: 0;
 }
 /* @ws WS-VIEWS-A end: page band */
+
+/* @ws WS-VIEWS-A begin: busy action */
+/* AN ACTION WHOSE REQUEST IS OUT (`PageHeaderAction busy`, and the primary `IconAction` of a
+   Scheduler or Built apps row). It dims and shows the progress cursor, and it STAYS ENABLED:
+   `disabled` would dim it the same way, but Chromium hands focus to <body> the moment a focused
+   button turns `disabled`, so a keyboard user who pressed Pause, Resume, Stop, Refresh or Launch
+   lost their place after every press (vision round 2, V3-R2-1). The press is ignored in the
+   component, not by the browser. Authored here, never a Tailwind `opacity-50` at the call site,
+   because a newly written utility can silently fail to generate under BIOROUTER_NO_HMR. The
+   button's own `transition-[opacity]` eases the dim. */
+.br-action-busy {
+  opacity: 0.5;
+  cursor: progress;
+}
+/* @ws WS-VIEWS-A end: busy action */
 
 .biorouter-page-block {
   background: var(--background-default);

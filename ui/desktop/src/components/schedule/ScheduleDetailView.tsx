@@ -485,7 +485,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                       icon={StopSquare}
                       label={scheduleCopy.stopRun}
                       onClick={handleKill}
-                      disabled={isActionLoading}
+                      busy={isActionLoading}
                     />
                   ) : (
                     <PageHeaderAction
@@ -493,7 +493,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                       label={paused ? scheduleCopy.resume : scheduleCopy.pause}
                       tooltip={paused ? copy.resumeTooltip : copy.pauseTooltip}
                       onClick={handlePauseToggle}
-                      disabled={isActionLoading}
+                      busy={isActionLoading}
                     />
                   ))}
                 <PageHeaderMenu items={menu} />

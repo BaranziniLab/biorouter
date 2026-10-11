@@ -141,26 +141,33 @@ const ScheduleRow: React.FC<{
     },
   ];
 
+  // ⚠ No `disabled` on the primary action while a request is out. A focused button that turns
+  // `disabled` hands focus to <body> in Chromium, so a keyboard user lost their place after every
+  // Pause, Resume or Stop (vision round 2, V3-R2-1). The handlers refuse a second press for the
+  // same schedule (`beginAction`); the row says it is working with `aria-busy`, and the action is
+  // dimmed by `.br-action-busy` (main.css). The three branches are one component in one position,
+  // so the DOM node, and with it focus, survives the swap from Pause to Resume.
+  const busyClass = actionInProgress ? 'br-action-busy' : undefined;
   const primary = running ? (
     <IconAction
       icon={StopSquare}
       label={copy.stopNamed(name)}
       onSelect={() => onKill(job.id)}
-      disabled={actionInProgress}
+      className={busyClass}
     />
   ) : job.paused ? (
     <IconAction
       icon={Play}
       label={copy.resumeNamed(name)}
       onSelect={() => onUnpause(job.id)}
-      disabled={actionInProgress}
+      className={busyClass}
     />
   ) : (
     <IconAction
       icon={Pause}
       label={copy.pauseNamed(name)}
       onSelect={() => onPause(job.id)}
-      disabled={actionInProgress}
+      className={busyClass}
     />
   );
 
@@ -173,6 +180,7 @@ const ScheduleRow: React.FC<{
       <div
         className="biorouter-list-row flex cursor-pointer items-center gap-3"
         data-testid="schedule-row"
+        aria-busy={actionInProgress || undefined}
         onClick={(event) => {
           // React delivers clicks from portalled menus through the row too; only a click on
           // the row's own surface, and not on one of its controls, opens the detail.
@@ -465,7 +473,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                   label={copy.refresh}
                   tooltip={copy.refreshTooltip}
                   onClick={handleRefresh}
-                  disabled={isRefreshing || isLoading}
+                  busy={isRefreshing || isLoading}
                 />
                 <Button onClick={openCreateModal}>
                   <Plus />

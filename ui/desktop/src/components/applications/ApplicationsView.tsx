@@ -370,12 +370,15 @@ export function ApplicationItem({
         </div>
         <RowActions
           primary={
+            // ⚠ Not `disabled` while the launch is out: a focused button that turns `disabled`
+            // hands focus to <body> in Chromium. `launch` refuses a second press for the same
+            // app; the row's `aria-busy` says it is working and `.br-action-busy` dims the action.
             <IconAction
               icon={Play}
               label={copy.launchNamed(app.title)}
               tooltip={copy.launch}
               onSelect={onLaunch}
-              disabled={isLaunching}
+              className={isLaunching ? 'br-action-busy' : undefined}
             />
           }
           menu={menu}

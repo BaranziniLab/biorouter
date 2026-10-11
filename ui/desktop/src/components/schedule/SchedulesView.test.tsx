@@ -162,10 +162,74 @@ describe('SchedulesView interactions', () => {
     fireEvent.click(pause);
 
     expect(mocks.pauseSchedule).toHaveBeenCalledTimes(1);
-    expect(pause).toBeDisabled();
+    // Working, not disabled: a focused button that turns `disabled` hands focus to <body> in
+    // Chromium (V3-R2-1). The row says it is busy and the action is dimmed.
+    expect(pause).toBeEnabled();
+    expect(pause).toHaveClass('br-action-busy');
+    expect(screen.getByTestId('schedule-row')).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => finishPause?.());
-    await waitFor(() => expect(pause).not.toBeDisabled());
+    await waitFor(() => expect(pause).not.toHaveClass('br-action-busy'));
+    expect(screen.getByTestId('schedule-row')).not.toHaveAttribute('aria-busy');
+  });
+
+  /**
+   * Keyboard focus survives a toggle (vision round 2, V3-R2-1). jsdom never moves focus off a
+   * button that turns `disabled`, so the load-bearing half of this lives in
+   * `scheduleFocus.browser.test.tsx` (real Chromium); what jsdom CAN pin is the cause: the
+   * primary action is never `disabled` while its request is out, it is the same DOM node before
+   * and after the swap from Pause to Resume, and it keeps focus there.
+   */
+  it('keeps the row action enabled, and focused, from Pause through Resume', async () => {
+    let finishPause: (() => void) | undefined;
+    mocks.pauseSchedule.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishPause = resolve;
+      })
+    );
+    const user = userEvent.setup();
+    renderSchedules();
+
+    const pause = await screen.findByRole('button', { name: 'Pause nightly-cohort' });
+    pause.focus();
+    await user.keyboard('{Enter}');
+    expect(pause).toHaveFocus();
+    expect(pause).not.toHaveAttribute('disabled');
+
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
+    await act(async () => finishPause?.());
+
+    const resume = await screen.findByRole('button', { name: 'Resume nightly-cohort' });
+    expect(resume).toBe(pause);
+    expect(resume).toHaveFocus();
+  });
+
+  it('keeps Refresh in the band focusable while a refresh is out', async () => {
+    let finish: ((jobs: unknown[]) => void) | undefined;
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole('button', { name: 'Pause nightly-cohort' });
+
+    mocks.listSchedules.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve as (jobs: unknown[]) => void;
+      })
+    );
+    const refresh = screen.getByRole('button', { name: scheduleCopy.refresh });
+    refresh.focus();
+    await user.keyboard('{Enter}');
+
+    expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    expect(refresh).not.toHaveAttribute('disabled');
+    expect(refresh).toHaveFocus();
+    // A second press while it is out starts nothing.
+    await user.keyboard('{Enter}');
+    expect(mocks.listSchedules).toHaveBeenCalledTimes(2);
+
+    await act(async () => finish?.([schedule]));
+    await waitFor(() => expect(refresh).not.toHaveAttribute('aria-disabled'));
+    expect(refresh).toHaveFocus();
   });
 
   // Issue #56, task 24 step 3(a). A cron tick that returns `Err` used to leave
@@ -265,6 +329,18 @@ describe('SchedulesView interactions', () => {
       })
     );
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The class every working action wears (the band's `busy`, a row's primary action) is
+   * authored CSS, defined once: a Tailwind `opacity-50` at the call site can silently fail to
+   * generate under BIOROUTER_NO_HMR, and `pointer-events: none` would take the tooltip with it.
+   */
+  it('defines the busy-action rule once, as authored CSS that dims and does not block', () => {
+    const rules = MAIN_CSS.match(/^\.br-action-busy \{[^}]*\}/gm) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/opacity:\s*0\.5/);
+    expect(rules[0]).not.toMatch(/pointer-events/);
   });
 });
 

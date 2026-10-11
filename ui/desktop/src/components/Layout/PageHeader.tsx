@@ -1,4 +1,5 @@
 import React from 'react';
+import { cn } from '../../utils';
 import { ArrowLeft, MoreHorizontal } from '../icons/app-icons';
 import { useMouseBackButton } from '../ui/BackButton';
 import { Button } from '../ui/button';
@@ -153,6 +154,16 @@ export type PageHeaderActionProps = Omit<
   label: string;
   /** Optional tooltip text when it should say more than the name ("Filter · ⌘F"). */
   tooltip?: string;
+  /**
+   * The action is working. It stays a live, focused control (`aria-disabled` and `aria-busy`,
+   * dimmed by `.br-action-busy`, a press ignored) instead of becoming `disabled`.
+   *
+   * ⚠ Use this, never `disabled`, for "a request this button started is in flight". Chromium
+   * hands focus to `<body>` the moment a focused button turns `disabled`, so a keyboard user who
+   * pressed Pause or Refresh lost their place in the band and had to Tab in from the top again
+   * (vision round 2, V3-R2-1). `disabled` stays right for a control that cannot act at all.
+   */
+  busy?: boolean;
 };
 
 /**
@@ -160,10 +171,19 @@ export type PageHeaderActionProps = Omit<
  * Crew channel header's right-cluster control. Exported so every view's band uses one shape.
  */
 export const PageHeaderAction = React.forwardRef<HTMLButtonElement, PageHeaderActionProps>(
-  ({ icon: Icon, label, tooltip, ...props }, ref) => (
+  ({ icon: Icon, label, tooltip, busy, onClick, className, ...props }, ref) => (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button ref={ref} variant="ghost" shape="round" aria-label={label} {...props}>
+        <Button
+          ref={ref}
+          variant="ghost"
+          shape="round"
+          aria-label={label}
+          {...props}
+          {...(busy ? { 'aria-disabled': true, 'aria-busy': true } : null)}
+          className={cn(className, busy && 'br-action-busy')}
+          onClick={busy ? undefined : onClick}
+        >
           <Icon />
         </Button>
       </TooltipTrigger>

@@ -274,6 +274,79 @@ describe('PageHeaderAction', () => {
     const button = screen.getByRole('button', { name: 'Import workflow' });
     expect(button).not.toHaveAttribute('title');
   });
+
+  /**
+   * `busy` is "a request this button started is in flight" (V3-R2-1). A focused button that
+   * turns `disabled` hands focus to <body> in Chromium, so the action stays a live control that
+   * says it is working and ignores the press. jsdom never moves focus off a disabled button, so
+   * the real-engine half is `schedule/scheduleFocus.browser.test.tsx`.
+   */
+  describe('busy', () => {
+    it('stays enabled and focusable, says it is working, and ignores a press', async () => {
+      const onClick = vi.fn();
+      const user = userEvent.setup();
+      render(<PageHeaderAction icon={Upload} label="Refresh" onClick={onClick} busy />);
+
+      const button = screen.getByRole('button', { name: 'Refresh' });
+      expect(button).not.toHaveAttribute('disabled');
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      expect(button).toHaveAttribute('aria-busy', 'true');
+      expect(button).toHaveClass('br-action-busy');
+
+      button.focus();
+      await user.keyboard('{Enter}');
+      await user.click(button);
+      expect(button).toHaveFocus();
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it('presses normally, with none of that, when it is not busy', async () => {
+      const onClick = vi.fn();
+      const user = userEvent.setup();
+      render(<PageHeaderAction icon={Upload} label="Refresh" onClick={onClick} busy={false} />);
+
+      const button = screen.getByRole('button', { name: 'Refresh' });
+      expect(button).not.toHaveAttribute('aria-disabled');
+      expect(button).not.toHaveAttribute('aria-busy');
+      expect(button).not.toHaveClass('br-action-busy');
+      await user.click(button);
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a caller’s own aria-disabled and class alone when it is not busy', () => {
+      render(
+        <PageHeaderAction
+          icon={Upload}
+          label="Share"
+          aria-disabled
+          className="br-transcript-action"
+          onClick={() => {}}
+        />
+      );
+
+      const button = screen.getByRole('button', { name: 'Share' });
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      expect(button).toHaveClass('br-transcript-action');
+      expect(button).not.toHaveClass('br-action-busy');
+    });
+
+    it('keeps a caller’s class while busy', () => {
+      render(
+        <PageHeaderAction
+          icon={Upload}
+          label="Share"
+          className="br-transcript-action"
+          onClick={() => {}}
+          busy
+        />
+      );
+
+      expect(screen.getByRole('button', { name: 'Share' })).toHaveClass(
+        'br-transcript-action',
+        'br-action-busy'
+      );
+    });
+  });
 });
 
 describe('PageHeaderMenu', () => {

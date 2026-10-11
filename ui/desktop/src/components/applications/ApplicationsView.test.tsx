@@ -92,12 +92,14 @@ describe('ApplicationItem', () => {
     expect(await screen.findByRole('menuitem', { name: appsCopy.delete })).toBeInTheDocument();
   });
 
-  it('disables duplicate launch and export actions while they are in flight', async () => {
+  it('refuses duplicate launch and export actions while they are in flight', async () => {
     renderItem({ isLaunching: true, isExporting: true });
 
-    expect(
-      screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') })
-    ).toBeDisabled();
+    // Working, not disabled: a focused button that turns `disabled` hands focus to <body> in
+    // Chromium (V3-R2-1); `launch` itself refuses a second press for the same app.
+    const launch = screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') });
+    expect(launch).toBeEnabled();
+    expect(launch).toHaveClass('br-action-busy');
     expect(screen.getByTestId('app-row')).toHaveAttribute('aria-busy', 'true');
     openRowMenu();
     expect(await screen.findByRole('menuitem', { name: appsCopy.exportItem })).toHaveAttribute(

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -12,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   listSchedules: vi.fn(),
   runScheduleNow: vi.fn(),
   pauseSchedule: vi.fn(),
+  unpauseSchedule: vi.fn(),
+  killRunningJob: vi.fn(),
   deleteSchedule: vi.fn(),
   inspectRunningJob: vi.fn(),
   getSession: vi.fn(),
@@ -21,9 +24,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../schedule', () => ({
   ...mocks,
-  unpauseSchedule: vi.fn(),
   updateSchedule: vi.fn(),
-  killRunningJob: vi.fn(),
 }));
 vi.mock('../../toasts', () => mocks);
 vi.mock('../../api', () => ({ getSession: mocks.getSession }));
@@ -79,6 +80,8 @@ beforeEach(() => {
   mocks.listSchedules.mockResolvedValue([schedule]);
   mocks.getScheduleSessions.mockResolvedValue([]);
   mocks.pauseSchedule.mockResolvedValue(undefined);
+  mocks.unpauseSchedule.mockResolvedValue(undefined);
+  mocks.killRunningJob.mockResolvedValue(undefined);
 });
 
 describe('manual schedule run feedback', () => {
@@ -130,6 +133,94 @@ describe('manual schedule run feedback', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(mocks.runScheduleNow).not.toHaveBeenCalled();
     await act(async () => finish());
+  });
+});
+
+/**
+ * Keyboard focus survives a toggle in the band (vision round 2, V3-R2-1).
+ *
+ * The band's one Pause, Resume or Stop control was `disabled` while its request ran, and
+ * Chromium hands focus to <body> the moment a focused button turns `disabled`: a keyboard user
+ * lost their place after every toggle (measured: `document.activeElement` was BODY after Enter on
+ * Resume, and after Enter on Pause). jsdom never moves focus off a disabled button, so
+ * `scheduleFocus.browser.test.tsx` holds the real-engine half; what jsdom CAN pin is the cause
+ * (the control is not `disabled` while busy, it says `aria-disabled` and `aria-busy`, and a
+ * second press starts nothing) and the node identity (Pause, Resume and Stop are ONE element,
+ * so focus has nowhere to fall from).
+ */
+describe('the band keeps keyboard focus through a toggle', () => {
+  it('holds Pause, then Resume, in one focused control while each request is out', async () => {
+    let finishPause!: () => void;
+    let finishResume!: () => void;
+    mocks.pauseSchedule.mockReturnValueOnce(
+      new Promise<void>((resolve) => (finishPause = resolve))
+    );
+    mocks.unpauseSchedule.mockReturnValueOnce(
+      new Promise<void>((resolve) => (finishResume = resolve))
+    );
+    const user = userEvent.setup();
+    renderDetails();
+
+    const toggle = await screen.findByRole('button', { name: scheduleCopy.pause });
+    toggle.focus();
+    await user.keyboard('{Enter}');
+
+    expect(toggle).toHaveFocus();
+    expect(toggle).not.toHaveAttribute('disabled');
+    expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    expect(toggle).toHaveAttribute('aria-busy', 'true');
+    expect(toggle).toHaveClass('br-action-busy');
+    // A second press while the request is out starts nothing.
+    await user.keyboard('{Enter}');
+    expect(mocks.pauseSchedule).toHaveBeenCalledTimes(1);
+
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
+    await act(async () => finishPause());
+    const resume = await screen.findByRole('button', { name: scheduleCopy.resume });
+    expect(resume).toBe(toggle);
+    expect(resume).toHaveFocus();
+    expect(resume).not.toHaveAttribute('aria-disabled');
+    expect(resume).not.toHaveAttribute('aria-busy');
+    expect(resume).not.toHaveClass('br-action-busy');
+
+    // And back: Resume is the same control, busy and focused, then Pause again.
+    await user.keyboard('{Enter}');
+    expect(resume).toHaveFocus();
+    expect(resume).not.toHaveAttribute('disabled');
+    expect(resume).toHaveAttribute('aria-busy', 'true');
+    expect(mocks.unpauseSchedule).toHaveBeenCalledTimes(1);
+
+    mocks.listSchedules.mockResolvedValue([schedule]);
+    await act(async () => finishResume());
+    const again = await screen.findByRole('button', { name: scheduleCopy.pause });
+    expect(again).toBe(toggle);
+    expect(again).toHaveFocus();
+  });
+
+  it('holds Stop, then Pause, in the same focused control when a run is stopped', async () => {
+    let finishKill!: () => void;
+    mocks.killRunningJob.mockReturnValueOnce(
+      new Promise<void>((resolve) => (finishKill = resolve))
+    );
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, currently_running: true }]);
+    const user = userEvent.setup();
+    renderDetails();
+
+    const stop = await screen.findByRole('button', { name: scheduleCopy.stopRun });
+    stop.focus();
+    await user.keyboard('{Enter}');
+
+    expect(stop).toHaveFocus();
+    expect(stop).not.toHaveAttribute('disabled');
+    expect(stop).toHaveAttribute('aria-busy', 'true');
+    await user.keyboard('{Enter}');
+    expect(mocks.killRunningJob).toHaveBeenCalledTimes(1);
+
+    mocks.listSchedules.mockResolvedValue([schedule]);
+    await act(async () => finishKill());
+    const pause = await screen.findByRole('button', { name: scheduleCopy.pause });
+    expect(pause).toBe(stop);
+    expect(pause).toHaveFocus();
   });
 });
 
