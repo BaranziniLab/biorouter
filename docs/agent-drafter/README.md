@@ -9,7 +9,7 @@ Come here when you want to understand the Agent Drafter subsystem as a whole, or
 | Document | What it covers |
 |---|---|
 | [BioRouter Apps platform design](apps-platform-design.md) | The design overview of the Agent Drafter subsystem — the nine SDK v2 pillars, protocol v2, the capability matrix, archetypes, theme packs, export modes, multi-agent orchestration, the `biorouter apps` CLI and the testing story. Its first half is current and matches the shipped code; its clearly marked second half is a deliberately retained historical record of the v1 redesign and the app-building campaigns that produced the current design. |
-| [Built apps hardening: handoff](built-apps-hardening-handoff.md) | In-progress handoff for the October 2026 fixes to Launch in browser, the build-chat button and Export: root causes, what shipped, open review findings and the remaining verification. |
+| [Built apps hardening: handoff](built-apps-hardening-handoff.md) | Exact checkout and PR routing for the October 2026 Launch, build-chat and Export fixes, review dispositions, acceptance evidence and design limits. |
 | [Built apps hardening: verification](built-apps-hardening-verification.md) | Current integration ledger, isolated QA profile, workstream reports, and final acceptance evidence. |
 
 ## Subdirectories
