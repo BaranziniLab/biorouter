@@ -11,6 +11,11 @@ interface Props {
   onPathPickRequested: () => void | Promise<void>;
   /** Summon the paste box. "Paste text" lives inside the dropzone (spec 3.12). */
   onPasteText: () => void;
+  /**
+   * Something is being dragged over the rail (`useFileDrop`). The box does not own the drop any
+   * more, the whole rail does, so the box only shows the answer.
+   */
+  dragging?: boolean;
 }
 
 function labelFromPath(path: string): string {
@@ -55,15 +60,28 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
   return [...candidates.values()];
 }
 
-export function Dropzone({ onFiles, onPathPickRequested, onPasteText }: Props) {
+/**
+ * The Sources rail's drop target: the WHOLE rail, not the box in it (V3-12).
+ *
+ * The box is sized to its content (about 160px) instead of stretching to the rail's height, so the
+ * area it used to cover must keep taking drops: a file let go under a small box would otherwise do
+ * nothing. `IngestPanel` spreads `dropProps` on the rail's root and hands `dragging` to the box,
+ * which is where the feedback is drawn (the rail itself carries no fill).
+ *
+ * ⚠ **Text fields are left alone.** A drag that starts or lands inside the paste box's fields is a
+ * text drag; claiming it would cancel the browser's own insertion.
+ */
+export function useFileDrop(onFiles: Props['onFiles']) {
   const [dragging, setDragging] = useState(false);
-  const [chooserOpen, setChooserOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   // Counter-based drag tracking prevents flicker when cursor moves over child elements.
   const dragCounterRef = useRef(0);
 
+  const inTextField = (e: React.DragEvent) =>
+    e.target instanceof Element && e.target.closest('input, textarea, [contenteditable]') !== null;
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
+      if (inTextField(e)) return;
       e.preventDefault();
       dragCounterRef.current = 0;
       setDragging(false);
@@ -75,50 +93,60 @@ export function Dropzone({ onFiles, onPathPickRequested, onPasteText }: Props) {
     [onFiles]
   );
 
+  const dropProps = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+      dragCounterRef.current++;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) setDragging(false);
+    },
+    onDrop,
+  };
+
+  return { dragging, dropProps };
+}
+
+export function Dropzone({ onFiles, onPathPickRequested, onPasteText, dragging = false }: Props) {
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   function openChooser() {
     setChooserOpen(true);
   }
 
   return (
     <>
-      {/* The drop target. A press anywhere on it opens the chooser, as it always
-          has; the keyboard reaches the same thing through the label's own button,
-          because a `role="button"` box cannot also hold the "Paste text" button
-          and the InfoTip (an interactive control inside another).
+      {/* The box a person aims at. A press anywhere on it opens the chooser, as it always has; the
+          keyboard reaches the same thing through the label's own button, because a
+          `role="button"` box cannot also hold the "Paste text" button and the InfoTip (an
+          interactive control inside another).
 
           ⚠ **Only a press INSIDE the box counts.** React bubbles a synthetic
           event up the React tree, not the DOM tree, so a click on the InfoTip's
           floating text (portaled out of this box) would otherwise arrive here
-          and open the chooser over the tip being read. */}
+          and open the chooser over the tip being read.
+
+          ⚠ **It is as tall as its content, and it no longer owns the drop** (V3-12). It used to be
+          `flex-1`, to close the rail's empty middle, and that made a 268x715 box at 1440 and an
+          820x715 slab on the narrow tab. The drop is the rail's (`useFileDrop`), so the empty space
+          under a staged list or under this box still takes a file and nothing else is lost. */}
       <div
         data-testid="knowledge-ingest-dropzone"
         onClick={(e) => {
           if (e.currentTarget.contains(e.target as Node)) openChooser();
         }}
-        onDragEnter={(e) => {
-          e.preventDefault();
-          dragCounterRef.current++;
-          setDragging(true);
-        }}
-        onDragOver={(e) => {
-          e.preventDefault();
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault();
-          dragCounterRef.current--;
-          if (dragCounterRef.current === 0) setDragging(false);
-        }}
-        onDrop={onDrop}
-        /* ⚠ **`flex-1` here is what closes the rail's empty middle, and it is a
-           FUNCTIONAL fix rather than a cosmetic one.** The body packs its
-           children at the top and the digest footer is pinned at the bottom, so
-           an unstaged rail showed a tall hole between them. Letting the DROP
-           TARGET absorb that slack means the target is largest exactly when you
-           have nothing staged and are about to drop something, and shrinks back
-           toward its floor as staged rows claim the space. `min-h` is that
-           floor. */
         data-dragging={dragging ? 'true' : undefined}
-        className="br-knowledge-dropzone relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
+        className="br-knowledge-dropzone relative flex shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
       >
         <input
           data-testid="knowledge-ingest-file-input"

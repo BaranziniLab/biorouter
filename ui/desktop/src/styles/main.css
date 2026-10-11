@@ -4270,6 +4270,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   background-color: var(--background-strong);
   color: var(--text-default);
 }
+/* The model picker and Digest, one column under the rail (V3-12). At the two-column step the rail
+   is 264px and the cap does nothing; on the narrow Sources tab the rail is the whole pane and an
+   uncapped Digest was an 820px coral bar. Left-aligned with the dropzone's own edge. Authored,
+   because the cap is load-bearing and must not depend on class scanning. */
+.br-knowledge-ingest-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 22.5rem;
+}
 /* @ws WS-KNOWLEDGE end: dropzone */
 
 /* @ws WS-KNOWLEDGE begin: pane header */

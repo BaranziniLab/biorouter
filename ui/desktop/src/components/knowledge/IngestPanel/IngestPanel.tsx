@@ -14,7 +14,7 @@ import { useKnowledge } from '../KnowledgeContext';
 import { expandKnowledgePath, knowledgeFetch } from '../hooks/knowledgeRequest';
 import { useIngestStream } from '../hooks/useIngestStream';
 import { useStagedSources } from '../hooks/useStagedSources';
-import { Dropzone } from './Dropzone';
+import { Dropzone, useFileDrop } from './Dropzone';
 import { IngestModelPicker } from './IngestModelPicker';
 import { IngestWarnings } from './IngestWarnings';
 import { PasteTextBox } from './PasteTextBox';
@@ -512,9 +512,15 @@ export function IngestPanel() {
           : 'Digest staged sources';
 
   const failed = items.filter((item) => item.status === 'error');
+  // The whole rail takes a dropped file (V3-12), so the box can be as tall as its content.
+  const fileDrop = useFileDrop(onFiles);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-testid="knowledge-ingest-rail"
+      {...fileDrop.dropProps}
+    >
       {/* ⚠ **`justify-start` and NOT `flex-1` on the children** — the gap this
           leaves is deliberate and belongs at the BOTTOM, not the middle. R-06
           stopped the rail scrolling at rest, which made its leftover space
@@ -528,6 +534,7 @@ export function IngestPanel() {
           actually grows into. */}
       <div className="flex min-h-0 flex-1 flex-col justify-start gap-3 overflow-y-auto p-4">
         <Dropzone
+          dragging={fileDrop.dragging}
           onFiles={onFiles}
           onPathPickRequested={() => void onPathPickRequested()}
           onPasteText={() => setShowPasteBox(true)}
@@ -612,78 +619,83 @@ export function IngestPanel() {
           used to carry is gone. */}
       <div
         ref={footerRef}
-        className="flex flex-none flex-col gap-2 border-t border-border-subtle bg-background-default p-4"
+        className="flex-none border-t border-border-subtle bg-background-default p-4"
       >
-        <IngestModelPicker
-          value={model}
-          valueState={modelValueState}
-          onChange={(next) => void onDefaultModelChange(next)}
-          disabled={!dispatchKbId || savingDefaultModel}
-          saving={savingDefaultModel}
-        />
-        {/* K-04: the one primary action stays full-opacity with nothing
-            staged, guarded by a cursor and its Tooltip (a visible line only
-            when the person must act), so it never trains the eye to ignore a
-            permanently half-lit button.
-            `size="lg"` and NO className height — `size="sm" className="min-h-9"`
-            was a contradiction that forced a 28px rung to render at 36px while
-            keeping `sm`'s own 6px icon gap. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              data-testid="knowledge-digest-button"
-              variant={busy ? 'secondary' : 'default'}
-              size="lg"
-              disabled={digestState === 'stopping'}
-              aria-disabled={(!busy && nothingToDigest) || undefined}
-              aria-describedby={quietReason ? quietReasonId : undefined}
-              onClick={() => {
-                if (busy) {
-                  onAbort();
-                  return;
-                }
-                if (!nothingToDigest) void onDigest();
-              }}
-              className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
-            >
-              {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
-            </Button>
-          </TooltipTrigger>
-          {quietReason && <TooltipContent side="top">{quietReason}</TooltipContent>}
-        </Tooltip>
-        {quietReason && (
-          <span id={quietReasonId} className="sr-only">
-            {quietReason}
-          </span>
-        )}
-        {visibleReason && (
-          <p
-            data-testid="knowledge-digest-reason"
-            className="flex flex-wrap items-center justify-center gap-x-1 text-center text-supporting text-text-muted"
-          >
-            <span>{visibleReason}</span>
-            {/* The raw error behind "could not load", for the person who asks.
-                It used to be a native `title` on the line. The sentence itself
-                stays visible: an InfoTip never carries an error alone. */}
-            {kbUnavailable && basesError && (
-              <InfoTip label={knowledgeCopy.ingest.errorDetails} help={basesError} />
-            )}
-            {/* The one state the user can act on from here: re-read the list.
-                Offered for a missing base too — a base that came back, or one
-                the prune has since cleared, both settle this line. */}
-            {kbUnavailable && (
+        {/* One column the width of the rail, and no wider than a button needs to be (V3-12): on the
+            narrow Sources tab the rail is the whole pane, and a full-width coral bar was the heaviest
+            thing on screen. */}
+        <div className="br-knowledge-ingest-actions">
+          <IngestModelPicker
+            value={model}
+            valueState={modelValueState}
+            onChange={(next) => void onDefaultModelChange(next)}
+            disabled={!dispatchKbId || savingDefaultModel}
+            saving={savingDefaultModel}
+          />
+          {/* K-04: the one primary action stays full-opacity with nothing
+              staged, guarded by a cursor and its Tooltip (a visible line only
+              when the person must act), so it never trains the eye to ignore a
+              permanently half-lit button.
+              `size="lg"` and NO className height — `size="sm" className="min-h-9"`
+              was a contradiction that forced a 28px rung to render at 36px while
+              keeping `sm`'s own 6px icon gap. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button
-                data-testid="knowledge-ingest-retry"
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void refresh()}
+                data-testid="knowledge-digest-button"
+                variant={busy ? 'secondary' : 'default'}
+                size="lg"
+                disabled={digestState === 'stopping'}
+                aria-disabled={(!busy && nothingToDigest) || undefined}
+                aria-describedby={quietReason ? quietReasonId : undefined}
+                onClick={() => {
+                  if (busy) {
+                    onAbort();
+                    return;
+                  }
+                  if (!nothingToDigest) void onDigest();
+                }}
+                className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
               >
-                Retry
+                {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
               </Button>
-            )}
-          </p>
-        )}
+            </TooltipTrigger>
+            {quietReason && <TooltipContent side="top">{quietReason}</TooltipContent>}
+          </Tooltip>
+          {quietReason && (
+            <span id={quietReasonId} className="sr-only">
+              {quietReason}
+            </span>
+          )}
+          {visibleReason && (
+            <p
+              data-testid="knowledge-digest-reason"
+              className="flex flex-wrap items-center justify-center gap-x-1 text-center text-supporting text-text-muted"
+            >
+              <span>{visibleReason}</span>
+              {/* The raw error behind "could not load", for the person who asks.
+                  It used to be a native `title` on the line. The sentence itself
+                  stays visible: an InfoTip never carries an error alone. */}
+              {kbUnavailable && basesError && (
+                <InfoTip label={knowledgeCopy.ingest.errorDetails} help={basesError} />
+              )}
+              {/* The one state the user can act on from here: re-read the list.
+                  Offered for a missing base too — a base that came back, or one
+                  the prune has since cleared, both settle this line. */}
+              {kbUnavailable && (
+                <Button
+                  data-testid="knowledge-ingest-retry"
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void refresh()}
+                >
+                  Retry
+                </Button>
+              )}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

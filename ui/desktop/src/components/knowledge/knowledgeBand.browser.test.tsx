@@ -25,6 +25,7 @@ import { Badge } from '../ui/badge';
 import { Sheet } from '../ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 import { KbTierControl } from './KbTierControl';
+import { Dropzone } from './IngestPanel/Dropzone';
 import { KnowledgePaneHeader } from './KnowledgePaneHeader';
 import { knowledgeCopy } from './copy';
 
@@ -70,7 +71,12 @@ svg { width: 16px; height: 16px; flex-shrink: 0; }
   clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
 .br-info-tip { display: inline-flex; width: 24px; height: 24px; margin: -5px; align-items: center;
   justify-content: center; }
-.br-tabs-indicator { display: none; }`;
+.br-tabs-indicator { display: none; }
+.px-4 { padding-inline: 16px; } .py-4 { padding-block: 16px; } .py-1 { padding-block: 4px; }
+.text-center { text-align: center; } .mt-1 { margin-top: 4px; }
+.h-8 { height: 32px; } .w-8 { width: 32px; } .h-control-sm { height: 28px; }
+.rounded-container { border-radius: 12px; } .gap-1\\.5 { gap: 6px; } .px-3 { padding-inline: 12px; }
+.cursor-pointer { cursor: pointer; }`;
 
 /** A rule block of `main.css`, cut between two markers (inclusive of everything between). */
 function cut(main: string, begin: string, end: string): string {
@@ -230,6 +236,44 @@ describe('the Knowledge band in a real layout engine', () => {
   beforeAll(async () => {
     browser = await launchChromium();
     if (!browser) {
+/** The dropzone block and the footer column, cut at their owner's markers. */
+function ingestCss(): string {
+  const main = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+  return cut(
+    main,
+    '/* @ws WS-KNOWLEDGE begin: dropzone */',
+    '/* @ws WS-KNOWLEDGE end: dropzone */'
+  );
+}
+
+/**
+ * The Sources rail as `IngestPanel` lays it out: the real `Dropzone` at the top of a flex-1 body,
+ * the footer column (`.br-knowledge-ingest-actions`) under it with a model field and a full-width
+ * Digest. The body is 640px tall, as a rail is, so a box that stretches shows.
+ */
+function railPage(css: string, railWidth: number): string {
+  const box = renderToStaticMarkup(
+    <Dropzone
+      onFiles={() => undefined}
+      onPathPickRequested={() => undefined}
+      onPasteText={() => undefined}
+    />
+  );
+  return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
+    <div id="rail" style="width:${railWidth}px;height:760px;display:flex;flex-direction:column">
+      <div id="body" style="flex:1 1 0%;min-height:0;display:flex;flex-direction:column;justify-content:flex-start;gap:12px;padding:16px;overflow-y:auto">
+        ${box}
+      </div>
+      <div id="footer" style="flex:none;padding:16px">
+        <div class="br-knowledge-ingest-actions">
+          <div id="picker" style="height:32px"></div>
+          <button id="digest" type="button" style="height:36px;width:100%">Digest staged sources</button>
+        </div>
+      </div>
+    </div>
+  </body></html>`;
+}
+
       console.warn(
         'No Chromium found (Playwright’s or Google Chrome): skipping the Knowledge band ' +
           'geometry tests. Run `npx playwright install chromium` to enable them.'
@@ -462,3 +506,43 @@ describe('the Knowledge band in a real layout engine', () => {
     });
   });
 });
+  // V3-12: the dropzone is as tall as its content, and Digest is a button, not a bar.
+  describe('the Sources rail', () => {
+    async function measure(width: number) {
+      const tab = await browser!.newPage({ viewport: { width: 1600, height: 900 } });
+      try {
+        await tab.setContent(railPage(ingestCss(), width));
+        return {
+          box: (await box(tab, '[data-testid="knowledge-ingest-dropzone"]'))!,
+          digest: (await box(tab, '#digest'))!,
+          picker: (await box(tab, '#picker'))!,
+        };
+      } finally {
+        await tab.close();
+      }
+    }
+
+    it('sizes the dropzone to its content, not to the rail', async (ctx) => {
+      if (!browser) return ctx.skip();
+      for (const width of [288, 820]) {
+        const { box: b } = await measure(width);
+        const height = b.bottom - b.top;
+        // About 160px: a plate, two lines and a button. The rail's body is 600px tall.
+        expect(height, `dropzone height at a ${width}px rail`).toBeGreaterThan(120);
+        expect(height, `dropzone height at a ${width}px rail`).toBeLessThan(200);
+        expect(b.width).toBe(width - 32);
+      }
+    });
+
+    it('caps the model field and Digest at one column, left with the dropzone', async (ctx) => {
+      if (!browser) return ctx.skip();
+      // The two-column step's rail: the cap does nothing and the column is the rail's width.
+      const rail = await measure(288);
+      expect(rail.digest.width).toBe(288 - 32);
+      // The narrow Sources tab: the rail is the whole pane, and Digest stops at 360px.
+      const wide = await measure(820);
+      expect(wide.digest.width).toBeLessThanOrEqual(360);
+      expect(wide.picker.width).toBe(wide.digest.width);
+      expect(wide.digest.left).toBe(wide.box.left);
+    });
+  });

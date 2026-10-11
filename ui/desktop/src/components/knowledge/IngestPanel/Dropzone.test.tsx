@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { Dropzone } from './Dropzone';
+import { Dropzone, useFileDrop } from './Dropzone';
 import { knowledgeCopy } from '../copy';
 
 beforeAll(() => {
@@ -69,5 +69,74 @@ describe('Dropzone', () => {
     // dropzone, which must not read it as a press on the drop target.
     fireEvent.click(tip!);
     expect(chooser()).toBeNull();
+  });
+});
+
+/**
+ * V3-12: the box is as tall as its content, so the drop is the whole rail's. A file let go below
+ * the box (or on a staged row) must still stage, and the box is where the answer is drawn.
+ */
+function Rail({ onFiles }: { onFiles: (files: unknown[]) => void }) {
+  const { dragging, dropProps } = useFileDrop(onFiles);
+  return (
+    <div data-testid="rail" {...dropProps}>
+      <Dropzone
+        dragging={dragging}
+        onFiles={onFiles}
+        onPathPickRequested={vi.fn()}
+        onPasteText={vi.fn()}
+      />
+      <div data-testid="below-the-box">staged list</div>
+      <textarea aria-label="Pasted text" />
+    </div>
+  );
+}
+
+const file = new File(['x'], 'notes.md', { type: 'text/markdown' });
+const transfer = (files: File[] = []) => ({
+  dataTransfer: { files, getData: () => '', types: files.length ? ['Files'] : [] },
+});
+
+describe('Dropzone as the rail’s drop target', () => {
+  it('takes a file let go anywhere in the rail, not only on the box', () => {
+    const onFiles = vi.fn();
+    render(<Rail onFiles={onFiles} />);
+    const below = screen.getByTestId('below-the-box');
+
+    fireEvent.dragEnter(below, transfer([file]));
+    expect(screen.getByTestId('knowledge-ingest-dropzone')).toHaveAttribute(
+      'data-dragging',
+      'true'
+    );
+
+    fireEvent.drop(below, transfer([file]));
+    expect(onFiles).toHaveBeenCalledWith([{ file }]);
+    expect(screen.getByTestId('knowledge-ingest-dropzone')).not.toHaveAttribute('data-dragging');
+  });
+
+  it('stays lit while the pointer moves between the rail’s children, and goes dark on leaving', () => {
+    render(<Rail onFiles={vi.fn()} />);
+    const box = screen.getByTestId('knowledge-ingest-dropzone');
+    const below = screen.getByTestId('below-the-box');
+
+    fireEvent.dragEnter(box, transfer([file]));
+    fireEvent.dragEnter(below, transfer([file]));
+    fireEvent.dragLeave(box, transfer([file]));
+    expect(box).toHaveAttribute('data-dragging', 'true');
+
+    fireEvent.dragLeave(below, transfer([file]));
+    expect(box).not.toHaveAttribute('data-dragging');
+  });
+
+  it('leaves a text field alone, so text can still be dropped into the paste box', () => {
+    const onFiles = vi.fn();
+    render(<Rail onFiles={onFiles} />);
+    const field = screen.getByRole('textbox', { name: 'Pasted text' });
+
+    // A drag over a field claims nothing: the browser's own insertion is not cancelled.
+    expect(fireEvent.dragEnter(field, transfer())).toBe(true);
+    expect(screen.getByTestId('knowledge-ingest-dropzone')).not.toHaveAttribute('data-dragging');
+    expect(fireEvent.drop(field, transfer())).toBe(true);
+    expect(onFiles).not.toHaveBeenCalled();
   });
 });
