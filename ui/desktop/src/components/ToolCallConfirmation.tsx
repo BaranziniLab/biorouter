@@ -255,11 +255,13 @@ export default function ToolConfirmation({
                 : APPROVAL_COPY.resolved(sentenceStart(friendlyToolName(toolName)), actionDisplay)
             }
             trailing={
+              // The row's own voice (13px muted): a 14px control beside a 13px
+              // line read as a second size on one line.
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="text-text-muted"
+                className="text-secondary text-text-muted"
                 onClick={() => setIsModalOpen(true)}
               >
                 {APPROVAL_COPY.change}

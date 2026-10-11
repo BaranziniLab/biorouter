@@ -157,13 +157,18 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
 }
 
 /* The well is the subtle fill every in-page box takes (fills before lines,
-   R-27, design.md 9.11): no outline, the element radius. */
+   R-27, design.md 9.11): no visible outline, the element radius. Its 1px
+   border is transparent and the padding one less, so the content still starts
+   12px in: forced colours repaint the fill as Canvas and draw the border in
+   the system ink, so the well keeps its box there (with no border it had
+   none). */
 .br-transcript-row-well {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding: 12px;
+  padding: 11px;
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   background: var(--background-fill);
 }
@@ -195,6 +200,14 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
 /* A code block or a table in the output steps back to the page ground: the
    well is already the fill, and a fill never sits on a fill. */
 .br-transcript-row-well :is(.br-md-code, .br-md-table) {
+  background-color: var(--background-default);
+}
+
+/* So does a tool's progress track. The shared Progress paints its track in
+   `--background-muted`, which IS the fill in both modes, so on the well only
+   the coral part showed and "3 of 10" read as a short bar with no length. On
+   the page ground the whole track reads, as the usage card's bars do. */
+.br-transcript-row-well .br-progress {
   background-color: var(--background-default);
 }
 

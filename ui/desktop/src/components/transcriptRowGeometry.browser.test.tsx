@@ -43,6 +43,7 @@ const TOKENS = `:root {
   --border-focus: #6b6963;
   --background-fill: #f4f4f2;
   --background-default: #ffffff;
+  --background-muted: #f4f4f2;
   --dur-fast-min: 95ms;
   --dur-fast: 125ms;
   --dur-fast-max: 175ms;
@@ -53,6 +54,8 @@ body { margin: 0; font: 14px/20px var(--font-body); }
 /* main.css: the markdown prose line, which a well must be able to re-voice. */
 .biorouter-markdown.prose { font-size: var(--text-prose); line-height: var(--text-prose--line-height); }
 * { box-sizing: border-box; }
+/* The Progress track's ground, a Tailwind utility (layered, as in the app). */
+@layer utilities { .bg-background-muted { background-color: var(--background-muted); } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }`;
 
@@ -348,22 +351,54 @@ describe('TranscriptRow in a real layout engine', () => {
     }
   }
 
-  it('rests the well on the subtle fill, with no outline (R-27)', async () => {
+  it('rests the well on the subtle fill with no visible outline, its content still 12px in (R-27)', async () => {
     if (!browser) return;
     const well = await measure(
       <TranscriptRow icon={Terminal} label="Ran ls" defaultOpen>
-        <pre>ok</pre>
+        <pre id="content" style={{ margin: 0 }}>
+          ok
+        </pre>
       </TranscriptRow>,
       () => {
-        const style = getComputedStyle(document.querySelector('.br-transcript-row-well')!);
+        const node = document.querySelector('.br-transcript-row-well')!;
+        const style = getComputedStyle(node);
+        const box = node.getBoundingClientRect();
+        const content = document.getElementById('content')!.getBoundingClientRect();
         return {
           ground: style.backgroundColor,
-          edge: style.borderTopStyle,
+          // The 1px border stays, transparent: nothing shows, and forced
+          // colours draw it in the system ink, so the well keeps its box there.
+          edge: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
           radius: style.borderTopLeftRadius,
+          inset: [content.left - box.left, content.top - box.top],
         };
       }
     );
-    expect(well).toEqual({ ground: 'rgb(244, 244, 242)', edge: 'none', radius: '8px' });
+    expect(well).toEqual({
+      ground: 'rgb(244, 244, 242)',
+      edge: '1px solid rgba(0, 0, 0, 0)',
+      radius: '8px',
+      inset: [12, 12],
+    });
+  });
+
+  it("steps a tool's progress track back to the page ground, so the whole track shows on the well", async () => {
+    if (!browser) return;
+    // The shared Progress paints its track in `--background-muted`, which is
+    // the fill in both modes: on the well only the coral part showed.
+    const grounds = await measure(
+      <TranscriptRow icon={Terminal} label="Running sleep 30" defaultOpen>
+        <div className="br-progress bg-background-muted" id="track" />
+      </TranscriptRow>,
+      () => {
+        const well = getComputedStyle(document.querySelector('.br-transcript-row-well')!);
+        return [
+          getComputedStyle(document.getElementById('track')!).backgroundColor,
+          well.backgroundColor,
+        ];
+      }
+    );
+    expect(grounds).toEqual(['rgb(255, 255, 255)', 'rgb(244, 244, 242)']);
   });
 
   it("breaks each line of an output paragraph once and keeps the line's spaces", async () => {

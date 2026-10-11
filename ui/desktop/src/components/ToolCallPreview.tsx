@@ -50,7 +50,7 @@ export function ToolRiskBadge({ risk }: { risk: ToolRisk }) {
  */
 function TruncationNote() {
   return (
-    <div className="flex items-center gap-1 border-t border-border-subtle px-3 py-1.5 text-supporting text-text-muted">
+    <div className="br-tool-preview-note flex items-center gap-1 px-3 py-1.5 text-supporting text-text-muted">
       <span>{PREVIEW_COPY.truncated}</span>
       <InfoTip label={PREVIEW_COPY.truncated} help={PREVIEW_COPY.truncatedHelp} />
     </div>
@@ -58,10 +58,10 @@ function TruncationNote() {
 }
 
 /**
- * Shared chrome: a code box with a head row over a hairline, after Crew's code
- * block. No border of its own (`.br-tool-preview`, tool-call.css): inside the
- * filled approval card it steps back to the page ground, a step of ground and
- * not a fill on a fill.
+ * Shared chrome: a code box with a head row, after the code block recipe
+ * (`.br-tool-preview`, tool-call.css). No visible edge and no rule under the
+ * head (R-27): inside the filled approval card it steps back to the page
+ * ground, a step of ground and not a fill on a fill.
  */
 function PreviewFrame({
   icon,
@@ -86,7 +86,7 @@ function PreviewFrame({
 
   return (
     <div className="br-tool-preview">
-      <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-supporting text-text-muted">
+      <div className="br-tool-preview-head flex items-center gap-2 px-3 py-1.5 text-supporting text-text-muted">
         <span aria-hidden="true" className="shrink-0">
           {icon}
         </span>

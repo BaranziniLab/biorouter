@@ -16,7 +16,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
-import type { EmbeddedResource } from '../api';
+import { ToolCallPreview } from './ToolCallPreview';
+import type { EmbeddedResource, ToolPreview } from '../api';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COLUMN = 760;
@@ -51,6 +52,13 @@ body { margin: 0; font: 14px/20px var(--font-body); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .min-w-0 { min-width: 0; }
 .flex-1 { flex: 1 1 0%; }
+/* The border utilities a hairline would be written with, layered as Tailwind's
+   are, so a rule drawn by a utility on the preview shows up here too. */
+@layer utilities {
+  .border-b { border-bottom-style: solid; border-bottom-width: 1px; }
+  .border-t { border-top-style: solid; border-top-width: 1px; }
+  .border-border-subtle { border-color: var(--border-subtle); }
+}
 /* main.css's entrance: the card must be able to opt out of it. */
 .br-enter { animation: br-enter 175ms cubic-bezier(0.24, 1, 0.4, 1) both; }
 @keyframes br-enter { from { opacity: 0; } to { opacity: 1; } }`;
@@ -160,6 +168,66 @@ describe('the transcript cards in a real layout engine', () => {
         }, id);
       expect(await ground('inside')).toEqual(['rgb(255, 255, 255)', '8px']);
       expect(await ground('alone')).toEqual(['rgb(244, 244, 242)', '8px']);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('draws the preview as one box with no visible line: no rule under its head or over the Truncated note (R-27)', async () => {
+    if (!browser) return;
+    const preview = {
+      kind: 'fileEdit',
+      path: '/work/design.R',
+      added: 1,
+      removed: 1,
+      lines: [
+        { kind: 'removed', text: 'fit <- DESeq(dds)' },
+        { kind: 'added', text: 'fit <- DESeq(dds, test = "LRT")' },
+      ],
+      truncated: true,
+    } as unknown as ToolPreview;
+    // Tailwind's preflight zeroes every border (the InfoTip is a <button>, which
+    // the browser would otherwise frame).
+    const tab = await open(
+      `<style>@layer base { *, ::before, ::after { border: 0 solid; } }</style>` +
+        `<div class="br-action-card">${renderToStaticMarkup(<ToolCallPreview preview={preview} />)}</div>`
+    );
+    try {
+      const m = await tab.evaluate(() => {
+        const box = document.querySelector('.br-tool-preview') as HTMLElement;
+        const style = getComputedStyle(box);
+        // Every edge drawn inside the preview, the box included: width, style
+        // and a colour that is not transparent.
+        const visible = [box, ...box.querySelectorAll('*')].flatMap((node) => {
+          const s = getComputedStyle(node);
+          return (['Top', 'Right', 'Bottom', 'Left'] as const)
+            .filter(
+              (side) =>
+                parseFloat(s.getPropertyValue(`border-${side.toLowerCase()}-width`)) > 0 &&
+                s.getPropertyValue(`border-${side.toLowerCase()}-style`) !== 'none' &&
+                s.getPropertyValue(`border-${side.toLowerCase()}-color`) !== 'rgba(0, 0, 0, 0)'
+            )
+            .map((side) => `${(node as HTMLElement).className || node.tagName} ${side}`);
+        });
+        const edge = (selector: string, side: 'top' | 'bottom') => {
+          const s = getComputedStyle(box.querySelector(selector)!);
+          return `${s.getPropertyValue(`border-${side}-width`)} ${s.getPropertyValue(`border-${side}-style`)}`;
+        };
+        return {
+          box: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
+          ground: style.backgroundColor,
+          head: edge('.br-tool-preview-head', 'bottom'),
+          note: edge('.br-tool-preview-note', 'top'),
+          visible,
+        };
+      });
+      // The edges stay, transparent, so forced colours still draw the box and
+      // the head's division; nothing shows at rest.
+      expect(m.box).toBe('1px solid rgba(0, 0, 0, 0)');
+      expect(m.ground).toBe('rgb(255, 255, 255)');
+      expect(m.head).toBe('1px solid');
+      expect(m.note).toBe('1px solid');
+      expect(m.visible).toEqual([]);
     } finally {
       await tab.close();
     }

@@ -1648,10 +1648,11 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
       </TranscriptRowSection>
       {code && (
         <TranscriptRowSection label={TOOL_ROW_COPY.code}>
-          {/* Straight on the well: `--background-well` is the ground fenced
-              code sits on everywhere, and a second box inside the well would
-              be a box in a box. No line numbers, so long lines may wrap (never
-              combine wrapping with line numbers in react-syntax-highlighter). */}
+          {/* Straight on the well's fill (one unit off `--background-well`,
+              the ground the syntax palettes are measured on, in light; equal
+              in dark): a second box inside the well would be a box in a box.
+              No line numbers, so long lines may wrap (never combine wrapping
+              with line numbers in react-syntax-highlighter). */}
           <div className="w-full overflow-x-auto">
             <ToolContentPreview text={code}>
               {(text) => (

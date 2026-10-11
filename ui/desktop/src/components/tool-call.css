@@ -65,18 +65,33 @@
   animation: none;
 }
 
-/* What the call will do (`ToolCallPreview`): a code box with a head row over a
-   hairline, after the code block recipe. Inside the filled card it steps back
+/* What the call will do (`ToolCallPreview`): a code box with a head row, after
+   the code block recipe (`.br-md-code`). Inside the filled card it steps back
    to the page ground, so it reads as a window onto the call and never as a
-   fill on a fill; anywhere else it is the fill itself. */
+   fill on a fill; anywhere else it is the fill itself. Its 1px border is
+   transparent, as every filled box's is: forced colours draw it in the system
+   ink, so the command keeps its box there. */
 .br-tool-preview {
   overflow: hidden;
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   background: var(--background-fill);
 }
 
 .br-action-card .br-tool-preview {
   background: var(--background-default);
+}
+
+/* No rule under the head or over the "Truncated" note (R-27, as the code
+   block's head): the muted 12px type and the 8px before the code separate them
+   on one ground. Transparent rather than gone, so forced colours still draw
+   the division and nothing moves. */
+.br-tool-preview-head {
+  border-bottom: 1px solid transparent;
+}
+
+.br-tool-preview-note {
+  border-top: 1px solid transparent;
 }
 /* @ws WS-TOOLS end: action card */
 
