@@ -52,7 +52,7 @@ function useCapabilityToggle(
 }
 
 // ⚠ **No state-dependent fill.** A capability row used to paint
-// `bg-background-medium/70` while its switch was ON, which turned a hairline
+// `bg-background-medium/70` while its switch was ON, which turned a ruled
 // list into a striped one and said the state a second time in a weaker
 // language. It was also inverted: `.biorouter-settings-row:hover` is
 // unlayered and beats a `@layer utilities` background, so pointing at an ON
@@ -124,9 +124,10 @@ export const CapabilitiesSection = () => {
   );
 
   // A fragment, not a `space-y-1` wrapper: the rows belong directly to the
-  // `.biorouter-settings-list` this section mounts into, so they abut, the
-  // hairline is their only separator, and `:last-child` selects the real last
-  // row instead of the last row of a nested box.
+  // `.biorouter-settings-list` this section mounts into, so they abut and
+  // `:last-child` selects the real last row instead of the last row of a nested
+  // box. Nothing here draws a line: Settings switches the row's rule off by
+  // scope (R-27), and a row is told apart by its rhythm and its hover fill.
   return (
     <>
       {CAPABILITIES.map((meta) => {

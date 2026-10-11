@@ -291,3 +291,42 @@ describe('ConfigSettings privacy summary', async () => {
     expect(dialog.querySelector('.br-config-body .br-config-row')).not.toBeNull();
   });
 });
+
+// R-27 (fills before lines): the editor draws no outline of its own. A field rests on the filled
+// field recipe, a structured value is the subtle fill with a transparent edge, and an edit that is
+// not saved yet is a wash instead of a blue outline (which also hid the focus edge: a utility
+// beats the field's layered `border-color`). jsdom runs no Tailwind, so this pins the classes;
+// `settingsBFill.browser.test.tsx` measures what Chromium paints from them.
+describe('ConfigSettings under the fill rule', async () => {
+  it('marks an unsaved edit with the info wash, never an outline', async () => {
+    const dialog = await openEditor();
+    const field = within(dialog).getByLabelText(configFieldLabel('BIOROUTER_MODE'));
+    expect(field.className).not.toMatch(/\bbg-wash-info\b/);
+
+    fireEvent.change(field, { target: { value: 'approve' } });
+    expect(field.className).toMatch(/\bbg-wash-info\b/);
+    // No border colour of its own: the layered field recipe draws the focus and danger edges.
+    expect(field.className).not.toMatch(/(^|\s)border-border-/);
+
+    // Back to the saved value: the wash goes with the edit.
+    fireEvent.change(field, { target: { value: 'auto' } });
+    expect(field.className).not.toMatch(/\bbg-wash-info\b/);
+  });
+
+  it('leaves every field to the shared field recipe: no resting outline of its own', async () => {
+    const dialog = await openEditor();
+    const field = within(dialog).getByLabelText(configFieldLabel('BIOROUTER_MODE'));
+    expect(field).toHaveClass('br-field');
+    // (`aria-invalid:border-border-danger` is the primitive's own variant, so only a bare one counts.)
+    expect(field.className).not.toMatch(/(^|\s)border-(border-|[a-z]+-\d)/);
+  });
+
+  it('draws a structured value as the subtle fill with a transparent 1px edge', async () => {
+    mocks.config = { ...served, SOME_REPORT: { a: 1 } as unknown as ConfigData[string] };
+    const value = within(await openEditor()).getByTestId('config-readonly-SOME_REPORT');
+    expect(value).toHaveClass('bg-background-fill', 'border', 'border-transparent');
+    // The muted ground it used to take is a different token on a recessed pane, and `border-0`
+    // would leave forced colours with no edge to draw.
+    expect(value.className).not.toMatch(/bg-background-muted|\bborder-0\b/);
+  });
+});

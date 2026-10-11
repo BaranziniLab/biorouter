@@ -404,8 +404,8 @@ function StoreBlock({
           help={memoryCopy.emptyHelp}
         />
       ) : (
-        // The rows are the shared settings row and abut: the hairline is their only
-        // separator, and a store's last row has none.
+        // The rows are the shared settings row and abut. Settings draws no rule under a row
+        // (R-27): the rhythm and the hover fill tell them apart.
         store.categories.map((category) => (
           <CategoryRow
             key={`${store.scope}:${category.name}`}

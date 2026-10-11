@@ -67,7 +67,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
   const verdict = runtimeVerdict(runtime);
   return (
     <div className="space-y-1 text-supporting text-text-muted">
-      <p>{copilotSetupCopy.runtimeStates[runtime.status] ?? runtime.status}</p>
+      {/* The state is the answer; everything under it is detail. It takes the default ink so the
+          block is read from its first line, where the muted lines under it are the how and why. */}
+      <p className="text-text-default">
+        {copilotSetupCopy.runtimeStates[runtime.status] ?? runtime.status}
+      </p>
       {runtime.error && <p className="break-words">{runtime.error}</p>}
       {runtime.host && <p>Backend computer: {runtime.host}</p>}
       {runtime.runtime_version && (

@@ -374,7 +374,7 @@ export default function ConfigSettings() {
                       {!isEditableValue(configValues[key]) ? (
                         <code
                           data-testid={`config-readonly-${key}`}
-                          className="block whitespace-pre-wrap break-all rounded-element bg-background-muted px-2 py-1.5 font-mono text-supporting text-text-muted"
+                          className="block whitespace-pre-wrap break-all rounded-element border border-transparent bg-background-fill px-2 py-1.5 font-mono text-supporting text-text-muted"
                         >
                           {JSON.stringify(configValues[key], null, 2)}
                         </code>
@@ -384,17 +384,20 @@ export default function ConfigSettings() {
                           value={String(configValues[key] || '')}
                           onChange={(e) => handleChange(key, e.target.value)}
                           disabled={fixedByHost}
-                          // ⚠ Only the modified-key marker survives. The three
-                          // deleted overrides each fought the primitive:
-                          // `border-border-subtle` replaced the input's own
-                          // `--border-emphasized` with the divider hairline,
-                          // `hover:border-border-subtle` pinned hover to the
-                          // resting colour while the primitive's inset ring
-                          // still fired, and `transition-colors` REPLACED the
-                          // input's transition list, dropping `box-shadow`
-                          // from it. The placeholder went too: the label names
-                          // the field.
-                          className={cn(modifiedKeys.has(key) && 'border-border-info')}
+                          // ⚠ Only the modified-key marker survives, and it is a FILL. An edit
+                          // that is not saved yet washes the field in the info tone; it used to
+                          // draw a blue 1px outline (`border-border-info`), which is a line on a
+                          // page that has none (R-27) and, being a utility, beat the field's
+                          // layered focus edge, so a modified field looked the same focused or
+                          // not (checklist 10, measured). The Save button beside it turns from
+                          // dimmed to active as well, so the cue is not colour alone.
+                          // The overrides deleted earlier each fought the primitive:
+                          // `border-border-subtle` replaced the input's own edge with the divider
+                          // hairline, `hover:border-border-subtle` pinned hover to the resting
+                          // colour, and `transition-colors` REPLACED the input's transition list,
+                          // dropping `box-shadow` from it. The placeholder went too: the label
+                          // names the field.
+                          className={cn(modifiedKeys.has(key) && 'bg-wash-info')}
                         />
                       )}
                       {/* The `topic &&` guard is load-bearing and stays: it

@@ -13,8 +13,9 @@
   margin-block: -2px;
 }
 
-/* A store is a heading over its own rows, so each store's last row loses its hairline and the
-   two stores read as two lists. */
+/* A store is a heading over its own rows, with 12px of air before the next store's heading, so the
+   two stores read as two lists. Rows are told apart by their rhythm and the hover fill, not by a
+   rule each (R-27); Settings switches the shared row's hairline off by scope (`settings.css`). */
 .br-memory-store + .br-memory-store {
   margin-top: 12px;
 }
@@ -55,14 +56,24 @@
 }
 
 /* The disclosure: the chevron and the category name are one button that fills the row's text
-   side, so the whole name is the target. */
+   side, so the whole name is the target.
+
+   The button owns its focus box, and the box is a control, not a text hug: 28px tall (the control
+   rung, so a one-line name is a 28px target in a 40px row) with 8px of padding on each side and a
+   matching negative start margin, so the chevron and the name stay exactly where the row's 12px
+   inset puts them while the focus fill and its 2px edge have room around them and the 8px radius
+   every filled box here wears. It was a bare 20px-tall rectangle with square corners and the
+   chevron touching its edge (measured with Tab in Chromium). The vertical padding is cancelled by
+   the margin, so a one-line row stays 40px. */
 .br-memory-toggle {
   display: flex;
   min-inline-size: 0;
   flex: 1 1 auto;
   align-items: flex-start;
   gap: 8px;
-  padding: 0;
+  margin: -4px 0 -4px -8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-element);
   text-align: start;
 }
 

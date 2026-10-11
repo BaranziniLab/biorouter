@@ -358,6 +358,40 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
     }
   });
 
+  // The disclosure button owns its focus box: a 28px rounded control, not a 20px square hug of the
+  // text with the chevron touching its edge. Its padding is cancelled by a negative margin, so the
+  // chevron and the name stay where the row's 12px inset puts them and the row stays 40px.
+  it('gives the category button a 28px rounded focus box without moving the chevron or the name', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await tab.evaluate(() => {
+        const rect = (el: Element | null) => el!.getBoundingClientRect().toJSON();
+        const toggle = document.querySelector('#memory .br-memory-toggle')!;
+        const row = toggle.closest('.biorouter-settings-row')!;
+        return {
+          row: rect(row),
+          toggle: rect(toggle),
+          chevron: rect(toggle.querySelector('svg')),
+          name: rect(toggle.querySelector('span')),
+          radius: getComputedStyle(toggle).borderTopLeftRadius,
+        };
+      });
+      near(m.toggle.height, 28, 'focus box height');
+      expect(m.radius, 'focus box radius').toBe('8px');
+      near(m.row.height, 40, 'category row');
+      // The box reaches 8px past the chevron; the chevron and name keep the old positions.
+      near(m.chevron.left - m.toggle.left, 8, 'room left of the chevron');
+      near(m.chevron.left - m.row.left, 12, 'chevron inset from the row');
+      near(m.name.left - m.chevron.left, 16 + 8, 'name after the chevron and its gap');
+      // Centred on the row's line, within the 1px transparent edge the row keeps.
+      expect(m.toggle.top - m.row.top).toBeGreaterThanOrEqual(4);
+      expect(m.toggle.top - m.row.top).toBeLessThanOrEqual(8);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('lines the counts up on one right edge and the entries up under the name', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
