@@ -37,6 +37,7 @@ import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
 import { chatTabStripCopy, TAB_MENU_FILTER_MIN } from './copy';
 import { createTabStripMemory, type TabStripMemory } from './tabStripMemory';
+import { TAB_CLOSE_CLASS } from './tabClasses';
 
 /**
  * A tab is not a session row — it persists `{tabId, sessionId, title}` and
@@ -872,9 +873,7 @@ export function ChatTabStrip({
                     type="button"
                     aria-label={chatTabStripCopy.close(tab.title)}
                     data-testid={`chat-tab-close-${tab.tabId}`}
-                    className={cn(
-                      'flex-none rounded-sm p-0.5 text-text-muted opacity-0 hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100'
-                    )}
+                    className={TAB_CLOSE_CLASS}
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -889,7 +888,7 @@ export function ChatTabStrip({
                   type="button"
                   aria-label={chatTabStripCopy.close(tab.title)}
                   data-testid={`chat-tab-close-${tab.tabId}`}
-                  className="flex-none rounded-sm p-0.5 text-text-muted opacity-0 transition-opacity hover:bg-background-medium hover:text-text-default focus-visible:opacity-100 group-hover:opacity-100"
+                  className={TAB_CLOSE_CLASS}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
                     event.stopPropagation();

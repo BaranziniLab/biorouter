@@ -15,6 +15,7 @@ import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
 import { useTerminalDock } from '../../contexts/TerminalDockContext';
 import { ChatTabStrip } from './ChatTabStrip';
+import { TAB_NEW_CLASS } from './tabClasses';
 import { forgetTabStripMemories, tabStripMemoryFor, type TabStripMemories } from './tabStripMemory';
 import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
@@ -1362,7 +1363,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
             title="New chat"
             data-testid="chat-tab-new"
             onClick={() => handleNewTab(groupId)}
-            className="br-tab-new ml-0.5 flex h-6 w-6 items-center justify-center rounded-element text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+            className={TAB_NEW_CLASS}
           >
             <Plus className="h-4 w-4" />
           </button>

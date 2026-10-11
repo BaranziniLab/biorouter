@@ -2518,11 +2518,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   pointer-events: auto;
 }
 
+/* @ws WS-MOTION begin: toast close hover */
+/* The ghost hover, 5% ink: the toast is the floating recipe, and its dark ground
+   is lifted to `--background-medium`, so a hover in that token vanished there. */
 .Toastify__toast-container .Toastify__close-button:hover {
   opacity: 1;
   color: var(--text-default);
-  background-color: var(--background-medium);
+  background-color: var(--overlay-hover);
 }
+/* @ws WS-MOTION end: toast close hover */
 
 /* Focus is drawn once, globally, in the @layer base block above. */
 
@@ -2807,41 +2811,46 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    One component, three surfaces. After Safari.
 
    The strip is NOT a darker slab: it is painted `--sidebar`, the SAME
-   surface as the sidebar's titlebar band, so the whole 52px top edge of
+   surface as the sidebar's titlebar band, so the whole 44px top edge of
    the window is one continuous ground and no part of the chrome reads
    heavier than another. That rationale is about the TOP edge, and it
    inverts at the bottom one — see `.br-tabstrip--sm`, which is the
    terminal dock and grounds on the surface instead.
-   Only the ACTIVE tab is painted — a floating pill
-   in `--background-default`. Inactive tabs are plain text, divided by a
-   hairline that lives in the GAP (never a border on the tab) and retracts
-   around whatever the cursor is on.
 
-   No tab carries an outline: fills do the work, exactly as D-15 (focus is
-   a surface shift, not a ring) and D-17 (tool calls are lines, not cards)
-   already decided everywhere else.
+   FILLS, NOT LINES (R-27, design.md 9.11). A tab is a sidebar row laid on
+   its side, and it wears the row's ladder: an inactive tab is plain text on
+   the band, the pointer gives it the ghost hover (`--overlay-hover`, the 5%
+   ink every ghost control in the band hovers with), a press and the
+   selection are the solid `--background-fill-strong` (the sidebar's active
+   row has that value), and nothing at rest draws an outline. The chat strip
+   used to box every tab in a 1px `--border-subtle` and the other two divided
+   them with a hairline in the gap; both lines are gone, because the spacing,
+   the leading glyph and the hover fill already tell one tab from the next.
+   Every tab keeps a TRANSPARENT 1px border, never `border: 0`, so forced
+   colours draw each tab's edge in the system ink and the selected one in
+   Highlight (the accent strip is a gradient, which forced colours drop).
 
    D-07 chose an underline for horizontal tabs — that decision was about
    NAVIGATION tabs (settings sections). These are document tabs: objects
-   you switch between, as in Safari and VS Code. The pill is right here;
-   D-07's underline stands for nav.
+   you switch between, as in Safari and VS Code. The filled chip is right
+   here; D-07's underline stands for nav.
 
-   SANCTIONED DEPARTURE (#37): the active pill now ALSO carries a 2px
+   SANCTIONED DEPARTURE (#37): the active tab ALSO carries a 2px
    --accent-bar strip along its bottom edge — the same token as the
    sidebar rail and D-07's nav underline, so the "you are here" colour is
-   one vocabulary across every surface. The pill remains the primary
-   signal (fill + weight + shadow are unchanged); the strip is drawn as a
-   bottom-anchored BACKGROUND-IMAGE stripe because both pseudo-elements
-   are taken (::before is the sibling divider, ::after the drop-insertion
-   hairline) and an inset box-shadow follows the pill's border-radius —
-   the strip read as a curved smile hugging the corners, not a line. The
-   gradient stripe is dead straight, inset 11px each side (≥ the 8px
-   radius, and matching the tab's content padding) so the rounded corners
-   never clip it. The unfocused-group dim rule resets the `background`
-   shorthand, which wipes background-image — so the strip goes out there
-   for free: two lit strips would be two answers to "where am I typing?".
-   Applies to the small (--sm, terminal dock) strip too: one tab
-   language, both sizes.
+   one vocabulary across every surface. The fill remains the primary
+   signal (fill + weight); the strip is drawn as a bottom-anchored
+   BACKGROUND-IMAGE stripe because both pseudo-elements are taken
+   (::after is the drop-insertion hairline, and ::before was the old gap
+   divider) and an inset box-shadow follows the tab's border-radius — the
+   strip read as a curved smile hugging the corners, not a line. The
+   gradient stripe is dead straight, inset 11px each side (more than the
+   8px radius, and matching the tab's content inset) so the rounded
+   corners never clip it. The unfocused-group dim rule resets the
+   `background` shorthand, which wipes background-image — so the strip
+   goes out there for free: two lit strips would be two answers to "where
+   am I typing?". Applies to the small (--sm, terminal dock) strip too:
+   one tab language, both sizes.
    ============================================================ */
 .br-tabstrip {
   display: flex;
@@ -2966,11 +2975,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-MOTION end: tab overflow menu filter */
 
+/* @ws WS-MOTION begin: overflow button fill */
+/* Hover and open on the band's fill step (R-27), the step the band's other
+   pressed controls (summary, terminal) use. */
 .br-tabstrip__overflow:hover,
 .br-tabstrip__overflow[data-state='open'] {
-  background: var(--background-medium);
+  background: var(--background-fill-strong);
   color: var(--text-default);
 }
+/* @ws WS-MOTION end: overflow button fill */
 
 /* The chat strip is threaded THROUGH BaseChat's existing 52px header (which
    already paints the ground and draws the bottom hairline) rather than mounted
@@ -3213,14 +3226,20 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   flex: 0 1 auto;
   min-width: var(--tab-min-width);
   max-width: 190px;
-  padding: 0 11px;
-  border: 0;
+  /* @ws WS-MOTION begin: tab edge and radius */
+  /* A transparent 1px edge, never `border: 0` (R-27): no tab draws a line at
+     rest, forced colours draw every tab's edge, and the content still starts
+     11px in (10px of padding plus the edge), where the accent strip starts. */
+  padding: 0 10px;
+  border: 1px solid transparent;
   /* Four corners, not two. The top-only radius was the other half of the
      band-filling shape: it made sense when the tab's bottom edge WAS the band's
      hairline and its lower corners were never visible. A centred chip has all
-     four corners on show, so squaring two of them just looks broken. 4px keeps
-     the square-ish register. */
-  border-radius: var(--radius-inner);
+     four corners on show. 8px, the element step every row and menu item uses:
+     the selected tab now wears the sidebar's selected-row fill, so it wears the
+     row's corner too (it was 4px, the inner step, while it was an outline). */
+  border-radius: var(--radius-element);
+  /* @ws WS-MOTION end: tab edge and radius */
   background: transparent;
   color: var(--text-muted);
   /* D-31: sans, not mono. These labels shipped in --font-mono, borrowed from
@@ -3256,30 +3275,34 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    want — but if it comes back, it comes back as a token, not as a literal
    hidden in a descendant selector. */
 
-/* THE THREE STATES ARE ONE LADDER, and they are all steps of the SAME move:
-   the tab rising off the band toward the content's own surface. Resting it is
-   transparent (the band shows through), hovered it is most of the way to
-   `--background-default`, pressed it is nearly there, and selected it IS
-   `--background-default` — the same fill as the conversation below, which is
-   what makes a selected tab read as attached to its content rather than as a
-   highlighted item in a list.
+/* @ws WS-MOTION begin: tab fill ladder */
+/* THE STATES ARE ONE LADDER, the sidebar row's (R-27). Resting, a tab is
+   transparent: the band shows through and the label alone is the tab. Hovered
+   it takes `--overlay-hover`, the ghost hover of every icon button in the same
+   band, so it reads on the `--sidebar` band and on the dock's surface alike.
+   Pressed it takes the selected fill, so a press previews what a release
+   selects, and selected it IS `--background-fill-strong`, the value of the
+   sidebar's selected row (light and dark), in all three strips.
 
-   Expressing all three as percentages of one destination colour is why they
-   cannot drift apart: change the destination and the whole ladder follows. The
-   earlier version had a hover value and nothing else, so "pressed" was
-   indistinguishable from "hovered" and the control gave no feedback on click. */
+   It used to rise toward `--background-default` by percentages (62, 84, 100).
+   In dark that destination is #1b1b19 on a #171716 band, so the hover and the
+   press measured 1.02:1 and could not be seen, and the selected tab was told
+   apart by its strip and weight alone. The fill step is visible in both modes
+   on both grounds.
+
+   Pressed must sit BELOW the active rule in source order so that pressing an
+   already-selected tab does not change it: `:active` and `[data-active]` have
+   the same specificity (0,2,0), so order is the whole separation, exactly as
+   with the light/dark theme blocks. */
 .br-tab:hover {
-  background: color-mix(in srgb, var(--background-default) 62%, transparent);
+  background-color: var(--overlay-hover);
   color: var(--text-default);
 }
 
-/* Pressed: one rung past hover, and it must sit BELOW the active rule in source
-   order so that pressing an already-selected tab does not dim it — `:active` and
-   `[data-active]` have the same specificity (0,2,0), so order is the whole
-   separation, exactly as with the light/dark theme blocks. */
 .br-tab:active {
-  background: color-mix(in srgb, var(--background-default) 84%, transparent);
+  background-color: var(--background-fill-strong);
 }
+/* @ws WS-MOTION end: tab fill ladder */
 
 .br-tab[data-active='true'] {
   /* Longhand color + image, NOT the `background` shorthand: the stripe is the
@@ -3289,11 +3312,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
      11px side insets keep it clear of the 8px corner radius and align it with
      the tab's content padding. (A top-edge variant was tried and reverted: it
      read as a lid on the tab rather than a marker under it.) */
-  background-color: var(--background-default);
+  /* @ws WS-MOTION begin: selected tab fill */
+  /* The selected fill (R-27); the strip is placed against the BORDER box, so
+     the transparent edge does not lift it 1px off the tab's bottom or narrow it
+     by 2px. */
+  background-color: var(--background-fill-strong);
   background-image: linear-gradient(var(--accent-bar), var(--accent-bar));
   background-repeat: no-repeat;
+  background-origin: border-box;
   background-size: calc(100% - 22px) 2px;
   background-position: 50% 100%;
+  /* @ws WS-MOTION end: selected tab fill */
   color: var(--text-default);
   /* @ws WS-MOTION begin: active tab is flat and bold */
   /* ONE active weight, 600 (Arial draws it bold): the 500/600 split between
@@ -3385,11 +3414,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-MOTION end: tab entrance */
 
-/* Active group. Only the FOCUSED group's active tab is the painted pill; an
-   unfocused group's active tab keeps a neutral fill and drops the pill shadow.
-   Spec: "Focus costs zero extra chrome" — the unfocused group is not decorated
-   with a marker, it simply stops claiming the emphasis. Two lit pills in one
-   window would be two answers to "where am I typing?".
+/* Active group. Only the FOCUSED group's active tab is the painted chip; an
+   unfocused group's active tab keeps a quiet fill and drops the strip and the
+   weight. Spec: "Focus costs zero extra chrome" — the unfocused group is not
+   decorated with a marker, it simply stops claiming the emphasis. Two lit
+   chips in one window would be two answers to "where am I typing?".
 
    The attribute is only ever 'false' on a strip that knows it is unfocused;
    default (absent) reads as active, so a bare strip — and every strip in the
@@ -3398,40 +3427,24 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    The `background` SHORTHAND here is load-bearing: it resets
    background-image, which is what removes the active tab's accent stripe on
    an unfocused group. Do not narrow it to background-color. */
+/* @ws WS-MOTION begin: unfocused group tab fill */
+/* At rest it is the hover step, the quiet fill (R-27); under the pointer it
+   takes the selected fill, so pointing at it previews the group taking focus. */
 .br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
-  background: color-mix(in srgb, var(--background-default) 45%, transparent);
+  background: var(--overlay-hover);
   color: var(--text-muted);
   font-weight: 400;
   box-shadow: none;
 }
 
-.dark .br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
-  box-shadow: none;
+.br-tabstrip[data-group-active='false'] .br-tab[data-active='true']:hover {
+  background: var(--background-fill-strong);
 }
+/* @ws WS-MOTION end: unfocused group tab fill */
 
-/* Safari's divider: a hairline in the gap, not a border on the tab. */
-.br-tab + .br-tab::before {
-  content: '';
-  position: absolute;
-  left: -2px;
-  top: 9px;
-  bottom: 9px;
-  width: 1px;
-  background: var(--border-strong);
-  opacity: 0.5;
-  /* @ws WS-MOTION begin: tab divider motion */
-  transition: opacity var(--dur-fast) var(--ease-out);
-  /* @ws WS-MOTION end: tab divider motion */
-}
-
-/* …and it retracts around whatever you are pointing at, so the thing under
-   the cursor is never boxed in. */
-.br-tab:hover::before,
-.br-tab[data-active='true']::before,
-.br-tab:hover + .br-tab::before,
-.br-tab[data-active='true'] + .br-tab::before {
-  opacity: 0;
-}
+/* No divider between tabs (R-27): the hairline Safari hangs in the gap is gone
+   with the outlines. The spacing, the leading glyph and the hover fill tell one
+   tab from the next, as they tell sidebar rows apart. */
 
 .br-tab__label {
   min-width: 0;
@@ -3450,14 +3463,14 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    which the artifact panel has been writing into the DOM with NO CSS reading
    them — its drag visuals were Tailwind at the call site.
 
-   The source tab STAYS IN FLOW at 35%. That much is a CSS contract, not a taste
-   call: `.br-tab`'s divider is adjacent-sibling based (`.br-tab + .br-tab::before`),
-   so pulling the real tab out of the DOM re-flows every divider mid-drag.
+   The source tab STAYS IN FLOW at 35%, so nothing in the strip reflows while
+   it is carried (the gap divider that first made this a CSS contract is gone
+   with R-27; the no-reflow reason stands on its own).
 
    The lifted tab under the cursor is therefore a SEPARATE element (.br-tab-ghost,
    below) rather than the tab itself moving — which is what lets the spec's "the
    tab lifts under the cursor at 2deg… the one it left dims to 35%" (card ∇) and
-   the divider contract both hold at once. An earlier revision of this comment
+   the in-flow source both hold at once. An earlier revision of this comment
    said there was no ghost at all; that was the reorder-only scope, where the tab
    never leaves its own strip and a ghost buys nothing. Once a tab can be carried
    to another group, dimming-in-place alone leaves the user dragging an invisible
@@ -3655,6 +3668,19 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   /* @ws WS-MOTION end: tab entrance rest */
 }
 
+/* @ws WS-MOTION begin: tab forced colours */
+/* Forced colours repaint a tab's fill as Canvas and drop the accent strip (a
+   gradient), so the selected tab would be told apart by its weight alone. Its
+   transparent edge, which the system draws in its ink on every tab, is drawn in
+   Highlight on the selected one. A system colour written by the author is kept
+   in forced colours, so no `forced-color-adjust` is needed. */
+@media (forced-colors: active) {
+  .br-tab[data-active='true'] {
+    border-color: Highlight;
+  }
+}
+/* @ws WS-MOTION end: tab forced colours */
+
 /* ============================================================
    CHAT GROUPS · the split
    ============================================================ */
@@ -3817,6 +3843,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   align-items: stretch;
   height: var(--chrome-height);
   background: var(--sidebar);
+  /* THE BAND IS A RECESSED GROUND (fills before lines, R-27, design.md 9.11 rule 2). It is the
+     sidebar's own paint, and the rest fill (`--background-fill`) is 1.03:1 off it in light, so a
+     filter field resting there was a white-on-white box nobody could find. A control on the band
+     rests one step deeper, on the strong fill (1.12:1 off the band, `--text-subtle` 4.62:1 on it
+     in light and 4.57:1 in dark), so the field reads as a quiet well. There is no deeper
+     neutral that still clears 4.5:1 for the placeholder, so the field does not step further under
+     the pointer: its hover equals its rest, and the focus edge is what answers a click. Every
+     band's filter, whoever owns the view, rests this way. */
+  --br-control-ground: var(--background-fill-strong);
 }
 
 .biorouter-page-header-bar {
@@ -3904,6 +3939,24 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   padding-top: 0;
 }
 /* @ws WS-VIEWS-A end: page band */
+
+/* @ws WS-VIEWS-A begin: flat rows */
+/* ROW LISTS DROP THEIR HAIRLINES (owner message 13, R-27: "row lists drop inter-row hairlines
+   where spacing and the hover fill already separate rows"). The shared row recipe
+   (`@ws WS-PRIMITIVES begin: rows`) draws a straight rule under every row through `::after`;
+   that recipe stays as it is for every list that has not decided. A list that has (Workflows,
+   the Scheduler and its runs, Built apps) opts out by SCOPE, with `.br-rows-flat` on its
+   `.biorouter-list-shell`, so the shared recipe is not edited and every other list keeps its
+   line. Only the `::after` goes: the row keeps its 1px transparent bottom edge, so nothing
+   moves, and a keyboard row still shows its wash and its own focus edge.
+   Looked at both ways in light and dark: a two-line row (14px title, 12px muted line, 8px of
+   air above and below) reads as one block from the 16px of air between blocks, and the hover
+   wash marks the row under the pointer. Settings decided the same for its rows with the same
+   class name (`settings.css`); the one definition belongs in the shared rows block. */
+.br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
+  content: none;
+}
+/* @ws WS-VIEWS-A end: flat rows */
 
 .biorouter-page-block {
   background: var(--background-default);

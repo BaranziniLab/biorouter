@@ -5,35 +5,17 @@
 
 /* A chat tab gets more room for its title than a preview tab (spec 3.16): at
    the shared 190px cap the title was cut at about 110px in a 1150px band. The
-   cap still yields to the pane, so a narrow split shrinks it. */
+   cap still yields to the pane, so a narrow split shrinks it.
+
+   Width is the only thing the chat strip says about its tabs. It used to box
+   every tab in a 1px `--border-subtle` over a translucent ground; that outline
+   is gone (R-27, fills before lines), and the chat strip now wears the shared
+   `.br-tab` ladder in main.css: plain text at rest, the ghost hover, and the
+   selected fill with its accent strip, the same tab as the preview panel's and
+   the terminal dock's. */
 .br-tabstrip--inline > .br-tab {
   min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 240px));
   max-width: min(240px, var(--chat-tab-available-width, 240px));
-  border: 1px solid var(--border-subtle);
-  background-color: color-mix(in srgb, var(--background-default) 24%, transparent);
-}
-
-.br-tabstrip--inline > .br-tab:hover {
-  border-color: var(--border-strong);
-  background-color: color-mix(in srgb, var(--background-default) 72%, transparent);
-}
-
-/* The weight comes from the shared `.br-tab[data-active]` rule (one active
-   weight, 600); only the inline strip's edge and ground are its own. */
-.br-tabstrip--inline > .br-tab[data-active='true'] {
-  border-color: var(--border-subtle);
-  background-color: var(--background-default);
-  box-shadow: none;
-}
-
-.br-tabstrip--inline[data-group-active='false'] > .br-tab[data-active='true'] {
-  border-color: var(--border-strong);
-  background: color-mix(in srgb, var(--background-default) 55%, transparent);
-  box-shadow: none;
-}
-
-.br-tabstrip--inline > .br-tab::before {
-  display: none;
 }
 
 /* The "+" once the strip overflows (vision V1-M2): a fixed slot between the
@@ -46,9 +28,10 @@
   margin-inline: 2px 4px;
 }
 
-/* Rename in place (P3): the sidebar's editor, sized to the tab's label. The
-   tab's own fill is the field's ground, so the field draws no box of its own;
-   the focus edge is the tab's. */
+/* Rename in place (P3): the sidebar's editor, sized to the tab's label. It
+   rests on the page ground inside the tab's fill (a fill never sits on a fill,
+   R-27) and draws its focus edge as an inset 1px, so it adds no outline of its
+   own and moves nothing. */
 .br-tab__rename {
   flex: 1 1 auto;
   min-width: 0;
