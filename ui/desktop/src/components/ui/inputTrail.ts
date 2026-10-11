@@ -15,11 +15,17 @@
  *   menu item opened closes, the item and the menu are gone. The control that held focus when the
  *   menu took it (the row a Shift+F10 was pressed on) is the one place left to go back to.
  *
+ * - **Where focus came from** when it last moved (the `focusin`'s `relatedTarget`). A dialog whose
+ *   field takes React's `autoFocus` has focus inside before Radix's focus scope mounts, so Radix
+ *   never fires `onOpenAutoFocus` and the dialog cannot read its opener from the active element;
+ *   the control focus left to reach that field is the opener (WS-SKILLS-2, V3-R3-1).
+ *
  * `chats/menuFocusReturn.ts` re-exports `lastInputWasKey` from here, so the sidebar's menus and the
  * dialogs they open read one tracker.
  */
 let lastInputWasKeyboard = false;
 let lastOutsideMenu: HTMLElement | null = null;
+let lastMove: { to: HTMLElement; from: HTMLElement | null } | null = null;
 
 if (typeof window !== 'undefined') {
   window.addEventListener(
@@ -41,6 +47,11 @@ if (typeof window !== 'undefined') {
     (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement) || target === document.body) return;
+      const from = (event as FocusEvent).relatedTarget;
+      lastMove = {
+        to: target,
+        from: from instanceof HTMLElement && from !== document.body ? from : null,
+      };
       if (target.closest('[role="menu"]')) return;
       lastOutsideMenu = target;
     },
@@ -51,6 +62,17 @@ if (typeof window !== 'undefined') {
 /** Was the most recent input a key press? A page nobody has touched reads as the pointer. */
 export function lastInputWasKey(): boolean {
   return lastInputWasKeyboard;
+}
+
+/**
+ * The element focus left when it last arrived on `element`, or null when the last focus move was
+ * not onto `element` or came from nowhere (`<body>`, another window). It may have left the
+ * document since (a menu item whose menu closed as it acted): `resolveDialogOpener` climbs from a
+ * detached item to its menu's trigger.
+ */
+export function focusArrivedFrom(element: Element | null): HTMLElement | null {
+  if (!element || !lastMove || lastMove.to !== element) return null;
+  return lastMove.from;
 }
 
 /** The control outside any menu that held focus last, while it is still in the document. */

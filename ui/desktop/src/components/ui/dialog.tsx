@@ -6,7 +6,7 @@ import { XIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
 import { installDialogTabRepair } from './dialogTabRepair';
-import { lastFocusOutsideMenu, lastInputWasKey } from './inputTrail';
+import { focusArrivedFrom, lastFocusOutsideMenu, lastInputWasKey } from './inputTrail';
 
 /**
  * The control that stands for `element` as the opener of a dialog: the element itself, or, when
@@ -99,25 +99,48 @@ export function useReturnFocusToOpener(handlers: {
 }): {
   onOpenAutoFocus: (event: Event) => void;
   onCloseAutoFocus: (event: Event) => void;
+  recordFocusAlreadyInside: (content: HTMLElement | null) => void;
 } {
   const { onOpenAutoFocus, onCloseAutoFocus } = handlers;
   const opener = React.useRef<HTMLElement | null>(null);
   // Set when the opener was found through a menu; true only if the pick was a key press too.
   const fromMenu = React.useRef<{ pickedByKey: boolean } | null>(null);
+  // The content node an opener was last read for, so a ref that re-attaches mid-dialog (a caller's
+  // inline ref) does not read a later focus move (back from a Select's portal) as the opener.
+  const readFor = React.useRef<HTMLElement | null>(null);
+  /**
+   * A field with React's `autoFocus` takes focus as the content commits, before Radix's focus
+   * scope mounts; the scope then finds focus inside and never fires `onOpenAutoFocus`, so the
+   * opener was never read and Escape left focus on `<body>` (WS-SKILLS-2, measured on the Skills
+   * page). The content's ref attaches after that focus and before the scope's effect: when focus
+   * is already inside, the opener is the control the focus left to get there.
+   */
+  const recordFocusAlreadyInside = React.useCallback((content: HTMLElement | null) => {
+    if (!content || readFor.current === content) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || !content.contains(active)) return;
+    const from = focusArrivedFrom(active);
+    if (!from || content.contains(from)) return;
+    readFor.current = content;
+    const resolved = resolveDialogOpener(from);
+    opener.current = resolved.opener;
+    fromMenu.current = resolved.viaMenu ? { pickedByKey: lastInputWasKey() } : null;
+  }, []);
   const handleOpen = React.useCallback(
     (event: Event) => {
-      const resolved = resolveDialogOpener(document.activeElement);
-      opener.current = resolved.opener;
-      const pickedByKey = lastInputWasKey();
-      fromMenu.current = resolved.viaMenu ? { pickedByKey } : null;
-      onOpenAutoFocus?.(event);
-      if (event.defaultPrevented || !resolved.viaMenu || pickedByKey) return;
       const content =
         event.currentTarget instanceof HTMLElement
           ? event.currentTarget
           : event.target instanceof HTMLElement
             ? event.target
             : null;
+      readFor.current = content;
+      const resolved = resolveDialogOpener(document.activeElement);
+      opener.current = resolved.opener;
+      const pickedByKey = lastInputWasKey();
+      fromMenu.current = resolved.viaMenu ? { pickedByKey } : null;
+      onOpenAutoFocus?.(event);
+      if (event.defaultPrevented || !resolved.viaMenu || pickedByKey) return;
       if (!content || content.querySelector(TEXT_ENTRY)) return;
       event.preventDefault();
       content.focus({ preventScroll: true });
@@ -145,7 +168,7 @@ export function useReturnFocusToOpener(handlers: {
     },
     [onCloseAutoFocus]
   );
-  return { onOpenAutoFocus: handleOpen, onCloseAutoFocus: handleClose };
+  return { onOpenAutoFocus: handleOpen, onCloseAutoFocus: handleClose, recordFocusAlreadyInside };
 }
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -206,6 +229,7 @@ function DialogContent({
   showCloseButton?: boolean;
 }) {
   const returnFocus = useReturnFocusToOpener({ onOpenAutoFocus, onCloseAutoFocus });
+  const { recordFocusAlreadyInside } = returnFocus;
   // See `dialogTabRepair`: a `Select` unmounting its live region on blur makes
   // Radix's focus scope swallow the Tab that was moving off it, which left the
   // New schedule dialog's Cancel and "Create schedule" keyboard-unreachable.
@@ -220,6 +244,7 @@ function DialogContent({
       };
       forward(node);
       if (!node) return;
+      recordFocusAlreadyInside(node);
       const teardown = installDialogTabRepair(node);
       // React 19 calls a ref callback's cleanup INSTEAD of re-invoking it with
       // `null`, so the forwarded ref has to be cleared here or a caller holding
@@ -229,7 +254,7 @@ function DialogContent({
         forward(null);
       };
     },
-    [ref]
+    [ref, recordFocusAlreadyInside]
   );
 
   return (

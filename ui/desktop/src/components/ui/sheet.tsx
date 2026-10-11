@@ -68,16 +68,32 @@ function SheetContent({
   side = 'right',
   onOpenAutoFocus,
   onCloseAutoFocus,
+  ref,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left';
 }) {
   // A sheet opened from state has no Trigger for Radix to return to (see `dialog.tsx`).
   const returnFocus = useReturnFocusToOpener({ onOpenAutoFocus, onCloseAutoFocus });
+  const { recordFocusAlreadyInside } = returnFocus;
+  // A field with `autoFocus` has focus inside before Radix reads the opener (see `dialog.tsx`).
+  const attach = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = node;
+      recordFocusAlreadyInside(node);
+      return () => {
+        if (typeof ref === 'function') ref(null);
+        else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = null;
+      };
+    },
+    [ref, recordFocusAlreadyInside]
+  );
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
+        ref={attach}
         onOpenAutoFocus={returnFocus.onOpenAutoFocus}
         onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         data-slot="sheet-content"
