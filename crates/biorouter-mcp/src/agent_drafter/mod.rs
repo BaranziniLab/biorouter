@@ -5567,16 +5567,71 @@ br.run("hello", "#missing");
         );
     }
 
-    /// `bundle_daemon="current"` copies a `biorouterd` (located via the
-    /// `BIOROUTERD_BIN` hook) into `payload/bin/` and records it in export.json.
+    fn native_export_compiler_fixture() -> Option<PathBuf> {
+        if let Some(explicit) = std::env::var_os("BIOROUTER_ESBUILD_BIN").filter(|p| !p.is_empty())
+        {
+            return Some(PathBuf::from(explicit));
+        }
+        let compiler_name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        let mut candidates = Vec::new();
+        if let Ok(executable) = std::env::current_exe() {
+            // Cargo's test executable is under target/<profile>/deps; a QA
+            // build's packaged compiler is beside the daemon one level up.
+            if let Some(profile) = executable.parent().and_then(Path::parent) {
+                candidates.push(profile.join(compiler_name));
+            }
+        }
+        let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/desktop");
+        candidates.push(desktop.join("src/bin").join(compiler_name));
+        let platform = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            os => os,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            "x86" => "ia32",
+            arch => arch,
+        };
+        let package = desktop.join(format!("node_modules/@esbuild/{platform}-{arch}"));
+        candidates.push(if cfg!(windows) {
+            package.join(compiler_name)
+        } else {
+            package.join("bin").join(compiler_name)
+        });
+        candidates.into_iter().find(|path| path.is_file())
+    }
+
+    /// A real pinned native compiler exercises the public fat export path.
+    /// The Rust-only CI matrix has no compiler installation, so there it must
+    /// explicitly return the missing-helper thin export contract instead.
     #[tokio::test]
     #[serial_test::serial]
-    async fn export_bundle_daemon_current_stages_binary() {
+    async fn export_bundle_daemon_current_checks_packaged_compiler_contract() {
         // A fake daemon binary on disk; find_biorouterd_binary honours BIOROUTERD_BIN first.
         let bin_dir = TempDir::new().unwrap();
-        let fake = bin_dir.path().join("biorouterd");
+        let bin_name = if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        };
+        let compiler_name = if cfg!(windows) {
+            "esbuild.exe"
+        } else {
+            "esbuild"
+        };
+        let fake = bin_dir.path().join(bin_name);
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
         let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+        let compiler = native_export_compiler_fixture();
+        if let Some(source) = &compiler {
+            std::fs::copy(source, bin_dir.path().join(compiler_name)).unwrap();
+        }
 
         let (_d, s) = server();
         let mut p = create("Fat", None);
@@ -5597,13 +5652,33 @@ br.run("hello", "#missing");
             .await
             .unwrap();
 
-        let bin_name = if cfg!(windows) {
-            "biorouterd.exe"
-        } else {
-            "biorouterd"
-        };
         let staged = out.path().join("payload/bin").join(bin_name);
+        let Some(compiler) = compiler else {
+            assert!(
+                !staged.exists(),
+                "missing compiler never publishes a partial daemon"
+            );
+            assert!(
+                !out.path().join("export.json").exists(),
+                "thin launcher has no bundled-daemon metadata"
+            );
+            let text = text_of(&res);
+            assert!(
+                text.contains("no packaged esbuild") && text.contains("thin export"),
+                "{text}"
+            );
+            return;
+        };
         assert!(staged.exists(), "daemon staged under payload/bin");
+        assert_eq!(
+            std::fs::read(&staged).unwrap(),
+            std::fs::read(&fake).unwrap()
+        );
+        let staged_compiler = out.path().join("payload/bin").join(compiler_name);
+        assert_eq!(
+            std::fs::read(&staged_compiler).unwrap(),
+            std::fs::read(&compiler).unwrap()
+        );
         // A fat launcher still writes export.json recording the bundled daemon.
         let ej: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
@@ -5616,7 +5691,60 @@ br.run("hello", "#missing");
             ej["bundled_daemon"]["file"],
             format!("payload/bin/{bin_name}")
         );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["file"],
+            format!("payload/bin/{compiler_name}")
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["bytes"],
+            std::fs::metadata(staged_compiler).unwrap().len()
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["esbuild"]["version"],
+            bundle::ESBUILD_VERSION
+        );
         assert!(text_of(&res).contains("fat export"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_missing_packaged_compiler_is_explicitly_thin() {
+        let bin_dir = TempDir::new().unwrap();
+        let fake = bin_dir.path().join(if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        });
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+        let (_d, s) = server();
+        let mut p = create("Missing Compiler", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app_public(Parameters(ExportAppParams {
+                id: "missing-compiler".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert!(!out.path().join("payload/bin").exists());
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(ej["bundled_daemon"].is_null());
+        let text = text_of(&res);
+        assert!(
+            text.contains("no packaged esbuild") && text.contains("thin export"),
+            "{text}"
+        );
+        assert!(!text.contains("fat export"), "{text}");
     }
 
     /// When no daemon can be found, `bundle_daemon="current"` degrades to a thin
