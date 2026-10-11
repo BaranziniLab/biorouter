@@ -39,7 +39,8 @@ the clock, so every combination is tested without a DOM:
 | None | One list, no header | None | The sort |
 
 Date buckets come from `utils/chatDateBuckets.ts`, which History also uses. Name sort is
-`localeCompare` with numeric ordering, case ignored, and default names ("New chat") last. Ties break
+`localeCompare` with numeric ordering, case ignored, and default names ("New chat") last. It sorts
+the title the row shows (see "A row"), so a scheduled run files under its job id. Ties break
 on the chat id, so a re-render never reorders equal rows. History breaks its ties the same way:
 `GET /sessions` orders by `updated_at` alone, so chats sharing a second came back in scan order and
 the two lists drew them differently (vision V1-R2-8). `sortByActivity` in
@@ -252,6 +253,15 @@ longer be seen: Chats collapsed, the sidebar closed, or the row scrolled out of 
 chat shows the 2px accent rail. A row whose menu is open keeps its hover ground, and its `⋯` stays
 on screen until the menu closes.
 
+The title says the chat's kind only once, in the glyph (vision V1-R3-6). It goes through History's
+resolver, `historyRowTitle` in `components/sessions/historyRow.ts`, by way of `sidebarRowTitle`: a
+scheduled run, stored as `Scheduled job: <job id>`, reads as the job id beside the clock, and an
+app's chat, stored as `app:<app id>`, reads as the app's name. It is keyed on the kind, so a chat a
+person titled "Scheduled job: x" keeps its title. The row's accessible name, its `⋯` label, the
+rename field's label and the delete sentence use the shown title. It is display only: the rename
+field starts from the stored name, an export is titled with it, a click hands it to the new tab, and
+the Meditation job still finds scheduled runs by the stored prefix.
+
 ### The row menu
 
 Right-click, `⋯` and Shift+F10 (or the ContextMenu key) open one menu, text only, in this order:
@@ -339,11 +349,12 @@ tab stop, so Tab reaches them from the row.
 
 | File | Holds |
 |---|---|
-| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows` |
+| `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows`; `sidebarRowTitle` and the name sort by the shown title |
 | `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
-| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
+| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; a scheduled run's row showing its job id (its names and delete sentence too) with the rename starting from the stored name; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |
+| `BioRouterSidebar/RecentChats.menuRoots.test.tsx` | No menu root per drawn row: rendering and a key press add a handful of document listeners, not one per row; a `⋯` armed by focus keeps focus and opens from Enter; the one right-click menu opens on the row it came from and on nothing else |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |

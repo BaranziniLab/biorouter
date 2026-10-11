@@ -53,6 +53,7 @@ import {
   SIDEBAR_RENDER_WINDOW,
   SIDEBAR_RENDER_WINDOW_STEP,
   sidebarRenderWindow,
+  sidebarRowTitle,
   windowSidebarRows,
   tildePath,
   type HeldArrangement,
@@ -142,6 +143,20 @@ const moreKey = (group: SidebarChatGroup) => `more:${group.key}`;
 
 /** Lines a group's header draws: a date or folder header is one, the ungrouped list none. */
 const headerLines = ({ group }: { group: SidebarChatGroup }) => (group.kind === 'all' ? 0 : 1);
+
+/**
+ * What a row SHOWS, and what its accessible names and the delete sentence say:
+ * the kind is said once, in the glyph (`sidebarRowTitle`, History's resolver),
+ * so a scheduled run reads "daily-meditation" beside its clock (vision V1-R3-6).
+ */
+const shownTitle = (session: SessionSummary) =>
+  sidebarRowTitle(session) || sidebarCopy.chats.untitled;
+
+/**
+ * The chat's own name, for what works ON the name rather than showing it: the
+ * rename draft starts from it and an export is titled with it, as in History.
+ */
+const storedTitle = (session: SessionSummary) => session.name.trim() || sidebarCopy.chats.untitled;
 
 /**
  * What a row's menu offers, decided from the chat itself, by History's rule
@@ -383,7 +398,7 @@ const RecentChatRow = memo(function RecentChatRow({
   onCommitRename,
   onCancelRename,
 }: RecentChatRowProps) {
-  const title = session.name.trim() || sidebarCopy.chats.untitled;
+  const title = shownTitle(session);
   const accessibleLabel = isRunning
     ? sidebarCopy.chats.openRunningChat(title)
     : sidebarCopy.chats.openChat(title);
@@ -415,7 +430,7 @@ const RecentChatRow = memo(function RecentChatRow({
       renameAfterMenu.current = true;
     },
     onDiverge: canDivergeChat(session) ? () => onDiverge(session.id) : undefined,
-    onExport: () => void exportConversation(session.id, title, { scope: 'app' }),
+    onExport: () => void exportConversation(session.id, storedTitle(session), { scope: 'app' }),
     onDelete: () => onRequestDelete(session),
   };
   const onMenuCloseAutoFocus = (event: Event) => {
@@ -946,7 +961,9 @@ export default function RecentChats({
       // up to it, or the list would hold still around an editor nobody can see.
       const needed = linesToDrawRow(shown, sessionId, headerLines);
       if (needed !== null) setRenderBudget((budget) => Math.max(budget, needed));
-      setEditing({ sessionId, draft: session.name.trim() || sidebarCopy.chats.untitled });
+      // The draft starts from the STORED name, not the shown one: a scheduled
+      // run's editor reads "Scheduled job: <id>" (V1-R3-6, display only).
+      setEditing({ sessionId, draft: storedTitle(session) });
     },
     [sessions, shown, setRenderBudget]
   );
@@ -1194,42 +1211,37 @@ export default function RecentChats({
     []
   );
 
-  const rowMenu = menuRow
-    ? (() => {
-        const title = menuRow.name.trim() || sidebarCopy.chats.untitled;
-        return (
-          <ChatRowContextMenuContent
-            target={{
-              sessionId: menuRow.id,
-              workingDir: menuRow.working_dir,
-              openInNewTab: () =>
-                openChat(menuRow.id, menuRow.name.trim() || undefined, menuRow.user_set_name),
-            }}
-            onRename={() => {
-              renameAfterRowMenu.current = menuRow.id;
-            }}
-            onDiverge={canDivergeChat(menuRow) ? () => divergeRow(menuRow.id) : undefined}
-            onExport={() => void exportConversation(menuRow.id, title, { scope: 'app' })}
-            onDelete={() => setPendingDelete(menuRow)}
-            onCloseAutoFocus={(event: Event) => {
-              const renameId = renameAfterRowMenu.current;
-              if (!renameId) {
-                // A choice made with the pointer leaves focus alone: handing it
-                // back to the row would ring a button the person clicked with
-                // a mouse and pin the row's hover-revealed ⋯ open.
-                keepFocusOffAfterPointerClose(event);
-                return;
-              }
-              // Rename was chosen: start editing once the menu has let go of
-              // focus, or it would hand focus back to the row over the input.
-              renameAfterRowMenu.current = null;
-              event.preventDefault();
-              startRenameRow(renameId);
-            }}
-          />
-        );
-      })()
-    : null;
+  const rowMenu = menuRow ? (
+    <ChatRowContextMenuContent
+      target={{
+        sessionId: menuRow.id,
+        workingDir: menuRow.working_dir,
+        openInNewTab: () =>
+          openChat(menuRow.id, menuRow.name.trim() || undefined, menuRow.user_set_name),
+      }}
+      onRename={() => {
+        renameAfterRowMenu.current = menuRow.id;
+      }}
+      onDiverge={canDivergeChat(menuRow) ? () => divergeRow(menuRow.id) : undefined}
+      onExport={() => void exportConversation(menuRow.id, storedTitle(menuRow), { scope: 'app' })}
+      onDelete={() => setPendingDelete(menuRow)}
+      onCloseAutoFocus={(event: Event) => {
+        const renameId = renameAfterRowMenu.current;
+        if (!renameId) {
+          // A choice made with the pointer leaves focus alone: handing it
+          // back to the row would ring a button the person clicked with
+          // a mouse and pin the row's hover-revealed ⋯ open.
+          keepFocusOffAfterPointerClose(event);
+          return;
+        }
+        // Rename was chosen: start editing once the menu has let go of
+        // focus, or it would hand focus back to the row over the input.
+        renameAfterRowMenu.current = null;
+        event.preventDefault();
+        startRenameRow(renameId);
+      }}
+    />
+  ) : null;
 
   const rowProps = (session: SessionSummary) => ({
     session,
@@ -1250,7 +1262,8 @@ export default function RecentChats({
     onCancelRename: finishRename,
   });
 
-  const pendingTitle = pendingDelete ? pendingDelete.name.trim() || sidebarCopy.chats.untitled : '';
+  // The title the row showed, so the sentence names what the person clicked (V1-R3-6).
+  const pendingTitle = pendingDelete ? shownTitle(pendingDelete) : '';
   const isEmpty = groups.length === 0;
 
   return (

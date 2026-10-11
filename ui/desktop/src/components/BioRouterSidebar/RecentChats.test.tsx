@@ -176,11 +176,14 @@ describe('RecentChats', () => {
   });
 
   it('truncates an overlong row title while preserving the full hover summary', async () => {
-    const longTitle = 'app:ucsf-versa-gpt55-kb-visualizer-smoke-with-an-even-longer-suffix';
-    const longSession = { ...makeSession(0), name: longTitle };
+    const stored = 'app:ucsf-versa-gpt55-kb-visualizer-smoke-with-an-even-longer-suffix';
+    const longSession = { ...makeSession(0), name: stored };
     renderRecentChats({ sessions: [longSession] });
+    // An app's chat reads as the app's name, as in History (`historyRowTitle`, V1-R3-6).
+    const longTitle = 'Ucsf versa gpt55 kb visualizer smoke with an even longer suffix';
 
     const row = screen.getByTestId('recent-chat-session-0');
+    expect(screen.queryByText(stored)).toBeNull();
     const title = screen.getByText(longTitle);
     expect(row).toHaveClass('br-nav-row');
     expect(title).toHaveClass('br-nav-row-label');
@@ -624,5 +627,62 @@ describe('the hover card goes with its row', () => {
 
     fireEvent.keyDown(window, { key: 'b', metaKey: true });
     expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+  });
+});
+
+/**
+ * Vision V1-R3-6 (inbox WS-HISTORY-3). The scheduler names a run's chat `Scheduled job: <job id>`
+ * and the clock glyph already says "scheduled", so the row shows the job id, as History does
+ * (`historyRowTitle`). Display only: the rename starts from the stored name.
+ */
+describe('a scheduled run says its kind once, in the glyph', () => {
+  function renderScheduled() {
+    const at = Date.now();
+    renderRecentChats({
+      sessions: [
+        {
+          ...makeSession(0, at),
+          id: 'run',
+          name: 'Scheduled job: daily-meditation',
+          session_type: 'scheduled',
+        },
+        { ...makeSession(1, at), id: 'person', name: 'Scheduled job: notes', session_type: 'user' },
+      ],
+    });
+  }
+  const label = (id: string) =>
+    screen.getByTestId(`recent-chat-${id}`).querySelector('.br-nav-row-label')?.textContent;
+
+  it('shows the job id, and names it so, while a chat a person titled that way keeps its title', () => {
+    renderScheduled();
+    expect(label('run')).toBe('daily-meditation');
+    expect(screen.getByTestId('recent-chat-run')).toHaveAttribute(
+      'aria-label',
+      sidebarCopy.chats.openChat('daily-meditation')
+    );
+    expect(screen.getByTestId('recent-chat-more-run')).toHaveAttribute(
+      'aria-label',
+      sidebarCopy.chats.moreActions('daily-meditation')
+    );
+    expect(label('person')).toBe('Scheduled job: notes');
+  });
+
+  it('starts a rename from the stored name', async () => {
+    renderScheduled();
+    const row = screen.getByTestId('recent-chat-run');
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F2' });
+    const editor = await screen.findByRole('textbox', { name: 'Rename chat daily-meditation' });
+    expect(editor).toHaveValue('Scheduled job: daily-meditation');
+    fireEvent.keyDown(editor, { key: 'Escape' });
+  });
+
+  it('names the shown title in the delete sentence', async () => {
+    renderScheduled();
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-run'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    expect(
+      await screen.findByText(`Delete "daily-meditation"? This can't be undone.`)
+    ).toBeInTheDocument();
   });
 });

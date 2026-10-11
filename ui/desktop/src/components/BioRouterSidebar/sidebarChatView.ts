@@ -2,6 +2,7 @@ import type { SessionSummary } from '../../api';
 import { chatDateBucket, type ChatDateBucket } from '../../utils/chatDateBuckets';
 import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { isCrewTask } from '../chats/chatKind';
+import { historyRowTitle } from '../sessions/historyRow';
 
 /**
  * How the sidebar arranges its chats (owner message 3): grouped by date (the
@@ -65,6 +66,21 @@ export function createdTime(session: SessionSummary): number {
   return parseTime(session.created_at) || parseTime(session.updated_at);
 }
 
+/**
+ * The title a chat row shows, before the "Untitled chat" fallback: the one
+ * resolver History uses (`historyRowTitle`), so a chat says its kind once, in
+ * its glyph (vision V1-R3-6). A scheduled run, stored as `Scheduled job: <job
+ * id>`, reads as the job id beside the clock; an app's chat, stored as
+ * `app:<app id>`, reads as the app's name. Keyed on the kind, not the prefix, so
+ * a chat a person titled "Scheduled job: x" keeps its title.
+ *
+ * Display only: the stored name is what a rename starts from and what an
+ * export is titled, and the Meditation job skips scheduled runs by the prefix.
+ */
+export function sidebarRowTitle(session: SessionSummary): string {
+  return historyRowTitle(session).trim();
+}
+
 const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 /**
@@ -80,7 +96,9 @@ export function sortSidebarChats(
     const keyed = sessions.map((session) => ({
       session,
       isDefault: isDefaultSessionName(session.name?.trim()),
-      name: session.name ?? '',
+      // What the row SHOWS: a scheduled run files under its job id, not under
+      // "Scheduled job:" (`sidebarRowTitle`).
+      name: historyRowTitle(session),
     }));
     // A to Z, numbers in numeric order, case ignored; default names ("New chat") last.
     keyed.sort((left, right) => {

@@ -24,6 +24,7 @@ import {
   SIDEBAR_COLLAPSED_FOLDERS_MAX,
   SIDEBAR_GROUP_BY_OPTIONS,
   SIDEBAR_SORT_BY_OPTIONS,
+  sidebarRowTitle,
   writeSidebarChatView,
   type SidebarChatView,
 } from './sidebarChatView';
@@ -141,6 +142,24 @@ describe('arrangeSidebarChats: the nine views', () => {
     expect(shape({ groupBy: 'none', sortBy: 'name' })).toEqual([['', 'bedac']]);
   });
 
+  it('sorts a chat by the title its row shows: a scheduled run by its job id (V1-R3-6)', () => {
+    const chats = [
+      chat('run', 'Scheduled job: daily-meditation', { session_type: 'scheduled' }),
+      chat('person', 'Scheduled job: notes', { session_type: 'user' }),
+      chat('cell', 'Cell atlas'),
+      chat('morning', 'Morning notes'),
+      chat('zoo', 'Zoo survey'),
+    ];
+    const order = arrangeSidebarChats(
+      chats,
+      { groupBy: 'none', sortBy: 'name' },
+      NOW
+    )[0].sessions.map((session) => session.id);
+    // "daily-meditation" files under D, before "Morning notes" (by the stored name it would
+    // follow it, under S); a chat a person titled "Scheduled job: …" keeps S.
+    expect(order).toEqual(['cell', 'run', 'morning', 'person', 'zoo']);
+  });
+
   it('covers every option the menu offers', () => {
     expect(SIDEBAR_GROUP_BY_OPTIONS).toEqual(['date', 'folder', 'none']);
     expect(SIDEBAR_SORT_BY_OPTIONS).toEqual(['activity', 'created', 'name']);
@@ -167,6 +186,31 @@ describe('arrangeSidebarChats: the nine views', () => {
       workingDir: '/Users/wgu/biorouter',
       isCrew: false,
     });
+  });
+});
+
+describe('sidebarRowTitle: the kind is said once, in the glyph (V1-R3-6)', () => {
+  it('shows a scheduled run as its job id, keyed on the kind', () => {
+    const run = { session_type: 'scheduled' };
+    expect(sidebarRowTitle(chat('a', 'Scheduled job: daily-meditation', run))).toBe(
+      'daily-meditation'
+    );
+    // A chat a person titled this way keeps its title; a renamed run has nothing to drop.
+    expect(sidebarRowTitle(chat('b', 'Scheduled job: notes', { session_type: 'user' }))).toBe(
+      'Scheduled job: notes'
+    );
+    expect(sidebarRowTitle(chat('c', 'Morning check-in', run))).toBe('Morning check-in');
+    // Only the prefix: kept, so a row never reads empty.
+    expect(sidebarRowTitle(chat('d', 'Scheduled job:', run))).toBe('Scheduled job:');
+  });
+
+  it("shows an app's chat by the app's name, as History does", () => {
+    expect(sidebarRowTitle(chat('e', 'app:living-news-router'))).toBe('Living news router');
+  });
+
+  it('trims, and leaves an empty name empty for the row to fill', () => {
+    expect(sidebarRowTitle(chat('f', '  Cell atlas  '))).toBe('Cell atlas');
+    expect(sidebarRowTitle(chat('g', '   '))).toBe('');
   });
 });
 
