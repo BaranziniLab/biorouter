@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBManagerDialog } from './KBManagerDialog';
@@ -91,6 +91,60 @@ describe('KBManagerDialog', () => {
     expect(mocks.create).toHaveBeenCalledWith('first-base', 'First Base', { format: 'okf' });
     expect(mocks.setPrimaryKbId).toHaveBeenCalledWith('first-base');
     expect(mocks.refresh).toHaveBeenCalled();
+  });
+
+  /**
+   * V3-R2-4. The manager is unmounted while the format chooser stands in for it, so what comes back
+   * is a new dialog, and Radix put its first focus on the header's InfoTip (ringed after a
+   * keyboard close) instead of the "Create knowledge base" button the person was on. The manager's
+   * `onOpenAutoFocus` sends it back there, once, and only when it is returning from the chooser.
+   */
+  describe('focus when the format chooser closes', () => {
+    it('returns to "Create knowledge base" on Escape', async () => {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      expect(screen.getByRole('dialog', { name: 'Create knowledge base' })).toBeInTheDocument();
+      expect(screen.queryByTestId('knowledge-kb-create')).toBeNull();
+
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+      // Not the InfoTip that sits first in the header.
+      expect(
+        screen.getByRole('button', { name: `About ${knowledgeCopy.manager.infoLabel}` })
+      ).not.toHaveFocus();
+    });
+
+    it('returns to it on Cancel too', async () => {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+    });
+
+    it('returns to it when the chooser was the first thing opened (the picker row)', async () => {
+      const user = userEvent.setup();
+      render(<KBManagerDialog open startInCreate onOpenChange={mocks.onOpenChange} />);
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+    });
+
+    it('leaves a plain open on Radix first stop, and does not carry the return over to a reopen', async () => {
+      const user = userEvent.setup();
+      const { rerender } = open();
+      expect(screen.getByTestId('knowledge-kb-create')).not.toHaveFocus();
+
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+
+      // Close the manager, open it again: a fresh open, not a return from the chooser.
+      rerender(<KBManagerDialog open={false} onOpenChange={mocks.onOpenChange} />);
+      expect(screen.queryByTestId('knowledge-kb-create')).toBeNull();
+      rerender(<KBManagerDialog open onOpenChange={mocks.onOpenChange} />);
+      expect(await screen.findByTestId('knowledge-kb-create')).not.toHaveFocus();
+    });
   });
 
   // Two states per row, never three. Under the merged model membership and the

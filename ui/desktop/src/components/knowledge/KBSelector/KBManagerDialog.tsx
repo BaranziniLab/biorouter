@@ -75,8 +75,20 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   const [error, setError] = useState<string | null>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const createRef = useRef<HTMLButtonElement>(null);
+  // True from the moment the format chooser takes this dialog's place until the manager comes back
+  // under it. The manager is UNMOUNTED while the chooser is up (one usable dialog, see the return
+  // below), so what comes back is a new dialog whose first focus would otherwise be the first
+  // tabbable in its header, the "About bases in this chat" InfoTip, ringed after a keyboard close
+  // (V3-R2-4). `placeFocus` sends it to the button that opened the chooser instead.
+  const returnToCreate = useRef(false);
 
   useEffect(() => {
+    if (chooserOpen) returnToCreate.current = true;
+  }, [chooserOpen]);
+
+  useEffect(() => {
+    returnToCreate.current = false;
     if (!open) return;
     setDraftMode(null);
     setChooserOpen(startInCreate);
@@ -121,6 +133,21 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     setError(null);
     setDraftMode(null);
     setChooserOpen(true);
+  }
+
+  /**
+   * Radix's open-focus hook for the manager: when it is coming back from the chooser, focus goes to
+   * "Create knowledge base", the control the person was on, and not to the header's InfoTip. A
+   * first open, and a reopen, keep Radix's own first stop. No ring is forced: a script focus
+   * wears one only when the chooser was closed with the keyboard, which is the person who needs it.
+   */
+  function placeFocus(event: Event) {
+    if (!returnToCreate.current) return;
+    returnToCreate.current = false;
+    const target = createRef.current;
+    if (!target) return;
+    event.preventDefault();
+    target.focus({ preventScroll: true });
   }
 
   /**
@@ -283,6 +310,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           size="lg"
           purpose={busyId !== null ? 'required' : 'form'}
           scrollBody
+          onOpenAutoFocus={placeFocus}
           title={knowledgeCopy.manager.title}
           // ONE sentence, because ModalShell makes the subtitle the dialog's
           // `aria-describedby` (ModalShell.test.tsx names this dialog). The rest
@@ -328,6 +356,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
 
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
+                ref={createRef}
                 data-testid="knowledge-kb-create"
                 type="button"
                 variant="default"
