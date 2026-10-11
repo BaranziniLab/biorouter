@@ -1,6 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ChatTurnError, hasVisibleTurnErrorMessage, presentChatTurnError } from './ChatTurnError';
+import {
+  ChatTurnError,
+  hasVisibleTurnErrorMessage,
+  presentChatTurnError,
+  presentStoredTurnError,
+} from './ChatTurnError';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { transcriptCopy } from '../transcript/copy';
@@ -330,5 +335,64 @@ describe('ChatTurnError', () => {
 
     expect(hasVisibleTurnErrorMessage(turnError, messages)).toBe(true);
     expect(hasVisibleTurnErrorMessage(error({ message: 'Failed to fetch' }), messages)).toBe(false);
+  });
+
+  // Vision V2-07: the daemon's stored notice ("Ran into this error: …", from
+  // `stop_notice` in agents/mistakes.rs) is the same failure the live row draws,
+  // so it is presented the same way, with the raw response under Details.
+  describe('the stored turn-ending notice', () => {
+    const AUTH_ADVICE =
+      'Retrying will not help until the key or sign-in is fixed. Once it is, send your message again: this chat reads the new credentials with its next message.';
+
+    it('names an authentication failure and keeps the raw response under Details', () => {
+      const raw =
+        'Authentication error: Authentication failed. Status: 401 Unauthorized. Response: {"error":"Invalid client id or secret"}.';
+      expect(presentStoredTurnError(`Ran into this error: ${raw}\n\n${AUTH_ADVICE}`)).toEqual({
+        title: 'Model authentication failed',
+        message: `Authentication failed. Status: 401 Unauthorized. ${AUTH_ADVICE}`,
+        details: raw,
+      });
+    });
+
+    it('keeps a bare status with its kind, and needs no Details when nothing was hidden', () => {
+      expect(
+        presentStoredTurnError(
+          'Ran into this error: Server error: 502.\n\nPlease retry if you think this is a transient or recoverable error. Biorouter already retried it 2 times.'
+        )
+      ).toEqual({
+        title: 'Model provider unavailable',
+        message:
+          'Server error: 502. Please retry if you think this is a transient or recoverable error. Biorouter already retried it 2 times.',
+        details: undefined,
+      });
+    });
+
+    it('keeps an actionable vendor sentence in view', () => {
+      const presentation = presentStoredTurnError(
+        "Ran into this error: Request failed: The 'gpt-6-astra' model requires a newer version of Codex.\n\nRetrying will not help: this one returns the same way until its cause changes."
+      );
+      expect(presentation?.title).toBe('Model request failed');
+      expect(presentation?.message).toBe(
+        "The 'gpt-6-astra' model requires a newer version of Codex. Retrying will not help: this one returns the same way until its cause changes."
+      );
+    });
+
+    it('names a failed compaction as such', () => {
+      expect(
+        presentStoredTurnError(
+          'Ran into this error trying to compact: Context length exceeded: too long.\n\nPlease try again or create a new chat'
+        )
+      ).toEqual({
+        title: 'Could not compact this chat',
+        message: 'Too long. Please try again or create a new chat.',
+        details: undefined,
+      });
+    });
+
+    it('leaves every other answer to markdown', () => {
+      expect(presentStoredTurnError('Here is the answer.')).toBeNull();
+      expect(presentStoredTurnError('I ran into this error: nothing.')).toBeNull();
+      expect(presentStoredTurnError('Ran into this error: \n\nadvice')).toBeNull();
+    });
   });
 });

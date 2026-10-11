@@ -26,6 +26,7 @@ import { Brain } from './icons/app-icons';
 import { TranscriptRow } from './TranscriptRow';
 import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
+import { presentStoredTurnError, TurnErrorRow } from './conversation/ChatTurnError';
 import { splitAssistantText } from './transcript/transcriptRhythm';
 import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
 import type { ArtifactSource } from './artifacts/artifactTypes';
@@ -70,6 +71,11 @@ interface BioRouterMessageProps {
    * surfaces that never had it.
    */
   onRunInTerminal: ((command: string) => boolean) | null;
+  /**
+   * The row was appended while the person watched (`useLiveRows`), so a
+   * failure it reports is announced. A row read back from history is not.
+   */
+  live?: boolean;
 }
 
 export default function BioRouterMessage({
@@ -84,6 +90,7 @@ export default function BioRouterMessage({
   onOpenArtifact,
   onRunInTerminal,
   workingDir,
+  live = false,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   // Collapsed by default and sticky per message while it is mounted — a thought
@@ -175,6 +182,24 @@ export default function BioRouterMessage({
   }, [messages, messageIndex, toolRequests]);
 
   const quotedSelection = useTextSelection(contentRef, `${sessionId}:${message.id}`);
+
+  // The daemon's own turn-ending notice ("Ran into this error: …") is stored as
+  // an assistant message. It draws as the error row the live failure draws,
+  // never as prose holding a raw provider response (vision V2-07).
+  const storedError = useMemo(
+    () =>
+      toolRequests.length === 0 && message.content.every((content) => content.type === 'text')
+        ? presentStoredTurnError(displayText)
+        : null,
+    [displayText, message.content, toolRequests.length]
+  );
+  if (storedError) {
+    return (
+      <div className="biorouter-message flex w-full justify-start min-w-0">
+        <TurnErrorRow presentation={storedError} alert={live} testId="stored-turn-error" />
+      </div>
+    );
+  }
 
   return (
     <div className="biorouter-message flex w-full justify-start min-w-0">

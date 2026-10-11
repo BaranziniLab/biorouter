@@ -380,6 +380,7 @@ export default function ProgressiveMessageList({
                 onOpenArtifact={onOpenArtifact}
                 onRunInTerminal={onRunInTerminal}
                 workingDir={workingDir}
+                live={live}
               />
             )}
           </div>
