@@ -38,6 +38,7 @@ These keep the site on the desktop app's scale. `node --test landing/scripts/loo
 - **Weights** are 400, and 700 only for `strong` in the docs. Arial draws nothing between, so never write 500 or 600. Inter 600 sets the wordmark and nothing else.
 - **Controls** are `--h-control` (32px) for small actions and `--h-cta` (40px) for the one call to action of a view. The 44px menu button is a touch target.
 - **Ink**: small text uses `--subtle`. `--faint` is for the quiet second line of a large headline and for disabled rows.
+- **Fills before lines** (owner message 13): a card, field, button, chip, note or diagram box rests on the subtle fill, `--fill`, with a transparent 1px edge, and steps to `--fill-strong` under the pointer, as the app does. A chip or field inside a filled box rests on the page ground (`--paper`), because a fill never sits on a fill. The art frame is a white window with a soft shadow, and what the animations draw inside it follows the app. Lines stay as section rules, table rules, the dividers between list rows, a band's edge, the coral rails and focus edges, and on floating surfaces (the menus, pickers and dialogs the animations draw keep a hairline and a shadow). Crew's own composer and fields keep the outline the Crew view still draws. A drawn border together with a radius fails the guard.
 - **Motion** uses `--dur-*` with `--ease`. Reveals take 525ms and travel 8px.
 - **Headlines**: one two-tone headline per page, the first. Slack stays in the header of every page and in one community band.
 

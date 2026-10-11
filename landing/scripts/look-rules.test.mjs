@@ -44,6 +44,12 @@ const FAINT_OK = /\.soft\b|row-toggle|baam-search-wrap svg|docs-search svg|hub-p
 const RETIRED_HEIGHTS = new Set(['34px', '36px', '42px', '48px']);
 const DIAGRAM = /arrow/;
 const TOUCH_44 = /menu-btn|avatar/;
+// Fills before lines (owner message 13, R-27): a card, a field, a button or a chip rests on the
+// subtle fill with a TRANSPARENT 1px edge, never a drawn outline. What may still draw one: the
+// floating surfaces the animations show (a menu, a picker, a dialog keep a hairline and a
+// shadow), the schedule's ring marker, and Crew's own recipes, which the app has not converted.
+const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-/;
+const DRAWN_EDGE = /^[\d.]+px (solid|dashed|dotted) (var\(--(line|line-2|line-input|coral|coral-bar|ink|navy|danger)\)|#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i;
 
 /** Every violation in a { file: css } map, as strings naming file, selector and why. */
 export function violations(files) {
@@ -51,6 +57,17 @@ export function violations(files) {
   for (const [file, css] of Object.entries(files)) {
     const art = file.startsWith('art/');
     for (const { selector, body } of rules(css)) {
+      // A box that paints its own outline: a full border in a visible colour together with a radius.
+      const all = decls(body);
+      const edge = all.find(([p, v]) => p === 'border' && DRAWN_EDGE.test(v));
+      if (edge && all.some(([p]) => p === 'border-radius') && !OUTLINE_OK.test(selector)) {
+        found.push(`${file}: ${selector} { border: ${edge[1]} }: boxes rest on the fill with a transparent edge`);
+      }
+      for (const [prop, value] of all) {
+        if (prop === 'box-shadow' && /inset 0(px)? 0(px)? 0(px)? 1px/.test(value) && !OUTLINE_OK.test(selector)) {
+          found.push(`${file}: ${selector} { box-shadow: ${value} }: a ring is an outline`);
+        }
+      }
       for (const [prop, value] of decls(body)) {
         const at = `${file}: ${selector} { ${prop}: ${value} }`;
         if (prop === 'font-size') {
@@ -109,6 +126,11 @@ const mutants = {
   'a 44px button that is no touch target': ['home.css', (s) => s + '\n.btn { height: 44px; }'],
   'art text at 11.5px': ['art/wall.css', (s) => s + '\n.x { font-size: 11.5px; }'],
   'an art size variable off the scale': ['art/wall.css', (s) => s + '\n.art-wall { --wall-t-msg: 15px; }'],
+  'an outlined card': ['site.css', (s) => s + '\n.card { border: 1px solid var(--line); border-radius: var(--r-container); background: var(--paper); }'],
+  'an outlined button': ['baam.css', (s) => s + '\n.brxt-chip { border: 1px solid var(--line-2); border-radius: var(--r-element); }'],
+  'a dashed empty box': ['art/apps.css', (s) => s + '\n[data-art="apps"] .apps-empty { border: 1px dashed var(--line-2); border-radius: var(--r-element); }'],
+  'a ring drawn as a shadow': ['art/skills.css', (s) => s + '\n.art-skills .sk-sel { box-shadow: inset 0 0 0 1px var(--line); }'],
+  'a drawn edge on the art frame': ['site.css', (s) => s + '\n.art { border: 1px solid var(--line); border-radius: var(--r-surface); }'],
 };
 for (const [name, [file, edit]] of Object.entries(mutants)) {
   test(`mutant caught: ${name}`, () => {
