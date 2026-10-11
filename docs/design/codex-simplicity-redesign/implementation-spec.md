@@ -2370,7 +2370,7 @@ job.
   - **Version** is a row with a mono value and the action "Check for updates" (no `ExternalLink`
     icon). Status ("Up to date", progress) shows as the row's status line, and "Restart to update"
     replaces the button when an update is ready. Keep the UpdateSection test strings.
-  - Delete the Block logo PNGs (a Goose leftover) after the owner confirms.
+  - The unreferenced logo images are deleted (R-29).
   - Feedback is a row with two ghost `sm` buttons.
 - **Configuration:** one row, "Configuration", with the provider as its value, an "Edit…" button
   and an InfoTip. The editor moves to `ModalShell` (WS-SETTINGS-B owns `ConfigSettings.tsx`).

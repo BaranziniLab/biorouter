@@ -132,8 +132,8 @@ spec's tables are authoritative where this summary is shorter.
 - Integration gate green: `lint:check` (944 contrast assertions), `format:check`, all 851 test files
   (11,858 tests), the website consistency and Crew manual checks, clean tree. Wave 2 sweeps removed
   the old aliases and tightened the guards; the second gate was green too.
-- Coordinator rulings: dialogs take Crew's top anchor and header rule app wide; the unused Block
-  logo images stay; the 14px body default lands before the vision loop so the loop sees the final
+- Coordinator rulings: dialogs take Crew's top anchor and header rule app wide; the unreferenced
+  logo images are deleted (R-29); the 14px body default lands before the vision loop so the loop sees the final
   sizes.
 - Vision loop started: four sandboxed app instances (shell and Home, chat, component views,
   Settings with dialogs and a Crew regression check) and the website, each reviewed from real
