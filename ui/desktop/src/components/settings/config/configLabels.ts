@@ -5,9 +5,11 @@ import { configLabels } from '../../../utils/configUtils';
  *
  * The key itself (`BIOROUTER_AUTO_COMPACT_THRESHOLD`) is a machine string and lives in the label's
  * tooltip, in the mono face; the label is a plain name in sentence case, so a column of them reads
- * as one list. `utils/configUtils.getUiNames` is the provider setup form's naming and stays as it
- * is (Title Case, "Aws Endpoint Url Bedrock"); this is the editor's own, with the same known names
- * and a better fallback.
+ * as one list. The provider setup form names a key through `providerFieldName`, which runs the
+ * curated Title Case label through the exported `sentenceCase` below; `utils/configUtils.getUiNames`
+ * is not used by either. This file is the editor's own naming: the same known names and a better
+ * fallback. Keep `sentenceCase` exported as `(label: string) => string`: the provider dialog
+ * imports it, and its name cases (OpenAI, MiMo, Llama Server, API, CLI, GCP, ID) depend on it.
  *
  * - The brand prefix goes: every key in this file belongs to Biorouter.
  * - Acronyms and product names keep their own spelling (AWS, URL, OpenAI, GitHub).
