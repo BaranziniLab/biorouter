@@ -169,9 +169,7 @@ describe('LlamaServerInlineCard', () => {
       expect(screen.getByTestId('llamacpp-model-select')).toHaveTextContent(
         'Gemma 4 12B · 7.6 GB · Needs download'
       );
-      expect(screen.getByTestId('llamacpp-size-speed')).toHaveTextContent(
-        'Fast · 7.6 GB · 128k context'
-      );
+      expect(screen.getByTestId('llamacpp-size-speed')).toHaveTextContent(/^Fast · 128k context$/);
     });
 
     it('cannot be changed while a start is in flight', async () => {
@@ -193,11 +191,17 @@ describe('LlamaServerInlineCard', () => {
     });
   });
 
-  it('shows download size and expected speed for the selected model (#35)', async () => {
+  // #35 asked for the size and the speed. FR-R2-6: the size is said once in the option and once
+  // in the button, so the Details summary keeps the speed and the context and not a third size.
+  it('shows download size and expected speed for the selected model (#35), the size once each', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const info = await screen.findByTestId('llamacpp-size-speed');
-    // The Settings row's one facts line: the speed word, the size, the context window.
-    expect(info).toHaveTextContent('Fast · 9.6 GB · 128k context');
+    expect(info).toHaveTextContent(/^Fast · 128k context$/);
+    expect(screen.getByTestId('llamacpp-model-select')).toHaveTextContent('9.6 GB');
+    expect(screen.getByTestId('llamacpp-start')).toHaveTextContent(
+      llamaCopy.downloadAndStart('9.6 GB')
+    );
+    expect(screen.getAllByText(/9\.6 GB/)).toHaveLength(2);
   });
 
   // Vision FR-R1-3 / FR-S-2: the default first screen printed a box of seven lines (description,
@@ -231,7 +235,13 @@ describe('LlamaServerInlineCard', () => {
       fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
       const details = await screen.findByTestId('llamacpp-details');
       expect(details).toHaveTextContent('Laptop default');
-      expect(details).toHaveTextContent('Recommended for this machine.');
+      // The fit in plain words with its two numbers, never the daemon's sentence, which repeated
+      // the row's label and printed the machine id `apple_unified` (FR-R2-6).
+      expect(details).toHaveTextContent(
+        'MemoryFits this Mac (64 GiB unified memory, 16 GiB recommended)'
+      );
+      expect(details).not.toHaveTextContent('Recommended for this machine.');
+      expect(details).not.toHaveTextContent('apple_unified');
       const tag = screen.getByText('gemma4:latest');
       expect(tag).toHaveClass('font-mono');
       expect(screen.getByText('/tmp/models')).toHaveClass('font-mono');
@@ -274,7 +284,7 @@ describe('LlamaServerInlineCard', () => {
           ...statusResponse().data,
           catalog: [
             catalogEntry({
-              recommended_gpu_memory_gib: 64,
+              recommended_gpu_memory_gib: 96,
               suitability_status: 'above_recommendation',
             }),
           ],
@@ -284,6 +294,33 @@ describe('LlamaServerInlineCard', () => {
       expect(await screen.findByTestId('llamacpp-size-speed')).toHaveTextContent(
         localModelsCopy.largeForThisMac
       );
+      // Details says it once, with the numbers, rather than a second shortfall sentence.
+      fireEvent.click(screen.getByRole('button', { name: llamaCopy.details }));
+      const details = await screen.findByTestId('llamacpp-details');
+      expect(details).toHaveTextContent(
+        'Large for this Mac (64 GiB unified memory, 96 GiB recommended)'
+      );
+      expect(details).not.toHaveTextContent(/This machine reports/);
+    });
+
+    it('says the memory was not read, in words, when the daemon could not read it', async () => {
+      mockLlamacppStatus.mockResolvedValue({
+        data: {
+          ...statusResponse().data,
+          catalog: [catalogEntry({ suitability_status: 'unknown_resources' })],
+          system: {
+            ...statusResponse().data.system,
+            os: 'linux',
+            accelerator_memory_gib: null,
+            accelerator_memory_kind: 'unknown_vram',
+          },
+        },
+      });
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      const details = await screen.findByTestId('llamacpp-details');
+      expect(details).toHaveTextContent('VRAM not detected (16 GiB recommended)');
+      expect(details).not.toHaveTextContent('unknown_vram');
     });
   });
 

@@ -9,7 +9,7 @@ import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServer
 import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
 import { localModelsCopy } from '../settings/models/copy';
-import { factsLine } from '../settings/models/localModelFacts';
+import { factsLine, fitLine } from '../settings/models/localModelFacts';
 import { llamaCopy } from './copy';
 import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -308,33 +308,21 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   };
 
   /**
-   * What the Details list says about this machine's memory. Only a real shortfall (or a reading the
-   * daemon could not take) is said, and the confirmation before a start says it again at the moment
-   * of decision. The panel used to add "This model is above the 16 GB laptop tier" whenever a model
-   * recommended more than 16 GB, so the model the app recommends for a 128 GiB machine opened with a
-   * warning under a line saying the machine meets its recommendation (vision FR-R1-4).
+   * What the Details list adds about this machine's memory beyond its Memory row. The Memory row
+   * (`fitLine`) says the fit, the memory reported and the memory recommended in one line, so a
+   * shortfall or a reading the daemon could not take is said there once, and the confirmation
+   * before a start says it again at the moment of decision; the separate shortfall sentences this
+   * list used to carry repeated it (vision FR-R2-6). The panel used to add "This model is above the
+   * 16 GB laptop tier" whenever a model recommended more than 16 GB, too (vision FR-R1-4). What is
+   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count.
    */
   const resourceWarnings = useMemo(() => {
     if (!system || !selectedEntry) return [];
-
-    const warnings: string[] = [];
-    const detected = system.accelerator_memory_gib;
-    const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
-    if (typeof detected === 'number' && detected < selectedEntry.recommended_gpu_memory_gib) {
-      warnings.push(
-        `This machine reports ${detected} GiB ${memoryLabel}; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
-      );
-    } else if (detected == null) {
-      warnings.push(
-        `Biorouter could not detect VRAM; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
-      );
-    }
-    if (system.os.toLowerCase().includes('windows')) {
-      warnings.push(
-        'Windows needs enough free VRAM for the selected model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
-      );
-    }
-    return warnings;
+    return system.os.toLowerCase().includes('windows')
+      ? [
+          'Windows needs enough free VRAM for the selected model and context window; regular system RAM does not satisfy the GPU memory recommendation.',
+        ]
+      : [];
   }, [selectedEntry, system]);
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
@@ -425,7 +413,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 label={llamaCopy.details}
                 summary={
                   <span data-testid="llamacpp-size-speed">
-                    {factsLine(selectedEntry)}
+                    {/* No size: the option and the button already say it (FR-R2-6). */}
+                    {factsLine(selectedEntry, { size: false })}
                     {largeWarning ? (
                       <>
                         {' · '}
@@ -442,11 +431,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                       {modelDownloadNote(selectedEntry)}
                     </DetailRow>
                     <DetailRow label={detail.expectedSpeed}>{selectedEntry.speed_hint}</DetailRow>
-                    {selectedEntry.suitability_message ? (
-                      <DetailRow label={detail.recommendation}>
-                        {selectedEntry.suitability_message}
-                      </DetailRow>
-                    ) : null}
+                    {/* The fit in plain words, with the two numbers it rests on (FR-R2-6). */}
+                    <DetailRow label={detail.memory}>{fitLine(selectedEntry, system)}</DetailRow>
                     {resourceWarnings.map((warning) => (
                       <DetailRow key={warning} label={detail.detectedMemory}>
                         {warning}

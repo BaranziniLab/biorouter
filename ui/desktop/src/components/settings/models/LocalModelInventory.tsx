@@ -27,7 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
-import { factsLine, isInstalled, stateWord } from './localModelFacts';
+import { factsLine, fitVerdict, isInstalled, stateWord } from './localModelFacts';
 import './models.css';
 
 const formatContext = (value: number | null | undefined) =>
@@ -602,7 +602,11 @@ export default function LocalModelInventory() {
                   )}`
                 : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
             </DetailRow>
-            <DetailRow label={detail.recommendation}>{selectedModel.suitability_message}</DetailRow>
+            {/* The verdict in words; the numbers are the three memory rows above. The daemon's
+                sentence repeated this label and printed `apple_unified` (vision FR-R2-6). */}
+            <DetailRow label={detail.recommendation}>
+              {fitVerdict(selectedModel, snapshot?.system)}
+            </DetailRow>
             {/* Three machine values, one face: the model id and the GGUF spec are as much
                 identifiers as the path below (V4-R2-8; this said "NOT mono" when the list row
                 behind the dialog still printed them, and the row no longer does). */}

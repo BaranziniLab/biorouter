@@ -43,6 +43,20 @@ export const localModelsCopy = {
   /** The one warning word a row shows, and only when the model is bigger than the machine's memory. */
   largeForThisMac: 'Large for this Mac',
   largeForThisComputer: 'Large for this computer',
+  /**
+   * Whether a model fits this machine, in words (`fitVerdict` / `fitLine` in `localModelFacts`).
+   * It replaces the daemon's sentence ("Recommended for this machine: 128 GiB apple_unified meets
+   * the 32 GiB recommendation."), which repeated its row's label and printed a machine id on a
+   * reading surface (vision FR-R2-6).
+   */
+  fitsThisMac: 'Fits this Mac',
+  fitsThisComputer: 'Fits this computer',
+  /** No reading: "VRAM not detected", "Unified memory not detected". */
+  memoryNotDetected: (memory: string) =>
+    `${memory.charAt(0).toUpperCase()}${memory.slice(1)} not detected`,
+  /** `128 GiB unified memory`, `24 GiB VRAM`. */
+  memoryAmount: (gib: number, memory: string) => `${gib} GiB ${memory}`,
+  recommendedMemory: (gib: number) => `${gib} GiB recommended`,
   /** Row facts joined with a middle dot: `4.2 GB · 128k context`. */
   contextWindow: (tokens: number | null | undefined) => {
     if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return null;
@@ -73,6 +87,8 @@ export const localModelsCopy = {
     recommendedMemory: 'Recommended memory',
     detectedMemory: 'Detected memory',
     recommendation: 'Recommendation',
+    /** First run's Details row: the fit, the memory reported and the memory recommended, in one. */
+    memory: 'Memory',
     ollamaModel: 'Ollama model',
     fallbackGguf: 'Fallback GGUF',
     officialUrl: 'Official URL',

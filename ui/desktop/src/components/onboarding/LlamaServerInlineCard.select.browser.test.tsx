@@ -253,7 +253,10 @@ describe('the Llama Server card Model picker (V4-R4-3)', () => {
         await tab.waitForSelector('.br-select-menu', { state: 'detached' });
         const value = await tab.textContent('[data-testid="llamacpp-model-select"]');
         expect(value).toContain('Gemma 4 12B · 7.6 GB · Needs download');
-        expect(await tab.textContent('[data-testid="llamacpp-size-speed"]')).toContain('7.6 GB');
+        // The facts below follow the pick: the size moves to the button, never a third copy in
+        // the Details summary (FR-R2-6).
+        expect(await tab.textContent('[data-testid="llamacpp-start"]')).toContain('7.6 GB');
+        expect(await tab.textContent('[data-testid="llamacpp-size-speed"]')).not.toContain('GB');
       } finally {
         await tab.close();
       }

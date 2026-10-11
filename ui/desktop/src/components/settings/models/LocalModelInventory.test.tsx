@@ -205,6 +205,20 @@ describe('LocalModelInventory', () => {
     expect(within(dialog).getByText(/Fast — ~4B active parameters/)).toBeInTheDocument();
   });
 
+  // FR-R2-6: the Recommendation row printed the daemon's sentence, "Recommended for this machine:
+  // 64 GiB apple_unified meets the 16 GiB recommendation.", which repeated the label and printed a
+  // machine id. The memory numbers are the three rows above it, so the row is the verdict.
+  it('says the fit as a verdict in words in the info dialog, never the machine id', async () => {
+    render(<LocalModelInventory />);
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
+    const dialog = await screen.findByRole('dialog');
+    const fit = within(dialog).getByText(localModelsCopy.detail.recommendation).nextElementSibling;
+    expect(fit).toHaveTextContent(/^Fits this Mac$/);
+    expect(dialog).not.toHaveTextContent('apple_unified');
+    expect(dialog).not.toHaveTextContent('Recommended for this machine.');
+  });
+
   /// The three machine values of the info dialog (the model id, the Hugging Face spec and the
   /// path) are set in ONE face (vision round 2, V4-R2-8). They were mixed: the paths mono at the 13px
   /// code role, the two ids sans (F-21 argued an id is a name because the list row behind the dialog
