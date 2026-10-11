@@ -315,6 +315,16 @@ describe('WorkflowsView dialogs and rows after vision round 1', () => {
     );
   });
 
+  it('opens the Schedule dialog on the dialog, not on a closed Select (V3-20)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+
+    await chooseFromRowMenu('Cohort Review', copy.scheduleItem);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('combobox', { name: 'Repeat every' })).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
+  });
+
   it('marks the row item that opens a confirmation with an ellipsis (V3-21)', async () => {
     mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
     renderView();

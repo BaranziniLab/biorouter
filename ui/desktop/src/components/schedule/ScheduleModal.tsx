@@ -10,6 +10,7 @@ import { getStorageDirectory } from '../../workflow/workflow_management';
 import { Folder } from '../icons/app-icons';
 import { ModalShell } from '../ModalShell';
 import { scheduleDisplayName } from '../../utils/builtins';
+import { focusDialogOnOpen } from './dialogFocus';
 import { scheduleNameProblem } from './scheduleName';
 import { scheduleCopy } from './copy';
 
@@ -146,6 +147,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       }}
       size="md"
       purpose={isLoadingExternally ? 'required' : 'form'}
+      // Editing has no text field, so the first tabbable would be a closed Select wearing the
+      // focus surface after a mouse open (V3-20); creating opens on the Name field instead.
+      onOpenAutoFocus={isEditMode ? focusDialogOnOpen : undefined}
       title={isEditMode ? copy.editTitle : copy.newTitle}
       subtitle={schedule ? scheduleDisplayName(schedule.id) : undefined}
       scrollBody

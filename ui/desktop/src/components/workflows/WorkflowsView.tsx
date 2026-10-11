@@ -29,6 +29,7 @@ import CreateEditWorkflowModal from './CreateEditWorkflowModal';
 import { generateDeepLink, Workflow } from '../../workflow';
 import { useNavigation } from '../../hooks/useNavigation';
 import { CronPicker } from '../schedule/CronPicker';
+import { focusDialogOnOpen } from '../schedule/dialogFocus';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import { startChatFailureNotice } from '../../utils/startChatFailure';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
@@ -568,6 +569,8 @@ export default function WorkflowsView() {
           }}
           size="md"
           purpose="form"
+          // Selects only, no text field: the dialog takes focus, not a closed trigger (V3-20).
+          onOpenAutoFocus={focusDialogOnOpen}
           title={copy.schedule.title}
           subtitle={scheduleWorkflowManifest.workflow.title}
           footer={
