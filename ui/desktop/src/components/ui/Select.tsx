@@ -1,6 +1,11 @@
 import React from 'react';
-import ReactSelect, { components as selectComponents, type OptionProps } from 'react-select';
-import { CheckIcon } from '../icons/app-icons';
+import ReactSelect, {
+  components as selectComponents,
+  type ClearIndicatorProps,
+  type DropdownIndicatorProps,
+  type OptionProps,
+} from 'react-select';
+import { CheckIcon, ChevronDown, X } from '../icons/app-icons';
 import {
   MENU_GROUP_LABEL_CLASS_NAME,
   MENU_ROW_CLASS_NAME,
@@ -75,11 +80,39 @@ function SelectOption(props: OptionProps) {
   );
 }
 
+/**
+ * The chevron and the clear mark are the app's own 16px, stroke-1.5 glyphs, not the library's
+ * filled `DownChevron` and `CrossIcon`, which drew a heavier pair than every other control in
+ * the app (vision V4-28, V3-20: Switch models' two selects and the workflow Schedule dialog).
+ * Passing `children` is react-select's own seam (`children || <DownChevron />`), so the
+ * indicator keeps its handlers, its `aria-hidden` and its `isDisabled` state.
+ */
+function SelectDropdownIndicator(props: DropdownIndicatorProps) {
+  return (
+    <selectComponents.DropdownIndicator {...props}>
+      <ChevronDown className="size-4" aria-hidden />
+    </selectComponents.DropdownIndicator>
+  );
+}
+
+function SelectClearIndicator(props: ClearIndicatorProps) {
+  return (
+    <selectComponents.ClearIndicator {...props}>
+      <X className="size-4" aria-hidden />
+    </selectComponents.ClearIndicator>
+  );
+}
+
 export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
   return (
     <ReactSelect
       {...props}
-      components={{ Option: SelectOption, ...props.components }}
+      components={{
+        Option: SelectOption,
+        DropdownIndicator: SelectDropdownIndicator,
+        ClearIndicator: SelectClearIndicator,
+        ...props.components,
+      }}
       unstyled
       isSearchable={props.isSearchable !== false}
       closeMenuOnSelect={props.closeMenuOnSelect !== false}
@@ -108,6 +141,9 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         singleValue: () => 'text-text-default',
         input: () => 'text-text-default',
         dropdownIndicator: () => 'text-text-muted transition-transform',
+        // `unstyled` leaves the clear mark with no padding; 4px each side keeps a 24px target
+        // beside the chevron, and it warms to the default ink under the pointer like a ghost icon.
+        clearIndicator: () => 'cursor-pointer px-1 text-text-muted hover:text-text-default',
         // --radius-container (12px), matching every other floating surface (§4.5). It opens the
         // way every other menu does (`.br-select-menu` in main.css: opacity, scale .97 and 4px
         // toward the side it hangs from, over `--dur-fast-max`); react-select unmounts it on

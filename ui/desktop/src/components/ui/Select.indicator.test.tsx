@@ -1,5 +1,5 @@
-import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { Select } from './Select';
 
 /**
@@ -29,7 +29,67 @@ describe('the shared Select’s chosen option', () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const source = readFileSync(join(__dirname, 'Select.tsx'), 'utf8');
-    expect(source).toMatch(/components=\{\{ Option: SelectOption, \.\.\.props\.components \}\}/);
+    // Ours first, the caller's last: a call site that passes its own `components` still wins.
+    expect(source).toMatch(
+      /components=\{\{\s*Option: SelectOption,\s*DropdownIndicator: SelectDropdownIndicator,\s*ClearIndicator: SelectClearIndicator,\s*\.\.\.props\.components,\s*\}\}/
+    );
     expect(source).toMatch(/option:\s*\(base\)\s*=>\s*\(\{\s*\.\.\.base,\s*display:\s*'flex'/);
+  });
+});
+
+/**
+ * V4-28 / V3-20: react-select draws its own filled chevron and cross (20px, `fill: currentColor`).
+ * Both are the app's 16px stroke-1.5 glyphs now, so the pair is no heavier than any other control.
+ */
+describe('the shared Select’s indicators', () => {
+  it('draws the app’s own chevron and clear mark, not the library’s filled ones', () => {
+    const { container } = render(
+      <Select
+        aria-label="Schedule"
+        options={OPTIONS}
+        value={OPTIONS[0]}
+        isClearable
+        classNamePrefix="s"
+      />
+    );
+    const chevron = container.querySelector('.s__dropdown-indicator svg');
+    const cross = container.querySelector('.s__clear-indicator svg');
+    expect(chevron).not.toBeNull();
+    expect(cross).not.toBeNull();
+    for (const glyph of [chevron!, cross!]) {
+      // The library's own icons carry width/height 20 and no class; ours are 16px by class.
+      expect(glyph.getAttribute('width')).not.toBe('20');
+      expect(glyph.getAttribute('class')).toMatch(/\bsize-4\b/);
+      expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    }
+    expect(chevron!.getAttribute('class')).toMatch(/chevron-down/);
+    expect(cross!.getAttribute('class')).toMatch(/lucide-x\b/);
+  });
+
+  it('keeps the clear mark working: a press empties the value', () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <Select
+        aria-label="Schedule"
+        options={OPTIONS}
+        value={OPTIONS[0]}
+        onChange={onChange}
+        isClearable
+        classNamePrefix="s"
+      />
+    );
+    const clear = container.querySelector('.s__clear-indicator')!;
+    fireEvent.mouseDown(clear, { button: 0 });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][0]).toBeNull();
+  });
+
+  it('gives the clear mark the muted ink and a hover to the default ink', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const source = readFileSync(join(__dirname, 'Select.tsx'), 'utf8');
+    expect(source).toMatch(
+      /clearIndicator:\s*\(\)\s*=>\s*'[^']*text-text-muted[^']*hover:text-text-default[^']*'/
+    );
   });
 });
