@@ -207,6 +207,47 @@ describe('Chat history rows in a real layout engine', () => {
     }
   });
 
+  /**
+   * Vision V1-R2-6. A modal menu takes the pointer, so `:hover` ends on the row it was opened
+   * from. The sidebar's row keeps its ground while its menu is open; History's did not, so
+   * the row being acted on was unmarked while its actions showed. The right-click menu marks
+   * the row with Radix's `data-state="open"`; the `⋯` menu with the row's own
+   * `data-menu-open`.
+   */
+  it('keeps the hover ground on a row whose menu is open, from either menu', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const ground = (id: string) =>
+        tab.evaluate((el) => getComputedStyle(document.getElementById(el)!).backgroundColor, id);
+      const settled = (id: string, colour: string) =>
+        tab.waitForFunction(
+          ([el, want]) => getComputedStyle(document.getElementById(el)!).backgroundColor === want,
+          [id, colour] as const
+        );
+      // Pointer elsewhere, as it is while a menu holds it.
+      await tab.mouse.move(990, 590);
+      expect(await ground('a')).toBe('rgba(0, 0, 0, 0)');
+
+      await tab.evaluate(() => document.getElementById('a')!.setAttribute('data-state', 'open'));
+      await settled('a', 'rgb(240, 240, 240)');
+      await tab.evaluate(() => document.getElementById('b')!.setAttribute('data-menu-open', ''));
+      await settled('b', 'rgb(240, 240, 240)');
+      // Only the row whose menu is open: its neighbours keep the resting ground.
+      expect(await ground('c')).toBe('rgba(0, 0, 0, 0)');
+      expect(await ground('d')).toBe('rgba(0, 0, 0, 0)');
+
+      // A Radix menu that has closed says `closed`, and the ground goes with it.
+      await tab.evaluate(() => document.getElementById('a')!.setAttribute('data-state', 'closed'));
+      await settled('a', 'rgba(0, 0, 0, 0)');
+      // The same value a hover paints, so the two are one ground and not two near ones.
+      await tab.hover('#c-open');
+      await settled('c', 'rgb(240, 240, 240)');
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('fades the reveal over --dur-fast-min when motion is allowed', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await browser!.newPage({ reducedMotion: 'no-preference' });

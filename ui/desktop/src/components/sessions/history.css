@@ -49,6 +49,22 @@
   padding: 8px 12px;
 }
 
+/* A row whose menu is open keeps the hover ground (vision V1-R2-6). A modal menu takes the
+   pointer, so `:hover` ends on the row it was opened from, and the row being acted on lost the
+   one mark that said so while its actions stayed visible. The sidebar's row keeps its ground
+   the same way. Keyed on the right-click menu's own `data-state` (Radix puts it on the
+   trigger, which is this row) and on `data-menu-open`, which the row sets for its `⋯` menu,
+   because that trigger sits inside a Tooltip whose own `data-state` would overwrite the
+   menu's. The wash is the shared recipe's (`--overlay-hover`), and a control inside the row
+   steps back one ground exactly as it does under `:hover`. Authored here, not a Tailwind
+   `data-[state=open]:` variant: a newly written utility can silently fail to generate. */
+.br-history-row:is([data-state='open'], [data-menu-open]) {
+  background-color: var(--overlay-hover);
+  --br-control-ground: var(--background-default);
+  --br-control-hover: var(--background-fill-strong);
+  --br-track-ground: var(--background-fill-strong);
+}
+
 /* The open control is the whole text block: title, then one muted line. */
 .br-history-row-open {
   display: flex;

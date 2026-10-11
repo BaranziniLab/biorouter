@@ -27,6 +27,30 @@ describe('Share on a saved transcript while it is unavailable', () => {
   });
 });
 
+describe('a row whose menu is open (V1-R2-6)', () => {
+  const rule = HISTORY_CSS.match(
+    /\.br-history-row:is\(\[data-state='open'\],\s*\[data-menu-open\]\)\s*\{([^}]*)\}/
+  );
+
+  /**
+   * A modal menu removes `:hover` from the row it opened from. The right-click menu marks the
+   * row with Radix's `data-state="open"`, the `⋯` menu with `data-menu-open` (its trigger sits in
+   * a Tooltip whose own `data-state` would overwrite the menu's), and both must paint the same
+   * wash as the shared row's `:hover`, or the row being acted on is unmarked.
+   */
+  it('keeps the shared hover wash, from either menu', () => {
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toMatch(/background-color:\s*var\(--overlay-hover\)/);
+    const shared = MAIN_CSS.match(/\.biorouter-list-row:hover,[^{]*\{([^}]*)\}/);
+    expect(shared?.[1]).toMatch(/background-color:\s*var\(--overlay-hover\)/);
+  });
+
+  it('steps a control inside the row back one ground, as a hovered row does', () => {
+    expect(rule![1]).toMatch(/--br-control-ground:\s*var\(--background-default\)/);
+    expect(rule![1]).toMatch(/--br-control-hover:\s*var\(--background-fill-strong\)/);
+  });
+});
+
 describe('the loading skeleton', () => {
   const block = MAIN_CSS.match(
     /@ws WS-HISTORY begin: history loading[\s\S]*?@ws WS-HISTORY end: history loading/

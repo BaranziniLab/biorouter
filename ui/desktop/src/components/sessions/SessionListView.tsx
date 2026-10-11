@@ -435,6 +435,11 @@ const HistoryRow = React.memo(function HistoryRow({
         <div
           className="biorouter-list-row br-history-row session-item"
           data-session-id={session.id}
+          // A row whose menu is open keeps the hover ground (`history.css`): the pointer
+          // is over the menu, and the modal menu removes `:hover`, so without it the row
+          // being acted on is unmarked. The right-click menu says so through the row's
+          // own `data-state` (Radix puts it on the trigger); the `⋯` menu through this.
+          data-menu-open={menuOpen || undefined}
           onKeyDown={handleKeyDown}
         >
           {/* The glyph says what the chat is and whether it is private; the
