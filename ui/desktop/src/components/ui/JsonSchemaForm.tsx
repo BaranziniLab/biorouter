@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useId } from 'react';
 import { Input } from './input';
 import { Checkbox } from './Checkbox';
 import { Button } from './button';
@@ -6,6 +6,8 @@ import { cn } from '../../utils';
 
 interface JsonSchemaProperty {
   type?: string;
+  /** The field's name for a person ("Cohort"). The key ("cohort", "sample_id") is the fallback. */
+  title?: string;
   description?: string;
   default?: unknown;
   enum?: string[];
@@ -59,6 +61,12 @@ export default function JsonSchemaForm({
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Every field's id is the form's own prefix plus its key, never the bare key: two elicitation
+  // cards in one chat that both ask for `cohort` would otherwise put two `id="cohort"` on the
+  // page, and the second card's label would name the first card's field (WS-TOOLS-2).
+  const idPrefix = useId();
+  const fieldId = (key: string) => `${idPrefix}field-${key}`;
 
   const validateField = useCallback(
     (key: string, value: unknown): string | null => {
@@ -145,7 +153,7 @@ export default function JsonSchemaForm({
     if (prop.enum) {
       return (
         <select
-          id={key}
+          id={fieldId(key)}
           value={String(value ?? '')}
           onChange={(e) => handleChange(key, e.target.value)}
           disabled={disabled}
@@ -173,12 +181,14 @@ export default function JsonSchemaForm({
         <label className="flex items-center gap-2 cursor-pointer">
           {/* The shared Checkbox (spec 2.6): a 16px box in a 24px target, 8px from its label. */}
           <Checkbox
-            id={key}
+            id={fieldId(key)}
             checked={Boolean(value)}
             onChange={(e) => handleChange(key, e.target.checked)}
             disabled={disabled}
           />
-          <span className="text-label text-text-default">{prop.description || key}</span>
+          <span className="text-label text-text-default">
+            {prop.title || prop.description || key}
+          </span>
         </label>
       );
     }
@@ -187,7 +197,7 @@ export default function JsonSchemaForm({
       return (
         <Input
           type="number"
-          id={key}
+          id={fieldId(key)}
           value={String(value ?? '')}
           onChange={(e) => {
             const numValue =
@@ -206,7 +216,7 @@ export default function JsonSchemaForm({
     return (
       <Input
         type="text"
-        id={key}
+        id={fieldId(key)}
         value={String(value ?? '')}
         onChange={(e) => handleChange(key, e.target.value)}
         minLength={prop.minLength}
@@ -231,6 +241,11 @@ export default function JsonSchemaForm({
           return (
             <div key={key} className="flex flex-col gap-1">
               {renderField(key, prop)}
+              {/* A titled checkbox reads its title, so its description is the line under it, as
+                  every other field's is. An untitled one reads the description as its label. */}
+              {prop.title && prop.description && (
+                <span className="text-supporting text-text-muted">{prop.description}</span>
+              )}
               {error && <span className="text-text-danger text-supporting">{error}</span>}
             </div>
           );
@@ -238,8 +253,10 @@ export default function JsonSchemaForm({
 
         return (
           <div key={key} className="flex flex-col gap-1">
-            <label htmlFor={key} className="text-label text-text-default">
-              {key}
+            {/* The schema's `title` is the name a person reads; the key is a machine name
+                (principle 10), shown only when the schema gives no title. */}
+            <label htmlFor={fieldId(key)} className="text-label text-text-default">
+              {prop.title || key}
               {isRequired && <span className="text-text-danger ml-1">*</span>}
             </label>
             {prop.description && prop.type !== 'boolean' && (
