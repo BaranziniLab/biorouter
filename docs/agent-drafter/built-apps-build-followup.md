@@ -1,5 +1,7 @@
 # Built-app build and serve followup
 
+Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](built-apps-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
+
 The build lane continues commit `a423670d5` in the isolated worktree
 `/Users/wgu/Desktop/BioRouter/.claude/worktrees/built-apps-build-followup`, branch
 `codex/built-apps-build-followup`. The seven findings in

@@ -1,10 +1,11 @@
 # Built apps hardening: handoff
 
-Status: integrated implementation; final acceptance verification in progress, October 10, 2026.
+Status: implementation and native acceptance complete, October 11, 2026. Current CI and artifact
+verification are recorded in the linked PR checks and final PR verification record.
 
 Continue in `/Users/wgu/Desktop/BioRouter/.claude/worktrees/biorouter-built-apps-testing-cc226e`,
 on `claude/biorouter-built-apps-testing-cc226e`. The upstream base is `30e1f0622`.
-[PR #392](https://github.com/BaranziniLab/biorouter/pull/392) is a draft. Commits are pushed
+[PR #392](https://github.com/BaranziniLab/biorouter/pull/392) carries the integrated change. Commits are pushed
 periodically; inspect `git status`, `git log` and the PR head before resuming. The main checkout
 and the original QA profile have been preserved.
 
@@ -26,7 +27,10 @@ manifests carry no source chat identifier.
 Launcher, Full and bundled-daemon export requests now reach a shared Rust ZIP implementation.
 It exports raw entry HTML, preserves binary assets and executable launchers, excludes working
 files and secrets, and includes only selected custom skills and authorized knowledge bases.
-Recipient synchronization preserves independent edits and distinguishes competing export folders.
+First-run launchers import included knowledge through the authenticated daemon API, preserve
+privacy/ownership rules, bind allocated IDs and retry from per-archive receipts. Recipient
+synchronization preserves independent edits and distinguishes competing export folders. Node
+and PowerShell normalize Windows short/long aliases of the same physical export folder.
 
 The desktop and Linux CLI packages ship pinned, integrity-checked esbuild. Build staging handles
 CSS, SDK import variants and failed builds without corrupting the app. Authored static scripts
@@ -67,9 +71,10 @@ Do not print or commit credentials. The original profile and installed app are n
 
 Rebuild the branch's daemon and Electron app before testing. A debug build may use the
 `biorouter/privacy-test-auth` seam for this controlled profile; a release must omit it.
-Record actual native folder-picker exports, default-browser opening, build-chat states,
-managed preview figures, all three recipient modes, forced source rebuilds, binary bytes,
-exclusions and real agent responses in the ledger. Keep CI evidence tied to its exact head.
+The ledger records actual native folder-picker exports, default-browser opening, build-chat
+states, managed preview figures, all three recipient modes, forced source rebuilds, binary bytes,
+exclusions, real knowledge-tool retrieval and provider responses. Full and fat recipient replays
+reused their daemon without duplicate knowledge imports. Keep CI evidence tied to its exact head.
 Run the formatter, strict clippy and `just check-everything` before pushing source changes.
 
 ## Deliberate design limits

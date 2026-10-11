@@ -1,114 +1,115 @@
 # Built apps hardening verification
 
-Status: integration verification in progress, October 10, 2026.
+Implementation and native acceptance completed October 11, 2026. Merge readiness is
+recorded by the [current PR checks](https://github.com/BaranziniLab/biorouter/pull/392/checks)
+and the final verification record in [PR #392](https://github.com/BaranziniLab/biorouter/pull/392).
+A passing older checkpoint does not replace checks on the current PR head.
 
-The original handoff's implementation and interrupted review fixes are integrated in
-`claude/biorouter-built-apps-testing-cc226e`, in
-`/Users/wgu/Desktop/BioRouter/.claude/worktrees/biorouter-built-apps-testing-cc226e`.
-The local and pushed implementation checkpoints both resolve to
-`aff68dd6192f723a08525c17d7ef3b4da31d3ca6`. `origin/main` remains `30e1f0622`.
-The main checkout and original QA profile were preserved.
+Continue in `/Users/wgu/Desktop/BioRouter/.claude/worktrees/biorouter-built-apps-testing-cc226e`,
+on `claude/biorouter-built-apps-testing-cc226e`. The upstream base is `30e1f0622`.
+The original handoff was `a423670d5`; the completed payload implementation is
+`cd56d90cb`, the Windows source-alias correction is `21b770408`, and the Crew fixture
+readiness correction is `d74b2985d`. The main checkout and original QA profile were preserved.
 
-Four isolated workstreams contributed the followups:
+Four isolated worktrees contributed reviewed fixes:
 
 - [Security and lifecycle](built-apps-security-followup.md)
 - [Export and recipient synchronization](built-apps-export-followup.md)
 - [Build and browser serving](built-apps-build-followup.md)
 - [Desktop navigation, authentication and file writes](built-apps-desktop-followup.md)
 
-## Verification ledger
+## Completed verification
 
-Only completed checks are marked passed. Source review is not runtime evidence.
+Source review, generated-launcher fixtures, real browser tests and native application
+acceptance are distinct evidence. Only observed results are marked passed below.
 
-| Check                                                               | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Independent review of all 21 interrupted-review findings            | Implementation dispositions recorded in the four reports; runtime acceptance is tracked separately below                                                                                                                                                                                                                                                                                                                                                               |
-| Combined `CARGO_BUILD_JOBS=2 just check-everything`                 | Six completed runs passed, including `f24ccb938`, `3c0a514e5` and `aff68dd61`                                                                                                                                                                                                                                                                                                                                                                                          |
-| UI repository Prettier check, Node 24.10.0                          | Passed                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| SDK DOM/WebSocket control harness (jsdom)                           | 167 assertions passed; this does not execute figure scripts in Chrome                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Pinned esbuild packaging regressions                                | 6 passed                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Export appcheck regressions                                         | 3 passed                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Workspace Rust libraries and binaries                               | Clean rerun completed: core 4,726 passed / 2 ignored; ACP 17; bench 1; Crew 23; CLI 766; sandbox 21; server library 975 passed / 1 ignored; daemon binary 902 passed / 1 ignored. MCP had 1,795 passed / 6 ignored and one legacy fat-export fixture failure, subsequently corrected; the affected Agent Drafter suite then passed 368 / 2 ignored / 1,434 filtered                                                                                                    |
-| UI full Vitest suite                                                | [Corrected CI checkpoint `cd20bf3b2`](https://github.com/BaranziniLab/biorouter/actions/runs/38116708108): 754 files passed, 10,552 tests passed, 19 skipped (10,571 total). The `3c0a514e5` run is in progress. Focused current export tests: 14 passed; credential tests: 15 passed                                                                                                                                                                                  |
-| UI examples, privacy wiring and real socket retirement integrations | `ui_example_apps`: 5 passed / 1 ignored; `privacy_guard_wiring`: 3 passed; `app_socket_lifecycle`: 5 passed, including actual TCP socket retirement and credential revocation after deletion                                                                                                                                                                                                                                                                           |
-| Real daemon CSP/browser regression                                  | 12 Chrome assertions passed against a real binary: authored scripts/handlers, injected markup refusal, binder replay refusal and frame path. Final rebuild and repeat remain required after the recipient payload correction                                                                                                                                                                                                                                           |
-| UI build and debug privacy-test binary                              | Passed at the tested checkpoint; repeat after the recipient payload correction                                                                                                                                                                                                                                                                                                                                                                                         |
-| Electron Launch and build-chat navigation                           | Static and agentic Launch reached the daemon directly; static BMI interaction updated; real Versa GPT-5.5 replied and displayed the fictional donut chart. Existing build chats opened correctly; deleting a chat in the backed-up test copy produced disabled “Build chat deleted” feedback                                                                                                                                                                           |
-| In-chat managed preview                                             | The native chat link reached Session ready on the daemon origin. A real provider turn completed the figure tools; the same-app figure frame appeared in the accessibility tree. After scrolling, the native preview visibly rendered the donut colors and legend: A=1 (33.3%), B=2 (66.7%). Open in browser successfully focused the existing Chrome app tab                                                                                                           |
-| Native Launcher, Full and Full + bundled daemon exports             | All three native folder exports completed; binary assets matched byte for byte, exclusions held, and launcher modes were 0755. The fat export contained the selected 393 MB daemon and 10 MB native esbuild 0.27.3                                                                                                                                                                                                                                                     |
-| Fresh Launcher recipient                                            | Passed with its own provider configuration and a fresh root; the real agent replied                                                                                                                                                                                                                                                                                                                                                                                    |
-| Fresh Full and fat recipients                                       | Both reached Session ready and imported the selected skill. Included knowledge payloads were only staged, and dependent calls returned MissingKB. API-based import correction and complete functional reruns remain required                                                                                                                                                                                                                                           |
-| Fat recipient native compiler                                       | With an OS-only PATH and no compiler override, an obsolete SDK and edited source forced a real rebuild; the resulting DOM confirmed the new compiled marker. Final repeat remains required after the payload correction                                                                                                                                                                                                                                                |
-| Platform CI, including Windows PowerShell                           | [PR #392](https://github.com/BaranziniLab/biorouter/pull/392) remains a draft. At `3c0a514e5`, all five native compiler staging jobs and Linux cross checks passed; full Rust CI is in progress. Windows failed before Rust at the portable PowerShell check because Get-FileHash required an unavailable module. `aff68dd61` uses .NET stream hashing; four actual portable PowerShell checks pass locally. Windows PowerShell 5.1 and current-head CI remain pending |
+| Check                                 | Observed result                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Interrupted reviews                   | All 21 findings have implementation dispositions in the four reports, with independent followup review.                                                                                                                                                                                                                                                                          |
+| Combined required gates               | Nine completed `CARGO_BUILD_JOBS=2 just check-everything` runs passed, most recently at `d74b2985d`: formatter, strict clippy, UI lint, schema, version, brand, capability naming, cross drift and both registry checks.                                                                                                                                                         |
+| Agent Drafter Rust namespace          | 369 passed, 2 ignored, 1,434 filtered after the knowledge-import correction. This filtered run does not claim coverage of the other crates.                                                                                                                                                                                                                                      |
+| Full workspace Rust diagnostic rerun  | Core 4,726 passed / 2 ignored; ACP 17; bench 1; Crew 23; CLI 766; sandbox 21; server library 975 passed / 1 ignored; daemon binary 902 passed / 1 ignored. MCP had 1,795 passed / 6 ignored and one legacy fat-export fixture failure, subsequently corrected. Final platform-wide CI is tracked at the current PR head.                                                         |
+| Full UI Vitest checkpoint             | [Run at `21b770408`](https://github.com/BaranziniLab/biorouter/actions/runs/38121608515): 754 files, 10,553 tests passed, 19 skipped; 400.97 seconds. A later Crew startup race was corrected without removing assertions; that file passed 53 tests and the previously failing case passed again. Final full-suite status belongs to the current PR head.                       |
+| Focused UI checks                     | Export tests: 14 passed; captured-credential tests: 15 passed; source console census: 31 passed; repository UI Prettier check passed.                                                                                                                                                                                                                                            |
+| SDK and compiler checks               | SDK DOM/WebSocket harness: 167 assertions passed in jsdom; pinned compiler packaging: 6 passed; export appcheck: 3 passed.                                                                                                                                                                                                                                                       |
+| Integration tests                     | UI examples: 5 passed / 1 ignored; privacy wiring: 3 passed; real socket retirement: 5 passed, including actual TCP closure and token revocation after deletion.                                                                                                                                                                                                                 |
+| Real daemon / Chrome policy           | Repeated after the payload rebuild: 12 assertions passed for authored scripts, window/form-scoped handlers, navigation cancellation, injected-handler refusal, binder replay refusal and cloned-template refusal.                                                                                                                                                                |
+| Real CLI serve protocol               | 8 assertions passed: loopback authentication/exchange, no-store shell, plain HTTP LAN shell and exchange refusal, forged forwarding-header refusal, script-fetch refusal and modern HTTPS proxy navigation. The test listener bound only to loopback.                                                                                                                            |
+| Native Launch and build chats         | Static and agentic Launch opened the daemon origin in the default browser. The BMI control changed the computed result. The final production rebuild read the fictional knowledge page through the real provider and returned `FINAL_LAUNCH_QA_OK`. Existing build chats opened. Deleting a backed-up chat in the isolated copy produced disabled “Build chat deleted” feedback. |
+| Native managed preview                | A saved link to the old daemon port rebound to the new daemon origin after restart and reached Session ready. A real provider turn rendered the same-app donut frame visibly: A=1 (33.3%), B=2 (66.7%). Open in browser opened the new origin.                                                                                                                                   |
+| Native error feedback and file writes | A missing app produced “Could not open the app” / “This app no longer exists.” Workflow and hints saves succeeded with expected bytes in the allowed project; refused targets produced failure feedback without changing the target. The disposable hints fixture was restored.                                                                                                  |
+| All three native folder exports       | Launcher, Full and Full + bundled daemon completed through the native picker. Binary assets matched byte for byte, secret/workspace exclusion canaries were absent, source chat IDs were absent, and launchers were 0755.                                                                                                                                                        |
+| Full/fat payload contents             | Both carried one selected custom skill and one authorized knowledge archive. The fat export paired the selected 393,256,360-byte daemon with native esbuild 0.27.3 (10,385,170 bytes); both were 0755.                                                                                                                                                                           |
+| Fresh Full recipient                  | Executed `run.command` with only its own provider configuration initially present. First-run authenticated import registered the included base and installed the skill. Real `knowledge__kb_read_page` returned the fictional page phrase, then the provider returned `FULL_V2_RECIPIENT_QA_OK`.                                                                                 |
+| Fresh fat recipient                   | Executed `run.command` with an OS-only PATH, no external daemon/compiler and no Node override. An obsolete SDK and edited source forced its bundled compiler to rebuild; the DOM showed the new marker. Included knowledge retrieval, real provider reply and the visible donut figure all passed; no browser errors were captured.                                              |
+| Fresh Launcher recipient              | Initially showed its missing-dependency warning and returned a real provider reply. After independently installing the documented recipient prerequisites, the same thin export read the existing knowledge page successfully. Launcher exports intentionally carry no skill/knowledge payload.                                                                                  |
+| Recipient replay                      | Full and fat reruns reused their own daemon. Knowledge registries and import receipts stayed byte-identical; no additional imports occurred.                                                                                                                                                                                                                                     |
+| Generated launcher parity             | Actual Bash, Node and portable PowerShell templates passed authenticated import, collision/chained-ID mapping, partial failure/retry, consent, independent-edit preservation, skill backups and receipt tests. Windows short/long path replay additionally checks that PowerShell and Node share receipts.                                                                       |
 
-The source-based console census passes all 31 checks. The captured launch credentials
-are now checked structurally, and the focused credential suites pass all 15 tests.
-The assembled website generator also passes its check. These corrections do not
-substitute for the full UI suite or the native acceptance checks below.
+The native recipient proof exercised actual knowledge registration and agent tool access;
+staging an archive or reaching Session ready alone would not establish that result.
+Test prompts and the knowledge verification page were fictional. The real provider was
+Versa Azure with the configured GPT-5.5 model. No local model or mocked provider was used
+for those recipient replies.
 
-The earlier full Vitest run at `658ed8c4` had 753 files passed and one failed;
-10,551 tests passed, one failed and 19 were skipped. Its sole failure was the
-formatting-sensitive captured-credential assertion. The structural repair retained
-the owning-window and captured-secret checks; the later `cd20bf3b2` full run passed.
+## Resolved diagnostic failures
 
-The first full Rust run passed 4,726 core tests (2 ignored), 765 CLI tests, 1,790 MCP
-tests (6 ignored), 970 server library tests (1 ignored) and 897 daemon binary tests
-(1 ignored). The failures were: one lock-mode fixture affected by sandboxed chmod,
-one proxy fixture that accidentally fell back from a Hermit script interpreter to a
-real daemon, and the HTTP shipped-bundle filter in each server target plus four
-test-root guards in each. These counts document the diagnostic run and are not a
-passing-suite claim.
+Earlier Full/fat recipients reached Session ready but returned MissingKB because their
+archives were only staged. `cd56d90cb` imports archives through the authenticated existing
+daemon API, preserves privacy/ownership rules, maps allocated IDs and records per-archive
+receipts before installing skills. Fresh functional reruns above passed.
 
-The clean MCP rerun's remaining legacy fat-export fixture failure was corrected in
-`68f88b9b7` by exercising the public packaged-compiler contract. The later complete
-Agent Drafter namespace rerun passed as recorded above; this is not a claim that
-another full workspace rerun has completed after every subsequent source change.
+Actual Windows PowerShell 5.1 first exposed unavailable `Get-FileHash` module discovery.
+The streaming .NET hashing replacement passed all four Windows runtime-digest cases.
+The next run showed PowerShell expanding an 8.3 source path while Node retained its short
+spelling. `21b770408` uses native physical-path normalization and retains an alias replay
+regression. The actual PowerShell 5.1 runtime-digest and full-payload steps both passed at
+`21b770408`, including short-path and cross-launcher receipt reuse. Final whole-job status
+still belongs to the current PR head.
 
-The bundled export followup now stages the selected daemon's own native esbuild,
-verifies the staged binary reports pinned version 0.27.3 within five seconds, and
-publishes both binaries together. A missing or rejected helper produces an explicit
-thin-export note with no partial daemon payload. Backend and desktop extraction
-restore executable modes for both binaries. The fresh recipient test must force a
-rebuild without an external compiler to verify this path; that check has now passed
-for the tested fat export. Knowledge import is a separate unresolved acceptance
-failure and prevents marking Full/fat recipient functionality complete.
+A later full Vitest run exposed an unchanged Crew test clicking its synthetic access button
+before channel observation settled. The fixture now awaits the observed channel before
+one click; finished-state text, absence of Allow and the Open chat assertions remain.
+The focused file passed; the final full-suite result is recorded on the PR.
 
-## Remaining acceptance work
+The first full Rust diagnostic run also found HTTP seeded-bundle filtering, a Hermit
+interpreter fallback in a proxy fixture, outer-profile test-root conflicts and a sandboxed
+chmod fixture issue. Those were corrected before the clean rerun. None of these failed
+runs is represented as a passing full suite.
 
-- Finish the API-based import of included knowledge bases, rebuild the UI and debug
-  daemon, and repeat affected browser and recipient checks. Full and fat recipients
-  must use their included knowledge base successfully and receive real provider replies.
-- The native managed-preview figure and Open in browser success path passed on
-  the tested binary. Repeat affected checks after the final rebuild, and complete
-  browser failure feedback and allowed/denied hints/workflow file-write checks if
-  their live evidence has not yet been captured.
-- Capture completed full Vitest and Rust CI at the final pushed commit, including the
-  native Windows PowerShell 5.1 digest regression and final combined required gates.
-- Push the final integrated checkpoints and reconcile this ledger with the final
-  PR/CI results. No final shipping or release claim is made by this checkpoint.
+## CI and artifact delivery gate
 
-## Controlled live profile
+Require the current PR head's three platform Rust test jobs, full Vitest, no-ai-coauthor
+and all other requested checks before marking the PR ready. Record completed run links,
+source SHA and packaging assertions in the final PR verification record. Linux package
+verification includes installing GUI/CLI packages in clean Debian/Rocky containers.
+The installed CLI package compiler at `/usr/libexec/biorouter/esbuild` executes, reports
+0.27.3 and compiles source into a nonempty bundle. The GUI compiler is separately
+staged and checked as shipped payload; the workflow does not execute the compiler
+extracted from the GUI package. A successful merge or source build alone is not a release claim.
 
-The live test copy is `/private/tmp/built-apps-final-qa/runs/gui`, copied from the original
-`/Users/wgu/biorouter-runs/built-apps-qa` profile. Only the copy is used for writes and
-disposable lifecycle tests. Test input is fictional. The provider is Versa Azure, using
-the configured GPT-5.5 model; no local model is used. Credentials are neither printed
-nor included in exports or committed evidence.
+## Controlled profile and retained evidence
 
-Recipient tests keep the real `HOME` unchanged and select fresh temporary roots through
-`BIOROUTER_PATH_ROOT`. The debug-only `biorouter/privacy-test-auth` seam may be armed for
-controlled QA; it must never be included in a release artifact.
+Native tests used `/private/tmp/built-apps-final-qa/runs/gui`, copied from
+`/Users/wgu/biorouter-runs/built-apps-qa`. Only the copy was modified. Recipient roots were
+fresh temporary directories selected by `BIOROUTER_PATH_ROOT`; the real HOME stayed unchanged.
+Private execution logs and sanitized result JSON are under `/private/tmp/built-apps-final-qa/`.
+Credentials, launch access links and raw private logs are neither exported nor committed.
 
-Private execution logs are under `/private/tmp/built-apps-final-qa/`. Only sanitized
-counts and observed behavior are recorded here; private identifiers, credentials,
-access links and raw logs are omitted.
+The debug-only `biorouter/privacy-test-auth` seam was used solely in controlled QA builds.
+It must never be compiled into a release. The installed app and original QA profile were
+not changed. Test daemons must be stopped only after verifying their exact PID and path.
 
-## Deliberate remaining design limits
+## Deliberate design limits
 
-Per-app origins, privacy classification of apps and trusted identity stamping for legacy
-build-chat records require separate designs. The interim browser isolation uses navigation
-metadata and opener policy. Plain HTTP on a network address now refuses both app pages and
-the secret-bearing serve shell; use loopback or a correctly configured HTTPS deployment.
+Per-app origins/storage, app privacy classification and trusted identity stamps for legacy
+build-chat records need separate designs. Browser isolation relies on modern navigation
+metadata and opener support; legacy loopback clients without those headers remain supported.
+Plain HTTP network addresses now refuse both app pages and the secret-bearing serve shell.
+Use loopback or a correctly configured HTTPS deployment. Extension registry references are
+recorded rather than universally bundled. Same-user parent-directory swaps and already
+submitted background knowledge jobs need separate containment designs. Exports target the
+exporting daemon's OS/architecture and require the recipient's own provider configuration.
+
 See [browser access](../deployment/browser-access.md),
-[serve decisions](../deployment/serve-decisions.md), and
-[privacy tiers](../security/privacy-tiers.md).
+[serve decisions](../deployment/serve-decisions.md), and [privacy tiers](../security/privacy-tiers.md).
