@@ -302,7 +302,16 @@ describe('the ring arc moves only for a live update in the same chat (V2-R3-5)',
 
   it('lands the window that arrives after the count at rest', () => {
     const { rerender } = render(ring({ totalTokens: 92_000, isTokenLimitLoaded: false }));
+    // Nothing is drawn against the fallback while the window loads (V2-R4-1).
+    expect(screen.queryByTestId('context-ring-arc')).toBeNull();
     rerender(ring({ totalTokens: 92_000, tokenLimit: 400_000, isTokenLimitLoaded: true }));
+    expect(arc()).toHaveAttribute('data-motion-still');
+  });
+
+  it('lands a re-read window at rest after holding the last one', () => {
+    const { rerender } = render(ring({ totalTokens: 92_000, tokenLimit: 1_000_000 }));
+    rerender(ring({ totalTokens: 92_000, tokenLimit: 1_000_000, isTokenLimitLoaded: false }));
+    rerender(ring({ totalTokens: 92_000, tokenLimit: 200_000, isTokenLimitLoaded: true }));
     expect(arc()).toHaveAttribute('data-motion-still');
   });
 
@@ -325,5 +334,103 @@ describe('the ring arc moves only for a live update in the same chat (V2-R3-5)',
     await waitFor(() => expect(arc()).not.toHaveAttribute('data-motion-still'));
     rerender(ring({ totalTokens: 100_000 }));
     expect(arc()).not.toHaveAttribute('data-motion-still');
+  });
+});
+
+/**
+ * V2-R4-1. The composer mounts with a 128k fallback in `tokenLimit` and
+ * `isTokenLimitLoaded` false, and the chat's real window lands about a second
+ * later. Measured on a tab switch: a 1M chat 10% full read "20% context left ·
+ * 102.4k of 128k", and a 1M chat 18% full drew the empty ring and "0% left" for
+ * 700ms. No ring and no figure until a window has loaded for the chat; a re-read
+ * in the same chat holds the last loaded window instead of blinking out.
+ */
+describe('the ring draws only against a loaded window (V2-R4-1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
+  });
+
+  const ring = (props: Partial<React.ComponentProps<typeof ContextWindowIndicator>>) => (
+    <ContextWindowIndicator
+      sessionId="chat-a"
+      totalTokens={180_000}
+      tokenLimit={128_000}
+      isTokenLimitLoaded={false}
+      onCompact={vi.fn()}
+      showRemainingPercent
+      {...props}
+    />
+  );
+
+  /** The reading the ring announces, or none when nothing is drawn. */
+  const reading = () =>
+    screen.queryByTestId('context-window-indicator')?.getAttribute('aria-label') ?? null;
+
+  it('draws no ring and no figure while the window loads, then one reading', () => {
+    const { container, rerender } = render(ring({}));
+    // 180k of the 128k fallback would read "0% left" beside an empty ring.
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText(/% left$/)).toBeNull();
+
+    rerender(ring({ tokenLimit: 1_000_000, isTokenLimitLoaded: true }));
+    expect(reading()).toBe(FOOTER_COPY.contextTooltip(82, '180k', '1M'));
+    // 82% left is above the figure's threshold: the ring says it alone.
+    expect(screen.queryByText(/% left$/)).toBeNull();
+    const circumference = 2 * Math.PI * 6;
+    const offset = Number(screen.getByTestId('context-ring-arc').getAttribute('stroke-dashoffset'));
+    expect(offset).toBeCloseTo(circumference * 0.18, 6);
+  });
+
+  it('draws nothing while the window loads, also where the figure would print', () => {
+    // 100k of the fallback is 22% left and would print "22% left".
+    const { container } = render(ring({ totalTokens: 100_000 }));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('holds the last loaded window while the same chat re-reads it', () => {
+    const { rerender } = render(ring({ tokenLimit: 1_000_000, isTokenLimitLoaded: true }));
+    const loaded = FOOTER_COPY.contextTooltip(82, '180k', '1M');
+    expect(reading()).toBe(loaded);
+    // The model changed: the composer marks the window unloaded and keeps the old
+    // value until the lookup lands. The ring keeps its reading, no blink.
+    rerender(ring({ tokenLimit: 1_000_000, isTokenLimitLoaded: false }));
+    expect(reading()).toBe(loaded);
+    // Even if the composer put its fallback back while loading, the ring holds the
+    // window it loaded.
+    rerender(ring({ tokenLimit: 128_000, isTokenLimitLoaded: false }));
+    expect(reading()).toBe(loaded);
+    rerender(ring({ tokenLimit: 200_000, isTokenLimitLoaded: true }));
+    expect(reading()).toBe(FOOTER_COPY.contextTooltip(10, '180k', '200k'));
+    expect(screen.getByText(FOOTER_COPY.contextLeft(10))).toBeInTheDocument();
+  });
+
+  it('holds nothing across a change of chat', () => {
+    const { container, rerender } = render(
+      ring({ tokenLimit: 1_000_000, isTokenLimitLoaded: true })
+    );
+    rerender(ring({ sessionId: 'chat-b', tokenLimit: 1_000_000, isTokenLimitLoaded: false }));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('holds nothing when the re-read finds no model', () => {
+    const { container, rerender } = render(
+      ring({ tokenLimit: 1_000_000, isTokenLimitLoaded: true })
+    );
+    rerender(ring({ tokenLimit: 0, isTokenLimitLoaded: false }));
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('the gauge alone draws nothing against a window that has not loaded', () => {
+    const { container } = render(
+      <ContextWindowGauge
+        totalTokens={180_000}
+        tokenLimit={128_000}
+        isTokenLimitLoaded={false}
+        onCompact={vi.fn()}
+      />
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });

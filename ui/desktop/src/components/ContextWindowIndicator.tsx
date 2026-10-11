@@ -177,7 +177,9 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     };
   }, [handleDragMove, handleDragEnd]);
 
-  if (!isTokenLimitLoaded && !current) return null;
+  // A window that has not loaded is the composer's 128k fallback, not the
+  // model's: a reading against it is wrong (V2-R4-1), so the gauge draws none.
+  if (!isTokenLimitLoaded) return null;
   // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
   // with none there is no number to report and every number this component
   // could print would be about a model that does not exist. It read
@@ -403,6 +405,43 @@ function useArcStill(
   return still > 0;
 }
 
+/**
+ * The window the ring may draw against: one the composer LOADED for this chat,
+ * or 0 for none (V2-R4-1).
+ *
+ * The composer mounts with a 128k fallback in `tokenLimit` and `isTokenLimitLoaded`
+ * false, and the chat's real window lands about a second later. The ring used to
+ * draw at once whenever the chat had tokens, so every open and tab switch showed a
+ * reading against a window nobody had looked up: "20% left" on a 1M chat that was
+ * 10% full, and on a chat past 128k the empty ring and "0% left". So nothing is
+ * drawn until a window has loaded.
+ *
+ * A RE-READ in the same chat (the model changed, or the app's selection moved
+ * under a chat pinned to its own) holds the last loaded window until the new one
+ * lands, rather than blinking the ring out for a second: that window was a real
+ * lookup for this chat, never the fallback. The hold is per chat and ends with the
+ * mount, so a tab switch (BaseChat remounts per tab) never carries one over, and
+ * a re-read that finds no model (`tokenLimit` 0) draws nothing.
+ *
+ * Derived during render, not in an effect, so the frame that would show the
+ * fallback is never painted.
+ */
+function useLoadedWindow(
+  sessionId: string | null | undefined,
+  tokenLimit: number,
+  loaded: boolean
+): number {
+  const [held, setHeld] = useState<{ sessionId: string | null | undefined; limit: number } | null>(
+    null
+  );
+  if (loaded && (!held || held.sessionId !== sessionId || held.limit !== tokenLimit)) {
+    setHeld({ sessionId, limit: tokenLimit });
+  }
+  if (tokenLimit <= 0) return 0;
+  if (loaded) return tokenLimit;
+  return held && held.sessionId === sessionId ? held.limit : 0;
+}
+
 /** The footer's context readout: a ring that opens the gauge (threshold and
  * Compact) in a popover. One line of tooltip, "72% context left · 92k of 128k". */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
@@ -415,13 +454,15 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
-  const total = tokenLimit || 0;
-  // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
-  // with none there is no number to report: it once read "128k of 128k tokens
-  // remaining" during onboarding beside a chip that said no model was chosen.
-  // Asserted on the LIMIT rather than only on the loaded flag, because a lookup
-  // that finished and found nothing is exactly the case being guarded.
-  const drawn = (isTokenLimitLoaded || current > 0) && total > 0;
+  // NO LOADED WINDOW, NO RING (V2-R4-1). A context window is a property of a
+  // bound model, and the composer's 128k fallback stands in for it until the
+  // lookup lands: drawn against it, a 1M chat read "20% left" for a second on
+  // every tab switch. With no model there is no window at all: the ring once
+  // read "128k of 128k tokens remaining" during onboarding beside a chip that
+  // said no model was chosen. Asserted on the LIMIT as well as the loaded flag,
+  // because a lookup that finished and found nothing is exactly that case.
+  const total = useLoadedWindow(sessionId, tokenLimit || 0, isTokenLimitLoaded);
+  const drawn = total > 0;
   const remainingTokens = Math.max(total - current, 0);
   const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 1;
   const remainingPct = Math.round(remainingRatio * 100);
@@ -484,10 +525,12 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
         <TooltipContent side="top">{summary}</TooltipContent>
       </Tooltip>
       <PopoverContent side="top" align="end" className="w-72 p-1">
+        {/* The gauge reads the window the ring draws (loaded, or held across a
+            re-read), so the two never disagree. */}
         <ContextWindowGauge
           totalTokens={totalTokens}
-          tokenLimit={tokenLimit}
-          isTokenLimitLoaded={isTokenLimitLoaded}
+          tokenLimit={total}
+          isTokenLimitLoaded
           onCompact={() => {
             onCompact();
             setOpen(false);

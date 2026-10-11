@@ -154,7 +154,10 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
     await browser?.close();
   }, 120_000);
 
-  /** The composer as it mounts on an open or a tab switch: the window known, no count yet. */
+  /**
+   * The composer as it mounts on an open or a tab switch. A reading whose window
+   * has not loaded draws no ring (V2-R4-1), so then there is no arc to wait for.
+   */
   async function open(initial: Reading): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 400, height: 200 } });
     await tab.setContent(
@@ -164,7 +167,11 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       (window as unknown as { __initial: unknown }).__initial = reading;
     }, initial);
     await tab.addScriptTag({ content: script });
-    await tab.waitForSelector('[data-testid="context-ring-arc"]');
+    if (initial.isTokenLimitLoaded) {
+      await tab.waitForSelector('[data-testid="context-ring-arc"]');
+    } else {
+      await tab.waitForFunction(() => document.getElementById('root')!.childElementCount > 0);
+    }
     await rest(tab);
     return tab;
   }
@@ -220,7 +227,7 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
     }
   });
 
-  it('lands the window that arrives after the count at rest', async (ctx) => {
+  it('draws nothing against the fallback, then lands the window at rest', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open({
       sessionId: 'chat-a',
@@ -229,6 +236,14 @@ describe('the context ring sweeps only for a live update in the same chat (V2-R3
       isTokenLimitLoaded: false,
     });
     try {
+      // V2-R4-1: no ring, no figure while the window loads (92k of the 128k
+      // fallback would read "28% left").
+      expect(
+        await tab.evaluate(() => ({
+          arc: document.querySelector('[data-testid="context-ring-arc"]') !== null,
+          text: document.getElementById('root')!.textContent,
+        }))
+      ).toEqual({ arc: false, text: '' });
       const m = await commit(tab, {
         sessionId: 'chat-a',
         totalTokens: 92_000,
