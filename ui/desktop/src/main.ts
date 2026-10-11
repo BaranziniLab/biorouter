@@ -200,8 +200,10 @@ import { recordExtensionProvenance } from './utils/extensionProvenance';
 import {
   biorouterConfigDir,
   biorouterExtensionsDir,
+  ensureAppFolderMoved,
   unsandboxedConfigDirCandidates,
 } from './utils/biorouterPaths';
+import { describeFolderMove } from './utils/appFolder';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { stagedAssetPath } from './utils/registryDownload';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
@@ -781,6 +783,19 @@ process.on('unhandledRejection', (reason) => {
     /* logger itself may be torn down — swallow */
   }
 });
+
+// R-31: on Windows, move Biorouter's folder out of the one earlier releases
+// used, before anything in this process reads or writes it and before the
+// daemon starts (the daemon runs the same move, and finishes it by rewriting
+// the paths stored inside). Synchronous on purpose: a handful of existence
+// checks and at most one rename, and the deep-link and `.brxt` handlers
+// registered below may touch the folder as soon as the app is ready. A no-op
+// elsewhere and under BIOROUTER_PATH_ROOT; it never throws.
+if (!started) {
+  for (const line of describeFolderMove(ensureAppFolderMoved())) {
+    log[line.level](`[Main] ${line.text}`);
+  }
+}
 
 if (process.env.ENABLE_PLAYWRIGHT) {
   const cdpPort = process.env.PLAYWRIGHT_CDP_PORT ?? '9222';

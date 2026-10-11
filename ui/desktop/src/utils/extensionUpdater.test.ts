@@ -233,7 +233,7 @@ describe('extension updater directory resolution (#146)', () => {
       process.env.APPDATA = appData;
       const { biorouterExtensionsDir } = await loadUpdater();
       expect(biorouterExtensionsDir()).toBe(
-        path.join(appData, 'Block', 'biorouter', 'config', 'extensions')
+        path.join(appData, 'UCSF', 'biorouter', 'config', 'extensions')
       );
     } finally {
       if (originalAppData === undefined) delete process.env.APPDATA;
