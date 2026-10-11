@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
 import { toolRowLabel } from './toolCallCopy';
-import type { NotificationEvent, ToolRequestMessageContent } from '../types/message';
+import type {
+  NotificationEvent,
+  ToolRequestMessageContent,
+  ToolResponseMessageContent,
+} from '../types/message';
 
 // The transcript is no longer a display surface for artifacts — it can only hand
 // one to the panel — so `onOpenArtifact` is required all the way down the chain.
@@ -329,6 +333,93 @@ describe('summarizeToolCall', () => {
     expect(
       summarizeToolCall({ name: 'knowledge__kb_search', arguments: { query: 'browser checks' } })
     ).toBe('Searching knowledge bases for browser checks');
+  });
+
+  // V2-R4-3: deleting a knowledge base read "Removed KB base" and dropped which
+  // base. A create and a delete name the base the way every other knowledge row
+  // does (by its id), and the state is carried by the verb.
+  it('names the base a knowledge base create or delete touches (V2-R4-3)', () => {
+    const created = summarizeToolCall({
+      name: 'knowledge__kb_create_base',
+      arguments: { id: 'merge-verify', name: 'Merge verification', format: 'okf' },
+    });
+    expect(created).toBe('Creating knowledge base merge-verify');
+    expect(toolRowLabel(created, 'done')).toBe('Created knowledge base merge-verify');
+    expect(toolRowLabel(created, 'failed')).toBe('Failed to create knowledge base merge-verify');
+    expect(toolRowLabel(created, 'stopped')).toBe('Stopped creating knowledge base merge-verify');
+
+    const deleted = summarizeToolCall({
+      name: 'knowledge__kb_delete_base',
+      arguments: { kb_id: 'merge-verify' },
+    });
+    expect(deleted).toBe('Deleting knowledge base merge-verify');
+    expect(toolRowLabel(deleted, 'done')).toBe('Deleted knowledge base merge-verify');
+    expect(toolRowLabel(deleted, 'failed')).toBe('Failed to delete knowledge base merge-verify');
+    expect(toolRowLabel(deleted, 'stopped')).toBe('Stopped deleting knowledge base merge-verify');
+
+    // Arguments the model left out never leave a hole or the old abbreviation.
+    expect(summarizeToolCall({ name: 'knowledge__kb_create_base' })).toBe(
+      'Creating a knowledge base'
+    );
+    expect(summarizeToolCall({ name: 'knowledge__kb_delete_base' })).toBe(
+      'Deleting a knowledge base'
+    );
+    // A create whose id is missing still names the base by its display name.
+    expect(
+      summarizeToolCall({
+        name: 'knowledge__kb_create_base',
+        arguments: { name: 'Merge verification' },
+      })
+    ).toBe('Creating knowledge base Merge verification');
+    // The built-in base keeps its spelling, so a refused attempt reads right.
+    expect(
+      summarizeToolCall({ name: 'knowledge__kb_delete_base', arguments: { kb_id: 'soul' } })
+    ).toBe('Deleting knowledge base Soul');
+  });
+
+  it('renders a finished knowledge base delete with the base it removed (V2-R4-3)', () => {
+    const renderDelete = (toolResult: ToolResponseMessageContent['toolResult']) =>
+      render(
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          onOpenArtifact={noopOpenArtifact}
+          toolRequest={
+            {
+              type: 'toolRequest',
+              id: 'kb-delete',
+              toolCall: {
+                status: 'success',
+                value: { name: 'knowledge__kb_delete_base', arguments: { kb_id: 'merge-verify' } },
+              },
+            } as ToolRequestMessageContent
+          }
+          toolResponse={{ type: 'toolResponse', id: 'kb-delete', toolResult }}
+        />
+      );
+
+    const done = renderDelete({
+      status: 'success',
+      value: {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              kb_id: 'merge-verify',
+              name: 'Merge verification',
+              pages_removed: 3,
+              deleted: true,
+            }),
+          },
+        ],
+        isError: false,
+      },
+    });
+    expect(screen.getByText('Deleted knowledge base merge-verify')).toBeInTheDocument();
+    expect(screen.queryByText(/Removed KB base/)).not.toBeInTheDocument();
+    done.unmount();
+
+    renderDelete({ status: 'error', error: 'Knowledge base not found' });
+    expect(screen.getByText('Failed to delete knowledge base merge-verify')).toBeInTheDocument();
   });
 
   it('describes browser-tab actions rather than listing an argument key', () => {

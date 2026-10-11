@@ -1154,6 +1154,17 @@ function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown):
   if (toolCall.name.startsWith('knowledge__')) {
     if (toolName === 'kb_get_active') return 'Checking the primary knowledge base';
     if (toolName === 'kb_list_bases') return 'Listing knowledge bases';
+    // V2-R4-3: a create and a delete used to fall through to the generic
+    // "Removing" chain and read "Removed KB base", which names no base. Every
+    // other knowledge row names its base by `kb_id`; a create carries the id it
+    // is about to give the base, so the three rows about one base spell it alike.
+    if (toolName === 'kb_create_base') {
+      const created = namedArgument(args, ['id', 'name']);
+      return created ? `Creating knowledge base ${created}` : 'Creating a knowledge base';
+    }
+    if (toolName === 'kb_delete_base') {
+      return base ? `Deleting knowledge base ${base}` : 'Deleting a knowledge base';
+    }
     if (toolName === 'kb_list_pages')
       return `Listing pages in ${base ?? 'the primary knowledge base'}`;
     if (toolName === 'kb_read_page') {

@@ -34,6 +34,23 @@ describe('toolRowLabel: the verb carries the state', () => {
     expect(toolRowLabel('Blocking “Draft #2”', 'failed')).toBe('Failed to block “Draft #2”');
   });
 
+  it('conjugates delete, which a knowledge base delete needs (V2-R4-3)', () => {
+    expect(toolRowLabel('Deleting knowledge base merge-verify', 'running')).toBe(
+      'Deleting knowledge base merge-verify'
+    );
+    expect(toolRowLabel('Deleting knowledge base merge-verify', 'done')).toBe(
+      'Deleted knowledge base merge-verify'
+    );
+    expect(toolRowLabel('Deleting knowledge base merge-verify', 'failed')).toBe(
+      'Failed to delete knowledge base merge-verify'
+    );
+    expect(toolRowLabel('Deleting knowledge base merge-verify', 'stopped')).toBe(
+      'Stopped deleting knowledge base merge-verify'
+    );
+    // The name-built phrase learns it too: a delete operation no longer reads "Running delete row".
+    expect(toolActionPhrase(['delete', 'row'])).toBe('Deleting row');
+  });
+
   it('keeps everything after the verb byte for byte', () => {
     expect(toolRowLabel('Marking “Draft #2” complete', 'done')).toBe('Marked “Draft #2” complete');
     expect(toolRowLabel('Delegating: read the logs', 'done')).toBe('Delegated: read the logs');
