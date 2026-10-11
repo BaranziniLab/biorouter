@@ -9,38 +9,22 @@
  * on screen after the pointer has left the row.
  *
  * So a close that follows a pointer press does not return focus; one that
- * follows a key press does. The modality is the last thing the window saw
- * (capture listeners, installed once when this module loads), which is the same
- * question the browser asks for `:focus-visible` on a click.
+ * follows a key press does. The modality is the last thing the window saw,
+ * which is the same question the browser asks for `:focus-visible` on a click.
+ * It is read from the app's one input tracker, `ui/inputTrail.ts` (capture
+ * listeners installed once when that module loads), which the dialogs a menu
+ * item opens ask too, so a menu and its dialog can never disagree about how the
+ * person got there.
  */
-let lastInputWasKeyboard = false;
+import { lastInputWasKey } from '../ui/inputTrail';
 
-if (typeof window !== 'undefined') {
-  window.addEventListener(
-    'keydown',
-    () => {
-      lastInputWasKeyboard = true;
-    },
-    true
-  );
-  window.addEventListener(
-    'pointerdown',
-    () => {
-      lastInputWasKeyboard = false;
-    },
-    true
-  );
-}
-
-/** Was the most recent input a key press? Exported for tests. */
-export function lastInputWasKey(): boolean {
-  return lastInputWasKeyboard;
-}
+/** Was the most recent input a key press? Re-exported for tests and callers. */
+export { lastInputWasKey };
 
 /**
  * An `onCloseAutoFocus` handler for a menu: keeps Radix from returning focus to
  * the trigger when the menu was closed with the pointer.
  */
 export function keepFocusOffAfterPointerClose(event: Event): void {
-  if (!lastInputWasKeyboard) event.preventDefault();
+  if (!lastInputWasKey()) event.preventDefault();
 }

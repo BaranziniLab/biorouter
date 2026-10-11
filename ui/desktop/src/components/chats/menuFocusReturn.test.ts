@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import * as inputTrail from '../ui/inputTrail';
 import { keepFocusOffAfterPointerClose, lastInputWasKey } from './menuFocusReturn';
 
 const close = () => {
@@ -27,5 +28,15 @@ describe('where focus goes when a row menu closes', () => {
     expect(close().defaultPrevented).toBe(true);
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
     expect(close().defaultPrevented).toBe(false);
+  });
+
+  it('reads the app’s one input tracker, so a menu and the dialog it opens agree', () => {
+    expect(lastInputWasKey).toBe(inputTrail.lastInputWasKey);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(inputTrail.lastInputWasKey()).toBe(true);
+    expect(close().defaultPrevented).toBe(false);
+    window.dispatchEvent(new Event('pointerdown'));
+    expect(inputTrail.lastInputWasKey()).toBe(false);
+    expect(close().defaultPrevented).toBe(true);
   });
 });
