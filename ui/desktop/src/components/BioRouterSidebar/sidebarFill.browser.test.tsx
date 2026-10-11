@@ -30,8 +30,11 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import postcss from 'postcss';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { fontScale } from '../../../vite-plugins/fontScale.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STYLES = resolve(here, '../../styles');
@@ -207,22 +210,32 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     await browser?.close();
   }, 120_000);
 
+  let scaled: Promise<string> | null = null;
+  const scaledCss = () =>
+    (scaled ??= postcss([fontScale()])
+      .process(css, { from: undefined })
+      .then((result) => result.css));
+
   /**
    * `list` swaps the chat list the daemon serves (`serve` answers each `/sessions/sidebar` URL,
    * and may take its time), the window size, and a script run before the app's own (`init`), for
-   * the cases that watch the list itself rather than its paint.
+   * the cases that watch the list itself rather than its paint. `scale` sets the Text size
+   * preference's `--app-font-scale` and serves the stylesheet through the app's own font-scale
+   * plugin, as the app's bundler does.
    */
   async function open(
     mode: 'light' | 'dark',
     forcedColors = false,
     daemon: 'attached' | 'lost' = 'attached',
-    list: { serve?: (url: string) => unknown; height?: number; init?: string } = {}
+    list: { serve?: (url: string) => unknown; height?: number; init?: string; scale?: number } = {}
   ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1200, height: list.height ?? 900 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     if (list.init) await tab.addInitScript(list.init);
     const html =
-      `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
+      `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"` +
+      (list.scale ? ` style="--app-font-scale: ${list.scale}"` : '') +
+      `><head><style>${list.scale ? await scaledCss() : css}</style></head>` +
       `<body style="margin:0"><div id="root"></div>` +
       `<script>${stubs(daemon)}</script><script>${script.replace(/<\/script/gi, '<\\/script')}</script>` +
       `</body></html>`;
@@ -793,20 +806,10 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
       }
     });
 
-    /**
-     * Vision V1-R2-2, round 4 (R-28). The list grew as it was scrolled and never shrank: after a
-     * scroll to its end every chat was a mounted row, and with 5,542 drawn a right-click took
-     * about 2.2 s, most of it restyling them. Now only the lines near the viewport are rows; the
-     * rest are placeholders, and every row must still sit exactly where it would with all of them
-     * drawn: line N of the list at N × 30px (a 28px row and the list's 2px), and the list exactly
-     * as tall as its lines. Home still reaches the first chat, and the right-click menu is not
-     * modal, so it leaves <body> alone.
-     */
-    it('draws only the rows near the viewport, each where it would be (V1-R2-2)', async (ctx) => {
-      if (!browser) return ctx.skip();
+    /** `total` chats under Group by None, newest first: line N of the list is chat `s{N + 1}`. */
+    const openLongList = (total: number, options: { scale?: number } = {}) => {
       const now = Date.now();
-      const TOTAL = 400;
-      const all = Array.from({ length: TOTAL }, (_, i) => ({
+      const all = Array.from({ length: total }, (_, i) => ({
         id: `s${i + 1}`,
         name: `Chat ${i + 1}`,
         created_at: new Date(now - i * 1_000).toISOString(),
@@ -823,71 +826,109 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         const next = from + rows.length;
         return {
           sessions: rows,
-          has_more: next < TOTAL,
-          next_cursor: next < TOTAL ? String(next) : null,
+          has_more: next < total,
+          next_cursor: next < total ? String(next) : null,
         };
       };
-      // Group by None: one list, no header, so line N is chat N + 1.
       const stored = JSON.stringify({ v: 1, groupBy: 'none', sortBy: 'activity' });
-      const tab = await open('light', false, 'attached', {
+      return open('light', false, 'attached', {
         serve,
+        scale: options.scale,
         init: `localStorage.setItem('biorouter:sidebar-chat-view', ${JSON.stringify(stored)});`,
       });
-      try {
-        // Scroll to the end until every chat is in reach, then to the middle.
-        let height = 0;
-        for (let i = 0; i < 20; i++) {
-          const next = await tab.evaluate(() => {
-            const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
-            el.scrollTop = el.scrollHeight;
-            return el.scrollHeight;
-          });
-          await tab.waitForTimeout(100);
-          if (next === height) break;
-          height = next;
-        }
-        await tab.evaluate(() => {
+    };
+
+    /** Scroll to the end until every chat is in reach, then to `fraction` of the way down. */
+    const scrollLongList = async (tab: Page, fraction: number) => {
+      let height = 0;
+      for (let i = 0; i < 20; i++) {
+        const next = await tab.evaluate(() => {
           const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
-          el.scrollTop = el.scrollHeight / 2;
+          el.scrollTop = el.scrollHeight;
+          return el.scrollHeight;
         });
-        await tab.waitForTimeout(200);
-        const state = await tab.evaluate(() => {
-          const scroll = document.querySelector('[data-testid="recent-chat-scroll"]')!;
-          const box = scroll.getBoundingClientRect();
-          const list = scroll.querySelector('ul')!;
-          const listTop = list.getBoundingClientRect().top;
-          const rows = [...list.querySelectorAll<HTMLElement>('button[data-row^="chat:"]')];
-          const visible = rows.filter((row) => {
-            const rect = row.getBoundingClientRect();
-            return rect.bottom > box.top && rect.top < box.bottom;
-          });
-          const gaps = [...list.querySelectorAll<HTMLElement>('.br-chat-row-gap')];
-          const lines =
+        await tab.waitForTimeout(100);
+        if (next === height) break;
+        height = next;
+      }
+      await tab.evaluate((f) => {
+        const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+        el.scrollTop = el.scrollHeight * f;
+      }, fraction);
+      await tab.waitForTimeout(200);
+    };
+
+    /**
+     * What the list draws: rows and the lines the placeholders stand for, the list's height, the
+     * line pitch averaged over the rows in view, every visible row not on its own line (more than
+     * a pixel off line N × `pitch`, where it sits with every row drawn), and the placeholders in
+     * view.
+     */
+    const readLongList = (tab: Page, expectedPitch = 30) =>
+      tab.evaluate((pitch) => {
+        const scroll = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+        const box = scroll.getBoundingClientRect();
+        const list = scroll.querySelector('ul')!;
+        const listTop = list.getBoundingClientRect().top;
+        const rows = [...list.querySelectorAll<HTMLElement>('button[data-row^="chat:"]')];
+        const lineOf = (row: Element) =>
+          Number(row.getAttribute('data-row')!.slice('chat:s'.length)) - 1;
+        const visible = rows.filter((row) => {
+          const rect = row.getBoundingClientRect();
+          return rect.bottom > box.top && rect.top < box.bottom;
+        });
+        const first = visible[0];
+        const last = visible[visible.length - 1];
+        const gaps = [...list.querySelectorAll<HTMLElement>('.br-chat-row-gap')];
+        return {
+          drawn: rows.length,
+          lines:
             rows.length +
             gaps.reduce(
               (sum, gap) => sum + Number(gap.style.getPropertyValue('--br-gap-lines')),
               0
-            );
-          return {
-            drawn: rows.length,
-            lines,
-            listHeight: list.getBoundingClientRect().height,
-            visible: visible.length,
-            // Each visible row's offset from the list's top, against where line N sits.
-            misplaced: visible
-              .map((row) => {
-                const line = Number(row.getAttribute('data-row')!.slice('chat:s'.length)) - 1;
-                const top = Math.round(row.getBoundingClientRect().top - listTop);
-                return top === line * 30 ? null : `${row.getAttribute('data-row')}@${top}`;
-              })
-              .filter(Boolean),
-            gapsInView: gaps.filter((gap) => {
-              const rect = gap.getBoundingClientRect();
-              return rect.bottom > box.top && rect.top < box.bottom;
-            }).length,
-          };
-        });
+            ),
+          listHeight: list.getBoundingClientRect().height,
+          rowHeight: first?.getBoundingClientRect().height ?? NaN,
+          pitch:
+            visible.length < 2
+              ? NaN
+              : (last.getBoundingClientRect().top - first.getBoundingClientRect().top) /
+                (lineOf(last) - lineOf(first)),
+          visible: visible.length,
+          misplaced: visible
+            .map((row) => {
+              const top = row.getBoundingClientRect().top - listTop;
+              return Math.abs(top - lineOf(row) * pitch) <= 1
+                ? null
+                : `${row.getAttribute('data-row')}@${top.toFixed(1)}`;
+            })
+            .filter(Boolean),
+          gapsInView: gaps.filter((gap) => {
+            const rect = gap.getBoundingClientRect();
+            return rect.bottom > box.top && rect.top < box.bottom;
+          }).length,
+        };
+      }, expectedPitch);
+
+    /**
+     * Vision V1-R2-2, round 4 (R-28). The list grew as it was scrolled and never shrank: after a
+     * scroll to its end every chat was a mounted row, and with 5,542 drawn a right-click took
+     * about 2.2 s, most of it restyling them. Now only the lines near the viewport are rows; the
+     * rest are placeholders, and every row must still sit exactly where it would with all of them
+     * drawn: line N of the list at N × 30px (a 28px row and the list's 2px), and the list exactly
+     * as tall as its lines. Home still reaches the first chat, and the right-click menu is not
+     * modal, so it leaves <body> alone.
+     */
+    it('draws only the rows near the viewport, each where it would be (V1-R2-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const TOTAL = 400;
+      const tab = await openLongList(TOTAL);
+      try {
+        await scrollLongList(tab, 0.5);
+        const state = await readLongList(tab);
         expect(state.lines, 'every chat is in reach').toBe(TOTAL);
+        expect(state.pitch).toBe(30);
         expect(state.listHeight, 'the list is as tall as its lines').toBe(TOTAL * 30 - 2);
         expect(state.visible).toBeGreaterThan(10);
         expect(state.misplaced, 'every visible row on its own line').toEqual([]);
@@ -915,6 +956,37 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         await expect
           .poll(() => tab.evaluate(() => document.activeElement?.getAttribute('data-row')))
           .toBe('chat:s1');
+      } finally {
+        await tab.close();
+      }
+    });
+
+    /**
+     * The same list under the Larger text preference (`--app-font-scale` 1.15): the rows and the
+     * list's 2px scale with the type (`vite-plugins/fontScale.mjs`), so a line is 34.5px, not 30.
+     * Read at 30px, the lines in view came out 15% too far down the list, so from the middle on
+     * the view showed placeholder where rows should be; and a placeholder that kept its 2px
+     * unscaled drifted from the rows it stands for.
+     */
+    it('keeps the rows near the viewport drawn under Larger text (V1-R2-2)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const TOTAL = 400;
+      const tab = await openLongList(TOTAL, { scale: 1.15 });
+      try {
+        for (const fraction of [0.5, 0.9]) {
+          await scrollLongList(tab, fraction);
+          // 28px × 1.15 and the list's 2px × 1.15.
+          const state = await readLongList(tab, 34.5);
+          expect(state.lines, 'every chat is in reach').toBe(TOTAL);
+          expect(state.visible, `${fraction}: rows in view`).toBeGreaterThan(10);
+          expect(state.pitch, 'a line scales with the type').toBeCloseTo(34.5, 1);
+          expect(state.gapsInView, `${fraction}: no placeholder shows`).toBe(0);
+          expect(state.misplaced, `${fraction}: every visible row on its own line`).toEqual([]);
+          expect(
+            Math.abs(state.listHeight - (TOTAL * 34.5 - 2.3)),
+            'the list is as tall as its lines'
+          ).toBeLessThanOrEqual(1);
+        }
       } finally {
         await tab.close();
       }

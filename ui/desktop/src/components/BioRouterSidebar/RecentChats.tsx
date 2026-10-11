@@ -54,6 +54,7 @@ import {
   holdArrangement,
   linesToDrawRow,
   nextSidebarDrawRange,
+  SIDEBAR_LINE_HEIGHT_PX,
   SIDEBAR_RENDER_WINDOW,
   SIDEBAR_RENDER_WINDOW_STEP,
   sidebarLinesInView,
@@ -714,6 +715,24 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
 }
 
 /**
+ * The list's line pitch, read off a drawn row: its height and the gap its
+ * list puts below it. Both scale with the Text size preference (30px at the
+ * standard size, 34.5px under Larger text), so reading the lines in view at a
+ * fixed 30px put them further down the list the further it was scrolled, until
+ * the view showed only placeholder. The standard pitch when no row is drawn.
+ */
+export function measuredLinePitch(container: HTMLElement): number {
+  const item = container.querySelector<HTMLElement>(
+    'section[data-rows-line] > ul > li[data-row-item]'
+  );
+  const list = item?.parentElement;
+  if (!item || !list) return SIDEBAR_LINE_HEIGHT_PX;
+  const pitch =
+    item.getBoundingClientRect().height + (parseFloat(getComputedStyle(list).rowGap) || 0);
+  return pitch > 0 ? pitch : SIDEBAR_LINE_HEIGHT_PX;
+}
+
+/**
  * Scroll the list just enough to show `row`, and its date bucket or folder
  * header too when it is the first chat under one, so a chat that moved to the
  * top reads under its "Today". Measured against the list itself, never with
@@ -1005,8 +1024,9 @@ export default function RecentChats({
   );
 
   // Which lines the list shows, read from the drawn groups' boxes (a group's
-  // rows and gaps sit on one pitch below its first row, so no row or header
-  // height is assumed), and the range to draw for them. From a scroll, the new
+  // rows and gaps sit on one pitch below its first row, the pitch read off a
+  // drawn row, so no row or header height is assumed), and the range to draw
+  // for them. From a scroll, the new
   // rows are committed before the frame paints (`flushSync`), so a scroll
   // never shows the empty placeholder where a row is about to be. A list that
   // cannot be measured (hidden, or no layout, as in jsdom) keeps what it drew.
@@ -1034,7 +1054,8 @@ export default function RecentChats({
       sections.length,
       boxAt,
       container.scrollTop,
-      container.scrollTop + container.clientHeight
+      container.scrollTop + container.clientHeight,
+      measuredLinePitch(container)
     );
     const update = () =>
       setDrawn((current) => {
