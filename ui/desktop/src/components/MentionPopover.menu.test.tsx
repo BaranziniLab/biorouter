@@ -37,13 +37,19 @@ function renderMenu({
   query = '',
   isSlashCommand = true,
   selectedIndex = 0,
-}: { query?: string; isSlashCommand?: boolean; selectedIndex?: number } = {}) {
+  sessionId = null,
+}: {
+  query?: string;
+  isSlashCommand?: boolean;
+  selectedIndex?: number;
+  sessionId?: string | null;
+} = {}) {
   return render(
     <MentionPopover
       isOpen
       isSlashCommand={isSlashCommand}
       query={query}
-      sessionId={null}
+      sessionId={sessionId}
       workingDir="/w"
       position={{ x: 0, y: 400 }}
       selectedIndex={selectedIndex}
@@ -107,5 +113,26 @@ describe('the mention menu', () => {
   it('draws nothing for an "@" with nothing typed after it', async () => {
     renderMenu({ isSlashCommand: false, query: '' });
     await waitFor(() => expect(screen.queryByTestId('mention-popover')).toBeNull());
+  });
+});
+
+/**
+ * V2-R3-6: the `/diverge` row read "Continue in a new chat with the full history.
+ * Press Enter", a typed instruction with a period inside a one-line description.
+ * The client's own command descriptions live in the composer's copy.
+ */
+describe('the client commands in the "/" list', () => {
+  it('describe themselves from the composer copy', async () => {
+    renderMenu({ sessionId: 'chat-1' });
+    expect(await screen.findByText(COMPOSER_COPY.commands.diverge)).toBeInTheDocument();
+    expect(screen.getByText(COMPOSER_COPY.commands.crew)).toBeInTheDocument();
+    expect(screen.getByText(COMPOSER_COPY.commands.knowledge)).toBeInTheDocument();
+    expect(COMPOSER_COPY.commands.diverge).toBe('Continue in a new chat with the full history');
+  });
+
+  it('carry no period and no instruction to press a key', () => {
+    for (const description of Object.values(COMPOSER_COPY.commands)) {
+      expect(description).not.toMatch(/\.\s*$|\.\s|press/i);
+    }
   });
 });

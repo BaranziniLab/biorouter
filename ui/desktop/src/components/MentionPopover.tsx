@@ -48,15 +48,15 @@ const CLIENT_INSERT_COMMANDS: Record<
   { description: string; insert?: string; reference?: MentionReference }
 > = {
   knowledge: {
-    description: 'Use the Knowledge capability',
+    description: COMPOSER_COPY.commands.knowledge,
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   crew: {
-    description: 'Connect this chat to a Crew channel',
+    description: COMPOSER_COPY.commands.crew,
     insert: '/crew',
   },
   diverge: {
-    description: 'Continue in a new chat with the full history. Press Enter',
+    description: COMPOSER_COPY.commands.diverge,
     insert: '/diverge',
   },
 };
@@ -67,8 +67,7 @@ const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
  * `/crew` in a chat with no session yet (UXN-8): Enter can only say to send a message first, so the
  * row says so before it is picked, and stays where people look for Crew.
  */
-export const CREW_COMMAND_BEFORE_FIRST_MESSAGE =
-  'Connect this chat to a Crew channel after your first message';
+export const CREW_COMMAND_BEFORE_FIRST_MESSAGE = COMPOSER_COPY.commands.crewBeforeFirstMessage;
 
 // ── Crew in the palette (live QA round 2, Q2-71; round 3, Q3-31) ───────────────────────────────
 // "/cr" listed two rows that both read as "crew": the `/crew` command, which connects the chat, and
@@ -80,7 +79,7 @@ export const CREW_COMMAND_BEFORE_FIRST_MESSAGE =
 // the extension's row — labelled as the tools, for someone who knows they want them.
 
 /** The Crew extension's row, when a query reaches it without the `/crew` command. */
-export const CREW_EXTENSION_DESCRIPTION = 'Crew tools extension (advanced)';
+export const CREW_EXTENSION_DESCRIPTION = COMPOSER_COPY.commands.crewExtension;
 
 /** The Crew platform extension's key (as `isCrewExtensionName` in `crew/access` reads it). */
 const isCrewExtensionItem = (item: DisplayItem) =>

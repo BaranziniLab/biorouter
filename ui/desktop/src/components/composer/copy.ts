@@ -86,6 +86,21 @@ export const COMPOSER_COPY = {
     noMatch: (query: string) => `Nothing matches "${query}"`,
   },
 
+  /**
+   * The one-line descriptions of the commands the client adds to the `/` list.
+   * A menu description says what the command does, with no period and no
+   * instruction to press a key.
+   */
+  commands: {
+    knowledge: 'Use the Knowledge capability',
+    crew: 'Connect this chat to a Crew channel',
+    /** `/crew` in a chat with no session yet: Enter can only say to send a message first. */
+    crewBeforeFirstMessage: 'Connect this chat to a Crew channel after your first message',
+    /** The Crew extension's row, when a query reaches it without the `/crew` command. */
+    crewExtension: 'Crew tools extension (advanced)',
+    diverge: 'Continue in a new chat with the full history',
+  },
+
   /** Why a pasted or dropped image did not attach; each sits behind the chip's help. */
   imageErrors: {
     undecodable: 'Image preview could not be decoded.',
