@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listSidebarSessions, type SessionSummary } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
+import { laterActivity, subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
 import { SESSION_META_CHANGED_EVENT } from '../../utils/sessionMetaSubscription';
 import {
@@ -56,9 +56,11 @@ export interface SidebarSessionsOptions {
    * only re-read on a finished turn or a new chat put it under September while
    * History, fetched fresh, put it under Today (round 1, V1-M8). Since R-30
    * opening moves nothing, so a change of this finds the order the list already
-   * had; it still re-reads the head, which keeps the list right against a
-   * daemon from before R-30 and picks up a turn or a rename made elsewhere.
-   * Leaving for a page that is not a chat reads nothing.
+   * had, and the list itself moves no row for it. It still re-reads the head,
+   * which keeps the list right against a daemon from before R-30 and picks up a
+   * turn, or a rename from the terminal, made elsewhere. A rename made in this
+   * app moves its row at once and needs no open (the name channel's
+   * `activityAt`). Leaving for a page that is not a chat reads nothing.
    */
   openSessionId?: string | null;
 }
@@ -92,6 +94,37 @@ export function appendSessionPage(
   return merged;
 }
 
+/** A rename announced while a page request was in flight. */
+export interface NameDuringLoad {
+  name: string;
+  userSetName: boolean;
+  /** Set when the daemon saved it: the rename's activity time (R-30). */
+  activityAt?: string;
+}
+
+/**
+ * Re-apply the renames that outran a page: the name, and for a saved rename the
+ * later of the page's `updated_at` and the rename's, so a page issued before
+ * the rename neither restores the old name nor moves the chat back down.
+ */
+export function applyNamesDuringLoad(
+  rows: SessionSummary[],
+  names: ReadonlyMap<string, NameDuringLoad>
+): SessionSummary[] {
+  if (names.size === 0) return rows;
+  return rows.map((row) => {
+    const later = names.get(row.id);
+    return later
+      ? {
+          ...row,
+          name: later.name,
+          user_set_name: later.userSetName,
+          updated_at: laterActivity(row.updated_at, later.activityAt),
+        }
+      : row;
+  });
+}
+
 export default function useSidebarSessions(
   options: SidebarSessionsOptions = {}
 ): SidebarSessionsState {
@@ -122,6 +155,10 @@ export default function useSidebarSessions(
   // refresh issued before a turn raised a chat and answered after the raise was
   // patched in would draw the chat public again.
   const rowsReadDuringLoadRef = useRef(new Map<string, SessionRowFacts>());
+  // Renames delivered while a page request was in flight. A page issued before
+  // the rename carries the chat's old name and, for a saved rename, its old
+  // `updated_at`; merging it as it is would put both back (R-30).
+  const namesDuringLoadRef = useRef(new Map<string, NameDuringLoad>());
   // Read by `loadPage` at request time, so a view change takes effect on the
   // next page without re-creating the loader (and its subscriptions).
   const pageSizeRef = useRef(loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE);
@@ -144,6 +181,7 @@ export default function useSidebarSessions(
     const cursor = reset ? null : nextCursorRef.current;
     loadingRef.current = true;
     rowsReadDuringLoadRef.current.clear();
+    namesDuringLoadRef.current.clear();
     setIsLoading(true);
 
     try {
@@ -159,7 +197,10 @@ export default function useSidebarSessions(
       const page = response.data;
       const mergedSessions = appendSessionPage(
         sessionsRef.current,
-        settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false)
+        applyNamesDuringLoad(
+          settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
+          namesDuringLoadRef.current
+        )
       );
       const pageHasMore =
         reset && hasLoadedRef.current ? hasMoreRef.current || page.has_more : page.has_more;
@@ -205,16 +246,44 @@ export default function useSidebarSessions(
     };
     scheduleRefreshRef.current = scheduleRefresh;
 
-    const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
-      const rename = (rows: SessionSummary[]) =>
-        rows.map((session) =>
-          session.id === sessionId ? { ...session, name, user_set_name: userSetName } : session
-        );
-      if (pendingAllRef.current) pendingAllRef.current = rename(pendingAllRef.current);
-      const renamedSessions = rename(sessionsRef.current);
-      sessionsRef.current = renamedSessions;
-      setSessions(renamedSessions);
-    });
+    // A rename patches the row's name in place. A rename the daemon has SAVED
+    // (`activityAt`) is activity in the chat (R-30), so it also raises the
+    // row's `updated_at` and the chat sorts to the top under "Last activity" at
+    // once, with no request and without waiting for an unrelated refresh (the
+    // list is arranged from `updated_at`, `sidebarChatView.ts`). A chat this
+    // list does not hold yet is past the pages read so far; the head re-read
+    // brings it in, now that the daemon lists it first.
+    const unsubscribeNames = subscribeSessionNameChanges(
+      ({ sessionId, name, userSetName, activityAt }) => {
+        const isRenamed = (session: SessionSummary) => session.id === sessionId;
+        const listed =
+          sessionsRef.current.some(isRenamed) || (pendingAllRef.current?.some(isRenamed) ?? false);
+        const rename = (rows: SessionSummary[]) =>
+          rows.map((session) =>
+            isRenamed(session)
+              ? {
+                  ...session,
+                  name,
+                  user_set_name: userSetName,
+                  updated_at: laterActivity(session.updated_at, activityAt),
+                }
+              : session
+          );
+        if (loadingRef.current) {
+          const earlier = namesDuringLoadRef.current.get(sessionId);
+          namesDuringLoadRef.current.set(sessionId, {
+            name,
+            userSetName,
+            activityAt: activityAt ?? earlier?.activityAt,
+          });
+        }
+        if (pendingAllRef.current) pendingAllRef.current = rename(pendingAllRef.current);
+        const renamedSessions = rename(sessionsRef.current);
+        sessionsRef.current = renamedSessions;
+        setSessions(renamedSessions);
+        if (activityAt && !listed) scheduleRefresh();
+      }
+    );
 
     // Membership changes — a session created, DIVERGED, deleted or imported, in
     // THIS window or any sibling. Diverge creates a session purely over HTTP and
@@ -277,11 +346,12 @@ export default function useSidebarSessions(
     });
 
     // Other writers raise `updated_at` without announcing a list change: a turn
-    // or a rename in another window, a row rewritten by the CLI or a schedule
-    // (the session-meta channel reports those for the chats this window has
-    // open), and this window coming back to the front. Opening a chat is not one
-    // of them since R-30. A head page is cheap (a 10 to 50 row read), and
-    // `scheduleRefresh` coalesces a burst of them into one.
+    // in another window, a rename from the terminal, a row rewritten by the CLI
+    // or a schedule (the session-meta channel reports those for the chats this
+    // window has open), and this window coming back to the front. A rename made
+    // in any window of this app is announced (the name channel above), and
+    // opening a chat is not activity at all since R-30. A head page is cheap (a
+    // 10 to 50 row read), and `scheduleRefresh` coalesces a burst into one.
     const onVisible = () => {
       if (!document.hidden) scheduleRefresh();
     };
@@ -308,9 +378,10 @@ export default function useSidebarSessions(
 
   // A chat opened (or switched to) used to raise its `updated_at` (the resume's
   // model bind stamped it); since R-30 it does not, so these reads normally find
-  // the same order. They are kept for a daemon from before R-30 and for a turn
-  // or a rename made elsewhere while this window was away. Read the head now,
-  // and once more after the resume has had time to finish.
+  // the same order, and nothing here moves a row for the open itself. They are
+  // kept for a daemon from before R-30 and for a turn, or a rename from the
+  // terminal, made elsewhere while this window was away. Read the head now, and
+  // once more after the resume has had time to finish.
   const openedRef = useRef(openSessionId);
   useEffect(() => {
     if (openedRef.current === openSessionId) return;
@@ -339,6 +410,7 @@ export default function useSidebarSessions(
     loadingRef.current = true;
     drainingRef.current = true;
     rowsReadDuringLoadRef.current.clear();
+    namesDuringLoadRef.current.clear();
     pendingAllRef.current = [];
     setIsLoading(true);
 
@@ -361,7 +433,10 @@ export default function useSidebarSessions(
         const page = response.data;
         pendingAllRef.current = appendSessionPage(
           pendingAllRef.current ?? [],
-          settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false)
+          applyNamesDuringLoad(
+            settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false),
+            namesDuringLoadRef.current
+          )
         );
         cursor = page.next_cursor ?? null;
         more = page.has_more;

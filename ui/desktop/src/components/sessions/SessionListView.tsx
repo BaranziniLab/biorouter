@@ -596,15 +596,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const navigate = useNavigate();
   const { diverge } = useDiverge();
   // ⚠ The cached list is NOT painted on open. It is only as fresh as the last
-  // membership change, and a turn or a rename in another tab or window moves a
-  // chat's `updated_at` without one (opening a chat no longer does, R-30), so a
-  // cached paint can show an older order that the first fresh page then
-  // re-sorts in front of the reader. Before R-30, opening chats alone sent
-  // three of them into Today and changed the row under the pointer (vision
-  // V1-M8, principle 9). Every open waits for its first fresh page and appears
-  // at rest. A warm open shows nothing for `HISTORY_SKELETON_DELAY_MS`, then
-  // the skeleton; a cold one shows the skeleton at once; the cache is the
-  // fallback if the fetch fails.
+  // membership change, and a turn in another tab or window, or a rename from
+  // the terminal, moves a chat's `updated_at` without one, so a cached paint can
+  // show an older order that the first fresh page then re-sorts in front of the
+  // reader. (A rename made in this app moves the cached row itself, through
+  // the name channel's `activityAt`; opening a chat moves nothing since R-30.
+  // Before R-30, opening chats alone sent three of them into Today and changed
+  // the row under the pointer: vision V1-M8, principle 9.) Every open waits for
+  // its first fresh page and appears at rest. A warm open shows nothing for
+  // `HISTORY_SKELETON_DELAY_MS`, then the skeleton; a cold one shows the
+  // skeleton at once; the cache is the fallback if the fetch fails.
   const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
   const [isLoading, setIsLoading] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);

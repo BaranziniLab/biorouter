@@ -21,7 +21,9 @@
 //      data continues to read correctly.
 //   3. `renameSession` — optimistic API call + cache update + cross-window
 //      broadcast. Callers do not need to coordinate cache invalidation or
-//      sibling-window updates themselves.
+//      sibling-window updates themselves. Once the daemon has saved the name
+//      the broadcast carries `activityAt`, and the lists sorted by activity
+//      move the chat to the top at once (R-30: a rename is activity).
 //   4. `subscribeSessionNameChanges` — fan-out for sibling windows
 //      (history list, other open windows, the chat tab) to receive
 //      updates without re-fetching.
@@ -114,6 +116,29 @@ export interface SessionNameChange {
   /** Where the rename originated. Used so the originating window can ignore
    *  its own broadcast and avoid a no-op re-render. */
   origin: 'user' | 'llm' | 'sync';
+  /**
+   * Set only once the daemon has SAVED the rename, to the moment it did (an ISO
+   * string). A saved rename is activity in the chat (R-30): the daemon raises
+   * its `updated_at`, so under "Last activity" the chat belongs at the top. The
+   * lists that sort by activity (the sidebar, History, Home recents) move the
+   * row when they see this, in this window and in every sibling window, instead
+   * of waiting for an unrelated refresh. The optimistic announcement and a
+   * rollback carry none: neither is a rename the daemon saved.
+   */
+  activityAt?: string;
+}
+
+/**
+ * The later of a row's `updated_at` and a saved rename's `activityAt`, as the
+ * string that carries it. A row a re-read already brought with the daemon's
+ * own, newer time keeps it; anything unreadable leaves the row as it was.
+ */
+export function laterActivity(updatedAt: string, activityAt: string | undefined): string {
+  if (!activityAt) return updatedAt;
+  const current = Date.parse(updatedAt);
+  const renamed = Date.parse(activityAt);
+  if (Number.isNaN(renamed)) return updatedAt;
+  return Number.isNaN(current) || renamed > current ? activityAt : updatedAt;
 }
 
 type Listener = (change: SessionNameChange) => void;
@@ -173,11 +198,16 @@ export async function renameSession(
   // A user rename always sets user_set_name=true on the backend; an LLM
   // rename leaves it false. `origin` tells the broadcast which is which so
   // listeners can decide whether to allow future LLM auto-renames.
+  //
+  // `activityAt`: the daemon has saved the name, and a saved rename moved the
+  // chat's `updated_at` (R-30). The response carries no timestamp, so this is
+  // the renderer's clock; a list's next re-read carries the daemon's own.
   broadcast({
     sessionId,
     name: trimmed,
     userSetName: origin === 'user',
     origin,
+    activityAt: new Date().toISOString(),
   });
 
   return trimmed;

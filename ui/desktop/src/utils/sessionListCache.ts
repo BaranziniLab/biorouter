@@ -1,6 +1,6 @@
 import { listSessions, type Session } from '../api';
 import { userActionHeaders } from './userAction';
-import { subscribeSessionNameChanges } from './sessionNameSync';
+import { laterActivity, subscribeSessionNameChanges } from './sessionNameSync';
 import {
   settleRowsReadDuringFetch,
   subscribeSessionRowChanges,
@@ -43,22 +43,60 @@ function emitChange(): void {
  * with thousands of chats the list is easily the slower of the two.
  *
  * Recorded only while a request is outstanding, and cleared by the request that
- * consumes them, so the map cannot grow.
+ * consumes them, so the map cannot grow. A saved rename's `activityAt` is kept
+ * with its name, because a list issued before the rename also carries the old
+ * place in the order (R-30).
  */
-const namesPublishedDuringFetch = new Map<string, { name: string; userSetName: boolean }>();
+const namesPublishedDuringFetch = new Map<
+  string,
+  { name: string; userSetName: boolean; activityAt?: string }
+>();
+
+/**
+ * Put a renamed chat where its activity now puts it (R-30: a saved rename is
+ * activity). The list is in the daemon's order, `updated_at` newest first, and
+ * History keeps that order inside each date bucket, so the row is lifted to
+ * just above the first row that is not newer than it, with its `updated_at`
+ * raised to the rename. A row the list does not hold is left to the re-read.
+ */
+export function placeRenamedSession(
+  sessions: Session[],
+  sessionId: string,
+  activityAt: string
+): Session[] {
+  const index = sessions.findIndex((session) => session.id === sessionId);
+  if (index === -1) return sessions;
+  const row = sessions[index];
+  const updatedAt = laterActivity(row.updated_at, activityAt);
+  const at = Date.parse(updatedAt);
+  if (Number.isNaN(at)) return sessions;
+  const rest = sessions.filter((_, i) => i !== index);
+  const before = rest.findIndex((session) => !(Date.parse(session.updated_at) > at));
+  const insertAt = before === -1 ? rest.length : before;
+  return [...rest.slice(0, insertAt), { ...row, updated_at: updatedAt }, ...rest.slice(insertAt)];
+}
 
 // A session rename rides the name channel, not the list channel — but the
 // See-all view and Home recents read THIS cache, so patch the cached name when
 // one arrives. Without this a rename made in the tab pill or the sidebar never
 // reached those two surfaces until they remounted, and the same session showed
 // two different names in two panels at once.
-subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
-  if (inFlightRequest) namesPublishedDuringFetch.set(sessionId, { name, userSetName });
+//
+// A rename the daemon has SAVED (`activityAt`) also moves the chat (R-30):
+// History and Home recents show it at the top at once, with no request. A chat
+// the cache does not hold yet (a list read before the chat had its first
+// message) is brought in by re-reading the list instead.
+subscribeSessionNameChanges(({ sessionId, name, userSetName, activityAt }) => {
+  if (inFlightRequest) namesPublishedDuringFetch.set(sessionId, { name, userSetName, activityAt });
   if (!cachedSessions) return;
   const idx = cachedSessions.findIndex((s) => s.id === sessionId);
-  if (idx === -1) return;
-  const next = cachedSessions.slice();
+  if (idx === -1) {
+    if (activityAt) void refreshSessionList().catch(() => undefined);
+    return;
+  }
+  let next = cachedSessions.slice();
   next[idx] = { ...next[idx], name, user_set_name: userSetName };
+  if (activityAt) next = placeRenamedSession(next, sessionId, activityAt);
   cachedSessions = next;
   emitChange();
 });
@@ -194,10 +232,13 @@ export function notifySessionListChanged(change: SessionListChange = {}): void {
 /** Re-apply the renames that outran this response. See {@link namesPublishedDuringFetch}. */
 function applyNamesPublishedDuringFetch(sessions: Session[]): Session[] {
   if (namesPublishedDuringFetch.size === 0) return sessions;
-  const next = sessions.map((session) => {
+  let next = sessions.map((session) => {
     const later = namesPublishedDuringFetch.get(session.id);
     return later ? { ...session, name: later.name, user_set_name: later.userSetName } : session;
   });
+  for (const [sessionId, { activityAt }] of namesPublishedDuringFetch) {
+    if (activityAt) next = placeRenamedSession(next, sessionId, activityAt);
+  }
   namesPublishedDuringFetch.clear();
   return next;
 }

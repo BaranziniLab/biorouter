@@ -50,8 +50,9 @@ const session = (id: string, name: string, minutesAgo: number): Session =>
     message_count: 2,
   }) as Session;
 
-// Cached: "Older chat" was last touched two days ago. Fresh: it was opened in a
-// tab a minute ago, so the daemon now lists it first.
+// Cached: "Older chat" was last touched two days ago. Fresh: a turn ran in it in
+// another window a minute ago, so the daemon now lists it first. (Opening it
+// would not have moved it, R-30.)
 const recent = session('s1', 'Recent chat', 30);
 const olderStale = session('s2', 'Older chat', 2 * 24 * 60);
 const olderFresh = session('s2', 'Older chat', 1);
