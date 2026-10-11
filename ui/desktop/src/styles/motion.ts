@@ -102,10 +102,28 @@ export function prefersReducedMotion(): boolean {
 
 /**
  * True while the window or the sidebar is being resized: `AppLayout` sets
- * `biorouter-window-resizing` on `<body>` and clears it 180ms after the last
- * resize event, and the sidebar's drag handle sets `biorouter-sidebar-resizing`.
- * A JS animation that moves layout-driven geometry must not start while this is
- * true; it snaps instead (CSS gets the same rule from `[data-motion-layout]`).
+ * `biorouter-window-resizing` on `<body>` and clears it `MOTION.resizeSettleMs`
+ * after the last resize event, and the sidebar's drag handle sets
+ * `biorouter-sidebar-resizing`. A JS animation that moves layout-driven geometry
+ * must not start while this is true; it snaps instead (CSS gets the same rule
+ * from `[data-motion-layout]`).
+ *
+ * The window half is only as early as `AppLayout`'s `resize` listener. Chromium
+ * runs window `resize` listeners in registration order, capture flag or not, and
+ * a component below `AppLayout` registers its listeners first (a child's effects
+ * run before its parent's). A `setState` in such a listener is committed in the
+ * microtask after it returns, before the marker has run. In the event that
+ * begins a resize (any event that finds no hold left by the one before it), a
+ * glide that commit starts gets `false` here, and a layout read in it resolves
+ * styles without the class. A listener that moves layout therefore puts the
+ * class on `<body>` itself before it moves anything, as `AppLayout`'s width
+ * watcher does (vision V1-R4-1).
+ *
+ * One marker at module scope here would run before every component's listener
+ * and close that gap everywhere. It is not installed: no other listener has been
+ * measured to slide, and `Layout/sidebarAutoCollapseMotion.browser.test.tsx`
+ * proves the watcher's hold by removing it, which an earlier marker would hide.
+ * Installing it means changing that test to remove both.
  */
 export function isWindowResizing(): boolean {
   if (typeof document === 'undefined' || !document.body) return false;
