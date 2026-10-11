@@ -1212,6 +1212,9 @@ function collectCodeDelta(messages: Message[]) {
   return { added, removed };
 }
 
+/** Module-level, so the message list's memoised element keeps one identity. */
+const isUserRow = (m: Message) => m.role === 'user';
+
 interface BaseChatProps {
   setChat: (chat: ChatType) => void;
   onMessageSubmit?: (message: string) => void;
@@ -2412,6 +2415,78 @@ function BaseChatContent({
    */
   const { effectiveModel } = usePinnedModel(session, pinnedModel);
 
+  // The message list, held as ONE element across the commits that do not change
+  // it (V2-17). No message component is memoised and the list re-renders every
+  // row on each render it gets, so toggling the summary rail, opening or closing
+  // a preview, or the rail's own exit re-rendered a whole long transcript before
+  // the grid could snap and the glide start (200 to 250ms on an 8.5k px chat).
+  // React skips an element it has already rendered, so on those commits only
+  // the grid, the rail and the glide re-render. Every prop the list reads is a
+  // dependency here; the callbacks are stable, and a streamed chunk still
+  // rebuilds it through `messages`.
+  //
+  // `handleOpenArtifact` is the one callback that is NOT stable: the panel
+  // rebuilds it whenever the presented artifact changes, which is exactly the
+  // preview opening or closing. The list gets a wrapper that reads the latest
+  // one at click time instead, so those commits skip the transcript too.
+  const openArtifactRef = useRef(handleOpenArtifact);
+  openArtifactRef.current = handleOpenArtifact;
+  const openArtifactFromTranscript = useCallback(
+    (artifact: Parameters<typeof handleOpenArtifact>[0]) => openArtifactRef.current(artifact),
+    []
+  );
+  const transcriptList = useMemo(
+    () => (
+      <ProgressiveMessageList
+        messages={messages}
+        chat={{ sessionId }}
+        toolCallNotifications={toolCallNotifications}
+        isUserMessage={isUserRow}
+        isStreamingMessage={chatState !== ChatState.Idle}
+        chatState={chatState}
+        turnStartedAt={turnStartedAt}
+        lastMessageAt={lastMessageAt}
+        pendingSteer={pendingSteer}
+        steerRecoveries={steerRecoveries}
+        onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
+        canStopTurn={!subagentTabReadOnly}
+        onRenderingComplete={handleRenderingComplete}
+        onMessageUpdate={heldMessageUpdate}
+        // Finding 5.1 (the PR author's own follow-up).
+        // `ElicitationRequest` resolves a waiting tool
+        // through the daemon's human-action endpoint,
+        // and it lives INSIDE the transcript, so removing
+        // the composer never reached it.
+        // `BioRouterMessage` renders the form only when it
+        // is handed a submit callback, so withholding the
+        // callback withholds the control rather than
+        // leaving a Submit that 403s.
+        submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
+        onOpenArtifact={openArtifactFromTranscript}
+        onRunInTerminal={handleRunInTerminal}
+        workingDir={sessionWorkingDir}
+      />
+    ),
+    [
+      messages,
+      sessionId,
+      toolCallNotifications,
+      chatState,
+      turnStartedAt,
+      lastMessageAt,
+      pendingSteer,
+      steerRecoveries,
+      subagentTabReadOnly,
+      handleSendAgain,
+      handleRenderingComplete,
+      heldMessageUpdate,
+      submitElicitationResponse,
+      openArtifactFromTranscript,
+      handleRunInTerminal,
+      sessionWorkingDir,
+    ]
+  );
+
   const renderChatInput = () => (
     <div
       ref={composerMotionRef}
@@ -2877,37 +2952,7 @@ function BaseChatContent({
                       <>
                         <SearchView>
                           <>
-                            <ProgressiveMessageList
-                              messages={messages}
-                              chat={{ sessionId }}
-                              toolCallNotifications={toolCallNotifications}
-                              isUserMessage={(m: Message) => m.role === 'user'}
-                              isStreamingMessage={chatState !== ChatState.Idle}
-                              chatState={chatState}
-                              turnStartedAt={turnStartedAt}
-                              lastMessageAt={lastMessageAt}
-                              pendingSteer={pendingSteer}
-                              steerRecoveries={steerRecoveries}
-                              onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
-                              canStopTurn={!subagentTabReadOnly}
-                              onRenderingComplete={handleRenderingComplete}
-                              onMessageUpdate={heldMessageUpdate}
-                              // Finding 5.1 (the PR author's own follow-up).
-                              // `ElicitationRequest` resolves a waiting tool
-                              // through the daemon's human-action endpoint,
-                              // and it lives INSIDE the transcript, so removing
-                              // the composer never reached it.
-                              // `BioRouterMessage` renders the form only when it
-                              // is handed a submit callback, so withholding the
-                              // callback withholds the control rather than
-                              // leaving a Submit that 403s.
-                              submitElicitationResponse={
-                                subagentTabReadOnly ? undefined : submitElicitationResponse
-                              }
-                              onOpenArtifact={handleOpenArtifact}
-                              onRunInTerminal={handleRunInTerminal}
-                              workingDir={sessionWorkingDir}
-                            />
+                            {transcriptList}
                             {/* §6.1b: skeleton cards for tool calls whose args
                                 are still streaming. They sit at the tail of the
                                 transcript and vanish as each authoritative

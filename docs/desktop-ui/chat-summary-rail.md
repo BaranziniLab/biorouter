@@ -139,6 +139,13 @@ so the glide moves only the transcript and leaves the composer to its own animat
 hook slides the conversation when a side preview opens or closes, and the card the person
 clicked stays in view while the column narrows.
 
+A toggle, a preview opening or closing, or the rail's exit re-renders the grid and the rail and
+nothing in the transcript. `BaseChat` holds the message list as one memoised element whose
+dependencies are only what the list reads, so React skips it on those commits; a long chat used
+to re-render every row first, and the first frame came 200 to 250ms after the click. The panel
+rebuilds its `openArtifact` whenever the shown artifact changes, so the list is handed a stable
+wrapper that reads the latest one when a card is clicked.
+
 New to-do rows enter with `.br-enter`, 30ms apart, at most five at once; rows that arrive with
 the list (an open, a reload, a tab switch) do not animate. A status change crossfades the glyph
 over 125ms. The list keeps the running step in view, scrolling smoothly unless motion is reduced
@@ -171,7 +178,7 @@ or the pointer is over the summary.
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, and the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from |
-| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the first turn counted from the commit that creates a new chat, and no titlebar padding under the header band |
+| `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, and the message list memoised against everything the rail, the popover and the preview change |
 | `components/summary/summaryRailGeometry.browser.test.ts` | In Chromium: the grid at 1055/1056 and 1067/1068, the 760px column on both sides of each seam, the composer's left edge on the column's, and the column moving by half the rail |
 
 ## Related documentation

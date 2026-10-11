@@ -146,3 +146,53 @@ describe('BaseChat: the edits it applies for other areas', () => {
     expect(code).toMatch(/await renameSessionOptimistically\(/);
   });
 });
+
+describe('BaseChat: the transcript does not re-render for the rail or the preview (V2-17)', () => {
+  const memoStart = code.indexOf('const transcriptList = useMemo(');
+  const memoEnd = code.indexOf(']\n  );', memoStart);
+  const memo = code.slice(memoStart, memoEnd + 1);
+  const element = memo.slice(memo.indexOf('<ProgressiveMessageList'), memo.indexOf('/>') + 2);
+  const deps = new Set(
+    (memo.slice(memo.lastIndexOf('[')).match(/\b[A-Za-z_]\w*\b/g) ?? []).filter(Boolean)
+  );
+
+  it('builds the message list once, inside the memo, and renders that element', () => {
+    expect(memoStart).toBeGreaterThan(-1);
+    expect(code.match(/<ProgressiveMessageList\b/g) ?? []).toHaveLength(1);
+    expect(element.startsWith('<ProgressiveMessageList')).toBe(true);
+    expect(code.match(/\{transcriptList\}/g) ?? []).toHaveLength(1);
+    // Above the early return, so the hook order never changes.
+    expect(memoStart).toBeLessThan(code.indexOf('if (sessionLoadError)'));
+  });
+
+  it('lists every value the element reads as a dependency', () => {
+    const expressions = [...element.matchAll(/=\{([^}]*)\}/g)].map((m) => m[1]).join(' ');
+    // Identifiers not reached through a property access; module-level names are stable.
+    const read = (expressions.match(/(?<![.\w])[A-Za-z_]\w*/g) ?? []).filter(
+      (name) => !['undefined', 'ChatState', 'isUserRow'].includes(name)
+    );
+    expect(read.length).toBeGreaterThan(10);
+    for (const name of read) expect(deps.has(name), name).toBe(true);
+  });
+
+  it('depends on nothing the rail, the popover or the preview changes', () => {
+    for (const name of [
+      'summaryRail',
+      'reviewOpen',
+      'presentedArtifact',
+      'previewMode',
+      'previewSideWidth',
+      'handleOpenArtifact',
+    ]) {
+      expect(deps.has(name), name).toBe(false);
+    }
+  });
+
+  it('opens an artifact through a stable wrapper, since the panel rebuilds its own on every open', () => {
+    expect(element).toContain('onOpenArtifact={openArtifactFromTranscript}');
+    expect(code).toMatch(/openArtifactRef\.current = handleOpenArtifact;/);
+    expect(code).toMatch(
+      /const openArtifactFromTranscript = useCallback\(\s*\([^)]*\) => openArtifactRef\.current\(artifact\),\s*\[\]\s*\)/
+    );
+  });
+});
