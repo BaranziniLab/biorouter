@@ -82,6 +82,7 @@ import { SegmentedControl } from '../ui/segmented-control';
 import { artifactCardKind } from '../MCPUIResourceRenderer';
 import { ARTIFACT_CARD_COPY } from '../toolCallCopy';
 import { PREVIEW_COPY } from './copy';
+import { isCodePath } from './artifactCodePath';
 import {
   PreviewBar,
   PreviewBarActions,
@@ -476,16 +477,51 @@ function clampRenderErrorText(value: string) {
     : value;
 }
 
-function iconForArtifact(artifact: ArtifactSource | null) {
+/**
+ * The glyph a preview tab draws (spec 3.3 and 3.8: a glyph stands for the content,
+ * the same way everywhere).
+ *
+ * A file source is only a path, and a path cannot say whether it names a folder, so
+ * `loadedKind` (what the panel last loaded for the tab) outranks the name and the
+ * name decides only until a preview has landed. Code is whatever the code view
+ * highlights as code (`isCodePath`), not a second list of extensions.
+ */
+export function iconForArtifact(
+  artifact: ArtifactSource | null,
+  loadedKind?: ArtifactFilePreview['kind']
+) {
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
   if (artifact.kind === 'file') {
-    const ext = artifact.path.split('.').pop()?.toLowerCase();
+    switch (loadedKind) {
+      case 'gitDirectory':
+        // The branch is what a repository adds to a folder, and the glyph the
+        // preview's own bar and empty state draw for one.
+        return GitBranch;
+      case 'directory':
+        return Folder;
+      case 'image':
+        return Image;
+      case 'html':
+        return Globe;
+      case 'document':
+        return FileText;
+      case 'binary':
+        // The glyph the panel draws for a file it declines to show.
+        return File;
+      default:
+        // `text`, `error`, or nothing loaded yet: the name is the evidence.
+        break;
+    }
+    if (/[\\/]$/.test(artifact.path)) return Folder;
+    const ext = extensionFromPath(artifact.path);
     if (isImageExtension(ext)) return Image;
     if (['html', 'htm'].includes(ext || '')) return Globe;
-    if (['js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'sql', 'json', 'yaml', 'yml'].includes(ext || '')) {
-      return Code;
-    }
+    if (isCodePath(artifact.path)) return Code;
+    // A name with no extension is a folder more often than a file in what agents
+    // hand over (`repo`, `results`), so it draws the folder until the preview says
+    // otherwise. A conventional file name (`Makefile`) is code and returned above.
+    if (!ext) return Folder;
     return FileText;
   }
   // A `ui://` figure or report (Auto Visualiser, an app card): the figure glyph
@@ -1229,6 +1265,20 @@ export default function ArtifactViewer({
     }
   }, [sessionId, tabState.tabs]);
 
+  /**
+   * What the panel last loaded for a tab's file, so its glyph follows the content
+   * (a folder, a repository, an image) and not only the name: a path cannot say
+   * whether it is a directory. Read from the same cache stale-while-loading keeps,
+   * which `show()` fills in the same step that sets `preview`, so the render a
+   * landed preview causes is the one that sees it.
+   */
+  const loadedKindOf = (tabArtifact: ArtifactSource) => {
+    const cached = previewCacheRef.current.get(
+      JSON.stringify([sessionId, artifactSourceKey(tabArtifact)])
+    );
+    return cached?.kind === 'file' ? cached.preview.kind : undefined;
+  };
+
   useEffect(() => {
     if (activeArtifact?.kind !== 'file') return;
     const trackDirty = (event: MessageEvent) => {
@@ -1630,7 +1680,7 @@ export default function ArtifactViewer({
             className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
           >
             {tabState.tabs.map((tab) => {
-              const TabIcon = iconForArtifact(tab.artifact);
+              const TabIcon = iconForArtifact(tab.artifact, loadedKindOf(tab.artifact));
               const isActive = tab.id === tabState.activeTabId;
               return (
                 // `br-tab` (shared) paints the tab, and its drag rules do the
@@ -1702,7 +1752,7 @@ export default function ArtifactViewer({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
                 {tabState.tabs.map((tab) => {
-                  const TabIcon = iconForArtifact(tab.artifact);
+                  const TabIcon = iconForArtifact(tab.artifact, loadedKindOf(tab.artifact));
                   const isCurrent = tab.id === tabState.activeTabId;
                   return (
                     <DropdownMenuItem

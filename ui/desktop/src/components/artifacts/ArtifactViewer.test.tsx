@@ -1234,6 +1234,92 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.getByRole('treeitem', { name: 'report.md' })).toBeVisible();
   });
 
+  it('draws each tab with the glyph of what it holds: a repository, a folder, code, prose (V2-R3-3)', async () => {
+    installElectronMock();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    const entry = (name: string) => ({
+      name,
+      path: `/work/repo/${name}`,
+      relativePath: name,
+      parentPath: '',
+      isDirectory: false,
+      status: 'pushed',
+    });
+    readFile.mockImplementation(async (path: string) => {
+      if (path === '/work/repo') {
+        return {
+          kind: 'gitDirectory',
+          title: 'repo',
+          path,
+          branch: 'main',
+          entries: [entry('lib.rs'), entry('Cargo.toml'), entry('notes.md')],
+          found: true,
+        };
+      }
+      if (path === '/work/results') {
+        return { kind: 'directory', title: 'results', path, entries: [], found: true };
+      }
+      const name = path.split('/').pop() ?? path;
+      return {
+        kind: 'text',
+        title: name,
+        path,
+        mimeType: 'text/plain',
+        text: 'x',
+        size: 1,
+        found: true,
+      };
+    });
+
+    function Harness() {
+      const [artifact, setArtifact] = useState<ArtifactSource>({
+        kind: 'file' as const,
+        title: 'repo',
+        path: '/work/repo',
+      });
+      return (
+        <ThemeProvider>
+          <button
+            type="button"
+            onClick={() => setArtifact({ kind: 'file', title: 'results', path: '/work/results' })}
+          >
+            open results
+          </button>
+          <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={setArtifact} />
+        </ThemeProvider>
+      );
+    }
+
+    const glyphOf = (name: string) =>
+      screen.getByRole('tab', { name }).querySelector('svg')?.getAttribute('class') ?? '';
+
+    render(<Harness />);
+    expect(await screen.findByRole('tree', { name: 'repo repository files' })).toBeVisible();
+    // Before any entry is opened, a git directory is a repository, whatever its name.
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+
+    for (const name of ['lib.rs', 'Cargo.toml', 'notes.md']) {
+      // The tree belongs to the repository's tab; a file's tab shows the file.
+      await userEvent.click(screen.getByRole('tab', { name: 'repo' }));
+      await userEvent.dblClick(screen.getByRole('treeitem', { name: new RegExp(`^${name}`) }));
+      expect(await screen.findByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
+    }
+    // `.rs` and `.toml` are both code to the code view, so both are code here.
+    expect(glyphOf('lib.rs')).toContain('lucide-code');
+    expect(glyphOf('Cargo.toml')).toContain('lucide-code');
+    expect(glyphOf('notes.md')).toContain('lucide-file-text');
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+
+    await userEvent.click(screen.getByRole('button', { name: 'open results' }));
+    expect(await screen.findByRole('tab', { name: 'results' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    // A plain folder: the folder glyph, once the folder has loaded.
+    await waitFor(() => expect(glyphOf('results')).toContain('lucide-folder'));
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+  });
+
   it('renders a written markdown report as prose, with the raw text one click away', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
