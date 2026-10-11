@@ -100,7 +100,10 @@ export default function WorkflowActivityEditor({
           <InfoTip label={copy.buttons} help={copy.buttonsInfo} />
         </div>
 
-        {/* Rows, not chips: each starter button is one line with its own Remove. */}
+        {/* Rows, not chips: each starter button is one line with its own Remove. A row keeps the
+            1px TRANSPARENT edge a filled box keeps (R-27), which also puts its text on the
+            field's own text edge below it (1px edge + 8px inset), and gives it an outline under
+            forced colours, where its hover wash is gone. */}
         {nonMessageActivities.length > 0 && (
           <ul className="flex flex-col">
             {nonMessageActivities.map((activity, index) => {
@@ -108,7 +111,7 @@ export default function WorkflowActivityEditor({
               return (
                 <li
                   key={index}
-                  className="flex min-h-8 min-w-0 items-center gap-2 rounded-element pl-2 hover:bg-overlay-hover"
+                  className="flex min-h-8 min-w-0 items-center gap-2 rounded-element border border-transparent pl-2 hover:bg-overlay-hover"
                   title={cut ? activity : undefined}
                 >
                   <span className="min-w-0 flex-1 truncate text-body text-text-default">

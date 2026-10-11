@@ -38,6 +38,7 @@ import { PageHeader } from './PageHeader';
 import { FilterInput } from '../ui/filter-input';
 import { Button } from '../ui/button';
 import ParameterInput from '../parameter/ParameterInput';
+import WorkflowActivityEditor from '../workflows/WorkflowActivityEditor';
 import {
   DefinitionRow,
   FactRow,
@@ -84,6 +85,9 @@ function App() {
           </ScheduleFacts>
           <div className="biorouter-list-row" id="run-row"><span id="run-text">Oct 10, 3:00 AM</span></div>
           <div id="skeleton" style={{ marginTop: 16 }}><ScheduleFactsSkeleton /></div>
+        </div>
+        <div id="activity-host" style={{ marginTop: 16 }}>
+          <WorkflowActivityEditor activities={['message:Hello', 'Run the QC']} setActivities={() => {}} />
         </div>
         <div id="param-host" style={{ marginTop: 16, paddingBottom: 24 }}>
           <ParameterInput
@@ -417,6 +421,33 @@ describe('Workflows, Scheduler and Built apps under the fill rule (R-27)', () =>
       } finally {
         await tab.close();
       }
+    }
+  }, 120_000);
+
+  it('puts a starter-button row’s text on the text edge of the field under it, and gives the row a transparent edge', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      const edges = await tab.evaluate(() => {
+        const row = document.querySelector('#activity-host li')!;
+        const text = row.querySelector('span')!.getBoundingClientRect().left;
+        const input = document.querySelector('#workflow-starter-button') as HTMLInputElement;
+        const box = input.getBoundingClientRect();
+        const cs = getComputedStyle(input);
+        const rowStyle = getComputedStyle(row);
+        return {
+          rowText: text,
+          // the field's text starts after its own edge and padding
+          fieldText: box.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft),
+          rowEdge: rowStyle.borderTopWidth,
+          rowEdgeColour: rowStyle.borderTopColor,
+        };
+      });
+      expect(edges.rowText).toBeCloseTo(edges.fieldText, 0);
+      expect(edges.rowEdge).toBe('1px');
+      expect(edges.rowEdgeColour).toBe(await paint(tab, 'transparent'));
+    } finally {
+      await tab.close();
     }
   }, 120_000);
 
