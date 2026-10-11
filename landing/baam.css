@@ -220,9 +220,13 @@
 .tag.public { border-color: transparent; background: var(--wash); color: var(--muted); }
 .tag.affiliation { border-color: transparent; background: var(--navy-wash); color: var(--navy); }
 
-/* Actions, at the right of the row */
+/* Actions, at the right of the row. They sit on the name's line, level with
+   the glyph (32px, -4px: centred on the 17px name's 24px line), not centred on
+   the row: opening a row unclamps its description and makes it taller, and
+   controls centred on it slid down from under the pointer, so the chevron
+   just pressed was not where a second press would land. */
 .ext-gh-link {
-  grid-column: 3; grid-row: 1 / span 3; align-self: center; margin-left: 24px;
+  grid-column: 3; grid-row: 1 / span 3; align-self: start; margin: -4px 0 0 24px;
   width: var(--h-control); height: var(--h-control); display: grid; place-items: center;
   border-radius: var(--r-element); color: var(--muted);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -230,7 +234,7 @@
 .ext-gh-link svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
 .ext-gh-link:hover { background: var(--fill-strong); color: var(--ink); text-decoration: none; }
 .brxt-chip, .skill-dl-btn {
-  grid-column: 4; grid-row: 1 / span 3; align-self: center; margin-left: 8px;
+  grid-column: 4; grid-row: 1 / span 3; align-self: start; margin: -4px 0 0 8px;
   display: inline-flex; align-items: center; gap: 7px;
   height: var(--h-control); padding: 0 12px; border-radius: var(--r-element);
   border: 1px solid transparent; background: var(--fill); color: var(--ink);
@@ -241,7 +245,7 @@
 .brxt-chip:hover, .skill-dl-btn:hover { background: var(--fill-strong); text-decoration: none; }
 .brxt-chip:active, .skill-dl-btn:active { transform: scale(0.98); }
 .row-toggle {
-  grid-column: 5; grid-row: 1 / span 3; align-self: center; margin: 0 0 0 6px; padding: 0;
+  grid-column: 5; grid-row: 1 / span 3; align-self: start; margin: -4px 0 0 6px; padding: 0;
   width: var(--h-control); height: var(--h-control); display: grid; place-items: center;
   border: 0; border-radius: var(--r-element); background: none; color: var(--faint); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
