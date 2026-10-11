@@ -169,7 +169,7 @@ describe('PinnedModelNote', () => {
     render(<PinnedModelNote session={chat('private')} />);
     const note = await screen.findByTestId('pinned-model-note');
     expect(note).toHaveAttribute('role', 'status');
-    expect(note.className).toContain('bg-background-muted');
+    expect(note.className).toContain('bg-background-fill');
     expect(note.className).not.toContain('wash-warning');
     expect(note.className).not.toContain('wash-danger');
   });

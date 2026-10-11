@@ -41,7 +41,7 @@ describe('HostManagedModelNote', () => {
   it('is a boxed neutral note by default', () => {
     render(<HostManagedModelNote />);
     const note = screen.getByTestId('host-managed-model-note');
-    expect(note).toHaveClass('rounded-element', 'bg-background-muted', 'border-border-subtle');
+    expect(note).toHaveClass('rounded-element', 'bg-background-fill', 'border-transparent');
     expect(note).toHaveTextContent(HOST_MANAGED_MODEL_REASON);
   });
 
