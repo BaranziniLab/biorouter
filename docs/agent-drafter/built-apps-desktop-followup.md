@@ -23,7 +23,9 @@ This lane did not start an app or run Cargo.
   Shipped-skill filtering was also already present in `referencedSkills`.
   A late export review found the seeded `knowledge-bases` bundle was missing from the list;
   the UI mirror now omits that bundle too, with the existing full-export dialog regression
-  expanded to cover it. This mirror matches the export lane's Rust shipped-skill list.
+  expanded to cover it. Shipped skill aliases are filtered case-insensitively, matching the
+  Rust export filter and case-insensitive recipient filesystems. This mirror matches the
+  export lane's Rust shipped-skill list.
 - While reviewing the proof path, the two renderer authentication getters were found to read
   current settings even though the window remained attached to its earlier daemon. After a
   Settings > External Backend change, the build-chat metadata read could carry the wrong proof.

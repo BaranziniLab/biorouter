@@ -134,7 +134,7 @@ export function referencedSkills(app: AppManifest): string[] {
   return [
     ...new Set(
       (references(app).skills ?? []).filter(
-        (name) => typeof name === 'string' && !SHIPPED_SKILLS.includes(name)
+        (name) => typeof name === 'string' && !SHIPPED_SKILLS.includes(name.toLowerCase())
       )
     ),
   ];

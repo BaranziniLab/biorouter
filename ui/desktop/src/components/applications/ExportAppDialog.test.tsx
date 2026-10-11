@@ -32,7 +32,13 @@ const app = {
   updated_at: 1750000000,
   agent: {
     knowledge_base: 'ms-cohort',
-    skills: ['ggplot-visualization', 'office-word', 'knowledge-bases'],
+    skills: [
+      'ggplot-visualization',
+      'office-word',
+      'Office-Word',
+      'knowledge-bases',
+      'Knowledge-Bases',
+    ],
     extensions: ['developer', 'spokeagent', 'autovisualiser'],
     capabilities: {
       data: { sources: [{ name: 'trials', kind: 'knowledge', ids: ['trials-kb'] }] },
@@ -94,8 +100,8 @@ describe('ExportAppDialog', () => {
     }
     expect(screen.getByRole('checkbox', { name: /Skill: ggplot-visualization/ })).toBeChecked();
     // The recipient's install seeds its own; one installed over it could not be removed.
-    expect(screen.queryByRole('checkbox', { name: /Skill: office-word/ })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: /Skill: knowledge-bases/ })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Skill: office-word/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Skill: knowledge-bases/i })).toBeNull();
     expect(screen.getByRole('checkbox', { name: /Extension: spokeagent/ })).toBeChecked();
     expect(screen.queryByRole('checkbox', { name: /Extension: developer/ })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /Extension: autovisualiser/ })).toBeNull();
