@@ -1230,15 +1230,24 @@ fn placement_refusal(
         _ => false,
     };
     let hidden = |component: &Component| matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'));
+    if resolved.components().any(|c| named(&c, CODE_LOAD_DIRS)) {
+        return Some("is inside a folder code is imported from.".to_string());
+    }
     let content_roots: Vec<PathBuf> = home
         .into_iter()
         .flat_map(|home| EXPORT_CONTENT_DIRS.iter().map(move |name| home.join(name)))
         .map(|root| resolve_existing_prefix(&root))
         .collect();
-    let rest: Vec<Component> = if let Some(rest) = content_roots
+    let rest: Vec<Component> = if let Some((root, rest)) = content_roots
         .iter()
-        .find_map(|root| resolved.strip_prefix(root).ok())
+        .find_map(|root| resolved.strip_prefix(root).ok().map(|rest| (root, rest)))
     {
+        let root_relative = home
+            .and_then(|home| root.strip_prefix(home).ok())
+            .unwrap_or(root);
+        if root_relative.components().any(|c| hidden(&c)) {
+            return Some("is inside a hidden folder; pick another export location.".to_string());
+        }
         if rest.as_os_str().is_empty() {
             return Some("is a content folder itself; name a new folder inside it.".to_string());
         }
@@ -2618,9 +2627,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_model_exports_only_into_the_persons_own_folders() {
-        let home = Path::new("/home/u");
-        let tests = [PathBuf::from("/tmp/T")];
-        let verdict = |path: &str| placement_refusal(Path::new(path), Some(home), &tests);
+        let home = resolve_existing_prefix(Path::new("/home/u"));
+        let tests = [resolve_existing_prefix(Path::new("/tmp/T"))];
+        let verdict = |path: &str| {
+            placement_refusal(
+                &resolve_existing_prefix(Path::new(path)),
+                Some(&home),
+                &tests,
+            )
+        };
         for allowed in [
             "/home/u/Desktop/my-app",
             "/home/u/Documents/apps/my-app",
@@ -2666,7 +2681,7 @@ mod tests {
             ),
             (
                 "/opt/homebrew/lib/python3.12/site-packages/my-app",
-                "outside the export locations",
+                "imported from",
             ),
             ("/usr/local/my-app", "outside the export locations"),
             ("/etc/my-app", "outside the export locations"),
@@ -2679,6 +2694,37 @@ mod tests {
         }
         // No home at all: only the drives and the test folders remain.
         assert!(placement_refusal(Path::new("/home/u/Desktop/x"), None, &tests).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn redirected_content_roots_cannot_bypass_forbidden_destination_components() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::Builder::new()
+            .prefix("biorouter-placement-")
+            .tempdir()
+            .unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let desktop = home.join("Desktop");
+        for (destination, reason) in [
+            (
+                root.path().join("python/site-packages"),
+                Some("imported from"),
+            ),
+            (home.join(".private-export"), Some("hidden")),
+            (root.path().join("Cloud Storage/Desktop"), None),
+        ] {
+            std::fs::create_dir_all(&destination).unwrap();
+            symlink(&destination, &desktop).unwrap();
+            let target = resolve_existing_prefix(&desktop.join("my-app"));
+            let refusal = placement_refusal(&target, Some(&home), &[]);
+            match reason {
+                Some(reason) => assert!(refusal.is_some_and(|why| why.contains(reason))),
+                None => assert_eq!(refusal, None),
+            }
+            std::fs::remove_file(&desktop).unwrap();
+        }
     }
 
     #[test]

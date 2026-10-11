@@ -12,7 +12,7 @@ export async function checkExport(base, id) {
   const result = { id, files: 0, hasRun: false, hasDist: false, rawEntry: false, rebuildOk: false, skippedBinary: [], ok: false, err: '' };
   let out;
   try {
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(id || '')) throw new Error('invalid app id');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id || '')) throw new Error('invalid app id');
     const response = await fetch(new URL(`/apps/${id}/export`, base), { headers: exportHeaders() });
     if (!response.ok) throw new Error(`export http ${response.status}`);
     const data = await response.json();
