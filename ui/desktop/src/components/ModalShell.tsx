@@ -118,6 +118,12 @@ export interface ModalShellProps {
   title: React.ReactNode;
   /** Status ink for the title (danger/warning). Layout never changes with it. */
   titleClassName?: string;
+  /**
+   * An `InfoTip` beside the title. It sits OUTSIDE the heading: the dialog is named by the heading
+   * (`aria-labelledby`), and an InfoTip inside it would add its "About …" name and its hidden help
+   * to the dialog's name (V4-R4-2, "Report a problem").
+   */
+  titleInfo?: React.ReactNode;
   /** Optional 12px line under the title. */
   subtitle?: React.ReactNode;
   /** Right-aligned action row. */
@@ -163,6 +169,7 @@ export function ModalShell({
   purpose = 'info',
   title,
   titleClassName,
+  titleInfo,
   subtitle,
   footer,
   children,
@@ -219,9 +226,18 @@ export function ModalShell({
             rule && 'border-b border-border-subtle'
           )}
         >
-          <DialogTitle className={cn('min-w-0 [overflow-wrap:anywhere]', titleClassName)}>
-            {title}
-          </DialogTitle>
+          {titleInfo != null ? (
+            <div className="flex min-w-0 items-center">
+              <DialogTitle className={cn('min-w-0 [overflow-wrap:anywhere]', titleClassName)}>
+                {title}
+              </DialogTitle>
+              {titleInfo}
+            </div>
+          ) : (
+            <DialogTitle className={cn('min-w-0 [overflow-wrap:anywhere]', titleClassName)}>
+              {title}
+            </DialogTitle>
+          )}
           {subtitle ? (
             <DialogDescription className="mt-1 text-supporting">{subtitle}</DialogDescription>
           ) : bodyDescribes ? (

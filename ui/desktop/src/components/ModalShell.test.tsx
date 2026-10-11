@@ -8,6 +8,7 @@ import {
   ModalShellDefaultsContext,
   type ModalPurpose,
 } from './ModalShell';
+import { InfoTip } from './ui/info-tip';
 
 afterEach(cleanup);
 
@@ -174,6 +175,29 @@ describe('ModalShell — the description contract', () => {
   it('keeps the subtitle as the description when both are given', () => {
     open({ subtitle: 'in Analysis Lab', describedBy: 'note-1' });
     expect(screen.getByRole('dialog')).toHaveAccessibleDescription('in Analysis Lab');
+  });
+});
+
+describe('ModalShell — an InfoTip beside the title (V4-R4-2)', () => {
+  it('sits on the title line, outside the heading, so the dialog keeps the title as its name', () => {
+    open({
+      title: 'Report a problem',
+      titleInfo: <InfoTip label="Report a problem" help="Say report a bug in the chat." />,
+    });
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    const heading = screen.getByRole('heading', { name: 'Report a problem' });
+    const tip = screen.getByRole('button', { name: 'About Report a problem' });
+    expect(heading).not.toContainElement(tip);
+    // One row: the heading and the tip share a parent inside the header band, which keeps its rule.
+    expect(tip.parentElement).toBe(heading.parentElement);
+    expect(heading.parentElement!.parentElement).toHaveClass('border-b');
+    expect(dialog).toContainElement(tip);
+  });
+
+  it('leaves the header as it was without one: the heading is the band’s first child', () => {
+    open();
+    const heading = screen.getByRole('heading', { name: 'Do the thing' });
+    expect(heading.parentElement).toHaveClass('border-b');
   });
 });
 

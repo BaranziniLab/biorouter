@@ -68,6 +68,73 @@ describe('DiagnosticsModal', () => {
     expect(tip.closest('p')).toBeNull();
   });
 
+  /**
+   * V4-R4-2: the one dialog recipe. It was a raw, centred DialogContent with a warning tile before
+   * the title and 28px footer buttons; geometry is measured in `diagnosticsDialog.browser.test.tsx`.
+   */
+  it('is the shared dialog: ModalShell md at the top, the header rule, no tile, a word-only footer', () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    expect(dialog).toHaveAttribute('data-size', 'md');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+
+    const heading = screen.getByRole('heading', { name: 'Report a problem' });
+    expect(heading).toHaveTextContent(/^Report a problem$/);
+    const header = heading.closest('.border-b')!;
+    expect(header).not.toBeNull();
+    // The title row holds the title and its InfoTip, and nothing painted before them.
+    expect(header.querySelectorAll('svg')).toHaveLength(1);
+    expect(screen.getByTestId('diagnostics-agent-hint')).toContainElement(
+      header.querySelector('svg')
+    );
+    expect(header.querySelector('[class*="bg-"]')).toBeNull();
+
+    // What leaves the machine is the dialog's description, in body text.
+    expect(dialog).toHaveAccessibleDescription(
+      /A diagnostics report contains the following:.*Your current chat messages.*do not share the diagnostics file publicly/
+    );
+
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((button) => button.textContent && button.textContent !== 'Close')
+      .filter((button) => !button.classList.contains('br-info-tip'));
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Cancel',
+      'Generate diagnostics',
+      'File a bug on GitHub',
+    ]);
+    for (const button of buttons) {
+      expect(button).toHaveClass('h-control-md');
+      expect(button).not.toHaveClass('h-control-sm');
+      expect(button.querySelector('svg')).toBeNull();
+    }
+    // The dismiss and the second action are secondary; the one coral button files the bug.
+    expect(buttons.filter((button) => button.classList.contains('bg-background-accent'))).toEqual([
+      buttons[2],
+    ]);
+  });
+
+  it('opens with focus on the dialog box, not on the title’s InfoTip', async () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(screen.getByTestId('diagnostics-agent-hint')).not.toHaveFocus();
+  });
+
+  it('must be answered while the bundle is being made: no close button, Escape ignored', async () => {
+    const onClose = vi.fn();
+    saveDiagnosticsBundle.mockImplementation(() => new Promise(() => {}));
+    render(<DiagnosticsModal isOpen onClose={onClose} sessionId="20260716_27" />);
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Preparing diagnostics bundle');
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('generates and saves the archive through the native diagnostics IPC', async () => {
     const onClose = vi.fn();
     saveDiagnosticsBundle.mockResolvedValue({

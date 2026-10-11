@@ -1,19 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Github } from '../icons/app-icons';
+import React, { useEffect, useId, useState } from 'react';
+import { ModalShell } from '../ModalShell';
 import { Spinner } from './spinner';
 import { Button } from './button';
 import { InfoTip } from './info-tip';
 import { toastError, toastSuccess } from '../../toasts';
 import { diagnostics, getSession, systemInfo } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './dialog';
 
 interface DiagnosticsModalProps {
   isOpen: boolean;
@@ -83,6 +75,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   }, [isOpen, sessionId]);
 
   const isPrivateChat = liveTier === 'private';
+  const messageId = useId();
   const [isDownloading, setIsDownloading] = useState(false);
   const [isFilingBug, setIsFilingBug] = useState(false);
 
@@ -216,78 +209,89 @@ Add any other context about the problem here.
 
   const isBusy = isDownloading || isFilingBug;
 
+  // The shared dialog recipe (V4-R4-2): ModalShell md, pinned at the top with the header rule like
+  // every other dialog, no icon tile, and default-size footer buttons that are words only, as in
+  // every other footer (with their glyphs the three buttons wrapped at 480px under Large text). While a bundle is being made or
+  // the issue page is opening the dialog must be answered: no ×, no Escape, no backdrop.
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isBusy && onClose()}>
-      <DialogContent dismissible={!isBusy} className="sm:max-w-lg">
-        <DialogHeader className="mb-0">
-          <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-container bg-wash-warning text-text-warning">
-              <AlertTriangle size={20} />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center">
-                <DialogTitle>Report a problem</DialogTitle>
-                {/* The other way to report: it is a tip, not a disclosure, so it sits behind the
-                    glyph (spec principle 2). The words stay in the page for a screen reader. */}
-                <InfoTip
-                  label="Report a problem"
-                  help="Say “report a bug” in the chat and Biorouter writes the report, removes paths and credentials, and shows you the exact text before anything is published."
-                  data-testid="diagnostics-agent-hint"
-                />
-              </div>
-              {/* What the bundle holds is a disclosure of what leaves the machine, so it stays. */}
-              <DialogDescription className="mt-2">
-                A diagnostics report contains the following:
-              </DialogDescription>
-            </div>
-          </div>
-        </DialogHeader>
-        <div className="space-y-3 text-body text-text-muted">
-          <ul className="list-inside list-disc space-y-1">
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => !open && !isBusy && onClose()}
+      size="md"
+      purpose={isBusy ? 'required' : 'info'}
+      title="Report a problem"
+      titleInfo={
+        // The other way to report: it is a tip, not a disclosure, so it sits behind the glyph
+        // (spec principle 2). The words stay in the page for a screen reader.
+        <InfoTip
+          label="Report a problem"
+          help="Say “report a bug” in the chat and Biorouter writes the report, removes paths and credentials, and shows you the exact text before anything is published."
+          data-testid="diagnostics-agent-hint"
+        />
+      }
+      // What the bundle holds is a disclosure of what leaves the machine: the body says it, and it
+      // is the dialog's description.
+      describedBy={messageId}
+      // Radix would focus the first tabbable, which is the title's InfoTip: a poor place to start.
+      // Focus rests on the dialog box instead (no ring, `.biorouter-modal-surface:focus`), where a
+      // screen reader reads the title and what the report holds; Tab reaches the tip and buttons.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        if (event.currentTarget instanceof HTMLElement) {
+          event.currentTarget.focus({ preventScroll: true });
+        }
+      }}
+      bodyClassName="flex flex-col gap-3"
+      footer={
+        <>
+          {/* The dismiss is `secondary`, as in every shared dialog footer (Make workflow's too). */}
+          <Button onClick={onClose} variant="secondary" disabled={isBusy}>
+            Cancel
+          </Button>
+          <Button onClick={handleDownload} variant="secondary" disabled={isBusy}>
+            {isDownloading ? 'Generating…' : 'Generate diagnostics'}
+          </Button>
+          {/* The view's one coral button (principle 7). */}
+          <Button onClick={handleFileGitHubIssue} disabled={isBusy}>
+            {isFilingBug ? 'Opening…' : 'File a bug on GitHub'}
+          </Button>
+        </>
+      }
+    >
+      <div id={messageId} className="flex flex-col gap-3 text-body text-text-muted">
+        <div>
+          <p>A diagnostics report contains the following:</p>
+          <ul className="mt-1.5 list-inside list-disc space-y-1">
             <li>Basic system info</li>
             <li>Your current chat messages</li>
             <li>Recent log files</li>
             <li>Configuration settings</li>
           </ul>
-          <p>
-            <strong className="text-text-default">Warning:</strong> If your chat contains sensitive
-            information, do not share the diagnostics file publicly.
-          </p>
-          {isPrivateChat && (
-            <p
-              className="rounded-container bg-wash-warning px-3 py-2.5 text-text-default"
-              data-testid="diagnostics-private-warning"
-            >
-              <strong>This chat is private.</strong> The diagnostics file includes its messages and
-              its log files. Read the file before you send it to anyone, and take out anything that
-              should not leave this machine.
-            </p>
-          )}
         </div>
-        {isDownloading && (
-          <div
-            className="flex items-center gap-3 rounded-container bg-background-fill px-3 py-2.5 text-body text-text-muted"
-            role="status"
+        <p>
+          <strong className="text-text-default">Warning:</strong> If your chat contains sensitive
+          information, do not share the diagnostics file publicly.
+        </p>
+        {isPrivateChat && (
+          <p
+            className="rounded-container bg-wash-warning px-3 py-2.5 text-text-default"
+            data-testid="diagnostics-private-warning"
           >
-            <Spinner />
-            Preparing diagnostics bundle…
-          </div>
+            <strong>This chat is private.</strong> The diagnostics file includes its messages and
+            its log files. Read the file before you send it to anyone, and take out anything that
+            should not leave this machine.
+          </p>
         )}
-        <DialogFooter className="sm:flex-wrap">
-          <Button onClick={onClose} variant="ghost" size="sm" disabled={isBusy}>
-            Cancel
-          </Button>
-          <Button onClick={handleDownload} variant="secondary" size="sm" disabled={isBusy}>
-            <Download size={16} />
-            {isDownloading ? 'Generating…' : 'Generate diagnostics'}
-          </Button>
-          {/* The view's one coral button (principle 7). */}
-          <Button onClick={handleFileGitHubIssue} size="sm" disabled={isBusy}>
-            <Github size={16} />
-            {isFilingBug ? 'Opening…' : 'File a bug on GitHub'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+      {isDownloading && (
+        <div
+          className="flex items-center gap-3 rounded-container bg-background-fill px-3 py-2.5 text-body text-text-muted"
+          role="status"
+        >
+          <Spinner />
+          Preparing diagnostics bundle…
+        </div>
+      )}
+    </ModalShell>
   );
 };
