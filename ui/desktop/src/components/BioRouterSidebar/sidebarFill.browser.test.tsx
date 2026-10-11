@@ -207,12 +207,17 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     await browser?.close();
   }, 120_000);
 
+  /**
+   * `list` swaps the chat list the daemon serves (`serve` answers each `/sessions/sidebar` URL)
+   * and the window size, for the cases that watch the list itself rather than its paint.
+   */
   async function open(
     mode: 'light' | 'dark',
     forcedColors = false,
-    daemon: 'attached' | 'lost' = 'attached'
+    daemon: 'attached' | 'lost' = 'attached',
+    list: { serve?: (url: string) => unknown; height?: number } = {}
   ): Promise<Page> {
-    const tab = await browser!.newPage({ viewport: { width: 1200, height: 900 } });
+    const tab = await browser!.newPage({ viewport: { width: 1200, height: list.height ?? 900 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     const html =
       `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
@@ -227,7 +232,9 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ sessions: sessions(), has_more: false, next_cursor: null }),
+          body: JSON.stringify(
+            list.serve?.(url) ?? { sessions: sessions(), has_more: false, next_cursor: null }
+          ),
         });
       } else {
         await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
@@ -624,6 +631,114 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
         await tab.close();
       }
     }
+  });
+
+  /**
+   * Vision round 2, the list itself under a real layout and real pointer events (jsdom has
+   * neither, so the unit tests stand in a ResizeObserver and fire pointer events by hand).
+   */
+  describe('the list in a real engine (vision round 2)', () => {
+    const scrollBox = (tab: Page) =>
+      tab.evaluate(() => {
+        const el = document.querySelector('[data-testid="recent-chat-scroll"]')!;
+        return {
+          client: el.clientHeight,
+          scroll: el.scrollHeight,
+          rows: el.querySelectorAll('[data-row^="chat:"]').length,
+        };
+      });
+
+    it('reads the next page when its box grows past the rows it holds (V1-R2-1)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const now = Date.now();
+      const TOTAL = 60;
+      const requested: string[] = [];
+      // The default view pages by 10 from an opaque cursor, as the daemon does.
+      const serve = (url: string) => {
+        requested.push(url);
+        const query = new URL(url).searchParams;
+        const from = Number(query.get('cursor') ?? 0);
+        const limit = Number(query.get('limit') ?? 10);
+        const rows = Array.from({ length: Math.min(limit, TOTAL - from) }, (_, i) => ({
+          id: `s${from + i + 1}`,
+          name: `Chat ${from + i + 1}`,
+          created_at: new Date(now - (from + i) * 60_000).toISOString(),
+          updated_at: new Date(now - (from + i) * 60_000).toISOString(),
+          working_dir: '/Users/me/projects/cohort',
+          message_count: 2,
+          user_set_name: true,
+          privacy_tier: 'public',
+        }));
+        const next = from + rows.length;
+        return {
+          sessions: rows,
+          has_more: next < TOTAL,
+          next_cursor: next < TOTAL ? String(next) : null,
+        };
+      };
+      const tab = await open('light', false, 'attached', { serve, height: 480 });
+      try {
+        await settle(tab);
+        const short = await scrollBox(tab);
+        expect(short.scroll, 'ten rows overflow the short list').toBeGreaterThan(short.client);
+        expect(requested).toHaveLength(1);
+
+        // The window grows: the same ten rows now leave room, and nothing scrolls.
+        await tab.setViewportSize({ width: 1200, height: 1400 });
+        await expect.poll(() => requested.length, { timeout: 5_000 }).toBeGreaterThan(1);
+        await expect
+          .poll(
+            async () => {
+              const box = await scrollBox(tab);
+              return box.scroll > box.client || box.rows === TOTAL;
+            },
+            { timeout: 5_000 }
+          )
+          .toBe(true);
+      } finally {
+        await tab.close();
+      }
+    });
+
+    it('moves a renamed chat to the top at once while the pointer rests on the list (V1-R2-4)', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open('light');
+      try {
+        const order = () =>
+          tab.evaluate(() =>
+            [
+              ...document.querySelectorAll(
+                '[data-testid="recent-chat-scroll"] [data-row^="chat:"]'
+              ),
+            ].map((el) => el.getAttribute('data-row'))
+          );
+        expect((await order())[0]).toBe('chat:s1');
+
+        // The usual way: right-click, Rename, type, Enter, with the pointer still on the list.
+        await tab.click('[data-testid="recent-chat-s7"]', { button: 'right' });
+        await tab.getByRole('menuitem', { name: /^Rename/ }).click();
+        const input = tab.getByRole('textbox', { name: /Rename chat/ });
+        await input.waitFor();
+        await tab.hover('[data-testid="recent-chat-s3"]');
+        await input.fill('Methods draft');
+        await input.press('Enter');
+
+        await expect.poll(async () => (await order())[0], { timeout: 2_000 }).toBe('chat:s7');
+        const after = await tab.evaluate(() => ({
+          hovered: document.querySelector('[data-testid="recent-chat-scroll"]')!.matches(':hover'),
+          focused: document.activeElement?.getAttribute('data-row'),
+        }));
+        expect(after).toEqual({ hovered: true, focused: 'chat:s7' });
+        if (SHOTS) {
+          await tab.screenshot({
+            path: resolve(SHOTS, 'sidebar-renamed-moves-light.png'),
+            clip: { x: 0, y: 0, width: 600, height: 700 },
+          });
+        }
+      } finally {
+        await tab.close();
+      }
+    });
   });
 
   it('saves screenshots when asked', async (ctx) => {
