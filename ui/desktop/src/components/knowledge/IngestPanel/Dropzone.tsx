@@ -61,12 +61,12 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
 }
 
 /**
- * The Sources rail's drop target: the WHOLE rail, not the box in it (V3-12).
+ * The Sources rail's drop target: the WHOLE rail, not the box in it (V3-12, kept by R-33).
  *
- * The box is sized to its content (about 160px) instead of stretching to the rail's height, so the
- * area it used to cover must keep taking drops: a file let go under a small box would otherwise do
- * nothing. `IngestPanel` spreads `dropProps` on the rail's root and hands `dragging` to the box,
- * which is where the feedback is drawn (the rail itself carries no fill).
+ * The box fills the rail's free height again (R-33), but it yields that room to the paste box and
+ * the staged list as they appear, so a file let go on a staged row, on the paste box's frame or on
+ * the footer must still stage. `IngestPanel` spreads `dropProps` on the rail's root and hands
+ * `dragging` to the box, which is where the feedback is drawn (the rail itself carries no fill).
  *
  * ⚠ **Text fields are left alone.** A drag that starts or lands inside the paste box's fields is a
  * text drag; claiming it would cancel the browser's own insertion.
@@ -136,17 +136,19 @@ export function Dropzone({ onFiles, onPathPickRequested, onPasteText, dragging =
           floating text (portaled out of this box) would otherwise arrive here
           and open the chooser over the tip being read.
 
-          ⚠ **It is as tall as its content, and it no longer owns the drop** (V3-12). It used to be
-          `flex-1`, to close the rail's empty middle, and that made a 268x715 box at 1440 and an
-          820x715 slab on the narrow tab. The drop is the rail's (`useFileDrop`), so the empty space
-          under a staged list or under this box still takes a file and nothing else is lost. */}
+          ⚠ **It fills the rail's free height, and it does not own the drop** (R-33 over V3-12).
+          V3-12 cut it to its content (about 160px), which left a small box over an empty rail; the
+          owner wants the side-panel scale back. Its size is authored on `.br-knowledge-dropzone`
+          (grow into the scroller's free height, yield it to the paste box and the staged list, a
+          240px floor), not written here, because a sizing utility that fails to generate would put
+          the small box back silently. The drop is the rail's (`useFileDrop`). */}
       <div
         data-testid="knowledge-ingest-dropzone"
         onClick={(e) => {
           if (e.currentTarget.contains(e.target as Node)) openChooser();
         }}
         data-dragging={dragging ? 'true' : undefined}
-        className="br-knowledge-dropzone relative flex shrink-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
+        className="br-knowledge-dropzone relative flex cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
       >
         <input
           data-testid="knowledge-ingest-file-input"

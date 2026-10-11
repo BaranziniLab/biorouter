@@ -4487,8 +4487,16 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    strong fill under the pointer. The 1px border is kept and transparent, so forced colours draw the
    edge and nothing moves between states. A file held over it firms the edge and the ground (the
    "this will act" state). Authored, because the drag state is load-bearing feedback and must not
-   depend on class scanning. */
+   depend on class scanning.
+   ⚠ **It fills the rail's free height, like a side panel** (owner message 17, R-33, which
+   supersedes V3-12's content-height box for the height only). It grows into whatever the rail's
+   scroller has left, and yields that room to the paste box, the staged list and the digest
+   progress as they appear, down to a 240px floor; below the floor the scroller scrolls instead, so
+   the target never shrinks to a strip. Basis 0, so its own content never decides its height.
+   Measured in `knowledge/knowledgeBand.browser.test.tsx` ("the Sources rail"). */
 .br-knowledge-dropzone {
+  flex: 1 1 0%;
+  min-height: 240px;
   border: 1px solid transparent;
   background-color: var(--background-fill);
   transition: background-color var(--dur-fast-min) var(--ease-out);
@@ -4523,10 +4531,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     transition: none;
   }
 }
-/* The model picker and Digest, one column under the rail (V3-12). At the two-column step the rail
-   is 264px and the cap does nothing; on the narrow Sources tab the rail is the whole pane and an
-   uncapped Digest was an 820px coral bar. Left-aligned with the dropzone's own edge. Authored,
-   because the cap is load-bearing and must not depend on class scanning. */
+/* The model picker and Digest, one column under the rail (V3-12, kept by R-33). At the two-column
+   step the rail is 264px and the cap does nothing; on the narrow Sources tab the rail is the whole
+   pane and an uncapped Digest was an 820px coral bar. Left-aligned with the dropzone's own edge.
+   Authored, because the cap is load-bearing and must not depend on class scanning. */
 .br-knowledge-ingest-actions {
   display: flex;
   flex-direction: column;

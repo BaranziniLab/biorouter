@@ -512,7 +512,8 @@ export function IngestPanel() {
           : 'Digest staged sources';
 
   const failed = items.filter((item) => item.status === 'error');
-  // The whole rail takes a dropped file (V3-12), so the box can be as tall as its content.
+  // The whole rail takes a dropped file (V3-12), so a file let go on a staged row or the paste box,
+  // which the box yields its room to (R-33), still stages.
   const fileDrop = useFileDrop(onFiles);
 
   return (
@@ -521,17 +522,15 @@ export function IngestPanel() {
       data-testid="knowledge-ingest-rail"
       {...fileDrop.dropProps}
     >
-      {/* ⚠ **`justify-start` and NOT `flex-1` on the children** — the gap this
-          leaves is deliberate and belongs at the BOTTOM, not the middle. R-06
-          stopped the rail scrolling at rest, which made its leftover space
-          visible for the first time: dropzone and Paste text at the top, the
-          action footer pinned at the bottom, and ~200px of nothing between them.
-          Distributing that space (`justify-between`, or growing the staged
-          list) would push the two staging affordances apart and read as two
-          unrelated groups. Keeping the group together at the top, with the slack
-          under it, is what makes the empty rail read as "nothing staged yet"
-          rather than as a layout accident — and it is where a staged list
-          actually grows into. */}
+      {/* ⚠ **The dropzone is the ONE child that grows** (R-33). It takes the
+          scroller's free height, like the side panel it was before V3-12, and
+          everything else here (warnings, the paste box, the staged list, the
+          digest progress) keeps its own height under it and takes that room
+          back as it appears, the box shrinking to its 240px floor and then the
+          scroller scrolling. Nothing else may grow: a second grower splits the
+          free height and the target stops being the rail's one big thing.
+          `justify-start` stays: once the box is at its floor the children
+          overflow at the bottom, where the scroller can reach them. */}
       <div className="flex min-h-0 flex-1 flex-col justify-start gap-3 overflow-y-auto p-4">
         <Dropzone
           dragging={fileDrop.dragging}

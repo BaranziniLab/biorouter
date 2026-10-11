@@ -247,11 +247,20 @@ function ingestCss(): string {
 }
 
 /**
- * The Sources rail as `IngestPanel` lays it out: the real `Dropzone` at the top of a flex-1 body,
- * the footer column (`.br-knowledge-ingest-actions`) under it with a model field and a full-width
- * Digest. The body is 640px tall, as a rail is, so a box that stretches shows.
+ * The Sources rail as `IngestPanel` lays it out: the real `Dropzone` at the top of the rail's
+ * scroller (`flex-1`, `gap-3`, `p-4`, `overflow-y-auto`), the footer column
+ * (`.br-knowledge-ingest-actions`) under it with a model field and a full-width Digest.
+ *
+ * `paste` and `staged` add stand-ins for what the box yields its room to (R-33): the paste box (a
+ * wrapper around a 248px card, its height at 1440) and N staged rows of 40px. Each stand-in's
+ * height is its CONTENT's, as the real ones' is, so it cannot shrink under the box the way an
+ * empty div with a fixed height can (its automatic minimum is its content, 0).
  */
-function railPage(css: string, railWidth: number): string {
+function railPage(
+  css: string,
+  railWidth: number,
+  { paste = false, staged = 0, height = 760 }: RailOptions = {}
+): string {
   const box = renderToStaticMarkup(
     <Dropzone
       onFiles={() => undefined}
@@ -259,10 +268,18 @@ function railPage(css: string, railWidth: number): string {
       onPasteText={() => undefined}
     />
   );
-  return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
-    <div id="rail" style="width:${railWidth}px;height:760px;display:flex;flex-direction:column">
+  const pasteBox = paste ? '<div id="paste"><div style="height:248px"></div></div>' : '';
+  const stagedList = staged
+    ? `<div id="staged">${'<div style="height:40px"></div>'.repeat(staged)}</div>`
+    : '';
+  return `<!doctype html><html><head><style>${TOKENS}
+.hidden { display: none; }
+${css}</style></head><body>
+    <div id="rail" style="width:${railWidth}px;height:${height}px;display:flex;flex-direction:column">
       <div id="body" style="flex:1 1 0%;min-height:0;display:flex;flex-direction:column;justify-content:flex-start;gap:12px;padding:16px;overflow-y:auto">
         ${box}
+        ${pasteBox}
+        ${stagedList}
       </div>
       <div id="footer" style="flex:none;padding:16px">
         <div class="br-knowledge-ingest-actions">
@@ -273,6 +290,8 @@ function railPage(css: string, railWidth: number): string {
     </div>
   </body></html>`;
 }
+
+type RailOptions = { paste?: boolean; staged?: number; height?: number };
 
 type Box = { left: number; right: number; top: number; bottom: number; width: number };
 
@@ -537,32 +556,87 @@ describe('the Knowledge band in a real layout engine', () => {
       }
     });
   });
-  // V3-12: the dropzone is as tall as its content, and Digest is a button, not a bar.
+  // R-33 (over V3-12's height): the dropzone fills the rail's free height again and yields it to
+  // what appears under it. V3-12's other half stands: Digest is a button, not a bar.
   describe('the Sources rail', () => {
-    async function measure(width: number) {
+    async function measure(width: number, opts: RailOptions = {}) {
       const tab = await browser!.newPage({ viewport: { width: 1600, height: 900 } });
       try {
-        await tab.setContent(railPage(ingestCss(), width));
+        await tab.setContent(railPage(ingestCss(), width, opts));
+        const scroller = await tab.evaluate(() => {
+          const body = document.getElementById('body')!;
+          const pad = parseFloat(getComputedStyle(body).paddingTop);
+          // The height the scroller's children share: its client box less the 16px padding.
+          return {
+            free: body.clientHeight - 2 * pad,
+            scrolls: body.scrollHeight > body.clientHeight + 1,
+          };
+        });
+        // The box's content group, the label button down to Paste text (the file input is hidden).
+        const content = await tab.evaluate(() => {
+          const zone = document.querySelector('[data-testid="knowledge-ingest-dropzone"]')!;
+          const shown = [...zone.children].filter((c) => c.getClientRects().length > 0);
+          return {
+            top: shown[0].getBoundingClientRect().top,
+            bottom: shown[shown.length - 1].getBoundingClientRect().bottom,
+          };
+        });
         return {
           box: (await box(tab, '[data-testid="knowledge-ingest-dropzone"]'))!,
           digest: (await box(tab, '#digest'))!,
           picker: (await box(tab, '#picker'))!,
+          content,
+          ...scroller,
         };
       } finally {
         await tab.close();
       }
     }
+    const heightOf = (b: Box) => b.bottom - b.top;
 
-    it('sizes the dropzone to its content, not to the rail', async (ctx) => {
+    it('fills the rail’s free height with the dropzone, like a side panel', async (ctx) => {
       if (!browser) return ctx.skip();
-      for (const width of [288, 820]) {
-        const { box: b } = await measure(width);
-        const height = b.bottom - b.top;
-        // About 160px: a plate, two lines and a button. The rail's body is 600px tall.
-        expect(height, `dropzone height at a ${width}px rail`).toBeGreaterThan(120);
-        expect(height, `dropzone height at a ${width}px rail`).toBeLessThan(200);
-        expect(b.width).toBe(width - 32);
+      // The 264px and 300px rails of the two-column steps, and the narrow Sources tab.
+      for (const width of [264, 300, 820]) {
+        const m = await measure(width);
+        const height = heightOf(m.box);
+        expect(Math.abs(height - m.free), `dropzone height at a ${width}px rail`).toBeLessThan(2);
+        // V3-12's box was about 160px; the scroller here is 600px tall.
+        expect(height, `dropzone height at a ${width}px rail`).toBeGreaterThan(500);
+        expect(m.box.width).toBe(width - 32);
+        expect(m.scrolls).toBe(false);
+        // The plate, the two lines and Paste text sit in the middle of the box, as one group.
+        const mid = (m.box.top + m.box.bottom) / 2;
+        expect(Math.abs((m.content.top + m.content.bottom) / 2 - mid)).toBeLessThan(2);
       }
+    });
+
+    it('yields its room to the paste box and the staged list, and stays a generous target', async (ctx) => {
+      if (!browser) return ctx.skip();
+      const empty = heightOf((await measure(300)).box);
+
+      // The paste box opens under it: the box gives back exactly the card and one 12px gap.
+      const paste = await measure(300, { paste: true });
+      expect(Math.abs(heightOf(paste.box) - (empty - 248 - 12))).toBeLessThan(2);
+      expect(paste.scrolls).toBe(false);
+
+      // The paste box and three staged rows together, in the rail a 900px window gives (856px):
+      // no scroll, and still over the floor.
+      const tall = heightOf((await measure(300, { height: 856 })).box);
+      const both = await measure(300, { paste: true, staged: 3, height: 856 });
+      expect(Math.abs(heightOf(both.box) - (tall - 248 - 12 - 120 - 12))).toBeLessThan(2);
+      expect(heightOf(both.box)).toBeGreaterThan(240);
+      expect(both.scrolls).toBe(false);
+
+      // A long list: the box stops at its 240px floor and the scroller scrolls instead.
+      const long = await measure(300, { staged: 30 });
+      expect(Math.round(heightOf(long.box))).toBe(240);
+      expect(long.scrolls).toBe(true);
+
+      // A short window with the paste box open: the floor holds there too.
+      const short = await measure(300, { paste: true, height: 520 });
+      expect(Math.round(heightOf(short.box))).toBe(240);
+      expect(short.scrolls).toBe(true);
     });
 
     it('caps the model field and Digest at one column, left with the dropzone', async (ctx) => {
