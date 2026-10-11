@@ -16,6 +16,13 @@ import {
  * that had just failed existed. These cases pin the name, the reason and at
  * least one thing to do about it onto that page.
  */
+/** What a person reads on a button: its text without the label kept only to size it. */
+function shownText(button: HTMLElement): string {
+  const copy = button.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll('[aria-hidden="true"]').forEach((el) => el.remove());
+  return copy.textContent ?? '';
+}
+
 describe('ExtensionLoadFailureNotice', () => {
   beforeEach(() => {
     resetExtensionLoadFailuresForTests();
@@ -96,7 +103,7 @@ describe('ExtensionLoadFailureNotice', () => {
 
     const alert = screen.getByRole('alert');
     const buttons = within(alert).getAllByRole('button');
-    expect(buttons.map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual([
+    expect(buttons.map((b) => b.getAttribute('aria-label') ?? shownText(b))).toEqual([
       COPY.askBiorouter,
       COPY.copyError,
       COPY.dismiss,
@@ -122,6 +129,32 @@ describe('ExtensionLoadFailureNotice', () => {
 
     expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
     expect(screen.queryByText(/!/)).toBeNull();
+  });
+
+  // V3-R4-5. "Copy error" turned into the narrower "Copied" and Ask Biorouter, its neighbour,
+  // slid 22px for two seconds. Both labels now share one grid cell, so the button keeps the width
+  // of the longer one. jsdom has no layout: this pins the structure (the label that is not on
+  // show is still in the cell, hidden from a screen reader, never read as part of the name) and
+  // extensionNoticeGeometry.browser.test measures the width in Chromium.
+  it('keeps the other label in the button so its width does not change, unread by a screen reader', () => {
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error: 'spawn ENOENT' }]);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async () => undefined) },
+    });
+    render(<ExtensionLoadFailureNotice />);
+
+    const button = screen.getByRole('button', { name: COPY.copyError });
+    const ghost = button.querySelector('[aria-hidden="true"]');
+    expect(ghost?.textContent).toBe(COPY.copied);
+    expect(button.querySelector('.br-ext-notice-swap')).not.toBeNull();
+
+    fireEvent.click(button);
+
+    // Same button, the labels traded places: the name is "Copied" alone, not both words.
+    const after = screen.getByRole('button', { name: COPY.copied });
+    expect(after).toBe(button);
+    expect(after.querySelector('[aria-hidden="true"]')?.textContent).toBe(COPY.copyError);
   });
 
   /**

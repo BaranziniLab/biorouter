@@ -16,6 +16,25 @@ import { LOAD_FAILURE_COPY } from './copy';
 import './extension-notice.css';
 
 /**
+ * A button label that changes in place without moving anything beside it (V3-R4-5).
+ *
+ * "Copy error" turns into "Copied" for two seconds, and the button is as wide as its label, so
+ * the neighbour on its left (Ask Biorouter) slid 22px right and back. Both labels sit in one
+ * grid cell instead: the one on show is visible, the other is `visibility: hidden` and
+ * `aria-hidden`, so the cell, and with it the button, is as wide as the longer of the two
+ * whatever the font, text size or language. A fixed `min-width` would be right for one of those
+ * and wrong for the rest. The rule is authored in `extension-notice.css`.
+ */
+function StableLabel({ shown, other }: { shown: string; other: string }) {
+  return (
+    <span className="br-ext-notice-swap">
+      <span>{shown}</span>
+      <span aria-hidden="true">{other}</span>
+    </span>
+  );
+}
+
+/**
  * The standing extension-failure notice, on the page the failure is ABOUT.
  *
  * The defect this closes had two halves and they compounded: a toast recurred
@@ -81,7 +100,14 @@ export function ExtensionLoadFailureNotice({
                   markCopied(failure.name);
                 }}
               >
-                {copied === failure.name ? LOAD_FAILURE_COPY.copied : LOAD_FAILURE_COPY.copyError}
+                <StableLabel
+                  shown={
+                    copied === failure.name ? LOAD_FAILURE_COPY.copied : LOAD_FAILURE_COPY.copyError
+                  }
+                  other={
+                    copied === failure.name ? LOAD_FAILURE_COPY.copyError : LOAD_FAILURE_COPY.copied
+                  }
+                />
               </Button>
               <IconAction
                 icon={X}

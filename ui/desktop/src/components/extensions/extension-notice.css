@@ -15,3 +15,20 @@
   gap: 4px;
   padding-top: 2px;
 }
+
+/* A label that swaps for another in place (the Copy error button, `StableLabel`): both labels share
+   one grid cell, the one on show centred in it and the other hidden, so the button keeps the width
+   of the longer label and the action beside it does not move for the two seconds "Copied" shows.
+   Measured before: 90px against 68px, Ask Biorouter 22px to the right. */
+.br-ext-notice-swap {
+  display: inline-grid;
+  justify-items: center;
+}
+
+.br-ext-notice-swap > * {
+  grid-area: 1 / 1;
+}
+
+.br-ext-notice-swap > [aria-hidden='true'] {
+  visibility: hidden;
+}
