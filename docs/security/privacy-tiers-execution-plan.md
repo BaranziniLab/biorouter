@@ -13163,7 +13163,7 @@ premise, and what follows from it, is (c) below.
 `strip_daemon_private_env` (`biorouter-sandbox/src/environment.rs:54-65`) removes both the
 **inherited** keys (`env::vars_os()`) and the ones **explicitly set on the command**
 (`doomed_env_keys` `:81-88`), and `is_daemon_private_env_key` (`:36-50`) is deny-by-default inside
-`BIOROUTER_SERVER__`/`GOOSE_SERVER__` plus a credential-shaped net over the rest of BioRouter's
+`BIOROUTER_SERVER__` plus a credential-shaped net over the rest of BioRouter's
 namespace. **`BIOROUTER_PORT` is deliberately kept** (`:116`'s assertion), and so is
 `BIOROUTER_APP_BASE_URL` (set at `commands/agent.rs:69`) — `is_daemon_private_env_key` needs a
 `BIOROUTER_SERVER__` prefix or a credential marker and `BASE_URL` has neither, so a child is measured
