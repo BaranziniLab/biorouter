@@ -22,7 +22,7 @@ selector. Inputs live in `/Users/wgu/biorouter-runs/redesign-2026-10-09/{researc
 This spec cites them as `[codex-ui]`, `[shell-sidebar]` and so on.
 
 **The in-repo record.** The owner's requirements are also restated in the repo as `R-01` to
-`R-33` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
+`R-34` in `docs/design/codex-simplicity-redesign/requirements-and-plan.md`, with a live tracker in
 `progress.md` beside it. R-24 makes keeping both current a requirement, and that plan says "the
 final file ownership is recorded in progress.md". The coordinator owns
 `docs/design/codex-simplicity-redesign/**`: it copies section 3.17 (with the section 3.19 splits)
@@ -58,6 +58,7 @@ message names the R-IDs it serves.
 | M14 / R-28 fast sidebar reordering | 3.4 paging; the measurements in [progress.md](progress.md) |
 | M15, M16 / R-29, R-30, R-31 the wordmark, opening is not activity, the retired names | 10 |
 | M17 / R-32, R-33 the composer card on the page ground, the big Knowledge drop zone | 11 |
+| M18 / R-34 the first run experience gets the same redesign | 11, and the P2 pass in 3.13 |
 
 ---
 
@@ -133,6 +134,8 @@ mark.
    Lines stay only where they are structural (the band edge, pane dividers, table rules inside a
    filled table) and on floating surfaces (menus, popovers, toasts, dialogs), which keep a hairline
    and a shadow. Crew keeps its own recipes. This replaces the earlier "borders before shadows".
+   The one box the rule does not reach is the composer card (owner message 17, R-32, section 11):
+   it is the page ground with its resting hairline.
 9. **Layout snaps and content glides.** Animate only `transform`, `opacity` and `clip-path`, and
    use tokens only. The named exceptions, and no others [motion §3.1]: the Disclosure's height
    (`.biorouter-disclosure-panel`, which the tool rows reuse), the Progress fill's width,
@@ -3336,11 +3339,12 @@ They supersede any earlier section where they differ. The requirements are R-29 
     name back; `just check-everything` and the `guards` job in `rust.yml` run it.
   - Owner: WS-BRAND.
 
-## 11. Owner message 17 (2026-10-11, binding)
+## 11. Owner messages 17 and 18 (2026-10-11, binding)
 
-The owner took two surfaces partly back to their earlier design and asked for the rest of the
-redesign to continue. Coordinator ruling 20 records it. These supersede R-27, section 9 and vision
-finding V3-12 for these two surfaces only.
+Message 17: the owner took two surfaces partly back to their earlier design and asked for the rest
+of the redesign to continue. Coordinator ruling 20 records it. R-32 and R-33 supersede R-27,
+section 9 and vision finding V3-12 for these two surfaces only. Message 18 widened the redesign to
+the first run (R-34).
 
 - **R-32 The composer card is the page ground.** In a chat and on Home, the card is
   `bg-background-default border border-border-subtle/60` (`composer/composerCard.ts`), the resting
@@ -3357,6 +3361,17 @@ finding V3-12 for these two surfaces only.
   gives that room back to the paste box, the staged list and the digest progress as they appear.
   The redesign's skin stays (the fill, the drag edge, the rail as the drop target).
   `knowledgeBand.browser.test.tsx` measures it in Chromium. Owner: WS-KNOWLEDGE (`5055fe64d`).
+- **R-34 The first run is part of the redesign** (message 18). What a person sees before any
+  provider is set up (`ProviderGuard.tsx` and `components/onboarding/**`: the welcome, the provider
+  catalog tabs Local, Institutional and Public, the Llama Server, Ollama and coding-agent inline
+  cards, the institutional and public provider forms, the privacy notice, the dependency setup
+  prompt and the hand off to Home) is redesigned to the standard of the rest of the app. That
+  means principles 1 to 9, the five step type scale, hover help in place of paragraphs, one
+  control style, the fill rule, the icon registry and the wordmark as the logo (R-29). It widens
+  the P2 pass of 3.13, which only swapped type roles there. The privacy copy and logic stay as
+  they are (the frozen privacy UI takes class only changes, by ruling 15). The review runs in a
+  sandbox that has no provider (`launch-dev-gui.sh start <worktree> <run> <cdp-port> --no-provider`);
+  it never downloads or starts a local model and never enters a key. Owner: WS-SETTINGS-M.
 
 ## Related documentation
 
@@ -3367,5 +3382,5 @@ finding V3-12 for these two surfaces only.
   "Artifact side panel")
 - `docs/desktop-ui/{settings-visual-vocabulary,summary-and-figures-qa,artifact-display-surfaces}.md`,
   `docs/desktop-ui/preview-panel/narrow-panes.md`, `docs/security/privacy-tiers.md` §13.5
-- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-33, the
+- `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-34, the
   live tracker), and [handoff.md](handoff.md) (what is left)

@@ -10,7 +10,7 @@ In October 2026 the owner asked for a redesign of the whole desktop app and a ca
 the website, with one governing rule: simplicity. The inspiration is OpenAI Codex (the
 [openai/codex](https://github.com/openai/codex) repository and the Codex desktop app). The
 requirements arrived as a series of messages with screenshots; this page restates them as items
-`R-01` to `R-33` so the plan and the progress tracker can refer to each one. Workstream names use
+`R-01` to `R-34` so the plan and the progress tracker can refer to each one. Workstream names use
 the prefix `WS-`. Both schemes are local to this folder.
 
 ## Requirements
@@ -82,6 +82,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 |----|-------------|
 | R-32 | The composer card, in a chat and on Home, goes back to the page ground with its resting 1px hairline from before R-27: no grey fill, the same coral focus edge. Everything else about the composer stays. This supersedes R-27 for that card only. |
 | R-33 | The Knowledge view's drag and drop zone is big again, taking most of the Sources rail like the side panel it was before the redesign, while keeping the redesign's look. |
+| R-34 | The first run experience gets the same redesign. What a person sees before any provider is set up (the welcome, the provider catalog, the Llama Server, Ollama and coding agent cards, the provider forms, the privacy notice, the dependency prompt, the hand off to Home) meets the standard of the rest of the app: the principles, the type scale, hover help, one control style, the fill rule, the icon registry and the wordmark logo. Privacy copy and logic stay. It is reviewed with no provider configured, and never by downloading a local model or entering a key. |
 
 ## Owner decisions
 
@@ -95,6 +96,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 | Activity | Renaming a chat is activity; opening it is not (message 15). Coordinator ruling 16 lists the other deliberate changes that count. |
 | Retired names | Removed everywhere, including credits, docs, test fixtures and the private-environment filters' prefix. NOTICE is kept verbatim, and the LICENSE appendix line stays removed (message 16, ruling 19). |
 | Composer card and drop zone | The composer card is the page ground with a hairline, not filled, and the Knowledge drop zone is big again; both keep the rest of the redesign (message 17, ruling 20). The message edit card follows the composer card (ruling 21). |
+| First run | The first run experience is redesigned with the rest of the app, with its privacy copy and logic unchanged (message 18). |
 
 ## Constraints
 
@@ -150,13 +152,14 @@ the prefix `WS-`. Both schemes are local to this folder.
 The workstream list is provisional until the specification phase finishes; the final file
 ownership is recorded in [progress.md](progress.md). Owner messages 14 to 16 added three more:
 WS-PERF (R-28), WS-ACTIVITY (R-30) and WS-BRAND (R-29, R-31). R-32 and R-33 (message 17) went
-to the workstreams that own those surfaces: WS-COMPOSER and WS-LANDING, and WS-KNOWLEDGE.
+to the workstreams that own those surfaces: WS-COMPOSER and WS-LANDING, and WS-KNOWLEDGE. R-34
+(message 18) went to WS-SETTINGS-M, which owns `onboarding/**` and `ProviderGuard.tsx`.
 
 ## Related documentation
 
 - [Progress tracker](progress.md): the live status of every requirement and workstream.
 - [Handoff](handoff.md): what is left and how to resume.
-- [Implementation spec](implementation-spec.md): sections 9 to 11 hold the owner's rulings for R-25 to R-33.
+- [Implementation spec](implementation-spec.md): sections 9 to 11 hold the owner's rulings for R-25 to R-34.
 - [Biorouter Design System](../../../design.md): the decision records this work builds on.
 - [Theme system architecture](../theming/theme-system-architecture.md): how theme tokens are generated.
 - [UI overhaul](../ui-overhaul/README.md): the previous whole interface revision.

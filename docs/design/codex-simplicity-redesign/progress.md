@@ -93,6 +93,7 @@ spec's tables are authoritative where this summary is shorter.
 | R-31 | The retired upstream and its publisher named nowhere but NOTICE | WS-BRAND | Done on macOS (the repo guard passes; rounds 2 to 4 found no mention); the Windows folder move has not run on Windows |
 | R-32 | The composer card on the page ground with its hairline, not filled | WS-COMPOSER, WS-LANDING | Implemented (`d3be11a4b`, `a5fa59b6f`, `a5cd7046c`); vision check pending |
 | R-33 | The Knowledge drop zone big again | WS-KNOWLEDGE | Implemented (`5055fe64d`); vision check pending |
+| R-34 | The first run experience gets the same redesign | WS-SETTINGS-M | Open: recorded 2026-10-11 (owner message 18); the redesign and its no-provider review are still to do |
 
 ## Log
 
@@ -223,6 +224,9 @@ spec's tables are authoritative where this summary is shorter.
   and R-33 (the Knowledge drop zone is big again); coordinator ruling 20 records it, and spec
   section 11 holds it. Both landed the same morning (`d3be11a4b`, `a5fa59b6f`, `a5cd7046c`,
   `5055fe64d`) and wait for the vision loop to confirm them.
+- Owner message 18 added R-34 (the first run experience, `ProviderGuard.tsx` and `onboarding/**`, gets the
+  same redesign as the rest of the app). It is recorded in the plan and in spec section 11 and owned by
+  WS-SETTINGS-M; no commit for it exists at the time of writing.
 
 ## Related documentation
 
