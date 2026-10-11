@@ -1,5 +1,5 @@
 /* BAAM, the Biorouter AI Agent Marketplace.
-   Every entry is a row on the page, separated by hairlines, that opens in
+   Every entry is a row on the page, separated by space, that opens in
    place. Class names and ids here are read by build-registry.mjs and by the
    browser tests in landing/scripts, so restyle them but never rename them.
    Tokens come from site.css. */
@@ -111,13 +111,14 @@
 }
 
 /* ── Group heads ────────────────────────────────────────── */
-/* Each group opens on the hairline of its first row. The head puts the
-   coral lead segment of site.css's .rule-line on that hairline, so it sits
-   on whichever row the filter leaves first. */
+/* Each group head draws its own hairline, with the coral lead segment of
+   site.css's .rule-line on it. The rows under it have none: space and the
+   row's own controls tell them apart (owner message 13). */
 .group-head, .subsection-title {
   position: relative;
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
   padding: 40px 0 14px; margin: 0;
+  border-bottom: 1px solid var(--line);
   font-size: var(--fs-md); line-height: 1.4; color: var(--ink);
 }
 .group-head::after, .subsection-title::after {
@@ -138,9 +139,7 @@
 }
 
 /* ── Rows ───────────────────────────────────────────────── */
-/* Every row carries a hairline above it and a shadow line below it; between
-   two rows the two coincide, and the last visible row is closed off by its
-   own, whatever the filter leaves. */
+/* A row draws no line of its own: 22px above and below it keep two rows apart. */
 .ext-card, .skill-card, .wf-card {
   position: relative;
   display: grid;
@@ -148,8 +147,6 @@
   align-items: start;
   padding: 22px 0;
   background: var(--paper);
-  border-top: 1px solid var(--line);
-  box-shadow: 0 1px 0 var(--line);
   min-width: 0;
 }
 /* Only baam.js opens a row, so only a page running it shows the pointer. */
@@ -319,7 +316,7 @@
 /* ── Show more and nothing found ────────────────────────── */
 .show-all-btn, .show-more-btn {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  margin: 0; padding: 17px 0; border: 0; border-top: 1px solid var(--line); background: none;
+  margin: 0; padding: 17px 0; border: 0; background: none;
   font-size: var(--fs-md); color: var(--ink); cursor: pointer; text-align: left;
 }
 .show-all-btn .chev, .show-more-btn .chev { width: 14px; height: 14px; color: var(--coral); transition: transform var(--dur-med) var(--ease); }
@@ -339,11 +336,9 @@
 
 /* ── Contribute ─────────────────────────────────────────── */
 .contrib { margin: 0; padding: 0; list-style: none; }
-/* The head sits on the first row's hairline, like the catalog's group heads,
-   so the section opens on one line with its coral lead. */
+/* The head draws the section's one line, like the catalog's group heads, so
+   it opens with its coral lead. */
 .contribute .group-head { padding-top: 0; }
-.contrib li { border-bottom: 1px solid var(--line); }
-.contrib li:first-child { border-top: 1px solid var(--line); }
 .contrib a {
   display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) 20px; gap: 6px 28px; align-items: baseline;
   padding: 20px 0; color: var(--ink);
