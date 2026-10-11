@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
 import type { ChangeKind, HistoryEntry } from '../../../api/types.gen';
-import { AlertCircle, History } from '../../icons/app-icons';
+import { AlertCircle, Eye, History, RotateCcw } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
-import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { IconAction, RowActions, type RowActionItem } from '../../ui/row-actions';
 import { Sheet, SheetContent, SheetTitle } from '../../ui/sheet';
 import { knowledgeCopy } from '../copy';
 import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
@@ -55,6 +55,13 @@ function relativeTime(iso: string): string {
  *   buttons inside them; a row that lights up under the pointer and does nothing
  *   when clicked is a promise the surface does not keep. The row keeps
  *   `.biorouter-list-row` for its hairline.
+ * - **Actions appear on intent** (V3-10). A row rests as its kind, its time and its
+ *   summary; hovering or focusing it swaps the time for Preview (an icon) and a `⋯`
+ *   holding "Restore…". They were two labelled buttons on every entry, and the newest
+ *   commit offered a Restore that restores nothing, so it has none.
+ * - **A strip that filters nothing is quiet.** With every kind on, the seven chips
+ *   rest in the ordinary fill and differ from an off chip by their ink alone; only
+ *   once the log is narrowed do the kinds still shown take the selected tint.
  */
 export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: Props) {
   const { primaryKbId, triggerGraphRefresh } = useKnowledge();
@@ -69,6 +76,22 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     () => history.filter((h) => activeKinds.has(h.kind)),
     [history, activeKinds]
   );
+  // The log is newest first. Restoring to the newest commit restores the state the base is
+  // already in, so it is not offered, whatever the kind filter hides.
+  const headSha = history[0]?.commit_sha;
+  const allKindsOn = activeKinds.size === ALL_KINDS.length;
+
+  function menuFor(entry: HistoryEntry): RowActionItem[] {
+    if (entry.commit_sha === headSha) return [];
+    return [
+      {
+        label: knowledgeCopy.drawers.restore,
+        icon: RotateCcw,
+        disabled: restoring !== null,
+        onSelect: () => setEntryToRestore(entry),
+      },
+    ];
+  }
 
   function toggleKind(k: ChangeKind) {
     setActiveKinds((prev) => {
@@ -132,7 +155,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                 asChild
                 className={
                   on
-                    ? 'tint-selected tint-interactive text-text-default'
+                    ? `${allKindsOn ? '' : 'tint-selected '}tint-interactive text-text-default`
                     : 'tint-interactive text-text-muted'
                 }
               >
@@ -172,31 +195,30 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
           {!loading &&
             !error &&
             filtered.map((entry) => (
-              <div key={entry.commit_sha} className="biorouter-list-row flex flex-col px-4 py-3">
+              <div
+                key={entry.commit_sha}
+                className="biorouter-list-row flex flex-col gap-1 px-4 py-3"
+              >
                 {/* No commit id on the row (principle 10: ids stay off everyday
                     rows). Previewing a commit names it in the graph's banner. */}
-                <div className="mb-1 flex items-center gap-2">
-                  <ChangeKindChip kind={entry.kind} />
-                  <span className="ml-auto text-supporting tabular-nums text-text-muted">
-                    {relativeTime(entry.timestamp)}
-                  </span>
-                </div>
-                <div className="mb-2 text-body text-text-default">{entry.summary}</div>
                 <div className="flex items-center gap-2">
-                  {/* `sm` (28px), not `xs`. The compact tier's contract is
-                      glyph-only — "a control carrying a label never uses it". */}
-                  <Button variant="ghost" size="sm" onClick={() => onPreview(entry.commit_sha)}>
-                    Preview
-                  </Button>
-                  <Button
-                    variant="secondary"
+                  <ChangeKindChip kind={entry.kind} />
+                  <RowActions
+                    className="ml-auto"
                     size="sm"
-                    onClick={() => setEntryToRestore(entry)}
-                    disabled={restoring !== null}
-                  >
-                    {restoring === entry.commit_sha ? 'Restoring…' : 'Restore'}
-                  </Button>
+                    meta={relativeTime(entry.timestamp)}
+                    primary={
+                      <IconAction
+                        icon={Eye}
+                        size="sm"
+                        label={knowledgeCopy.drawers.preview}
+                        onSelect={() => onPreview(entry.commit_sha)}
+                      />
+                    }
+                    menu={menuFor(entry)}
+                  />
                 </div>
+                <div className="text-body text-text-default">{entry.summary}</div>
               </div>
             ))}
         </div>

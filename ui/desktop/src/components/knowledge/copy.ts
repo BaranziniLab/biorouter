@@ -147,6 +147,9 @@ export const knowledgeCopy = {
     lint: 'Check for problems',
     closeChangeLog: 'Close change log',
     closeLint: 'Close check',
+    /** A change-log entry's primary action (an icon) and the item behind its ⋯. */
+    preview: 'Preview',
+    restore: 'Restore…',
   },
 
   /** The create dialog (format chooser). */
