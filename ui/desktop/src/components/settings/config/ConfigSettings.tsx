@@ -488,7 +488,7 @@ function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: 
         <button
           type="button"
           onClick={onOpen}
-          className="text-text-default underline underline-offset-2"
+          className="rounded-inner text-text-default underline underline-offset-2"
         >
           Go to Privacy
         </button>
