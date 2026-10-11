@@ -155,11 +155,11 @@ function page(catalog: RegistryLoad, columnWidth = 712): string {
     <div id="column" style="width:${columnWidth}px;padding:0">
       <section>
         <div class="br-ext-group-label"><h2 id="label" class="truncate text-caps text-text-muted">Enabled <span class="tabular-nums">6</span></h2></div>
-        <div class="biorouter-list-shell" id="list">${rows}</div>
+        <div class="biorouter-list-shell br-rows-flat" id="list">${rows}</div>
       </section>
       <section>
-        <!-- The control: the shared row recipe without the extension marker, so a test can tell a
-             rule this page removed from a recipe the sheet never drew. -->
+        <!-- The control: the shared row recipe on a shell that did not opt out, so a test can tell a
+             line the page's shell removed from a recipe the sheet never drew. -->
         <div class="biorouter-list-shell" id="plain"><div class="biorouter-list-row" id="plain-first">A</div><div class="biorouter-list-row">B</div></div>
       </section>
     </div>
@@ -400,6 +400,8 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
+      // The shell carries `.br-rows-flat`, the one shared rule (main.css, rows block); this folder
+      // has no rule of its own for it.
       const rows = await tab.evaluate(() =>
         [...document.querySelectorAll('[data-extension-row]')].map((row) => {
           const style = getComputedStyle(row);
@@ -430,12 +432,40 @@ describe('Extension rows in a real layout engine', { timeout: 90_000 }, () => {
     }
   });
 
+  it('draws the line back in forced colours, except under the last row', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      // Forced colours repaint every fill as Canvas, so the hover wash that tells a row from the
+      // next is gone and the line is all that separates them. The shared rule gives it back; a
+      // private `content: none` on the row (which this folder used to carry) would have kept it
+      // off, at the same specificity and loaded later.
+      await tab.emulateMedia({ forcedColors: 'active' });
+      const contents = await tab.evaluate(() =>
+        [...document.querySelectorAll('[data-extension-row]')].map(
+          (row) => getComputedStyle(row, '::after').content
+        )
+      );
+      expect(contents.length).toBeGreaterThan(2);
+      for (const content of contents.slice(0, -1)) expect(content).toBe('""');
+      // The shared `:last-child` rule still leaves the last row without one.
+      expect(contents[contents.length - 1]).toBe('none');
+      await tab.emulateMedia({ forcedColors: 'none' });
+      const rest = await tab.evaluate(
+        () => getComputedStyle(document.querySelector('[data-extension-row]')!, '::after').content
+      );
+      expect(rest).toBe('none');
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('leaves the shared row recipe its straight, inset hairline everywhere else', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
     try {
-      // The control is a row of another list: the sheet draws its line, so the page's `none`
-      // above is this folder's rule and not a recipe that stopped drawing one.
+      // The control is a row of a list that did not opt out: the sheet draws its line, so the
+      // page's `none` above is `.br-rows-flat` at work and not a recipe that stopped drawing one.
       const line = await tab.evaluate(() => {
         const row = document.getElementById('plain-first') as HTMLElement;
         const after = getComputedStyle(row, '::after');

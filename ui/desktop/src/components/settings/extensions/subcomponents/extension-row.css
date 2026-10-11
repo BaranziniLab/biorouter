@@ -7,18 +7,6 @@
  * provenance sentence says.
  */
 
-/*
- * R-27 (owner message 13): rows are told apart by space and the hover wash, not by a line under
- * each. The shared row recipe draws a straight hairline there (`.biorouter-list-row::after`,
- * `main.css`); a two-line row carries 20px of padding between its text and the next row's, which
- * the 2px between a title and its line does not come near, so the line adds nothing the eye
- * needs. The 1px of transparent border the recipe keeps still reserves the room, so no row
- * moves. A keyboard focus inside a row still washes it (the recipe's `:has(:focus-visible)`).
- */
-.biorouter-list-row[data-extension-row]::after {
-  content: none;
-}
-
 /* The leading glyph: 16px, muted, the same slot the sidebar rows give theirs. */
 .br-ext-glyph {
   flex: none;

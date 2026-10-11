@@ -241,7 +241,9 @@ function ExtensionGroup({
           />
         ) : null}
       </div>
-      <div className="biorouter-list-shell">{children}</div>
+      {/* Rows read apart by their own air and the hover wash (R-27), so the shell opts out of the
+          shared hairline with the one shared class. Forced colours get the line back from it. */}
+      <div className="biorouter-list-shell br-rows-flat">{children}</div>
     </section>
   );
 }
