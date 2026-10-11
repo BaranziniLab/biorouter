@@ -72,9 +72,13 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
       />
       {/* The `Textarea` primitive, the one multi-line field: Input's edge and
           radius, resizing vertically only. Five rows because this is a paste
-          target. It keeps the focus surface this box has always carried
-          (`focusSurface.test.ts` pins it for the Knowledge controls that write
-          their own background). */}
+          target. It keeps its resting fill while focused and firms its own edge,
+          as every other text field does (the Write a skill textarea, the title
+          field above). It used to carry `biorouter-focus-surface`, which swapped
+          the fill for the grey focus surface the moment the box opened and took
+          the caret, so the field being typed in turned the box's darkest grey
+          (V3-R4-4). That class is for controls that paint their own background
+          and would otherwise show no focus at all. */}
       <Textarea
         ref={textRef}
         rows={5}
@@ -82,7 +86,6 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         onChange={(e) => setText(e.target.value)}
         placeholder={knowledgeCopy.ingest.pastePlaceholder}
         aria-label="Text to stage"
-        className="biorouter-focus-surface"
       />
 
       {detectedUrls.length > 0 && (

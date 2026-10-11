@@ -152,6 +152,21 @@ describe('the focus surface', () => {
   it('is carried by the Knowledge controls that write their own background', () => {
     expect(KB_TRIGGER).toContain('biorouter-focus-surface');
     expect(MODEL_PICKER).toContain('biorouter-focus-surface');
-    expect(PASTE_BOX).toContain('biorouter-focus-surface');
+  });
+
+  /**
+   * The paste box's textarea is a plain text field: it keeps its resting fill while focused and
+   * firms its own `--border-focus` edge (`.br-field:focus`), like the Write a skill textarea and
+   * the title field above it. With this class it turned the grey focus surface the moment the box
+   * opened and took the caret (V3-R4-4: rgb(224, 224, 220) in light, rgb(53, 52, 47) in dark).
+   * `knowledgeFill.browser.test.tsx` measures the focused field in Chromium.
+   */
+  it('is NOT carried by the paste box: its text field keeps its fill when focused', () => {
+    // The whole element, through its self-closing `/>` (an arrow function inside it holds a `>`).
+    // Not the whole file: the comment above it names the class to say why it is gone.
+    const textarea = PASTE_BOX.match(/<Textarea\b[\s\S]*?\n\s*\/>/)?.[0] ?? '';
+    expect(textarea, 'the paste box has a Textarea').toContain('aria-label="Text to stage"');
+    expect(textarea).not.toContain('biorouter-focus-surface');
+    expect(textarea).not.toContain('className');
   });
 });

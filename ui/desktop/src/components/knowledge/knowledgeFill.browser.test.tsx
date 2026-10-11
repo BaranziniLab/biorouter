@@ -386,6 +386,45 @@ describe.each(Object.keys(MODES) as Mode[])('the Knowledge surfaces are fills (%
     expect(stage.bg).toBe(rgb(hex('--background-default')));
   });
 
+  it('keeps the paste textarea on its resting fill while it has focus, and firms its edge (V3-R4-4)', async (ctx) => {
+    if (!page) return ctx.skip();
+    const area = '#rail textarea[aria-label="Text to stage"]';
+    const title = '#rail input[aria-label="Title for the pasted source"]';
+    await page.mouse.move(0, 0);
+    const rest = await look(page, area);
+    const ground = rgb(hex('--background-default'));
+    expect(rest.bg, 'rests one ground back, on the page ground').toBe(ground);
+
+    // The box is summoned with the caret in the textarea, so focus is the state it is read in.
+    await page.focus(area);
+    try {
+      expect(
+        await page.evaluate((sel) => document.activeElement === document.querySelector(sel), area)
+      ).toBe(true);
+      const focused = await look(page, area);
+      if (SHOTS) {
+        mkdirSync(SHOTS, { recursive: true });
+        await page.locator('#rail').screenshot({ path: join(SHOTS, `paste-focus-${mode}.png`) });
+      }
+      // Not the grey focus surface (rgb(224, 224, 220) light, rgb(53, 52, 47) dark): the fill it
+      // rested on, like the title field and the Write a skill textarea.
+      expect(focused.bg).not.toBe(rgb(hex('--background-focus')));
+      expect(focused.bg).toBe(ground);
+      // The edge is what says it has focus: the same 1px border, now `--border-focus`.
+      expect(focused.edgeWidth).toBe('1px');
+      expect(focused.edge).toBe(rgb(hex('--border-focus')));
+      expect([focused.w, focused.h]).toEqual([rest.w, rest.h]);
+
+      // The same state, read on the sibling text field, is identical: one look for a text field.
+      await page.focus(title);
+      const sibling = await look(page, title);
+      expect(sibling.bg).toBe(ground);
+      expect(sibling.edge).toBe(rgb(hex('--border-focus')));
+    } finally {
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    }
+  });
+
   it('rests a graph filter on the fill, hovers it on the strong fill, and keeps its height', async (ctx) => {
     if (!page) return ctx.skip();
     const facet = '#strip-rest [data-testid="knowledge-graph-facet-type"]';
