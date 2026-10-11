@@ -60,6 +60,12 @@ export interface UsagePanelProps {
   summary: UsageSummaryResponse;
   dayRows: UsageReportRow[];
   modelRows: UsageReportRow[];
+  /**
+   * Whether dollar figures are drawn (Settings > App > Show costs). Off drops every cost and
+   * keeps tokens and turns, so the row and the report stay where they are instead of the whole
+   * section unmounting and moving every row below it (vision V4-02). Default on.
+   */
+  showCosts?: boolean;
 }
 
 export function formatTokens(n: number | null | undefined): string {
@@ -212,7 +218,7 @@ function EmptyTableState({ children }: { children: React.ReactNode }) {
   return <p className="py-6 text-center text-supporting text-text-muted">{children}</p>;
 }
 
-export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
+export function UsagePanel({ summary, dayRows, modelRows, showCosts = true }: UsagePanelProps) {
   const [reportOpen, setReportOpen] = useState(false);
   const month = summary.monthToDate;
   const monthTokens = billedTokenValue(month);
@@ -221,13 +227,20 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
     <div data-testid="usage-panel">
       <SettingRow
         label={copy.rowLabel}
-        help={copy.rowHelp(summary.month)}
+        help={showCosts ? copy.rowHelp(summary.month) : copy.rowHelpNoCost(summary.month)}
         value={
           <span className="tabular-nums">
             <span title={formatBilledTokens(month)}>
               {monthTokens === null ? formatBilledTokens(month) : formatCompactTokens(monthTokens)}
             </span>{' '}
-            tokens · <span>{formatCostEstimate(month.cost)}</span> ·{' '}
+            tokens
+            {showCosts && (
+              <>
+                {' · '}
+                <span>{formatCostEstimate(month.cost)}</span>
+              </>
+            )}
+            {' · '}
             <span>{month.turns.toLocaleString('en-US')}</span>{' '}
             {month.turns === 1 ? 'turn' : 'turns'}
           </span>
@@ -252,7 +265,12 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
         scrollBody
       >
         <div className="py-4" data-testid="usage-report-dialog">
-          <UsageReport summary={summary} dayRows={dayRows} modelRows={modelRows} />
+          <UsageReport
+            summary={summary}
+            dayRows={dayRows}
+            modelRows={modelRows}
+            showCosts={showCosts}
+          />
         </div>
       </ModalShell>
     </div>
@@ -272,22 +290,29 @@ function ReportSection({ title, children }: { title: string; children: React.Rea
 const TH = 'px-3 py-2 text-supporting font-medium text-text-muted';
 const TD = 'border-t border-border-subtle px-3 py-2';
 
-export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
+export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: UsagePanelProps) {
   const mtd = summary.monthToDate;
+  // With costs hidden nothing about cost is said at all: no figure, no column, no budget and no
+  // note about unpriced or partial cost, which would explain a number that is not there.
   const anyUnpriced =
-    rowHasUnknownCost(mtd) || dayRows.some(rowHasUnknownCost) || modelRows.some(rowHasUnknownCost);
+    showCosts &&
+    (rowHasUnknownCost(mtd) ||
+      dayRows.some(rowHasUnknownCost) ||
+      modelRows.some(rowHasUnknownCost));
   const showMtdCache = hasRecordedCacheUsage(mtd);
   const showModelCache = modelRows.some(hasRecordedCacheUsage);
-  const showDayCost = dayRows.some((row) => hasUsage(row) && hasKnownCost(row));
-  const showModelCost = modelRows.some(hasKnownCost);
+  const showDayCost = showCosts && dayRows.some((row) => hasUsage(row) && hasKnownCost(row));
+  const showModelCost = showCosts && modelRows.some(hasKnownCost);
+  const showDollarBudget = showCosts && summary.monthlyDollarLimit != null;
   const anyIncompleteTokens =
     hasIncompleteTokens(mtd) ||
     dayRows.some(hasIncompleteTokens) ||
     modelRows.some(hasIncompleteTokens);
   const anyCostExcludesCache =
-    mtd.costExcludesCache ||
-    dayRows.some((row) => row.costExcludesCache) ||
-    modelRows.some((row) => row.costExcludesCache);
+    showCosts &&
+    (mtd.costExcludesCache ||
+      dayRows.some((row) => row.costExcludesCache) ||
+      modelRows.some((row) => row.costExcludesCache));
   const mtdCostPartial = costIsPartial(mtd);
   const knownMtdCost =
     mtd.cost != null && Number.isFinite(mtd.cost) && mtd.cost >= 0 ? mtd.cost : null;
@@ -332,13 +357,17 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
         : copy.tokensHelp,
       note: hasIncompleteTokens(mtd) && mtdTokens !== null ? copy.conservative : undefined,
     },
-    {
-      key: 'cost',
-      label: copy.cost,
-      value: formatCostEstimate(mtd.cost),
-      help: copy.costHelp,
-      note: mtdCostPartial && knownMtdCost !== null ? copy.conservative : undefined,
-    },
+    ...(showCosts
+      ? [
+          {
+            key: 'cost',
+            label: copy.cost,
+            value: formatCostEstimate(mtd.cost),
+            help: copy.costHelp,
+            note: mtdCostPartial && knownMtdCost !== null ? copy.conservative : undefined,
+          },
+        ]
+      : []),
     {
       key: 'turns',
       label: copy.turns,
@@ -351,7 +380,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
     <div className="flex flex-col gap-6" data-testid="usage-report">
       <StatGrid items={stats} data-testid="usage-summary-stats" />
 
-      {(summary.monthlyTokenLimit != null || summary.monthlyDollarLimit != null) && (
+      {(summary.monthlyTokenLimit != null || showDollarBudget) && (
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
           {summary.monthlyTokenLimit != null && (
             <UsageGauge
@@ -363,7 +392,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
               unavailableReason={tokenUnavailableReason}
             />
           )}
-          {summary.monthlyDollarLimit != null && (
+          {showDollarBudget && summary.monthlyDollarLimit != null && (
             <UsageGauge
               testid="usage-gauge-dollars"
               label={copy.dollarBudget}

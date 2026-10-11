@@ -53,9 +53,12 @@ export const homeUsageCopy = {
 export const settingsUsageCopy = {
   sectionTitle: 'Usage',
   sectionHelp: 'Billed tokens and estimated cost for the current month, grouped by day and model.',
+  /** The same help when Settings > App > Show costs is off: it must not mention a price. */
+  sectionHelpNoCost: 'Billed tokens for the current month, grouped by day and model.',
   rowLabel: 'This month',
   rowHelp: (month: string) =>
     `Billed tokens, estimated cost and model turns for ${month}, across all chats.`,
+  rowHelpNoCost: (month: string) => `Billed tokens and model turns for ${month}, across all chats.`,
   details: 'Details',
   /** The Details button's accessible name. */
   detailsName: 'Open detailed usage report',

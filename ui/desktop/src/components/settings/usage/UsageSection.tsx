@@ -20,8 +20,12 @@ import { fillCalendarDays, UsagePanel } from './UsagePanel';
  * {@link UsagePanel}. Fetch failures remain visible and retryable instead of
  * making the entire settings section disappear. The section's explanation is
  * its InfoTip; there is no paragraph under the label.
+ *
+ * `showCosts` (Settings > App > Show costs) drops the dollar figures and keeps the tokens and
+ * turns, in the same row; the section never unmounts on that switch, so nothing below it moves
+ * under the pointer (vision V4-02).
  */
-export default function UsageSection() {
+export default function UsageSection({ showCosts = true }: { showCosts?: boolean }) {
   const [summary, setSummary] = useState<UsageSummaryResponse | null>(null);
   const [dayRows, setDayRows] = useState<UsageReportRow[]>([]);
   const [modelRows, setModelRows] = useState<UsageReportRow[]>([]);
@@ -76,7 +80,7 @@ export default function UsageSection() {
     <SettingSection
       id={SETTINGS_SECTION_IDS.usage}
       title={copy.sectionTitle}
-      help={copy.sectionHelp}
+      help={showCosts ? copy.sectionHelp : copy.sectionHelpNoCost}
     >
       {loadError && (
         <Note
@@ -103,7 +107,12 @@ export default function UsageSection() {
       {loading && !summary ? (
         <Skeleton className="h-10 w-full" data-testid="usage-loading" />
       ) : summary ? (
-        <UsagePanel summary={summary} dayRows={dayRows} modelRows={modelRows} />
+        <UsagePanel
+          summary={summary}
+          dayRows={dayRows}
+          modelRows={modelRows}
+          showCosts={showCosts}
+        />
       ) : null}
       {loading && summary && (
         <p className="px-3 text-supporting text-text-muted" role="status">

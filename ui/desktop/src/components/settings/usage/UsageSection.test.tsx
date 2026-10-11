@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getUsageReport, getUsageSummary } from '../../../api';
+import { settingsUsageCopy as copy } from '../../usage/copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import UsageSection from './UsageSection';
 
@@ -80,6 +81,25 @@ describe('UsageSection', () => {
       'Billed tokens and estimated cost for the current month, grouped by day and model.'
     );
     expect(screen.queryByText(/grouped by day and model/, { selector: 'p' })).toBeNull();
+  });
+
+  it('stays one row, with no dollar figure, when costs are hidden', async () => {
+    const { rerender } = render(<UsageSection />);
+    const panel = await screen.findByTestId('usage-panel');
+    expect(panel).toHaveTextContent('$0.00');
+    const rowBefore = screen.getByText('This month').closest('.br-setting-row');
+
+    rerender(<UsageSection showCosts={false} />);
+    // The same panel and the same row, not a remount: the section does not unmount on the switch.
+    expect(screen.getByTestId('usage-panel')).toBe(panel);
+    expect(screen.getByText('This month').closest('.br-setting-row')).toBe(rowBefore);
+    expect(panel.textContent).not.toContain('$');
+    expect(panel).toHaveTextContent('0 tokens · 0 turns');
+    // The section's InfoTip stops talking about cost too.
+    expect(screen.getByRole('button', { name: 'About Usage' })).toHaveAccessibleDescription(
+      copy.sectionHelpNoCost
+    );
+    expect(copy.sectionHelpNoCost).not.toMatch(/cost|price|\$/i);
   });
 
   it('loads as one row-sized skeleton', () => {

@@ -670,3 +670,80 @@ describe('UsagePanel', () => {
     expect(screen.queryByRole('columnheader', { name: 'Activity' })).toBeNull();
   });
 });
+
+describe('UsagePanel with costs hidden (Settings > App > Show costs off, V4-02)', () => {
+  it('keeps the row and says tokens and turns, with no dollar figure', () => {
+    render(
+      <UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} showCosts={false} />
+    );
+    const panel = screen.getByTestId('usage-panel');
+    expect(panel).toHaveTextContent('33M tokens · 42 turns');
+    expect(panel.textContent).not.toContain('$');
+    expect(within(panel).getByText(copy.rowLabel)).toBeTruthy();
+    expect(screen.getByRole('button', { name: copy.detailsName })).toBeTruthy();
+    // The row's own help does not mention a price either.
+    const help = within(panel).getByRole('button', { name: 'About This month' });
+    expect(help).toHaveAccessibleDescription(copy.rowHelpNoCost('2026-07'));
+    expect(copy.rowHelpNoCost('2026-07')).not.toMatch(/cost|price|\$/i);
+  });
+
+  it('draws no cost in the report: no stat, no column, no budget, no note about pricing', async () => {
+    const user = userEvent.setup();
+    render(
+      <UsagePanel
+        summary={summary({
+          monthlyTokenLimit: 100_000_000,
+          monthlyDollarLimit: 500,
+          tokenPercent: 33,
+          dollarPercent: 25,
+        })}
+        dayRows={dayRows}
+        modelRows={modelRows}
+        showCosts={false}
+      />
+    );
+    await user.click(screen.getByRole('button', { name: copy.detailsName }));
+
+    const report = screen.getByTestId('usage-report');
+    const stats = screen.getByTestId('usage-summary-stats');
+    expect(
+      within(stats)
+        .getAllByRole('term')
+        .map((term) => term.querySelector('.br-stat-label-text')?.textContent)
+    ).toEqual([copy.tokens, copy.turns]);
+    expect(screen.queryByRole('button', { name: 'About Est. cost' })).toBeNull();
+    // The token budget stays; the dollar one is a cost.
+    expect(screen.getByTestId('usage-gauge-tokens')).toBeTruthy();
+    expect(screen.queryByTestId('usage-gauge-dollars')).toBeNull();
+    for (const table of [
+      screen.getByTestId('usage-day-table'),
+      screen.getByTestId('usage-model-table'),
+    ]) {
+      expect(within(table).queryByRole('columnheader', { name: copy.costColumn })).toBeNull();
+    }
+    // Nothing explains a price that is not drawn, though both fixtures have unpriced rows.
+    expect(screen.queryByTestId('usage-unpriced-note')).toBeNull();
+    expect(screen.queryByTestId('usage-cache-excluded-note')).toBeNull();
+    expect(report.textContent).not.toMatch(/\$\d/);
+  });
+
+  it('keeps the note about incomplete TOKENS, which is not a cost', async () => {
+    render(
+      <UsageReport
+        summary={summary({
+          monthToDate: { ...summary().monthToDate, totalTokens: null, hasUnpriced: true },
+        })}
+        dayRows={[]}
+        modelRows={[]}
+        showCosts={false}
+      />
+    );
+    expect(screen.getByTestId('usage-incomplete-note')).toBeTruthy();
+    expect(screen.queryByTestId('usage-unpriced-note')).toBeNull();
+  });
+
+  it('draws every cost when the prop is left out, as before', () => {
+    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    expect(screen.getByTestId('usage-panel')).toHaveTextContent('33M tokens · $125.00 · 42 turns');
+  });
+});
