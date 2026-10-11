@@ -70,7 +70,7 @@ export function scheduleState(job: ScheduledJob): {
  */
 export function ScheduleStatusDot({ job, className }: { job: ScheduledJob; className?: string }) {
   const { tone, live } = scheduleState(job);
-  return <StatusDot tone={tone} live={live} className={cn('br-schedule-dot', className)} />;
+  return <StatusDot tone={tone} live={live} className={className} />;
 }
 
 /**

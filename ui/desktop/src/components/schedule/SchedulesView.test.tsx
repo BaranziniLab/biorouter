@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import SchedulesView from './SchedulesView';
 import { DELETE_SCHEDULE_MESSAGE, scheduleCopy } from './copy';
 
-const SCHEDULE_CSS = readFileSync(join(__dirname, 'schedule.css'), 'utf8');
+const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 
 const mocks = vi.hoisted(() => ({
   listSchedules: vi.fn(),
@@ -321,11 +321,10 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     // The hue is the row's leading status dot (spec 3.10), muted for Paused.
     const row = paused.closest('.biorouter-list-row') as HTMLElement;
     expect(row.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'idle');
-    // …and visible: the primitive's idle fill is 1.3:1 (V3-16), so the Scheduler's dot wears
-    // its own 3:1 ink, written at a specificity that outranks the primitive's.
-    expect(row.querySelector('[data-slot="status-dot"]')).toHaveClass('br-schedule-dot');
-    expect(SCHEDULE_CSS).toMatch(
-      /\.biorouter-status-dot\.br-schedule-dot\[data-tone='idle'\]\s*\{[^}]*--status-dot-fill:\s*var\(--border-control\)/
+    // …and visible (V3-16): the primitive's idle fill is the control edge's 3:1 neutral, not the
+    // 1.3:1 `--background-strong` it was, so a Paused dot is a state and not a speck.
+    expect(MAIN_CSS).toMatch(
+      /\.biorouter-status-dot\[data-tone='idle'\]\s*\{[^}]*--status-dot-fill:\s*var\(--border-control\)/
     );
     // Paused rows offer Resume, the one verb pair (Pause/Resume) everywhere.
     expect(screen.getByRole('button', { name: 'Resume nightly-cohort' })).toBeInTheDocument();
