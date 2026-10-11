@@ -294,7 +294,7 @@ describe('ExtensionModal — the dialog and its form', () => {
 
     expect(remove.className).toMatch(/text-text-danger/);
     expect(remove.className).not.toMatch(/border-border-emphasized/);
-    expect(cancel.className).toMatch(/bg-background-medium/);
+    expect(cancel.className).toMatch(/\bbr-fill-rest\b/);
     // The Button base already gaps its icon; the old `mr-2` doubled it.
     expect(remove.className).not.toMatch(/\bmr-2\b/);
   });

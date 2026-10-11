@@ -238,9 +238,7 @@ describe('BrxtInstallModal — the dialog', () => {
 
     expect(dialog).toHaveAttribute('data-size', 'md');
     expect(dialog).toHaveAttribute('data-anchor', 'top');
-    expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(
-      /bg-background-medium/
-    );
+    expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(/\bbr-fill-rest\b/);
     // §13.5, as text above the Install button, not in a panel and not in help.
     expect(screen.getByText(COPY.tierPublicFile)).toBeVisible();
     expect(dialog.querySelector('.biorouter-modal-panel')).toBeNull();

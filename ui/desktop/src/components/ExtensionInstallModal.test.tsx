@@ -233,9 +233,7 @@ describe('ExtensionInstallModal', () => {
 
       expect(screen.getByRole('dialog')).toHaveAttribute('data-size', 'sm');
       // `secondary`, not the `outline` the rest of the app has retired for a dismissal.
-      expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(
-        /bg-background-medium/
-      );
+      expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(/\bbr-fill-rest\b/);
       expect(screen.getByRole('button', { name: 'Cancel' }).className).not.toMatch(
         /border-border-emphasized/
       );
@@ -247,7 +245,7 @@ describe('ExtensionInstallModal', () => {
       await open('biorouter://extension?cmd=npx&arg=blocked&name=Blocked');
 
       const gotIt = screen.getByRole('button', { name: 'Got it' });
-      expect(gotIt.className).toMatch(/bg-background-medium/);
+      expect(gotIt.className).toMatch(/\bbr-fill-rest\b/);
       expect(gotIt.className).not.toMatch(/border-border-emphasized/);
     });
   });
