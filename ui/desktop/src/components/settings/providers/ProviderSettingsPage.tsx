@@ -11,7 +11,6 @@ import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCa
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import { KEY_STORAGE_NOTICE } from './modal/subcomponents/SecureStorageNotice';
 import { providerPageCopy } from './copy';
-import { useMouseBackButton } from './useMouseBackButton';
 import './providers.css';
 
 interface ProviderSettingsProps {
@@ -45,7 +44,6 @@ export default function ProviderSettings({
   // The band's tab slot, which the catalog draws its tabs into (`ProviderCatalog.tabsHost`). State
   // rather than a ref: the catalog must re-render when the element exists.
   const [tabsHost, setTabsHost] = useState<HTMLElement | null>(null);
-  useMouseBackButton(onClose);
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
   const tabHint = useMemo(() => new URLSearchParams(search).get('tab'), [search]);

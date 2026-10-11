@@ -24,7 +24,6 @@ import { Spinner } from '../../ui/spinner';
 import { StatusDot } from '../../ui/status-dot';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
-import { lastInputWasKey } from '../../chats/menuFocusReturn';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
 import './models.css';
@@ -120,26 +119,22 @@ function DetailRow({
 }
 
 /**
- * The info dialog's body, which takes focus when the dialog opens instead of its first control
- * (V4-04). That control is the Official URL, and after a pointer pick of View info from the
- * right-click menu it wore the keyboard ring: Chromium gives `:focus-visible` to every script
- * focus on that path (measured: the dialog box, the Close button and a bare div all match), so the
- * only way to show no ring is to focus something that draws none. A container, not a control:
+ * The info dialog's body: a container, not a control. The dialog places focus on it when it opens
+ * (`onOpenAutoFocus` below, V4-04) instead of on its first control, the Official URL, which wore
+ * the keyboard ring after a pointer pick of View info from the right-click menu: Chromium gives
+ * `:focus-visible` to every script focus on that path (the dialog box, the Close button and a bare
+ * div all match), so the only way to show no ring is to focus something that draws none.
  * `.br-local-info-body` has no outline, and the first Tab reaches the URL.
- *
- * ⚠ **A passive effect, not a ref callback.** The menu this dialog was picked from is still
- * mounted, in its exit animation, with its own focus trap on; a focus moved in the layout phase
- * is pulled straight back to the menu row by that trap (logged in Chromium). Passive effects run
- * after the trap's cleanup, and before the dialog's own focus scope looks at where focus is, and
- * that scope leaves focus alone when it is already inside.
  */
-function InfoDialogBody({ children }: { children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    ref.current?.focus({ preventScroll: true });
-  }, []);
+function InfoDialogBody({
+  children,
+  bodyRef,
+}: {
+  children: React.ReactNode;
+  bodyRef: React.RefObject<HTMLDivElement | null>;
+}) {
   return (
-    <div ref={ref} tabIndex={-1} className="br-local-info-body space-y-2 py-3">
+    <div ref={bodyRef} tabIndex={-1} className="br-local-info-body space-y-2 py-3">
       {children}
     </div>
   );
@@ -179,38 +174,10 @@ export default function LocalModelInventory() {
     };
   }, []);
 
-  // Where focus goes when the info dialog closes (V4-03). The dialog is opened from a menu item,
-  // which is gone by the time it closes, so Radix has nothing to hand focus back to and a
-  // keyboard user was dropped on <body>, at the top of the page. `menuOpener` is what held focus
-  // when the row's menu opened (its ⋯, or the control a Shift+F10 was pressed on); a KEYBOARD pick
-  // of View info keeps it as the return target, a pointer pick keeps nothing (a script-focused
-  // control draws the keyboard ring after a mouse press, and its row would keep the ⋯ on screen).
-  const menuOpenerRef = useRef<HTMLElement | null>(null);
-  const infoReturnRef = useRef<HTMLElement | null>(null);
-  const rememberMenuOpener = useCallback((open: boolean) => {
-    if (!open) return;
-    const active = document.activeElement;
-    menuOpenerRef.current =
-      active instanceof HTMLElement && active !== document.body ? active : null;
-  }, []);
-  const openInfo = useCallback((model: LlamaCppModel) => {
-    infoReturnRef.current = lastInputWasKey() ? menuOpenerRef.current : null;
-    // One task later, once the menu that picked it has closed. Radix runs an item's select inside
-    // `flushSync` and closes the menu after it, so a dialog mounted from `onSelect` appears while
-    // that menu's focus trap is still on, and the trap pulls focus back to the menu row (logged in
-    // Chromium); `InfoDialogBody` can only hold focus once the trap is gone.
-    window.setTimeout(() => {
-      if (mountedRef.current) setSelectedModel(model);
-    }, 0);
-  }, []);
-  const returnFocusAfterInfo = useCallback((event: Event) => {
-    const target = infoReturnRef.current;
-    infoReturnRef.current = null;
-    // Closed with the pointer (the Close button, the ×): nothing to give back.
-    if (!target || !target.isConnected || !lastInputWasKey()) return;
-    event.preventDefault();
-    target.focus();
-  }, []);
+  // The info dialog places focus on its own body when it opens (`onOpenAutoFocus` on the dialog).
+  // Where focus goes when it closes is the shared dialog's job: a keyboard pick gives focus back
+  // to the control that opened the menu, a pointer pick gives nothing back (V4-03).
+  const infoBodyRef = useRef<HTMLDivElement>(null);
 
   const busy = !!operation || !!deleteAction;
 
@@ -428,7 +395,7 @@ export default function LocalModelInventory() {
 
   const rowItems = (model: LlamaCppModel, busyNow: boolean): RowActionItem[] => {
     const items: RowActionItem[] = [
-      { label: localModelsCopy.viewInfo, onSelect: () => openInfo(model) },
+      { label: localModelsCopy.viewInfo, onSelect: () => setSelectedModel(model) },
     ];
     if (isInstalled(model)) {
       items.push(
@@ -520,7 +487,7 @@ export default function LocalModelInventory() {
           const items = rowItems(model, busy);
 
           return (
-            <RowContextMenu key={model.name} items={items} onOpenChange={rememberMenuOpener}>
+            <RowContextMenu key={model.name} items={items}>
               <div
                 className="biorouter-settings-row br-setting-row"
                 data-testid={`local-model-${model.name}`}
@@ -563,7 +530,6 @@ export default function LocalModelInventory() {
                     menu={items}
                     size="sm"
                     menuLabel={localModelsCopy.more(model.display_name)}
-                    onMenuOpenChange={rememberMenuOpener}
                     // What an installed row says at rest, in the cell the ⋯ takes over on hover.
                     meta={
                       installed ? (
@@ -609,7 +575,10 @@ export default function LocalModelInventory() {
         onOpenChange={(open) => !open && setSelectedModel(null)}
         size="lg"
         scrollBody
-        onCloseAutoFocus={returnFocusAfterInfo}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          infoBodyRef.current?.focus({ preventScroll: true });
+        }}
         title={selectedModel?.display_name ?? ''}
         subtitle={selectedModel?.description}
         footer={
@@ -636,7 +605,7 @@ export default function LocalModelInventory() {
         }
       >
         {selectedModel && (
-          <InfoDialogBody>
+          <InfoDialogBody bodyRef={infoBodyRef}>
             <DetailRow label={detail.status}>{installedLabel(selectedModel)}</DetailRow>
             <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
             <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
