@@ -2,7 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
-import DefaultProviderSetupForm, { type ConfigInput } from './DefaultProviderSetupForm';
+import DefaultProviderSetupForm, {
+  providerFieldName,
+  type ConfigInput,
+} from './DefaultProviderSetupForm';
 import CustomProviderForm from './CustomProviderForm';
 import { customProviderCopy } from '../../../copy';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
@@ -64,13 +67,55 @@ function Harness({ provider = bedrock }: { provider?: ProviderDetails }) {
  */
 // W2-PRV-13: the placeholder is the field's name in words. It was the env var
 // with spaces ('VERSA BEDROCK SECRET ACCESS KEY').
-const SECRET_ACCESS_KEY = 'Secret Access Key';
-const ACCESS_KEY_ID = 'Access Key Id';
+const SECRET_ACCESS_KEY = 'Secret access key';
+const ACCESS_KEY_ID = 'Access key ID';
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Nothing stored yet — the state the QA run typed into.
   mocks.read.mockResolvedValue(null);
+});
+
+// V4-R3-2: the labels were Title Case ("Anthropic API Key") beside the custom form's "API key", and
+// the required error repeated it. One name per key, in sentence case, with acronyms and product
+// names kept: it is the label, the placeholder fallback, the reveal toggle and the error.
+describe('providerFieldName: a key named in sentence case', () => {
+  it.each([
+    ['anthropic', 'ANTHROPIC_API_KEY', 'Anthropic API key'],
+    ['anthropic', 'ANTHROPIC_HOST', 'Anthropic host'],
+    ['azure_openai', 'AZURE_OPENAI_DEPLOYMENT_NAME', 'Azure OpenAI deployment name'],
+    ['llamacpp', 'LLAMACPP_CONTEXT_SIZE', 'Llama Server context size'],
+    ['claude_code', 'CLAUDE_CODE_COMMAND', 'Claude CLI command'],
+    ['zai', 'ZAI_API_KEY', 'z.ai API key'],
+    ['xiaomi_mimo', 'XIAOMI_MIMO_HOST', 'Xiaomi MiMo host (region endpoint)'],
+    ['gcp_vertex_ai', 'GCP_PROJECT_ID', 'GCP project ID'],
+    // The role names, for a key with no curated label.
+    ['tetrate', 'TETRATE_API_KEY', 'API key'],
+    ['tetrate', 'TETRATE_HOST', 'API host'],
+    // The prefix-stripped fallback, with ID kept as an acronym.
+    ['versa_bedrock', 'VERSA_BEDROCK_ACCESS_KEY_ID', 'Access key ID'],
+    ['versa_bedrock', 'VERSA_BEDROCK_SECRET_ACCESS_KEY', 'Secret access key'],
+    ['litellm', 'LITELLM_CUSTOM_HEADERS', 'Custom headers'],
+  ])('names %s %s as "%s"', (provider, key, name) => {
+    expect(providerFieldName(provider, key)).toBe(name);
+  });
+
+  it('never leaves a plain later word capitalised', () => {
+    for (const key of [
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_PATH',
+      'AZURE_OPENAI_API_VERSION',
+      'LLAMACPP_ENABLE_THINKING',
+      'SNOWFLAKE_TOKEN',
+      'CODEX_COMMAND',
+    ]) {
+      const later = providerFieldName('x', key).split(' ').slice(1);
+      for (const word of later) {
+        if (/^(Server|OpenAI|Llama|Azure)$/.test(word)) continue;
+        expect(word, key).not.toMatch(/^[A-Z][a-z]+$/);
+      }
+    }
+  });
 });
 
 describe('DefaultProviderSetupForm — secrets are masked', () => {
@@ -98,12 +143,12 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     );
   });
 
-  // ⚠ An EXACT label: the reveal toggle's accessible name is "Show Secret Access Key" and the
-  // label's InfoTip is "About Secret Access Key", so a pattern would match all three.
+  // ⚠ An EXACT label: the reveal toggle's accessible name is "Show Secret access key" and the
+  // label's InfoTip is "About Secret access key", so a pattern would match all three.
   it('labels each field, so a screen reader names the masked one', async () => {
     render(<Harness />);
     const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
-    expect(screen.getByLabelText('Secret Access Key')).toBe(input);
+    expect(screen.getByLabelText('Secret access key')).toBe(input);
   });
 
   // The config key a field writes is machine text: it is the label's InfoTip, and the field is
@@ -113,7 +158,7 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
     expect(input).toHaveAccessibleDescription('Saved as VERSA_BEDROCK_SECRET_ACCESS_KEY.');
     expect(screen.queryByText('(VERSA_BEDROCK_SECRET_ACCESS_KEY)')).toBeNull();
-    expect(screen.getByRole('button', { name: 'About Secret Access Key' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Secret access key' })).toBeInTheDocument();
   });
 
   it('stays masked while typing, and reveals only on an explicit toggle', async () => {
@@ -123,14 +168,14 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     fireEvent.change(input, { target: { value: 'dummy-not-a-real-secret' } });
     expect(input).toHaveAttribute('type', 'password');
 
-    const reveal = screen.getByRole('button', { name: 'Show Secret Access Key' });
+    const reveal = screen.getByRole('button', { name: 'Show Secret access key' });
     expect(reveal).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(reveal);
     expect(input).toHaveAttribute('type', 'text');
     // Revealed is exactly when a spellchecker would otherwise see the value.
     expect(input).toHaveAttribute('spellcheck', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Secret Access Key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Secret access key' }));
     expect(input).toHaveAttribute('type', 'password');
     expect(input).toHaveValue('dummy-not-a-real-secret');
   });
@@ -188,14 +233,14 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('leaves the endpoint empty, with a placeholder that says whose it is', async () => {
     render(<Harness provider={azure} />);
 
-    const endpoint = await screen.findByLabelText('Azure OpenAI Endpoint');
+    const endpoint = await screen.findByLabelText('Azure OpenAI endpoint');
     expect(endpoint).toHaveValue('');
     expect(endpoint).toHaveAttribute('placeholder', 'https://<your-resource>.openai.azure.com');
   });
 
   it('fills in no value that points at the UCSF gateway', async () => {
     render(<Harness provider={azure} />);
-    await screen.findByLabelText('Azure OpenAI Endpoint');
+    await screen.findByLabelText('Azure OpenAI endpoint');
 
     expect(screen.queryByDisplayValue(/unified-api\.ucsf\.edu/)).toBeNull();
   });
@@ -205,7 +250,7 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('still fills in the API version, which is the same for everyone', async () => {
     render(<Harness provider={azure} />);
 
-    expect(await screen.findByLabelText('Azure OpenAI API Version')).toHaveValue(
+    expect(await screen.findByLabelText('Azure OpenAI API version')).toHaveValue(
       '2025-01-01-preview'
     );
   });
@@ -233,7 +278,7 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
 
   it('names Llama Server\u2019s external host and suggests this machine for it', async () => {
     render(<Harness provider={llama} />);
-    const input = await screen.findByLabelText('Llama Server External Host');
+    const input = await screen.findByLabelText('Llama Server external host');
     expect(input).toHaveAttribute('placeholder', 'http://127.0.0.1:8080');
     expect(input).toHaveAccessibleDescription('Saved as LLAMACPP_EXTERNAL_HOST.');
     expect(screen.queryByPlaceholderText('https://api.example.com')).toBeNull();
@@ -250,7 +295,7 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
       },
     } as unknown as ProviderDetails;
     render(<Harness provider={azure} />);
-    expect(await screen.findByLabelText('API Key')).toHaveAccessibleDescription(
+    expect(await screen.findByLabelText('API key')).toHaveAccessibleDescription(
       'Saved as VERSA_AZURE_API_KEY.'
     );
   });

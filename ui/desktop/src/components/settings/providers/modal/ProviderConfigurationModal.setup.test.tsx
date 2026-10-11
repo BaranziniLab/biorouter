@@ -222,7 +222,7 @@ it('keeps Anthropic API configuration separate from Claude Code setup', async ()
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={apiProvider} onClose={vi.fn()} />);
   // The key field is what asks for the key; a line under the title that restated it is gone.
-  expect(await screen.findByLabelText('Anthropic API Key')).toBeInTheDocument();
+  expect(await screen.findByLabelText('Anthropic API key')).toBeInTheDocument();
   expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
   expect(screen.queryByText(/subscription sign-in/)).not.toBeInTheDocument();
   expect(mocks.status).not.toHaveBeenCalled();
@@ -373,16 +373,16 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={azure} onClose={vi.fn()} />);
 
-  fireEvent.change(await screen.findByLabelText('Azure OpenAI Deployment Name'), {
+  fireEvent.change(await screen.findByLabelText('Azure OpenAI deployment name'), {
     target: { value: 'my-gpt-6-sol' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
   // W2-PRV-13: the field's name in words, not its env var.
-  expect(await screen.findByText('Azure OpenAI Endpoint is required')).toBeInTheDocument();
+  expect(await screen.findByText('Azure OpenAI endpoint is required')).toBeInTheDocument();
   expect(mocks.submit).not.toHaveBeenCalled();
 
-  fireEvent.change(screen.getByLabelText('Azure OpenAI Endpoint'), {
+  fireEvent.change(screen.getByLabelText('Azure OpenAI endpoint'), {
     target: { value: 'https://contoso.openai.azure.com' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));

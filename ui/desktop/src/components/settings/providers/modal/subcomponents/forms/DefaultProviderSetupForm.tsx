@@ -9,6 +9,7 @@ import { configLabels } from '../../../../../../utils/configUtils';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
+import { sentenceCase } from '../../../../config/configLabels';
 import { providerSetupCopy } from '../../../copy';
 import { useHandFocusOnReady } from '../../../../models/dialogFocus';
 
@@ -74,6 +75,8 @@ const envToPrettyName = (envVar: string) => {
     Api: 'API',
     Aws: 'AWS',
     Gcp: 'GCP',
+    Id: 'ID',
+    Url: 'URL',
   };
 
   return envVar
@@ -88,12 +91,23 @@ const envToPrettyName = (envVar: string) => {
 /**
  * A config key's name in words, for its label, its placeholder and its
  * "is required" error: the curated label in `configUtils` when there is one
- * ("Llama Server External Host"), else the key's role, else the key itself
+ * ("Llama Server external host"), else the key's role, else the key itself
  * without the provider's prefix. The modal's required error used to print the
  * raw env var ("VERSA_BEDROCK_ACCESS_KEY_ID is required") and the placeholder
  * fallback was the env var with spaces (W2-PRV-13).
+ *
+ * Sentence case, like every other label in the app (V4-R3-2): the curated labels
+ * are Title Case ("Anthropic API Key"), so the name goes through the one
+ * `sentenceCase` the Configuration editor uses, which keeps acronyms and product
+ * names ("Anthropic API key", "Azure OpenAI deployment name"). That is also what
+ * makes the required error read "Anthropic API key is required", beside the custom
+ * provider form's "API key is required".
  */
 export function providerFieldName(providerName: string, parameterName: string): string {
+  return sentenceCase(titleCaseFieldName(providerName, parameterName));
+}
+
+function titleCaseFieldName(providerName: string, parameterName: string): string {
   if (configLabels[parameterName]) return configLabels[parameterName];
   const name = parameterName.toLowerCase();
   if (name.includes('api_key')) return 'API Key';

@@ -113,6 +113,17 @@ holds it**: a person who has already tabbed to Cancel stays on Cancel. The opene
 runs, so Escape and Cancel still return focus to the row's button. `ProviderConfigurationModal.focus.test.tsx`
 and `LeadWorkerSettings.focus.test.tsx` hold it, and each line that makes it true was checked by removing it.
 
+## How the Configure dialog names a field
+
+One function, `providerFieldName` in `DefaultProviderSetupForm.tsx`, names a key for its label, its
+placeholder fallback, the reveal toggle ("Show Anthropic API key") and the "is required" error, so the four
+can never disagree. The names are sentence case ("Anthropic API key", "Azure OpenAI deployment name",
+"Llama Server context size"), the same as the custom provider form's "API key" and every other label in the
+app. The curated names in `utils/configUtils.ts` stay Title Case in the table, and each reader sentence-cases
+them on the way out: this function and the Configuration editor both use `sentenceCase` from
+`settings/config/configLabels.ts`, which keeps acronyms and product names. A key with no curated name falls back to its role ("API key", "API host") or to the key
+without the provider's prefix ("Access key ID").
+
 ## The page band
 
 `ProviderSettingsPage.tsx` (`#/configure-providers`, and `#/welcome` on first run) is one 44px `PageHeader`
