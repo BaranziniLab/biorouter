@@ -67,18 +67,23 @@ function joined(value: unknown) {
  */
 function safeNotebookHtml(html: string, resolvedTheme: 'light' | 'dark', themeFamily: ThemeFamily) {
   const { background, foreground, border, muted } = sandboxedSurface(themeFamily, resolvedTheme);
-  // `--background-muted` is not in the generated surface, so the header ground is
-  // mixed the way the token is: a 4% wash of the ink over the page.
-  const mutedGround = `color-mix(in srgb, ${foreground} 4%, ${background})`;
+  // `--background-fill` is not in the generated surface either, so the table's
+  // ground is mixed the way the token is made: a 4% wash of the ink over the
+  // page, which lands within one level of the token in every family and mode
+  // (`NotebookPreview.test.tsx` measures it against main.css).
+  const fill = `color-mix(in srgb, ${foreground} 4%, ${background})`;
   // Paper, restated for a separate document: the page font stack (--font-body)
-  // and the app's ONE table (`.br-md-table`, Crew's recipe; spec section 0): a
-  // 1px frame at radius 8, top rules only, a 12px muted header on the muted
-  // ground, 8px 12px cells, tabular numbers, no bold index. pandas emits
+  // and the app's ONE table (`.br-md-table`, Crew's recipe; spec section 0) as
+  // the app draws it under R-27 (fills before lines): the subtle fill with no
+  // outline, top rules only BETWEEN rows, a 12px muted header on the same fill,
+  // 8px 12px cells, tabular numbers, no bold index. The 1px border stays but
+  // transparent, so nothing moves and forced colours still draw an edge, and the
+  // fill is clipped to the padding box so it never rings the border. pandas emits
   // `<table border="1">`, whose attribute alone drew a full grid: the table's
-  // own `border` replaces it with the frame, and `border:0` on every cell clears
-  // the grid before the top rule is drawn. `::selection` is restated because the
+  // own `border` replaces it, and `border:0` on every cell clears the grid
+  // before the top rule is drawn. `::selection` is restated because the
   // renderer-wide selection in main.css cannot reach this document.
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/18px Arial,"Helvetica Neue",Helvetica,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:8px 1px}img,svg{max-width:100%;height:auto}table{border:1px solid ${border};border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;font-variant-numeric:tabular-nums}td,th{border:0;border-top:1px solid ${border};padding:8px 12px;text-align:right;font-weight:400}thead tr:first-child>*,table>tbody:first-child>tr:first-child>*{border-top:0}thead th{background:${mutedGround};color:${muted};font-size:12px;line-height:16px;font-weight:600}tbody th{color:${muted}}::selection{background:${SELECTION_TINT[resolvedTheme]}}</style></head><body>${html}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/18px Arial,"Helvetica Neue",Helvetica,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:8px 0}img,svg{max-width:100%;height:auto}table{border:1px solid transparent;background:${fill};background-clip:padding-box;border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;font-variant-numeric:tabular-nums}td,th{border:0;border-top:1px solid ${border};padding:8px 12px;text-align:right;font-weight:400}thead tr:first-child>*,table>tbody:first-child>tr:first-child>*{border-top:0}thead th{color:${muted};font-size:12px;line-height:16px;font-weight:600}tbody th{color:${muted}}@media (forced-colors:active){table{border-color:CanvasText}}::selection{background:${SELECTION_TINT[resolvedTheme]}}</style></head><body>${html}</body></html>`;
 }
 
 function NotebookOutputView({

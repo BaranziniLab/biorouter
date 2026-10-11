@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import postcss from 'postcss';
 import { describe, expect, it } from 'vitest';
 import { PAPER_GUTTER_EM } from '../components/artifacts/artifactUtils';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from './themes.generated';
@@ -144,6 +145,10 @@ describe('artifact panel paper', () => {
   // scrollbar too, which is why the fade is not one.
   it('fades a scrolling table out at its right edge, on each row’s own ground', () => {
     expect(ruleBody('.br-paper-table')).toContain('--paper-fade-width: 40px;');
+    // Every row, the header included, rests on the table's one fill (R-27), so
+    // there is one fade ground and no second one for the header.
+    expect(ruleBody('.br-paper-table')).toContain('--paper-fade-ground: var(--background-fill);');
+    expect(flat).not.toContain('--paper-fade-head-ground');
     const filler = ruleBody('.br-paper-table .br-paper-fill');
     expect(filler).toContain('position: sticky;');
     expect(filler).toContain('right: 0;');
@@ -152,12 +157,9 @@ describe('artifact panel paper', () => {
     expect(fade).toContain('pointer-events: none;');
     expect(fade).toContain('display: none;');
     expect(fade).toMatch(/linear-gradient\(to left, var\(--paper-fade-ground\), transparent\)/);
-    // The header and a hovered row each fade into their own ground.
-    expect(ruleBody('.br-paper-table th.br-paper-fill::after')).toContain(
-      'var(--paper-fade-head-ground)'
-    );
+    // A hovered row fades into its own ground: the strong step the row takes.
     expect(ruleBody('.br-paper-table tbody tr:hover .br-paper-fill::after')).toContain(
-      'var(--overlay-hover)'
+      'var(--background-fill-strong)'
     );
     // Drawn only while more lies to the right, and never over forced colours.
     expect(
@@ -195,6 +197,9 @@ describe('artifact panel paper', () => {
     const head = ruleBody('.br-paper-table.br-md-table th');
     expect(head).toContain('position: sticky;');
     expect(head).toContain('box-shadow: inset 0 -1px 0 var(--border-subtle);');
+    // The sticky header paints the table's own fill, so rows passing under it
+    // never show through (R-27: no second ground, which would read as a hover).
+    expect(head).toContain('background-color: var(--background-fill);');
     // The frame sits on the column edge the bar's name and the prose share…
     expect(ruleBody('.br-paper-table-frame')).toContain('padding-left: var(--paper-inset);');
     // …and leaves it only for a table that fits by doing so (V2-09: a 1300px
@@ -231,7 +236,9 @@ describe('artifact panel paper', () => {
   it('paints the shared markdown table header from tokens, never literals', () => {
     const header = ruleBody('.br-md-table thead :where(th, td), .br-md-table th[data-head]');
     expect(header, 'table header rule').not.toBeNull();
-    expect(header).toContain('background-color: var(--background-muted);');
+    // The header rests on a ground token: the page's muted ground, or (R-27, the
+    // filled table) the table's own fill, never a literal.
+    expect(header).toMatch(/background-color: var\(--background-(muted|fill)\);/);
     expect(header).toContain('color: var(--text-muted);');
     // The point of the exercise: no hex may come back.
     expect(header).not.toMatch(/#[0-9a-f]{3,8}\b/i);
@@ -375,5 +382,160 @@ describe('the document front matter and the fold chevron', () => {
     expect(ruleBody('.br-preview-fold-toggle > svg')).toContain(
       'transition: rotate var(--dur-fast) var(--ease-out);'
     );
+  });
+});
+
+/**
+ * FILLS BEFORE LINES in the panel (R-27, owner message 13, design.md 9.11). A
+ * box or a control in the preview is a subtle fill with no resting outline; a
+ * line stays only where it is structural. The second half is a ratchet: every
+ * rule in the panel's own families that draws an edge in a border token is named
+ * here, so a new outline cannot arrive without someone writing down why it is
+ * structure.
+ */
+describe('fills before lines in the preview panel', () => {
+  const panelCss = readFileSync('src/components/artifacts/preview-panel.css', 'utf-8');
+  const paperStart = css.indexOf('/* ── Preview paper');
+  // The paper block runs to the focus-surface comment that follows the notebook.
+  const paperEnd = css.indexOf("P5 / D-15's focus surface");
+  const paperCss = css.slice(paperStart, paperEnd);
+
+  /** Selectors of every rule that draws an edge in a border token. */
+  function edgeSelectors(source: string): string[] {
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '');
+    const out: string[] = [];
+    for (const [, selector, body] of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const draws = body
+        .split(';')
+        .some(
+          (declaration) =>
+            /^\s*(border(-[a-z-]+)?|box-shadow|outline)\s*:/.test(declaration) &&
+            /var\(--border-/.test(declaration)
+        );
+      if (draws) out.push(selector.replace(/\s+/g, ' ').trim());
+    }
+    return out;
+  }
+
+  it('draws edges only where they are structure, and says which', () => {
+    expect(edgeSelectors(panelCss).sort()).toEqual(
+      [
+        // The pane's divider from the conversation.
+        '.br-preview-panel',
+        // The 32px bar's bottom edge: the band the file's name sits in.
+        '.br-preview-bar',
+        // A directory's rail divider, and its header band's edge (aligned with the bar's).
+        '.br-preview-rail',
+        '.br-preview-rail__filter',
+        // A rendered page's own edge on the white paper (PDF, Word, a slide): the
+        // document's boundary, drawn outside the page, not a box around UI.
+        '.br-preview-page',
+        '.artifact-docx-preview .docx-wrapper > section.docx',
+        ".artifact-pptx-preview > div > div[style*='box-shadow']",
+      ].sort()
+    );
+    expect(edgeSelectors(paperCss).sort()).toEqual(
+      [
+        // The title block's divider from the body: a rule in a document.
+        '.br-paper-frontmatter',
+        // A table's rule under its header: inside the filled table, structure.
+        '.br-paper-table.br-md-table th',
+      ].sort()
+    );
+  });
+
+  it('fills the CSV table, with a transparent border, instead of framing it', () => {
+    const table = ruleBody('.br-paper-table.br-md-table');
+    expect(table).toContain('border-color: transparent;');
+    expect(table).toContain('background-color: var(--background-fill);');
+    // The fill stops at the padding box, so the transparent border never rings it.
+    expect(table).toContain('background-clip: padding-box;');
+    expect(ruleBody('.br-paper-table tbody tr:hover td')).toContain(
+      'background-color: var(--background-fill-strong);'
+    );
+  });
+
+  it('gives the notebook one radius for its source, figure and error boxes', () => {
+    for (const selector of ['.br-paper-well', '.br-paper-nb-error', '.br-paper-nb-figure']) {
+      expect(ruleBody(selector), selector).toContain('border-radius: var(--radius-container);');
+    }
+    // A figure is a tile of the fill; the ring that used to be its edge is gone.
+    const figure = ruleBody('.br-paper-nb-figure');
+    expect(figure).toContain('background-color: var(--background-fill);');
+    expect(ruleBody('.br-paper-nb-figure > img')).not.toContain('box-shadow');
+  });
+
+  it('rests the sheet picker on the fill and steps it to the strong fill', () => {
+    const flatPanel = panelCss.replace(/\s+/g, ' ');
+    const rule = (selector: string) =>
+      new RegExp(
+        `(?:^|[}/])\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`
+      ).exec(flatPanel)?.[1] ?? '';
+    const picker = rule('.br-preview-select');
+    expect(picker).toContain('background: var(--background-fill);');
+    expect(picker).toContain('border: 1px solid transparent;');
+    expect(rule(".br-preview-select:hover, .br-preview-select[data-state='open']")).toContain(
+      'background: var(--background-fill-strong);'
+    );
+  });
+
+  it('draws the directory filter and the address field as the app’s filled field', () => {
+    const viewer = readFileSync('src/components/artifacts/ArtifactViewer.tsx', 'utf-8');
+    expect(viewer).toContain('className="br-field br-preview-rail__input border"');
+    const page = readFileSync('src/components/artifacts/WebPagePreview.tsx', 'utf-8');
+    expect(page).toMatch(/className="br-field h-6 w-full min-w-0 truncate rounded-element border /);
+    // The old bare-input recipe, a ground written by hand, is gone from both.
+    expect(page).not.toContain('bg-background-muted px-2');
+    expect(viewer).not.toContain('bg-transparent text-secondary text-text-default outline-none');
+  });
+});
+
+/**
+ * The stylesheet PARSES the way these tests read it. Every other assertion in
+ * this file reads rule bodies out of the source with a regular expression, and a
+ * regular expression happily finds a declaration that a real parser would never
+ * see: commit 0807c69db staged the CSV frame's hunks out of order, so main.css
+ * carried `padding-left: …; }` and a selector INSIDE a comment, lost the
+ * `[data-yield]` rule and the `.br-paper-table` rule, and every test here still
+ * passed. A parse is the check that cannot be fooled that way.
+ */
+describe('the preview families parse', () => {
+  const root = postcss.parse(css);
+  const selectors = new Set<string>();
+  root.walkRules((rule) => {
+    selectors.add(rule.selector.replace(/\s+/g, ' '));
+  });
+
+  it('has every rule the panel relies on as a rule, not as text in a comment', () => {
+    for (const selector of [
+      '.br-paper-table-frame',
+      '.br-paper-table-frame[data-yield]',
+      '.br-paper-table',
+      '.br-paper-table.br-md-table',
+      '.br-paper-table.br-md-table th',
+      '.br-paper-table .br-paper-fill::after',
+      '.br-paper-nb',
+      '.br-paper-nb > .br-paper-nb-cell:first-child',
+      '.br-paper-well',
+      '.br-paper-nb-figure',
+      '.br-paper-nb-figure > img',
+    ]) {
+      expect(selectors.has(selector), selector).toBe(true);
+    }
+  });
+
+  it('keeps declarations out of comments', () => {
+    const paperStart = css.indexOf('/* ── Preview paper');
+    const paperEnd = css.indexOf("P5 / D-15's focus surface");
+    let seen = 0;
+    root.walkComments((comment) => {
+      const at = comment.source?.start?.offset ?? -1;
+      if (at < paperStart || at > paperEnd) return;
+      seen += 1;
+      // A line that is only a closing brace, or opens a block, is CSS that was
+      // swallowed by a comment.
+      expect(comment.text, comment.text.slice(0, 60)).not.toMatch(/^\s*\}\s*$|\{\s*$/m);
+    });
+    expect(seen).toBeGreaterThan(20);
   });
 });

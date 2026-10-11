@@ -2419,16 +2419,18 @@ function DirectoryTreePreview({
       )}
       <div className="br-preview-rail">
         {/* The rail's header is the filter, one 32px row (the bar's height), so
-            the two hairlines either side of the seam line up. */}
+            the two hairlines either side of the seam line up. The field in it is
+            the app's filled field (`.br-field`: a fill at rest, the strong step
+            under the pointer, an edge only while focused; R-27), 24px tall. */}
         <label className="br-preview-rail__filter">
-          <Search className="h-3.5 w-3.5 shrink-0 text-text-subtle" aria-hidden="true" />
+          <Search className="br-preview-rail__glyph" aria-hidden="true" />
           <input
             type="search"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             placeholder={PREVIEW_COPY.filterFiles}
             aria-label={isGitRepository ? PREVIEW_COPY.filterRepository : PREVIEW_COPY.filterFolder}
-            className="min-w-0 flex-1 bg-transparent text-secondary text-text-default outline-none placeholder:text-text-subtle"
+            className="br-field br-preview-rail__input border"
           />
         </label>
         <div

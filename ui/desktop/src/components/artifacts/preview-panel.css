@@ -368,7 +368,8 @@
 }
 
 /* ── Directories ── the rail's header is the filter, one 32px row, so its
-   hairline meets the file side's at the seam. */
+   hairline meets the file side's at the seam. The hairline is the band's edge
+   (structural); the filter in it is a filled field, not a ruled one (R-27). */
 .br-preview-rail {
   display: flex;
   flex: none;
@@ -380,18 +381,48 @@
 }
 
 .br-preview-rail__filter {
+  position: relative;
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
   height: var(--tab-height);
   box-sizing: border-box;
-  padding: 0 12px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.br-preview-rail__filter:focus-within {
-  background: var(--background-focus, var(--overlay-hover));
+/* The field is `.br-field` (main.css, layered): the fill at rest, the strong step
+   under the pointer, `--border-focus` only while focused, a transparent border
+   otherwise. What is written here is its size and type: 24px, the compact rung,
+   in the 32px row, with the glyph inside its left edge. */
+.br-preview-rail__input {
+  flex: 1;
+  min-width: 0;
+  block-size: var(--control-compact);
+  padding-inline: 28px 8px;
+  border-radius: var(--radius-element);
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-preview-rail__input::placeholder {
+  color: var(--text-muted);
+}
+
+.br-preview-rail__input::-webkit-search-cancel-button,
+.br-preview-rail__input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.br-preview-rail__glyph {
+  position: absolute;
+  inset-inline-start: 16px;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  pointer-events: none;
 }
 
 /* ── Documents ── pages are white sheets on the paper with a hairline edge, not
@@ -420,6 +451,16 @@ canvas.br-preview-page[data-rendered='true'] {
   box-shadow: 0 0 0 1px var(--border-subtle);
 }
 
+/* A deck's slide arrives with the renderer's own drop shadow, written inline on
+   the slide's frame (the first box inside each slide's wrapper; the shapes on
+   the slide are deeper and are left alone). A static page takes no shadow, so it
+   takes the one hairline edge a PDF page and a Word page take. The page edge is
+   the rendered document's own, drawn outside the page, not a box around UI: a
+   white sheet on the paper has no other edge in light mode. */
+.artifact-pptx-preview > div > div[style*='box-shadow'] {
+  box-shadow: 0 0 0 1px var(--border-subtle) !important;
+}
+
 .artifact-docx-preview[data-rendered='false'],
 .artifact-pptx-preview[data-rendered='false'] {
   opacity: 0;
@@ -431,7 +472,10 @@ canvas.br-preview-page[data-rendered='true'] {
   transition: opacity var(--dur-fast-max) var(--ease-out);
 }
 
-/* The workbook's sheet picker: a menu trigger in the bar, named by the sheet. */
+/* The workbook's sheet picker: a menu trigger in the bar, named by the sheet. A
+   select is a filled control (R-27): the fill at rest, the strong step under the
+   pointer and while its menu is open, no outline. The 1px border stays but
+   transparent, so nothing moves and forced colours still draw an edge. */
 .br-preview-select {
   display: inline-flex;
   align-items: center;
@@ -439,7 +483,9 @@ canvas.br-preview-page[data-rendered='true'] {
   max-width: 200px;
   height: 24px;
   padding: 0 6px 0 8px;
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
+  background: var(--background-fill);
   color: var(--text-default);
   font-size: var(--text-secondary);
   line-height: var(--text-secondary--line-height);
@@ -448,7 +494,7 @@ canvas.br-preview-page[data-rendered='true'] {
 
 .br-preview-select:hover,
 .br-preview-select[data-state='open'] {
-  background: var(--overlay-hover);
+  background: var(--background-fill-strong);
 }
 
 /* ── Keyframes ── */

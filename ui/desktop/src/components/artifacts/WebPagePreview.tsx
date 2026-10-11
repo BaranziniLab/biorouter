@@ -292,7 +292,9 @@ export default function WebPagePreview({
               setIsEditingAddress(true);
             }}
             onBlur={() => setIsEditingAddress(false)}
-            className="h-6 w-full min-w-0 truncate rounded-element bg-background-muted px-2 text-secondary text-text-default outline-none focus:bg-background-medium"
+            // The app's filled field (R-27): a fill at rest, the strong step under
+            // the pointer, the accent edge only while it is being typed in.
+            className="br-field h-6 w-full min-w-0 truncate rounded-element border px-2 text-secondary text-text-default transition-[color,background-color,border-color] placeholder:text-text-muted"
           />
         </form>
         {updateReady && (
@@ -336,7 +338,7 @@ export default function WebPagePreview({
       {state?.error && (
         <p
           data-testid="embedded-browser-error"
-          className="flex-none border-b border-border-subtle bg-background-muted px-3 py-1.5 text-supporting text-text-muted"
+          className="flex-none bg-background-fill px-3 py-1.5 text-supporting text-text-muted"
         >
           {state.error}
         </p>
@@ -353,7 +355,7 @@ export default function WebPagePreview({
         aria-label={state?.title || url}
         className={cn(
           'relative min-h-0 flex-1 overflow-hidden',
-          isSuspended && 'bg-background-muted'
+          isSuspended && 'bg-background-fill'
         )}
       >
         {snapshotDataUrl && (

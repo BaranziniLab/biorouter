@@ -7495,11 +7495,19 @@ code [class~='token'] {
 
 /* @ws WS-PREVIEW begin: csv on the shared table */
 /* THE ONE TABLE (spec 3.8 and section 0). A CSV wears `.br-md-table`, Crew's
-   recipe that chat, documents and notebook DataFrames share: a 1px frame at
-   radius 8, top rules only, a 12px muted header on the muted ground, 8px 12px
-   cells, 13/18 type and tabular numbers. What the panel adds is what a data file
-   needs and a chat table does not: a header that sticks while 500 rows scroll
-   under it, a quiet row index as the first column, and packed columns.
+   recipe that chat, documents and notebook DataFrames share: radius 8, top
+   rules only, a 12px muted header, 8px 12px cells, 13/18 type and tabular
+   numbers. What the panel adds is what a data file needs and a chat table does
+   not: a header that sticks while 500 rows scroll under it, a quiet row index as
+   the first column, and packed columns.
+
+   FILLED, NOT FRAMED (R-27, design.md 9.11). The table is one subtle fill
+   (`--background-fill`) with no outline; its 1px border stays but transparent,
+   so nothing moves and forced colours still draw an edge. The rules BETWEEN rows
+   stay, because they are structure. A hovered row steps to the strong fill. The
+   sticky header rests on the same fill (an opaque ground, so rows never show
+   through it) and is told apart by its type and the rule under it, never by a
+   second ground: a header on the strong step would read as a hovered row.
 
    The frame sits on the column edge, the left edge the bar's name and a
    report's prose share. It leaves that edge for one reason only: a table that
@@ -7532,11 +7540,11 @@ code [class~='token'] {
    panel has room for once the lead and the right gutter are taken, so a narrow
    CSV never scrolls sideways for nothing. */
 .br-paper-table {
-  /* The grounds the right-edge fade ends in (below): the page's, and the
-     header's. A table that changes its ground changes these. */
+  /* The ground the right-edge fade ends in (below): the table's own fill, which
+     every row, the header included, rests on. A table that changes its ground
+     changes this. */
   --paper-fade-width: 40px;
-  --paper-fade-ground: var(--background-default);
-  --paper-fade-head-ground: var(--background-muted);
+  --paper-fade-ground: var(--background-fill);
   width: max-content;
   min-width: min(var(--paper-column), calc(100cqw - var(--paper-lead) - var(--paper-gutter)));
   color: var(--text-default);
@@ -7544,9 +7552,14 @@ code [class~='token'] {
 
 /* The recipe clips its corners with `overflow: hidden`, which would make the
    table a scroll container and stop the header sticking; the corner cells
-   round themselves instead (radius 8 less the 1px frame). */
+   round themselves instead (radius 8 less the 1px border). The fill is clipped
+   to the padding box, so it never shows as a ring around the transparent
+   border. */
 .br-paper-table.br-md-table {
   overflow: visible;
+  border-color: transparent;
+  background-color: var(--background-fill);
+  background-clip: padding-box;
 }
 
 .br-paper-table.br-md-table th {
@@ -7554,6 +7567,7 @@ code [class~='token'] {
   top: 0;
   z-index: 1;
   width: 1px;
+  background-color: var(--background-fill);
   /* A box-shadow, not a border: a sticky cell's border scrolls away with the
      table, and the header's bottom rule has to stay with it. */
   box-shadow: inset 0 -1px 0 var(--border-subtle);
@@ -7608,8 +7622,8 @@ code [class~='token'] {
    filler cell draws it instead: it sticks to the scroller's right edge
    (`right: 0`) whenever the table runs past that edge, and its pseudo-element
    paints 40px of the row's own ground over the text, transparent to opaque
-   towards the edge. The header's filler is on the header's ground, and a hovered
-   row's is on the hover wash, so no row shows a patch. `data-overflow` (set by
+   towards the edge. Every row rests on the table's fill, and a hovered row's
+   filler is on the strong step like the row, so no row shows a patch. `data-overflow` (set by
    DelimitedTable while more lies to the right) turns every fade on at once.
    Forced colours repaint grounds, so the fade yields to the system there, as the
    recipe's does. */
@@ -7629,14 +7643,8 @@ code [class~='token'] {
   pointer-events: none;
 }
 
-.br-paper-table th.br-paper-fill::after {
-  background: linear-gradient(to left, var(--paper-fade-head-ground), transparent);
-}
-
 .br-paper-table tbody tr:hover .br-paper-fill::after {
-  background:
-    linear-gradient(to left, var(--overlay-hover), transparent),
-    linear-gradient(to left, var(--paper-fade-ground), transparent);
+  background: linear-gradient(to left, var(--background-fill-strong), transparent);
 }
 
 .br-paper-table-scroll[data-overflow='true'] .br-paper-fill::after {
@@ -7673,9 +7681,9 @@ code [class~='token'] {
   text-overflow: ellipsis;
 }
 
-/* Hover is neutral (principle 7). */
+/* Hover is neutral (principle 7) and steps to the strong fill (R-27). */
 .br-paper-table tbody tr:hover td {
-  background-color: var(--overlay-hover);
+  background-color: var(--background-fill-strong);
 }
 /* @ws WS-PREVIEW end: csv on the shared table */
 
@@ -7752,11 +7760,17 @@ code [class~='token'] {
   margin-top: 0;
 }
 
+/* @ws WS-PREVIEW begin: notebook boxes share one radius */
+/* A cell's source, a figure and an error are the notebook's three boxes, and
+   they share ONE radius, the container's 12 (a markdown cell's fenced block
+   already draws 12, so 10 put two radii in one notebook). The source is the
+   code well, which is the code's fill (the syntax palettes are measured on it). */
 .br-paper-well {
   overflow-x: auto;
-  border-radius: 10px;
+  border-radius: var(--radius-container);
   background-color: var(--background-well);
 }
+/* @ws WS-PREVIEW end: notebook boxes share one radius */
 
 /* The execution prompt hangs in the left margin when there is one… */
 .br-paper-nb-prompt {
@@ -7795,34 +7809,41 @@ code [class~='token'] {
 .br-paper-nb-error {
   margin: 0;
   padding: 10px 16px;
-  border-radius: 8px;
+  border-radius: var(--radius-container);
   background-color: color-mix(in srgb, var(--text-danger) 8%, transparent);
   color: var(--text-danger);
 }
 
+/* @ws WS-PREVIEW begin: notebook figure tile */
+/* A figure output is a plot on a tile of the subtle fill (R-27), not a plot in a
+   hairline: a plot with a white ground still has an edge on the paper because
+   the fill is around it, and no line is drawn. The tile is the well's box (the
+   same radius and the same left edge), and the image sits in it 16px in, where
+   the cell's own text sits, so the picture, the source and the printed output
+   share one text edge. */
 .br-paper-nb-figure {
-  padding: 6px 16px;
+  padding: 12px 16px;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
 }
 
-/* @ws WS-PREVIEW begin: notebook figure edge */
-/* A figure output is an image on the page: the well's radius and a hairline
-   ring, so a plot with a white ground still has an edge on the paper (spec 3.8).
-   A ring, not a border, so the image keeps its own pixel size. */
 .br-paper-nb-figure > img {
   display: block;
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px var(--border-subtle);
+  border-radius: var(--radius-element);
 }
-/* @ws WS-PREVIEW end: notebook figure edge */
+/* @ws WS-PREVIEW end: notebook figure tile */
 
 /* A `sandbox=""` frame cannot be measured from here, so a short DataFrame
    keeps the frame's `min-h-40` floor and leaves some air under it. Sizing it
    would need `allow-same-origin`, a sandbox relaxation this surface does not
-   make. */
+   make.
+
+   The frame spans the cell's width: the DataFrame is a filled box (R-27) like the
+   source well and the figure tile, so its box starts on their left edge, and the
+   text inside it sits in its own 12px cell padding. */
 .br-paper-nb-output > iframe {
   display: block;
-  width: calc(100% - 16px);
-  margin-left: 16px;
+  width: 100%;
 }
 
 .br-paper-nb-output > .br-paper-prose {
