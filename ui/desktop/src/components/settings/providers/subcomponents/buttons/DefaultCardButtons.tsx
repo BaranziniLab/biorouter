@@ -8,6 +8,8 @@ interface CardButtonsProps {
   isOnboardingPage: boolean;
   onConfigure: (provider: ProviderDetails) => void;
   onLaunch: (provider: ProviderDetails) => void;
+  /** The id of the row's full description, so the button is described by it (FR-R1-9). */
+  describedBy?: string;
 }
 
 /**
@@ -20,6 +22,7 @@ export default function DefaultCardButtons({
   isOnboardingPage,
   onLaunch,
   onConfigure,
+  describedBy,
 }: CardButtonsProps) {
   const name = provider.metadata.display_name || provider.name;
   // A configured provider on the onboarding page is launched; every other row is configured
@@ -28,6 +31,7 @@ export default function DefaultCardButtons({
     return (
       <RocketButton
         aria-label={catalogCopy.launchRow(name)}
+        aria-describedby={describedBy}
         onClick={(e) => {
           e.stopPropagation();
           onLaunch(provider);
@@ -38,6 +42,7 @@ export default function DefaultCardButtons({
   return (
     <ConfigureSettingsButton
       aria-label={catalogCopy.configureRow(name)}
+      aria-describedby={describedBy}
       onClick={(e) => {
         e.stopPropagation();
         onConfigure(provider);

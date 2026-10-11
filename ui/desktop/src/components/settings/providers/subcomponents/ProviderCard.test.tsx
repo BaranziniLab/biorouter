@@ -173,7 +173,45 @@ describe('ProviderCard keyboard access', () => {
     expect(button).toHaveTextContent(catalogCopy.configure);
   });
 
-  it('reaches the description and then Configure by Tab, and Enter opens the dialog', async () => {
+  /**
+   * jsdom lays nothing out, so every width reads 0 and nothing is ever "truncated". These cases
+   * stand the description in for a cut-off one: wider text than box.
+   */
+  const truncateDescriptions = () => {
+    const isDescription = (el: HTMLElement) =>
+      (el.dataset?.testid ?? '').startsWith('provider-description-');
+    const scroll = vi
+      .spyOn(HTMLElement.prototype, 'scrollWidth', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return isDescription(this) ? 400 : 0;
+      });
+    const client = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return isDescription(this) ? 200 : 0;
+      });
+    return () => {
+      scroll.mockRestore();
+      client.mockRestore();
+    };
+  };
+
+  // FR-R1-9: every description was a Tab stop, cut off or not, so the walk was row, description,
+  // action for every provider. Only a cut-off one is a stop now; the action carries the full text.
+  it('is not a Tab stop when the description fits, and the action is described by it', async () => {
+    const user = userEvent.setup();
+    renderRow(true);
+    expect(screen.getByTestId('provider-description-versa_azure')).not.toHaveAttribute('tabindex');
+    await user.tab();
+    const configure = screen.getByRole('button');
+    expect(configure).toHaveFocus();
+    expect(configure).toHaveAccessibleDescription(
+      'A description long enough that the row truncates it in a narrow window'
+    );
+  });
+
+  it('reaches a cut-off description and then Configure by Tab, and Enter opens the dialog', async () => {
+    const restore = truncateDescriptions();
     const user = userEvent.setup();
     const onConfigure = renderRow(true);
 
@@ -187,9 +225,11 @@ describe('ProviderCard keyboard access', () => {
 
     await user.keyboard('{Enter}');
     expect(onConfigure).toHaveBeenCalledTimes(1);
+    restore();
   });
 
-  it('opens the full description in a tooltip on keyboard focus', async () => {
+  it('opens a cut-off description in a tooltip on keyboard focus', async () => {
+    const restore = truncateDescriptions();
     const user = userEvent.setup();
     renderRow(false);
     await user.tab();
@@ -199,5 +239,27 @@ describe('ProviderCard keyboard access', () => {
         name: /A description long enough that the row truncates it/,
       })
     ).toBeInTheDocument();
+    restore();
+  });
+
+  it('describes an agent row by the daemon sentence its short line stands in for', () => {
+    render(
+      <TooltipProvider>
+        <ProviderCard
+          provider={provider(false)}
+          onConfigure={vi.fn()}
+          onLaunch={vi.fn()}
+          isOnboarding
+          expandable
+          onToggle={vi.fn()}
+          summary="Your plan · no API key"
+        />
+      </TooltipProvider>
+    );
+    const toggle = screen.getByTestId('provider-row-toggle-versa_azure');
+    expect(toggle).toHaveTextContent('Your plan · no API key');
+    expect(toggle).toHaveAccessibleDescription(
+      'A description long enough that the row truncates it in a narrow window'
+    );
   });
 });

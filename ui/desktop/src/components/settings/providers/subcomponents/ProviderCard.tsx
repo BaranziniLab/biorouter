@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { ChevronDown } from '../../../icons/app-icons';
 import DefaultCardButtons from './buttons/DefaultCardButtons';
 import { ProviderDetails, ProviderMetadata } from '../../../../api';
@@ -7,6 +7,26 @@ import { StatusDot } from '../../../ui/status-dot';
 import { catalogCopy } from '../copy';
 import { InlineCodeText } from './InlineCodeText';
 import '../providers.css';
+
+/**
+ * Whether a one-line element is cut off: its text is wider than its box. Measured after layout and
+ * again whenever the box resizes, so a description that fits in a wide window and is cut in a
+ * narrow one gains and loses its Tab stop with the window.
+ */
+function useIsTruncated(ref: RefObject<HTMLElement | null>, text: string): boolean {
+  const [truncated, setTruncated] = useState(false);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => setTruncated(element.scrollWidth > element.clientWidth + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, text]);
+  return truncated;
+}
 
 type ProviderCardProps = {
   provider: ProviderDetails;
@@ -73,6 +93,13 @@ export const ProviderCard = function ProviderCard({
 }: ProviderCardProps) {
   const providerMetadata: ProviderMetadata | null = provider?.metadata || null;
   const metadata = useMemo(() => providerMetadata, [providerMetadata]);
+  const descriptionRef = useRef<HTMLParagraphElement>(null);
+  const descriptionId = useId();
+  const fullDescriptionId = useId();
+  const descriptionTruncated = useIsTruncated(
+    descriptionRef,
+    summary ?? metadata?.description ?? ''
+  );
 
   if (!metadata) {
     return <div>ProviderCard error: No metadata provided</div>;
@@ -97,14 +124,20 @@ export const ProviderCard = function ProviderCard({
       </div>
       {metadata.description && (
         <Tooltip>
-          {/* Focusable, so a keyboard user can open the tooltip that holds the
-              rest of a truncated description: a Radix trigger opens on focus
-              as well as hover, but only if it can take focus. */}
+          {/* A Tab stop ONLY while it is cut off, so a keyboard user can open the tooltip that
+              holds the rest (a Radix trigger opens on focus as well as hover, but only if it can
+              take focus). Every description used to be one, truncated or not, so the walk went
+              row, description, action for every provider: about 27 extra stops on Public (vision
+              FR-R1-9). The row's action names the full text as its description either way, so a
+              screen reader hears it without the stop. The 6px and 4px of room are for the focus
+              surface, which hugged the glyphs; the negative margins keep the layout. */}
           <TooltipTrigger asChild>
             <p
-              tabIndex={0}
+              ref={descriptionRef}
+              id={descriptionId}
+              tabIndex={descriptionTruncated ? 0 : undefined}
               data-testid={`provider-description-${slug}`}
-              className="-mx-1 -my-0.5 cursor-default truncate rounded-element px-1 py-0.5 text-supporting text-text-muted biorouter-focus-surface"
+              className="-mx-1.5 -my-1 cursor-default truncate rounded-element px-1.5 py-1 text-supporting text-text-muted biorouter-focus-surface"
             >
               {summary ?? <InlineCodeText text={metadata.description} />}
             </p>
@@ -114,6 +147,13 @@ export const ProviderCard = function ProviderCard({
           </TooltipContent>
         </Tooltip>
       )}
+      {/* The daemon's own sentence, for assistive tech, when the line shows a short summary in
+          its place (the coding agents'). */}
+      {metadata.description && summary ? (
+        <span id={fullDescriptionId} className="sr-only">
+          {metadata.description.replace(/`/g, '')}
+        </span>
+      ) : null}
     </div>
   );
 
@@ -147,6 +187,12 @@ export const ProviderCard = function ProviderCard({
       {catalogCopy.configured}
     </span>
   ) : null;
+  // The full description, as the row's action's (or toggle's) accessible description.
+  const fullDescriptionRef = metadata.description
+    ? summary
+      ? fullDescriptionId
+      : descriptionId
+    : undefined;
   const action = (
     <div data-testid={`provider-actions-${slug}`} className="br-row-actions flex items-center">
       <DefaultCardButtons
@@ -154,6 +200,7 @@ export const ProviderCard = function ProviderCard({
         onConfigure={onConfigure}
         onLaunch={onLaunch}
         isOnboardingPage={isOnboarding}
+        describedBy={fullDescriptionRef}
       />
     </div>
   );
@@ -186,6 +233,9 @@ export const ProviderCard = function ProviderCard({
           <button
             type="button"
             aria-expanded={expanded}
+            // The visible line is already part of the button's name; a short summary's full
+            // sentence is not, so it is the button's description.
+            aria-describedby={summary && metadata.description ? fullDescriptionId : undefined}
             onClick={onToggle}
             data-testid={`provider-row-toggle-${slug}`}
             className="br-provider-row-toggle cursor-pointer"
