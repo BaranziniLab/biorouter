@@ -297,12 +297,71 @@ export function arrangeSidebarChats(
   return groups.map((entry) => entry.group);
 }
 
+const arrangementCache = new WeakMap<readonly SessionSummary[], Map<string, SidebarChatGroup[]>>();
+
+/**
+ * {@link arrangeSidebarChats}, kept for as long as the list it arranged is held
+ * (R-28, vision V1-R2-2): a switch back to a view already drawn is a lookup,
+ * and so is the second call a development build makes. The key is the list
+ * itself (a fresh read, or any change to a row, is a new array), the view, the
+ * home folder and the local calendar day, the only part of `now` an
+ * arrangement reads (date buckets are calendar days).
+ *
+ * ⚠ The list must not be changed in place; React state never is. The groups it
+ * returns are shared between callers and must not be changed either.
+ */
+export function arrangeSidebarChatsCached(
+  sessions: readonly SessionSummary[],
+  view: SidebarChatView,
+  now: number = Date.now(),
+  options: ArrangeOptions = {}
+): SidebarChatGroup[] {
+  const today = new Date(now);
+  const key = [
+    view.groupBy,
+    view.sortBy,
+    options.homeDir ?? '',
+    view.groupBy === 'date' ? today.toDateString() : '',
+  ].join('\u0000');
+  let byView = arrangementCache.get(sessions);
+  if (!byView) {
+    byView = new Map();
+    arrangementCache.set(sessions, byView);
+  }
+  let arranged = byView.get(key);
+  if (!arranged) {
+    arranged = arrangeSidebarChats(sessions, view, now, options);
+    byView.set(key, arranged);
+  }
+  return arranged;
+}
+
 // ── Draw what can be seen ─────────────────────────────────────────────────
 
 /** Lines the list draws at first: more than a tall window shows. */
 export const SIDEBAR_RENDER_WINDOW = 60;
 /** Lines added each time the list is scrolled near its end. */
 export const SIDEBAR_RENDER_WINDOW_STEP = 120;
+/** One drawn line: a 28px row and the 2px between rows (`.br-nav-list`). */
+export const SIDEBAR_LINE_HEIGHT_PX = 30;
+/** Lines drawn past the list's bottom edge, so a scroll has rows to show. */
+export const SIDEBAR_RENDER_OVERSCAN = 12;
+
+/**
+ * Lines a view draws at first in a list `listHeight` px tall (R-28, vision
+ * V1-R2-2): what the list shows plus the overscan, and never more than
+ * {@link SIDEBAR_RENDER_WINDOW}. A view switch mounts every line it draws, so
+ * its cost grows with them: a 1440 x 900 window drew 60 lines to show 21 rows.
+ * A list not measured yet (0, or no layout at all) draws the full window; the
+ * list still grows on scroll, and a list its lines do not fill draws more.
+ */
+export function sidebarRenderWindow(listHeight: number): number {
+  if (!Number.isFinite(listHeight) || listHeight <= 0) return SIDEBAR_RENDER_WINDOW;
+  return Math.min(
+    SIDEBAR_RENDER_WINDOW,
+    Math.ceil(listHeight / SIDEBAR_LINE_HEIGHT_PX) + SIDEBAR_RENDER_OVERSCAN
+  );
+}
 
 /**
  * The first `budget` lines of a drawn list (R-28). A line is a group's header

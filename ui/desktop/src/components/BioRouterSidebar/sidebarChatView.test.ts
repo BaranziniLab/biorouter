@@ -5,6 +5,7 @@ import type { SessionSummary } from '../../api';
 import {
   applyHeldArrangement,
   arrangeSidebarChats,
+  arrangeSidebarChatsCached,
   clampSidebarChatView,
   DEFAULT_SIDEBAR_CHAT_VIEW,
   folderLabels,
@@ -16,6 +17,10 @@ import {
   SIDEBAR_CHAT_VIEW_STORAGE_KEY,
   linesToDrawRow,
   windowSidebarRows,
+  sidebarRenderWindow,
+  SIDEBAR_LINE_HEIGHT_PX,
+  SIDEBAR_RENDER_OVERSCAN,
+  SIDEBAR_RENDER_WINDOW,
   SIDEBAR_COLLAPSED_FOLDERS_MAX,
   SIDEBAR_GROUP_BY_OPTIONS,
   SIDEBAR_SORT_BY_OPTIONS,
@@ -465,5 +470,74 @@ describe('windowSidebarRows: draw what can be seen (R-28)', () => {
     expect(linesToDrawRow(entries, 'nope', header)).toBeNull();
     const drawn = windowSidebarRows(entries, linesToDrawRow(entries, 'b2', header) ?? 0, header);
     expect(drawn.entries[drawn.entries.length - 1].rows.map((row) => row.id)).toContain('b2');
+  });
+
+  it('draws what the list shows plus the overscan, never more than the full window', () => {
+    // The list heights a 700, 900, 1117 and 1440 px tall window gives the sidebar.
+    expect(sidebarRenderWindow(413)).toBe(14 + SIDEBAR_RENDER_OVERSCAN);
+    expect(sidebarRenderWindow(613)).toBe(21 + SIDEBAR_RENDER_OVERSCAN);
+    expect(sidebarRenderWindow(830)).toBe(28 + SIDEBAR_RENDER_OVERSCAN);
+    expect(sidebarRenderWindow(1153)).toBe(SIDEBAR_RENDER_WINDOW - 9);
+    expect(sidebarRenderWindow(5000)).toBe(SIDEBAR_RENDER_WINDOW);
+    // Never more than the list drew before, and still more than it shows (a
+    // list taller than the full window is filled by the list's own fill check).
+    for (const height of [1, 30, 300, 900, 1500]) {
+      const lines = sidebarRenderWindow(height);
+      expect(lines).toBeLessThanOrEqual(SIDEBAR_RENDER_WINDOW);
+      expect(lines * SIDEBAR_LINE_HEIGHT_PX).toBeGreaterThan(height);
+    }
+  });
+
+  it('draws the full window for a list not measured yet', () => {
+    expect(sidebarRenderWindow(0)).toBe(SIDEBAR_RENDER_WINDOW);
+    expect(sidebarRenderWindow(-1)).toBe(SIDEBAR_RENDER_WINDOW);
+    expect(sidebarRenderWindow(Number.NaN)).toBe(SIDEBAR_RENDER_WINDOW);
+  });
+});
+
+describe('arrangeSidebarChatsCached: a view seen before is a lookup (R-28)', () => {
+  const byName: SidebarChatView = { groupBy: 'none', sortBy: 'name' };
+  const byFolder: SidebarChatView = { groupBy: 'folder', sortBy: 'activity' };
+  const byDate = DEFAULT_SIDEBAR_CHAT_VIEW;
+  const options = { homeDir: HOME };
+
+  it('arranges exactly as arrangeSidebarChats does', () => {
+    const held = [...CHATS];
+    for (const view of [byName, byFolder, byDate]) {
+      expect(arrangeSidebarChatsCached(held, view, NOW, options)).toEqual(
+        arrangeSidebarChats(held, view, NOW, options)
+      );
+    }
+  });
+
+  it('hands back the same arrangement when switching back to a view, for the same list', () => {
+    const held = [...CHATS];
+    const first = arrangeSidebarChatsCached(held, byName, NOW, options);
+    const other = arrangeSidebarChatsCached(held, byFolder, NOW, options);
+    expect(other).not.toBe(first);
+    expect(arrangeSidebarChatsCached(held, { ...byName }, NOW, options)).toBe(first);
+    // Later the same day is the same arrangement, date groups included.
+    const dated = arrangeSidebarChatsCached(held, byDate, NOW, options);
+    expect(arrangeSidebarChatsCached(held, byDate, NOW + 60 * 60 * 1000, options)).toBe(dated);
+  });
+
+  it('arranges again for a new list, another home folder or another day', () => {
+    const held = [...CHATS];
+    const first = arrangeSidebarChatsCached(held, byName, NOW, options);
+    // A changed row arrives as a new array: its new name places it.
+    const renamed = held.map((session) =>
+      session.id === 'e' ? { ...session, name: 'Aardvark' } : session
+    );
+    const again = arrangeSidebarChatsCached(renamed, byName, NOW, options);
+    expect(again).not.toBe(first);
+    expect(again[0].sessions[0].id).toBe('e');
+    expect(arrangeSidebarChatsCached(held, byFolder, NOW, { homeDir: '/elsewhere' })).toEqual(
+      arrangeSidebarChats(held, byFolder, NOW, { homeDir: '/elsewhere' })
+    );
+    // The next day "Today" becomes "Yesterday".
+    const today = arrangeSidebarChatsCached(held, byDate, NOW, options);
+    const tomorrow = arrangeSidebarChatsCached(held, byDate, NOW + 24 * 60 * 60 * 1000, options);
+    expect(tomorrow).not.toBe(today);
+    expect(tomorrow[0].label).toBe('Yesterday');
   });
 });
