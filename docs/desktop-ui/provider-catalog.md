@@ -49,7 +49,7 @@ line is privacy information, so it is visible text and never an InfoTip
 ## The rows
 
 A provider is a row on the shared settings-row geometry (`ProviderCard.tsx`, `providers.css`): a name
-over a one-line description (truncated, with a focusable tooltip for the rest), "Configured" as a success
+over a one-line description (truncated, with a tooltip for the rest), "Configured" as a success
 dot and a word, and one action. There is no initial tile. The status and the action share one cell,
 Crew's `meta` recipe (`.br-row-actions-slot`): "Configured" at rest on the right edge, and the action
 (`Configure`, named for its row, as in "Configure Anthropic"; `Launch` for a configured provider on first
@@ -58,6 +58,17 @@ run) in its place while the row is hovered or holds focus, always shown without 
 1, V4-29): it used to keep the button on screen, which made it the one list in the app with permanent row
 actions on a hover-capable display. Its rows act on a click as Settings' do, so the button is the keyboard
 path and a shortcut for the mouse, never the only way in.
+
+Two first-run refinements (first-run vision round 1):
+
+- **An expandable row on first run has no row action** (FR-R1-5). Its open panel holds the primary for
+  the same choice ("Use Claude Code", "Download and start", "Use Ollama", "Connect"), so a hover "Launch"
+  beside it was a second verb for one decision. "Configured" stays its resting status and no longer
+  gives way under the pointer. Settings keeps the action on its expandable rows.
+- **A description is a Tab stop only while it is cut off** (FR-R1-9), measured as text wider than its
+  box and re-measured on resize; the row's action (or an agent's toggle) is described by the full text,
+  so a screen reader hears it without the stop. Every description used to be a stop, so the keyboard
+  walk was row, description, action for every provider.
 
 Three details keep one list reading as one list (V4-26):
 
@@ -138,7 +149,7 @@ plain input, never the shared `Select`'s typing input that the shared rule exclu
 ## The Llama Server card's model picker is the shared select
 
 `LlamaServerInlineCard` (the first row of the Local tab, open by default in onboarding, and the expanded row in
-Settings) picks its model with `ui/Select`, the same select the Switch models and Lead/worker dialogs use. It
+Settings) picks its model with `ui/Select` inside the shared `Field`, the same select the Switch models and Lead/worker dialogs use. It
 was a native `<select>` until vision round 4 (V4-R4-3), which drew the OS chevron and opened the OS popup, the
 only ones in the app. The options are the same strings as before ("Gemma 4 E4B · 9.6 GB · Needs download"), the
 label still points at the field (`for` and `inputId` are both `llamacpp-model-select`), and the menu is portalled
@@ -148,6 +159,16 @@ not from a `value`. `LlamaServerInlineCard.select.browser.test.tsx` measures the
 the menu (one row of at least 32px per model, a trailing check on the chosen one) and the disabled step in
 Chromium, light and dark. The two other native selects in the tree, `components/parameter/NativeSelect.tsx` and
 the enum branch of `components/ui/JsonSchemaForm.tsx`, are not this card's and were left alone.
+
+Under the select the panel says one line, the Settings row's facts line (`settings/models/localModelFacts.ts`,
+read by both surfaces: speed, size, context window, and "Large for this Mac" only when the daemon reports the
+model above this machine's recommendation), as the closed summary of a "Details" disclosure. Details holds the
+model's description, the download note, the speed hint, the fit sentence, any memory shortfall, the Ollama tag,
+the fallback GGUF, the model file and the model store, as sans labels over values, the machine values in mono at
+12px; no box. Then the one action on the 32px rung: "Start", "Download and start (9.6 GB)" or "Resume and start".
+A status shows only with news (running, warm-up needed, binary missing). It used to be a box of seven lines and an
+unconditional "above the 16 GB laptop tier" warning that fired on the model the app recommends for a 128 GiB
+machine, and it pushed the only action below the fold (first-run vision FR-R1-3, FR-R1-4, FR-S-2).
 
 ## How the Configure dialog names a field
 
@@ -223,8 +244,9 @@ start at y=32 under a separate 32px strip, which made 76px of chrome where Setti
 The mouse's Back button still leaves the page: `PageHeader` calls the shared `useMouseBackButton` for any
 band that has an `onBack`, so the page carries no listener of its own.
 
-First run's setup forms (`InstitutionalSetupCard`, `CommercialSetupCard`) sit on the rows' 12px text inset
-(`.br-provider-inset`), so a field starts where a row's name does and ends where a row's button does.
+First run's setup forms sit on the rows' 12px text inset (an open row's panel, `.br-provider-panel`, and
+the detector's `.br-provider-inset`), so a field starts where a row's name does and ends where a row's button
+does.
 
 A section is a `SettingSection`: a caps heading with, where there is a reason to give, an InfoTip beside
 it (`OrderedProviderSection.help`: the agents' subscription billing, a gateway with no named
@@ -328,22 +350,32 @@ on their machine.
 Each row opens **in place** into that provider's own setup UI, one at a time, with Llama
 Server open by default.
 
-The setup bodies are not duplicated. Each onboarding card gained an
-`OnboardingCardShell` — `chrome="card"` for the standalone card, `chrome="bare"` for the
-catalog row — around one body, and the coding-agent card's entire state machine moved into
-`onboarding/codingAgentControls.tsx`, which the card and the catalog both render. A fix to
-the `signed_in_with_api_key` copy therefore cannot land on one screen and not the other.
+The setup bodies are not duplicated. Each one is a plain column the catalog opens under its
+row (the standalone card chrome, `OnboardingCardShell` and its section label, and the unused
+`CodingAgentInlineCard` were deleted, FR-S-12), and the coding agents' whole state machine is
+`onboarding/codingAgentControls.tsx`, which the catalog and the configure dialog's recovery
+panel both render (its suite is `codingAgentControls.test.tsx`). A fix to the
+`signed_in_with_api_key` copy therefore cannot land on one screen and not the other. The
+words of first run are in `onboarding/copy.ts`, which the tests import.
 
-Two setup surfaces are not per-row:
-
-- The **institutional** form (`InstitutionalSetupCard`) covers a family of gateways behind
-  its own Azure/Bedrock toggle, so it renders once under an institution section — and only
-  where it actually configures one of that section's providers, which the catalog asks the
-  card itself via `INSTITUTIONAL_SETUP_PROVIDER_IDS`. A form written for UCSF's Versa
-  endpoints must never appear under another institution's heading.
+- **An institutional gateway's row is the selector** (FR-R1-6, FR-S-6). A Versa row that is not
+  set up opens `InstitutionalSetupCard` in place for its own gateway (`INSTITUTIONAL_SETUP_FLAVOR`,
+  the form's own table of the rows it sets up); a configured one is chosen on a click like any
+  configured row. The tab used to list the two rows (which opened the Configure dialog) and, under
+  them, a second unheaded form whose segmented switch chose between the same two. A form written
+  for UCSF's Versa endpoints must never open from another institution's gateway.
 - The **paste-a-key detector** (`CommercialSetupCard`) sits at the top of the API-provider
   section: it is the fastest path for someone who already holds a key and does not know
-  which of twenty-odd rows is theirs.
+  which of twenty-odd rows is theirs. It is a labelled field ("API key", with what it detects
+  in the label's InfoTip) and a "Detect provider" button that stays secondary until there is
+  a key (FR-S-5); a failure is the Note alone.
+- **A coding-agent row's second line is short** ("Your Claude subscription · no API key", from
+  `AGENT_SUBSCRIPTION`); the daemon's long sentence, which the row cut mid-word, stays its
+  tooltip and accessible description (FR-R1-8). Each auth state says one instruction with its
+  reason in an InfoTip beside it, then the copyable command and the actions; a ready agent's
+  plan and account sit on its version line (FR-S-3).
+- Every status line on first run is the one `StatusPill` on the shared `StatusDot` (FR-S-10), and
+  every panel action is on the 32px rung, never stretched to the panel's width (FR-R1-11, FR-S-11).
 
 The coding-agent rows are accordions in **both** modes. Their content is a live auth status
 and the guidance for it, which a modal cannot carry and which a settings user needs exactly
@@ -436,7 +468,9 @@ renders normally.
 | `ui/desktop/src/components/settings/providers/copy.ts`, `providers.css` | The catalog's words (tests import them) and its row geometry |
 | `ui/desktop/src/components/settings/providers/ProviderSettingsPage.tsx` | The `configure-providers` and `welcome` routes |
 | `ui/desktop/src/components/ProviderGuard.tsx` | The first-run page (its band, the catalog under it) and the way past it |
-| `ui/desktop/src/components/onboarding/OnboardingCardShell.tsx` | `card` / `bare` chrome around one body |
+| `ui/desktop/src/components/onboarding/copy.ts` | The words of first run (tests import them) |
+| `ui/desktop/src/components/onboarding/StatusPill.tsx` | Every first-run status line, on the shared `StatusDot` |
+| `ui/desktop/src/components/settings/models/localModelFacts.ts` | A local model's state word and facts line, for Settings and the Llama Server panel |
 | `ui/desktop/src/components/onboarding/onboarding.css` | The first-run boxes and the band's wordmark |
 | `ui/desktop/src/components/onboarding/codingAgentControls.tsx` | The coding-agent probe, guidance and connect write |
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
