@@ -5,10 +5,8 @@ import { uiCopy } from '../ui/copy';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { isCapabilityExtension } from '../settings/capabilities/capabilities';
 import { toastService } from '../../toasts';
-import {
-  formatExtensionName,
-  isBuiltInExtension,
-} from '../settings/extensions/subcomponents/ExtensionList';
+import { isBuiltInExtension } from '../settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
@@ -41,6 +39,8 @@ export interface ExtensionPicker {
 
 export interface ExtensionRow {
   ext: FixedExtensionEntry;
+  /** The name a person reads, as the catalogue spells it (see `extensionDisplayName`). */
+  title: string;
   pairingRefused: boolean;
   lockedByCrew: boolean;
   disabled: boolean;
@@ -218,7 +218,7 @@ export function useExtensionPicker(
         } catch {
           toastService.error({
             title: EXTENSIONS_COPY.toggleErrorTitle,
-            msg: EXTENSIONS_COPY.toggleFailed(formatExtensionName(name), nextEnabled),
+            msg: EXTENSIONS_COPY.toggleFailed(extensionDisplayName(extensionConfig), nextEnabled),
           });
           return appliedState;
         }
@@ -296,19 +296,37 @@ export function useExtensionPicker(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);
 
-  const filteredExtensions = useMemo(() => {
-    return extensionsList.filter((ext) => {
-      const query = searchQuery.toLowerCase();
-      return (
-        ext.name.toLowerCase().includes(query) ||
-        (ext.description && ext.description.toLowerCase().includes(query))
-      );
-    });
-  }, [extensionsList, searchQuery]);
+  // The name a person reads for each extension, asked once. It is the one resolver every other
+  // surface asks (the Extensions page, the load notice, History), so `cdwagent` is `CDWAgent`
+  // here as there and not the key title-cased. The lookup walks the marketplace snapshot, so the
+  // search and the sort below read this map instead of asking per comparison.
+  const titles = useMemo(
+    () =>
+      new Map(extensionsList.map((ext): [string, string] => [ext.name, extensionDisplayName(ext)])),
+    [extensionsList]
+  );
+  const titleOf = useCallback(
+    (ext: FixedExtensionEntry) => titles.get(ext.name) ?? ext.name,
+    [titles]
+  );
 
+  // A person searches for what the row says, so the displayed name matches as well as the key.
+  const filteredExtensions = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return extensionsList.filter(
+      (ext) =>
+        ext.name.toLowerCase().includes(query) ||
+        titleOf(ext).toLowerCase().includes(query) ||
+        (ext.description && ext.description.toLowerCase().includes(query))
+    );
+  }, [extensionsList, searchQuery, titleOf]);
+
+  // In the order the names read, as the Extensions page lists them; the key breaks a tie.
   const sortedExtensions = useMemo(() => {
-    return [...filteredExtensions].sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredExtensions]);
+    return [...filteredExtensions].sort(
+      (a, b) => titleOf(a).localeCompare(titleOf(b)) || a.name.localeCompare(b.name)
+    );
+  }, [filteredExtensions, titleOf]);
 
   /**
    * The rows "Enable all" may actually act on.
@@ -489,13 +507,14 @@ export function useExtensionPicker(
         const lockedByCrew = crewLocked(ext);
         return {
           ext,
+          title: titleOf(ext),
           pairingRefused,
           lockedByCrew,
           disabled: bulkInFlight || pairingRefused || lockedByCrew,
           pending: pendingExtensionNames.has(ext.name),
         };
       }),
-    [sortedExtensions, pairingTier, crewLocked, bulkInFlight, pendingExtensionNames]
+    [sortedExtensions, titleOf, pairingTier, crewLocked, bulkInFlight, pendingExtensionNames]
   );
 
   const bulk =
@@ -543,10 +562,10 @@ export function ExtensionsPanel({
       emptyText={picker.query ? EXTENSIONS_COPY.noMatch : EXTENSIONS_COPY.empty}
       inputRef={inputRef}
     >
-      {picker.rows.map(({ ext, pairingRefused, lockedByCrew, disabled, pending }) => (
+      {picker.rows.map(({ ext, title, pairingRefused, lockedByCrew, disabled, pending }) => (
         <PickerRow
           key={ext.name}
-          name={formatExtensionName(ext.name)}
+          name={title}
           checked={ext.enabled}
           disabled={disabled}
           busy={pending}

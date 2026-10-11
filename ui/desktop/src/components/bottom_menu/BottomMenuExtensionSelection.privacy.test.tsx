@@ -74,8 +74,9 @@ vi.mock('../ConfigContext', () => ({
   }),
 }));
 
+// Only the built-in predicate is stubbed: the NAME a row reads is the real resolver's, as in
+// the sibling test file.
 vi.mock('../settings/extensions/subcomponents/ExtensionList', () => ({
-  formatExtensionName: (name: string) => name,
   isBuiltInExtension: () => false,
 }));
 
@@ -140,9 +141,9 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     await openMenu();
 
     expect(screen.getAllByRole('option')).toHaveLength(2);
-    expect(screen.getByText('ucsfomopagent')).toBeInTheDocument();
+    expect(screen.getByText('UCSFOMOPAgent')).toBeInTheDocument();
 
-    const item = screen.getByText('ucsfomopagent').closest('[role="option"]')!;
+    const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
     expect(item).toHaveAttribute('aria-disabled', 'true');
     // The refusal is a visible line on the row, never tooltip-only (principle 2).
     expect(item).toHaveTextContent(EXTENSIONS_COPY.pairingRefused);
@@ -156,7 +157,7 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
 
-    const item = screen.getByText('example').closest('[role="option"]')!;
+    const item = screen.getByText('Example').closest('[role="option"]')!;
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
     expect(item).not.toHaveTextContent(/public model/i);
   });
@@ -166,7 +167,7 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="private" />);
     await openMenu();
 
-    const item = screen.getByText('ucsfomopagent').closest('[role="option"]')!;
+    const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
     expect(item).not.toHaveTextContent(/public model/i);
   });
@@ -192,7 +193,7 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
 
-    const item = screen.getByText('ucsfomopagent').closest('[role="option"]')!;
+    const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
     expect(item).not.toHaveTextContent(/public model/i);
   });
@@ -206,7 +207,7 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
 
-    const item = screen.getByText('ucsfomopagent').closest('[role="option"]')!;
+    const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
   });
 
@@ -217,7 +218,7 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
 
-    const item = screen.getByText('ucsfomopagent').closest('[role="option"]')!;
+    const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
     expect(item).not.toHaveAttribute('aria-disabled', 'true');
   });
 });

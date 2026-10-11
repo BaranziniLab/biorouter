@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExtensionsPanel, useExtensionPicker } from './BottomMenuExtensionSelection';
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
+import { toastService } from '../../toasts';
 
 /**
  * The extensions list as the Tools chip holds it (spec 3.7): the hook lives for
@@ -33,6 +34,8 @@ function toggleList() {
 
 const mocks = vi.hoisted(() => ({
   overrides: new Map<string, boolean>(),
+  /** Entries a test adds to the config's list, on top of the fixture below. */
+  extraExtensions: [] as Array<Record<string, unknown>>,
   getSessionExtensions: vi.fn(async () => ({ data: { extensions: [] } })),
   addToAgent: vi.fn(async (): Promise<void> => undefined),
   removeFromAgent: vi.fn(async (): Promise<void> => undefined),
@@ -121,12 +124,14 @@ vi.mock('../ConfigContext', () => ({
         args: [],
         enabled: true,
       },
+      ...mocks.extraExtensions,
     ],
   }),
 }));
 
+// Only the built-in predicate is stubbed: the NAME a row reads is the real resolver's
+// (`extensionDisplayName`), so these tests see what a person sees.
 vi.mock('../settings/extensions/subcomponents/ExtensionList', () => ({
-  formatExtensionName: (name: string) => name,
   isBuiltInExtension: () => false,
 }));
 
@@ -158,6 +163,7 @@ vi.mock('../../toasts', () => ({
 describe('BottomMenuExtensionSelection', () => {
   beforeEach(() => {
     mocks.overrides.clear();
+    mocks.extraExtensions.length = 0;
     vi.clearAllMocks();
     // `clearAllMocks` clears CALLS, not implementations, so a `mockResolvedValue`
     // set by one test would otherwise be the starting state of the next.
@@ -206,7 +212,7 @@ describe('BottomMenuExtensionSelection', () => {
     expect(trigger).not.toHaveAttribute('title');
     fireEvent.click(trigger);
 
-    const toggle = await screen.findByRole('option', { name: 'example' });
+    const toggle = await screen.findByRole('option', { name: 'Example' });
     expect(toggle).toHaveAttribute('aria-selected', 'false');
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
@@ -215,7 +221,7 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() => expect(screen.queryByRole('option')).not.toBeInTheDocument());
     fireEvent.click(trigger);
 
-    const reopenedToggle = await screen.findByRole('option', { name: 'example' });
+    const reopenedToggle = await screen.findByRole('option', { name: 'Example' });
     expect(reopenedToggle).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(reopenedToggle);
     await waitFor(() => expect(reopenedToggle).toHaveAttribute('aria-selected', 'false'));
@@ -330,7 +336,7 @@ describe('BottomMenuExtensionSelection', () => {
     );
 
     toggleList();
-    fireEvent.click(await screen.findByRole('option', { name: 'example' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Example' }));
 
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument()
@@ -365,7 +371,7 @@ describe('BottomMenuExtensionSelection', () => {
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     toggleList();
 
-    const example = await screen.findByRole('option', { name: 'example' });
+    const example = await screen.findByRole('option', { name: 'Example' });
     expect(example).toHaveAttribute('aria-selected', 'false');
     await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalledTimes(2));
     const callsBeforeChange = mocks.getSessionExtensions.mock.calls.length;
@@ -514,7 +520,7 @@ describe('BottomMenuExtensionSelection', () => {
     const { toastService } = await import('../../toasts');
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     toggleList();
-    fireEvent.click(await screen.findByRole('option', { name: 'example' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Example' }));
     await waitFor(() => expect(mocks.addToAgent).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: /^(Enable|Disable) all/ }));
     await waitFor(() => expect(mocks.getSessionExtensions).toHaveBeenCalled());
@@ -530,7 +536,7 @@ describe('BottomMenuExtensionSelection', () => {
   it('describes a row without renaming it', async () => {
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     toggleList();
-    const example = await screen.findByRole('option', { name: 'example' });
+    const example = await screen.findByRole('option', { name: 'Example' });
     expect(example).toHaveAttribute('aria-description', 'Example extension');
     expect(example.querySelector('[title]')).toBeNull();
     expect(example).not.toHaveAttribute('title');
@@ -542,7 +548,7 @@ describe('BottomMenuExtensionSelection', () => {
     const field = await screen.findByPlaceholderText(EXTENSIONS_COPY.search);
     field.focus();
     fireEvent.change(field, { target: { value: 'spo' } });
-    expect(screen.getAllByRole('option').map((row) => row.textContent)).toEqual(['spoke']);
+    expect(screen.getAllByRole('option').map((row) => row.textContent)).toEqual(['Spoke']);
     expect(field).toHaveFocus();
     fireEvent.change(field, { target: { value: 'zzz' } });
     expect(screen.getByText(EXTENSIONS_COPY.noMatch)).toBeInTheDocument();
@@ -561,9 +567,9 @@ describe('BottomMenuExtensionSelection', () => {
     fireEvent.click(trigger);
 
     expect(await screen.findAllByRole('option')).toHaveLength(3);
-    expect(screen.getByText('example')).toBeInTheDocument();
-    expect(screen.getByText('spoke')).toBeInTheDocument();
-    expect(screen.getByText('notetaker')).toBeInTheDocument();
+    expect(screen.getByText('Example')).toBeInTheDocument();
+    expect(screen.getByText('Spoke')).toBeInTheDocument();
+    expect(screen.getByText('Notetaker')).toBeInTheDocument();
     expect(screen.queryByText('autovisualiser')).not.toBeInTheDocument();
     expect(screen.queryByText('code_execution')).not.toBeInTheDocument();
     expect(screen.queryByText('chatrecall')).not.toBeInTheDocument();
@@ -578,7 +584,7 @@ describe('BottomMenuExtensionSelection', () => {
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
     toggleList();
 
-    const toggle = await screen.findByRole('option', { name: 'example' });
+    const toggle = await screen.findByRole('option', { name: 'Example' });
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
     fireEvent.click(toggle);
@@ -590,5 +596,89 @@ describe('BottomMenuExtensionSelection', () => {
 
     await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'false'));
+  });
+
+  /**
+   * Principle 10: one extension, one name. The composer used to title-case the config key, so an
+   * installed CDWAgent read `Cdwagent` here while the Extensions page and the marketplace said
+   * CDWAgent (vision V3-R2-6). The fixture lists the two private agents the marketplace names, and
+   * one the marketplace has never heard of, so both halves of the resolver are on screen.
+   */
+  describe('the name a row reads', () => {
+    const agent = (name: string, description: string) => ({
+      type: 'stdio',
+      name,
+      description,
+      cmd: name,
+      args: [],
+      enabled: false,
+    });
+
+    it('is the catalogue spelling, as on the Extensions page, not the key title-cased', async () => {
+      mocks.extraExtensions.push(
+        agent('cdwagent', 'Clinical data warehouse'),
+        agent('spokeagent', 'Knowledge graph'),
+        agent('my-lab_tool', 'Somebody’s own server')
+      );
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+
+      expect(await screen.findByRole('option', { name: 'CDWAgent' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'SPOKEAgent' })).toBeInTheDocument();
+      // Nothing the catalogue does not know is guessed at: the key read as words.
+      expect(screen.getByRole('option', { name: 'My Lab Tool' })).toBeInTheDocument();
+      expect(screen.queryByText('Cdwagent')).not.toBeInTheDocument();
+      expect(screen.queryByText('Spokeagent')).not.toBeInTheDocument();
+    });
+
+    it('is in the toggle failure toast, the same name as the row', async () => {
+      mocks.extraExtensions.push(agent('cdwagent', 'Clinical data warehouse'));
+      mocks.addToAgent.mockRejectedValueOnce(new Error('refused'));
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+
+      fireEvent.click(await screen.findByRole('option', { name: 'CDWAgent' }));
+
+      await waitFor(() => expect(toastService.error).toHaveBeenCalledTimes(1));
+      expect(toastService.error).toHaveBeenCalledWith({
+        title: EXTENSIONS_COPY.toggleErrorTitle,
+        msg: EXTENSIONS_COPY.toggleFailed('CDWAgent', true),
+      });
+    });
+
+    it('is what the list is searched by, beside the key and the description', async () => {
+      // `playwrightagent` is `Playwright Agent` in the catalogue: a person who types the words
+      // they read finds it, though the key has no space and the description never says them.
+      mocks.extraExtensions.push(agent('playwrightagent', 'Browser automation'));
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      const field = await screen.findByPlaceholderText(EXTENSIONS_COPY.search);
+
+      fireEvent.change(field, { target: { value: 'playwright agent' } });
+      expect(screen.getAllByRole('option').map((row) => row.textContent)).toEqual([
+        'Playwright Agent',
+      ]);
+      // The key still finds it, as it always did.
+      fireEvent.change(field, { target: { value: 'playwrightagent' } });
+      expect(screen.getAllByRole('option').map((row) => row.textContent)).toEqual([
+        'Playwright Agent',
+      ]);
+    });
+
+    it('is the order the list runs in, as the Extensions page sorts it', async () => {
+      // By key `playwrightaardvark` comes first ('a' before 'g'); by the names a person reads,
+      // `Playwright Agent` does (a space sorts before a letter).
+      mocks.extraExtensions.push(
+        agent('playwrightaardvark', 'Not in the catalogue'),
+        agent('playwrightagent', 'Browser automation')
+      );
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      await screen.findAllByRole('option');
+
+      const order = screen.getAllByRole('option').map((row) => row.textContent);
+      expect(order.indexOf('Playwright Agent')).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf('Playwright Agent')).toBeLessThan(order.indexOf('Playwrightaardvark'));
+    });
   });
 });
