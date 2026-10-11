@@ -63,6 +63,18 @@ every row already held. A rename, a removal or a privacy change that lands durin
 to the buffer too, and a refresh asked for during the read runs after it. A page asks for no more
 rows than the cap leaves room for, so the read stops at 2,000 exactly.
 
+### Keeping the list current
+
+The list re-reads its head (the first 10 rows, or 50 in a non-default view) when a turn finishes,
+when a chat is created, diverged, deleted or imported, when the person opens a different chat
+(`openSessionId`, read 250 ms later and again after 2 s), when the window comes back to the front,
+and when the session-meta channel reports a row rewritten by something else. The last three exist
+because opening or resuming a chat raises its `updated_at` on the daemon and announces nothing: the
+sidebar kept a chat under September while History, fetched fresh, listed it under Today (round 1,
+V1-M8). A burst of these is one request (the 250 ms debounce), and the rows apply under the pointer
+hold, so a refresh never moves a row beneath a hovering pointer. Whether opening a chat should raise
+`updated_at` at all is the daemon's call and is not changed here.
+
 ### Drawing the list
 
 The list draws the first 60 lines of the arranged list (a header, a row and a "Show more" are one
@@ -158,7 +170,7 @@ tab stop, so Tab reaches them from the row.
 | File | Holds |
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows` |
-| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap |
+| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; the head re-read on a new open chat, on focus and on a meta change |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases |

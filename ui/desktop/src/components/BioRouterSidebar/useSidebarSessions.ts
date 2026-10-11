@@ -3,6 +3,7 @@ import { listSidebarSessions, type SessionSummary } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { subscribeSessionListChanges, subscribeSessionRemoved } from '../../utils/sessionListCache';
+import { SESSION_META_CHANGED_EVENT } from '../../utils/sessionMetaSubscription';
 import {
   settleRowsReadDuringFetch,
   subscribeSessionRowChanges,
@@ -18,6 +19,13 @@ export const SIDEBAR_SESSION_FULL_PAGE_SIZE = 50;
  * the list arrives in ONE request (R-28).
  */
 export const SIDEBAR_SESSION_LOAD_ALL_CAP = 2_000;
+
+/**
+ * How long after a chat is opened the list reads its head a second time. The
+ * first read follows the open by 250 ms; the daemon stamps the chat's
+ * `updated_at` when the resume binds its model, which can land after that.
+ */
+const OPEN_REFRESH_FOLLOW_UP_MS = 2_000;
 
 export interface SidebarSessionsOptions {
   /**
@@ -38,6 +46,14 @@ export interface SidebarSessionsOptions {
    * a minute and a half for 2,000 chats.
    */
   loadAll?: boolean;
+  /**
+   * The chat the person is in. Opening or resuming a chat raises its
+   * `updated_at` on the daemon without announcing a list change, so a list that
+   * only re-read on a finished turn or a new chat put it under September while
+   * History, fetched fresh, put it under Today (round 1, V1-M8). A change of
+   * this re-reads the head. Leaving for a page that is not a chat reads nothing.
+   */
+  openSessionId?: string | null;
 }
 
 export interface SidebarSessionsState {
@@ -73,6 +89,7 @@ export default function useSidebarSessions(
   options: SidebarSessionsOptions = {}
 ): SidebarSessionsState {
   const loadAll = options.loadAll ?? false;
+  const openSessionId = options.openSessionId ?? null;
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -164,6 +181,10 @@ export default function useSidebarSessions(
     }
   }, []);
 
+  // The debounced head refresh, for the effects that are not the subscriptions
+  // below (a change of the open chat).
+  const scheduleRefreshRef = useRef<() => void>(() => {});
+
   useEffect(() => {
     void loadPage(true);
 
@@ -175,6 +196,7 @@ export default function useSidebarSessions(
         void loadPage(true);
       }, 250);
     };
+    scheduleRefreshRef.current = scheduleRefresh;
 
     const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
       const rename = (rows: SessionSummary[]) =>
@@ -247,8 +269,20 @@ export default function useSidebarSessions(
       setSessions(next);
     });
 
+    // Other writers raise `updated_at` without announcing a list change: a chat
+    // resumed in another window, a row rewritten by the CLI or a schedule (the
+    // session-meta channel reports those for the chats this window has open),
+    // and this window coming back to the front. A head page is cheap (a 10 to 50
+    // row read), and `scheduleRefresh` coalesces a burst of them into one.
+    const onVisible = () => {
+      if (!document.hidden) scheduleRefresh();
+    };
+
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
+    window.addEventListener(SESSION_META_CHANGED_EVENT, scheduleRefresh);
+    window.addEventListener('focus', scheduleRefresh);
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       unsubscribeNames();
@@ -258,8 +292,26 @@ export default function useSidebarSessions(
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);
+      window.removeEventListener(SESSION_META_CHANGED_EVENT, scheduleRefresh);
+      window.removeEventListener('focus', scheduleRefresh);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [loadPage]);
+
+  // A chat opened (or switched to) raises its `updated_at` on the daemon. Read
+  // the head again now, and once more after the resume has had time to finish.
+  const openedRef = useRef(openSessionId);
+  useEffect(() => {
+    if (openedRef.current === openSessionId) return;
+    openedRef.current = openSessionId;
+    if (!openSessionId) return;
+    scheduleRefreshRef.current();
+    const followUp = window.setTimeout(
+      () => scheduleRefreshRef.current(),
+      OPEN_REFRESH_FOLLOW_UP_MS
+    );
+    return () => window.clearTimeout(followUp);
+  }, [openSessionId]);
 
   const loadMore = useCallback(() => {
     void loadPage(false);

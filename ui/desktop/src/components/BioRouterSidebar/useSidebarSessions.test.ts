@@ -8,6 +8,7 @@ import useSidebarSessions, {
 } from './useSidebarSessions';
 import { notifySessionListChanged } from '../../utils/sessionListCache';
 import { announceSessionName } from '../../utils/sessionNameSync';
+import { SESSION_META_CHANGED_EVENT } from '../../utils/sessionMetaSubscription';
 
 const mocks = vi.hoisted(() => ({
   listSidebarSessions: vi.fn(),
@@ -144,6 +145,97 @@ describe('useSidebarSessions', () => {
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
+  });
+});
+
+/**
+ * Round 1, V1-M8. Opening a chat raises its `updated_at` on the daemon and
+ * announces nothing, so the sidebar kept the chat under September while History
+ * (a fresh fetch) listed it under Today.
+ */
+describe('the head is read again when something else raised a chat', () => {
+  const headPage = (name: string) => ({
+    data: {
+      sessions: [
+        { ...makeSummary(0), name },
+        ...Array.from({ length: 9 }, (_, i) => makeSummary(i + 1)),
+      ],
+      has_more: false,
+      next_cursor: null,
+    },
+  });
+
+  it('re-reads on a change of the open chat, now and once more after the resume', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      mocks.listSidebarSessions.mockResolvedValue(headPage('First'));
+      const { rerender } = renderHook(({ id }) => useSidebarSessions({ openSessionId: id }), {
+        initialProps: { id: null as string | null },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(1);
+
+      // Opening a chat: the head is read 250 ms later and again at 2 s.
+      rerender({ id: 'session-3' });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3);
+
+      // The same chat again reads nothing, and neither does leaving for a page.
+      rerender({ id: 'session-3' });
+      rerender({ id: null });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not read twice for the chat the sidebar mounts with', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      mocks.listSidebarSessions.mockResolvedValue(headPage('First'));
+      renderHook(() => useSidebarSessions({ openSessionId: 'session-3' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-reads when the window comes back to the front and when a chat row is rewritten', async () => {
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce(headPage('First'))
+      .mockResolvedValueOnce(headPage('After focus'))
+      .mockResolvedValueOnce(headPage('After meta'));
+    const { result } = renderHook(() => useSidebarSessions());
+    await waitFor(() => expect(result.current.sessions[0]?.name).toBe('First'));
+
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(result.current.sessions[0].name).toBe('After focus'), {
+      timeout: 1_000,
+    });
+
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent(SESSION_META_CHANGED_EVENT, { detail: { sessionIds: ['session-0'] } })
+      )
+    );
+    await waitFor(() => expect(result.current.sessions[0].name).toBe('After meta'), {
+      timeout: 1_000,
+    });
+    expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3);
   });
 });
 

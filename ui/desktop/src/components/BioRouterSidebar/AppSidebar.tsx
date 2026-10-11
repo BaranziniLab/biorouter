@@ -171,10 +171,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const [chatView, setChatView] = useSidebarChatView();
   // Any view but the default sorts or groups the whole list, so it reads every
   // page first (spec 3.4 "Paging"); the default keeps lazy 10-row paging.
+  const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const { sessions, hasMore, isLoading, isLoadingAll, loadMore } = useSidebarSessions({
     loadAll: !isDefaultSidebarChatView(chatView),
+    openSessionId: currentSessionId,
   });
-  const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const runningSessionIds = useMemo(
     () =>
       new Set(runningChats.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId)),
@@ -313,9 +314,9 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           className="br-nav-row no-drag"
         >
           {/* Icons take --sidebar-icon rather than inheriting the label's ink.
-              In Parchment that token passes through to --sidebar-foreground, so
-              nothing changes there; Alma Mater points it at UCSF teal, which is
-              where the brand actually lives in that theme. */}
+              Every family passes its label ink through (the accent is held for
+              the active rail), and the token stays per family so
+              check-contrast.mjs can assert it on every row fill. */}
           <IconComponent className="br-nav-row-icon" />
           <span className="br-nav-row-label">{entry.label}</span>
           {isAction ? (
