@@ -98,7 +98,7 @@ export const ProviderCard = function ProviderCard({
             <p
               tabIndex={0}
               data-testid={`provider-description-${slug}`}
-              className="cursor-default truncate rounded-element text-supporting text-text-muted biorouter-focus-surface"
+              className="-mx-1 -my-0.5 cursor-default truncate rounded-element px-1 py-0.5 text-supporting text-text-muted biorouter-focus-surface"
             >
               <InlineCodeText text={metadata.description} />
             </p>

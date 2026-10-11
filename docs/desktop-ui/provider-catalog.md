@@ -75,7 +75,18 @@ An open agent's panel keeps its buttons at the `sm` size and shows the CLI's ver
 CLI lives is a path, so it is the line's tooltip (principle 10), not a mono line on the row.
 
 An accordion row (the coding agents, and the local providers on first run) and its panel are two
-siblings in the list, never one wrapper, because the list's hairline recipe drops the last child's rule.
+siblings in the list, never one wrapper: the shared rows block reads `:last-child`, and a wrapper made
+every row its parent's last child.
+
+**Rows are told apart by their air and a fill, not by a hairline** (owner message 13, R-27, design.md
+9.11). A provider row is a two-line block with 8px above and below, so the rule the shared rows recipe
+draws under every row is switched off for the catalog (`.br-provider-catalog`, `providers.css`; the 1px
+transparent edge stays, so nothing moves). The pointer washes the row with a fill (`--background-fill`,
+the strong step on the first-run ground) and the row's own button steps back one ground, to
+`--background-default`: the shared hover wash composites to the rest fill's value on the canvas, so the
+Configure button, resting on that same fill, used to lose its box the moment the pointer reached its row
+(measured in Chromium, `firstRunFill.browser.test.tsx`). Settings does the same for its rows
+(`settings.css`); the two are separate because the provider page is not inside `.br-settings-page`.
 
 ## The page band
 
@@ -90,7 +101,8 @@ Both routes are **outside the app shell** (`routeOwnsTopBand`), so `App.tsx`'s 3
 stays over the top of the page and the band starts below it, clear of the window controls
 (`.br-provider-page-strip`). The shared band's `--sidebar` ground is there to meet the sidebar's
 titlebar band, and this page has no sidebar, so the band is drawn on the page's own ground. The mouse's
-Back button still leaves the page (`useMouseBackButton`, the listener `ui/BackButton` carried).
+Back button still leaves the page: `PageHeader` calls the shared `useMouseBackButton` for any band that
+has an `onBack`, so the page carries no listener of its own.
 
 First run's setup forms (`InstitutionalSetupCard`, `CommercialSetupCard`) sit on the rows' 12px text inset
 (`.br-provider-inset`), so a field starts where a row's name does and ends where a row's button does.
@@ -103,6 +115,26 @@ institution?" is one quiet line under the Institutional tab with the answer in a
 The taxonomy strings themselves are the design of record in
 [`docs/security/privacy-tiers.md`](../security/privacy-tiers.md) §14.5 and are pinned by
 `ProviderCatalog.privacy.test.tsx`.
+
+## First run's ground and boxes
+
+`ProviderGuard` paints first run on `--background-muted` (the boot splash hands off to it), where the
+rest fill IS the ground (1.00:1): a field, a select or a secondary button resting on `--background-fill`
+there would have no box at all. The page root carries `.br-first-run-ground` (`onboarding/onboarding.css`),
+which sets the shared private control ground once, to `--background-fill-strong` (1.10:1 off the page,
+design.md 9.11 rule 2), so every filled control inside follows with no class of its own. The two
+primitives that paint their own ground take the same step by scope: the segmented track (the
+Institutional gateway switch) and the copy field (an install or sign-in command).
+
+A box inside an open row (the selected model's facts, a progress line, the embedded terminal) is
+`.br-first-run-box`: a subtle fill with a transparent 1px edge that rests where a field would on the same
+ground, so it is `--background-fill` on the canvas (the provider page in onboarding mode) and the strong
+step on the first-run page. A box that holds a control also carries `.br-fill-surface`, so the button in
+it rests on the page ground and never sits fill on fill. A progress track inside a box rests one step
+deeper than the box, because the shared track equals the fill it would sit on. The standalone card chrome
+(`OnboardingCardShell` with `chrome="card"`, which only tests render today) is `.br-first-run-card`, the
+same fill at the container radius. No first-run box draws an outline; the header's rule is the scroll
+edge of the body under it, and the first-run CTAs are on the control ladder (`size="lg"`, 36px).
 
 ## Ordering rules
 
@@ -295,11 +327,12 @@ renders normally.
 | `ui/desktop/src/components/settings/providers/ProviderSettingsPage.tsx` | The `configure-providers` and `welcome` routes |
 | `ui/desktop/src/components/ProviderGuard.tsx` | The first-run wall, and the way past it |
 | `ui/desktop/src/components/onboarding/OnboardingCardShell.tsx` | `card` / `bare` chrome around one body |
+| `ui/desktop/src/components/onboarding/onboarding.css` | The first-run ground, the fill boxes and the progress track on them |
 | `ui/desktop/src/components/onboarding/codingAgentControls.tsx` | The coding-agent probe, guidance and connect write |
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
 | `crates/biorouter/src/providers/base.rs` | `ProviderMetadata::institutions`, `with_institution` |
 
-Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`,
+Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `firstRunFill.browser.test.tsx` (Chromium),
 `ProviderCatalog.browserSurface.test.tsx`, `providerOrdering.test.ts`,
 `ProviderGuard.test.tsx`, `ProviderGuard.browserSurface.test.tsx`,
 `composerNoProvider.test.ts`, `ChatInput.noProvider.test.tsx`,

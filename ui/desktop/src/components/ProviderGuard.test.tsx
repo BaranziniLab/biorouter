@@ -108,6 +108,31 @@ describe('ProviderGuard', () => {
     expect(screen.queryByText('Application')).toBeNull();
   });
 
+  it('sits on the muted ground and tells the page its controls rest one step deeper (R-27)', async () => {
+    const { container } = renderGuard();
+    await screen.findByText('CATALOG');
+    // The boot splash hands off to this ground, so it stays muted. The rest fill IS the muted
+    // value there, so the page opts its controls onto the strong step through the one class
+    // (`onboarding.css`); without it a field and a secondary button would have no box.
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain('bg-background-muted');
+    expect(root.className).toContain('br-first-run-ground');
+  });
+
+  it('starts the header and the body on one left edge: the padding sits inside the measure in both', async () => {
+    renderGuard();
+    const title = await screen.findByRole('heading', { name: 'Welcome to Biorouter' });
+    const headerColumn = title.closest('.max-w-measure-chat') as HTMLElement;
+    const bodyColumn = screen.getByText('CATALOG').closest('.max-w-measure-chat') as HTMLElement;
+    expect(headerColumn).not.toBe(bodyColumn);
+    // Outside the measure the header stood 24px left of the tabs once the window was wider than
+    // the column; `px-5 sm:px-6` on the column itself keeps both on the same edge.
+    for (const column of [headerColumn, bodyColumn]) {
+      expect(column.className).toContain('px-5');
+      expect(column.className).toContain('sm:px-6');
+    }
+  });
+
   it('lets a configured install straight through', async () => {
     configReads({ provider: 'versa_azure' });
     renderGuard();
