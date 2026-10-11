@@ -15,7 +15,7 @@ import { cn } from '../../utils';
 import { isWindowResizing, prefersReducedMotion } from '../../styles/motion';
 import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
-import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import { useTabStripOverflow, useTabStripScrolledEdges } from '../Layout/useTabStripOverflow';
 import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
 import { ChatRowContextMenuContent } from '../chats/ChatRowContextMenu';
 import {
@@ -389,8 +389,7 @@ export function ChatTabStrip({
       // successor would start off-slot while settling from 0.97), while the
       // individual `translate` composes OUTSIDE it and the slide stays exact
       // (Codex B6 re-review finding 4). Never left/top, and never a reparent —
-      // the divider (::before) and drop hairline (::after) contracts stay
-      // untouched.
+      // the drop hairline (::after) contract stays untouched.
       el.style.transition = 'none';
       el.style.translate = `${delta}px`;
 
@@ -500,6 +499,7 @@ export function ChatTabStrip({
    * language and must not have to re-derive the rule (card Z).
    */
   const showOverflowMenu = useTabStripOverflow(stripRef, tabs.length);
+  const scrolledEdges = useTabStripScrolledEdges(stripRef);
 
   const handleSelect = useCallback(
     (tabId: ChatTabId) => {
@@ -651,6 +651,9 @@ export function ChatTabStrip({
         // reorder would be unreachable. See useTabDragReorder's move handler.
         data-tab-strip-group={groupId}
         data-group-active={groupActive ? 'true' : 'false'}
+        // The ends with tabs scrolled past them fade (chat-tabs.css).
+        data-scrolled-start={scrolledEdges.start ? '' : undefined}
+        data-scrolled-end={scrolledEdges.end ? '' : undefined}
         className="br-tabstrip br-tabstrip--inline h-full min-w-0 flex-1"
         // ONE no-drag rect for the whole strip, and it is STATIC. This element
         // is the last app-region declaration over the tabs, so it is the one

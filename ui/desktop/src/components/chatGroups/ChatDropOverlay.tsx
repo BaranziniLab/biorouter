@@ -49,9 +49,8 @@ export function ChatDropOverlay({ zone }: { zone: DropZone }) {
  * nothing would ever land.
  *
  * The ghost is a SEPARATE element; the source tab stays in flow at 35%
- * (.br-tab[data-dragging]). main.css's drag block explains why that matters:
- * .br-tab's divider is adjacent-sibling based, so pulling the real tab out of
- * the DOM would re-flow every divider in the strip mid-drag.
+ * (.br-tab[data-dragging]), so nothing in the strip reflows while it is carried
+ * (main.css's drag block).
  *
  * `detached` marks the moment the drag left the window and the drop would make a
  * new one (tear-off design D7): the tilt returns to 0 and it takes the dashed
@@ -154,7 +153,9 @@ export function ChatTabGhost({ ghost, detached }: { ghost: DragGhost; detached?:
   return createPortal(
     <div
       ref={ghostRef}
-      className="br-tab br-tab-ghost"
+      // A lifted tab is a floating surface, so it takes the one floating recipe
+      // (hairline and shadow, lifted in dark), as R-27 keeps for menus and toasts.
+      className="br-tab br-tab-ghost biorouter-popover-surface"
       data-testid="chat-tab-ghost"
       data-detach={detached ? 'true' : undefined}
       // Read by main, not by CSS and not by a test: the OS ghost has to sit

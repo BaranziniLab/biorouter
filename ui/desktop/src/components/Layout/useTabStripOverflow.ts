@@ -53,3 +53,60 @@ export function useTabStripOverflow(ref: RefObject<HTMLElement | null>, tabCount
 
   return overflowing;
 }
+
+/** Which ends of a scrolling tab strip have tabs scrolled past them. */
+export interface TabStripScrolledEdges {
+  start: boolean;
+  end: boolean;
+}
+
+const NOT_SCROLLED: TabStripScrolledEdges = { start: false, end: false };
+
+/**
+ * The scrolled-past ends of a tab strip, for the edge fade: a tab cut off at an
+ * edge fades into it, so it reads as "more this way" rather than as a clipped
+ * word beside the ▾ (vision V2-16 gave the preview panel's strip this; the chat
+ * strip clipped "Variant c" mid-letter). A strip that fits reports neither end,
+ * so it carries no mask at all.
+ *
+ * The same three triggers as {@link useTabStripOverflow}, plus the strip's own
+ * scroll. State changes only when an end flips, so scrolling re-renders the strip
+ * at most twice per pass.
+ *
+ * @param ref the element with `overflow-x: auto` that holds the tabs
+ */
+export function useTabStripScrolledEdges(
+  ref: RefObject<HTMLElement | null>
+): TabStripScrolledEdges {
+  const [edges, setEdges] = useState<TabStripScrolledEdges>(NOT_SCROLLED);
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    // 1px of slack: a fractional scroll width can leave scrollLeft a hair short
+    // of its maximum, which must still read as "at the end".
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setEdges((current) =>
+      current.start === start && current.end === end ? current : { start, end }
+    );
+  }, [ref]);
+
+  useLayoutEffect(() => {
+    measure();
+  });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, [ref, measure]);
+
+  return edges;
+}

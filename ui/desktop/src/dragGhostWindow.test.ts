@@ -286,6 +286,22 @@ describe('GHOST_PROBE_SCRIPT', () => {
     expect(GHOST_PROBE_SCRIPT).toContain('data-grab-y');
     expect(GHOST_PROBE_SCRIPT).toContain('--accent-bar');
   });
+
+  it('folds the tab’s transparent 1px edge into the inset, so the label lands where the DOM ghost’s does', () => {
+    // The tab keeps a transparent 1px border (R-27) with 10px of padding; the
+    // ghost window draws no border, so its padding must be 11px.
+    const el = document.createElement('div');
+    el.className = 'br-tab-ghost';
+    el.style.paddingLeft = '10px';
+    el.style.borderLeft = '1px solid transparent';
+    document.body.append(el);
+    try {
+      const probed = (0, eval)(GHOST_PROBE_SCRIPT) as { style: { paddingX: string } };
+      expect(probed.style.paddingX).toBe('11px');
+    } finally {
+      el.remove();
+    }
+  });
 });
 
 // ── The lifecycle ──────────────────────────────────────────────────────────

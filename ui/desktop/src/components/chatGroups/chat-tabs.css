@@ -18,6 +18,33 @@
   max-width: min(240px, var(--chat-tab-available-width, 240px));
 }
 
+/* The strip's edges (the preview panel's recipe, V2-16): a tab scrolled past an
+   edge fades into it over 32px, a tab's leading glyph and its padding, so a
+   cut-off tab reads as "more this way" instead of a word clipped mid-letter
+   beside the ▾. Only while scrolled: a strip that fits has no mask at all.
+   `useTabStripScrolledEdges` sets the two attributes. */
+.br-tabstrip--inline {
+  --tab-edge-fade: 32px;
+}
+
+.br-tabstrip--inline[data-scrolled-start] {
+  mask-image: linear-gradient(to right, transparent, #000 var(--tab-edge-fade));
+}
+
+.br-tabstrip--inline[data-scrolled-end] {
+  mask-image: linear-gradient(to left, transparent, #000 var(--tab-edge-fade));
+}
+
+.br-tabstrip--inline[data-scrolled-start][data-scrolled-end] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--tab-edge-fade),
+    #000 calc(100% - var(--tab-edge-fade)),
+    transparent
+  );
+}
+
 /* The "+" once the strip overflows (vision V1-M2): a fixed slot between the
    scroll box and the ▾, so it can never be scrolled under the ▾. 4px from the
    clipped tabs (2px here plus the button's own 2px) and 4px before the ▾. */

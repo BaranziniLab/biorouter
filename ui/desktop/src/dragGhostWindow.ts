@@ -60,7 +60,7 @@ export interface GhostStyle {
    * transition is heading towards.
    */
   accent: string;
-  /** Resolved `border-radius` (`--radius-inner`). */
+  /** Resolved `border-radius` (`--radius-element`, the tab's corner). */
   radius: string;
   /** Resolved `font-family` (`--font-sans`), quotes and all. */
   fontFamily: string;
@@ -68,7 +68,12 @@ export interface GhostStyle {
   fontWeight: string;
   /** Resolved `box-shadow` (`--shadow-popover`). Dropped on opaque platforms. */
   shadow: string;
-  /** Resolved horizontal padding and icon gap, so the chip's metrics match. */
+  /**
+   * Resolved horizontal inset and icon gap, so the chip's metrics match. The inset
+   * is the padding PLUS the tab's 1px edge (transparent, R-27): this page draws no
+   * edge, so the edge's width is folded into its padding and the label lands at
+   * the same x as in the DOM ghost.
+   */
   paddingX: string;
   gap: string;
 }
@@ -129,7 +134,7 @@ export const DEFAULT_GHOST_STYLE: GhostStyle = {
   background: '#ffffff',
   color: '#2a2520',
   accent: '#cf6d47',
-  radius: '4px',
+  radius: '8px',
   // The app's one UI stack, `--font-body` in main.css (spec 2.1; the website's
   // Arial-first stack). `dragGhostWindow.test.ts` pins the two together.
   fontFamily:
@@ -418,7 +423,7 @@ export const GHOST_PROBE_SCRIPT = `(() => {
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
       shadow: style.boxShadow,
-      paddingX: style.paddingLeft,
+      paddingX: (parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth || '0')) + 'px',
       gap: style.columnGap,
     },
   };

@@ -19,6 +19,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MENU_ROW_CLASS_NAME, MENU_SURFACE_CLASS_NAME } from '../ui/dropdown-menu';
 import { TAB_CLOSE_CLASS, TAB_NEW_CLASS } from './tabClasses';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,12 +60,21 @@ const dockStrip =
   tab('dock-idle', 'biorouter 2', false) +
   `</div></div><div class="bg-background-muted" style="height:24px"></div></div>`;
 
+/** The overflow ▾ menu with its filter (from eight tabs), on the shared menu recipe. */
+const overflowMenu =
+  `<div class="${MENU_SURFACE_CLASS_NAME} br-tabstrip__menu w-56" id="menu">` +
+  `<div class="br-tabstrip__menu-filter"><svg class="br-tabstrip__menu-filter-icon" id="filter-icon"></svg>` +
+  `<input class="br-tabstrip__menu-filter-field" id="filter-field" placeholder="Filter tabs"></div>` +
+  `<div class="${MENU_ROW_CLASS_NAME}" role="menuitem"><svg class="h-4 w-4" id="row-icon"></svg>` +
+  `<span class="min-w-0 flex-1 truncate" id="row-label">Cohort query</span></div></div>`;
+
 const MARKUP =
   `<div style="display:grid;gap:16px;padding:16px">` +
   chatBand('chat', true) +
   chatBand('unfocused', false) +
   previewStrip +
   dockStrip +
+  overflowMenu +
   `</div>`;
 
 const STRIPS = ['chat', 'preview', 'dock'] as const;
@@ -323,6 +333,55 @@ describe('the document tabs are fills, not lines (R-27)', () => {
       } finally {
         await page.close();
       }
+    }
+  });
+
+  it('fades only the chat strip ends that have tabs scrolled past them', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open('light');
+    try {
+      const mask = (attrs: string[]) =>
+        page.evaluate((names) => {
+          const strip = document.getElementById('chat-strip')!;
+          for (const name of ['data-scrolled-start', 'data-scrolled-end']) {
+            strip.removeAttribute(name);
+          }
+          for (const name of names) strip.setAttribute(name, '');
+          return getComputedStyle(strip).maskImage;
+        }, attrs);
+      expect(await mask([]), 'a strip that fits has no mask').toBe('none');
+      expect(await mask(['data-scrolled-end'])).toMatch(
+        /^linear-gradient\(to left, rgba\(0, 0, 0, 0\)/
+      );
+      expect(await mask(['data-scrolled-start'])).toMatch(
+        /^linear-gradient\(to right, rgba\(0, 0, 0, 0\)/
+      );
+      const both = await mask(['data-scrolled-start', 'data-scrolled-end']);
+      expect(both).toMatch(/32px/);
+      expect(both).toMatch(/calc\(100% - 32px\)/);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('starts the overflow menu’s filter glyph and text on the rows’ glyph and label edges', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open('light');
+    try {
+      const x = await page.evaluate(() => {
+        const left = (id: string) => document.getElementById(id)!.getBoundingClientRect().left;
+        return {
+          filterIcon: left('filter-icon'),
+          rowIcon: left('row-icon'),
+          filterText: left('filter-field'),
+          rowText: left('row-label'),
+        };
+      });
+      // At 12px of padding both sat 4px left of the rows.
+      expect(x.filterIcon).toBeCloseTo(x.rowIcon, 0);
+      expect(x.filterText).toBeCloseTo(x.rowText, 0);
+    } finally {
+      await page.close();
     }
   });
 
