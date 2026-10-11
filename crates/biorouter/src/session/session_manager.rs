@@ -7500,6 +7500,12 @@ impl SessionStorage {
             "INNER JOIN messages m ON s.id = m.session_id"
         };
         let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
+        // listing does (`summary_listing_sql`). `updated_at` has one-second
+        // granularity and a bulk write stamps hundreds of chats with the same
+        // second; without the tie-break SQLite's sorter handed them back in id
+        // DESC order, so History and the sidebar drew the same chats in two
+        // orders under "Last activity" (vision V3-R2-3, R-28/R-30).
         let query = format!(
             r#"
             SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
@@ -7513,7 +7519,7 @@ impl SessionStorage {
             {join}
             WHERE s.session_type IN ({placeholders})
             GROUP BY s.id
-            ORDER BY s.updated_at DESC
+            ORDER BY s.updated_at DESC, s.id ASC
             "#
         );
 
@@ -13636,6 +13642,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// History (`GET /sessions`, `biorouter session list`) and the sidebar
+    /// (`GET /sessions/sidebar`) put chats that share an `updated_at` in ONE
+    /// order: newest first, then `id ASC` (vision V3-R2-3). A bulk write stamps
+    /// many chats with the same second; the full listing ordered by
+    /// `updated_at` alone, SQLite handed the tied group back in id DESC order,
+    /// and one chat sat at row 11 of the sidebar and row 113 of History.
+    #[tokio::test]
+    async fn the_full_listing_breaks_a_tied_updated_at_by_id_like_the_sidebar() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut ids = Vec::new();
+        for index in 0..6 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("chat {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &umsg(10, "hello"))
+                .await
+                .unwrap();
+            ids.push(session.id);
+        }
+        // One chat is newer than the rest; the other five share one second.
+        let newest = ids.remove(3);
+        let pool = sm.storage().pool().await.unwrap();
+        for (id, at) in ids
+            .iter()
+            .map(|id| (id, "2026-09-05 17:49:17"))
+            .chain([(&newest, "2026-09-06 08:00:00")])
+        {
+            sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+                .bind(at)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let mut tied = ids.clone();
+        tied.sort();
+        let expected: Vec<String> = std::iter::once(newest).chain(tied).collect();
+
+        let history: Vec<String> = sm
+            .list_sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(history, expected, "History's order");
+
+        let including_empty: Vec<String> = sm
+            .list_sessions_by_types_including_empty(&[SessionType::User])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(
+            including_empty, expected,
+            "History's order when it lists empty chats"
+        );
+
+        let mut sidebar = Vec::new();
+        let mut cursor: Option<SidebarCursor> = None;
+        loop {
+            let page = sm
+                .list_session_summaries_page(2, cursor.as_ref(), false, false, false)
+                .await
+                .unwrap();
+            let Some(last) = page.last() else {
+                break;
+            };
+            cursor = Some(last.cursor.clone());
+            sidebar.extend(page.into_iter().map(|row| row.summary.id));
+        }
+        assert_eq!(sidebar, expected, "the sidebar's order");
     }
 
     /// R-28: every shape of the summary listing walks `idx_sessions_updated` in
