@@ -102,10 +102,6 @@ describe('ProviderGuard', () => {
   it('persists the detected provider contract before opening its model picker', async () => {
     renderGuard();
 
-    // The brand mark renders in both the checking loader and the onboarding
-    // header; assert it appears without re-checking document attachment, since
-    // the loader's mark detaches the instant `isChecking` flips to the header.
-    expect(await screen.findByRole('img', { name: 'BioRouter' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: 'Complete detection' }));
 
     await waitFor(() => {
@@ -115,6 +111,25 @@ describe('ProviderGuard', () => {
         ['BIOROUTER_PROVIDER', 'xiaomi_mimo', false],
       ]);
     });
+  });
+
+  // FR-R1-7, R-29: the wordmark is the logo. The loader is a frame or two between the boot splash
+  // and the page, and it used to draw an 84px BR monogram on the recessed grey: a second logo and
+  // a second ground before the page's wordmark. It now draws nothing, on the page ground.
+  it('draws no logo while it reads the provider, on the ground the page stands on', async () => {
+    let answer!: (value: unknown) => void;
+    mocks.read.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    const { container } = renderGuard();
+    const loader = screen.getByTestId('provider-guard-loading');
+    expect(loader).toHaveClass('bg-background-canvas');
+    expect(loader).not.toHaveClass('bg-background-muted');
+    expect(loader).toHaveAttribute('aria-busy', 'true');
+    expect(loader).toBeEmptyDOMElement();
+    expect(container.querySelector('svg')).toBeNull();
+    expect(screen.queryByRole('img')).toBeNull();
+    answer('');
+    expect(await screen.findByText('CATALOG')).toBeInTheDocument();
+    expect(screen.queryByTestId('provider-guard-loading')).toBeNull();
   });
 
   it('blocks the application while neither a provider nor a skip is recorded', async () => {

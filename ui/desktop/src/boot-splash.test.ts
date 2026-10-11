@@ -329,25 +329,21 @@ describe('boot splash', () => {
       expect(body).toMatch(/position:\s*absolute/);
     });
 
-    it('renders the mark at the same size as the loader it hands off to', () => {
-      const splashSize = ruleBody(splashStyle(), '#br-boot .br-mark').match(/height:\s*(\d+)px/);
-      expect(splashSize, 'splash .br-mark must set an explicit px height').not.toBeNull();
-
-      // ProviderGuard's `isChecking` branch is the screen the splash uncovers.
-      // It used to use Tailwind's h-20 (80px) against the splash's 84px, so the
-      // logo resized mid-boot even once the vertical jump was fixed.
+    it('hands off to a loader that draws no logo of its own, so nothing can resize or jump', () => {
+      // ProviderGuard's `isChecking` branch is the screen the splash uncovers. It used to draw the
+      // same BR monogram (first at Tailwind's h-20 against the splash's 84px, so the logo resized
+      // mid-boot), which made the monogram a second logo before the wordmark (vision FR-R1-7,
+      // R-29). It now draws nothing on the page ground, so whatever the splash shows fades out
+      // over an empty ground and no mark underneath it can sit at another size or centre.
       const guard = readFileSync(
         resolveFromPackage(join('src', 'components', 'ProviderGuard.tsx')),
         'utf-8'
       );
-      const guardMark = guard.match(/<BioRouterMark className="h-\[(\d+)px\] w-\[(\d+)px\]"/);
-      expect(
-        guardMark,
-        'ProviderGuard must size its loader mark in explicit px so it can be compared to the splash'
-      ).not.toBeNull();
-
-      expect(guardMark![1]).toBe(splashSize![1]);
-      expect(guardMark![2]).toBe(splashSize![1]);
+      const loader = guard.match(/if \(isChecking\) \{([\s\S]*?)\n {2}\}\n/);
+      expect(loader, "ProviderGuard's isChecking branch not found").not.toBeNull();
+      const markup = loader![1].replace(/\/\*[\s\S]*?\*\//g, '');
+      expect(markup).not.toMatch(/<BioRouter(Mark|Wordmark)\b/);
+      expect(markup).toMatch(/bg-background-canvas/);
     });
   });
 

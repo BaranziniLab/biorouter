@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo, useCallback, type CSSProperties } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
-import { BioRouterMark } from './icons/BioRouterMark';
 import { BioRouterWordmark } from './icons/BioRouterWordmark';
 import { toastService } from '../toasts';
 import ProviderCatalog from './settings/providers/ProviderCatalog';
@@ -185,15 +184,21 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   if (location.pathname === '/crew' || resumingSession) return <>{children}</>;
 
   if (isChecking) {
+    /**
+     * The loader draws nothing, on the page ground everything after it stands on (vision FR-R1-7,
+     * R-29: the wordmark is the logo). It is up for a frame or two while the provider is read, so
+     * it is a hand-off, not a screen: it used to repeat the boot splash's 84px BR monogram on the
+     * recessed grey, then the first-run page (or the app shell) replaced both the mark and the
+     * ground, a second logo and a second ground in one launch. On the page ground with nothing on
+     * it, the splash fades straight to the ground the page then draws on, and the first logo a
+     * person reads is the wordmark: in the first-run band, or at the head of the sidebar.
+     */
     return (
-      <div className="h-screen w-full bg-background-muted flex items-center justify-center">
-        {/* 84px, not Tailwind's h-20 (80px), to match the pre-React boot
-            splash's `.br-mark` exactly. This loader is what the splash hands
-            off to, so a 4px difference read as the logo resizing mid-boot.
-            The splash centres the same mark on the same point — see the
-            `.br-sweep` note in index.html. */}
-        <BioRouterMark className="h-[84px] w-[84px]" />
-      </div>
+      <div
+        className="h-screen w-full bg-background-canvas"
+        aria-busy="true"
+        data-testid="provider-guard-loading"
+      />
     );
   }
 
@@ -223,7 +228,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
      * as ghost buttons at its trailing edge. The page is outside the app shell like the provider
      * page, so it carries `.br-provider-page` for the same two rules (`providers.css`): the band's
      * lead clears the macOS traffic lights, and the 32px titlebar strip stops taking the band's
-     * clicks. The loader above stays on the muted ground the boot splash hands off to.
+     * clicks. The loader above stands on this same page ground, empty (FR-R1-7).
      */
     const bandLead = {
       '--br-provider-band-lead': `${getTitlebarControlInset(
