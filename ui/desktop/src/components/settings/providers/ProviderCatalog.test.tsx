@@ -1108,11 +1108,21 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
     vi.useRealTimers();
   });
 
+  /**
+   * Held: the skeleton, and the three tab labels drawn with none selected (FR-R2-1: the band
+   * holds still while the catalog settles, rather than growing its tabs at the end of the hold).
+   */
+  const expectHeld = () => {
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
+    expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+    expect(screen.queryByRole('tabpanel')).toBeNull();
+  };
+
   it('draws the skeleton, never an empty tab, while the provider list loads', () => {
     render(<ProviderCatalog providers={[]} loading mode="onboarding" configuredProvider={null} />);
-    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    expectHeld();
     expect(screen.queryByText(catalogCopy.emptyTab)).toBeNull();
-    expect(screen.queryByRole('tab')).toBeNull();
   });
 
   it('waits for the agent probe when it can decide the tab, then opens on its answer at rest', async () => {
@@ -1126,8 +1136,7 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
       />
     );
     // The list is in, but a signed-in agent would open Public, so Local is not drawn first.
-    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
-    expect(screen.queryByRole('tab')).toBeNull();
+    expectHeld();
 
     await act(async () => answer(ready));
     expect(openTab()).toBe('commercial');
@@ -1145,7 +1154,7 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
         holdUntilSettled
       />
     );
-    expect(screen.queryByRole('tab')).toBeNull();
+    expectHeld();
 
     act(() => {
       vi.advanceTimersByTime(AGENT_PROBE_WAIT_MS);
@@ -1157,7 +1166,10 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
     expect(openTab()).toBe('local');
   });
 
-  it('does not wait for the probe when a bound provider already decides the tab', () => {
+  // The probe never answers here and its wait is 2.5 s; `waitFor` gives up after 1 s, so opening
+  // inside it is opening without the probe (the disclosure copy, a resolved mock, is what it waits
+  // for: a microtask).
+  it('does not wait for the probe when a bound provider already decides the tab', async () => {
     pendingProbe();
     render(
       <ProviderCatalog
@@ -1167,10 +1179,10 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
         holdUntilSettled
       />
     );
-    expect(openTab()).toBe('commercial');
+    await waitFor(() => expect(openTab()).toBe('commercial'));
   });
 
-  it('does not wait for the probe when a route hint decides the tab', () => {
+  it('does not wait for the probe when a route hint decides the tab', async () => {
     pendingProbe();
     render(
       <ProviderCatalog
@@ -1181,7 +1193,7 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
         holdUntilSettled
       />
     );
-    expect(openTab()).toBe('local');
+    await waitFor(() => expect(openTab()).toBe('local'));
   });
 
   it('holds while the bound provider has not been read yet', async () => {
@@ -1194,7 +1206,7 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
         holdUntilSettled
       />
     );
-    expect(screen.queryByRole('tab')).toBeNull();
+    expectHeld();
     rerender(
       <ProviderCatalog
         providers={rows}
@@ -1204,5 +1216,105 @@ describe('ProviderCatalog — settling (FR-R1-1)', () => {
       />
     );
     await waitFor(() => expect(openTab()).toBe('commercial'));
+  });
+
+  /** A disclosure fetch that answers only when the test says so. */
+  const pendingDisclosure = () => {
+    let answer!: (value: unknown) => void;
+    mocks.getPrivacyDisclosure.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    return (value: unknown) => answer(value);
+  };
+
+  // FR-R2-1: the API section's disclosure line arrived 300 ms after Public was drawn and pushed
+  // the key field and every row down 40px under a still pointer. The held catalog now opens with
+  // the line already in place.
+  it('holds until the disclosure copy has answered, so Public opens with its line in place', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    const answer = pendingDisclosure();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    // The probe is in and would open Public, but the line it carries is not.
+    await act(async () => {});
+    expectHeld();
+    expect(mocks.getPrivacyDisclosure).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      answer({
+        data: { title_template: '{provider}', long: 'L', short: 'Short line', acknowledged: true },
+      })
+    );
+    expect(openTab()).toBe('commercial');
+    // The first paint of the open tab has the line, above the rows it would have pushed.
+    expect(screen.getByTestId('non-private-model-note')).toHaveTextContent('Short line');
+  });
+
+  it('opens when the disclosure cannot be fetched, since the note then draws nothing', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    mocks.getPrivacyDisclosure.mockRejectedValue(new Error('offline'));
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('commercial'));
+    expect(screen.queryByTestId('non-private-model-note')).toBeNull();
+  });
+
+  it('opens without the disclosure once the wait is over', async () => {
+    vi.useFakeTimers();
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    pendingDisclosure();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    await act(async () => {});
+    expectHeld();
+    act(() => {
+      vi.advanceTimersByTime(AGENT_PROBE_WAIT_MS);
+    });
+    expect(openTab()).toBe('commercial');
+  });
+
+  // A catalog that opens on Local (or any catalog in Settings) starts the fetch on mount, so the
+  // first visit to Public finds the copy already in the store.
+  it('asks for the disclosure when the catalog mounts, not when Public is opened', async () => {
+    render(<ProviderCatalog providers={rows} mode="settings" configuredProvider="llamacpp" />);
+    expect(openTab()).toBe('local');
+    await waitFor(() => expect(mocks.getPrivacyDisclosure).toHaveBeenCalledTimes(1));
+  });
+
+  // The person's pick during the hold is kept: it is their choice, and the panel opens on it at
+  // rest when the catalog settles.
+  it('keeps a tab picked while the catalog is held, and opens on it once settled', async () => {
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    expectHeld();
+    clickTab('institutional');
+    expect(screen.getByTestId('catalog-tab-institutional')).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('institutional');
+    expect(screen.queryByRole('status', { name: providerPageCopy.loading })).toBeNull();
   });
 });

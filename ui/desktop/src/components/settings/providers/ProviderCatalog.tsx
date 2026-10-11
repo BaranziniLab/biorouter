@@ -40,6 +40,7 @@ import {
   type ProviderGroupKey,
 } from './providerOrdering';
 import { NonPrivateModelDisclosureNote } from '../../privacy/NonPrivateModelDisclosureNote';
+import { readDisclosureAcknowledgement } from '../../privacy/disclosureCopy';
 import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import LlamaServerInlineCard from '../../onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from '../../onboarding/OllamaInlineCard';
@@ -153,10 +154,14 @@ interface ProviderCatalogProps {
   loading?: boolean;
   /**
    * Draw nothing but the skeleton until the opening tab is known, then open on it at rest and
-   * keep it: the provider list, `configuredProvider` (`undefined` = not read yet) and, when it can
-   * decide the tab (no route hint, no bound provider), the coding-agent probe, waited for at most
-   * {@link AGENT_PROBE_WAIT_MS}. Without it the first run painted Local, then switched itself to
-   * Public a second later when the probe answered, under the pointer (FR-R1-1).
+   * keep it: the provider list, `configuredProvider` (`undefined` = not read yet), the API
+   * section's disclosure copy and, when it can decide the tab (no route hint, no bound provider),
+   * the coding-agent probe; the last two are waited for at most {@link AGENT_PROBE_WAIT_MS}.
+   * Without it the first run painted Local, then switched itself to Public a second later when the
+   * probe answered, under the pointer (FR-R1-1), and the Public tab then grew a two-line disclosure
+   * above its key field 300 ms after it was drawn, moving every row under the pointer (FR-R2-1).
+   * The tab labels are drawn throughout, none selected until the catalog opens, so the band holds
+   * still too.
    */
   holdUntilSettled?: boolean;
 }
@@ -452,6 +457,25 @@ export default function ProviderCatalog({
     const timer = window.setTimeout(() => setProbeWaitOver(true), AGENT_PROBE_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [holdUntilSettled]);
+  /**
+   * The API section's standing disclosure (`NonPrivateModelDisclosureNote`) is the daemon's copy,
+   * fetched once for the app, and the note fetched it only when it mounted, so the first time
+   * Public was drawn the line arrived a beat later and pushed the key field and every API row down
+   * 40px (vision FR-R2-1). The fetch starts when the catalog mounts, whichever tab it opens on, and
+   * a held catalog waits for its answer (copy or no copy: a failed fetch renders nothing, so it is
+   * an answer too) within the same {@link AGENT_PROBE_WAIT_MS}. Read, never written: the frozen
+   * privacy module is only asked, and the note still renders exactly what it is handed.
+   */
+  const [disclosureAnswered, setDisclosureAnswered] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void readDisclosureAcknowledgement().finally(() => {
+      if (!cancelled) setDisclosureAnswered(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const ownsBoundProvider =
     !!configuredProvider &&
     groups.some((group) =>
@@ -462,7 +486,8 @@ export default function ProviderCatalog({
     loading ||
     (holdUntilSettled &&
       (configuredProvider === undefined ||
-        (probeCanDecide && agentControls.isChecking && !probeWaitOver)));
+        (probeCanDecide && agentControls.isChecking && !probeWaitOver) ||
+        (!disclosureAnswered && !probeWaitOver)));
   const [settledTab, setSettledTab] = useState<ProviderGroupKey | null>(null);
   useEffect(() => {
     if (holdUntilSettled && !settling && settledTab === null) setSettledTab(computedTab);
@@ -831,38 +856,43 @@ export default function ProviderCatalog({
       */}
       <HostManagedModelNote className="mb-6" />
 
-      {settling ? (
-        // The quiet skeleton at row height: the tier line, then three rows. Nothing in it can be
-        // read as an answer (no "Nothing here yet.", no tab), so nothing on the first screen is
-        // contradicted a second later (FR-R1-1).
-        <div
-          role="status"
-          aria-label={providerPageCopy.loading}
-          className="br-provider-skeleton"
-          data-testid="provider-catalog-loading"
-        >
-          <Skeleton className="h-4 w-64" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
-          <Skeleton className="h-10 w-full" />
-        </div>
-      ) : (
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
-          className="br-provider-catalog br-rows-flat flex flex-col"
-        >
-          {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
+      <Tabs
+        // While it settles no tab is selected (an empty value matches no trigger), unless the
+        // person picked one: their pick is kept and opens as soon as the panel can draw at rest.
+        value={settling ? (chosenTab ?? '') : activeTab}
+        onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
+        className="br-provider-catalog br-rows-flat flex flex-col"
+      >
+        {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
             colour that says private from public at a glance. In the page band they sit on the
-            title's line, as Settings' do, and the band's own hairline is the one rule. */}
-          {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
+            title's line, as Settings' do, and the band's own hairline is the one rule. They are
+            drawn while the catalog settles too, none selected, so the band does not grow its
+            tabs a second into the first run (FR-R2-1); the underline's first placement is at
+            rest (`ui/tabs`), so it appears under the settled tab without travelling. */}
+        {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
 
-          {/* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
-            the tab list would land on a panel that shows nothing. A panel with rows hands that
-            stop to its first control (V4-05, request WS-PRIMITIVES-3); one with no control to
-            hand it to (an empty institutional tab) keeps it, so a keyboard user can still reach
-            the line that explains why. */}
-          {groups.map((group) => (
+        {settling ? (
+          // The quiet skeleton at row height: the tier line, then three rows. Nothing in it can be
+          // read as an answer (no "Nothing here yet.", no selected tab), so nothing on the first
+          // screen is contradicted a second later (FR-R1-1).
+          <div
+            role="status"
+            aria-label={providerPageCopy.loading}
+            className="br-provider-skeleton"
+            data-testid="provider-catalog-loading"
+          >
+            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : (
+          /* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
+             the tab list would land on a panel that shows nothing. A panel with rows hands that
+             stop to its first control (V4-05, request WS-PRIMITIVES-3); one with no control to
+             hand it to (an empty institutional tab) keeps it, so a keyboard user can still reach
+             the line that explains why. */
+          groups.map((group) => (
             <TabsContent
               key={group.key}
               value={group.key}
@@ -871,9 +901,9 @@ export default function ProviderCatalog({
             >
               {renderPanel(group)}
             </TabsContent>
-          ))}
-        </Tabs>
-      )}
+          ))
+        )}
+      </Tabs>
 
       <ModalShell
         open={showCustomProviderModal}
