@@ -136,6 +136,16 @@ body:has(.br-provider-page) .titlebar-drag-region {
   padding-inline: 12px;
 }
 
+/* A checkbox row in a provider form (Add provider's "This is a local model" and "Provider supports
+   streaming responses"). The Checkbox draws its 16px square centred in a 24px hit target, so the
+   square sat 4px inside the labels and fields above it (vision V4-R4-5); the row moves back 4px so
+   the square starts on their edge, as Switch models' `.br-model-check-row` does. */
+.br-provider-check-row {
+  display: flex;
+  align-items: center;
+  margin-inline-start: -4px;
+}
+
 /*
  * ROWS ARE FILLS, NOT LINES (owner message 13, R-27, design.md 9.11). Provider rows are two-line
  * blocks with 8px of air above and below, so the air and the hover fill tell them apart and the

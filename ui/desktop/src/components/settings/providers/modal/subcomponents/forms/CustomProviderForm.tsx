@@ -11,6 +11,7 @@ import { UpdateCustomProviderRequest } from '../../../../../../api';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 import { customProviderCopy } from '../../../copy';
+import '../../../providers.css';
 
 /**
  * What to show when the save was refused. The daemon's refusal is a sentence
@@ -222,14 +223,16 @@ export default function CustomProviderForm({
           />
         </Field>
         {!initialData && (
-          <label className="flex cursor-pointer items-center gap-2">
-            <Checkbox
-              id="local-model"
-              checked={isLocalModel}
-              onChange={(event) => handleLocalModels(event.target.checked)}
-            />
-            <span className="text-label text-text-default">{customProviderCopy.localModel}</span>
-          </label>
+          <div className="br-provider-check-row" data-testid="custom-provider-local-row">
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                id="local-model"
+                checked={isLocalModel}
+                onChange={(event) => handleLocalModels(event.target.checked)}
+              />
+              <span className="text-label text-text-default">{customProviderCopy.localModel}</span>
+            </label>
+          </div>
         )}
       </div>
       {isEditable && (
@@ -245,14 +248,16 @@ export default function CustomProviderForm({
               placeholder="model-a, model-b, model-c"
             />
           </Field>
-          <label className="flex cursor-pointer items-center gap-2">
-            <Checkbox
-              id="supports-streaming"
-              checked={supportsStreaming}
-              onChange={(event) => setSupportsStreaming(event.target.checked)}
-            />
-            <span className="text-label text-text-default">{customProviderCopy.streaming}</span>
-          </label>
+          <div className="br-provider-check-row" data-testid="custom-provider-streaming-row">
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                id="supports-streaming"
+                checked={supportsStreaming}
+                onChange={(event) => setSupportsStreaming(event.target.checked)}
+              />
+              <span className="text-label text-text-default">{customProviderCopy.streaming}</span>
+            </label>
+          </div>
         </>
       )}
       <SecureStorageNotice className="mt-0" />
