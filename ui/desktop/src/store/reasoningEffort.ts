@@ -23,6 +23,14 @@ export const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffort, string> = {
   deep: 'More thinking and exploration',
 };
 
+/**
+ * What the three levels mean, in the InfoTip beside the model menu's Effort slider (R-26): the
+ * descriptions above, as the two sentences an InfoTip holds. The slider's thumb is described by
+ * it, so a screen reader hears it on focus.
+ */
+export const REASONING_EFFORT_HELP =
+  "Quick answers fast with little exploration, and Deep thinks and explores more. Normal uses this chat's /effort setting, or the model's default.";
+
 export function sessionReasoningScope(sessionId: string): string {
   return `session:${sessionId}`;
 }

@@ -100,6 +100,8 @@ export const MODEL_COPY = {
   changeModel: 'Change model…',
   leadWorker: 'Lead and worker…',
   effortGroup: 'Effort',
+  /** The Effort InfoTip's name reads "About effort". */
+  aboutEffort: 'effort',
   aboutModel: 'this model',
   noModelTooltip: 'Opens the provider catalog',
 } as const;

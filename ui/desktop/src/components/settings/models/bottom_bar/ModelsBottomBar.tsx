@@ -11,26 +11,17 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../../ui/dropdown-menu';
 import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import { friendlyModelName } from '../../../bottom_menu/modelLabel';
-import {
-  EffortBars,
-  useReasoningEffortValue,
-} from '../../../bottom_menu/BottomMenuReasoningEffort';
+import { useReasoningEffortValue } from '../../../bottom_menu/BottomMenuReasoningEffort';
+import { EffortSection, moveFocusAcrossEffort } from '../../../bottom_menu/EffortSection';
 import {
   DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORT_DESCRIPTIONS,
   REASONING_EFFORT_LABELS,
-  REASONING_EFFORTS,
-  setReasoningEffort,
-  type ReasoningEffort,
 } from '../../../../store/reasoningEffort';
 import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
@@ -151,6 +142,8 @@ export default function ModelsBottomBar({
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
+  // The Effort slider's thumb, which the menu's Up and Down keys move focus to.
+  const effortThumbRef = useRef<HTMLSpanElement>(null);
   const {
     currentModel,
     currentProvider,
@@ -623,6 +616,8 @@ export default function ModelsBottomBar({
           align="end"
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
+          // The menu's arrow keys visit rows only; this makes the Effort slider one more stop.
+          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortThumbRef.current)}
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center text-supporting text-text-muted">
@@ -678,34 +673,9 @@ export default function ModelsBottomBar({
           {effort !== null && reasoningScope && (
             <>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>{MODEL_COPY.effortGroup}</DropdownMenuLabel>
-              <DropdownMenuRadioGroup
-                value={effort}
-                onValueChange={(next) =>
-                  setReasoningEffort(reasoningScope, next as ReasoningEffort)
-                }
-              >
-                {REASONING_EFFORTS.map((level) => (
-                  <Tooltip key={level}>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuRadioItem
-                        value={level}
-                        data-testid={`effort-${level}`}
-                        // The tooltip is for the pointer: a tooltip opens on focus only
-                        // after Tab, and arrow keys move focus in a menu. A screen reader
-                        // hears the same line as the item's description.
-                        aria-description={REASONING_EFFORT_DESCRIPTIONS[level]}
-                      >
-                        <EffortBars effort={level} className="size-icon-row text-text-muted" />
-                        <span>{REASONING_EFFORT_LABELS[level]}</span>
-                      </DropdownMenuRadioItem>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">
-                      {REASONING_EFFORT_DESCRIPTIONS[level]}
-                    </TooltipContent>
-                  </Tooltip>
-                ))}
-              </DropdownMenuRadioGroup>
+              {/* R-26: one slider (Quick, Normal, Deep) where three radio rows were. Same
+                  store, same scope, applied at once; the menu stays open. */}
+              <EffortSection scope={reasoningScope} effort={effort} thumbRef={effortThumbRef} />
             </>
           )}
           <DropdownMenuSeparator />

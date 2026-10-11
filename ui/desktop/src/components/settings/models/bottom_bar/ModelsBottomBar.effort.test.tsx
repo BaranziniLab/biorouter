@@ -1,12 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import {
   getReasoningEffort,
-  REASONING_EFFORT_DESCRIPTIONS,
-  REASONING_EFFORTS,
+  REASONING_EFFORT_HELP,
   reasoningEffortForRequest,
   resetReasoningEffortForTests,
   setReasoningEffort,
@@ -15,7 +15,8 @@ import {
 /**
  * Spec 3.7: the model and the effort are ONE picker. The chip names the model
  * the way a person says it, plus a non-default effort ("gpt-5.6-sol · Deep"),
- * and its padlock; the menu carries Quick, Normal and Deep as a radio group.
+ * and its padlock. R-26 (owner message 13): the menu sets the effort with ONE
+ * slider of three stops, Quick, Normal and Deep, where it had three radio rows.
  */
 const mocks = vi.hoisted(() => ({
   read: vi.fn(async () => ''),
@@ -127,7 +128,7 @@ describe('the model and effort chip', () => {
     expect(chip).toHaveAccessibleName(/Effort: Deep$/);
   });
 
-  it('chooses the effort from a radio group in the model menu', async () => {
+  it('chooses the effort with one three-stop slider in the model menu (R-26)', async () => {
     renderChip();
     const chip = await screen.findByTestId('model-chip');
     expect(chip).toHaveAttribute('aria-expanded', 'false');
@@ -136,51 +137,128 @@ describe('the model and effort chip', () => {
     // the tooltip around the trigger overwrites.
     expect(chip).toHaveAttribute('aria-expanded', 'true');
 
-    expect(await screen.findByText(MODEL_COPY.effortGroup)).toBeInTheDocument();
-    const radios = screen.getAllByRole('menuitemradio');
-    expect(radios.map((radio) => radio.textContent)).toEqual(['Quick', 'Normal', 'Deep']);
-    expect(screen.getByRole('menuitemradio', { name: 'Normal' })).toHaveAttribute(
-      'aria-checked',
-      'true'
-    );
+    // One slider, named by the "Effort" label, speaking the word for its stop.
+    const section = await screen.findByRole('group', { name: MODEL_COPY.effortGroup });
+    const slider = within(section).getByRole('slider', { name: MODEL_COPY.effortGroup });
+    expect(slider).toHaveAttribute('aria-valuemin', '0');
+    expect(slider).toHaveAttribute('aria-valuemax', '2');
+    expect(slider).toHaveAttribute('aria-valuenow', '1');
+    expect(slider).toHaveAttribute('aria-valuetext', 'Normal');
+    // The radio rows are gone, and so are their glyphs.
+    expect(screen.queryByRole('menuitemradio')).toBeNull();
+    expect(section.querySelectorAll('svg')).toHaveLength(1); // the InfoTip's glyph only
 
-    // The item's tooltip is for the pointer; a screen reader hears the same line.
-    for (const level of REASONING_EFFORTS) {
-      expect(screen.getByTestId(`effort-${level}`)).toHaveAccessibleDescription(
-        REASONING_EFFORT_DESCRIPTIONS[level]
-      );
-    }
+    // The current stop beside "Effort", for the eye (the slider says it already).
+    const value = within(section).getByTestId('effort-value');
+    expect(value).toHaveTextContent('Normal');
+    expect(value).toHaveAttribute('aria-hidden', 'true');
+    // What the levels mean: in the InfoTip, and on the thumb without hovering.
+    expect(
+      within(section).getByRole('button', { name: `About ${MODEL_COPY.aboutEffort}` })
+    ).toBeInTheDocument();
+    expect(slider).toHaveAccessibleDescription(REASONING_EFFORT_HELP);
 
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Deep' }));
+    // Keys apply at once, through the same store and scope the rows wrote.
+    act(() => slider.focus());
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
     expect(getReasoningEffort(SCOPE)).toBe('deep');
     expect(reasoningEffortForRequest(getReasoningEffort(SCOPE))).toBe('deep');
+    await waitFor(() => expect(slider).toHaveAttribute('aria-valuetext', 'Deep'));
+    expect(value).toHaveTextContent('Deep');
+    await waitFor(() => expect(chip).toHaveTextContent('gpt-5.6-sol · Deep'));
+    fireEvent.keyDown(slider, { key: 'Home' });
+    expect(getReasoningEffort(SCOPE)).toBe('quick');
+    fireEvent.keyDown(slider, { key: 'End' });
+    expect(getReasoningEffort(SCOPE)).toBe('deep');
+    fireEvent.keyDown(slider, { key: 'ArrowLeft' });
+    expect(getReasoningEffort(SCOPE)).toBe('normal');
+
+    // The menu stays open: a slider is set, not picked.
+    expect(screen.getByTestId('effort-section')).toBeInTheDocument();
+  });
+
+  it('sets the stop a press lands on, and keeps the menu open', async () => {
+    renderChip();
+    await openMenu();
+    const section = await screen.findByTestId('effort-section');
+    const root = within(section).getByTestId('effort-slider');
+    const rail = root.querySelector<HTMLElement>('[data-slot="slider-rail"]')!;
+    // jsdom lays nothing out; give the rail the 240px it has in the menu.
+    vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      right: 240,
+      width: 240,
+      top: 0,
+      bottom: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    fireEvent.pointerDown(root, { clientX: 236, pointerId: 1, pointerType: 'mouse', button: 0 });
+    fireEvent.pointerUp(root, { clientX: 236, pointerId: 1, pointerType: 'mouse' });
+    expect(getReasoningEffort(SCOPE)).toBe('deep');
+    fireEvent.pointerDown(root, { clientX: 4, pointerId: 1, pointerType: 'mouse', button: 0 });
+    fireEvent.pointerUp(root, { clientX: 4, pointerId: 1, pointerType: 'mouse' });
+    expect(getReasoningEffort(SCOPE)).toBe('quick');
+    expect(screen.getByTestId('effort-section')).toBeInTheDocument();
+    // A press focuses the thumb, so the next key keeps going from there.
+    expect(within(section).getByRole('slider')).toHaveFocus();
+  });
+
+  it('follows an effort set elsewhere while the menu is open', async () => {
+    renderChip();
+    await openMenu();
+    const slider = await screen.findByRole('slider', { name: MODEL_COPY.effortGroup });
+    act(() => setReasoningEffort(SCOPE, 'quick'));
+    await waitFor(() => expect(slider).toHaveAttribute('aria-valuetext', 'Quick'));
+    expect(screen.getByTestId('effort-value')).toHaveTextContent('Quick');
   });
 
   /**
-   * Chromium draws script focus as keyboard focus when nothing held focus a moment
-   * before, and the menu item that was just picked has unmounted by then. So a mouse
-   * pick left the chip ringed like a Tab stop. The DropdownMenuContent primitive owns
-   * the rule (usePointerPickFocusRule): focus goes back after a key, and a pointer pick
-   * leaves it where the click put it. This pins that the chip, which no longer keeps a
-   * copy, still gets it. (The ring itself is a CSS state jsdom cannot see; what is
-   * pinned here is who gets the focus.)
+   * A Radix menu's arrow keys visit its rows only, and Tab leaves the menu, so a
+   * slider among the rows was out of the keyboard's reach. Up from the row under
+   * it lands on the thumb; on the thumb, Up and Down walk the menu and Left and
+   * Right move the effort.
    */
-  it('leaves focus alone after a mouse pick, and returns it to the chip after a key', async () => {
+  it('reaches the slider with the arrow keys and leaves it the same way', async () => {
+    const user = userEvent.setup();
+    renderChip();
+    await openMenu();
+    const slider = await screen.findByRole('slider', { name: MODEL_COPY.effortGroup });
+    const change = screen.getByRole('menuitem', { name: MODEL_COPY.changeModel });
+
+    act(() => change.focus());
+    await user.keyboard('{ArrowUp}');
+    expect(slider).toHaveFocus();
+    expect(getReasoningEffort(SCOPE)).toBe('normal');
+
+    // Nothing above it: Up stays, and it is not read as "more effort".
+    await user.keyboard('{ArrowUp}');
+    expect(slider).toHaveFocus();
+    expect(getReasoningEffort(SCOPE)).toBe('normal');
+
+    await user.keyboard('{ArrowRight}');
+    expect(getReasoningEffort(SCOPE)).toBe('deep');
+    expect(slider).toHaveFocus();
+
+    await user.keyboard('{ArrowDown}');
+    expect(change).toHaveFocus();
+    expect(getReasoningEffort(SCOPE)).toBe('deep');
+
+    // Row to row is still the menu's own.
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toHaveFocus();
+  });
+
+  it('closes on Escape from the slider and gives focus back to the chip', async () => {
+    const user = userEvent.setup();
     renderChip();
     const chip = await openMenu();
-
-    const deep = await screen.findByTestId('effort-deep');
-    fireEvent.pointerDown(deep, { button: 0, ctrlKey: false });
-    fireEvent.click(deep);
-    await waitFor(() => expect(screen.queryByTestId('effort-deep')).toBeNull());
-    expect(getReasoningEffort(SCOPE)).toBe('deep');
-    expect(chip).not.toHaveFocus();
-
-    await openMenu();
-    const quick = await screen.findByTestId('effort-quick');
-    fireEvent.keyDown(quick, { key: 'Enter' });
-    await waitFor(() => expect(screen.queryByTestId('effort-quick')).toBeNull());
-    expect(getReasoningEffort(SCOPE)).toBe('quick');
+    const slider = await screen.findByRole('slider', { name: MODEL_COPY.effortGroup });
+    act(() => slider.focus());
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('effort-section')).toBeNull());
     await waitFor(() => expect(chip).toHaveFocus());
   });
 
@@ -188,7 +266,7 @@ describe('the model and effort chip', () => {
     renderChip(null);
     await openMenu();
     await screen.findByText(MODEL_COPY.changeModel);
-    expect(screen.queryByRole('menuitemradio')).toBeNull();
+    expect(screen.queryByRole('slider')).toBeNull();
     expect(screen.queryByText(MODEL_COPY.effortGroup)).toBeNull();
   });
 
