@@ -326,7 +326,7 @@ export function FirstRunPrivacyNotice({
     >
       <div
         data-testid="first-run-privacy-notice"
-        className="space-y-4 py-3 text-body text-text-default"
+        className="space-y-4 py-3 text-body text-text-default tabular-nums"
       >
         {failed && (
           <DialogDescription
@@ -400,7 +400,7 @@ export function FirstRunPrivacyNotice({
           affected" is noise on every machine that reads it.
         */}
         {publicClinicalExtensions.length > 0 && (
-          <p data-testid="notice-public-clinical-extensions" className="text-text-muted">
+          <p data-testid="notice-public-clinical-extensions">
             {publicClinicalExtensions.length === 1
               ? 'One extension you have enabled is set up for clinical data and is not marked private: '
               : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}

@@ -263,6 +263,24 @@ describe('FirstRunPrivacyNotice', () => {
     expect(paragraph).toMatch(/nothing about it has changed/i);
   });
 
+  // FR-S-14, class only (privacy UI, ruling 15): the one disclosure no refusal will ever teach is
+  // in the default ink, not the muted one the less critical knowledge-base line wears, and the
+  // counts are tabular figures.
+  it('sets the clinical-extension disclosure in default ink and the counts as tabular figures', () => {
+    render(
+      <FirstRunPrivacyNotice
+        open
+        onDismiss={vi.fn()}
+        counts={computeNoticeCounts(FIXTURE)}
+        publicClinicalExtensions={['medcp']}
+      />
+    );
+    expect(screen.getByTestId('notice-public-clinical-extensions')).not.toHaveClass(
+      'text-text-muted'
+    );
+    expect(screen.getByTestId('first-run-privacy-notice')).toHaveClass('tabular-nums');
+  });
+
   it('says nothing about extensions when there are none to name', () => {
     render(
       <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />
