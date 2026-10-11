@@ -157,6 +157,35 @@ describe('ToolsChip', () => {
     expect(popover.lastElementChild).toBe(tabs);
   });
 
+  it('hands focus to the new list’s search after a pointer pick, and keeps it on the control after an arrow key', async () => {
+    const user = userEvent.setup();
+    render(<ToolsChip sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-tools-chip'));
+    await waitFor(() => expect(screen.getByTestId('extensions-panel')).toHaveFocus());
+
+    // Pointer: "click Skills, type gg" filters the skills.
+    await user.click(screen.getByRole('radio', { name: 'Skills' }));
+    await waitFor(() => expect(screen.getByTestId('skills-panel')).toHaveFocus());
+    await user.keyboard('gg');
+    expect(screen.getByTestId('skills-panel')).toHaveValue('gg');
+
+    // Keyboard: Tab to the control, then an arrow switches the list and focus
+    // stays on the control, so the next arrow keeps switching.
+    await user.tab();
+    expect(screen.getByRole('radio', { name: 'Skills' })).toHaveFocus();
+    await user.keyboard('{ArrowRight>}');
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: 'Knowledge' })).toHaveAttribute(
+        'aria-checked',
+        'true'
+      )
+    );
+    await user.keyboard('{/ArrowRight}');
+    expect(await screen.findByTestId('knowledge-panel')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Knowledge' })).toHaveFocus();
+    expect(screen.getByTestId('knowledge-panel')).not.toHaveFocus();
+  });
+
   it('puts focus in the search field when it opens', async () => {
     render(<ToolsChip sessionId="chat-1" />);
     fireEvent.click(screen.getByTestId('composer-tools-chip'));

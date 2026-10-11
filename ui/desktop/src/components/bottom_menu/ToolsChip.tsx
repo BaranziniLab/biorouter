@@ -1,5 +1,5 @@
 import './pickers.css';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SessionClassification } from '../../api/types.gen';
 import { ChevronDown } from '../icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -78,6 +78,23 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
   // Escape gives focus back to the chip; a click elsewhere leaves it where the
   // click put it, so a mouse user is not handed a focus ring on the chip.
   const closedByKeyboard = useRef(false);
+  // A list picked with the POINTER hands focus to its search field, the place
+  // focus goes when the popover opens, so "click Skills, type gg" filters. Left
+  // on the segment, the typing went nowhere. A list picked with the arrow keys
+  // keeps focus on the control, or the next arrow would type into the field.
+  const pickedWithPointer = useRef(false);
+  const focusSearchAfterSwitch = useRef(false);
+  const onSegmentChange = (next: ToolsSegment) => {
+    focusSearchAfterSwitch.current = pickedWithPointer.current;
+    pickedWithPointer.current = false;
+    setSegment(next);
+  };
+  useEffect(() => {
+    if (!focusSearchAfterSwitch.current) return;
+    focusSearchAfterSwitch.current = false;
+    // The new list's field: `inputRef` is handed to whichever panel is mounted.
+    inputRef.current?.focus();
+  }, [segment]);
 
   // The three lists live for as long as the composer does, so the chip's number
   // is right before the popover is ever opened. Each re-reads its source when
@@ -155,13 +172,24 @@ export function ToolsChip({ sessionId }: ToolsChipProps) {
           <KnowledgePanel picker={knowledge} inChat={sessionId !== null} inputRef={inputRef} />
         )}
         {/* Last, on the bottom edge: the one place in the popover that does not move. */}
-        <div className="br-picker-popover__tabs" data-testid="composer-tools-tabs">
+        <div
+          className="br-picker-popover__tabs"
+          data-testid="composer-tools-tabs"
+          onPointerDown={() => {
+            pickedWithPointer.current = true;
+          }}
+          // Capture: Radix selects on the focus an arrow key moves, inside the
+          // item's own keydown, before the event would bubble up to here.
+          onKeyDownCapture={() => {
+            pickedWithPointer.current = false;
+          }}
+        >
           <SegmentedControl
             fill
             aria-label={TOOLS_COPY.segmentsLabel}
             options={SEGMENTS}
             value={segment}
-            onValueChange={setSegment}
+            onValueChange={onSegmentChange}
           />
         </div>
       </PopoverContent>
