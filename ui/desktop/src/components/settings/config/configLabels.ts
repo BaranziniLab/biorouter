@@ -113,7 +113,26 @@ export function sentenceCase(label: string): string {
     .join(' ');
 }
 
-/** `computer_use_capabilities_version` as the sentence it abbreviates. */
+/**
+ * Names for keys whose spelling does not read as a name once it is made into words. Each is a key
+ * Biorouter or the AWS SDK wrote, and the words in it are in the wrong order or are a product's
+ * retired name:
+ *
+ * - `computer_use_capabilities_version` is the migration marker for Biorouter Copilot, the
+ *   product that used to be called Computer Use.
+ * - `AWS_ENDPOINT_URL_BEDROCK` and `..._RUNTIME` are the SDK's per-service endpoint variables, with
+ *   the service last ("AWS endpoint URL Bedrock"). The person looks for the service first.
+ *
+ * The label column holds these on one line (`capabilities/settingsBFill.browser.test.tsx`
+ * measures every label in the editor), so a name added here is held to that.
+ */
+const EDITOR_NAMES: Readonly<Record<string, string>> = {
+  computer_use_capabilities_version: 'Biorouter Copilot capabilities version',
+  AWS_ENDPOINT_URL_BEDROCK: 'Bedrock endpoint URL',
+  AWS_ENDPOINT_URL_BEDROCK_RUNTIME: 'Bedrock runtime endpoint URL',
+};
+
+/** `workspace_announce_only` as the sentence it abbreviates. */
 function humaniseKey(key: string): string {
   const words = key.split(/[_\s-]+/).filter(Boolean);
   // Everything in this file is Biorouter's, so a leading brand word says nothing.
@@ -129,8 +148,13 @@ function humaniseKey(key: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** The editor's name for a config key: a known name in sentence case, else the key made readable. */
+/**
+ * The editor's name for a config key: the name written for it above, else a known name in
+ * sentence case, else the key made readable.
+ */
 export function configFieldLabel(key: string): string {
+  const named = EDITOR_NAMES[key];
+  if (named) return named;
   const known = configLabels[key];
   return known ? sentenceCase(known) : humaniseKey(key);
 }

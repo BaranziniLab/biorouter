@@ -229,14 +229,18 @@ describe('ConfigSettings editor', async () => {
 
     for (const name of [
       'Auto compact threshold',
-      'Computer use capabilities version',
-      'AWS endpoint URL Bedrock',
+      'Biorouter Copilot capabilities version',
+      'Bedrock endpoint URL',
       'Context about Biorouter',
       'App SDK tracing',
     ]) {
       expect(within(dialog).getByLabelText(name)).toBeInTheDocument();
     }
-    expect(within(dialog).queryByText(/Aws Endpoint|Biorouter Auto|brsdk/)).toBeNull();
+    expect(
+      within(dialog).queryByText(
+        /Aws Endpoint|AWS endpoint URL Bedrock|Computer use|Biorouter Auto|brsdk/
+      )
+    ).toBeNull();
   });
 
   it('keeps the key as each label’s tooltip, whatever the label says', async () => {
@@ -244,7 +248,7 @@ describe('ConfigSettings editor', async () => {
     const user = userEvent.setup();
     const dialog = await openEditor();
 
-    await user.hover(within(dialog).getByText('Computer use capabilities version'));
+    await user.hover(within(dialog).getByText('Biorouter Copilot capabilities version'));
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'computer_use_capabilities_version'
     );

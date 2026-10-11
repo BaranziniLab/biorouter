@@ -5,7 +5,7 @@
  *
  * One label column serves both lists in the editor body: the privacy summary (read-only, plain
  * rows with no box) and the editable fields below it. So every value and every field starts at the
- * same x, and the label column is wide enough for the longest name the editor makes ("Computer use
+ * same x, and the label column is wide enough for the longest name the editor makes ("Biorouter Copilot
  * capabilities version") on one line.
  */
 

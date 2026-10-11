@@ -10,8 +10,9 @@ describe('configFieldLabel', () => {
   it.each([
     // The four the vision pass flagged, and one more of the same shape.
     ['BIOROUTER_AUTO_COMPACT_THRESHOLD', 'Auto compact threshold'],
-    ['computer_use_capabilities_version', 'Computer use capabilities version'],
-    ['AWS_ENDPOINT_URL_BEDROCK', 'AWS endpoint URL Bedrock'],
+    ['computer_use_capabilities_version', 'Biorouter Copilot capabilities version'],
+    ['AWS_ENDPOINT_URL_BEDROCK', 'Bedrock endpoint URL'],
+    ['AWS_ENDPOINT_URL_BEDROCK_RUNTIME', 'Bedrock runtime endpoint URL'],
     ['context_about_biorouter', 'Context about Biorouter'],
     ['brsdk_tracing', 'App SDK tracing'],
     ['BIOROUTER_MAX_TURNS', 'Max turns'],
@@ -57,17 +58,33 @@ describe('configFieldLabel', () => {
     }
   });
 
+  // V4-R4-6: the Configuration editor named the Copilot migration marker with the product's retired
+  // name ("Computer use capabilities version") and the SDK's endpoint variables with the service
+  // last ("AWS endpoint URL Bedrock"), the second one beside the first in the list.
+  it('names the Copilot marker for the product and the Bedrock endpoints for the service', () => {
+    expect(configFieldLabel('computer_use_capabilities_version')).toBe(
+      'Biorouter Copilot capabilities version'
+    );
+    expect(configFieldLabel('AWS_ENDPOINT_URL_BEDROCK')).toBe('Bedrock endpoint URL');
+    expect(configFieldLabel('AWS_ENDPOINT_URL_BEDROCK_RUNTIME')).toBe(
+      'Bedrock runtime endpoint URL'
+    );
+  });
+
+  it('never shows the retired product name in a label', () => {
+    for (const key of ['computer_use_capabilities_version', ...Object.keys(configLabels)]) {
+      expect(configFieldLabel(key), key).not.toMatch(/computer use/i);
+    }
+  });
+
   it('starts every name with a capital and never with the brand prefix', () => {
-    for (const key of [
-      'BIOROUTER_AUTO_COMPACT_THRESHOLD',
-      'computer_use_capabilities_version',
-      'brsdk_pii_guardrail',
-      'tunnel_port',
-    ]) {
+    for (const key of ['BIOROUTER_AUTO_COMPACT_THRESHOLD', 'brsdk_pii_guardrail', 'tunnel_port']) {
       const label = configFieldLabel(key);
       expect(label).toMatch(/^[A-Z]/);
       expect(label).not.toMatch(/^Biorouter /);
     }
+    // The one name that opens with the brand is the product's: Biorouter Copilot, not a prefix.
+    expect(configFieldLabel('computer_use_capabilities_version')).toMatch(/^Biorouter Copilot /);
   });
 
   it('keeps a lone brand word as it is', () => {
@@ -75,13 +92,15 @@ describe('configFieldLabel', () => {
   });
 
   it('is short enough to sit on one line in the label column', () => {
-    // The column is 240px at 14px Arial: about 7px per character, so 34 characters is the line.
+    // The column is 240px at 14px Arial. The Chromium test in capabilities/settingsBFill measures
+    // the real width; this is the cheap guard that a name written here stays near that line.
     for (const key of [
       'computer_use_capabilities_version',
       'BIOROUTER_AUTO_COMPACT_THRESHOLD',
       'AWS_ENDPOINT_URL_BEDROCK',
+      'AWS_ENDPOINT_URL_BEDROCK_RUNTIME',
     ]) {
-      expect(configFieldLabel(key).length).toBeLessThanOrEqual(34);
+      expect(configFieldLabel(key).length).toBeLessThanOrEqual(38);
     }
   });
 });

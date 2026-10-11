@@ -48,6 +48,13 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
         BIOROUTER_PROVIDER: 'versa_azure',
         VERSA_AZURE_HOST: 'https://versa.example.edu',
         SOME_REPORT: { checked: 3, failed: 0 },
+        // The keys whose editor names were written by hand (V4-R4-6), the longest label the editor
+        // makes among them, and the SDK's service-last variable names.
+        computer_use_capabilities_version: 2,
+        AWS_ENDPOINT_URL_BEDROCK: 'https://example.edu/awsai',
+        AWS_ENDPOINT_URL_BEDROCK_RUNTIME: 'https://vpce.example.edu',
+        BIOROUTER_AUTO_COMPACT_THRESHOLD: 0.8,
+        context_about_biorouter: true,
       };
       const api = {
         extensionsList, config,
@@ -245,6 +252,9 @@ describe('Copilot result and the Configuration editor under the fill rule (R-27)
   async function openEditor(tab: Page) {
     await tab.click('#configuration-edit');
     await tab.waitForSelector('[role="dialog"] .br-config-row');
+    // The pointer is still where "Edit" was, and the dialog is taller with more rows, so a field
+    // can open under it and rest on its hover fill. Park it on the page's corner.
+    await tab.mouse.move(0, 0);
     await tab.waitForTimeout(300);
   }
 
@@ -347,6 +357,65 @@ describe('Copilot result and the Configuration editor under the fill rule (R-27)
         const e = await edge(tab, well);
         expect(e.width, `${mode} the 1px edge is kept`).toBe('1px');
         expect(drawsNothing(e), `${mode} and draws nothing`).toBe(true);
+      } finally {
+        await tab.close();
+      }
+    }
+  }, 120_000);
+
+  // V4-R4-6: the editor named the Copilot migration marker with the retired product name and the
+  // SDK's endpoint variable with the service last. The new names are the longest the editor makes,
+  // so what is measured is that every label still sits on one line in its 240px column.
+  it('names the Copilot and Bedrock keys for what they are, every label on one line', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      try {
+        await openEditor(tab);
+        const labels = await tab.evaluate(() =>
+          [...document.querySelectorAll('[role="dialog"] .br-config-row label')].map((label) => {
+            const cs = getComputedStyle(label);
+            const lineHeight = parseFloat(cs.lineHeight);
+            const box = label.getBoundingClientRect();
+            return {
+              text: label.textContent ?? '',
+              lines: Math.round(box.height / lineHeight),
+              overflow: label.scrollWidth - label.clientWidth,
+              width: box.width,
+            };
+          })
+        );
+        const text = labels.map((label) => label.text);
+        expect(text, `${mode} the Copilot marker`).toContain(
+          'Biorouter Copilot capabilities version'
+        );
+        expect(text, `${mode} the Bedrock endpoint`).toContain('Bedrock endpoint URL');
+        expect(text, `${mode} the Bedrock runtime endpoint`).toContain(
+          'Bedrock runtime endpoint URL'
+        );
+        expect(
+          text.filter((label) => /computer use|AWS endpoint URL/i.test(label)),
+          `${mode} no retired name or service-last name`
+        ).toEqual([]);
+        for (const label of labels) {
+          expect(label.lines, `${mode} "${label.text}" is on one line`).toBe(1);
+          expect(label.overflow, `${mode} "${label.text}" does not spill`).toBeLessThanOrEqual(0);
+        }
+        // The probe sees a wrapped label: the same label with a sentence's worth of words.
+        const wrapped = await tab.evaluate(() => {
+          const label = document.querySelector('[role="dialog"] .br-config-row label')!;
+          const saved = label.textContent;
+          label.textContent = 'Biorouter Copilot capabilities version and the migration marker';
+          const box = label.getBoundingClientRect();
+          const lines = Math.round(box.height / parseFloat(getComputedStyle(label).lineHeight));
+          label.textContent = saved;
+          return lines;
+        });
+        expect(
+          wrapped,
+          `${mode} the probe counts a wrapped label as more than one line`
+        ).toBeGreaterThan(1);
+        await shot(tab, `settings-b-editor-labels-${mode}`);
       } finally {
         await tab.close();
       }
