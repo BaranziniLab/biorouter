@@ -61,6 +61,53 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
 // DialogContent — this tier is exactly what stops the menu painting under them.
 const MENU_Z = 500;
 
+/** The hook on every shared Select's container, for the Escape claim below. */
+const SELECT_CONTAINER_CLASS_NAME = 'br-select';
+
+/**
+ * Escape closes the innermost open surface only (APG; vision round 2, V4-R2-2).
+ *
+ * With Switch models' provider menu open, one Escape removed the menu AND the dialog, so the
+ * choice in progress was lost, while a Radix menu in another dialog closed only itself. A
+ * react-select menu is not a Radix layer, so the dialog is the top layer, and Radix listens for
+ * Escape in the CAPTURE phase on the document: it dismisses the dialog before react-select's own
+ * handler (bubbling, at React's root) sees the key. Stopping propagation inside the Select would
+ * therefore change nothing.
+ *
+ * So the Select claims the key first: a window capture listener (the window's capture runs before
+ * the document's) cancels an Escape whose target is THIS component's combobox while its menu is
+ * open (`aria-expanded="true"`, which react-select writes on its input and on its non-searchable
+ * dummy input alike). Radix leaves a cancelled Escape alone (`onEscapeKeyDown`, then dismiss only
+ * when not `defaultPrevented`), and so does every other surface that checks it; react-select then
+ * closes its menu as before and focus stays on the field. A second Escape, with the menu closed,
+ * reaches the dialog. The claim is scoped by the container class, because another combobox may say
+ * expanded for as long as it is mounted (cmdk's input does), and its Escape must still close a
+ * command palette's dialog.
+ *
+ * ⚠ react-select returns early on a cancelled key when a caller passes `onKeyDown` (it checks
+ * `defaultPrevented` after calling it), so a caller with its own `onKeyDown` would keep the menu
+ * open on Escape. None passes one; a caller that needs one handles Escape itself.
+ *
+ * One listener for the document, installed when this module loads, as `Tooltip`'s Tab tracker is.
+ */
+function installEscapeClaim() {
+  if (typeof window === 'undefined') return;
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.getAttribute('aria-expanded') !== 'true') return;
+      if (!target.closest(`.${SELECT_CONTAINER_CLASS_NAME}`)) return;
+      event.preventDefault();
+    },
+    true
+  );
+}
+
+installEscapeClaim();
+
 /**
  * The chosen option carries a 16px check at the trailing edge, as a selected radio item does in
  * every other menu (spec 2.6, principle 5), so the choice reads without leaning on a wash that a
@@ -118,7 +165,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
       closeMenuOnSelect={props.closeMenuOnSelect !== false}
       blurInputOnSelect={props.blurInputOnSelect !== false}
       classNames={{
-        container: () => 'w-full cursor-pointer relative',
+        container: () => `${SELECT_CONTAINER_CLASS_NAME} w-full cursor-pointer relative`,
         indicatorSeparator: () => 'h-0',
         // The trigger IS the <Input> chrome, class for class (§3.2): the 32px md
         // rung, 8px text inset, and the filled field of R-27 (design.md 9.11).
