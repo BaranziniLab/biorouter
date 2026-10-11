@@ -5,6 +5,7 @@ import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
 
 import { cn } from '../../utils';
 import {
+  MENU_COLLISION_PADDING,
   MENU_EASE_CLASS_NAME,
   MENU_GROUP_LABEL_CLASS_NAME,
   MENU_ROW_CLASS_NAME,
@@ -50,12 +51,16 @@ const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
 
 function ContextMenuContent({
   className,
+  collisionPadding = MENU_COLLISION_PADDING,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
+        // 8px from the window's edge, the dropdown's gap (V4-R6-1): a menu opened at the cursor
+        // near the bottom of the sidebar used to end on the window's last pixel.
+        collisionPadding={collisionPadding}
         // ⚠ `no-drag`, and it is load-bearing on exactly one of the three
         // surfaces: the tab strip sits in the titlebar band, where App.tsx
         // paints a 32px `-webkit-app-region: drag` rect. This menu opens AT THE

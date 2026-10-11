@@ -268,6 +268,17 @@ export const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
  * written utility never has to generate. Min width 180px and max width 320px are defaults in
  * `@layer components` (`.br-menu-surface`), so a caller's own width utility still wins.
  */
+/**
+ * The gap every menu keeps from the window's edge (vision V4-R6-1). Radix's default is 0, so a
+ * row menu right-clicked near the bottom of the sidebar ended on the window's last pixel, its
+ * bottom hairline and corners on the edge and its shadow cut off. 8px is the InfoTip's gap
+ * (`info-tip.tsx`): near an edge the menu shifts or flips to stay that far inside, and the
+ * available-height variable its `max-h` reads shrinks by the same amount. A caller that passes
+ * its own `collisionPadding` (a dialog's boundary) still wins. Pinned in Chromium by
+ * `menuCollisionPadding.browser.test.tsx`.
+ */
+export const MENU_COLLISION_PADDING = 8;
+
 export const MENU_SURFACE_CLASS_NAME =
   'br-menu-surface br-menu-motion biorouter-popover-surface bg-background-default text-text-default z-[var(--z-modal-dropdown)] rounded-container p-1 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2';
 
@@ -387,6 +398,7 @@ function useMenuInputModality<T extends HTMLElement>({
 function DropdownMenuContent({
   className,
   sideOffset = 6,
+  collisionPadding = MENU_COLLISION_PADDING,
   onKeyDown,
   onCloseAutoFocus,
   onKeyDownCapture,
@@ -411,6 +423,7 @@ function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         onKeyDown={handleKeyDown}
         {...focusRule}
         // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
@@ -654,6 +667,7 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  collisionPadding = MENU_COLLISION_PADDING,
   onKeyDownCapture,
   onPointerDownCapture,
   ref,
@@ -668,6 +682,7 @@ function DropdownMenuSubContent({
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
+      collisionPadding={collisionPadding}
       {...modality}
       className={cn(MENU_SURFACE_CLASS_NAME, 'overflow-hidden', MENU_EASE_CLASS_NAME, className)}
       {...props}
