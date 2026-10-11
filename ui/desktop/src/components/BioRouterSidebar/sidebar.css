@@ -143,7 +143,8 @@
    row's `--sidebar-active` equals it in light and sits 1.01:1 off it in dark),
    so on the Crew row while Crew is open the count vanished. On a lit row the
    badge steps back to the page ground instead: a fill never sits on a fill
-   (R-27 rule 3). Unlayered, so it beats the badge's Tailwind fill. */
+   (R-27 rule 3). Unlayered, so it beats the badge's layered fill
+   (`.br-badge-neutral` in main.css's `@layer components`). */
 .br-nav-row:is(:hover, :focus-visible, [data-active='true'], [aria-current='page'])
   .br-nav-row-badge {
   background-color: var(--background-default);
