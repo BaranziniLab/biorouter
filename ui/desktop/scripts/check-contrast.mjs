@@ -71,6 +71,26 @@ function assert(label, fg, bg, min, scope) {
 }
 
 /**
+ * The CEILING twin of `assert`: a pair that must stay close. A quiet surface
+ * step (the R-27 fills) has to be visible AND subtle, and only a ceiling keeps
+ * "subtle" from drifting into a grey slab one nudge at a time.
+ */
+function assertAtMost(label, fg, bg, max, scope) {
+  const f = resolve(fg, scope);
+  const b = resolve(bg, scope);
+  if (!f || !b) {
+    failures++;
+    rows.push(['UNRESOLVED', '', label, `${!f ? fg : bg} does not resolve to a hex`]);
+    return;
+  }
+  const r = ratio(f, b);
+  checks++;
+  const ok = r <= max;
+  if (!ok) failures++;
+  rows.push([ok ? 'pass' : 'FAIL', `${r.toFixed(2)}:1`, label, `${f} on ${b} (at most ${max})`]);
+}
+
+/**
  * Assert against a TRANSLUCENT fill, composited over the ground it sits on.
  *
  * Everything above measures opaque token pairs, which is blind to Tailwind's
@@ -594,6 +614,90 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   for (const g of ['--sidebar', '--sidebar-active', '--background-default']) {
     assert(`${theme}: private lock badge (text-accent) on ${g}`, '--text-accent', g, 3.0, scope);
   }
+
+  // Fills before lines (owner message 13, R-27). A card, button, chip, strip
+  // tab, segmented track, field or the composer rests on `--background-fill`
+  // with NO outline, so the fill alone has to say "there is a box here". Held
+  // two ways:
+  //   - VISIBLE: at least 1.08:1 off every page ground it rests on (the canvas
+  //     the transcript paints, the default surface, the card). 1.05 elsewhere in
+  //     this file only flags a collapse; this is the step the eye must find
+  //     without a line. On a recessed ground (the sidebar, the muted panel) the
+  //     rest fill is the muted value itself, so there the STRONG step is the
+  //     resting fill and owes the same 1.08.
+  //   - SUBTLE: at most 1.35:1 on the page grounds, so a filled card reads as a
+  //     quiet ground change and not as a grey slab; the strong step at most 1.5.
+  // Hover and press step to `--background-fill-strong`, which must stay a
+  // visible step off the rest fill (1.08) and off the focus fill (focus is a
+  // surface shift of its own, D-15; 1.05 there, the `background-focus vs
+  // medium` assertion above holds the same pair from the other side). Ink keeps
+  // its usual floors on both fills; `--text-subtle` (placeholders) is held on
+  // the rest fill only, because opaque `--background-medium` already shows it
+  // sub-AA in three scopes and a hovered field is transient. Control edges and
+  // the focus edge keep 3:1, since a checkbox, a radio or a focused control
+  // sits inside a filled card. The off switch keeps its track a step off the
+  // rest fill (1.05 collapse floor); on the strong step the knob ring carries it.
+  for (const g of ['--background-canvas', '--background-default', '--background-card']) {
+    assert(`${theme}: fill is a visible step off ${g}`, '--background-fill', g, 1.08, scope);
+    assertAtMost(`${theme}: fill stays subtle on ${g}`, '--background-fill', g, 1.35, scope);
+    assertAtMost(
+      `${theme}: strong fill stays subtle on ${g}`,
+      '--background-fill-strong',
+      g,
+      1.5,
+      scope
+    );
+  }
+  for (const g of ['--sidebar', '--background-muted']) {
+    assert(
+      `${theme}: strong fill rests a visible step off recessed ${g}`,
+      '--background-fill-strong',
+      g,
+      1.08,
+      scope
+    );
+  }
+  assert(
+    `${theme}: strong fill (hover, press) is a step off the fill`,
+    '--background-fill-strong',
+    '--background-fill',
+    1.08,
+    scope
+  );
+  assert(
+    `${theme}: focus fill is a step off the strong fill`,
+    '--background-focus',
+    '--background-fill-strong',
+    1.05,
+    scope
+  );
+  for (const fill of ['--background-fill', '--background-fill-strong']) {
+    const name = fill.slice(2);
+    assert(`${theme}: text-default on ${name}`, '--text-default', fill, 4.5, scope);
+    assert(`${theme}: text-muted on ${name}`, '--text-muted', fill, 4.5, scope);
+    assert(
+      `${theme}: control edge (border-control) on ${name}`,
+      '--border-control',
+      fill,
+      3.0,
+      scope
+    );
+    assert(`${theme}: focus edge (border-focus) on ${name}`, '--border-focus', fill, 3.0, scope);
+  }
+  assert(
+    `${theme}: text-subtle on background-fill`,
+    '--text-subtle',
+    '--background-fill',
+    4.5,
+    scope
+  );
+  assert(
+    `${theme}: switch off track is a step off the fill`,
+    '--control-track-off',
+    '--background-fill',
+    1.05,
+    scope
+  );
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to
   // SC 1.4.11's 3:1, and Roche Limit's design doc used to guarantee it. The

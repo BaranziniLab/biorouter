@@ -123,8 +123,9 @@ describe.each(['light', 'dark'] as const)('%s: the neutral scaffolding is shared
 
 /**
  * The control edge and the switch's off track are NEUTRALS (redesign spec 2.3),
- * so they are declared exactly twice, in the hand-authored base `:root` and
- * `.dark` blocks, and never in a family block or in the generated region.
+ * and so are the two fills of R-27 (owner message 13, "fills before lines"), so
+ * each is declared exactly twice, in the hand-authored base `:root` and `.dark`
+ * blocks, and never in a family block or in the generated region.
  *
  * Two reasons this is asserted rather than assumed. A family that restated
  * `--border-control` would pass every per-family contrast assertion (it would
@@ -135,7 +136,7 @@ describe.each(['light', 'dark'] as const)('%s: the neutral scaffolding is shared
  * into a quiet pass: the guard here keeps the declaration where the checker
  * reads it.
  */
-describe('the control edge and the off track are shared neutrals', () => {
+describe('the control edge, the off track and the fills are shared neutrals', () => {
   const raw = readFileSync(join(__dirname, 'main.css'), 'utf8');
   // Comments are blanked to spaces of the same length, so a prose mention of a
   // token cannot count as a declaration and every offset still matches `raw`.
@@ -143,7 +144,7 @@ describe('the control edge and the off track are shared neutrals', () => {
   const generatedStart = raw.indexOf('THEMES:GENERATED:FAMILIES:START');
   const generatedEnd = raw.indexOf('THEMES:GENERATED:FAMILIES:END');
 
-  it.each(['border-control', 'control-track-off'])(
+  it.each(['border-control', 'control-track-off', 'background-fill', 'background-fill-strong'])(
     '--%s is declared as a hex once for light and once for dark, outside the family blocks',
     (token) => {
       const declarations = [...css.matchAll(new RegExp(`(^|[\\s;{])--${token}:\\s*([^;]+);`, 'g'))];

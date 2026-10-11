@@ -304,6 +304,11 @@ export const STRUCTURAL_TOKENS = [
   // fails if a family block restates either.
   'border-control',
   'control-track-off',
+  // The fills of R-27 (owner message 13, "fills before lines"): the rest fill of
+  // a card, button, chip, tab, track or field and its hover/press step. Shared
+  // neutrals declared once per mode in the base blocks, like the two above.
+  'background-fill',
+  'background-fill-strong',
   'z-base',
   'z-sticky',
   'z-dropdown',
