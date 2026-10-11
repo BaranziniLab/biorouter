@@ -471,7 +471,7 @@ describe('collectArtifactsFromMessages', () => {
     // Regression: the agent writes a file like "results 100%.csv". basenameFromPath
     // called decodeURIComponent on it, which throws URIError: "URI malformed" on the
     // stray `%`. Because collectArtifactsFromMessages runs during chat render, that
-    // throw crashed the whole app into the "Honk!" error boundary mid-task.
+    // throw crashed the whole app into the "Something went wrong" error boundary mid-task.
     const messages: Message[] = [
       writeRequest('t1', 'developer__text_editor', {
         command: 'write',

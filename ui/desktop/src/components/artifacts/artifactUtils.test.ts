@@ -45,7 +45,7 @@ describe('basenameFromPath', () => {
     // A file named with a stray `%` (common: "results 100%.csv") is not valid
     // percent-encoding, so decodeURIComponent throws URIError: "URI malformed".
     // basenameFromPath runs during chat render (collectArtifactsFromMessages),
-    // so an unguarded throw crashes the whole app into the "Honk!" boundary.
+    // so an unguarded throw crashes the whole app into the error boundary.
     expect(() => basenameFromPath('/work/results 100%.csv')).not.toThrow();
     expect(basenameFromPath('/work/results 100%.csv')).toBe('results 100%.csv');
     expect(basenameFromPath('/tmp/50%off/report%.html')).toBe('report%.html');

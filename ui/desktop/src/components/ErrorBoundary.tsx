@@ -27,7 +27,7 @@ export function ErrorUI({ error }: { error: string }) {
           <AlertTriangle className="w-8 h-8 text-text-danger" />
         </div>
 
-        <h1 className="text-title text-text-default">Honk!</h1>
+        <h1 className="text-title text-text-default">Something went wrong</h1>
 
         {window?.appConfig?.get('BIOROUTER_VERSION') !== undefined ? (
           <p className="text-body text-text-muted mb-2">
