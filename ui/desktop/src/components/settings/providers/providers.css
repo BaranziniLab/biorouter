@@ -26,6 +26,27 @@
   text-align: start;
 }
 
+/* An accordion row's keyboard focus is the ROW's, drawn the way a row that is itself the focus
+   target draws it (`main.css`, "row focus": `--background-focus` and an inset 2px `--border-focus`
+   edge at the row's radius), and the toggle inside it draws none of its own (vision FR-R2-3). The
+   toggle used to take the base layer's control fallback: the same fill and edge, but square and
+   flush against the title and the second line, a box drawn inside the row's rounded wash, where
+   every other control in the panel has a rounded, padded surface. The scoped selector out-ranks
+   the catalog's hover paint below (0,5,0), so a focused row under the pointer still reads as
+   focused; the plain one covers a row outside a catalog. The forced-colours focus ring at the end
+   of `main.css` is an outline, which is left alone here. */
+.biorouter-settings-row.br-setting-row:has(> .br-provider-row-toggle:focus-visible),
+.br-provider-catalog.br-rows-flat
+  .biorouter-settings-row.br-setting-row:has(> .br-provider-row-toggle:focus-visible) {
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-provider-row-toggle:focus-visible {
+  background-color: transparent;
+  box-shadow: none;
+}
+
 /* The disclosure glyph follows the name, so every title starts on the same x. It points down at
    rest ("opens") and turns over when the row is open. */
 .br-provider-chevron {
