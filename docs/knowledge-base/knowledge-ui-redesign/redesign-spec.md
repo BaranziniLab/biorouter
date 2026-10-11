@@ -17,7 +17,11 @@
 > the title and subject bands into one 44px `PageHeader` band, moved the tier control's trigger
 > into that band as a badge-button (its confirmation is unchanged), flattened the Sources rail and
 > graph into flush columns, made the facet strip 44px, and retired the height step. The container
-> ladder (860/940/1140/1400) is unchanged.
+> ladder (860/940/1140/1400) is unchanged. Owner message 13 (R-27) then took the outlines out:
+> the filters (4.6), the Sources drop target, the paste box and the digest model field are subtle
+> fills with a transparent 1px edge, and an engaged filter is the strong fill under the selected
+> wash, no longer a solid accent fill. The Public tier badge, the drawers' rows and the lint
+> group heads follow the same rule; the lines that remain are structural or on a floating card.
 
 The companion mockup is [`knowledge-redesign-studio.html`](knowledge-redesign-studio.html) — open it
 in a browser, no server needed. It renders **the same page markup at four real pane sizes** (760,
