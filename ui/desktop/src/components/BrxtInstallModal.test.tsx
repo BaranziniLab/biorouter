@@ -308,11 +308,18 @@ describe('BrxtInstallModal — the dialog', () => {
     await waitFor(() => expect(zone).toHaveAttribute('data-state', 'error'));
   });
 
-  it('keeps the drop zone focusable while it reads a file, so first focus never lands on the dialog box', async () => {
-    // Finder hands over a file and the dialog opens already reading it. A disabled drop zone
-    // cannot hold focus, which left first focus on the dialog's own box, drawn with the
-    // browser's default blue ring.
-    const user = userEvent.setup({ delay: null });
+  /**
+   * The shared dialog (`ui/dialog.tsx`, `useReturnFocusToOpener`) decides where first focus goes
+   * from the last input the window saw. After a key press it keeps Radix's first stop; after a
+   * pointer press, and on a page nobody has touched (a dialog the app raises by itself, such as
+   * the one Finder's hand-over opens), it rests on the dialog's own box, which draws no ring. The
+   * tracker (`ui/inputTrail`) is module state that every earlier case in this file moved, so a case
+   * that depends on the modality sets it itself.
+   */
+  const keyOpen = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+  const pointerOpen = () => window.dispatchEvent(new Event('pointerdown'));
+
+  function readingFile() {
     const validate = vi.fn(() => new Promise<never>(() => {}));
     const picker = vi.fn(async () => '/tmp/other.brxt');
     (window as unknown as { electron: unknown }).electron = {
@@ -326,6 +333,16 @@ describe('BrxtInstallModal — the dialog', () => {
         preloadedFilePath="/tmp/playwright.brxt"
       />
     );
+    return { validate, picker };
+  }
+
+  it('keeps the drop zone focusable while it reads a file, so a key open starts on the zone', async () => {
+    // Finder hands over a file and the dialog opens already reading it. A disabled drop zone
+    // cannot hold focus, which left a key open's first stop on the dialog's own box. The zone
+    // answers `aria-disabled` instead, so Radix's first stop is still the zone.
+    const user = userEvent.setup({ delay: null });
+    keyOpen();
+    const { validate, picker } = readingFile();
 
     const zone = await screen.findByRole('button', { name: COPY.reading });
     expect(zone).not.toBeDisabled();
@@ -337,6 +354,23 @@ describe('BrxtInstallModal — the dialog', () => {
     await user.click(zone);
     expect(picker).not.toHaveBeenCalled();
     expect(validate).toHaveBeenCalledTimes(1);
+  });
+
+  it('rests a pointer open on the dialog box, and one Tab still reaches the reading drop zone', async () => {
+    // A pointer open (or an app-raised one) rests on the box, which draws no ring (V4-R5-1). The
+    // zone must stay in the tab order while it reads: `aria-disabled`, never `disabled`, which
+    // would drop it and leave the first Tab on the Cancel button.
+    const user = userEvent.setup({ delay: null });
+    pointerOpen();
+    readingFile();
+
+    const zone = await screen.findByRole('button', { name: COPY.reading });
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(zone).not.toHaveFocus();
+
+    await user.tab();
+    expect(zone).toHaveFocus();
   });
 
   it('labels a required variable with a mark that is not spoken, and masks a secret', async () => {

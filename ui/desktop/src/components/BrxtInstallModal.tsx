@@ -603,8 +603,10 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
           <button
             type="button"
             // Not `disabled` while a bundle is read: a disabled button cannot hold focus, and a
-            // dialog opened with a file already chosen (Finder hands one over) then had nowhere
-            // to put first focus but the dialog's own box, drawn with the browser's blue ring.
+            // dialog opened with a file already chosen (Finder hands one over) has every other
+            // control disabled too, so a key open then had no first stop and the keyboard no
+            // stop at all. The shared dialog rests a pointer open on its own box (no ring) and a
+            // key open on the first tabbable, which is this zone; one Tab reaches it from the box.
             // The label says what the zone is doing, so it still contains the words on screen.
             aria-label={
               isValidating ? COPY.reading : manifest ? COPY.dropZoneAnotherName : COPY.dropZoneName
