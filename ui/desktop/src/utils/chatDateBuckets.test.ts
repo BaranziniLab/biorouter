@@ -56,4 +56,35 @@ describe('groupByChatDate', () => {
       ['January 2025', ['old']],
     ]);
   });
+
+  it('builds the month formatter once per shape, not once per old chat (R-28)', () => {
+    // A construction costs about 25 µs, and the sidebar groups every loaded chat by date on a
+    // view switch: 5,500 chats older than 30 days took about 115 ms of formatter builds alone.
+    const rows = Array.from({ length: 3000 }, (_, index) => ({
+      id: String(index),
+      // Spread over the last six years, all older than 30 days: both shapes (with and without
+      // the year) are asked for many times.
+      when: at(2026 - (index % 6), index % 12, 1 + (index % 28)),
+    }));
+    // Counted by a subclass: a spy on the constructor would not build the formatter.
+    const Real = Intl.DateTimeFormat;
+    let constructed = 0;
+    class Counting extends Real {
+      constructor(...args: ConstructorParameters<typeof Real>) {
+        super(...args);
+        constructed += 1;
+      }
+    }
+    Intl.DateTimeFormat = Counting as typeof Intl.DateTimeFormat;
+    let labels: string[] = [];
+    try {
+      labels = groupByChatDate(rows, (row) => row.when, NOW).map((group) => group.label);
+    } finally {
+      Intl.DateTimeFormat = Real;
+    }
+    expect(constructed).toBeLessThanOrEqual(2);
+    // The labels are still the ones a fresh formatter gives, in both shapes.
+    expect(labels).toContain('July');
+    expect(labels).toContain('April 2023');
+  });
 });
