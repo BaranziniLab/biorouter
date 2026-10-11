@@ -15,9 +15,13 @@
  * whole stylesheet and driven with real key presses in Chromium. Only the daemon edge is stubbed
  * (the generated API module, toasts, the per-machine overrides store).
  *
- * "The instrument": the same bundle with `autoFocus` put back on the three fields must leave focus
- * on `<body>`, and a pointer pick followed by a pointer close must give nothing back (the menus'
- * rule, kept). A mutation that matches nothing throws, so a refactor cannot turn the instrument
+ * Since WS-PRIMITIVES took the primitive side (218cfe015, WS-PRIMITIVES-3), `DialogContent` reads
+ * the opener when its content mounts with focus already inside, so the old shape works too. The
+ * last case keeps that as a guard on these three dialogs: the same bundle with `autoFocus` put
+ * back on the three fields must still give focus back to Add, by Escape and by the keyboard
+ * Cancel. (Before the primitive learned it, that case asserted `<body>`; it was the instrument
+ * that proved the cause.) A pointer pick followed by a pointer close must give nothing back (the
+ * menus' rule, kept). A mutation that matches nothing throws, so a refactor cannot turn the guard
  * into a no-op.
  */
 import { readFileSync } from 'node:fs';
@@ -337,17 +341,33 @@ describe(
       }
     });
 
-    it('the instrument: with autoFocus back on the fields, Escape leaves focus on the page body', async (ctx) => {
+    it('with autoFocus back on the fields, the primitive still gives focus back to Add (Escape and keyboard Cancel)', async (ctx) => {
       if (!browser) return ctx.skip();
       for (const dialog of DIALOGS) {
-        const tab = await open(old);
-        try {
-          await pickByKeyboard(tab, dialog.item, dialog.field);
-          await tab.keyboard.press('Escape');
-          await closed(tab);
-          expect(await settledHolder(tab), dialog.title).toBe('BODY');
-        } finally {
-          await tab.close();
+        for (const closeWith of ['Escape', 'Cancel'] as const) {
+          const tab = await open(old);
+          try {
+            await pickByKeyboard(tab, dialog.item, dialog.field);
+            // autoFocus took the field as the content committed: the shape Radix's own open hook
+            // never sees.
+            expect(
+              await tab.evaluate((f) => document.activeElement?.matches(f), dialog.field),
+              `${dialog.title}: autoFocus put first focus on the field`
+            ).toBe(true);
+            if (closeWith === 'Escape') {
+              await tab.keyboard.press('Escape');
+            } else {
+              await tab
+                .getByRole('button', { name: /^(Cancel|Close)$/ })
+                .first()
+                .focus();
+              await tab.keyboard.press('Enter');
+            }
+            await closed(tab);
+            await expectFocusOnAdd(tab);
+          } finally {
+            await tab.close();
+          }
         }
       }
     });
