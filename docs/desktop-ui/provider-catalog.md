@@ -95,8 +95,9 @@ ground (rgb(27, 27, 25)) is 1.03:1 off its row and has no box. The row therefore
 strong step, so a button in it hovers one step deeper, on `--background-strong`, as it does anywhere else
 on that ground; the strong step there would be the row's own value and erase the button under the
 pointer. Settings paints its hovered rows with the same idea (`settings.css`); the two are separate
-because the provider page is not inside `.br-settings-page`, and the catalog's rule out-ranks Settings'
-`.br-rows-flat` paint by specificity, so the order the style sheets are bundled in does not matter.
+rules because the catalog root and Settings' reading column each carry `.br-rows-flat`, and the
+catalog's selector (`.br-provider-catalog.br-rows-flat`, two classes on one element) out-ranks Settings'
+one-class paint by specificity, so the order the style sheets are bundled in does not matter.
 
 ## The page band
 
