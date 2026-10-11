@@ -1,0 +1,552 @@
+// @vitest-environment node
+/**
+ * The boot splash, measured in Chromium with the real `index.html` and the real `main.css`
+ * (first run vision round 3, FR-R1-7; R-29, R-34).
+ *
+ * `boot-splash.test.ts` runs the splash's own markup and script in jsdom, which can say what the
+ * source contains and nothing about how it looks. This file loads the shipped `index.html` (its
+ * inline style, its inline script, its theme-init script) in a real engine, with the compiled
+ * stylesheet in place of the `<link>` and the React entry removed, and measures what a person on a
+ * slow launch sees:
+ *
+ * - the splash is the Biorouter wordmark the app draws, not a look-alike: the static numbers match
+ *   what `<BioRouterWordmark/>` measures, and the two rasterise to the same pixels;
+ * - its ground is the page's own canvas in every family and mode, so a launch that crosses the
+ *   threshold fades onto the page with no grey flash;
+ * - it appears at rest, whole in the first frame, with the brand face already loaded;
+ * - its ink sits at the window's centre, with the sweep a fixed distance below;
+ * - under forced colours and reduced motion it still reads and stays still.
+ *
+ * It needs a Chromium; with none installed it warns and passes, like the other `.browser.test`
+ * files.
+ */
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build, type Plugin } from 'esbuild';
+import postcss from 'postcss';
+import { chromium, type Browser, type Page } from 'playwright';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { fontScale } from '../vite-plugins/fontScale.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const DESKTOP = resolve(here, '..');
+const STYLES = resolve(here, 'styles');
+const requireFromDesktop = createRequire(resolve(DESKTOP, 'package.json'));
+
+const launchChromium = async (): Promise<Browser | null> => {
+  for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
+    try {
+      return await chromium.launch(options);
+    } catch {
+      // try the next build
+    }
+  }
+  return null;
+};
+
+/** The in-app wordmark at the size the splash draws it (160 by 49), light or dark. */
+const WORDMARK_ENTRY = `
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import { BioRouterWordmark } from './BioRouterWordmark';
+const dark = new URLSearchParams(location.search).get('dark') === '1';
+createRoot(document.getElementById('root')!).render(
+  <BioRouterWordmark dark={dark} style={{ width: 160, height: 49, display: 'block' }} />
+);
+`;
+
+const noCss: Plugin = {
+  name: 'nocss',
+  setup(b) {
+    b.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'js' }));
+  },
+};
+
+const FAMILIES = ['parchment', 'alma-mater', 'roche-limit'] as const;
+
+type Ink = { left: number; right: number; top: number; bottom: number };
+
+describe('The boot splash draws the wordmark at rest on the page ground (FR-R1-7)', () => {
+  let browser: Browser | null = null;
+  let css = '';
+  let wordmarkScript = '';
+  let indexHtml = '';
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn('No Chromium found: skipping the boot splash browser tests.');
+      return;
+    }
+    const bundle = await build({
+      stdin: {
+        contents: WORDMARK_ENTRY,
+        loader: 'tsx',
+        resolveDir: resolve(here, 'components', 'icons'),
+        sourcefile: 'entry.tsx',
+      },
+      bundle: true,
+      write: false,
+      format: 'iife',
+      jsx: 'automatic',
+      platform: 'browser',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      plugins: [noCss],
+      logLevel: 'silent',
+    });
+    wordmarkScript = bundle.outputFiles[0].text;
+    const { compile } = await import(requireFromDesktop.resolve('@tailwindcss/node'));
+    const { Scanner } = requireFromDesktop('@tailwindcss/oxide');
+    const compiler = await compile(readFileSync(resolve(STYLES, 'main.css'), 'utf8'), {
+      base: STYLES,
+      onDependency() {},
+    });
+    const tailwind = compiler.build(
+      new Scanner({}).scanFiles([{ content: wordmarkScript, extension: 'js' }])
+    );
+    css = (await postcss([fontScale()]).process(tailwind, { from: undefined })).css;
+
+    // The shipped page, with the stylesheet inlined where the <link> was and the React entry
+    // dropped. Each swap is asserted, so a markup change cannot leave this testing a stub.
+    const source = readFileSync(resolve(DESKTOP, 'index.html'), 'utf8');
+    const link = /<link href="\.\/src\/styles\/main\.css" rel="stylesheet"\/>/;
+    const entry = /<script type="module" src="\.\/src\/renderer\.tsx"><\/script>/;
+    if (!link.test(source) || !entry.test(source)) {
+      throw new Error('index.html no longer has the stylesheet link or the renderer entry');
+    }
+    indexHtml = source.replace(link, () => `<style>${css}</style>`).replace(entry, '');
+  }, 180_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  /** The real page at an http origin (so localStorage works), theme chosen the way the app does. */
+  async function openSplash(
+    options: {
+      width?: number;
+      height?: number;
+      dark?: boolean;
+      family?: (typeof FAMILIES)[number];
+      media?: { forcedColors?: 'active'; reducedMotion?: 'reduce' };
+      scale?: number;
+    } = {}
+  ): Promise<Page> {
+    const {
+      width = 1440,
+      height = 900,
+      dark = false,
+      family = 'parchment',
+      media,
+      scale,
+    } = options;
+    const ctx = await browser!.newContext({
+      viewport: { width, height },
+      colorScheme: dark ? 'dark' : 'light',
+      deviceScaleFactor: scale ?? 1,
+      ...(media?.forcedColors ? { forcedColors: media.forcedColors } : {}),
+      ...(media?.reducedMotion ? { reducedMotion: media.reducedMotion } : {}),
+    });
+    const tab = await ctx.newPage();
+    await tab.addInitScript(
+      ([fam, isDark]) => {
+        localStorage.setItem('theme_family', fam as string);
+        localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        localStorage.setItem('use_system_theme', 'false');
+      },
+      [family, dark] as const
+    );
+    await tab.route('http://splash.test/', (route) =>
+      route.fulfill({ body: indexHtml, contentType: 'text/html' })
+    );
+    await tab.goto('http://splash.test/');
+    return tab;
+  }
+
+  /** Resolves in the first animation frame the splash is on screen, with what that frame holds. */
+  const firstFrame = (tab: Page) =>
+    tab.evaluate(
+      () =>
+        new Promise<{
+          interLoaded: boolean;
+          animations: string[];
+          partOpacities: string[];
+          partFilters: string[];
+          bioLeft: number;
+        }>((res) => {
+          const tick = () => {
+            const splash = window.__brBootSplash;
+            if (splash && splash.isShown()) {
+              const parts = [...document.querySelectorAll('#br-boot .br-wordmark > *')];
+              res({
+                interLoaded: document.fonts.check('600 100px Inter'),
+                animations: document
+                  .getAnimations()
+                  .map(
+                    (a) => (a as unknown as { animationName?: string }).animationName ?? 'other'
+                  ),
+                partOpacities: parts.map((p) => getComputedStyle(p).opacity),
+                partFilters: parts.map((p) => getComputedStyle(p).filter),
+                bioLeft: document
+                  .querySelector('#br-boot .br-wordmark tspan')!
+                  .getBoundingClientRect().left,
+              });
+              return;
+            }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        })
+    );
+
+  /** The ink of whatever is drawn above `limitY` (CSS px), read from a real screenshot. */
+  async function inkAbove(tab: Page, limitY: number, scale: number): Promise<Ink> {
+    const png = await tab.screenshot();
+    const scratch = await browser!.newPage();
+    try {
+      return await scratch.evaluate(
+        async ([b64, limit, dpr]) => {
+          const img = new Image();
+          img.src = `data:image/png;base64,${b64}`;
+          await img.decode();
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const g = canvas.getContext('2d')!;
+          g.drawImage(img, 0, 0);
+          const { data } = g.getImageData(0, 0, img.width, img.height);
+          const ground = [data[0], data[1], data[2]];
+          let left = img.width;
+          let right = -1;
+          let top = img.height;
+          let bottom = -1;
+          const rows = Math.min(img.height, Math.floor((limit as number) * (dpr as number)));
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < img.width; x++) {
+              const i = (y * img.width + x) * 4;
+              const d =
+                Math.abs(data[i] - ground[0]) +
+                Math.abs(data[i + 1] - ground[1]) +
+                Math.abs(data[i + 2] - ground[2]);
+              if (d > 90) {
+                if (x < left) left = x;
+                if (x > right) right = x;
+                if (y < top) top = y;
+                if (y > bottom) bottom = y;
+              }
+            }
+          }
+          const s = dpr as number;
+          return { left: left / s, right: (right + 1) / s, top: top / s, bottom: (bottom + 1) / s };
+        },
+        [png.toString('base64'), limitY, scale] as const
+      );
+    } finally {
+      await scratch.close();
+    }
+  }
+
+  it('is the wordmark the app draws: the same measured geometry and the same pixels', async () => {
+    if (!browser) return;
+    // The real component, in the real engine, at the size the splash draws it.
+    const app = await browser.newPage({ viewport: { width: 400, height: 200 } });
+    await app.setContent(
+      `<!doctype html><html><head><style>${css}</style></head>` +
+        `<body style="margin:0;background:#fff"><div id="root"></div></body></html>`
+    );
+    await app.addScriptTag({ content: wordmarkScript });
+    await app.waitForSelector('#root svg rect');
+    await app.evaluate(() => document.fonts.ready);
+    await app.waitForTimeout(300);
+    const live = await app.evaluate(() => {
+      const svg = document.querySelector('#root svg')!;
+      const rects = [...svg.querySelectorAll('rect')].map((r) => ({
+        x: Number(r.getAttribute('x')),
+        y: Number(r.getAttribute('y')),
+        w: Number(r.getAttribute('width')),
+        h: Number(r.getAttribute('height')),
+      }));
+      const text = svg.querySelector('text')!;
+      return {
+        viewBox: svg.getAttribute('viewBox')!.split(' ').map(Number),
+        rects,
+        fontSize: text.getAttribute('font-size'),
+        weight: getComputedStyle(text).fontWeight,
+        family: getComputedStyle(text).fontFamily,
+      };
+    });
+
+    // The splash page, shown, light, at the same size.
+    const tab = await openSplash();
+    await firstFrame(tab);
+    const splash = await tab.evaluate(() => {
+      const svg = document.querySelector('#br-boot .br-wordmark')!;
+      const rects = [...svg.querySelectorAll('rect')].map((r) => ({
+        x: Number(r.getAttribute('x')),
+        y: Number(r.getAttribute('y')),
+        w: Number(r.getAttribute('width')),
+        h: Number(r.getAttribute('height')),
+      }));
+      const text = svg.querySelector('text')!;
+      const box = svg.getBoundingClientRect();
+      return {
+        viewBox: svg.getAttribute('viewBox')!.split(/\s+/).map(Number),
+        rects,
+        fontSize: text.getAttribute('font-size'),
+        weight: getComputedStyle(text).fontWeight,
+        family: getComputedStyle(text).fontFamily,
+        size: [box.width, box.height],
+      };
+    });
+
+    // The markup keeps two decimals; the component measures more. Half a hundredth is the rounding.
+    const close = (a: number[], b: number[]) =>
+      a.forEach((v, i) => expect(Math.abs(v - b[i])).toBeLessThanOrEqual(0.006));
+    close(splash.viewBox, live.viewBox);
+    expect(splash.rects).toHaveLength(2);
+    splash.rects.forEach((r, i) =>
+      close(
+        [r.x, r.y, r.w, r.h],
+        [live.rects[i].x, live.rects[i].y, live.rects[i].w, live.rects[i].h]
+      )
+    );
+    expect(splash.fontSize).toBe(live.fontSize);
+    expect(splash.weight).toBe(live.weight);
+    expect(splash.family).toBe(live.family);
+    expect(splash.size).toEqual([160, 49]);
+
+    // Same engine, same face, same box: the two rasterise to the same pixels. A sub-pixel of
+    // slack covers the two-decimal rounding of the box; anything visible (a weight, a face, a
+    // bar position, an ink) moves far more than that.
+    const clip = { x: 0, y: 0, width: 160, height: 49 };
+    const appPng = await app.screenshot({ clip });
+    const box = await tab.evaluate(() => {
+      const r = document.querySelector('#br-boot .br-wordmark')!.getBoundingClientRect();
+      return { x: r.left, y: r.top, width: r.width, height: r.height };
+    });
+    // The splash sits on the page ground, the component on white: both are white in light mode.
+    const splashPng = await tab.screenshot({ clip: box });
+    const scratch = await browser.newPage();
+    const differing = await scratch.evaluate(
+      async ([a, b]) => {
+        const read = async (b64: string) => {
+          const img = new Image();
+          img.src = `data:image/png;base64,${b64}`;
+          await img.decode();
+          const c = document.createElement('canvas');
+          c.width = img.width;
+          c.height = img.height;
+          const g = c.getContext('2d')!;
+          g.drawImage(img, 0, 0);
+          return g.getImageData(0, 0, img.width, img.height).data;
+        };
+        const [da, db] = [await read(a), await read(b)];
+        let n = 0;
+        for (let i = 0; i < da.length; i += 4) {
+          const d =
+            Math.abs(da[i] - db[i]) +
+            Math.abs(da[i + 1] - db[i + 1]) +
+            Math.abs(da[i + 2] - db[i + 2]);
+          if (d > 48) n += 1;
+        }
+        return { n, total: da.length / 4 };
+      },
+      [appPng.toString('base64'), splashPng.toString('base64')] as const
+    );
+    await scratch.close();
+    await app.close();
+    await tab.context().close();
+    expect(
+      differing.n,
+      `${differing.n} of ${differing.total} pixels differ from the app wordmark`
+    ).toBeLessThan(40);
+  }, 60_000);
+
+  it("paints the page's own canvas in every family and mode, and the window ground under it", async () => {
+    if (!browser) return;
+    const tab = await openSplash();
+    await firstFrame(tab);
+    const grounds = await tab.evaluate(
+      (families) => {
+        const root = document.documentElement;
+        const splash = document.getElementById('br-boot')!;
+        const probe = document.createElement('i');
+        document.body.appendChild(probe);
+        const read = (token: string) => {
+          probe.style.background = `var(${token})`;
+          return getComputedStyle(probe).backgroundColor;
+        };
+        const out: { scope: string; splash: string; canvas: string; app: string; muted: string }[] =
+          [];
+        for (const family of families) {
+          for (const dark of [false, true]) {
+            root.setAttribute('data-theme', family);
+            root.classList.toggle('dark', dark);
+            out.push({
+              scope: `${family} ${dark ? 'dark' : 'light'}`,
+              splash: getComputedStyle(splash).backgroundColor,
+              canvas: read('--background-canvas'),
+              app: read('--background-app'),
+              muted: read('--background-muted'),
+            });
+          }
+        }
+        return out;
+      },
+      [...FAMILIES]
+    );
+    expect(grounds).toHaveLength(6);
+    for (const g of grounds) {
+      expect(g.splash, `${g.scope}: the splash ground is the page canvas`).toBe(g.canvas);
+      expect(g.splash, `${g.scope}: and the window ground behind it`).toBe(g.app);
+      expect(g.splash, `${g.scope}: never the muted grey it used to be`).not.toBe(g.muted);
+    }
+    await tab.context().close();
+  }, 60_000);
+
+  it('appears whole in its first frame: the brand face loaded, nothing fading, sliding or blurred', async () => {
+    if (!browser) return;
+    for (const dark of [false, true]) {
+      const tab = await openSplash({ dark });
+      const first = await firstFrame(tab);
+      expect(
+        first.interLoaded,
+        `${dark ? 'dark' : 'light'}: Inter is loaded when the splash shows`
+      ).toBe(true);
+      // The only animation on the screen is the sweep.
+      expect(first.animations).toEqual(['br-boot-sweep']);
+      expect(new Set(first.partOpacities)).toEqual(new Set(['1']));
+      expect(new Set(first.partFilters)).toEqual(new Set(['none']));
+      // And the letters do not move over the frames after it (no slide-in).
+      const later = await tab.evaluate(
+        () =>
+          new Promise<number[]>((res) => {
+            const lefts: number[] = [];
+            const tick = () => {
+              lefts.push(
+                document.querySelector('#br-boot .br-wordmark tspan')!.getBoundingClientRect().left
+              );
+              if (lefts.length < 20) requestAnimationFrame(tick);
+              else res(lefts);
+            };
+            requestAnimationFrame(tick);
+          })
+      );
+      expect(new Set(later.map((n) => n.toFixed(2))).size, 'the lockup moved between frames').toBe(
+        1
+      );
+      expect(later[0].toFixed(2)).toBe(first.bioLeft.toFixed(2));
+      await tab.context().close();
+    }
+  }, 60_000);
+
+  it("sits the wordmark's ink at the window's centre, with the sweep a fixed distance below", async () => {
+    if (!browser) return;
+    // 1440 x 900 is the usual window; 1048 x 700 is the smallest the app opens at.
+    for (const [width, height] of [
+      [1440, 900],
+      [1048, 700],
+    ] as const) {
+      const tab = await openSplash({ width, height, scale: 2 });
+      await firstFrame(tab);
+      const sweep = await tab.evaluate(() => {
+        const r = document.querySelector('#br-boot .br-sweep')!.getBoundingClientRect();
+        return { top: r.top, left: r.left, width: r.width, height: r.height };
+      });
+      const ink = await inkAbove(tab, sweep.top - 4, 2);
+      const label = `${width}x${height}`;
+      expect(
+        Math.abs((ink.left + ink.right) / 2 - width / 2),
+        `${label}: ink centre x`
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs((ink.top + ink.bottom) / 2 - height / 2),
+        `${label}: ink centre y`
+      ).toBeLessThanOrEqual(1);
+      // The sweep is centred under it, a small fixed distance from the underline.
+      expect(
+        Math.abs(sweep.left + sweep.width / 2 - width / 2),
+        `${label}: sweep centre x`
+      ).toBeLessThanOrEqual(0.5);
+      expect(
+        sweep.top - ink.bottom,
+        `${label}: gap from the underline to the sweep`
+      ).toBeGreaterThanOrEqual(20);
+      expect(
+        sweep.top - ink.bottom,
+        `${label}: gap from the underline to the sweep`
+      ).toBeLessThanOrEqual(28);
+      await tab.context().close();
+    }
+  }, 90_000);
+
+  it('keeps the wordmark in the brand inks in every family, with navy lifting to teal in the dark', async () => {
+    if (!browser) return;
+    const inks: Record<string, string[]> = {};
+    for (const family of FAMILIES) {
+      for (const dark of [false, true]) {
+        const tab = await openSplash({ family, dark });
+        await firstFrame(tab);
+        inks[`${family} ${dark ? 'dark' : 'light'}`] = await tab.evaluate(() => [
+          getComputedStyle(document.querySelector('#br-boot .br-wordmark tspan.br-navy')!).fill,
+          getComputedStyle(document.querySelector('#br-boot .br-wordmark tspan.br-coral')!).fill,
+          getComputedStyle(document.querySelector('#br-boot .br-wordmark rect.br-navy')!).fill,
+        ]);
+        await tab.context().close();
+      }
+    }
+    const light = ['rgb(5, 32, 73)', 'rgb(184, 90, 50)', 'rgb(5, 32, 73)'];
+    const dark = ['rgb(24, 163, 172)', 'rgb(184, 90, 50)', 'rgb(24, 163, 172)'];
+    for (const [scope, got] of Object.entries(inks)) {
+      expect(got, scope).toEqual(scope.endsWith('dark') ? dark : light);
+    }
+  }, 120_000);
+
+  it('reads in the one ink forced colours guarantees, instead of navy on a canvas it did not choose', async () => {
+    if (!browser) return;
+    const tab = await openSplash({ media: { forcedColors: 'active' } });
+    await firstFrame(tab);
+    const fills = await tab.evaluate(() => {
+      const probe = document.createElement('i');
+      probe.style.color = 'CanvasText';
+      document.body.appendChild(probe);
+      const canvasText = getComputedStyle(probe).color;
+      return {
+        canvasText,
+        bio: getComputedStyle(document.querySelector('#br-boot tspan.br-navy')!).fill,
+        router: getComputedStyle(document.querySelector('#br-boot tspan.br-coral')!).fill,
+        bar: getComputedStyle(document.querySelector('#br-boot rect.br-navy')!).fill,
+        barRight: getComputedStyle(document.querySelector('#br-boot rect.br-coral')!).fill,
+      };
+    });
+    expect(fills.bio).toBe(fills.canvasText);
+    expect(fills.router).toBe(fills.canvasText);
+    expect(fills.bar).toBe(fills.canvasText);
+    expect(fills.barRight).toBe(fills.canvasText);
+    await tab.context().close();
+  }, 60_000);
+
+  it('stands still under reduced motion: the sweep stops and the logo is exactly where it was', async () => {
+    if (!browser) return;
+    const calm = await openSplash({ media: { reducedMotion: 'reduce' } });
+    const first = await firstFrame(calm);
+    expect(first.animations, 'nothing animates under reduced motion').toEqual([]);
+    const calmBox = await calm.evaluate(() => {
+      const r = document.querySelector('#br-boot .br-wordmark')!.getBoundingClientRect();
+      return [r.left, r.top, r.width, r.height];
+    });
+    await calm.context().close();
+
+    const moving = await openSplash();
+    await firstFrame(moving);
+    const movingBox = await moving.evaluate(() => {
+      const r = document.querySelector('#br-boot .br-wordmark')!.getBoundingClientRect();
+      return [r.left, r.top, r.width, r.height];
+    });
+    await moving.context().close();
+    expect(calmBox).toEqual(movingBox);
+  }, 60_000);
+});

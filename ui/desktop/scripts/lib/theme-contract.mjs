@@ -271,11 +271,13 @@ export const TERMINAL_DIM_SLOTS = {
 };
 
 /**
- * The brand mark's inks, plus the splash progress track. Named `mark`, not
- * `splash`: these drive BOTH the pre-React boot splash AND the in-app
- * <BioRouterMark>, and calling them "splash" is what let the two drift apart in
- * the first place. (The <BioRouterWordmark> deliberately does NOT read these —
- * see the note in that component.) `bg` is derived from --background-muted.
+ * The BR monogram's inks, plus the splash progress track. Named `mark`, not
+ * `splash`: `navy` and `coral` drive the in-app <BioRouterMark>, and `track` the
+ * boot splash's progress line. The boot splash draws the WORDMARK now, and the
+ * <BioRouterWordmark> deliberately does NOT follow the family (see the note in
+ * that component), so every family's splash takes the BASE family's `navy` and
+ * `coral`; only `track` is read per family. The splash ground is
+ * --background-canvas, derived by the generator and authored nowhere.
  */
 export const MARK_STOPS = ['navy', 'coral', 'track'];
 

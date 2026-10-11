@@ -42,18 +42,8 @@ function extractScript(html: string): string {
 }
 
 const THRESHOLD_MS = 400;
-const DURATION_MS = 420;
-const STAGGER_MS = 70;
-
-/** Only the fields the splash actually sets — avoids depending on DOM lib globals. */
-type SplashKeyframe = { opacity?: number; transform?: string; filter?: string };
-type SplashAnimOptions = {
-  duration?: number;
-  easing?: string;
-  delay?: number;
-  fill?: string;
-};
-type AnimateCall = { keyframes: SplashKeyframe[]; options: SplashAnimOptions };
+/** The longest the first frame waits for the brand face (the script's FONT_WAIT_MS). */
+const FONT_WAIT_MS = 250;
 
 /** Installs the splash exactly as the browser would, with timers already faked. */
 function mountSplash(): void {
@@ -66,14 +56,31 @@ function splashEl(): HTMLElement | null {
   return document.getElementById('br-boot');
 }
 
+/** The splash stylesheet with CSS comments removed, so rule matching is
+ *  not thrown off by the (long) explanatory comments between rules. */
+function splashStyle(): string {
+  const match = readIndexHtml().match(/<style id="br-boot-splash-style">([\s\S]*?)<\/style>/);
+  if (!match) throw new Error('boot splash style block not found in index.html');
+  return match[1].replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/**
+ * The declaration body of one rule. Anchored on `}` or start-of-sheet so
+ * `#br-boot` matches only the BASE rule, never `html.dark #br-boot`.
+ */
+function ruleBody(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = css.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
+  if (!match) throw new Error(`rule not found: ${selector}`);
+  return match[1];
+}
+
 describe('boot splash', () => {
-  let animateCalls: AnimateCall[];
-  let cancelled: number;
+  let animateCalls: number;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    animateCalls = [];
-    cancelled = 0;
+    animateCalls = 0;
     document.documentElement.className = '';
     document.documentElement.removeAttribute('data-theme');
     delete (window as { __brBootSplash?: unknown }).__brBootSplash;
@@ -84,21 +91,37 @@ describe('boot splash', () => {
     document.body.innerHTML = '';
     delete (window as { __brBootSplash?: unknown }).__brBootSplash;
     delete (Element.prototype as { animate?: unknown }).animate;
+    delete (document as { fonts?: unknown }).fonts;
   });
 
-  /** jsdom has no Web Animations API; stand one up so the animated path runs. */
+  /**
+   * jsdom has no Web Animations API. The splash must never reach for one: it appears at rest, so
+   * this stands one up that COUNTS, and the "at rest" cases below assert the count stays 0.
+   */
   function stubAnimate() {
-    (Element.prototype as unknown as { animate: unknown }).animate = function (
-      keyframes: SplashKeyframe[],
-      options: SplashAnimOptions
-    ) {
-      animateCalls.push({ keyframes, options });
-      return {
-        cancel: () => {
-          cancelled += 1;
-        },
-      };
+    (Element.prototype as unknown as { animate: unknown }).animate = function () {
+      animateCalls += 1;
+      return { cancel: () => undefined };
     };
+  }
+
+  /**
+   * jsdom has no FontFaceSet. This stands one up whose `load` the test settles by hand, so the
+   * wait for the brand face can be walked through (and a face that never arrives can be timed).
+   */
+  function stubFonts() {
+    const calls: { font: string; text: string | undefined }[] = [];
+    let settle: () => void = () => undefined;
+    const pending = new Promise<unknown[]>((resolve) => {
+      settle = () => resolve([]);
+    });
+    (document as unknown as { fonts: unknown }).fonts = {
+      load: (font: string, text?: string) => {
+        calls.push({ font, text });
+        return pending;
+      },
+    };
+    return { calls, arrive: settle };
   }
 
   /**
@@ -118,9 +141,11 @@ describe('boot splash', () => {
    * one in index.html, blamed `@theme inline` for compiling the tokens away.
    * That is false: they are ordinary custom properties, verified by probe.)
    *
-   * Most of those literals are now GENERATED from each family's
-   * --background-muted, so only the base family's light values are hand-written
-   * — and those are pinned to parchment.theme.mjs by a test below.
+   * Most of those literals are now GENERATED: each family's own
+   * --background-canvas (the ground the page paints) and the base family's mark
+   * inks (the splash draws the wordmark, which does not follow the family), so
+   * only the base family's light values are hand-written, and those are pinned
+   * to parchment.theme.mjs and to the wordmark's own constants by tests below.
    */
   describe('theme coverage', () => {
     /**
@@ -164,7 +189,7 @@ describe('boot splash', () => {
       // on the reasoning that a duplicate meant one family was wearing another's
       // background. That reasoning no longer holds: neutrals are now shared
       // infrastructure, so all three families paint the same
-      // `--background-muted` by design and duplicates are the CORRECT outcome.
+      // `--background-canvas` by design and duplicates are the CORRECT outcome.
       //
       // The regression it actually protected against survives, though, and is
       // asserted here instead: a family+mode whose rule is missing or malformed
@@ -187,6 +212,19 @@ describe('boot splash', () => {
       expect([...light][0], 'the dark ground must not equal the light one').not.toBe([...dark][0]);
     });
 
+    /** The canvas hexes in parchment.theme.mjs, light then dark (file order). */
+    function parchmentCanvas(): { light: string; dark: string; mutedLight: string } {
+      const src = readFileSync(resolveFromPackage(join('themes', 'parchment.theme.mjs')), 'utf-8');
+      const canvas = [...src.matchAll(/'background-canvas':\s*'(#[0-9a-fA-F]{6})'/g)].map(
+        (m) => m[1]
+      );
+      const muted = [...src.matchAll(/'background-muted':\s*'(#[0-9a-fA-F]{6})'/g)].map(
+        (m) => m[1]
+      );
+      expect(canvas, 'parchment.theme.mjs must define a canvas for light and dark').toHaveLength(2);
+      return { light: canvas[0], dark: canvas[1], mutedLight: muted[0] };
+    }
+
     it("pins the base family's hand-written splash values to its definition", () => {
       // The generator deliberately skips the base family's LIGHT rule: this
       // `#br-boot` block IS that rule, and emitting a second copy would give one
@@ -205,11 +243,62 @@ describe('boot splash', () => {
       expect(read('coral'), '--br-coral must match parchment.light mark.coral').toBe(
         parchment.mark.coral
       );
-      // The ground is --background-muted, which is what makes the hand-off to
-      // the booted app free of a colour jump. It is now the SHARED light
-      // neutral rather than Parchment's own cream #faf8f3 — the families
-      // differ in ink and accent (--br-navy / --br-coral above), not ground.
-      expect(read('bg'), '--br-bg must be the shared light --background-muted').toBe('#f4f4f2');
+      // The ground is the PAGE's: --background-canvas, the ground the first-run
+      // page and the loader paint (the loader's `bg-background-canvas` is pinned
+      // below). It was --background-muted, a grey one step off that ground, so a
+      // launch just over the threshold flashed grey before it faded onto white
+      // (vision FR-R1-7).
+      const canvas = parchmentCanvas();
+      expect(read('bg'), '--br-bg must be parchment light --background-canvas').toBe(canvas.light);
+      expect(read('bg'), '--br-bg must NOT be the muted grey').not.toBe(canvas.mutedLight);
+    });
+
+    it("paints each mode's page canvas in every family, never the muted grey", () => {
+      const html = readIndexHtml();
+      const canvas = parchmentCanvas();
+      const rules = [...html.matchAll(/([^\n{}]*)#br-boot\s*\{[^}]*?--br-bg:\s*([^;]+);/g)].map(
+        (m) => ({ dark: m[1].includes('.dark'), bg: m[2].trim() })
+      );
+      expect(rules.length).toBeGreaterThan(1);
+      for (const r of rules) {
+        expect(r.bg, r.dark ? 'dark ground' : 'light ground').toBe(
+          r.dark ? canvas.dark : canvas.light
+        );
+      }
+    });
+
+    it("gives every family the wordmark's inks, because the wordmark does not follow the family", () => {
+      // The splash draws icons/BioRouterWordmark.tsx's lockup, and that component
+      // is DELIBERATELY fixed to the brand colours in every family (navy, lifting
+      // to teal on a dark ground, over coral). A splash that took Alma Mater's
+      // teal or Roche Limit's orange from the family's own `mark` would hand off
+      // to a differently coloured logo one frame later. The constants are read
+      // from the component's source, so the two cannot drift.
+      const word = readFileSync(
+        resolveFromPackage(join('src', 'components', 'icons', 'BioRouterWordmark.tsx')),
+        'utf-8'
+      );
+      const ink = (name: string) =>
+        word.match(new RegExp(`const ${name} = '(#[0-9a-fA-F]{6})'`))?.[1];
+      const navy = ink('NAVY');
+      const coral = ink('CORAL');
+      const teal = ink('TEAL');
+      expect([navy, coral, teal], 'the wordmark constants were not found').not.toContain(undefined);
+
+      const html = readIndexHtml();
+      const rules = [
+        ...html.matchAll(
+          /([^\n{}]*)#br-boot\s*\{[^}]*?--br-navy:\s*([^;]+);[^}]*?--br-coral:\s*([^;]+);/g
+        ),
+      ].map((m) => ({ dark: m[1].includes('.dark'), navy: m[2].trim(), coral: m[3].trim() }));
+      // the hand-written base rule plus the five generated ones
+      expect(rules).toHaveLength(themeFamilies().length * 2);
+      for (const r of rules) {
+        expect(r.navy, r.dark ? 'dark navy lifts to teal' : 'light navy').toBe(
+          r.dark ? teal : navy
+        );
+        expect(r.coral, 'coral is the same in both modes').toBe(coral);
+      }
     });
 
     it('uses CSS comments inside <style>, never HTML comments', () => {
@@ -268,16 +357,59 @@ describe('boot splash', () => {
   });
 
   describe('markup', () => {
-    it('ships four independently animatable mark parts', () => {
+    it('draws the wordmark, not the BR monogram (R-29: the text logo is the logo)', () => {
       mountSplash();
-      expect(document.querySelectorAll('#br-boot .br-part')).toHaveLength(4);
+      const svg = document.querySelector('#br-boot svg.br-wordmark');
+      expect(svg, 'the wordmark lockup is missing').not.toBeNull();
+      // "Bio" and "Router" in two inks, over a two-tone bar drawn as two rects.
+      const words = [...svg!.querySelectorAll('text tspan')];
+      expect(words.map((w) => w.textContent)).toEqual(['Bio', 'Router']);
+      expect(words.map((w) => w.getAttribute('class'))).toEqual(['br-navy', 'br-coral']);
+      expect(
+        [...svg!.querySelectorAll('rect')].map((r) => r.getAttribute('class')),
+        'the bar is the navy rect with the coral one drawn over its right half'
+      ).toEqual(['br-navy', 'br-coral']);
+      // The monogram and its four animatable parts are gone from the launch frame.
+      expect(document.querySelector('#br-boot .br-mark')).toBeNull();
+      expect(document.querySelector('#br-boot .br-part')).toBeNull();
     });
 
-    it('announces the wait to screen readers, since nothing on screen is text', () => {
+    it("keeps the lockup's box and its two bar halves consistent with the size the CSS gives it", () => {
+      // The numbers were read off a rendered <BioRouterWordmark/> (viewBox, the two rects, the
+      // text's size). bootSplash.browser.test.ts renders the component in Chromium and compares
+      // against them; this case keeps the shape (a viewBox in the CSS box's ratio, bar halves that
+      // end together) honest in jsdom.
+      mountSplash();
+      const svg = document.querySelector('#br-boot svg.br-wordmark')!;
+      const [x, y, w, h] = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
+      expect(w / h, 'the box keeps the ratio the CSS sizes it by (160 x 49)').toBeCloseTo(
+        160 / 49,
+        1
+      );
+      expect(x).toBeLessThan(0);
+      expect(y).toBeLessThan(0);
+      const [navy, coral] = [...svg.querySelectorAll('rect')].map((r) => ({
+        x: Number(r.getAttribute('x')),
+        w: Number(r.getAttribute('width')),
+      }));
+      expect(coral.x + coral.w, 'both halves end at the same right edge').toBeCloseTo(
+        navy.x + navy.w,
+        2
+      );
+      expect(svg.querySelector('text')!.getAttribute('font-size')).toBe('100');
+    });
+
+    it('names the app once, in the brand spelling, and hides the lockup from assistive tech', () => {
       mountSplash();
       const live = document.querySelector('#br-boot .br-sr');
       expect(live?.getAttribute('role')).toBe('status');
-      expect(live?.textContent).toContain('Loading BioRouter');
+      // "Biorouter", lowercase r (src/test/uiCopySpelling.test.ts). The lockup is the logo, and
+      // its capital R is the logo's, so it is not announced a second time.
+      expect(live?.textContent).toBe('Loading Biorouter…');
+      const svg = document.querySelector('#br-boot svg.br-wordmark')!;
+      expect(svg.getAttribute('aria-hidden')).toBe('true');
+      expect(svg.hasAttribute('aria-label')).toBe(false);
+      expect(svg.hasAttribute('role')).toBe(false);
     });
 
     it('starts hidden so a fast boot paints nothing at all', () => {
@@ -288,43 +420,25 @@ describe('boot splash', () => {
 
   /**
    * jsdom has NO layout engine — `getBoundingClientRect()` is all zeroes here —
-   * so these cannot assert the mark's measured position. They pin the two CSS
+   * so these cannot assert the wordmark's measured position. They pin the two CSS
    * facts that PRODUCE the position instead, which is where the bug actually
    * lived. Both were measured in a real Electron window before and after:
-   * the mark's ink centre sat at y=447.59 on the splash but y=461.49 on the
-   * loader it hands off to (923px-tall viewport) — a 14px drop, plus a 4px
-   * size change, i.e. the logo visibly jumped.
+   * the old BR monogram's ink centre sat at y=447.59 on the splash but y=461.49
+   * on the loader it hands off to (923px-tall viewport), so the logo visibly
+   * jumped. bootSplash.browser.test.ts measures the wordmark's centre in
+   * Chromium.
    */
-  describe('mark placement (must not move when handing off to the app)', () => {
-    /** The splash stylesheet with CSS comments removed, so rule matching is
-     *  not thrown off by the (long) explanatory comments between rules. */
-    function splashStyle(): string {
-      const match = readIndexHtml().match(/<style id="br-boot-splash-style">([\s\S]*?)<\/style>/);
-      if (!match) throw new Error('boot splash style block not found in index.html');
-      return match[1].replace(/\/\*[\s\S]*?\*\//g, '');
-    }
-
-    /**
-     * The declaration body of one rule. Anchored on `}` or start-of-sheet so
-     * `#br-boot` matches only the BASE rule, never `html.dark #br-boot`.
-     */
-    function ruleBody(css: string, selector: string): string {
-      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const match = css.match(new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`));
-      if (!match) throw new Error(`rule not found: ${selector}`);
-      return match[1];
-    }
-
-    it('centres the container on the MARK — no gap can offset it', () => {
+  describe('wordmark placement (must not move when handing off to the app)', () => {
+    it('centres the container on the WORDMARK, so no gap can offset it', () => {
       const body = ruleBody(splashStyle(), '#br-boot');
       // A `gap` only has an effect if something else shares the flow, and any
-      // such sibling shifts the mark by half the extra height. This is the
+      // such sibling shifts the logo by half the extra height. This is the
       // regression: `gap: 26px` + an in-flow sweep pushed the mark 14px up.
       expect(body).toMatch(/justify-content:\s*center/);
       expect(body).not.toMatch(/(^|[\s;])gap\s*:/);
     });
 
-    it('keeps the sweep out of the flex flow, so it cannot displace the mark', () => {
+    it('keeps the sweep out of the flex flow, so it cannot displace the wordmark', () => {
       const body = ruleBody(splashStyle(), '#br-boot .br-sweep');
       expect(body).toMatch(/position:\s*absolute/);
     });
@@ -398,85 +512,175 @@ describe('boot splash', () => {
       expect(splashEl()).toBeNull();
     });
 
-    it('cancels in-flight animations so they cannot outlive the element', () => {
-      stubAnimate();
+    it('takes the sweep down with the element, so nothing keeps running after the app is up', () => {
+      // The sweep is a CSS animation on a child of #br-boot, so removing the element is what
+      // stops it: there is no script-held animation left to cancel.
       mountSplash();
       vi.advanceTimersByTime(THRESHOLD_MS);
-      expect(animateCalls.length).toBeGreaterThan(0);
+      expect(document.querySelector('#br-boot .br-sweep')).not.toBeNull();
 
       window.__brBootSplash?.dismiss();
       vi.advanceTimersByTime(400);
-      expect(cancelled).toBe(animateCalls.length);
+      expect(document.querySelector('#br-boot .br-sweep')).toBeNull();
+      expect(document.querySelector('#br-boot')).toBeNull();
     });
   });
 
-  describe('cascade timing', () => {
-    it('staggers the four parts left to right on the agreed keyframes', () => {
+  /**
+   * The splash is a launch surface, and a launch surface appears at REST (spec principle 9,
+   * vision FR-R1-7): the wordmark is whole in the first frame, with no stagger, no blur and no
+   * entrance. It used to cascade four parts in over 700 ms, which made the BR monogram the
+   * first thing a new person saw for most of a second. The cascade, its keyframes and the
+   * blur-in-user-units arithmetic are gone; what is left to pin is that nothing came back.
+   */
+  describe('appears at rest', () => {
+    it('asks the Web Animations API for nothing, whatever the motion preference', () => {
       stubAnimate();
       mountSplash();
       vi.advanceTimersByTime(THRESHOLD_MS);
 
-      // Four parts plus one sweep-bar fade.
-      const partAnims = animateCalls.slice(0, 4);
-      expect(partAnims).toHaveLength(4);
-
-      partAnims.forEach((call, i) => {
-        expect(call.options.delay).toBe(i * STAGGER_MS);
-        expect(call.options.duration).toBe(DURATION_MS);
-        expect(call.options.easing).toBe('cubic-bezier(0.22, 1, 0.36, 1)');
-        expect(call.options.fill).toBe('forwards');
-      });
-
-      // Each part resolves out of blur, from transparent to opaque.
-      const first = partAnims[0];
-      expect(first.keyframes[0].opacity).toBe(0);
-      expect(first.keyframes[first.keyframes.length - 1].opacity).toBe(1);
-      expect(String(first.keyframes[0].filter)).toMatch(/^blur\(/);
-      expect(first.keyframes[first.keyframes.length - 1].filter).toBe('blur(0px)');
+      expect(splashEl()?.hidden).toBe(false);
+      expect(animateCalls).toBe(0);
     });
 
-    it('converts blur into SVG user units, not raw device pixels', () => {
+    it('sets no inline opacity, transform, filter or animation on anything it draws', () => {
       stubAnimate();
       mountSplash();
       vi.advanceTimersByTime(THRESHOLD_MS);
 
-      // 2px at a 165.672-unit viewBox rendered 84px wide ≈ 3.94 user units.
-      // A literal blur(2px) here would mean the blur scaled with the mark.
-      const startBlur = String(animateCalls[0].keyframes[0].filter);
-      const value = parseFloat(startBlur.replace(/[^0-9.]/g, ''));
-      expect(value).toBeCloseTo(2 * (165.672 / 84), 1);
-      expect(value).not.toBeCloseTo(2, 1);
+      const styled = [...document.querySelectorAll('#br-boot *')].filter((n) =>
+        n.hasAttribute('style')
+      );
+      expect(
+        styled.map((n) => `${n.tagName}.${n.getAttribute('class')}: ${n.getAttribute('style')}`)
+      ).toEqual([]);
     });
-  });
 
-  describe('reduced motion', () => {
-    it('renders the mark settled instead of cascading it', () => {
-      stubAnimate();
-      const original = window.matchMedia;
-      window.matchMedia = ((query: string) =>
-        ({
-          matches: query.includes('prefers-reduced-motion'),
-          media: query,
-          addEventListener: vi.fn(),
-          removeEventListener: vi.fn(),
-          addListener: vi.fn(),
-          removeListener: vi.fn(),
-          onchange: null,
-          dispatchEvent: vi.fn(),
-        }) as unknown as MediaQueryList) as typeof window.matchMedia;
-
-      try {
-        mountSplash();
-        vi.advanceTimersByTime(THRESHOLD_MS);
-
-        expect(splashEl()?.hidden).toBe(false);
-        expect(animateCalls).toHaveLength(0);
-        document.querySelectorAll<HTMLElement>('#br-boot .br-part').forEach((part) => {
-          expect(part.style.opacity).toBe('1');
-        });
-      } finally {
-        window.matchMedia = original;
+    it('gives the wordmark no entrance in CSS either: no opacity ramp, filter, animation or transition', () => {
+      const css = splashStyle();
+      for (const selector of [
+        '#br-boot .br-wordmark',
+        '#br-boot .br-wordmark text',
+        '#br-boot .br-navy',
+        '#br-boot .br-coral',
+      ]) {
+        expect(ruleBody(css, selector), selector).not.toMatch(
+          /(^|[\s;])(opacity|filter|animation|transition|transform)\s*:/
+        );
       }
+      // Nothing in the sheet fades or blurs a part in, by name.
+      expect(css).not.toMatch(/\.br-part\b/);
+      expect(css).not.toMatch(/blur\(/);
+    });
+
+    it('moves only the sweep, and only through transform', () => {
+      const css = splashStyle();
+      // The one keyframe set on the screen, and it moves the bar with `transform` alone.
+      const keyframes = [...css.matchAll(/@keyframes\s+([\w-]+)\s*\{([\s\S]*?\})\s*\}/g)];
+      expect(keyframes.map((k) => k[1])).toEqual(['br-boot-sweep']);
+      expect(keyframes[0][2]).toMatch(/transform:\s*translateX\(100%\)/);
+      expect(keyframes[0][2]).not.toMatch(/opacity|filter|width|height|left|top/);
+
+      const bar = ruleBody(css, '#br-boot .br-sweep i');
+      expect(bar).toMatch(/animation:\s*br-boot-sweep\b[^;]*\binfinite/);
+      // The sweep is simply there from the first frame, not faded in behind the logo.
+      expect(ruleBody(css, '#br-boot .br-sweep')).not.toMatch(/opacity/);
+    });
+
+    it('stops the sweep under reduced motion and leaves the logo exactly as it was', () => {
+      const css = splashStyle();
+      const reduced = css.match(
+        /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?\})\s*\}/
+      )?.[1];
+      expect(reduced, 'no reduced-motion rule').toBeDefined();
+      expect(reduced).toMatch(/#br-boot \.br-sweep i\s*\{\s*animation:\s*none/);
+      // Nothing else changes under reduced motion: the logo has no motion to remove.
+      expect(reduced).not.toMatch(/\.br-wordmark|\.br-navy|\.br-coral|opacity/);
+    });
+
+    it('takes the whole lockup to the one ink forced colours guarantees', () => {
+      // Chromium does not force an SVG fill authored as a colour, so without this the navy half
+      // keeps its ink on a canvas the person chose (the in-app wordmark measured about 1.3:1).
+      const forced = splashStyle().match(
+        /@media\s*\(forced-colors:\s*active\)\s*\{([\s\S]*?\})\s*\}/
+      )?.[1];
+      expect(forced, 'no forced-colors rule').toBeDefined();
+      expect(forced).toMatch(/\.br-navy/);
+      expect(forced).toMatch(/\.br-coral/);
+      expect(forced).toMatch(/fill:\s*CanvasText/);
+    });
+  });
+
+  /**
+   * Inter is `font-display: block` and is requested only when something paints with it, so a
+   * splash shown at once drew the bars of the lockup first and its letters later (measured in
+   * Chromium: `unloaded` when shown, `loaded` 10 to 20 ms after). The splash therefore loads the
+   * face before it shows, and gives up after FONT_WAIT_MS so a slow or missing face never holds
+   * the launch frame back.
+   */
+  describe('the first frame is the whole logo', () => {
+    it('loads the brand face at the wordmark weight before it shows', () => {
+      const fonts = stubFonts();
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS);
+
+      expect(fonts.calls).toEqual([{ font: '600 100px Inter', text: 'BioRouter' }]);
+      // Still hidden: the face has not arrived, so there is no first frame to show yet.
+      expect(splashEl()?.hidden).toBe(true);
+      expect(window.__brBootSplash?.isShown()).toBe(false);
+    });
+
+    it('shows the instant the face arrives', async () => {
+      const fonts = stubFonts();
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS);
+
+      fonts.arrive();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(splashEl()?.hidden).toBe(false);
+      expect(window.__brBootSplash?.isShown()).toBe(true);
+    });
+
+    it('never holds the splash past FONT_WAIT_MS for a face that does not arrive', () => {
+      stubFonts();
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS + FONT_WAIT_MS - 1);
+      expect(splashEl()?.hidden).toBe(true);
+
+      vi.advanceTimersByTime(1);
+      expect(splashEl()?.hidden).toBe(false);
+    });
+
+    it('shows at once when the document has no font loading API at all', () => {
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS);
+      expect(splashEl()?.hidden).toBe(false);
+    });
+
+    it('shows nothing, and does not throw, when the app mounts while the face is still loading', async () => {
+      const fonts = stubFonts();
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS);
+      expect(splashEl()?.hidden).toBe(true);
+
+      // The boot finished inside the wait: drop the splash without a flash.
+      window.__brBootSplash?.dismiss();
+      expect(splashEl()).toBeNull();
+
+      fonts.arrive();
+      await vi.advanceTimersByTimeAsync(FONT_WAIT_MS + 50);
+      expect(splashEl()).toBeNull();
+      expect(window.__brBootSplash?.isShown()).toBe(false);
+    });
+
+    it('treats a rejected load like an arrival rather than waiting out the clock', async () => {
+      (document as unknown as { fonts: unknown }).fonts = {
+        load: () => Promise.reject(new Error('no such face')),
+      };
+      mountSplash();
+      vi.advanceTimersByTime(THRESHOLD_MS);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(splashEl()?.hidden).toBe(false);
     });
   });
 });
