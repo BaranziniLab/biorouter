@@ -7,7 +7,8 @@
    Public comes first because a chat that has run a turn on a private model
    stays private: in the third turn the picker shows Claude Code as
    unavailable, as the app's model picker does. The loop then starts a new chat
-   (the transcript clears and "New chat" shows) before any public turn runs.
+   (the transcript clears and the composer asks its open question again)
+   before any public turn runs.
    Groups, names and tiers follow crates/biorouter/src/providers/factory.rs,
    providerOrdering.ts and SwitchModelModal.tsx. */
 (function () {
@@ -16,9 +17,22 @@
 
   var NS = 'http://www.w3.org/2000/svg';
   var UP = '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>';
-  function svgIcon(body) {
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
+  var PLUS = '<path d="M5 12h14"/><path d="M12 5v14"/>';
+  var DOWN = '<path d="m6 9 6 6 6-6"/>';
+  var FOLDER = '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>';
+  function svgIcon(body, cls) {
+    return '<svg' + (cls ? ' class="' + cls + '"' : '') + ' viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
   }
+  // The composer card, as the app draws it: the prose line, then a controls
+  // row inside the card (+, Tools N, the model chip, Send), then the working
+  // folder under it. The row is as tall as the app's Send (32px); the PAD
+  // values are the card's padding, and hub.css holds the same numbers.
+  var BAR_H = 32, PAD_T = 4, PAD_B = 6, PAD_L = 14, PAD_R = 6;
+  // The open model menu rises from the chip: its bottom sits 4px above the row.
+  var MENU_INSET = PAD_B + BAR_H + 4;
+  // The row gives up its parts in this order when a narrow card cannot hold
+  // them: the two chevrons, the Tools chip, the + button. The chip stays.
+  var BAR_STEPS = 3;
 
   /* The catalogue, in the app's order. 28 providers ship (23 built in plus 5
      bundled declarative ones); nine are named here, so 19 more are Public.
@@ -107,11 +121,10 @@
     var pulsePath = mkPath('hub-pulse');
     hub.appendChild(svg);
 
-    // The chat: a transcript that scrolls, the composer card, the model chip.
+    // The chat: a transcript that scrolls, and the composer card.
     var log = el('div', 'hub-log');
     var stack = el('div', 'hub-stack');
-    var fresh = el('div', 'hub-new', 'New chat');
-    log.appendChild(stack); log.appendChild(fresh);
+    log.appendChild(stack);
     var card = el('div', 'hub-card');
     var input = el('div', 'hub-input');
     // The placeholder follows composer/copy.ts: the open question in an empty
@@ -122,7 +135,6 @@
     var caret = el('span', 'hub-caret');
     input.appendChild(ph); input.appendChild(typed); input.appendChild(caret);
     var send = el('div', 'hub-send', svgIcon(UP));
-    card.appendChild(input); card.appendChild(send);
 
     // The chip's menu, opening above the chip as the app's does.
     var pick = el('div', 'hub-pick');
@@ -136,14 +148,24 @@
       prows[p.row] = r;
     });
 
-    var controls = el('div', 'hub-controls');
+    // The controls row inside the card. The model chip is the row's own, so a
+    // turn's route leaves the card at this row's height.
+    var bar = el('div', 'hub-bar');
     var chip = el('div', 'hub-chip');
     var chipModel = el('span', 'model');
     var chipName = el('span', 'name');
     var chipLock = el('span', 'hub-lock');
     chipModel.appendChild(chipName); chipModel.appendChild(chipLock);
     chip.appendChild(chipModel);
-    controls.appendChild(chip);
+    chip.insertAdjacentHTML('beforeend', svgIcon(DOWN, 'hub-dd'));
+    bar.appendChild(el('span', 'hub-plus', svgIcon(PLUS)));
+    bar.appendChild(el('span', 'hub-tools', 'Tools 5' + svgIcon(DOWN, 'hub-dd')));
+    bar.appendChild(chip);
+    bar.appendChild(send);
+    card.appendChild(input); card.appendChild(bar);
+
+    // The working folder, under the card where the app shows it.
+    var folder = el('div', 'hub-folder', svgIcon(FOLDER, 'hub-fi') + '<span>Desktop</span>');
 
     // The brand's own mark (icon-transparent.svg), not letters set in the page.
     var mark = el('div', 'hub-mark', '<img src="icon-transparent.svg" alt="" width="512" height="512">');
@@ -183,7 +205,7 @@
     var probe = el('span', 'hub-probe');
     measure.appendChild(probe);
 
-    hub.appendChild(log); hub.appendChild(card); hub.appendChild(pick); hub.appendChild(controls);
+    hub.appendChild(log); hub.appendChild(card); hub.appendChild(pick); hub.appendChild(folder);
     hub.appendChild(mark); hub.appendChild(cat); hub.appendChild(measure);
     root.appendChild(hub);
 
@@ -249,11 +271,28 @@
       var longest = 0;
       TURNS.forEach(function (t) { longest = Math.max(longest, textW(t.prompt, 13.5)); });
 
+      // The card: its border, the prose (one line, or two for a long prompt)
+      // and the controls row. The prose has the card's whole width.
       function sizeCard(width) {
-        var inputW = width - 2 - 14 - 10 - 32 - 8;
+        var inputW = width - 2 - PAD_L - PAD_R;
         var lines = longest + 3 > inputW ? 2 : 1;
         input.style.height = (lines * 20 + 12) + 'px';
-        return lines * 20 + 12 + 20 + 2;
+        return 2 + PAD_T + lines * 20 + 12 + BAR_H + PAD_B;
+      }
+      // The row's parts, every one or fewer where this card is too narrow.
+      // The chip's name changes during the loop, so the row has to fit the
+      // widest of them, not the one showing now; the step is chosen once.
+      function setBarStep(n) {
+        for (var i = 1; i <= BAR_STEPS; i++) hub.classList.toggle('bs' + i, i <= n);
+      }
+      function fitBar() {
+        var name = chipName.textContent, hidden = chipLock.hidden, step = 0;
+        setBarStep(0);
+        TURNS.concat([NEW_CHAT]).forEach(function (t) {
+          chipName.textContent = t.model; chipLock.hidden = !t.lock;
+          while (step < BAR_STEPS && bar.scrollWidth > bar.clientWidth + 1) setBarStep(++step);
+        });
+        chipName.textContent = name; chipLock.hidden = hidden;
       }
       // Heights at this width: the tallest turn (`one`), and the tallest turn
       // together with the whole reply before it (`two`), so the chat can show
@@ -275,24 +314,23 @@
         }
         return { one: Math.ceil(one), two: Math.ceil(two) };
       }
-      // The menu is as wide as its widest state (Claude Code unavailable) and
-      // at least wide enough to cover the placeholder it opens over.
+      // The menu is as wide as its widest state (Claude Code unavailable).
       var wasOff = prows.claude.classList.contains('off');
       pick.style.width = '';
       prows.claude.classList.add('off');
       var pb = pick.getBoundingClientRect();
       prows.claude.classList.toggle('off', wasOff);
       var pickW = Math.ceil(pb.width), pickH = Math.ceil(pb.height);
-      var phW = textW(PH_EMPTY, 14);
       function placePick() {
-        var px = chatX + 6;
-        var pw = Math.max(pickW, Math.ceil(chatX + 15 + phW + 10 - px));
-        // sits over the composer, its bottom a little inside the card's
-        place(pick, px, cardY + cardH - 5 - pickH, pw);
+        // Right edge on the chip's (which Send holds in place, whatever the
+        // model's name), bottom 4px above the controls row.
+        var kb = box(chip), bb = box(bar);
+        var px = Math.max(chatX + 6, kb.x + kb.w - pickW), pw = pickW;
+        place(pick, px, bb.y - 4 - pickH, pw);
       }
       // The transcript ends far enough above the card that the open menu
       // keeps a clear 14px from the last line of the chat.
-      function gapFor(ch) { return Math.max(14, pickH + 5 + 14 - ch); }
+      function gapFor(ch) { return Math.max(14, pickH + MENU_INSET + 14 - ch); }
       // The transcript's box runs on down to just above the card, and the
       // gap below its last line is padding, so a message that was just sent
       // rises out of the composer instead of being cut by an unseen edge.
@@ -306,7 +344,7 @@
         chatW = clamp(Math.round(w * 0.31), 228, 300);
         // widen the composer to hold a prompt on one line when there is room,
         // letting the catalogue give up to 22px for it
-        var oneLine = Math.ceil(longest) + 3 + 2 + 14 + 10 + 32 + 8;
+        var oneLine = Math.ceil(longest) + 3 + 2 + PAD_L + PAD_R;
         if (oneLine > chatW) {
           var room = w - 2 * pad - markS - 80;
           var give = clamp(oneLine - (room - catW), 0, 22);
@@ -330,11 +368,14 @@
         cy = Math.min(Math.max(cy, cyTwo <= cyMax ? cyTwo : cyOne), cyMax);
         cardY = cy - half;
         place(card, chatX, cardY, chatW, cardH);
-        place(controls, chatX, cardY + cardH + 4);
+        place(folder, chatX, cardY + cardH + 4);
+        fitBar();
         setTail(G);
         place(log, chatX, pad, chatW, cardY - EDGE - pad);
         hub.style.setProperty('--hub-fade', '26px');
-        markY = cy - markS / 2;
+        // The mark sits level with the controls row, so the route leaves the
+        // card where the model chip and Send are.
+        markY = cardY + cardH - PAD_B - BAR_H / 2 - markS / 2;
         place(mark, markX, markY, markS, markS);
         cat.style.width = catW + 'px';
         var catH = cat.getBoundingClientRect().height;
@@ -394,7 +435,8 @@
         place(log, chatX, pad, chatW, logH + G - EDGE);
         cardY = pad + logH + G;
         place(card, chatX, cardY, chatW, cardH);
-        place(controls, chatX, cardY + cardH + 4);
+        place(folder, chatX, cardY + cardH + 4);
+        fitBar();
         markX = (w - markS) / 2;
         markY = cardY + cardH + 4 + 28 + g1;
         place(mark, markX, markY, markS, markS);
@@ -496,7 +538,6 @@
       setChip(TURNS[ti]);
       stack.innerHTML = ''; stack.style.transform = '';
       for (var i = 0; i <= ti; i++) stack.appendChild(makeTurn(TURNS[i], true));
-      fresh.classList.remove('on');
       ph.textContent = PH_FOLLOW;
       ph.classList.remove('off'); typed.textContent = ''; caret.classList.remove('on');
       send.classList.remove('armed');
@@ -589,8 +630,8 @@
 
     async function reset(my) {
       // A new chat: the whole transcript goes at once, the lit row goes quiet,
-      // the chip shows the new chat's model, and "New chat" shows before
-      // anything is sent. A composer left mid-turn by stop() is put to rest.
+      // the chip shows the new chat's model, and the empty chat rests a beat
+      // on its open question. A composer left mid-turn by stop() is put to rest.
       chipModel.classList.remove('out', 'in');
       ph.classList.remove('hide');
       pick.classList.remove('open');
@@ -602,7 +643,6 @@
       pulsePath.style.opacity = '0';
       routePath.classList.remove('on');
       setActive(null);
-      fresh.classList.remove('on');
       log.classList.add('leave');
       current = null;
       var swapping = swapChip(NEW_CHAT);
@@ -613,7 +653,6 @@
       ph.textContent = PH_EMPTY;
       ph.classList.remove('off');
       log.classList.remove('leave');
-      fresh.classList.add('on');
       await wait(400);
     }
 
@@ -664,7 +703,6 @@
 
       // 3. Send. The composer clears and the message joins the chat.
       send.classList.add('press');
-      fresh.classList.remove('on');
       await wait(125); if (my !== alive) return;
       send.classList.remove('press', 'armed');
       caret.classList.remove('on');
