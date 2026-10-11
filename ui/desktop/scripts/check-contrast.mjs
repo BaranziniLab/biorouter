@@ -128,6 +128,57 @@ function assertOverTint(label, fg, fill, alpha, ground, min, scope) {
   ]);
 }
 
+/**
+ * The off Switch on a popover's rows (WS-PICKERS-2). The composer's Tools
+ * popover is a list of rows whose trailing control is a Switch, and a command
+ * list opens with its first row highlighted: `--overlay-hover` (ink at an
+ * alpha, mixed to `transparent`) over the popover ground. So the track owes a
+ * visible step on BOTH row grounds, the resting one and the highlighted one,
+ * at the fills' own visible-step floor (1.08). In dark the old track
+ * (#33332f) sat 1.10:1 on the lifted ground and 1.05:1 on the highlighted row,
+ * a bare knob; main.css "popover fill" sinks it to a well.
+ *
+ * The highlight is read from the `--overlay-hover` DECLARATION, not copied
+ * here, so a change to its alpha moves the measurement with it. Mixing an ink
+ * to `transparent` keeps the ink and scales its alpha, and the browser
+ * composites that in sRGB, which is what `blend` does (WS-PICKERS read #363632
+ * off the dark popover's highlighted row in Chromium, the blend's own answer).
+ * A declaration of any other shape fails closed rather than skipping the row.
+ */
+function assertOffTrackOnRows(at, scope) {
+  assert(
+    `${at}: switch off track is a step off a resting row`,
+    '--control-track-off',
+    '--background-default',
+    1.08,
+    scope
+  );
+  const label = `${at}: switch off track is a step off the highlighted row`;
+  const overlay = resolveRaw('--overlay-hover', scope);
+  const parts =
+    overlay &&
+    /^color-mix\(in \w+,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)$/.exec(overlay);
+  if (!parts) {
+    failures++;
+    rows.push([
+      'UNRESOLVED',
+      '',
+      label,
+      `--overlay-hover is ${JSON.stringify(overlay)}, not color-mix(in <space>, var(--ink) N%, transparent)`,
+    ]);
+    return;
+  }
+  assertOverTint(
+    label,
+    '--control-track-off',
+    parts[1],
+    Number(parts[2]) / 100,
+    '--background-default',
+    1.08,
+    scope
+  );
+}
+
 // Grounds that body text can legitimately land on.
 const TEXT_GROUNDS = [
   '--background-app',
@@ -782,6 +833,19 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
       1.05,
       inside
     );
+    // The off Switch on the popover's own rows, and its knob ring on the re-pointed track.
+    assertOffTrackOnRows(at, inside);
+    assert(
+      `${at}: switch off knob ring on its track`,
+      '--border-control',
+      '--control-track-off',
+      3.0,
+      inside
+    );
+  } else {
+    // Light has no popover rule: a popover there paints the page's own ground, so these rows
+    // hold the track on every light list, and the highlighted row (1.09) is the binding case.
+    assertOffTrackOnRows(`${theme} popover`, scope);
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to

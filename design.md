@@ -1950,7 +1950,8 @@ wave 2 and before the vision loop, so the loop reviews the final sizes.
 - `--control-track-off` is the Switch's off track: `#ebebe8` light, `#33332f` dark. The off knob ring
   clears 3:1 against it (3.13 and 3.17), which is why the track sits a quiet step off the page (1.19 and
   1.36) rather than a mid-grey slab. Both are **hex literals declared once per mode in the base blocks**
-  because `check-contrast.mjs` resolves hex only; no family restates them.
+  because `check-contrast.mjs` resolves hex only; no family restates them. A dark popover sinks the track to
+  `#1b1b19` (9.11), where `#33332f` measured 1.05:1 on a highlighted row.
 - Dark `--heat-0` is `#32312e` (was `#1e1d1b`, 1.02:1 on the card, so a quiet day vanished): 1.33:1 now.
   Light is unchanged at `#eeeeea`. Each family's dark `--heat-1` moved one step where the lifted zero would
   have swallowed it (Parchment `#573e2a`, Roche Limit `#5c3410`), so the first active step stays 1.2:1 or
@@ -2004,7 +2005,9 @@ opens on focus only after a Tab.
 
 - **Switch.** One style, no variants. Track 32×20, `--radius-full`; off `--control-track-off`, on
   `--background-accent`. Knob 16px, inset 2px on every side in both states, travel 12px, no growth; off it is
-  `--background-default` ringed by `--border-control` (dark: `--text-muted` fill), on it is `--text-on-accent`.
+  the page ground (`--background-default`) ringed by `--border-control`, in light and dark, so the accent
+  track alone carries on; on, the knob is `--text-on-accent`. A dark `--text-muted` off knob was dropped
+  (coordinator ruling 8): it was the brightest thing in the control, so off read as on.
   Knob and track animate over 125ms; a value that loads asynchronously does not animate
   (`data-motion-still`). Named by the row's visible label through `aria-labelledby`. Stays a Radix
   `button[role=switch]`.
@@ -2151,6 +2154,12 @@ visible step in dark. On the dark canvas the transcript paints, the fill is 1.18
   thing inside a popover. The fill is not lifted above the popover ground on purpose: `--text-subtle`
   (placeholders) measures 4.15, 4.44 and 4.50:1 on the smallest useful lift (`#333330`) and 3.74 to 4.06:1 on
   `--background-strong`, below the 4.5:1 a field owes it, and on the well it only gains.
+- The off switch track sinks to the same well inside a dark popover (`--control-track-off` re-pointed to
+  `#1b1b19` in the same rule). The page's `#33332f` is a raised step on the page, but on the lifted ground it
+  measured 1.10:1 and on a highlighted row (the `--overlay-hover` wash a command list opens with) 1.05:1, a
+  bare knob. The well is 1.23:1 under the ground and 1.42:1 under the highlighted row, the nearest match to
+  light's 1.19:1 in lightness (dL* 8.2 against light's 7.0; `--background-fill` as the track gave 4.3), and
+  the knob ring gains (4.31:1). The Effort slider's rail paints the same token.
 - Opaque on purpose: a sticky table head, a fade that ends at the fill and anything that sits over content
   need a solid ground, which a translucent ink would not give them.
 
@@ -2161,7 +2170,10 @@ muted ink clear 4.5:1 on both fills (lowest 5.06:1), `--text-subtle` on the rest
 control edge and the focus edge clear 3:1 on both fills (lowest 3.10:1 and 4.55:1); the off switch track is a
 step off the fill. Inside a dark popover the same pair is measured again in the three dark scopes (the "dark
 popover" rows): the fill is 1.08 to 1.35:1 and the hover step at least 1.08:1 off the ground, 1.5:1 at most,
-and ink, placeholder and both edges clear their floors on both fills (lowest 4.31:1 for the control edge). `styles/themeNeutrals.test.ts` keeps both tokens shared, and
+and ink, placeholder and both edges clear their floors on both fills (lowest 4.31:1 for the control edge).
+The off switch track is held at 1.08:1 off a popover's resting row and off its highlighted row in all six
+scopes (the highlight is composited from the `--overlay-hover` declaration; light's highlighted row, 1.09:1,
+is the binding case), and the knob ring at 3:1 on the popover's track. `styles/themeNeutrals.test.ts` keeps both tokens shared, and
 `styles/fillTokens.browser.test.ts` measures the forced colours claim in Chromium.
 
 **The accessibility trade-off.** Text inputs and selects lose their resting border. A fill of 1.08 to 1.35:1 is

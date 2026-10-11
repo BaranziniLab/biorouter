@@ -56,8 +56,8 @@ Fills come before lines (design.md 9.11). Write `bg-background-fill border borde
 `hover:bg-background-fill-strong` where it responds to the pointer: keep the 1px border transparent,
 never `border-0`, so nothing moves and forced colours still draw the edge. On the sidebar or a muted
 ground, rest on `bg-background-fill-strong`. A control inside a filled card rests on
-`bg-background-default`. Inside a dark popover the fill is a well under the lifted ground and its hover
-step goes deeper; the tokens re-point themselves, so write nothing special. Lines stay only on structural
+`bg-background-default`. Inside a dark popover the fill is a well under the lifted ground, its hover
+step and the off switch track go deeper; the tokens re-point themselves, so write nothing special. Lines stay only on structural
 edges (the band edge, pane dividers, resize handles, rules inside a filled table) and on floating
 surfaces, which keep a hairline and a shadow.
 Row lists drop the hairline between rows when spacing and the hover fill separate them. Hairlines are
@@ -114,7 +114,9 @@ sheet only; `rounded-2xl` is banned outside `artifacts/`.
 Use the primitive in `components/ui/`, never a raw `<button>` or `<input>` with its own classes.
 
 - `Switch` when the change applies now, on the right, named by the row's visible label (no
-  "Toggle …", no "Enable …"). `Checkbox` to pick items or for a form option, on the left.
+  "Toggle …", no "Enable …"). Off, its knob is the page ground ringed in `--border-control`, in
+  light and dark; the accent track alone says on. `Checkbox` to pick items or for a form option, on
+  the left.
 - `SegmentedControl` for two to four short options; it never uses coral. `Select` for four or more,
   or options that need a line each. `CustomRadio` only in dialogs and forms. Underline `Tabs`.
 - Menus: 32px rows at 13px, a trailing check on the selected item, sentence-case group labels.

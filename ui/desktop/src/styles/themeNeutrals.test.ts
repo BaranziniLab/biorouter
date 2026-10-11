@@ -144,8 +144,8 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
   const generatedStart = raw.indexOf('THEMES:GENERATED:FAMILIES:START');
   const generatedEnd = raw.indexOf('THEMES:GENERATED:FAMILIES:END');
 
-  // The dark popover's one re-pointing of the strong fill is the only declaration of these tokens
-  // outside the two base blocks; it is held by its own test below.
+  // The dark popover's re-pointing of the strong fill and the off track is the only declaration
+  // of these tokens outside the two base blocks; it is held by its own test below.
   const popoverFill = (() => {
     const from = raw.indexOf('@ws WS-TOKENS begin: popover fill');
     const to = raw.indexOf('@ws WS-TOKENS end: popover fill');
@@ -172,11 +172,13 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
   /**
    * A dark popover floats on `--background-medium` (#2c2c29), which is also the dark strong fill, so
    * a hovered field there would vanish into the popover. The rule re-points the strong step one
-   * step DEEPER (#1b1b19) and nothing else: the rest fill is not lifted, because the placeholder ink
-   * falls under 4.5:1 on any fill a visible step above that ground (main.css "popover fill";
-   * `check-contrast.mjs` measures the rows in all three families).
+   * step DEEPER (#1b1b19): the rest fill is not lifted, because the placeholder ink falls under
+   * 4.5:1 on any fill a visible step above that ground. The off Switch's track sinks to the same
+   * well, because the page's track measured 1.05:1 on a highlighted popover row (WS-PICKERS-2).
+   * Nothing else moves (main.css "popover fill"; `check-contrast.mjs` measures the rows in all
+   * three families).
    */
-  it('re-points only the strong fill inside a dark popover, to the page ground, after the elevation rule', () => {
+  it('re-points only the strong fill and the off track inside a dark popover, to the page ground, after the elevation rule', () => {
     const [from, to] = popoverFill;
     expect(from, 'main.css has the popover fill block').toBeGreaterThan(-1);
     expect(to).toBeGreaterThan(from);
@@ -187,7 +189,10 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
       d[1],
       d[2].trim(),
     ]);
-    expect(declared).toEqual([['--background-fill-strong', 'var(--color-neutral-900)']]);
+    expect(declared).toEqual([
+      ['--background-fill-strong', 'var(--color-neutral-900)'],
+      ['--control-track-off', 'var(--color-neutral-900)'],
+    ]);
     // Only custom properties: the surface's own paint is WS-PRIMITIVES' rule, which comes first.
     expect(rule![1].replace(/--[\w-]+\s*:[^;]+;/g, '').trim()).toBe('');
     const elevation = raw.indexOf('@ws WS-PRIMITIVES end: popover elevation');

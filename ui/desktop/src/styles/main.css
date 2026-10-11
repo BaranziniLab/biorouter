@@ -3840,9 +3840,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    that is the page's direction in dark (and the first thing proposed): the placeholder ink
    (`--text-subtle`) is 4.15, 4.44 and 4.50:1 on the smallest useful lift (#333330) and 3.74 to 4.06
    on `--background-strong`, below the 4.5:1 a field owes it, while on the well it only gains.
-   `check-contrast.mjs` measures this scope in all three families (the "dark popover" rows). */
+   The off Switch's track sinks to the same well (WS-PICKERS-2). The page's #33332f is a raised
+   step on #1b1b19, but on the lifted ground it measured 1.10:1, and on a highlighted row (the
+   `--overlay-hover` wash, which a command list opens with) 1.05:1: a bare knob. At #1b1b19 it is
+   1.23:1 under the ground and 1.42:1 under the highlighted row, nearest light's 1.19:1 in
+   lightness (dL* 8.2 against light's 7.0; `--background-fill` gave 4.3), and still 1.09:1 off a
+   field's fill. The knob ring only gains on a deeper track (4.31:1). The Effort slider's rail
+   paints the same token. `check-contrast.mjs` measures this scope in all three families (the
+   "dark popover" rows). */
 .dark .biorouter-popover-surface {
   --background-fill-strong: var(--color-neutral-900);
+  --control-track-off: var(--color-neutral-900);
 }
 /* @ws WS-TOKENS end: popover fill */
 
