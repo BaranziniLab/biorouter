@@ -352,10 +352,37 @@ describe('CopilotControl', () => {
     // jsdom applies no Tailwind and computes no layout, so this asserts the
     // TOKEN CHOICE that separates the panel from the chat canvas, not the
     // painted pixel. The tokens themselves are audited by check-contrast.mjs.
+    // Fills before lines (R-27): the subtle fill, a transparent border (kept so
+    // forced colours draw it), and the controls inside stepped back to the page
+    // ground (`br-fill-surface`), so a secondary button is not fill on fill.
     const panel = screen.getByRole('region', { name: 'Biorouter Copilot' });
-    expect(panel.className).toContain('bg-background-muted');
-    expect(panel.className).toContain('border-border-subtle');
+    expect(panel.className).toContain('bg-background-fill');
+    expect(panel.className).toContain('border-transparent');
+    expect(panel.className).toContain('br-fill-surface');
+    expect(panel.className).not.toContain('border-border-subtle');
     expect(panel.className).toContain('rounded-container');
+  });
+
+  it('describes the dismiss button while control is active, and never with title=', async () => {
+    mocks.status.mockResolvedValue({ ...status, requested: false, state: 'active' });
+    render(<CopilotControl sessionId="task-a" />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Biorouter Copilot banner' });
+    expect(dismiss).not.toHaveAttribute('title');
+    expect(dismiss).toHaveAccessibleDescription(
+      'Hide details; control remains active and Stop stays available'
+    );
+  });
+
+  it('gives the browser approval key the app text field', async () => {
+    mocks.browser = true;
+    render(<CopilotControl sessionId="task-a" />);
+    const field = await screen.findByLabelText('Biorouter Copilot approval key', { exact: false });
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveAttribute('autocomplete', 'off');
+    // `ui/input.tsx`'s field: the fill comes from the control ground, so inside
+    // the filled panel it rests on the page ground with no resting edge.
+    expect(field.className).toContain('br-field');
+    expect(field.className).not.toContain('border-border-default');
   });
 
   it('withholds the collapse control while an approval is pending', async () => {

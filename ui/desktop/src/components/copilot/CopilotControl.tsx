@@ -3,6 +3,8 @@ import { ChevronDown, ChevronUp, Copilot, X } from '../icons/app-icons';
 import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { isBrowserSurface } from '../../utils/surface';
 import {
   CopilotNotApplicable,
@@ -13,17 +15,25 @@ import {
 } from './copilotApi';
 
 /**
- * The panel's own surface. It sits on the composer bar's `--background-canvas`
- * ground, so it takes one surface step up plus a hairline -- the same neutral
- * recipe `ui/note.tsx` uses, which the sibling `PinnedModelNote` on the rails
- * above it already paints. `--radius-container` is the ladder rung for a panel;
- * `--radius-element` would make it read as a control.
+ * The panel's own surface: a card that asks the person to act, so it takes the
+ * subtle fill with no resting outline (FILLS BEFORE LINES, owner message 13,
+ * R-27, design.md 9.11), the same ground the sibling `PinnedModelNote` above it
+ * paints through `ui/note.tsx`. The 1px border stays and is transparent, so
+ * nothing moves and forced colours still draw the edge.
+ *
+ * `br-fill-surface` steps the controls inside back to the page ground, because a
+ * fill never sits on a fill: the secondary "Check OS permissions" button and the
+ * approval key field rested on the panel's own fill and vanished into it.
+ * `--radius-container` is the ladder rung for a panel; `--radius-element` would
+ * make it read as a control.
  *
  * Every class here has existing call sites, so none is a freshly written utility
  * that can silently fail to generate under `BIOROUTER_NO_HMR`.
  */
 const PANEL_SHELL =
-  'mx-3 mb-2 rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-supporting';
+  'br-fill-surface mx-3 mb-2 rounded-container border border-transparent bg-background-fill px-3 py-2.5 text-supporting';
+
+const DISMISS_WHILE_ACTIVE = 'Hide details; control remains active and Stop stays available';
 
 const dismissedActivities = new Map<string, string>();
 
@@ -295,23 +305,29 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
             {sending ? 'Stopping…' : 'Stop'}
           </Button>
         )}
-        <Button
-          size="sm"
-          shape="round"
-          variant="ghost"
-          aria-label="Dismiss Biorouter Copilot banner"
-          title={
-            active
-              ? 'Hide details; control remains active and Stop stays available'
-              : 'Dismiss banner'
-          }
-          onClick={() => {
-            rememberDismissal(sessionId, activity);
-            setDismissedActivity(activity);
-          }}
-        >
-          <X className="size-4" aria-hidden="true" />
-        </Button>
+        {/* A Tooltip, never `title=` (spec 2.6). While control is active the
+            consequence is also the button's description, so a screen reader hears
+            that Stop stays available without hovering. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="sm"
+              shape="round"
+              variant="ghost"
+              aria-label="Dismiss Biorouter Copilot banner"
+              aria-description={active ? DISMISS_WHILE_ACTIVE : undefined}
+              onClick={() => {
+                rememberDismissal(sessionId, activity);
+                setDismissedActivity(activity);
+              }}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            {active ? DISMISS_WHILE_ACTIVE : 'Dismiss banner'}
+          </TooltipContent>
+        </Tooltip>
       </div>
       <div id={detailsId} hidden={!detailsVisible} className="mt-2 space-y-2">
         <p className="break-words">
@@ -367,13 +383,16 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
             {browser && (
               <label className="block">
                 Biorouter Copilot approval key
-                <input
+                {/* The app's one text field (`ui/input.tsx`): it rests on the page
+                    ground inside this filled panel and draws its edge only while
+                    focused. Attributes and handlers are unchanged. */}
+                <Input
                   type="password"
                   autoComplete="off"
                   spellCheck={false}
                   value={approvalKey}
                   onChange={(event) => setApprovalKey(event.target.value)}
-                  className="mt-1 block w-full rounded-md border border-border-default bg-background-default px-2 py-1"
+                  className="mt-1"
                 />
                 <span className="mt-1 block text-text-muted">
                   Enter the passphrase you chose when starting biorouter serve
