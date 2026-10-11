@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MentionPopover from './MentionPopover';
 import { COMPOSER_COPY } from './composer/copy';
@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getSlashCommands: vi.fn(),
   listBases: vi.fn(),
   getSessionExtensions: vi.fn(),
+  listFiles: vi.fn(),
   extensionsList: [] as never[],
 }));
 
@@ -62,7 +63,15 @@ function renderMenu({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  Object.assign(window, { electron: { getUserActionKey: vi.fn(async () => null) } });
+  Object.assign(window, {
+    electron: {
+      platform: 'darwin',
+      getUserActionKey: vi.fn(async () => null),
+      listFiles: mocks.listFiles,
+      listSkillDirs: vi.fn(async () => []),
+    },
+  });
+  mocks.listFiles.mockResolvedValue([]);
   mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } });
   mocks.listBases.mockResolvedValue({ data: [] });
   mocks.getSlashCommands.mockResolvedValue({
@@ -110,9 +119,28 @@ describe('the mention menu', () => {
     expect(document.body.innerHTML).not.toMatch(/text-\[1[01]px\]/);
   });
 
-  it('draws nothing for an "@" with nothing typed after it', async () => {
+  /**
+   * V2-R3-4: "Mention (@)" from the `+` menu, or an `@` typed alone, drew nothing
+   * until two more characters were typed. It always answers now; with a folder
+   * that has nothing to list, it says so.
+   */
+  it('says the folder has nothing to list for an "@" alone in an empty folder', async () => {
     renderMenu({ isSlashCommand: false, query: '' });
-    await waitFor(() => expect(screen.queryByTestId('mention-popover')).toBeNull());
+    expect(await screen.findByText(COMPOSER_COPY.mention.emptyFolder)).toBeInTheDocument();
+    expect(screen.getByTestId('mention-popover')).toHaveAttribute(
+      'aria-label',
+      COMPOSER_COPY.mention.mentionsLabel
+    );
+  });
+
+  it('says "Searching…", never that the folder is empty, until the scan answers', async () => {
+    mocks.listFiles.mockReturnValue(new Promise(() => {}));
+    renderMenu({ isSlashCommand: false, query: '' });
+    expect(screen.getByText(COMPOSER_COPY.mention.searching)).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(mocks.listFiles).toHaveBeenCalledWith('/w');
+    expect(screen.getByText(COMPOSER_COPY.mention.searching)).toBeInTheDocument();
+    expect(screen.queryByText(COMPOSER_COPY.mention.emptyFolder)).toBeNull();
   });
 });
 

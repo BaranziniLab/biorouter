@@ -19,6 +19,9 @@ import MentionPopover, {
 const mocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
   listSkillDirs: vi.fn(),
+  // ONE array, as the real context's state is: a new one per render would make
+  // `loadReferenceItems` new per render and restart the load on every render.
+  extensionsList: [] as never[],
 }));
 
 vi.mock('../api', () => ({
@@ -28,7 +31,9 @@ vi.mock('../api', () => ({
   getSessionExtensions: vi.fn(async () => ({ data: { extensions: [] } })),
 }));
 
-vi.mock('./ConfigContext', () => ({ useConfig: () => ({ extensionsList: [] }) }));
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({ extensionsList: mocks.extensionsList }),
+}));
 
 vi.mock('./skills/useSkillCatalog', () => ({
   fetchSkillCatalog: vi.fn(async () => ({ generation: 0, roots: [], skills: [], bundles: [] })),
@@ -181,5 +186,82 @@ describe('the scan of the chat folder', () => {
       .getAllByRole('option')
       .find((row) => row.textContent?.startsWith('ex-inner.zip'));
     expect(nested).toHaveAttribute('title', '/w/ex-src/ex-inner.zip');
+  });
+});
+
+/**
+ * V2-R3-4: "Mention (@)" in the `+` menu, or an `@` typed alone, inserted the `@`
+ * and drew nothing until two more characters were typed, while "Commands (/)"
+ * listed at once. An `@` alone lists the chat folder now.
+ */
+describe('an "@" with little or nothing typed after it', () => {
+  function renderMention(query: string, isSlashCommand = false) {
+    const ref = createRef<{
+      getDisplayFiles: () => DisplayItemWithMatch[];
+      selectFile: (index: number) => void;
+    }>();
+    const onSelect = vi.fn();
+    const menu = (next: string, slash: boolean) => (
+      <MentionPopover
+        ref={ref}
+        isOpen
+        isSlashCommand={slash}
+        query={next}
+        sessionId={null}
+        workingDir="/w"
+        position={{ x: 0, y: 400 }}
+        selectedIndex={0}
+        onSelectedIndexChange={() => {}}
+        onSelect={onSelect}
+        onClose={() => {}}
+      />
+    );
+    const view = render(menu(query, isSlashCommand));
+    const rerender = (next: string, slash = false) => view.rerender(menu(next, slash));
+    return { ref, rerender, onSelect };
+  }
+
+  it('lists the chat folder, its own entries first, folders before files', async () => {
+    const { ref } = renderMention('');
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(1));
+    const names = (ref.current?.getDisplayFiles() ?? []).map((row) => row.name);
+    expect(names.slice(0, 5)).toEqual([
+      'ex-empty',
+      'ex-linked',
+      'ex-src',
+      'ex-archive.zip',
+      'readme.md',
+    ]);
+    expect(mocks.listFiles).toHaveBeenCalledWith('/w');
+  });
+
+  it('inserts the entry an Enter picks, as a typed query would', async () => {
+    const { ref, onSelect } = renderMention('');
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(1));
+    ref.current?.selectFile(0);
+    expect(onSelect).toHaveBeenCalledWith('/w/ex-empty');
+  });
+
+  it('narrows the list from the first character typed', async () => {
+    const { rerender } = renderMention('');
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(1));
+    rerender('r');
+    await waitFor(() => {
+      const shown = screen.getAllByRole('option').map((row) => row.textContent ?? '');
+      expect(shown.some((text) => text.startsWith('readme.md'))).toBe(true);
+      expect(shown.some((text) => text.startsWith('ex-empty'))).toBe(false);
+    });
+  });
+
+  it('never shows the "/" list’s rows under "@"', async () => {
+    const { rerender } = renderMention('', true);
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(0));
+    const commandRows = screen.getAllByRole('option').map((row) => row.textContent);
+    rerender('');
+    // Before the scan answers, the menu says "Searching…", not the commands it listed.
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(1));
+    const fileRows = screen.getAllByRole('option').map((row) => row.textContent);
+    expect(fileRows.filter((text) => commandRows.includes(text))).toEqual([]);
   });
 });

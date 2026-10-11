@@ -84,6 +84,8 @@ export const COMPOSER_COPY = {
     commandsLabel: 'Commands',
     searching: 'Searching…',
     noMatch: (query: string) => `Nothing matches "${query}"`,
+    /** An `@` with nothing typed after it, in a folder with nothing to list. */
+    emptyFolder: 'No files in this folder',
   },
 
   /**

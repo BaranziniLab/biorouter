@@ -343,6 +343,19 @@ const MentionPopover = forwardRef<
   ) => {
     const [items, setItems] = useState<DisplayItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    // Whether a load has answered since the menu opened as this kind of list. Until
+    // one has, an empty list is "Searching…", never "No files in this folder".
+    const [hasAnswered, setHasAnswered] = useState(false);
+    // Opening, closing, or turning from `/` to `@` starts from an empty list, reset
+    // during render so a frame never shows the other list's rows or a stale answer.
+    const listKind = !isOpen ? 'closed' : isSlashCommand ? 'commands' : 'files';
+    const [loadedKind, setLoadedKind] = useState(listKind);
+    if (loadedKind !== listKind) {
+      setLoadedKind(listKind);
+      setItems([]);
+      setIsLoading(false);
+      setHasAnswered(false);
+    }
     const popoverRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
     const currentWorkingDir = workingDir ?? getInitialWorkingDir();
@@ -594,8 +607,7 @@ const MentionPopover = forwardRef<
       [query]
     );
 
-    const scanFilesFromRoot = useCallback(async () => {
-      setIsLoading(true);
+    const scanFilesFromRoot = useCallback(async (): Promise<DisplayItem[]> => {
       try {
         let startPath = currentWorkingDir;
 
@@ -609,13 +621,10 @@ const MentionPopover = forwardRef<
           }
         }
 
-        const scannedFiles = await scanDirectoryFromRoot(startPath);
-        setItems(scannedFiles);
+        return await scanDirectoryFromRoot(startPath);
       } catch (error) {
         console.error('Error scanning items from root:', error);
-        setItems([]);
-      } finally {
-        setIsLoading(false);
+        return [];
       }
     }, [scanDirectoryFromRoot, currentWorkingDir]);
 
@@ -723,23 +732,24 @@ const MentionPopover = forwardRef<
       const shown = (list: DisplayItemWithMatch[]) =>
         isSlashCommand ? withoutCrewExtensionBesideCommand(list) : list;
       if (!query.trim()) {
-        return shown(
-          items
-            .map((file) => ({
-              ...file,
-              matchScore: 0,
-              matches: [],
-              matchedText: file.name,
-              depth: currentWorkingDir
-                ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
-                : 0,
-            }))
-            .sort((a, b) => {
-              if (a.depth !== b.depth) return a.depth - b.depth;
-              const typeComparison = compareByType(a, b);
-              return typeComparison || a.name.localeCompare(b.name);
-            })
-        );
+        // Nothing typed yet: every command, or the chat folder's entries (its own
+        // first, then the ones a level down), so an `@` alone already offers files.
+        const unfiltered = items
+          .map((file) => ({
+            ...file,
+            matchScore: 0,
+            matches: [],
+            matchedText: file.name,
+            depth: currentWorkingDir
+              ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
+              : 0,
+          }))
+          .sort((a, b) => {
+            if (a.depth !== b.depth) return a.depth - b.depth;
+            const typeComparison = compareByType(a, b);
+            return typeComparison || a.name.localeCompare(b.name);
+          });
+        return isSlashCommand ? shown(unfiltered) : unfiltered.slice(0, MAX_FILE_DISPLAY_RESULTS);
       }
 
       const matchedItems = items
@@ -804,36 +814,33 @@ const MentionPopover = forwardRef<
     );
 
     useEffect(() => {
+      if (!isOpen) return;
       let cancelled = false;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-      const loadData = async () => {
-        if (isSlashCommand) {
-          setIsLoading(true);
-          try {
-            const commandItems = await loadReferenceItems(true);
-            if (!cancelled) setItems(commandItems);
-          } catch (error) {
-            console.error('Error loading slash commands:', error);
-            if (!cancelled) setItems([]);
-          } finally {
-            if (!cancelled) setIsLoading(false);
-          }
-          return;
-        }
-
-        if (query.trim().length < 2) {
-          setItems([]);
-          return;
-        }
-
-        timeoutId = setTimeout(() => {
-          if (!cancelled) void scanFilesFromRoot();
-        }, 120);
+      // Only the newest load may answer: an older scan that finishes late must not
+      // put its rows back, or turn "Searching…" off under a newer one.
+      const answer = (next: DisplayItem[]) => {
+        if (cancelled) return;
+        setItems(next);
+        setIsLoading(false);
+        setHasAnswered(true);
       };
 
-      if (isOpen) {
-        loadData();
+      setIsLoading(true);
+      if (isSlashCommand) {
+        loadReferenceItems(true).then(answer, (error) => {
+          console.error('Error loading slash commands:', error);
+          answer([]);
+        });
+      } else {
+        // An `@` alone scans too (V2-R3-4): picking "Mention" from the `+` menu, or
+        // typing `@`, lists the chat folder at once instead of waiting for two
+        // characters. Below two characters the scan does not depend on the query
+        // (only a longer one recurses into the folders it matches).
+        timeoutId = setTimeout(() => {
+          void scanFilesFromRoot().then(answer);
+        }, 120);
       }
 
       return () => {
@@ -884,6 +891,10 @@ const MentionPopover = forwardRef<
 
     if (!isOpen) return null;
 
+    // "Searching…" only while there is nothing to show: a rescan behind a typed
+    // query keeps the rows it has on screen until the new ones arrive.
+    const searching = displayItems.length === 0 && (isLoading || !hasAnswered);
+
     const menuWidth = Math.max(320, Math.min(448, window.innerWidth - 16));
     const menuLeft = Math.min(
       Math.max(8, position.x),
@@ -910,7 +921,7 @@ const MentionPopover = forwardRef<
           transform: 'translateY(-100%)', // Move it fully above
         }}
       >
-        {isLoading ? (
+        {searching ? (
           <div className="flex min-h-control-md items-center gap-2 px-3 text-secondary text-text-muted">
             <Spinner size={14} />
             <span>{COMPOSER_COPY.mention.searching}</span>
@@ -948,9 +959,9 @@ const MentionPopover = forwardRef<
               );
             })}
 
-            {displayItems.length === 0 && query && (
+            {displayItems.length === 0 && (query || !isSlashCommand) && (
               <div className="flex min-h-control-md items-center px-3 text-secondary text-text-muted">
-                {COMPOSER_COPY.mention.noMatch(query)}
+                {query ? COMPOSER_COPY.mention.noMatch(query) : COMPOSER_COPY.mention.emptyFolder}
               </div>
             )}
           </div>
@@ -958,9 +969,10 @@ const MentionPopover = forwardRef<
       </div>
     );
 
-    // An empty list with nothing typed yet (an `@` alone) draws nothing rather
-    // than an empty box.
-    if (!isLoading && displayItems.length === 0 && !query) return null;
+    // An empty command list with nothing typed yet draws nothing rather than an
+    // empty box. An `@` alone always answers: its entries, "Searching…", or a
+    // line saying the folder has nothing to list.
+    if (!searching && displayItems.length === 0 && !query && isSlashCommand) return null;
 
     return createPortal(menu, document.body);
   }
