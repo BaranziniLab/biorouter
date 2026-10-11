@@ -213,13 +213,17 @@ export default function SettingsView({
             no `mask-image`. */}
         <ScrollArea className="biorouter-scroll-fade-top flex-1" paddingX={1}>
           <ReadableContent size="chat" className="px-6 py-5">
-            <TabsContent value="models" className="mt-0">
+            {/* `tabIndex={-1}` on all three panels (vision V4-05): Radix makes a panel a Tab stop,
+                and a panel has no focus treatment by design, so Tab from the tab list landed on an
+                invisible stop before the first control. Every Settings panel opens with a control,
+                so one Tab now goes from the tab list straight to it. */}
+            <TabsContent value="models" className="mt-0" tabIndex={-1}>
               <ModelsSection setView={setView} />
             </TabsContent>
-            <TabsContent value="chat" className="mt-0">
+            <TabsContent value="chat" className="mt-0" tabIndex={-1}>
               <ChatSettingsSection />
             </TabsContent>
-            <TabsContent value="app" className="mt-0">
+            <TabsContent value="app" className="mt-0" tabIndex={-1}>
               {/* Order is the operator's, and it is not arbitrary: Configuration, then
                   Privacy, then everything AppSettingsSection owns (General, Appearance,
                   Usage, About, Danger zone).

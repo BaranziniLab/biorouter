@@ -142,6 +142,21 @@ describe('the Settings band', () => {
     }
   });
 
+  /**
+   * Radix makes every panel a Tab stop, and a panel has no focus treatment by design, so one Tab
+   * from the tab list used to land on a stop with nothing drawn (vision V4-05). Every Settings
+   * panel opens with a control, so each leaves the Tab order and Tab goes to the control.
+   */
+  it('keeps the panels out of the Tab order, so Tab goes from the tabs to the first control', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
+    for (const id of ['settings-chat-tab', 'settings-app-tab']) {
+      await user.click(screen.getByTestId(id));
+      expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
+    }
+  });
+
   it('opens on Models, or on the tab a deep link names', () => {
     const { unmount } = renderSettings();
     expect(screen.getByTestId('settings-models-tab')).toHaveAttribute('data-state', 'active');
