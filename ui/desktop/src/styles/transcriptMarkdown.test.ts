@@ -12,7 +12,10 @@ import { describe, expect, it } from 'vitest';
  *   document's h1 the 24/32 title at 400;
  * - no accent bar beside a heading, no tinted quote;
  * - Crew's code block and table as shared `br-md-*` recipes, on the well and
- *   with 8px 12px cells.
+ *   with 8px 12px cells;
+ * - fills before lines (owner message 13, R-27): the block and the table are a
+ *   solid fill with a transparent 1px border, and only the table's rules
+ *   between rows are drawn.
  */
 
 // vitest runs with `ui/desktop` as the root.
@@ -116,13 +119,14 @@ describe('markdown type', () => {
 });
 
 describe("Crew's code block and table, promoted", () => {
-  it('puts fenced code in the well, framed, with a head row over a hairline', () => {
+  it('puts fenced code on the well as a fill, with no frame and no rule under its head', () => {
     const code = ruleBody('.br-md-code');
     expect(code).toContain('background-color: var(--background-well);');
-    expect(code).toContain('border: 1px solid var(--border-subtle);');
+    // Transparent, never removed: nothing moves, and forced colours draw it.
+    expect(code).toContain('border: 1px solid transparent;');
     expect(code).toContain('border-radius: var(--radius-container);');
     const head = ruleBody('.br-md-code-head');
-    expect(head).toContain('border-bottom: 1px solid var(--border-subtle);');
+    expect(head).toContain('border-bottom: 1px solid transparent;');
     expect(head).not.toContain('background');
     const body = ruleBody('.br-md-code-body');
     expect(body).toContain('padding: 10px 12px;');
@@ -130,6 +134,9 @@ describe("Crew's code block and table, promoted", () => {
   });
 
   it('fades a box that scrolls at its right edge, and not while focused', () => {
+    // One fade for both boxes; a table no longer closes its cut with a hairline.
+    expect(block('md recipes').replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(/border-right/);
+    expect(ruleBody('.br-md-table-scroll')).toContain('border-radius: var(--radius-element);');
     expect(
       ruleBody(".br-md-code-body[data-overflow='true'],\n.br-md-table-scroll[data-overflow='true']")
     ).toContain('mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);');
@@ -140,17 +147,21 @@ describe("Crew's code block and table, promoted", () => {
     ).toContain('mask-image: none;');
   });
 
-  it('frames a table at radius 8 with top rules only and 8px 12px cells', () => {
+  it('fills a table at radius 8 with top rules only and 8px 12px cells', () => {
     const table = ruleBody('.br-md-table');
     expect(table).toContain('border-collapse: separate;');
+    expect(table).toContain('border: 1px solid transparent;');
+    expect(table).toContain('background-color: var(--background-fill);');
     expect(table).toContain('border-radius: var(--radius-element);');
     expect(table).toContain('font-size: var(--text-secondary);');
     expect(table).toContain('font-variant-numeric: tabular-nums;');
     const cell = ruleBody('.br-md-table :where(th, td)');
     expect(cell).toContain('padding: 8px 12px;');
     expect(cell).toContain('border-block-start: 1px solid var(--border-subtle);');
+    // The header is the table's own fill, never a band on it (a fill on a
+    // fill), and paints it so a sticky header stays opaque.
     const head = ruleBody('.br-md-table thead :where(th, td),\n.br-md-table th[data-head]');
-    expect(head).toContain('background-color: var(--background-muted);');
+    expect(head).toContain('background-color: var(--background-fill);');
     expect(head).toContain('color: var(--text-muted);');
     expect(head).toContain('font-size: var(--text-supporting);');
     expect(head).toContain('font-weight: 600;');
@@ -186,9 +197,13 @@ describe('the transcript rhythm', () => {
  * The promoted recipes stay Crew's (spec section 0, decision 6.15, critic item
  * 39): one code block and one table look in the app. Read from both sheets and
  * compared declaration by declaration, so a change to Crew's recipe that is not
- * carried over (or the reverse) fails here. The one deliberate difference, the
- * table cell's 8px 12px against Crew's off-token 11px 16px (Crew defect D11), is
- * named rather than skipped.
+ * carried over (or the reverse) fails here. The deliberate differences are
+ * named rather than skipped: the table cell's 8px 12px against Crew's off-token
+ * 11px 16px (Crew defect D11), the role line height, and fills before lines
+ * (owner message 13, R-27), which converts these recipes and not Crew's: the
+ * frames and the code head's rule are transparent, the table carries the fill,
+ * and the table's scroll box rounds its focus edge instead of closing its cut
+ * with a hairline.
  */
 describe('parity with Crew’s code block and table', () => {
   const crew = readFileSync('src/components/crew/timeline/timeline.css', 'utf-8');
@@ -208,26 +223,54 @@ describe('parity with Crew’s code block and table', () => {
       .sort();
   }
 
-  const pairs: Array<[string, string]> = [
-    ['.br-md-code', '.crew-md-code'],
-    ['.br-md-code-head', '.crew-md-code-head'],
+  /** What ours declares that Crew's does not, and the reverse. */
+  function difference(ours: string, theirs: string) {
+    const a = declarations(css, ours);
+    const b = declarations(crew, theirs);
+    return { added: a.filter((d) => !b.includes(d)), dropped: b.filter((d) => !a.includes(d)) };
+  }
+
+  const same: Array<[string, string]> = [
     ['.br-md-code-lang', '.crew-md-code-lang'],
     ['.br-md-code-body', '.crew-md-code-body'],
-    ['.br-md-table-scroll', '.crew-md-table-scroll'],
-    [".br-md-table-scroll[data-overflow='true']", ".crew-md-table-scroll[data-overflow='true']"],
   ];
 
-  it.each(pairs)('%s declares exactly what %s does', (ours, theirs) => {
+  it.each(same)('%s declares exactly what %s does', (ours, theirs) => {
     expect(declarations(css, ours)).toEqual(declarations(crew, theirs));
   });
 
-  it('frames the table as Crew does, adding only the role line height', () => {
-    const ours = declarations(css, '.br-md-table');
-    const theirs = declarations(crew, '.crew-md-table');
-    expect(ours.filter((d) => !theirs.includes(d))).toEqual([
-      'line-height: var(--text-secondary--line-height)',
-    ]);
-    expect(theirs.filter((d) => !ours.includes(d))).toEqual([]);
+  it('frames the code block as Crew does, but with a transparent edge (R-27)', () => {
+    expect(difference('.br-md-code', '.crew-md-code')).toEqual({
+      added: ['border: 1px solid transparent'],
+      dropped: ['border: 1px solid var(--border-subtle)'],
+    });
+    expect(difference('.br-md-code-head', '.crew-md-code-head')).toEqual({
+      added: ['border-bottom: 1px solid transparent'],
+      dropped: ['border-bottom: 1px solid var(--border-subtle)'],
+    });
+  });
+
+  it('fills the table where Crew frames it, adding the role line height', () => {
+    expect(difference('.br-md-table', '.crew-md-table')).toEqual({
+      added: [
+        'background-color: var(--background-fill)',
+        'border: 1px solid transparent',
+        'line-height: var(--text-secondary--line-height)',
+      ],
+      dropped: ['border: 1px solid var(--border-subtle)'],
+    });
+  });
+
+  it('scrolls the table as Crew does, with a rounded focus edge and no closing hairline', () => {
+    expect(difference('.br-md-table-scroll', '.crew-md-table-scroll')).toEqual({
+      added: ['border-radius: var(--radius-element)'],
+      dropped: [],
+    });
+    // Crew closes an overflowing table's cut with a hairline; ours fades the
+    // fill instead, through the fade the code body shares.
+    expect(declarations(crew, ".crew-md-table-scroll[data-overflow='true']")).toContain(
+      'border-right: 1px solid var(--border-subtle)'
+    );
   });
 
   it('differs from Crew’s cell only in the on-token padding', () => {

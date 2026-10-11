@@ -6756,19 +6756,28 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 /* The code block and the table, promoted from Crew so the app has one look for
    each (spec section 0, decision 6.15). Copied from
    `crew/timeline/timeline.css` (`.crew-md-code*`, `.crew-md-table*`); a parity
-   test keeps the two equal, so change Crew's first or not at all. Chat and
+   test keeps the two equal apart from the differences named below
+   (`transcriptMarkdown.test.ts`), so any other change is made to both. Chat and
    documents use them through `MarkdownContent`; the preview's CSV and notebook
    DataFrames use `.br-md-table` too.
 
-   One deliberate difference from Crew: table cells are 8px 12px, on the
-   spacing scale, where Crew's are 11px 16px (Crew defect D11). */
+   Deliberate differences from Crew, which is the reference and is not
+   converted: table cells are 8px 12px, on the spacing scale, where Crew's are
+   11px 16px (Crew defect D11); and FILLS BEFORE LINES (owner message 13, R-27,
+   design.md 9.11): the block and the table are a subtle solid fill with no
+   frame, where Crew draws a hairline around each. The 1px borders stay,
+   transparent, so no geometry moves and forced colours still draw the boxes in
+   the system ink. Only the table's rules between rows remain, because they are
+   inside a filled box and they are what makes rows of a table. */
 
 /* A fenced block sits in the well, never on `--background-code`, which in dark
-   mode is the page itself. The syntax palettes are measured against the well
-   (`themes/*.theme.mjs`). */
+   mode is the page itself. The well is the code's fill: it equals
+   `--background-fill` in dark and is one unit lighter in light, and it is the
+   ground the syntax palettes are measured against (`themes/*.theme.mjs`), so a
+   code block keeps it rather than moving to a ground nobody measured. */
 .br-md-code {
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-container);
   background-color: var(--background-well);
 }
@@ -6779,7 +6788,10 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   justify-content: space-between;
   gap: 8px;
   padding: 2px 2px 2px 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  /* No rule under the head (R-27): the language is muted 12px and the code
+     starts 10px below it, which separates them on one fill. Transparent rather
+     than gone, so forced colours still draw the division. */
+  border-bottom: 1px solid transparent;
 }
 
 .br-md-code-lang {
@@ -6808,24 +6820,12 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
    overlay scrollbars, so a clipped column gave no sign that the box scrolls.
    `data-overflow` is set while there is more to the right and dropped at the
    scroll end, so the last column is never dimmed. A mask paints nothing
-   (`black` is alpha), so the fade is right on any ground. */
+   (`black` is alpha), so the fade is right on any ground. On a table it fades
+   the fill too, so the box's open right side is the sign that it continues;
+   the closing hairline Crew draws there is a line R-27 retires. */
 .br-md-code-body[data-overflow='true'],
 .br-md-table-scroll[data-overflow='true'] {
   mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
-}
-
-/* A table's body rows are on the page's ground, so the box also draws a
-   hairline at its right edge, kept out of the fade: the mask stops 1px short
-   and the border's pixel stays opaque, so the cut reads as an edge on every
-   row. */
-.br-md-table-scroll[data-overflow='true'] {
-  border-right: 1px solid var(--border-subtle);
-  mask-image: linear-gradient(
-    to right,
-    black calc(100% - 41px),
-    transparent calc(100% - 1px),
-    black calc(100% - 1px)
-  );
 }
 
 /* Focused from the keyboard, the box drops its fade: the mask would fade the
@@ -6838,17 +6838,21 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 .br-md-table-scroll {
   max-width: 100%;
   overflow-x: auto;
+  /* The table's own radius, so the keyboard's focus edge (drawn on this box
+     only while it scrolls) follows the fill's corners. */
+  border-radius: var(--radius-element);
 }
 
 /* Rounded corners need the separate border model (a collapsed table ignores its
-   radius), so each body cell draws only its top edge and the table draws the
-   outside. Horizontal rules only; numbers line up in columns. */
+   radius), so each body cell draws only its top edge and the table carries the
+   fill. Horizontal rules only; numbers line up in columns. */
 .br-md-table {
   border-collapse: separate;
   border-spacing: 0;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid transparent;
   border-radius: var(--radius-element);
   overflow: hidden;
+  background-color: var(--background-fill);
   font-size: var(--text-secondary);
   line-height: var(--text-secondary--line-height);
   font-variant-numeric: tabular-nums;
@@ -6875,11 +6879,15 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   white-space: nowrap;
 }
 
-/* The header row is the first, and only it has no top rule. */
+/* The header row is the first, and only it has no top rule. It is set apart by
+   its muted 12px 600 type and the rule under it, not by a second ground: a
+   band on the fill would be a fill on a fill. It paints the table's fill
+   rather than inheriting it, so a header that sticks (the preview's CSV) stays
+   opaque over the rows passing under it. */
 .br-md-table thead :where(th, td),
 .br-md-table th[data-head] {
   border-block-start: 0;
-  background-color: var(--background-muted);
+  background-color: var(--background-fill);
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);

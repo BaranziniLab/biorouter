@@ -258,10 +258,11 @@ const CodeBlock = memo(function CodeBlock({
         : codeCopy.runTip;
 
   return (
-    // Crew's code block (`.br-md-code*`, main.css): the well, a hairline frame,
-    // a head row over a hairline on the same ground (no filled slab), and a
-    // 10px 12px mono body that fades at its right edge while it scrolls. The
-    // syntax palettes are measured against the well (`themes/*.theme.mjs`).
+    // Crew's code block (`.br-md-code*`, main.css), filled (R-27): the well as
+    // a solid fill with no frame, a head row on the same ground with no rule
+    // under it, and a 10px 12px mono body that fades at its right edge while it
+    // scrolls. The syntax palettes are measured against the well
+    // (`themes/*.theme.mjs`).
     //
     // `not-prose` is a correction, not decoration. The typography plugin's
     // inline-code rules target every `<code>` under `.prose`, and the
@@ -465,7 +466,9 @@ function BrokenImage({ alt }: { alt?: string }) {
       role="img"
       aria-label={label}
       title={alt?.trim() ? codeCopy.imageUnavailableNamed(alt) : codeCopy.imageUnavailable}
-      className="inline-flex items-center gap-1 rounded-inner border border-border-subtle bg-background-medium px-1.5 py-0.5 align-middle text-supporting text-text-muted"
+      // A chip: filled, no outline (R-27). The border stays, transparent, so
+      // forced colours still draw the chip's edge.
+      className="inline-flex items-center gap-1 rounded-inner border border-transparent bg-background-medium px-1.5 py-0.5 align-middle text-supporting text-text-muted"
     >
       <ImageIcon className="size-3.5 shrink-0" aria-hidden="true" />
       {label}
@@ -920,8 +923,9 @@ function MarkdownListItem({ children, node: _node, ...props }: SlotProps<'li'>) 
 }
 
 /**
- * Crew's table (`.br-md-table`, main.css): a hairline frame at radius 8, top
- * rules only, a muted header row, 13px tabular cells. The scroll box is a
+ * Crew's table (`.br-md-table`, main.css), filled (R-27): a solid fill at
+ * radius 8 with no frame, rules between rows only, a muted 12px header, 13px
+ * tabular cells. The scroll box is a
  * region a keyboard can reach only while the table is wider than the column,
  * and fades at its right edge while there is more to see.
  */
