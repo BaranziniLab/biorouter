@@ -43,17 +43,29 @@ const acceleratorMemoryExplanation = (kind: string | undefined) =>
 const isInstalled = (model: LlamaCppModel) =>
   model.download_status === 'downloaded' || model.fallback_download_status === 'downloaded';
 
-const installedLabel = (model: LlamaCppModel) => {
-  const words = localModelsCopy.status;
-  if (model.download_status === 'downloaded') {
-    return model.download_source === 'ollama' ? words.downloadedInOllama : words.downloaded;
-  }
-  if (model.fallback_download_status === 'downloaded') return words.fallbackReady;
-  if (model.download_status === 'partial' || model.fallback_download_status === 'partial') {
-    return words.partial;
-  }
-  return words.needsDownload;
-};
+const hasPartialDownload = (model: LlamaCppModel) =>
+  model.download_status === 'partial' || model.fallback_download_status === 'partial';
+
+/**
+ * A model's ONE state word, read by the row's trailing slot, its facts line and the info dialog's
+ * Status row alike (vision round 2, V4-R2-5: principle 4, one status per row). They used to ask
+ * three different questions of the same two fields, so the one model whose Ollama copy was partial
+ * and whose fallback GGUF was whole said "Installed" at rest, "Partial download" under its name
+ * and "Fallback ready" in the dialog.
+ *
+ * - Installed: either copy is whole. The model works, so that is what a person is told; which copy
+ *   serves it (and the other's half-finished download) is the daemon's business, and the dialog's
+ *   Ollama model, Fallback GGUF and Model store rows say where things are.
+ * - Partial download: nothing is whole yet and something has started. The Install button is the
+ *   action.
+ * - Needs download: nothing has started. The row says nothing about it; the button is the cue.
+ */
+const stateWord = (model: LlamaCppModel) =>
+  isInstalled(model)
+    ? localModelsCopy.installed
+    : hasPartialDownload(model)
+      ? localModelsCopy.status.partial
+      : localModelsCopy.status.needsDownload;
 
 /** "Fast", "Fastest" or "Moderate": the head of the catalog's speed hint, before its detail. */
 const speedWord = (model: LlamaCppModel) => model.speed_hint.split(/[,;—]/)[0].trim();
@@ -68,9 +80,8 @@ const factsLine = (model: LlamaCppModel) =>
     speedWord(model),
     model.download_size,
     localModelsCopy.contextWindow(model.context_limit),
-    model.download_status === 'partial' || model.fallback_download_status === 'partial'
-      ? localModelsCopy.status.partial
-      : null,
+    // The state word, only when it is the one thing a not-yet-installed row has to say.
+    !isInstalled(model) && hasPartialDownload(model) ? stateWord(model) : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -93,22 +104,31 @@ const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
       ? 'Local model install failed'
       : 'Could not start Llama Server';
 
+/**
+ * One row of the info dialog's fact list. A MACHINE value (a model id, a Hugging Face spec, a path)
+ * is set in one face for all of them: mono at the supporting size, the scale's mono size for IDs
+ * (spec 5.3), so a path reads like the id above it (vision round 2, V4-R2-8). It was mono for the
+ * paths alone, at the 13px code role, while the two ids beside it were sans, and one list used two
+ * families for one kind of string. Prose values (a size, a speed, a sentence) stay in the body face.
+ * The grid aligns on the first baseline, because the value's 12px mono and the label's 13px sans do
+ * not share a line height.
+ */
 function DetailRow({
   label,
   children,
-  mono = false,
+  machine = false,
 }: {
   label: string;
   children: React.ReactNode;
-  mono?: boolean;
+  machine?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] gap-3 text-secondary">
+    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] items-baseline gap-3 text-secondary">
       <span className="text-text-muted">{label}</span>
       <span
         className={[
           'min-w-0 text-right text-text-default',
-          mono ? 'break-all font-mono text-code' : 'break-words',
+          machine ? 'break-all font-mono text-supporting' : 'break-words',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -536,7 +556,7 @@ export default function LocalModelInventory() {
                       installed ? (
                         <span className="br-local-model-installed">
                           <StatusDot tone="success" />
-                          {localModelsCopy.installed}
+                          {stateWord(model)}
                         </span>
                       ) : undefined
                     }
@@ -607,7 +627,7 @@ export default function LocalModelInventory() {
       >
         {selectedModel && (
           <InfoDialogBody bodyRef={infoBodyRef}>
-            <DetailRow label={detail.status}>{installedLabel(selectedModel)}</DetailRow>
+            <DetailRow label={detail.status}>{stateWord(selectedModel)}</DetailRow>
             <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
             <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
             <DetailRow label={detail.expectedSpeed}>{selectedModel.speed_hint}</DetailRow>
@@ -628,12 +648,15 @@ export default function LocalModelInventory() {
                 : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
             </DetailRow>
             <DetailRow label={detail.recommendation}>{selectedModel.suitability_message}</DetailRow>
-            {/* NOT `mono`. A model id is a NAME everywhere else in the app (the composer chip,
-                the model pickers, the onboarding cards), so it takes the body face. The `mono`
-                rows below stay: those are filesystem paths, which is a job mono actually earns
-                (D-31). */}
-            <DetailRow label={detail.ollamaModel}>{selectedModel.ollama_name ?? 'none'}</DetailRow>
-            <DetailRow label={detail.fallbackGguf}>{selectedModel.hf_spec}</DetailRow>
+            {/* Three machine values, one face: the model id and the GGUF spec are as much
+                identifiers as the path below (V4-R2-8; this said "NOT mono" when the list row
+                behind the dialog still printed them, and the row no longer does). */}
+            <DetailRow label={detail.ollamaModel} machine>
+              {selectedModel.ollama_name ?? 'none'}
+            </DetailRow>
+            <DetailRow label={detail.fallbackGguf} machine>
+              {selectedModel.hf_spec}
+            </DetailRow>
             <DetailRow label={detail.officialUrl}>
               <button
                 type="button"
@@ -646,11 +669,11 @@ export default function LocalModelInventory() {
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" />
               </button>
             </DetailRow>
-            <DetailRow label={detail.modelStore} mono>
+            <DetailRow label={detail.modelStore} machine>
               {snapshot?.system.model_cache_dir ?? 'unknown'}
             </DetailRow>
             {selectedModel.model_path && (
-              <DetailRow label={detail.modelBlob} mono>
+              <DetailRow label={detail.modelBlob} machine>
                 {selectedModel.model_path}
               </DetailRow>
             )}

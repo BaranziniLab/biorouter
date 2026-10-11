@@ -52,11 +52,13 @@ export const localModelsCopy = {
   close: 'Close',
   warmUpModel: 'Warm up model',
   installModel: 'Install model',
-  /** A model's state, in words, for the info dialog's Status row. */
+  /**
+   * The states beside `installed`. A model has ONE of the three words (`stateWord` in
+   * `LocalModelInventory`), and the row's trailing slot, its facts line and the info dialog's Status
+   * row all read it: a model that is partly downloaded in Ollama with its fallback GGUF whole is
+   * "Installed" in all three, not "Installed", "Partial download" and "Fallback ready".
+   */
   status: {
-    downloadedInOllama: 'Downloaded in Ollama',
-    downloaded: 'Downloaded',
-    fallbackReady: 'Fallback ready',
     partial: 'Partial download',
     needsDownload: 'Needs download',
   },

@@ -205,20 +205,19 @@ describe('LocalModelInventory', () => {
     expect(within(dialog).getByText(/Fast — ~4B active parameters/)).toBeInTheDocument();
   });
 
-  /// A model id is a NAME, so it is set in the body font — the way the composer
-  /// chip, every model picker, the onboarding cards and ApplicationsView set it.
-  /// `Ollama model` and `Fallback GGUF` were `mono` while the list row BEHIND
-  /// this dialog prints those same two fields in the body font, so one field
-  /// changed face between a row and the dialog that row opens.
+  /// The three machine values of the info dialog (the model id, the Hugging Face spec and the
+  /// path) are set in ONE face (vision round 2, V4-R2-8). They were mixed: the paths mono at the 13px
+  /// code role, the two ids sans (F-21 argued an id is a name because the list row behind the dialog
+  /// printed it in the body font; the row no longer prints it). Mono at the supporting size is the
+  /// scale's mono size for IDs (spec 5.3). The prose rows stay in the body face, so this is not
+  /// "the dialog is all monospace".
   ///
-  /// The path rows are asserted in the same test on purpose: the fix is "model
-  /// ids are names, paths are paths", not "this dialog has no monospace", and a
-  /// test that only checked the first half would be satisfied by flattening
-  /// every row to the body font.
-  ///
-  /// jsdom never runs Tailwind, so a computed-font assertion would pass
-  /// whatever the class says. This asserts the CLASS on the value element.
-  it('sets model ids in the body font and paths in monospace (#F-21)', async () => {
+  /// jsdom never runs Tailwind, so a computed-font assertion would pass whatever the class says.
+  /// This asserts the CLASS on the value element.
+  it('sets the model id, the GGUF spec and the model store in one mono face (V4-R2-8)', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse({}, { download_status: 'downloaded', model_path: '/tmp/models/gemma4.gguf' })
+    );
     render(<LocalModelInventory />);
     const user = await openRowMenu();
     await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
@@ -230,14 +229,92 @@ describe('LocalModelInventory', () => {
       return value as HTMLElement;
     };
 
-    // Model ids: names, so body font.
-    expect((await valueFor(localModelsCopy.detail.ollamaModel)).className).not.toMatch(/font-mono/);
-    expect((await valueFor(localModelsCopy.detail.fallbackGguf)).className).not.toMatch(
-      /font-mono/
-    );
+    const machine = [
+      localModelsCopy.detail.ollamaModel,
+      localModelsCopy.detail.fallbackGguf,
+      localModelsCopy.detail.modelStore,
+      localModelsCopy.detail.modelBlob,
+    ];
+    const classes: string[] = [];
+    for (const label of machine) classes.push((await valueFor(label)).className);
+    for (const [index, className] of classes.entries()) {
+      expect(className, machine[index]).toMatch(/\bfont-mono\b/);
+      expect(className, machine[index]).toMatch(/\btext-supporting\b/);
+      // The 13px code role is the terminal's and a code block's, not a fact list's.
+      expect(className, machine[index]).not.toMatch(/\btext-code\b/);
+    }
+    // One face, one size: the four class strings are the same.
+    expect(new Set(classes).size).toBe(1);
 
-    // Filesystem paths: a job mono earns (D-31), and still mono.
-    expect((await valueFor(localModelsCopy.detail.modelStore)).className).toMatch(/font-mono/);
+    // Prose values stay in the body face.
+    for (const label of [localModelsCopy.detail.family, localModelsCopy.detail.download]) {
+      expect((await valueFor(label)).className, label).not.toMatch(/font-mono/);
+    }
+  });
+
+  /// One model, one state (V4-R2-5). The model below is the one the app measured: Ollama's copy is
+  /// partial and the fallback GGUF is whole. The row said "Installed" at rest, its facts line said
+  /// "Partial download" and the dialog said "Fallback ready". It is "Installed" in all three now.
+  it('says Installed in the row, the facts line and the dialog for a partial primary with a whole fallback (V4-R2-5)', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse(
+        {},
+        {
+          download_status: 'partial',
+          download_source: 'ollama',
+          fallback_download_status: 'downloaded',
+          fallback_downloaded: true,
+        }
+      )
+    );
+    render(<LocalModelInventory />);
+
+    // The row: the quiet status at rest, and no second word under the name.
+    const installed = await screen.findByText(localModelsCopy.installed);
+    expect(installed.closest('.br-row-actions-meta')).not.toBeNull();
+    expect(screen.getByText('Fast · 9.6 GB · 128k context')).toBeInTheDocument();
+    expect(screen.queryByText(localModelsCopy.status.partial)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Gemma 4 E4B' })).not.toBeInTheDocument();
+
+    // The dialog: the same word, in the Status row, and no jargon.
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
+    const dialog = await screen.findByRole('dialog');
+    const status = within(dialog).getByText(localModelsCopy.detail.status).nextElementSibling;
+    expect(status).toHaveTextContent(new RegExp(`^${localModelsCopy.installed}$`));
+    expect(within(dialog).queryByText(/Fallback ready/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(localModelsCopy.status.partial)).not.toBeInTheDocument();
+  });
+
+  it('says Partial download once under a model that is not installed, in the facts line and the dialog (V4-R2-5)', async () => {
+    mockLlamacppStatus.mockResolvedValue(statusResponse({}, { download_status: 'partial' }));
+    render(<LocalModelInventory />);
+
+    expect(
+      await screen.findByText(`Fast · 9.6 GB · 128k context · ${localModelsCopy.status.partial}`)
+    ).toBeInTheDocument();
+    // Nothing is installed, so the row has no Installed status and keeps its button.
+    expect(screen.queryByText(localModelsCopy.installed)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Install Gemma 4 E4B' })).toBeEnabled();
+
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
+    const dialog = await screen.findByRole('dialog');
+    const status = within(dialog).getByText(localModelsCopy.detail.status).nextElementSibling;
+    expect(status).toHaveTextContent(new RegExp(`^${localModelsCopy.status.partial}$`));
+  });
+
+  it('says Needs download in the dialog only for a model nothing has started on (V4-R2-5)', async () => {
+    render(<LocalModelInventory />);
+    // The row says nothing about it: the Install button is the cue.
+    expect(await screen.findByText('Fast · 9.6 GB · 128k context')).toBeInTheDocument();
+    expect(screen.queryByText(localModelsCopy.status.needsDownload)).not.toBeInTheDocument();
+
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
+    const dialog = await screen.findByRole('dialog');
+    const status = within(dialog).getByText(localModelsCopy.detail.status).nextElementSibling;
+    expect(status).toHaveTextContent(new RegExp(`^${localModelsCopy.status.needsDownload}$`));
   });
 
   it('renders the busy row for an operation started elsewhere (#34)', async () => {
