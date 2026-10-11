@@ -122,12 +122,28 @@ switch providers any time in Settings."), and Local, Institutional and Public on
 catalog draws its tabs into the band's slot (`ProviderCatalog`'s `tabsHost`, a portal; omitted, as in
 `ProviderGuard`, the list sits at the top of the catalog). There is no paragraph under the title.
 
-Both routes are **outside the app shell** (`routeOwnsTopBand`), so `App.tsx`'s 32px titlebar drag strip
-stays over the top of the page and the band starts below it, clear of the window controls
-(`.br-provider-page-strip`). The shared band's `--sidebar` ground is there to meet the sidebar's
-titlebar band, and this page has no sidebar, so the band is drawn on the page's own ground. The mouse's
-Back button still leaves the page: `PageHeader` calls the shared `useMouseBackButton` for any band that
-has an `onBack`, so the page carries no listener of its own.
+Both routes are **outside the app shell** (`routeOwnsTopBand`), so they have no sidebar and none of the
+shell's top-band bookkeeping, and the page does that bookkeeping itself. The band starts at **y=0** and is
+the window-drag region, as every band is (principle 1); there is no spacer under the strip. It used to
+start at y=32 under a separate 32px strip, which made 76px of chrome where Settings has 44 (vision round
+2, V4-14). Three rules in `providers.css` hold it:
+
+- `App.tsx`'s 32px `.titlebar-drag-region` is `position: fixed` at z-index 50, so over the band's top 32px
+  it would take the clicks meant for Back, the InfoTip and the tabs. It takes no pointer events while the
+  page is mounted (`body:has(.br-provider-page) .titlebar-drag-region`), which is what
+  `body.biorouter-chat-route-active` does for a route inside the shell, keyed on the page instead of a
+  body class that `AppLayout` owns. The strip's drag rect comes earlier in tree order than the band's
+  and Electron folds drag rects in tree order, so the band's `no-drag` controls still subtract from it.
+- The band's first control starts at the titlebar reserve, `--br-provider-band-lead`, which the page sets
+  from `getTitlebarControlInset` (100px on macOS, where the traffic lights sit over the band's left end,
+  16px elsewhere and in a browser). The chat header's collapsed sidebar starts its controls at the same
+  x. It is padding rather than margin: nothing earlier in tree order is `no-drag` on this route.
+- The band keeps the shared `--sidebar` paint, the same recessed ground as Settings' band. It used to be
+  overridden to transparent, so the page showed an unpainted white bar.
+
+`providerBand.browser.test.tsx` (Chromium) measures all of it, and strips each rule to see the defect.
+The mouse's Back button still leaves the page: `PageHeader` calls the shared `useMouseBackButton` for any
+band that has an `onBack`, so the page carries no listener of its own.
 
 First run's setup forms (`InstitutionalSetupCard`, `CommercialSetupCard`) sit on the rows' 12px text inset
 (`.br-provider-inset`), so a field starts where a row's name does and ends where a row's button does.
@@ -361,7 +377,8 @@ renders normally.
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
 | `crates/biorouter/src/providers/base.rs` | `ProviderMetadata::institutions`, `with_institution` |
 
-Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `firstRunFill.browser.test.tsx` (Chromium),
+Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `firstRunFill.browser.test.tsx` and
+`providerBand.browser.test.tsx` (Chromium),
 `ProviderCatalog.browserSurface.test.tsx`, `providerOrdering.test.ts`,
 `ProviderGuard.test.tsx`, `ProviderGuard.browserSurface.test.tsx`,
 `composerNoProvider.test.ts`, `ChatInput.noProvider.test.tsx`,

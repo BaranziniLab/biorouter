@@ -58,19 +58,36 @@
 
 /*
  * The provider page's own chrome (`ProviderSettingsPage`). The page is outside the app shell, so
- * the 32px titlebar drag strip stays over its top edge and the 44px band starts below it; the
- * strip's room is this spacer, on the page's own ground. The band is drawn on that same ground
- * (the shared band's `--sidebar` ground is there to meet the sidebar's titlebar band, and this
- * page has no sidebar). Authored here, not as Tailwind strings, because a newly written utility
- * can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ * it has no sidebar and none of the shell's top-band bookkeeping (`routeOwnsTopBand`), and it
+ * does the two things that bookkeeping would do (vision round 2, V4-14: the band sat at y=32
+ * under a separate 32px strip, 76px of chrome where Settings has 44):
+ *
+ * - The band starts at y=0 and IS the window-drag region, as every band is (principle 1). The
+ *   32px `.titlebar-drag-region` strip `App.tsx` paints is `position: fixed` above everything at
+ *   z-index 50, so it would sit over the band's top 32px and take the clicks meant for Back, the
+ *   InfoTip and the tabs. It stops taking pointer events while this page is mounted, which is
+ *   `body.biorouter-chat-route-active .titlebar-drag-region` in `main.css` keyed on the page
+ *   instead of a body class (AppLayout owns that class, and the page is not inside AppLayout; a
+ *   `:has()` on the page cannot leak past its unmount). The strip's own drag rect comes earlier
+ *   in tree order than the band's, and Electron folds drag rects in tree order, so the band's
+ *   `no-drag` controls still subtract from it.
+ * - The band's leading edge is the titlebar reserve, `--br-provider-band-lead` (set by the page
+ *   from `getTitlebarControlInset`), because the macOS traffic lights sit over the band's left
+ *   end here. It is padding, not margin: nothing earlier in tree order is `no-drag` on this
+ *   route, so the drag rect may as well run from x=0 as the strip did.
+ *
+ * The band keeps the shared `--sidebar` paint (no override): it is the same recessed ground as
+ * Settings' band, so the page reads as the Settings it was opened from, and the controls inside
+ * it rest one step deeper on it as they do there (`.br-ground-recessed`, which the band carries).
+ * Authored here, not as Tailwind strings, because a newly written utility can silently fail to
+ * generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
  */
-.br-provider-page-strip {
-  flex: none;
-  height: var(--titlebar-drag-height);
+body:has(.br-provider-page) .titlebar-drag-region {
+  pointer-events: none;
 }
 
-.br-provider-page .biorouter-page-header[data-band] {
-  background: transparent;
+.br-provider-page .biorouter-page-header-bar {
+  padding-inline-start: var(--br-provider-band-lead, 16px);
 }
 
 /* The band's tab slot: the catalog draws Local, Institutional and Public into it. The tabs sit

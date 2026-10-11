@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ScrollArea } from '../../ui/scroll-area';
 import { PageHeader } from '../../Layout/PageHeader';
+import { getTitlebarControlInset } from '../../Layout/TitlebarControls';
 import { Skeleton } from '../../ui/skeleton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
@@ -120,16 +121,30 @@ export default function ProviderSettings({
     ? `${providerPageCopy.onboardingHelp} ${KEY_STORAGE_NOTICE}`
     : KEY_STORAGE_NOTICE;
 
+  // Where the band's first control starts, clear of the window controls. The page is outside the
+  // app shell, so no sidebar's titlebar band holds the macOS traffic lights; the band does. The
+  // number is the one the chat header's collapsed sidebar reserves for the same lights
+  // (`getTitlebarControlInset`: 100 on macOS, 16 elsewhere, and a browser reports `linux`).
+  const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
+  const bandLead = useMemo(
+    () => ({ '--br-provider-band-lead': `${getTitlebarControlInset(isMacOS)}px` }) as CSSProperties,
+    [isMacOS]
+  );
+
   return (
     // The same ground as every other view (`MainPanelLayout`'s canvas), not a muted one: this
     // page used to be a shade darker than the Settings it was opened from.
-    <div className="br-provider-page flex h-screen w-full flex-col bg-background-canvas text-text-default">
-      {/* One 44px band, as every other page has (principle 1): Back as a 32px icon action, the
-          14px title with its help, and the three tabs on its line. The page is outside the app
-          shell (`routeOwnsTopBand`), so the 32px titlebar drag strip `App.tsx` paints stays over
-          the top of it and the band starts below that, clear of the window controls. The
-          strip is the page's own space, not a second band. */}
-      <div className="br-provider-page-strip" aria-hidden />
+    <div
+      className="br-provider-page flex h-screen w-full flex-col bg-background-canvas text-text-default"
+      style={bandLead}
+    >
+      {/* One 44px band at the top edge, as every other page has (principle 1): Back as a 32px icon
+          action, the 14px title with its help, and the three tabs on its line. The page is outside
+          the app shell (`routeOwnsTopBand`), so the band is its own window-drag region: it starts
+          at y=0, its leading edge is the titlebar reserve (`--br-provider-band-lead`), and
+          `providers.css` stops the 32px strip `App.tsx` paints from taking its clicks. There is no
+          spacer under that strip any more; it stood in for the band's missing 32px and made the
+          page 76px of chrome (vision round 2, V4-14). */}
       <PageHeader
         title={heading}
         info={help}
