@@ -67,6 +67,17 @@ every row already held. A rename, a removal or a privacy change that lands durin
 to the buffer too, and a refresh asked for during the read runs after it. A page asks for no more
 rows than the cap leaves room for, so the read stops at 2,000 exactly.
 
+**The view is not drawn until that first read lands** (vision V1-R3-3). Drawn from the part already
+read, a name sort put the wrong 50 chats in name order and then reordered all of them 0.2 to 0.4 s
+later, under a resting pointer. So after a switch from the default view the list keeps drawing the
+default arrangement, with "Loading chats…" at its foot, and changes once, to the complete list. On a
+reload with such a view stored there is nothing to keep, so the list draws no rows, only "Loading
+chats…", and the complete list is its first draw. The view menu shows the choice at once either
+way. `isLoadingAll` means the list still holds only some of the chats. Once a read has reached the
+end or the cap the list stays whole, and the tail re-read a head refresh starts (the daemon has more
+rows than the head page) is not reported, so it never hides a view the person already had. A failed
+read does not count as reaching the end.
+
 ### Keeping the list current
 
 The list re-reads its head (the first 10 rows, or 50 in a non-default view) when a turn finishes,
@@ -192,12 +203,12 @@ every held row come in; a row that would land above or between held rows waits.
 
 Two moves are not held:
 
-- **A full read landing.** A non-default view shows its first page while the rest is read. Its rows
-  hold still under the pointer during the read, and when the read lands the complete arrangement
-  shows at once and is what the pointer holds from then on (vision V1-R2-3). Held as it was, the
-  first page's order (the wrong 50 chats, sorted by name) stayed on screen for as long as the
-  pointer rested on the list. Nothing is held while the list is empty either, so a first load is
-  held from the rows it draws.
+- **A full read landing.** A non-default view is not drawn until its first full read lands (see
+  "Reading every chat"), so the list changes once, from the view it drew before (or from nothing)
+  to the complete arrangement, which is what the pointer holds from then on. A hold is of the view
+  drawn: when the read lands the drawn view changes, the old hold stops applying, and the list is
+  held again from the complete list (vision V1-R2-3, V1-R3-3). Nothing is held while the list is
+  empty either, so a first load is held from the rows it draws.
 - **The person's own rename** (coordinator ruling 16; vision V1-R2-4). The hold is there so a row
   never moves under a click the person is about to make. A rename they just committed is the move
   they asked for, and the usual way to rename (row menu, type, Enter) leaves the pointer on the
@@ -308,15 +319,15 @@ tab stop, so Tab reaches them from the row.
 | File | Holds |
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order, `windowSidebarRows` |
-| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; the head re-read on a new open chat, on focus and on a meta change |
-| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; the hold during a read giving way to the complete list when it lands, and a first load held from its own rows |
+| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading the rest in one request with the proof (or page by page from an older daemon), into a buffer shown once, stopping at the cap; `isLoadingAll` reported for the first full read only (not a later tail re-read, but again after a failed read); the head re-read on a new open chat, on focus and on a meta change |
+| `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder; a stored view drawn only once its read lands, a switch keeping the default arrangement until then, the complete list held from then on, and a first load held from its own rows |
 | `BioRouterSidebar/RecentChats.window.test.tsx` | The first 60 lines of the whole arranged list, growth on scroll before another page is asked for, a restart on a view change, a list whose box grew asking for the next page, and `⌘⌥R` drawing the current chat's row |
 | `BioRouterSidebar/RecentChats.switchCost.test.tsx` | A view switch mounts each drawn row once, also after a scroll; a row builds a menu only when it opens; a list re-render (pointer, rename keystroke) re-renders no other row; a measured list draws its height plus the overscan |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases; a rename moving its chat at once under the pointer with focus kept, while another chat's move waits; `scrollRowIntoView` |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
-| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, and a rename moving its chat to the top with the pointer resting on the list. `SIDEBAR_SHOTS_DIR` saves screenshots |
+| `BioRouterSidebar/sidebarFill.browser.test.tsx` | In Chromium, the real sidebar under the whole stylesheet, light and dark: only the structural lines, rows clear at rest, the `⋯` and View options with their menus open, the rename editor's border (kept in forced colours), the badge on a lit row, the hover card clear of the divider, the titlebar hover, the column as a recessed ground (a probe rests on the strong step, the notice's button on the page ground), and a pointer-opened menu with no ring until a key; a nav row's icon in its label's ink at rest, hovered and current; the list itself under a real layout: the next page read when the list's box grows, a rename moving its chat to the top with the pointer resting on the list, and every order painted (frame by frame) on a reload with None / Name stored and on Sort by Name through the menu being the complete name order, or the default before the read lands. `SIDEBAR_SHOTS_DIR` saves screenshots |
 | `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open; closing, it keeps the shadow until the slide ends, and drops it with the panel when a resize or reduced motion snaps it |
 
 ## Related documentation
