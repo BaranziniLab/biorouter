@@ -2491,7 +2491,9 @@ If the chat is private by inheritance, one extra line appears: *This chat inheri
 badge from **"OMOP cohort characterisation"**. Making this one public does not change that chat.*
 
 Destructive button styling using the app's existing destructive treatment (no new colour). `Cancel`
-holds initial focus. No keyboard shortcut binds the confirm button.
+holds initial focus when the dialog is opened from the keyboard; opened with the pointer, focus
+rests on the dialog itself and the next Tab reaches Cancel (or the typed field before it), so the
+confirm button is never the first stop. No keyboard shortcut binds the confirm button.
 
 ### 12.4 The confirmation — graded by what was actually touched
 
