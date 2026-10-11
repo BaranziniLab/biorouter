@@ -24,6 +24,42 @@
 }
 
 /*
+ * SETTINGS ROWS DRAW NO HAIRLINE EACH (owner message 13, R-27: "row lists drop inter-row hairlines
+ * where spacing and the hover fill already separate rows"). A row is 40px with one line of 14px
+ * text, so the air between two rows does what a rule would and the pointer washes the row it is on
+ * (counted in Chromium: the App tab drew 8 rules, the Chat tab 26; both read as rows without them,
+ * light and dark).
+ *
+ * Nothing in this file removes the rule. `.br-rows-flat` does, and it is main.css's alone (the
+ * "FLAT ROWS" rule in `@ws WS-PRIMITIVES begin: rows`), with the line given back in forced colours,
+ * where the wash and every fill are gone and a border is what still draws. The Settings reading
+ * column (`SettingsView`) carries the class, and so does each list a Settings dialog draws in a
+ * portal outside that column (Reset data, the two Tool permissions lists). A copy of the rule here,
+ * loaded after main.css at the same specificity, beat the forced-colours half and left every
+ * Settings row with no separator (measured in Chromium's forced-colours emulation: `none` on all
+ * of them).
+ */
+
+/*
+ * A HOVERED ROW PAINTS THE CARD FILL, NOT THE SHARED WASH. The page is the canvas
+ * (`MainPanelLayout`), and the shared wash is the page ink at 5%, which on the canvas in dark lands
+ * at rgb(30, 30, 29): a control stepped back to the page ground (rgb(27, 27, 25), which the shared
+ * rows block does for every washed row) is then 1.03:1 off its row and has no box, while the pointer
+ * is on the row. `--background-fill` is rgb(35, 35, 32) there, which leaves it 1.10:1, and the
+ * same rgb(244, 244, 242) as the wash in light. The ground the controls step back to is NOT set
+ * here; it is main.css's (`@ws WS-PRIMITIVES begin: rows`), so a Settings control and a control in
+ * any other washed row cannot disagree. Scoped to `.br-rows-flat`, which the Settings column and
+ * each list a Settings dialog draws in a portal carry; the provider catalog is also `.br-rows-flat`
+ * and out-ranks this rule by specificity where its ground differs (`providers.css`). The
+ * focus-visible half covers a row a keyboard is in; a row that is itself the focus target (a
+ * permission rule) keeps its own focus fill.
+ */
+.br-rows-flat
+  .biorouter-settings-row:not(.tint-selected, :focus-visible):is(:hover, :has(:focus-visible)) {
+  background-color: var(--background-fill);
+}
+
+/*
  * Reset data's rows: a 24px checkbox target before the label, which the standard row's 10px
  * padding wrapped into a 45px line (24 + 20 + the 1px transparent edge), against the 40px every
  * other row in Settings is (vision V4-22). 24 + 8 + 7 + the 1px edge is 40 again, and the box

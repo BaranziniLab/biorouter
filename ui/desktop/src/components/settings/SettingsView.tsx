@@ -212,7 +212,7 @@ export default function SettingsView({
             Guarded at the source by `styles/settingsScrollFade.test.ts`, because jsdom computes
             no `mask-image`. */}
         <ScrollArea className="biorouter-scroll-fade-top flex-1" paddingX={1}>
-          <ReadableContent size="chat" className="px-6 py-5">
+          <ReadableContent size="chat" className="br-rows-flat px-6 py-5">
             {/* `tabIndex={-1}` on all three panels (vision V4-05): Radix makes a panel a Tab stop,
                 and a panel has no focus treatment by design, so Tab from the tab list landed on an
                 invisible stop before the first control. Every Settings panel opens with a control,

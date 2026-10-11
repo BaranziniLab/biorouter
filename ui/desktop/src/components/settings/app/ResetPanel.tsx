@@ -304,9 +304,11 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           </>
         }
       >
-        {/* The dialog's body edge is 8px outside the row's hairline and 16px outside the
+        {/* The dialog's body edge is 4px outside the row's own edge and 16px outside the
             checkbox's box, so the two lines of text that frame the list take the box's edge as
-            theirs (`pl-4`): the count, the checkboxes and the permanence line share one left edge. */}
+            theirs (`pl-4`): the count, the checkboxes and the permanence line share one left edge.
+            The rows carry no hairline (`br-rows-flat`, main.css): each has its checkbox as its
+            anchor, and the hover fill says which one the pointer is on. */}
         <div className="flex items-center justify-between gap-2 pb-2">
           <span className="pl-4 text-supporting tabular-nums text-text-muted">
             {resetCopy.selectedCount(selectedCategories.length, ALL_CATEGORIES.length)}
@@ -322,7 +324,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
           </Button>
         </div>
 
-        <ul className="biorouter-settings-list">
+        <ul className="biorouter-settings-list br-rows-flat">
           {RESET_CATEGORIES.map((category) => {
             const checkboxId = `${idPrefix}-reset-${category.id}`;
             const count = countText(category, counts);

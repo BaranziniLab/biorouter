@@ -120,7 +120,7 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
 
         {status === 'ready' && extensions.length > 0 && (
           <div
-            className="biorouter-settings-list"
+            className="biorouter-settings-list br-rows-flat"
             role="group"
             aria-label={permissionDialogCopy.rulesListLabel}
           >

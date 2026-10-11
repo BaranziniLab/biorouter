@@ -178,7 +178,7 @@ export default function PermissionModal({
         )}
 
         {loadStatus === 'ready' && tools.length > 0 && (
-          <div className="biorouter-settings-list">
+          <div className="biorouter-settings-list br-rows-flat">
             {tools.map((tool) => {
               const selectedPermission = updatedPermissions[tool.name] || tool.permission;
               return (
