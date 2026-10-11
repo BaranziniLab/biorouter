@@ -13,6 +13,7 @@ import {
 import { createExtensionRecoverHints } from '../../utils/extensionErrorUtils';
 import { useTransientValue } from '../../hooks/useTransientFlag';
 import { LOAD_FAILURE_COPY } from './copy';
+import './extension-notice.css';
 
 /**
  * The standing extension-failure notice, on the page the failure is ABOUT.
@@ -62,7 +63,7 @@ export function ExtensionLoadFailureNotice({
           action={
             // Two quiet text actions and a round X, in the Note's one trailing slot: the notice
             // is a line and its error, not a card with a second row of buttons under it.
-            <div className="flex items-center gap-1">
+            <div className="br-ext-notice-actions">
               {onAskBiorouter && (
                 <Button
                   size="sm"

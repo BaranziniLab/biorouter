@@ -1,0 +1,17 @@
+/*
+ * The standing load-failure notice (`ExtensionLoadFailureNotice.tsx`).
+ *
+ * Authored rather than a Tailwind utility: under BIOROUTER_NO_HMR a newly written class can fail
+ * to generate (CLAUDE.md, "Desktop shell geometry").
+ */
+
+/* A Note centres its action on a 16px first line (`.br-note-action`, calibrated for 12px prose).
+   This notice opens with a 20px title line (`text-label`), so the buttons sat 2px above the title's
+   middle (measured: 78 against 80, with the glyph already on 80). The 2px of top padding moves
+   the row's middle to the title's, and the notice keeps its height. */
+.br-ext-notice-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 2px;
+}
