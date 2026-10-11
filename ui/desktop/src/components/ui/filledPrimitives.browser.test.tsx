@@ -62,6 +62,10 @@ function App() {
   return (
     <div style={{ display: 'grid', gap: 16, padding: 24, width: 420 }}>
       <div id="page"><Pair prefix="page" /></div>
+      <div id="muted-panel" className="text-text-muted font-medium">
+        <Input id="muted-value" aria-label="Endpoint" defaultValue="https://unified-api.ucsf.edu/general" />
+        <Input id="muted-empty" aria-label="API key" placeholder="Paste a key" />
+      </div>
       <Input id="invalid" aria-label="Invalid" aria-invalid defaultValue="not a url" />
       <div style={{ display: 'flex', alignItems: 'start', gap: 8 }}>
         <Button id="outline" variant="outline" size="sm">Outline</Button>
@@ -205,6 +209,46 @@ describe('the filled primitives under the whole stylesheet (R-27)', () => {
         expect((await style(tab, '#caller-ground')).ground).toBe(
           await paint(tab, 'var(--background-default)')
         );
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('draws a field’s value in the default ink at the body weight inside a muted container (FR-R1-10)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const mode of ['light', 'dark'] as const) {
+      const tab = await open(mode);
+      try {
+        const ink = (value: string) =>
+          tab.evaluate((v) => {
+            const probe = document.createElement('div');
+            probe.style.color = v;
+            document.body.append(probe);
+            const out = getComputedStyle(probe).color;
+            probe.remove();
+            return out;
+          }, value);
+        const field = await tab.evaluate(() => {
+          const value = getComputedStyle(document.getElementById('muted-value')!);
+          const empty = getComputedStyle(document.getElementById('muted-empty')!, '::placeholder');
+          return {
+            color: value.color,
+            weight: value.fontWeight,
+            size: value.fontSize,
+            line: value.lineHeight,
+            placeholder: empty.color,
+          };
+        });
+        // The tab panel of the first-run catalog is muted (and 500): a prefilled Endpoint read as
+        // a placeholder. The field sets its own ink and the values' weight.
+        expect(field.color, `${mode} value ink`).toBe(await ink('var(--text-default)'));
+        expect(field.weight, `${mode} value weight`).toBe('400');
+        expect([field.size, field.line]).toEqual(['14px', '20px']);
+        expect(field.placeholder, `${mode} the placeholder stays muted`).toBe(
+          await ink('var(--text-muted)')
+        );
+        expect(field.placeholder).not.toBe(field.color);
       } finally {
         await tab.close();
       }
