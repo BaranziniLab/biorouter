@@ -20,21 +20,36 @@ import { FALLBACK_REGISTRY, marketplaceEntryFor, type BaamRegistry } from '../..
 /**
  * Platform capabilities are compiled into the agent and have no catalogue entry, so their
  * display name is stated here. The key is the lowercased name with its whitespace dropped.
+ *
+ * `workspace` is the daemon's `Workspace` capability, which the daemon itself calls Workspace
+ * Control (`bundled_extension_display_name`) and so does Settings > Chat > Capabilities
+ * (`capabilities.ts`). Without the entry a load toast or a History row said "Workspace" for the
+ * same thing.
  */
 const PLATFORM_EXTENSION_DISPLAY_NAMES: Record<string, string> = {
   chatrecall: 'Chat Recall',
+  workspace: 'Workspace Control',
 };
 
-/** The last resort: a key read as words, each capitalised (`code_execution` is `Code Execution`). */
-export function formatExtensionName(name: string): string {
-  const normalized = name.toLowerCase().replace(/\s+/g, '');
-  const displayName = PLATFORM_EXTENSION_DISPLAY_NAMES[normalized];
-  if (displayName) return displayName;
-
+/** A key read as words, each capitalised (`code_execution` is `Code Execution`). */
+function readAsWords(name: string): string {
   return name
     .split(/[-_]/) // Split on hyphens and underscores
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
+}
+
+/** The name a platform capability is given, by its key, or `undefined`. */
+function platformNameFor(name: string): string | undefined {
+  return PLATFORM_EXTENSION_DISPLAY_NAMES[name.toLowerCase().replace(/\s+/g, '')];
+}
+
+/**
+ * The last resort: a platform capability's stated name, else a key read as words
+ * (`code_execution` is `Code Execution`).
+ */
+export function formatExtensionName(name: string): string {
+  return platformNameFor(name) ?? readAsWords(name);
 }
 
 /**
@@ -67,7 +82,7 @@ function builtInNameFor(key: string): string | null {
  * The display name for an extension, from the most specific source that has one:
  *
  *   1. the entry's own `display_name`, when it is a bundled one that states it;
- *   2. the platform names (`Chat Recall`);
+ *   2. the platform names (`Chat Recall`, `Workspace Control`), never for an installed entry;
  *   3. the bundled capabilities' catalogue (`computercontroller` is `Biorouter Copilot`);
  *   4. the marketplace catalogue (`cdwagent` is `CDWAgent`), for anything that is not bundled;
  *   5. the key read as words, only when nothing above knows it.
@@ -92,10 +107,12 @@ export function extensionDisplayName(
     return formatExtensionName(entry.display_name);
   }
 
-  const platform = PLATFORM_EXTENSION_DISPLAY_NAMES[entry.name.toLowerCase().replace(/\s+/g, '')];
-  if (platform) return platform;
-
   if (!installed) {
+    // A platform name is a bundled capability's, so an entry that says it is an installed one is
+    // not given it: `workspace` is as likely to be somebody's own MCP server as the capability.
+    const platform = platformNameFor(entry.name);
+    if (platform) return platform;
+
     const builtIn = builtInNameFor(entry.name);
     if (builtIn) return builtIn;
   }
@@ -105,5 +122,5 @@ export function extensionDisplayName(
     if (listed) return listed;
   }
 
-  return formatExtensionName(entry.name);
+  return installed ? readAsWords(entry.name) : formatExtensionName(entry.name);
 }

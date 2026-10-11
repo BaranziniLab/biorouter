@@ -31,10 +31,29 @@ describe('extensionDisplayName', () => {
     expect(extensionDisplayName('Chat Recall')).toBe('Chat Recall');
   });
 
+  /**
+   * The daemon sends the workspace capability as `Workspace`; the daemon's own display name and
+   * Settings > Chat > Capabilities call it Workspace Control, so a load toast, a History row and
+   * a permission list must too (the request from WS-SETTINGS-A, vision V4-R2-3).
+   */
+  it('names the workspace capability Workspace Control, however the daemon spells it', () => {
+    expect(extensionDisplayName('Workspace')).toBe('Workspace Control');
+    expect(extensionDisplayName('workspace')).toBe('Workspace Control');
+    expect(extensionDisplayName({ name: 'Workspace', type: 'platform' })).toBe('Workspace Control');
+    expect(formatExtensionName('Workspace')).toBe('Workspace Control');
+  });
+
+  it('does not give a platform name to an extension the user installed', () => {
+    // `workspace` is a likely name for somebody's own MCP server. It is theirs, not the capability.
+    expect(extensionDisplayName({ name: 'workspace', type: 'stdio' })).toBe('Workspace');
+    expect(extensionDisplayName({ name: 'chatrecall', type: 'streamable_http' })).toBe(
+      'Chatrecall'
+    );
+  });
+
   it('falls back to the key read as words only when nothing knows it', () => {
     expect(extensionDisplayName('code_execution')).toBe('Code Execution');
     expect(extensionDisplayName('my-lab_tool')).toBe('My Lab Tool');
-    expect(extensionDisplayName('Workspace')).toBe('Workspace');
   });
 
   it('lets a bundled entry state its own display name first', () => {

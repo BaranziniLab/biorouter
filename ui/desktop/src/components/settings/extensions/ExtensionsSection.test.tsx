@@ -55,9 +55,9 @@ vi.mock('../../../toasts', () => ({
 import ExtensionsSection from './ExtensionsSection';
 
 // `ExtensionItem` names its Radix switch by the row's title (`aria-labelledby`), and
-// `getFriendlyTitle` for a `platform` entry named `Workspace` is
-// `formatExtensionName('Workspace')` = 'Workspace' (it is not in
-// PLATFORM_EXTENSION_DISPLAY_NAMES).
+// `getFriendlyTitle` for a `platform` entry named `Workspace` is 'Workspace Control' (the
+// platform names in `extensionDisplayName.ts` state it), the name the daemon and the
+// Capabilities list use. The section never renders that row, which the tests below pin.
 
 /**
  * ⚠ These fixtures use the names the DAEMON sends, not the config keys.
@@ -116,7 +116,10 @@ describe('ExtensionsSection — Workspace is a capability, not an extension', ()
     await waitFor(() =>
       expect(screen.queryByRole('switch', { name: /Workspace/i })).not.toBeInTheDocument()
     );
+    // Neither the bare name nor the one the resolver gives it: the row's absence must not
+    // depend on which spelling a future title uses.
     expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workspace Control')).not.toBeInTheDocument();
   });
 });
 
