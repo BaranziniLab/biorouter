@@ -1260,7 +1260,10 @@ mod export_route_tests {
         };
         for name in biorouter_mcp::agent_drafter::render::SHIPPED_SKILL_NAMES {
             assert!(payload.is_shipped_skill(name), "{name}");
-            assert!(payload.is_shipped_skill(&name.to_ascii_uppercase()), "{name}");
+            assert!(
+                payload.is_shipped_skill(&name.to_ascii_uppercase()),
+                "{name}"
+            );
         }
         assert!(!payload.is_shipped_skill("ggplot-visualization"));
     }
