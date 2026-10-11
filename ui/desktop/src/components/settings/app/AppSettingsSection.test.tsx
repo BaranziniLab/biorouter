@@ -149,5 +149,10 @@ describe('App tab sections', () => {
     );
     render(<AppSettingsSection />);
     expect(await screen.findByText('1.92.1')).toBeInTheDocument();
+    // About draws no logo today. The only one it may ever show is the Biorouter wordmark
+    // (R-29; its svg is `role="img"` named "BioRouter"), so an image of any other name fails.
+    for (const logo of screen.queryAllByRole('img')) {
+      expect(logo).toHaveAccessibleName('BioRouter');
+    }
   });
 });
