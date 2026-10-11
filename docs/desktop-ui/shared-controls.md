@@ -129,6 +129,10 @@ react-select draws its own filled chevron and cross, which read heavier than eve
 
 react-select writes its own `display: block` on an option in an unlayered style sheet, which beats the row's `flex`. The Select sets `display: flex` in its styles API so the label and the check share a line.
 
+Escape with a Select's menu open closes the menu and nothing else. A react-select menu is not a Radix layer, so inside a dialog the dialog is the top layer, and Radix listens for Escape in the capture phase on the document, before react-select sees the key: one Escape used to close Switch models with the provider menu still open. The Select claims that Escape first, from a window capture listener, when the key's target is its own combobox (`.br-select`) and the combobox says `aria-expanded="true"`. It cancels the event, which Radix and every other surface leave alone, and react-select closes the menu. The class scopes the claim, because cmdk's input says expanded for as long as it is mounted. A caller that passes its own `onKeyDown` would stop react-select closing the menu on that cancelled key; none does.
+
+The filter field's tooltip ("Filter · ⌘F") is a hover hint for a field the person is not in. It never opens on focus, Tab included, or while the field holds focus, and focus closes it: it used to sit under History's band while the person typed. There is none when the placeholder already names the shortcut (History's "Search history… ⌘F") or when ⌘F is off. The shortcut reaches assistive tech as `aria-keyshortcuts`.
+
 ## How these are tested
 
 jsdom lays nothing out and runs no Tailwind, so a component test can only read class names. The acceptance numbers are measured in Chromium:
@@ -138,6 +142,7 @@ jsdom lays nothing out and runs no Tailwind, so a component test can only read c
 - `ui/dialogFromMenu.browser.test.tsx` bundles the real menus and dialogs and drives them with Playwright's keyboard and mouse: where focus lands when a dialog that a menu item opened closes, and whether its first stop wears a ring after a mouse pick.
 - `ui/menuPointerRing.browser.test.tsx` drives a dropdown menu, a submenu and a context menu with the real mouse and keys under the compiled `main.css`: no ring on a row the pointer crosses, the ring back on the first key, kept for a keyboard-opened menu and for `prefers-contrast: more` and forced colours. Its first case runs without the rule and sees the ring.
 - `ui/groundsAndRows.browser.test.tsx` compiles `main.css` the same way and measures the grounds table above on a page, in a card, on a recessed ground and in a card on it, a button and a pill in a washed row, and the flat rows' divider in light and forced colours. `ui/privacyPill.test.ts` holds the pill's one rule off settings rows.
+- `ui/filter-input.browser.test.tsx` drives the filter field with the real pointer and keys: the hint on hover over a field the person is not in (the instrument case), and none after a click, a leave and a return, on a Tab, under a placeholder that carries the shortcut, or with ⌘F off. `ui/Select.escape.test.tsx` holds Escape to the open menu inside a dialog, and leaves a closed Select's Escape and another combobox's to the dialog.
 - `styles/crewParity.test.ts` holds each promoted recipe to its Crew original, with the differences the redesign made on purpose written down.
 - `ui/controlsSourceGuard.test.ts` fails on a hand-rolled checkbox, radio or switch, an `@radix-ui/themes` import, a `title=` on a menu item and a Switch `variant` outside `ui/`. The `variant` prop itself is gone, so the type checker refuses it too. A file waiting on its owner is listed in `PENDING`, and the list only shrinks; it is empty now.
 
