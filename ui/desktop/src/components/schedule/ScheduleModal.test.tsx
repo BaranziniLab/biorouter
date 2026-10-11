@@ -52,22 +52,60 @@ describe('ScheduleModal name validation', () => {
   });
 
   /**
-   * An empty name never reaches the daemon either — but by the field's own
-   * `required`, which the browser answers before the form submits, so the
-   * "Enter a name" arm of `scheduleNameProblem` is a floor rather than the
-   * sentence the user reads. Asserted because "nothing was submitted" is the
-   * property that matters, and because a future edit that drops `required`
-   * should have to look at this.
+   * An empty name never reaches the daemon, and the sentence that says so is the app's own
+   * (vision V3-R4-1). The Input used to carry the native `required`, so Chromium answered the
+   * submit with its own themeless bubble ("Please fill out this field.") and `handleLocalSubmit`
+   * never ran: no danger edge, no line under the field. The form is `noValidate` now and the
+   * Field says it: `aria-invalid` on the control and the message through `aria-describedby`.
    */
-  it('does not submit an empty name at all', async () => {
+  it('answers an empty name with the Field error, not a native bubble', async () => {
     const user = userEvent.setup();
     const { onSubmit } = renderModal();
 
     await user.type(screen.getByLabelText('Workflow file'), '/tmp/wf.yaml');
     await user.click(screen.getByRole('button', { name: 'Create schedule' }));
 
+    const name = screen.getByLabelText('Name');
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('Name')).toBeRequired();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a name for this schedule.');
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(name).toHaveAccessibleDescription('Enter a name for this schedule.');
+
+    // Typing clears it again, the same as every other Field error.
+    await user.type(name, 'a');
+    expect(name).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('answers an empty workflow file the same way', async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderModal();
+
+    await user.type(screen.getByLabelText('Name'), 'daily-summary');
+    await user.click(screen.getByRole('button', { name: 'Create schedule' }));
+
+    const file = screen.getByLabelText('Workflow file');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a workflow file.');
+    expect(file).toHaveAttribute('aria-invalid', 'true');
+    expect(file).toHaveAccessibleDescription('Choose a workflow file.');
+  });
+
+  /**
+   * The wiring the two cases above stand on, stated at the source. jsdom does run constraint
+   * validation on a submit, so a native `required` (or a form without `noValidate`) fails them,
+   * but real Chromium shows its bubble where jsdom shows nothing, so the attributes are pinned
+   * as well: neither control carries `required`, both are `aria-required`, and the form opts out.
+   */
+  it('leaves validation to the Field: noValidate, no native required, aria-required instead', () => {
+    renderModal();
+
+    expect(document.getElementById('schedule-form')).toHaveAttribute('novalidate');
+    for (const label of ['Name', 'Workflow file']) {
+      const control = screen.getByLabelText(label);
+      expect(control).not.toHaveAttribute('required');
+      expect(control).toHaveAttribute('aria-required', 'true');
+    }
   });
 
   /**

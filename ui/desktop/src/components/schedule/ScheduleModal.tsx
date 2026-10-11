@@ -175,7 +175,16 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         </>
       }
     >
-      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-4 py-4">
+      {/* `noValidate`, and no native `required` on any control: the browser's constraint bubble is
+          its own chrome ("Please fill out this field." with an orange mark) and ignores the theme,
+          and it stops the submit before `handleLocalSubmit` can set the Field's danger edge and
+          line. `Field required` already marks the control `aria-required`. */}
+      <form
+        id="schedule-form"
+        onSubmit={handleLocalSubmit}
+        noValidate
+        className="flex flex-col gap-4 py-4"
+      >
         {apiErrorExternally && (
           <Note tone="danger" role="alert">
             {apiErrorExternally}
@@ -199,7 +208,6 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                   setNameError(null);
                 }}
                 placeholder={copy.namePlaceholder}
-                required
               />
             </Field>
 
@@ -216,6 +224,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                   id="workflowSource-modal"
                   aria-describedby={workflowError ? fieldHelpId('workflowSource-modal') : undefined}
                   aria-invalid={workflowError ? true : undefined}
+                  aria-required
                   value={workflowSourcePath}
                   onChange={(e) => {
                     setWorkflowSourcePath(e.target.value);
