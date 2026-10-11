@@ -1094,11 +1094,28 @@ pub(crate) struct EsbuildCommand {
     source: &'static str,
 }
 
+fn packaged_esbuild(executable: &Path) -> Option<PathBuf> {
+    let dir = executable.parent()?;
+    if let Some(beside) = esbuild_beside(dir) {
+        return Some(beside);
+    }
+    // CLI-only Linux packages keep helpers under libexec so they do not
+    // overwrite a separately installed /usr/bin/esbuild.
+    #[cfg(target_os = "linux")]
+    {
+        let candidate = dir.parent()?.join("libexec/biorouter/esbuild");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Locate an esbuild executable, in this order:
 ///
 /// 1. `$BIOROUTER_ESBUILD_BIN` — an explicit choice always wins.
-/// 2. Beside the running executable ([`esbuild_beside`]) — what the desktop app
-///    ships, so a packaged daemon never depends on the user's machine.
+/// 2. The package's helper ([`packaged_esbuild`]): beside the desktop daemon,
+///    or under `<install prefix>/libexec/biorouter` in CLI-only Linux packages.
 /// 3. This checkout's `ui/desktop/node_modules/.bin/esbuild` (dev tree).
 /// 4. `esbuild` on the process `PATH`, then on the login shell's.
 /// 5. `npx --yes esbuild@<ESBUILD_VERSION>` — pinned, because it downloads and
@@ -1122,8 +1139,7 @@ pub(crate) fn find_esbuild() -> Option<EsbuildCommand> {
     if let Some(found) = std::env::current_exe()
         .ok()
         .as_deref()
-        .and_then(Path::parent)
-        .and_then(esbuild_beside)
+        .and_then(packaged_esbuild)
     {
         return Some(direct(found, "bundled"));
     }
@@ -1796,6 +1812,8 @@ impl Drop for Staging {
 /// code no longer imports a stylesheet); then `app.js`, banner first, with
 /// one rename.
 fn install_bundle(staging: &Path, dist: &Path, banner: &BundleBanner) -> io::Result<()> {
+    let mut bytes = banner.line().into_bytes();
+    bytes.extend_from_slice(&std::fs::read(staging.join("app.js"))?);
     let css = staging.join("app.css");
     let installed_css = dist.join("app.css");
     if css.is_file() {
@@ -1805,8 +1823,6 @@ fn install_bundle(staging: &Path, dist: &Path, banner: &BundleBanner) -> io::Res
             return Err(error);
         }
     }
-    let mut bytes = banner.line().into_bytes();
-    bytes.extend_from_slice(&std::fs::read(staging.join("app.js"))?);
     write_atomic(&dist.join("app.js"), &bytes)
 }
 
@@ -3401,6 +3417,24 @@ mod tests {
         let as_dir = TempDir::new().unwrap();
         std::fs::create_dir(as_dir.path().join(name)).unwrap();
         assert_eq!(esbuild_beside(as_dir.path()), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cli_packages_find_the_private_esbuild_helper_before_a_path_binary() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("usr/bin");
+        let helpers = dir.path().join("usr/libexec/biorouter");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&helpers).unwrap();
+        let executable = bin.join("biorouterd");
+        assert_eq!(packaged_esbuild(&executable), None);
+        let helper = helpers.join("esbuild");
+        std::fs::write(&helper, b"packaged").unwrap();
+        assert_eq!(packaged_esbuild(&executable), Some(helper));
+        let beside = bin.join("esbuild");
+        std::fs::write(&beside, b"desktop").unwrap();
+        assert_eq!(packaged_esbuild(&executable), Some(beside));
     }
 
     /// The `npx` last resort downloads and runs a registry package, so it names

@@ -70,6 +70,19 @@ test('the pin is the esbuild ui/desktop already builds with, at the same digests
   }
 });
 
+test('CLI-only Linux packages stage and smoke-test the same verified helper', () => {
+  const root = path.resolve(__dirname, '../../..');
+  const manifest = fs.readFileSync(path.join(root, 'packaging/biorouter-cli.yaml'), 'utf8');
+  const script = fs.readFileSync(path.join(root, 'scripts/build-cli-linux-packages.sh'), 'utf8');
+  assert.match(
+    manifest,
+    /src: \.\/target\/cli-helpers\/linux-x64\/esbuild\s+dst: \/usr\/libexec\/biorouter\/esbuild\s+file_info:\s+mode: 0755/
+  );
+  assert.match(script, /fetchEsbuild\('linux', 'x64', \{ binDir: process\.argv\[2\] \}\)/);
+  assert.equal(script.match(/\/usr\/libexec\/biorouter\/esbuild \/tmp\/app\.ts/g)?.length, 2);
+  assert.equal(script.match(/\/usr\/libexec\/biorouter\/esbuild --version/g)?.length, 2);
+});
+
 test('the binary is read out of the npm tarball, pax path records included', () => {
   const archive = tgz({
     'package/package.json': Buffer.from('{}'),

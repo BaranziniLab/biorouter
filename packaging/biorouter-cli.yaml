@@ -58,6 +58,11 @@ contents:
     file_info:
       mode: 0755
 
+  - src: ./target/cli-helpers/linux-x64/esbuild
+    dst: /usr/libexec/biorouter/esbuild
+    file_info:
+      mode: 0755
+
   # The native Biorouter Copilot helper. `manifest::locate` finds it by walking out
   # from the running executable, and /usr/libexec is where the FHS puts a
   # program run by another program rather than by a user — so this is the one
