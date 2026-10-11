@@ -54,6 +54,19 @@ const RULES: Record<Rule, (source: string) => number> = {
     ).length,
 };
 
+/**
+ * The source with its comments blanked. A comment that NAMES the native control it replaces
+ * (MarkdownContent's task boxes: "never the native `<input type=\"checkbox\" disabled>`
+ * remark-gfm emits") is not a control, and failed the guard as one. Blanked, not removed, so a
+ * reader of a failure can still count lines. A `//` inside a string (a URL) may blank the rest of
+ * that line, which can only hide text, and these rules look for JSX, which never follows a URL.
+ */
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, (_match, before: string) => before);
+}
+
 /** Allowed for good: what the rule cannot replace. */
 const ALLOWED: Partial<Record<Rule, Record<string, string>>> = {
   'native-choice': {
@@ -73,7 +86,7 @@ describe('controls come from components/ui (spec 2.6, the controls source guard)
 
   it.each(Object.keys(RULES) as Rule[])('%s', (rule) => {
     const offenders = SOURCES.map((path) => rel(path)).filter(
-      (path) => RULES[rule](readFileSync(join(COMPONENTS, path), 'utf8')) > 0
+      (path) => RULES[rule](withoutComments(readFileSync(join(COMPONENTS, path), 'utf8'))) > 0
     );
     const allowed = { ...(ALLOWED[rule] ?? {}), ...(PENDING[rule] ?? {}) };
     expect(
@@ -94,5 +107,20 @@ describe('controls come from components/ui (spec 2.6, the controls source guard)
     expect(RULES['menu-item-title']('<DropdownMenuItem\n  title="Help"\n  onSelect={go}>')).toBe(1);
     expect(RULES['menu-item-title']('<DropdownMenuItem onSelect={go}>')).toBe(0);
     expect(RULES['switch-variant']('<Switch\n  checked\n  variant="mono"\n/>')).toBe(1);
+  });
+
+  it('reads code, not the comments that name what it replaced', () => {
+    const named =
+      '/**\n * Never the native `<input type="checkbox" disabled>` remark-gfm emits.\n */\n';
+    expect(RULES['native-choice'](withoutComments(named))).toBe(0);
+    expect(RULES['role-switch'](withoutComments('// was <div role="switch">\n'))).toBe(0);
+    // Code after a comment, and code on a line with a URL in a string, is still read.
+    expect(RULES['native-choice'](withoutComments('/* box */ <input type="checkbox" />'))).toBe(1);
+    expect(
+      RULES['native-choice'](
+        withoutComments('const u = "https://x.test"; const c = <input type="radio" />;')
+      )
+    ).toBe(1);
+    expect(withoutComments('a /* b\nc */ d').split('\n')).toHaveLength(2);
   });
 });
