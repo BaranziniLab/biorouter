@@ -137,11 +137,11 @@ export function runFile(file: string, args: string[]): Promise<string> {
  *
  * ⚠ Not {@link runFile}. That waits for the program to exit and kills it at its timeout, which for
  * a browser that was not already running is the browser, ten seconds after it opened. And no
- * `windowsHide`: on Windows it also asks a GUI program's first window to start hidden.
+ * `windowsHide: true`: on Windows it also asks a GUI program's first window to start hidden.
  */
 export function launchFile(file: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { detached: true, stdio: 'ignore' });
+    const child = spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: false });
     child.once('error', reject);
     child.once('spawn', () => {
       child.unref();
