@@ -281,6 +281,24 @@ describe('FirstRunPrivacyNotice', () => {
     expect(screen.getByTestId('first-run-privacy-notice')).toHaveClass('tabular-nums');
   });
 
+  // FR-R2-8, class only (privacy UI, ruling 15): a bare `<strong>` computes to `bolder`, 700, and the
+  // type system draws only 400 and 600. Every emphasised count and the extension names wear
+  // `font-semibold`; `firstRunPrivacyNotice.browser.test.tsx` measures the computed weight.
+  it('sets every emphasised count and extension name at the strong weight, 600', () => {
+    render(
+      <FirstRunPrivacyNotice
+        open
+        onDismiss={vi.fn()}
+        counts={computeNoticeCounts(FIXTURE)}
+        publicClinicalExtensions={['medcp']}
+      />
+    );
+    const emphasised = screen.getByTestId('first-run-privacy-notice').querySelectorAll('strong');
+    // The two headline counts, the unknown-model count and the extension names.
+    expect(emphasised.length).toBe(4);
+    for (const el of emphasised) expect(el).toHaveClass('font-semibold');
+  });
+
   it('says nothing about extensions when there are none to name', () => {
     render(
       <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />

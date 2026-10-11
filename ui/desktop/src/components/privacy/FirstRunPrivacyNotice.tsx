@@ -356,9 +356,9 @@ export function FirstRunPrivacyNotice({
               data-testid="notice-headline"
               className="text-body text-text-default"
             >
-              <strong>{resolved.privateVisible}</strong> of your{' '}
-              <strong>{resolved.totalVisible}</strong> chats are now marked private, because that is
-              the model each of them was last using.
+              <strong className="font-semibold">{resolved.privateVisible}</strong> of your{' '}
+              <strong className="font-semibold">{resolved.totalVisible}</strong> chats are now
+              marked private, because that is the model each of them was last using.
             </DialogDescription>
 
             {resolved.privateByProvider.length > 0 && (
@@ -376,8 +376,9 @@ export function FirstRunPrivacyNotice({
 
             {resolved.unknownProviderVisible > 0 && (
               <p data-testid="notice-unknown">
-                <strong>{resolved.unknownProviderVisible}</strong> chats record no model at all.
-                Biorouter cannot tell what those ran on, so they are left public.
+                <strong className="font-semibold">{resolved.unknownProviderVisible}</strong> chats
+                record no model at all. Biorouter cannot tell what those ran on, so they are left
+                public.
               </p>
             )}
           </>
@@ -404,8 +405,8 @@ export function FirstRunPrivacyNotice({
             {publicClinicalExtensions.length === 1
               ? 'One extension you have enabled is set up for clinical data and is not marked private: '
               : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
-            <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including commercial
-            models hosted outside your institution, can still call{' '}
+            <strong className="font-semibold">{publicClinicalExtensions.join(', ')}</strong>. Any
+            model, including commercial models hosted outside your institution, can still call{' '}
             {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
             {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
             you know.

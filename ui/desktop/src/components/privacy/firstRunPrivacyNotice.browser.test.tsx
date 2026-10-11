@@ -294,6 +294,31 @@ describe('The privacy notice is the shared dialog (FR-R1-14)', () => {
     }
   });
 
+  // FR-R2-8: a bare <strong> is `bolder`, which Arial draws at 700. The type system allows 400 and
+  // 600 only, so the counts and the extension names carry `font-semibold`.
+  it('draws no weight above 600: the counts and extension names are 600, not 700', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const weights = await tab.evaluate(() => {
+        const panel = document.querySelector('[role="dialog"]')!;
+        const strong = [...panel.querySelectorAll('strong')].map((el) => ({
+          text: el.textContent,
+          weight: getComputedStyle(el).fontWeight,
+        }));
+        const all = [...panel.querySelectorAll('*')].map((el) =>
+          parseInt(getComputedStyle(el).fontWeight, 10)
+        );
+        return { strong, max: Math.max(...all) };
+      });
+      expect(weights.strong.map((s) => s.text)).toEqual(['791', '5542', '3463', 'medcp']);
+      for (const { text, weight } of weights.strong) expect(weight, text ?? '').toBe('600');
+      expect(weights.max).toBeLessThanOrEqual(600);
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('holds its whole text in a 900px window, with the 32px "Got it" at the footer gutter', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open();
