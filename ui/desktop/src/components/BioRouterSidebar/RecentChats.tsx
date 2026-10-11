@@ -7,6 +7,9 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type UIEvent,
 } from 'react';
 
@@ -190,6 +193,134 @@ function useBuiltOnOpen<Part extends string>(): [
   return [built, buildOnOpen];
 }
 
+interface LazyMenuButtonProps {
+  /** The button's accessible name, and its tooltip. */
+  label: string;
+  className: string;
+  testId?: string;
+  tabIndex: 0 | -1;
+  onFocus: () => void;
+  /** The menu opened or closed (the row or header lights while it is open). */
+  onOpenChange: (open: boolean) => void;
+  /** The menu's content, built the first time the menu opens. */
+  children: ReactNode;
+}
+
+/**
+ * A ⋯ button whose menu root is mounted only once the button is used (R-28,
+ * vision V1-R2-2). A mounted Radix menu root adds a capture `keydown` listener
+ * to the document, and on every key press each of those adds two more, so a
+ * list with a menu root in every drawn row paid for every row on every key,
+ * and again when a view switch unmounted them all: with 4,233 rows drawn
+ * after a scroll to the end, one switch took 0.56 s in a production build,
+ * most of it in `addEventListener` and `removeEventListener`. Until it is
+ * focused, pressed or opened from the keyboard the button is a plain one that
+ * says it opens a menu; then the menu takes it over, already open when the
+ * press asked for that, and keeps focus on it when focus was what armed it.
+ * It lets go when it loses focus with the menu shut.
+ */
+function LazyMenuButton({
+  label,
+  className,
+  testId,
+  tabIndex,
+  onFocus,
+  onOpenChange,
+  children,
+}: LazyMenuButtonProps) {
+  const [armed, setArmed] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [built, buildOnOpen] = useBuiltOnOpen<'menu' | 'label'>();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const focusWhenArmed = useRef(false);
+  const changeOpen = (next: boolean) => {
+    buildOnOpen('menu')(next);
+    setOpen(next);
+    onOpenChange(next);
+  };
+  const armOpen = () => {
+    setArmed(true);
+    changeOpen(true);
+  };
+  // Armed by focus: the menu's trigger replaces the plain button, so focus
+  // moves to it in the same frame.
+  useLayoutEffect(() => {
+    if (!armed || !focusWhenArmed.current) return;
+    focusWhenArmed.current = false;
+    buttonRef.current?.focus({ preventScroll: true });
+  }, [armed]);
+
+  const button = {
+    type: 'button' as const,
+    variant: 'ghost' as const,
+    shape: 'round' as const,
+    size: 'xs' as const,
+    className,
+    'aria-label': label,
+    'data-testid': testId,
+    tabIndex,
+  };
+  const labelTooltip = built.has('label') ? <TooltipContent>{label}</TooltipContent> : null;
+
+  if (!armed) {
+    return (
+      <Tooltip onOpenChange={buildOnOpen('label')}>
+        <TooltipTrigger asChild>
+          <Button
+            {...button}
+            aria-haspopup="menu"
+            aria-expanded={false}
+            data-state="closed"
+            onFocus={() => {
+              onFocus();
+              focusWhenArmed.current = true;
+              setArmed(true);
+            }}
+            // The press that opens the menu, as the menu's own trigger takes it:
+            // the main button without Control, and no focus moved by it.
+            onPointerDown={(event: ReactPointerEvent<HTMLButtonElement>) => {
+              if (event.button !== 0 || event.ctrlKey) return;
+              event.preventDefault();
+              armOpen();
+            }}
+            onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+              if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'ArrowDown') return;
+              event.preventDefault();
+              armOpen();
+            }}
+          >
+            <MoreHorizontal className="size-4" aria-hidden />
+          </Button>
+        </TooltipTrigger>
+        {labelTooltip}
+      </Tooltip>
+    );
+  }
+
+  return (
+    <DropdownMenu open={open} onOpenChange={changeOpen}>
+      <Tooltip onOpenChange={buildOnOpen('label')}>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              {...button}
+              ref={buttonRef}
+              onFocus={onFocus}
+              onBlur={() => {
+                if (!open) setArmed(false);
+              }}
+            >
+              <MoreHorizontal className="size-4" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        {labelTooltip}
+      </Tooltip>
+      {built.has('menu') ? children : null}
+    </DropdownMenu>
+  );
+}
+
 // ── One chat row ──────────────────────────────────────────────────────────
 
 interface RecentChatRowProps {
@@ -215,6 +346,12 @@ interface RecentChatRowProps {
   onStartRename: (sessionId: string) => void;
   onRequestDelete: (session: SessionSummary) => void;
   onDiverge: (sessionId: string) => void;
+  /**
+   * True while the list's right-click menu is open on this row (one menu for
+   * the list, R-28): the row keeps its lit ground under it, as it does for its
+   * own ⋯ menu.
+   */
+  contextMenuOpen: boolean;
   /** Set while this row is being renamed: the row turns into its editor. */
   editingDraft: string | null;
   onDraftChange: (draft: string) => void;
@@ -240,6 +377,7 @@ const RecentChatRow = memo(function RecentChatRow({
   onStartRename,
   onRequestDelete,
   onDiverge,
+  contextMenuOpen,
   editingDraft,
   onDraftChange,
   onCommitRename,
@@ -259,8 +397,8 @@ const RecentChatRow = memo(function RecentChatRow({
   useEffect(() => {
     if (!listShown) setCardOpen(false);
   }, [listShown]);
-  // The hover card, the ⋯ label and the two menus are built when first shown.
-  const [built, buildOnOpen] = useBuiltOnOpen<'card' | 'moreLabel' | 'contextMenu' | 'dropdown'>();
+  // The hover card is built when first shown; the ⋯ builds its own label and menu.
+  const [built, buildOnOpen] = useBuiltOnOpen<'card'>();
   // Rename was chosen in a menu: start editing once the menu has let go of
   // focus, or it would hand focus back to this row over the new input.
   const renameAfterMenu = useRef(false);
@@ -295,7 +433,14 @@ const RecentChatRow = memo(function RecentChatRow({
 
   if (editingDraft !== null) {
     return (
-      <li className="br-chat-row-item" data-row-item="">
+      // The editor's own right-click is the app's text menu (cut, copy, paste,
+      // spelling), not the list's chat menu, which a right-click anywhere else
+      // in the list reaches by bubbling.
+      <li
+        className="br-chat-row-item"
+        data-row-item=""
+        onContextMenu={(event) => event.stopPropagation()}
+      >
         <div className="br-nav-row br-chat-row" data-editing="true" data-row={key}>
           <ChatKindIcon
             session={session}
@@ -332,133 +477,98 @@ const RecentChatRow = memo(function RecentChatRow({
   };
 
   return (
-    <li className="br-chat-row-item" data-row-item="" data-menu-open={menuOpen || undefined}>
-      <ContextMenu
+    <li
+      className="br-chat-row-item"
+      data-row-item=""
+      data-menu-open={menuOpen || contextMenuOpen || undefined}
+    >
+      <Tooltip
+        delayDuration={CHAT_HOVER_CARD_DELAY_MS}
+        open={cardOpen && listShown}
         onOpenChange={(open) => {
-          buildOnOpen('contextMenu')(open);
-          setMenuOpen(open);
+          if (open && labelRef.current) {
+            setTitleIsCut(labelRef.current.scrollWidth > labelRef.current.clientWidth);
+          }
+          buildOnOpen('card')(open);
+          setCardOpen(open);
         }}
       >
-        <Tooltip
-          delayDuration={CHAT_HOVER_CARD_DELAY_MS}
-          open={cardOpen && listShown}
-          onOpenChange={(open) => {
-            if (open && labelRef.current) {
-              setTitleIsCut(labelRef.current.scrollWidth > labelRef.current.clientWidth);
+        {/* The right-click menu is the list's (one for every row, R-28): a
+            right-click on this button, or Shift+F10 on it, bubbles to the
+            list, which reads the row from `data-row`. */}
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="br-nav-row br-chat-row no-drag"
+            data-testid={`recent-chat-${session.id}`}
+            data-row={key}
+            tabIndex={tabIndex}
+            onFocus={() => onRowFocus(key)}
+            onKeyDown={onKeyDown}
+            // One click, one real tab; an open chat is deduped by the
+            // reducer. The name goes WITH the click so the tab is born
+            // titled. Double-click is two opens (pinned by a test), never a
+            // rename.
+            onClick={() =>
+              onOpen(session.id, session.name.trim() || undefined, session.user_set_name)
             }
-            buildOnOpen('card')(open);
-            setCardOpen(open);
-          }}
-        >
-          {/* ⚠ Both triggers are `asChild` onto the SAME button, nested: the
-              button carries the tooltip's hover/focus listeners and the menu's
-              `contextmenu` listener at once, which keeps the row one element in
-              the 2px rhythm. */}
-          <TooltipTrigger asChild>
-            <ContextMenuTrigger asChild>
-              <button
-                type="button"
-                className="br-nav-row br-chat-row no-drag"
-                data-testid={`recent-chat-${session.id}`}
-                data-row={key}
-                tabIndex={tabIndex}
-                onFocus={() => onRowFocus(key)}
-                onKeyDown={onKeyDown}
-                // One click, one real tab; an open chat is deduped by the
-                // reducer. The name goes WITH the click so the tab is born
-                // titled. Double-click is two opens (pinned by a test), never a
-                // rename.
-                onClick={() =>
-                  onOpen(session.id, session.name.trim() || undefined, session.user_set_name)
-                }
-                aria-label={accessibleLabel}
-                aria-current={isActive ? 'page' : undefined}
-              >
-                {/* One glyph, two facts: the shape says what the chat IS, and a
-                    private chat carries the lock badge. It never hides. */}
-                <ChatKindIcon
-                  session={session}
-                  tier={session.privacy_tier}
-                  testId={`recent-chat-glyph-${session.id}`}
-                  isActive={isActive}
+            aria-label={accessibleLabel}
+            aria-current={isActive ? 'page' : undefined}
+          >
+            {/* One glyph, two facts: the shape says what the chat IS, and a
+                private chat carries the lock badge. It never hides. */}
+            <ChatKindIcon
+              session={session}
+              tier={session.privacy_tier}
+              testId={`recent-chat-glyph-${session.id}`}
+              isActive={isActive}
+            />
+            <span ref={labelRef} className="br-nav-row-label">
+              {title}
+            </span>
+            <span className="br-chat-row-trailing" aria-hidden="true">
+              {isRunning ? (
+                <span
+                  className="br-chat-row-ring"
+                  data-testid={`running-chat-indicator-${session.id}`}
                 />
-                <span ref={labelRef} className="br-nav-row-label">
-                  {title}
-                </span>
-                <span className="br-chat-row-trailing" aria-hidden="true">
-                  {isRunning ? (
-                    <span
-                      className="br-chat-row-ring"
-                      data-testid={`running-chat-indicator-${session.id}`}
-                    />
-                  ) : null}
-                </span>
-              </button>
-            </ContextMenuTrigger>
-          </TooltipTrigger>
-          {/* Sized to its text, up to the tooltip's 320px, so `~/path · 3h ago ·
-              12 messages` stays one line (V1-M6); a long title clamps to two.
-              `hideWhenDetached`: a row scrolled out of the list takes its card
-              with it rather than leaving it pinned to the list's edge. */}
-          {built.has('card') ? (
-            <TooltipContent
-              side="right"
-              align="start"
-              sideOffset={CHAT_HOVER_CARD_OFFSET}
-              hideWhenDetached
-              className="px-2 py-1.5 font-normal"
-            >
-              <div data-testid={`recent-chat-summary-${session.id}`}>
-                {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
-                <p>{chatHoverDetail(session, homeDir)}</p>
-              </div>
-            </TooltipContent>
-          ) : null}
-        </Tooltip>
-        {built.has('contextMenu') ? (
-          <ChatRowContextMenuContent
-            target={target}
-            {...handlers}
-            onCloseAutoFocus={onMenuCloseAutoFocus}
-          />
+              ) : null}
+            </span>
+          </button>
+        </TooltipTrigger>
+        {/* Sized to its text, up to the tooltip's 320px, so `~/path · 3h ago ·
+            12 messages` stays one line (V1-M6); a long title clamps to two.
+            `hideWhenDetached`: a row scrolled out of the list takes its card
+            with it rather than leaving it pinned to the list's edge. */}
+        {built.has('card') ? (
+          <TooltipContent
+            side="right"
+            align="start"
+            sideOffset={CHAT_HOVER_CARD_OFFSET}
+            hideWhenDetached
+            className="px-2 py-1.5 font-normal"
+          >
+            <div data-testid={`recent-chat-summary-${session.id}`}>
+              {titleIsCut ? <p className="line-clamp-2">{title}</p> : null}
+              <p>{chatHoverDetail(session, homeDir)}</p>
+            </div>
+          </TooltipContent>
         ) : null}
-      </ContextMenu>
-      <DropdownMenu
-        onOpenChange={(open) => {
-          buildOnOpen('dropdown')(open);
-          setMenuOpen(open);
-        }}
+      </Tooltip>
+      <LazyMenuButton
+        label={sidebarCopy.chats.moreActions(title)}
+        className="br-chat-row-more no-drag text-text-muted hover:text-text-default"
+        testId={`recent-chat-more-${session.id}`}
+        tabIndex={tabIndex}
+        onFocus={() => onRowFocus(key)}
+        onOpenChange={setMenuOpen}
       >
-        <Tooltip onOpenChange={buildOnOpen('moreLabel')}>
-          <TooltipTrigger asChild>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                shape="round"
-                size="xs"
-                className="br-chat-row-more no-drag text-text-muted hover:text-text-default"
-                aria-label={sidebarCopy.chats.moreActions(title)}
-                data-testid={`recent-chat-more-${session.id}`}
-                tabIndex={tabIndex}
-                onFocus={() => onRowFocus(key)}
-              >
-                <MoreHorizontal className="size-4" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-          </TooltipTrigger>
-          {built.has('moreLabel') ? (
-            <TooltipContent>{sidebarCopy.chats.moreActions(title)}</TooltipContent>
-          ) : null}
-        </Tooltip>
-        {built.has('dropdown') ? (
-          <ChatRowDropdownMenuContent
-            target={target}
-            {...handlers}
-            onCloseAutoFocus={onMenuCloseAutoFocus}
-          />
-        ) : null}
-      </DropdownMenu>
+        <ChatRowDropdownMenuContent
+          target={target}
+          {...handlers}
+          onCloseAutoFocus={onMenuCloseAutoFocus}
+        />
+      </LazyMenuButton>
     </li>
   );
 });
@@ -476,8 +586,8 @@ interface FolderHeaderProps {
 function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: FolderHeaderProps) {
   const key = folderKey(group);
   const [menuOpen, setMenuOpen] = useState(false);
-  // The path tooltip, the two button labels and the menu are built when first shown.
-  const [built, buildOnOpen] = useBuiltOnOpen<'path' | 'newChatLabel' | 'moreLabel' | 'menu'>();
+  // The path tooltip and the + label are built when first shown; the ⋯ builds its own.
+  const [built, buildOnOpen] = useBuiltOnOpen<'path' | 'newChatLabel'>();
   const canStartChat =
     !group.isCrew && Boolean(group.workingDir) && Boolean(window.electron?.createChatWindow);
   // The path tooltip opens beside the header's toggle, whose right edge is where
@@ -557,45 +667,23 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
           </Tooltip>
         ) : null}
         {group.workingDir ? (
-          <DropdownMenu
-            onOpenChange={(open) => {
-              buildOnOpen('menu')(open);
-              setMenuOpen(open);
-            }}
+          <LazyMenuButton
+            label={sidebarCopy.folder.moreActions(group.label)}
+            className="no-drag text-text-muted hover:text-text-default"
+            tabIndex={tabIndex}
+            onFocus={() => onRowFocus(key)}
+            onOpenChange={setMenuOpen}
           >
-            <Tooltip onOpenChange={buildOnOpen('moreLabel')}>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    shape="round"
-                    size="xs"
-                    className="no-drag text-text-muted hover:text-text-default"
-                    aria-label={sidebarCopy.folder.moreActions(group.label)}
-                    tabIndex={tabIndex}
-                    onFocus={() => onRowFocus(key)}
-                  >
-                    <MoreHorizontal className="size-4" aria-hidden />
-                  </Button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              {built.has('moreLabel') ? (
-                <TooltipContent>{sidebarCopy.folder.moreActions(group.label)}</TooltipContent>
-              ) : null}
-            </Tooltip>
-            {built.has('menu') ? (
-              <DropdownMenuContent
-                align="end"
-                className="w-56"
-                onCloseAutoFocus={keepFocusOffAfterPointerClose}
-              >
-                <DropdownMenuItem onSelect={() => void copyPath()}>
-                  {sidebarCopy.folder.copyPath}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            ) : null}
-          </DropdownMenu>
+            <DropdownMenuContent
+              align="end"
+              className="w-56"
+              onCloseAutoFocus={keepFocusOffAfterPointerClose}
+            >
+              <DropdownMenuItem onSelect={() => void copyPath()}>
+                {sidebarCopy.folder.copyPath}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </LazyMenuButton>
         ) : null}
       </div>
     </div>
@@ -965,6 +1053,26 @@ export default function RecentChats({
 
   // Delete, behind one confirmation for the list.
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+
+  // The right-click menu: ONE for the list, opened on the row the event came
+  // from (R-28, vision V1-R2-2). A Radix menu root in every drawn row put a
+  // document `keydown` listener in every row; see `LazyMenuButton`. The row is
+  // read from the target's `data-row` when the event arrives, and a
+  // right-click (or a long press) that is not on a chat row opens nothing, as
+  // before: it is stopped before the menu sees it.
+  const [menuRowId, setMenuRowId] = useState<string | null>(null);
+  const [rowMenuOpen, setRowMenuOpen] = useState(false);
+  const renameAfterRowMenu = useRef<string | null>(null);
+  const pickMenuRow = (event: ReactMouseEvent | ReactPointerEvent) => {
+    const row = (event.target as Element | null)?.closest?.('[data-row^="chat:"]');
+    const id = row?.getAttribute('data-row')?.slice('chat:'.length) ?? null;
+    if (!id) {
+      event.preventDefault();
+      return;
+    }
+    setMenuRowId(id);
+  };
+  const menuRow = menuRowId ? sessions.find((session) => session.id === menuRowId) : undefined;
   const [deleting, setDeleting] = useState(false);
   const deletePending = useRef(false);
   const handleDelete = async () => {
@@ -1086,6 +1194,43 @@ export default function RecentChats({
     []
   );
 
+  const rowMenu = menuRow
+    ? (() => {
+        const title = menuRow.name.trim() || sidebarCopy.chats.untitled;
+        return (
+          <ChatRowContextMenuContent
+            target={{
+              sessionId: menuRow.id,
+              workingDir: menuRow.working_dir,
+              openInNewTab: () =>
+                openChat(menuRow.id, menuRow.name.trim() || undefined, menuRow.user_set_name),
+            }}
+            onRename={() => {
+              renameAfterRowMenu.current = menuRow.id;
+            }}
+            onDiverge={canDivergeChat(menuRow) ? () => divergeRow(menuRow.id) : undefined}
+            onExport={() => void exportConversation(menuRow.id, title, { scope: 'app' })}
+            onDelete={() => setPendingDelete(menuRow)}
+            onCloseAutoFocus={(event: Event) => {
+              const renameId = renameAfterRowMenu.current;
+              if (!renameId) {
+                // A choice made with the pointer leaves focus alone: handing it
+                // back to the row would ring a button the person clicked with
+                // a mouse and pin the row's hover-revealed ⋯ open.
+                keepFocusOffAfterPointerClose(event);
+                return;
+              }
+              // Rename was chosen: start editing once the menu has let go of
+              // focus, or it would hand focus back to the row over the input.
+              renameAfterRowMenu.current = null;
+              event.preventDefault();
+              startRenameRow(renameId);
+            }}
+          />
+        );
+      })()
+    : null;
+
   const rowProps = (session: SessionSummary) => ({
     session,
     isActive: activeSessionId === session.id,
@@ -1098,6 +1243,7 @@ export default function RecentChats({
     onStartRename: startRenameRow,
     onRequestDelete: setPendingDelete,
     onDiverge: divergeRow,
+    contextMenuOpen: rowMenuOpen && menuRowId === session.id,
     editingDraft: editing?.sessionId === session.id ? editing.draft : null,
     onDraftChange: changeDraft,
     onCommitRename: commitRenameRow,
@@ -1164,91 +1310,106 @@ export default function RecentChats({
             {isLoadingMore || isLoadingAll ? sidebarCopy.chats.loading : sidebarCopy.chats.empty}
           </p>
         ) : (
-          <div
-            key={viewGeneration}
-            className="br-sidebar-chat-groups"
-            data-view-changed={viewGeneration > 0 ? 'true' : undefined}
-          >
-            {windowed.entries.map(({ group, collapsed, holdsActive, rows, more }) => (
-              <section
-                key={group.key}
-                className="br-sidebar-group"
-                aria-label={group.label || sidebarCopy.chats.header}
+          <ContextMenu onOpenChange={setRowMenuOpen}>
+            <ContextMenuTrigger
+              asChild
+              onContextMenu={pickMenuRow}
+              // A long press opens the menu on touch and pen; a mouse press is
+              // not one, and picks nothing.
+              onPointerDown={(event) => {
+                if (event.pointerType !== 'mouse') pickMenuRow(event);
+              }}
+            >
+              <div
+                key={viewGeneration}
+                className="br-sidebar-chat-groups"
+                data-view-changed={viewGeneration > 0 ? 'true' : undefined}
               >
-                {group.kind === 'date' ? <p className="br-sidebar-bucket">{group.label}</p> : null}
-                {group.kind === 'folder' ? (
-                  <FolderHeader
-                    group={group}
-                    collapsed={collapsed}
-                    tabIndex={roving.tabIndexFor(folderKey(group))}
-                    onRowFocus={roving.onRowFocus}
-                    onToggle={() => {
-                      // What a click does follows what is DRAWN: an open folder
-                      // closes and a closed one opens, even when the open one is
-                      // only open because it holds the current chat.
-                      if (collapsed) {
-                        setFolderCollapsed(group.key, false);
-                        setClosedWithActive((current) => ({
-                          ...current,
-                          keys: current.keys.filter((key) => key !== group.key),
-                        }));
-                        return;
-                      }
-                      setFolderCollapsed(group.key, true);
-                      if (holdsActive) {
-                        setClosedWithActive((current) => ({
-                          sessionId: activeSessionId ?? null,
-                          keys: [
-                            ...(current.sessionId === (activeSessionId ?? null)
-                              ? current.keys
-                              : []),
-                            group.key,
-                          ],
-                        }));
-                      }
-                    }}
-                  />
-                ) : null}
-                {rows.length > 0 ? (
-                  <ul className="br-nav-list">
-                    {rows.map((session) => (
-                      <RecentChatRow key={session.id} {...rowProps(session)} />
-                    ))}
-                    {more ? (
-                      <li data-row-item="">
-                        <button
-                          type="button"
-                          className="br-nav-row br-sidebar-quiet-row no-drag"
-                          data-row={moreKey(group)}
-                          data-testid={`sidebar-folder-more-${group.key}`}
-                          // A disclosure of the folder's other rows. `aria-expanded`
-                          // also tells the overlay sidebar this is not a choice, so
-                          // showing more rows does not close the panel.
-                          aria-expanded={more === 'less'}
-                          tabIndex={roving.tabIndexFor(moreKey(group))}
-                          onFocus={() => roving.onRowFocus(moreKey(group))}
-                          onClick={() =>
-                            setExpandedFolders((current) => {
-                              const next = new Set(current);
-                              if (next.has(group.key)) next.delete(group.key);
-                              else next.add(group.key);
-                              return next;
-                            })
-                          }
-                        >
-                          <span className="br-nav-row-label">
-                            {more === 'more'
-                              ? sidebarCopy.chats.showMore
-                              : sidebarCopy.chats.showLess}
-                          </span>
-                        </button>
-                      </li>
+                {windowed.entries.map(({ group, collapsed, holdsActive, rows, more }) => (
+                  <section
+                    key={group.key}
+                    className="br-sidebar-group"
+                    aria-label={group.label || sidebarCopy.chats.header}
+                  >
+                    {group.kind === 'date' ? (
+                      <p className="br-sidebar-bucket">{group.label}</p>
                     ) : null}
-                  </ul>
-                ) : null}
-              </section>
-            ))}
-          </div>
+                    {group.kind === 'folder' ? (
+                      <FolderHeader
+                        group={group}
+                        collapsed={collapsed}
+                        tabIndex={roving.tabIndexFor(folderKey(group))}
+                        onRowFocus={roving.onRowFocus}
+                        onToggle={() => {
+                          // What a click does follows what is DRAWN: an open folder
+                          // closes and a closed one opens, even when the open one is
+                          // only open because it holds the current chat.
+                          if (collapsed) {
+                            setFolderCollapsed(group.key, false);
+                            setClosedWithActive((current) => ({
+                              ...current,
+                              keys: current.keys.filter((key) => key !== group.key),
+                            }));
+                            return;
+                          }
+                          setFolderCollapsed(group.key, true);
+                          if (holdsActive) {
+                            setClosedWithActive((current) => ({
+                              sessionId: activeSessionId ?? null,
+                              keys: [
+                                ...(current.sessionId === (activeSessionId ?? null)
+                                  ? current.keys
+                                  : []),
+                                group.key,
+                              ],
+                            }));
+                          }
+                        }}
+                      />
+                    ) : null}
+                    {rows.length > 0 ? (
+                      <ul className="br-nav-list">
+                        {rows.map((session) => (
+                          <RecentChatRow key={session.id} {...rowProps(session)} />
+                        ))}
+                        {more ? (
+                          <li data-row-item="">
+                            <button
+                              type="button"
+                              className="br-nav-row br-sidebar-quiet-row no-drag"
+                              data-row={moreKey(group)}
+                              data-testid={`sidebar-folder-more-${group.key}`}
+                              // A disclosure of the folder's other rows. `aria-expanded`
+                              // also tells the overlay sidebar this is not a choice, so
+                              // showing more rows does not close the panel.
+                              aria-expanded={more === 'less'}
+                              tabIndex={roving.tabIndexFor(moreKey(group))}
+                              onFocus={() => roving.onRowFocus(moreKey(group))}
+                              onClick={() =>
+                                setExpandedFolders((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(group.key)) next.delete(group.key);
+                                  else next.add(group.key);
+                                  return next;
+                                })
+                              }
+                            >
+                              <span className="br-nav-row-label">
+                                {more === 'more'
+                                  ? sidebarCopy.chats.showMore
+                                  : sidebarCopy.chats.showLess}
+                              </span>
+                            </button>
+                          </li>
+                        ) : null}
+                      </ul>
+                    ) : null}
+                  </section>
+                ))}
+              </div>
+            </ContextMenuTrigger>
+            {rowMenu}
+          </ContextMenu>
         )}
         {!isEmpty && (isLoadingAll || isLoadingMore) ? (
           <p role="status" data-testid="recent-chat-loading" className="br-sidebar-foot">

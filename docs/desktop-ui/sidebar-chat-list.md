@@ -158,9 +158,23 @@ arithmetic is `windowSidebarRows` in `sidebarChatView.ts`, free of React.
 A view switch costs what it mounts, so it mounts little (vision V1-R2-2: 300 to 370 ms in the
 development app). The switch is decided while the new view renders, so each drawn row mounts once.
 When it was set from an effect, the new order mounted under the old key first and then again under
-the new one. A row builds its hover card, its ⋯ label and its two menus the first time each opens,
-and a folder header its tooltips and menu; Radix mounts nothing for a closed one, but their elements
-were created on every render of every row. Rows are memoized with stable handlers, so the pointer
+the new one. A row builds its hover card and its ⋯ label the first time each opens, and a folder
+header its tooltips; Radix mounts nothing for a closed one, but their elements were created on every
+render of every row.
+
+No row mounts a menu root (vision V1-R2-2, round 3). A mounted Radix menu root adds a capture
+`keydown` listener to the document, and every key press makes each of those add two more, so a
+context menu and a ⋯ menu in every drawn row made each key press and each view switch pay for every
+row: with 4,233 rows drawn after a scroll to the end, a production build took 0.59 s to switch views
+and 0.28 s to open the view menu. The list has one right-click menu, whose trigger is the list of
+groups; it opens on the chat row the event came from (`data-row`), a right-click anywhere else in
+the list opens nothing, and the rename editor keeps the app's own text menu. A ⋯ is a plain button
+that says it opens a menu (`LazyMenuButton`) until it is focused, pressed or opened from the
+keyboard; then its menu root takes it over, already open when the press asked for that, with focus
+kept on it, and lets go when it loses focus with the menu shut. A folder header's ⋯ is the same
+button. In a production build a switch takes 8 to 30 ms, and 85 ms with 4,233 rows drawn.
+
+Rows are memoized with stable handlers, so the pointer
 entering the list or a keystroke in a rename re-renders no other row. Each view's arrangement is
 kept for as long as the list of chats is the same array (`arrangeSidebarChatsCached`, keyed by the
 view, the home folder and the calendar day), so switching back is a lookup.
