@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
-import { Check, Copy, Terminal } from '../icons/app-icons';
+import { Terminal } from '../icons/app-icons';
+import { CopyField } from '../ui/copy-field';
 import InAppTerminalDock from '../InAppTerminalDock';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import {
@@ -14,6 +15,7 @@ import {
   type CodingAgentKind,
   type CodingAgentStatusResponse,
 } from './codingAgentStatus';
+import './onboarding.css';
 
 /**
  * The last coding-agent status this renderer probed, shared by every surface.
@@ -133,48 +135,14 @@ export function recheckLabel(auth: CodingAgentAuth): string {
   return auth.state === 'signed_out' ? "I've signed in" : 'Check again';
 }
 
-/** A command the user runs, never one Biorouter runs. Copyable, monospaced. */
+/**
+ * A command the user runs, never one Biorouter runs. Copyable, monospaced: the shared copy field
+ * (a well with the Copy button inside it), so the command looks and copies like every other thing
+ * Biorouter hands a person to paste. The label is the command itself, which is what the button's
+ * name ("Copy npm install -g ...") has always said.
+ */
 export function CommandBlock({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    []
-  );
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error('Failed to copy command to clipboard:', error);
-    }
-  };
-
-  return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-background-muted p-2">
-      <code className="min-w-0 flex-1 break-all font-mono text-supporting text-text-default">
-        {command}
-      </code>
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        shape="pill"
-        onClick={copy}
-        className="flex-shrink-0"
-        aria-label={copied ? `Copied ${command}` : `Copy ${command}`}
-      >
-        {copied ? <Check /> : <Copy />}
-        {copied ? 'Copied' : 'Copy'}
-      </Button>
-    </div>
-  );
+  return <CopyField value={command} label={command} />;
 }
 
 /** Everything both surfaces need, from one probe. */
@@ -379,7 +347,7 @@ function EmbeddedTerminal({
   if (controls.terminalFor !== agent.kind) return null;
   return (
     <div
-      className="overflow-hidden rounded-md border border-border-subtle bg-background-muted"
+      className="br-first-run-box overflow-hidden"
       style={{ height: CODING_AGENT_TERMINAL_HEIGHT_PX }}
       data-testid={`coding-agent-terminal-${agent.providerId}`}
     >

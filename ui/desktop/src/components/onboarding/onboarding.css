@@ -1,0 +1,68 @@
+/*
+ * First run and provider setup on the fill system (owner message 13, R-27, design.md 9.11).
+ *
+ * A box here is a subtle solid fill with no resting outline, and it rests where a FIELD would on
+ * the same ground. That is one rule for two grounds:
+ *
+ *   - on the page canvas (the provider page in onboarding mode) a field rests on `--background-fill`,
+ *     so the box does too;
+ *   - on `--background-muted` (`ProviderGuard`, the page the boot splash hands off to) the rest fill
+ *     IS the ground (1.00:1), so everything rests one step deeper, on `--background-fill-strong`
+ *     (1.10:1): design.md 9.11 rule 2. `.br-first-run-ground` sets that once, as the shared private
+ *     control ground, and every filled control inside it (a field, the model select, a secondary
+ *     button) follows with no class of its own.
+ *
+ * A box that holds controls also carries `.br-fill-surface` (the shared primitives block), so the
+ * field or button inside it steps back to the page ground and never sits fill on fill.
+ *
+ * Authored here, not as Tailwind strings: a newly written utility can silently fail to generate
+ * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry"), and which ground a box rests on is
+ * a cascade question a class list cannot ask. The 1px border stays and is TRANSPARENT, never
+ * dropped: nothing moves, and forced colours draw it in the system ink, so the box keeps its edge
+ * there.
+ */
+
+.br-first-run-ground {
+  --br-control-ground: var(--background-fill-strong);
+}
+
+/* The two shared primitives that paint their own ground instead of the control ground. On the
+   muted page the segmented track (`--background-fill`) and a copy field (`--background-well`)
+   would both equal the page, so the Institutional gateway switch would show a lone white thumb
+   and a command would show no box. They take the same strong step. */
+.br-first-run-ground .br-segmented {
+  background: var(--background-fill-strong);
+}
+
+.br-first-run-ground .biorouter-copy-field {
+  background-color: var(--background-fill-strong);
+}
+
+.br-first-run-box,
+.br-first-run-card {
+  min-width: 0;
+  border: 1px solid transparent;
+  background-color: var(--br-control-ground, var(--background-fill));
+}
+
+/* An inline box inside an open row: the model's facts, a progress line, a check. */
+.br-first-run-box {
+  border-radius: var(--radius-element);
+}
+
+/* The standalone onboarding card (`OnboardingCardShell` with its own chrome). */
+.br-first-run-card {
+  border-radius: var(--radius-container);
+}
+
+/* A progress track inside a box. The shared track is `--background-muted`, which is the value of the
+   fill the box rests on (and the first-run ground itself), so it would vanish in the box it reports
+   on. It rests one step deeper than the box: the strong step in a canvas box, `--background-strong`
+   in a strong-fill box. The fill (the information) is the tone's own and is not touched. */
+.br-first-run-box .br-progress {
+  background-color: var(--background-fill-strong);
+}
+
+.br-first-run-ground .br-first-run-box .br-progress {
+  background-color: var(--background-strong);
+}

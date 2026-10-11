@@ -259,7 +259,7 @@ export default function InstitutionalSetupCard({
       </Disclosure>
 
       <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
-        <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 w-full px-4 sm:w-auto">
+        <Button onClick={handleSubmit} disabled={!canSubmit} size="lg" className="w-full sm:w-auto">
           {isLoading ? (
             <Spinner />
           ) : (

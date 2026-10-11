@@ -7,6 +7,7 @@ import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServer
 import { Note } from '../ui/note';
 import { AlertTriangle } from '../icons/app-icons';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Spinner } from '../ui/spinner';
 
@@ -388,7 +389,7 @@ export default function LlamaServerInlineCard({
                 onChange={(e) => setSelectedModel(e.target.value)}
                 disabled={isStarting || isConnecting}
                 data-testid="llamacpp-model-select"
-                className="br-field block h-control-md w-full min-w-0 max-w-full rounded-element border bg-background-default px-2 text-label text-text-default"
+                className="br-field block h-control-md w-full min-w-0 max-w-full rounded-element border px-2 text-label text-text-default"
               >
                 {catalog.map((m) => (
                   <option key={m.name} value={m.name}>
@@ -400,7 +401,7 @@ export default function LlamaServerInlineCard({
               </select>
             </div>
             {selectedEntry && (
-              <div className="min-w-0 space-y-1.5 rounded-lg border border-border-subtle bg-background-muted p-3">
+              <div className="br-first-run-box br-fill-surface space-y-1.5 p-3">
                 <p className="break-words text-supporting text-text-muted">
                   {selectedEntry.description}
                 </p>
@@ -452,10 +453,7 @@ export default function LlamaServerInlineCard({
             )}
 
             {operation && (
-              <div
-                className="rounded-md border border-border-subtle bg-background-default p-3"
-                data-testid="llamacpp-progress"
-              >
+              <div className="br-first-run-box br-fill-surface p-3" data-testid="llamacpp-progress">
                 <div className="flex items-center gap-2 text-supporting text-text-default">
                   <Spinner size={14} />
                   <span>
@@ -479,7 +477,8 @@ export default function LlamaServerInlineCard({
                 <Button
                   onClick={() => connect(selectedModel)}
                   disabled={isConnecting}
-                  className="h-9 w-full px-4 sm:w-auto"
+                  size="lg"
+                  className="w-full sm:w-auto"
                   data-testid="llamacpp-connect"
                 >
                   {isConnecting ? 'Connecting…' : 'Use Llama Server'}
@@ -488,7 +487,8 @@ export default function LlamaServerInlineCard({
                 <Button
                   onClick={() => handleStart(selectedModel)}
                   disabled={isStarting || isConnecting || !selectedModel}
-                  className="h-9 w-full px-4 sm:w-auto"
+                  size="lg"
+                  className="w-full sm:w-auto"
                   data-testid="llamacpp-start"
                 >
                   {startButtonLabel}

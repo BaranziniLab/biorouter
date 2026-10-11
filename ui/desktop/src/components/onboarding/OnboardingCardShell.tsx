@@ -1,14 +1,15 @@
 import OnboardingSectionLabel from './OnboardingSectionLabel';
+import './onboarding.css';
 
 type Chrome = 'card' | 'bare';
 
 interface OnboardingCardShellProps {
   /**
-   * `'card'` — the standalone onboarding card, with its own border, tier label,
-   * heading and blurb. `'bare'` — the same body with none of that, for the
+   * `'card'` — the standalone onboarding card, a subtle fill (no outline) with its tier
+   * label, heading and blurb. `'bare'` — the same body with none of that, for the
    * provider catalog, whose accordion row already carries the provider's name,
    * whose panel heading already carries the tier label, and inside which a second
-   * bordered box would be a card within a card.
+   * filled box would be a card within a card.
    */
   chrome: Chrome;
   /** The `aria-labelledby` target; only meaningful in `'card'` chrome. */
@@ -45,7 +46,7 @@ export default function OnboardingCardShell({
   return (
     <section
       aria-labelledby={titleId}
-      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+      className="br-first-run-card br-fill-surface overflow-hidden p-5 sm:p-6"
     >
       <OnboardingSectionLabel category={category} label={label} />
       <h2 id={titleId} className="mt-2 text-label text-text-default">

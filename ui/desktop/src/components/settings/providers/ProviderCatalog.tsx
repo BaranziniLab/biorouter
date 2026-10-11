@@ -656,7 +656,7 @@ export default function ProviderCatalog({
           <div className="biorouter-settings-list">{rows}</div>
         )}
         {hostsInstitutionalSetup && (
-          <div className="br-provider-inset mt-4 border-t border-border-subtle pt-4">
+          <div className="br-provider-inset mt-6">
             <InstitutionalSetupCard
               chrome="bare"
               onSuccess={handleProviderReady}
@@ -763,7 +763,7 @@ export default function ProviderCatalog({
       <Tabs
         value={activeTab}
         onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
-        className="flex flex-col"
+        className="br-provider-catalog flex flex-col"
       >
         {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
             colour that says private from public at a glance. In the page band they sit on the

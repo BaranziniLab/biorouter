@@ -1,4 +1,5 @@
 import OnboardingSectionLabel from './OnboardingSectionLabel';
+import './onboarding.css';
 import {
   CodingAgentBody,
   CodingAgentLoadError,
@@ -42,7 +43,7 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
     return (
       <div
         key={agent.providerId}
-        className="min-w-0 space-y-2 rounded-lg border border-border-subtle bg-background-default p-3 sm:p-4"
+        className="min-w-0 space-y-2"
         data-testid={`coding-agent-row-${agent.providerId}`}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -58,7 +59,7 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
   return (
     <section
       aria-labelledby="coding-agent-setup-title"
-      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+      className="br-first-run-card br-fill-surface overflow-hidden p-5 sm:p-6"
     >
       <OnboardingSectionLabel category="commercial" label="Commercial · Existing subscription" />
       <h2 id="coding-agent-setup-title" className="mt-2 text-label text-text-default">
@@ -77,7 +78,7 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
       ) : controls.loadError && !controls.agents ? (
         <CodingAgentLoadError message={controls.loadError} controls={controls} />
       ) : (
-        <div className="space-y-3">{(controls.agents ?? []).map(renderAgent)}</div>
+        <div className="space-y-5">{(controls.agents ?? []).map(renderAgent)}</div>
       )}
     </section>
   );

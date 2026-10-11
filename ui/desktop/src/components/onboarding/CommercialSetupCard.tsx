@@ -195,19 +195,14 @@ export default function CommercialSetupCard({
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste your API key here…"
-          // The same 36px as the button beside it.
-          className="h-9 min-w-0"
+          // The same 36px (the control ladder's lg rung) as the button beside it.
+          className="h-control-lg min-w-0"
           disabled={isLoading}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) testApiKey();
           }}
         />
-        <Button
-          onClick={testApiKey}
-          disabled={!canSubmit}
-          aria-label="Detect provider"
-          className="h-9 px-3"
-        >
+        <Button onClick={testApiKey} disabled={!canSubmit} aria-label="Detect provider" size="lg">
           {isLoading ? <Spinner /> : <ArrowRight className="w-4 h-4" />}
         </Button>
       </div>

@@ -13,6 +13,7 @@ import {
   type PullProgress,
 } from '../../utils/ollamaDetection';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import './onboarding.css';
 import { Spinner } from '../ui/spinner';
 
 interface OllamaInlineCardProps {
@@ -153,7 +154,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
           )}
 
           {modelStatus === 'downloading' && downloadProgress && (
-            <div className="rounded-md border border-border-subtle bg-background-default p-3">
+            <div className="br-first-run-box br-fill-surface p-3">
               <p className="text-supporting text-text-default">
                 Downloading {getPreferredModel()}…
               </p>
@@ -192,7 +193,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
               <Button
                 onClick={handleDownloadModel}
                 variant="secondary"
-                className="h-9 w-full px-4 sm:w-auto"
+                size="lg"
+                className="w-full sm:w-auto"
               >
                 Download {getPreferredModel()} (~11GB)
               </Button>
@@ -201,7 +203,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
               <Button
                 onClick={handleConnectOllama}
                 disabled={isConnecting}
-                className="h-9 w-full px-4 sm:w-auto"
+                size="lg"
+                className="w-full sm:w-auto"
               >
                 {isConnecting ? 'Connecting…' : 'Connect to Ollama'}
               </Button>
@@ -218,7 +221,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
                 <span>Waiting for Ollama to start…</span>
               </div>
             ) : (
-              <Button asChild variant="secondary" className="h-9 w-full px-4 sm:w-auto">
+              <Button asChild variant="secondary" size="lg" className="w-full sm:w-auto">
                 <a
                   href={getOllamaDownloadUrl()}
                   target="_blank"

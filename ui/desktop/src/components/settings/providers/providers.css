@@ -96,3 +96,39 @@
 .br-provider-inset {
   padding-inline: 12px;
 }
+
+/*
+ * ROWS ARE FILLS, NOT LINES (owner message 13, R-27, design.md 9.11). Provider rows are two-line
+ * blocks with 8px of air above and below, so the air and the hover fill tell them apart and the
+ * shared rule under every row goes: only the `::after` (the 1px transparent bottom edge stays, so
+ * nothing moves). Scoped to the catalog, because the shared recipe is the rows block in main.css
+ * and every list that has not decided keeps its line.
+ *
+ * A hovered row paints a fill, and a control inside it steps back one ground (a fill never sits on
+ * a fill). The shared hover wash is the page ink at 5%, which on the canvas composites to the rest
+ * fill's own value, so the row's Configure or Launch button, resting on that same fill, lost its
+ * box the moment the pointer reached its row (measured in Chromium). The row now paints
+ * `--br-row-fill` itself and its controls rest on the page ground, still hovering on the strong
+ * step. Settings does the same for its rows (settings.css); the two are separate because the
+ * provider page is not inside `.br-settings-page`. On the first-run ground (`--background-muted`,
+ * `onboarding.css`) the rest fill IS the ground, so the row takes the strong step there. The
+ * focus-visible half is for a row a keyboard is in; a row that is itself the focus target keeps its
+ * own focus fill.
+ */
+.br-provider-catalog {
+  --br-row-fill: var(--background-fill);
+}
+
+.br-first-run-ground .br-provider-catalog {
+  --br-row-fill: var(--background-fill-strong);
+}
+
+.br-provider-catalog .biorouter-settings-row::after {
+  content: none;
+}
+
+.br-provider-catalog
+  .biorouter-settings-row:not(.tint-selected, :focus-visible):is(:hover, :has(:focus-visible)) {
+  background-color: var(--br-row-fill);
+  --br-control-ground: var(--background-default);
+}

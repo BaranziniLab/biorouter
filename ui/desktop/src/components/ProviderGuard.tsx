@@ -12,6 +12,7 @@ import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
 import { HOST_SERVE_COMMAND } from './privacy/hostManagedModelCopy';
+import './onboarding/onboarding.css';
 
 /**
  * The config key that records "let me in without a provider".
@@ -210,10 +211,14 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
       );
 
     return (
-      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-muted">
-        {/* Flat page header, on the same reading column as the panels below. */}
-        <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
-          <div className="mx-auto max-w-measure-chat">
+      <div className="br-first-run-ground flex h-screen w-full flex-col overflow-hidden bg-background-muted">
+        {/* Flat page header, on the same reading column as the panels below: the padding sits
+            INSIDE the measure here, as the body's does, so the wordmark and the title start on
+            the tabs' left edge at every window width (outside it they stood 24px to the left of
+            it once the window was wider than the column). The rule under it is the scroll edge of
+            the body. */}
+        <div className="flex-shrink-0 border-b border-border-subtle">
+          <div className="mx-auto max-w-measure-chat px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
             <div className="mb-4 sm:mb-5 biorouter-icon-animation origin-bottom-left">
               <BioRouterWordmark className="h-9 w-auto" />
             </div>
@@ -255,7 +260,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                   onCommercialSuccess={handleCommercialSuccess}
                   configuredProvider={null}
                 />
-                <div className="mt-8 border-t border-border-subtle pt-5">{skipAction('foot')}</div>
+                <div className="mt-8">{skipAction('foot')}</div>
               </>
             )}
           </div>
