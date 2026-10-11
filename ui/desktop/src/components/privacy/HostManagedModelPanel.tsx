@@ -15,18 +15,13 @@ import {
  */
 export function HostManagedModelPanel() {
   return (
-    <div
-      data-testid="host-managed-model-panel"
-      className="rounded-container border border-border-subtle bg-background-default p-5"
-    >
-      <h2 className="text-base font-semibold text-text-default">{HOST_MANAGED_ONBOARDING_TITLE}</h2>
-      <p className="mt-2 text-sm leading-relaxed text-text-muted">
-        {HOST_MANAGED_ONBOARDING_REASON}
-      </p>
-      <pre className="mt-4 overflow-x-auto rounded-element bg-background-muted px-3 py-2 text-xs text-text-default">
+    <div data-testid="host-managed-model-panel" className="br-first-run-card br-fill-surface p-5">
+      <h2 className="text-label text-text-default">{HOST_MANAGED_ONBOARDING_TITLE}</h2>
+      <p className="mt-2 text-body text-text-muted">{HOST_MANAGED_ONBOARDING_REASON}</p>
+      <pre className="mt-4 overflow-x-auto rounded-element bg-background-default px-3 py-2 text-supporting text-text-default">
         <code>{HOST_CONFIGURE_COMMAND}</code>
       </pre>
-      <p className="mt-3 text-xs leading-relaxed text-text-muted">
+      <p className="mt-3 text-supporting text-text-muted">
         Reload this page once that command has finished.
       </p>
     </div>

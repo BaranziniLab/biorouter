@@ -104,6 +104,10 @@ owner's latest rules (Tools switcher at the bottom, Effort slider, fills over li
 - Privacy UI presentation moved: the Knowledge tier trigger is a badge in the band (its
   confirmation logic is unchanged), the model chip's privacy lines and the DR-17 disclosure moved
   into the model menu, the extension provenance strings stay visible.
+- Two more privacy UI presentation changes, class names only (ruling 15): `privacy/HostManagedModelPanel.tsx`
+  (the first-run panel on `biorouter serve`) and `privacy/CrossAffiliationAcceptCard.tsx` (the accept and
+  accepted boxes) swapped an outlined box for a fill and moved to the shared type roles. No copy, props,
+  logic or test-id changed.
 - Text fields lost their resting border under the fill rule (recorded in `design.md` Part 9);
   forced colours still draw borders.
 
