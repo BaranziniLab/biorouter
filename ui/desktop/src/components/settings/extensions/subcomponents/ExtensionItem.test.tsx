@@ -40,11 +40,11 @@ describe('ExtensionItem', () => {
     // Spec 2.6: a switch is named by the visible label, never "Toggle …" or "Enable …", and the
     // name does not change when the state does (the state is aria-checked).
     const { rerender } = render(<ExtensionItem extension={external} onToggle={vi.fn()} />);
-    const on = screen.getByRole('switch', { name: 'Spokeagent' });
+    const on = screen.getByRole('switch', { name: 'SPOKEAgent' });
     expect(on).toHaveAttribute('aria-checked', 'true');
 
     rerender(<ExtensionItem extension={{ ...external, enabled: false }} onToggle={vi.fn()} />);
-    const off = screen.getByRole('switch', { name: 'Spokeagent' });
+    const off = screen.getByRole('switch', { name: 'SPOKEAgent' });
     expect(off).toHaveAttribute('aria-checked', 'false');
     expect(screen.queryByRole('switch', { name: /toggle|enable/i })).toBeNull();
   });
@@ -144,8 +144,8 @@ describe('ExtensionItem', () => {
     );
 
     // Named for its row, so a list of twelve is not twelve buttons called "More actions".
-    const more = COPY.moreActionsNamed('Spokeagent');
-    expect(more).toBe('More actions for Spokeagent');
+    const more = COPY.moreActionsNamed('SPOKEAgent');
+    expect(more).toBe('More actions for SPOKEAgent');
     await user.click(screen.getByRole('button', { name: more }));
     await user.click(await screen.findByRole('menuitem', { name: COPY.configure }));
     expect(onConfigure).toHaveBeenCalledWith(external);

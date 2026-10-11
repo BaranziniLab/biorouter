@@ -33,8 +33,33 @@ describe('ExtensionLoadFailureNotice', () => {
 
     render(<ExtensionLoadFailureNotice />);
 
-    expect(screen.getByText(COPY.failedToLoad('Cdwagent'))).toBeInTheDocument();
+    expect(screen.getByText(COPY.failedToLoad('CDWAgent'))).toBeInTheDocument();
     expect(screen.getByText(error)).toBeInTheDocument();
+  });
+
+  // Principle 10. The daemon reports a config KEY, and title-casing it read "Cdwagent failed to
+  // load" and "Computercontroller failed to load" on the page that otherwise says CDWAgent and
+  // Biorouter Copilot. The notice asks the one resolver for the name a person already knows.
+  it.each([
+    ['cdwagent', 'CDWAgent'],
+    ['computercontroller', 'Biorouter Copilot'],
+    ['codegraphagent', 'CodeGraph Agent'],
+    ['webdocuments', 'Web & Documents'],
+    ['chatrecall', 'Chat Recall'],
+  ])('names %s as %s, never the key in capitals', (key, shown) => {
+    recordExtensionLoadResults([{ name: key, success: false, error: 'spawn ENOENT' }]);
+
+    render(<ExtensionLoadFailureNotice />);
+
+    expect(screen.getByText(COPY.failedToLoad(shown))).toBeInTheDocument();
+  });
+
+  it('reads an unlisted key as words, the one place the key is still capitalised', () => {
+    recordExtensionLoadResults([{ name: 'my-lab_tool', success: false, error: 'spawn ENOENT' }]);
+
+    render(<ExtensionLoadFailureNotice />);
+
+    expect(screen.getByText(COPY.failedToLoad('My Lab Tool'))).toBeInTheDocument();
   });
 
   it('offers something actionable, not just the bad news', () => {
@@ -56,7 +81,7 @@ describe('ExtensionLoadFailureNotice', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
-    expect(screen.queryByText('Cdwagent failed to load')).not.toBeInTheDocument();
+    expect(screen.queryByText('CDWAgent failed to load')).not.toBeInTheDocument();
     expect(getExtensionLoadFailures()).toHaveLength(0);
   });
 

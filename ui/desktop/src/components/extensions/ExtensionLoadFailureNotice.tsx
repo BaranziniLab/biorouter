@@ -3,7 +3,7 @@ import { Note } from '../ui/note';
 import { Button } from '../ui/button';
 import { IconAction } from '../ui/row-actions';
 import { AlertCircle, X } from '../icons/app-icons';
-import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import {
   dismissExtensionLoadFailure,
   getExtensionLoadFailures,
@@ -92,8 +92,10 @@ export function ExtensionLoadFailureNotice({
             </div>
           }
         >
+          {/* The extension's name as the catalogue spells it (CDWAgent), never its config key
+              title-cased (Cdwagent): principle 10, and the name the Extensions row uses. */}
           <div className="text-label text-text-default">
-            {LOAD_FAILURE_COPY.failedToLoad(formatExtensionName(failure.name))}
+            {LOAD_FAILURE_COPY.failedToLoad(extensionDisplayName(failure.name))}
           </div>
           {/* The error, which the Note clamps behind "Show more" past its ceiling. This
               surface has room, and the toast's hard truncation is what sent people looking for

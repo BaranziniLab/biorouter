@@ -9,6 +9,7 @@ import { EmptyState } from '../../../ui/empty-state';
 import { InfoTip } from '../../../ui/info-tip';
 import { ENTITY_ICONS } from '../../../icons/entity-icons';
 import { EXTENSION_ROW_COPY } from '../copy';
+import { extensionDisplayName, formatExtensionName } from '../extensionDisplayName';
 import './extension-row.css';
 
 interface ExtensionListProps {
@@ -249,24 +250,14 @@ function ExtensionGroup({
 }
 
 // Helper functions
-const PLATFORM_EXTENSION_DISPLAY_NAMES: Record<string, string> = {
-  chatrecall: 'Chat Recall',
-};
 
-export function formatExtensionName(name: string): string {
-  const normalized = name.toLowerCase().replace(/\s+/g, '');
-  const displayName = PLATFORM_EXTENSION_DISPLAY_NAMES[normalized];
-  if (displayName) return displayName;
-
-  return name
-    .split(/[-_]/) // Split on hyphens and underscores
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
+// The one name resolver lives in `extensionDisplayName.ts`, so a toast or a History row can use it
+// without importing this page. `formatExtensionName` stays importable from here for the callers
+// that already do.
+export { formatExtensionName };
 
 export function getFriendlyTitle(extension: FixedExtensionEntry): string {
-  const name = (extension.type === 'builtin' && extension.display_name) || extension.name;
-  return formatExtensionName(name);
+  return extensionDisplayName(extension);
 }
 
 // 'builtin' extensions are the bundled MCP servers; 'platform' extensions
