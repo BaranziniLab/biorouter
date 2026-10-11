@@ -1,5 +1,6 @@
 import React from 'react';
 import { ArrowLeft, MoreHorizontal } from '../icons/app-icons';
+import { useMouseBackButton } from '../ui/BackButton';
 import { Button } from '../ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { InfoTip } from '../ui/info-tip';
@@ -25,7 +26,11 @@ export type PageHeaderProps = {
   actions?: React.ReactNode;
   /** Underline tabs rendered inline after the title, filling the band's height. */
   tabs?: React.ReactNode;
-  /** A drill-in's way back. Renders a ghost round 32px back button before the title. */
+  /**
+   * A drill-in's way back. Renders a ghost round 32px back button before the title, and the
+   * mouse's Back key does the same thing (`useMouseBackButton`), so a page passes it once and
+   * must not call that hook itself: two mounted callers both leave.
+   */
   onBack?: () => void;
   /** The back button's accessible name and tooltip. */
   backLabel?: string;
@@ -84,6 +89,15 @@ export function PageHeader({
 }: PageHeaderProps) {
   const help = info ?? description;
   const trailing = adornment ?? titleAdornment;
+  // The hook re-attaches its listeners whenever the function it is given changes, and a caller's
+  // `onBack` is usually an inline arrow, new on every render. A stable wrapper reading the
+  // latest one keeps one pair of listeners for the life of the band.
+  const latestBack = React.useRef(onBack);
+  React.useEffect(() => {
+    latestBack.current = onBack;
+  });
+  const mouseBack = React.useCallback(() => latestBack.current?.(), []);
+  useMouseBackButton(onBack ? mouseBack : undefined);
   return (
     <>
       <header className="biorouter-page-header" data-band="" data-testid="page-header">

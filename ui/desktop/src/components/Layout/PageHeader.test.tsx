@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PageHeader, PageHeaderAction, PageHeaderMenu } from './PageHeader';
 import { Upload } from '../icons/app-icons';
 
@@ -179,6 +179,79 @@ describe('PageHeader', () => {
     const { container } = render(<PageHeader title="Workflows" info="Anything." />);
 
     expect(container.querySelector('.page-transition')).toBeNull();
+  });
+});
+
+/**
+ * The mouse's Back key leaves a drill-in the way its Back button does (V4-14: `BackButton` was the
+ * only place the key lived, so a band's `onBack`, which is a plain icon button, lost it). The
+ * band calls the hook itself, so every page gets the key from one place.
+ */
+describe('PageHeader mouse Back', () => {
+  let dispose: ReturnType<typeof vi.fn>;
+  let on: ReturnType<typeof vi.fn>;
+  let command: (() => void) | undefined;
+
+  beforeEach(() => {
+    dispose = vi.fn();
+    command = undefined;
+    on = vi.fn((_channel: string, listener: () => void) => {
+      command = listener;
+      return dispose;
+    });
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      writable: true,
+      value: { on },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+  });
+
+  it('leaves on the main process command and on the mouse’s Back key, as the button does', () => {
+    const onBack = vi.fn();
+    render(<PageHeader title="nightly-cohort" onBack={onBack} />);
+
+    expect(on).toHaveBeenCalledWith('mouse-back-button-clicked', expect.any(Function));
+    act(() => command?.());
+    fireEvent.mouseUp(document, { button: 3 });
+    expect(onBack).toHaveBeenCalledTimes(2);
+  });
+
+  it('listens to nothing on a top-level page, which has no Back', () => {
+    render(<PageHeader title="Workflows" />);
+
+    expect(on).not.toHaveBeenCalled();
+  });
+
+  it('keeps one pair of listeners and calls the LATEST handler when the caller passes a new arrow each render', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = render(<PageHeader title="a" onBack={() => first()} />);
+    rerender(<PageHeader title="a" onBack={() => second()} />);
+    rerender(<PageHeader title="a" onBack={() => second()} />);
+
+    expect(on).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
+    fireEvent.mouseUp(document, { button: 3 });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets go of the key when the page unmounts', () => {
+    const onBack = vi.fn();
+    const { unmount } = render(<PageHeader title="a" onBack={onBack} />);
+    unmount();
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+    fireEvent.mouseUp(document, { button: 3 });
+    expect(onBack).not.toHaveBeenCalled();
   });
 });
 
