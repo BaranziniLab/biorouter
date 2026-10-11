@@ -172,10 +172,15 @@ describe('the OS-requested focus ring (P0-5)', () => {
   });
 
   it('comes after every unlayered rule that suppresses a focus outline', () => {
+    // The one deliberate exception sits INSIDE the OS block: a Radix tab trigger keeps its
+    // label-sized `::before` ring in the OS colour instead of the outline (vision V4-16), and
+    // that rule is pinned by the tab ring test below.
+    const tabException = "[role='tab'][data-orientation]:not(.br-tab):focus-visible";
     const suppressors = RULES.filter(
       (r) =>
         !isLayered(r) &&
         r !== ringRules[0] &&
+        !(r.context.join(' ') === OS_MEDIA && r.selector === tabException) &&
         /:focus/.test(r.selector) &&
         /(^|;|\s)outline:\s*(none|0)\b/.test(r.body)
     );
@@ -376,11 +381,43 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
     );
   });
 
-  /** One ring when the OS asked for one: the outline, not the pseudo ring as well. */
-  it('stands the pseudo ring down under the OS-requested ring', () => {
-    const off = onlyRule("[role='tab'][data-orientation]:focus-visible::before");
-    expect(off.context.join(' ')).toBe(OS_MEDIA);
-    expect(off.body).toMatch(/content:\s*none/);
+  /**
+   * One ring when the OS asked for one, and it is the label-sized pseudo ring, not the outline.
+   * An outline is drawn round the 36px box with no side padding: at a 2px offset it hugged the
+   * label ("Chat" touched it) and the settings band cut its top off (vision V4-16, forced
+   * colours). The pseudo ring keeps the normal-colour geometry and takes the OS colour.
+   */
+  it('keeps the label-sized ring under the OS-requested ring, in the OS colour', () => {
+    const trigger = "[role='tab'][data-orientation]:not(.br-tab):focus-visible";
+    const inContext = (selector: string, context: string) => {
+      const found = RULES.filter((r) => r.selector === selector && r.context.join(' ') === context);
+      expect(found, `expected exactly one ${context} rule for ${selector}`).toHaveLength(1);
+      return found[0];
+    };
+
+    // The outline stands down, after (and above the specificity of) the ring rule it overrides.
+    const outline = inContext(trigger, OS_MEDIA);
+    expect(isLayered(outline)).toBe(false);
+    expect(outline.body).toMatch(/outline:\s*none\s*!important/);
+    const ring = RULES.filter(
+      (r) => r.context.join(' ') === OS_MEDIA && /outline:\s*2px solid var\(--ring\)/.test(r.body)
+    );
+    expect(ring).toHaveLength(1);
+    expect(outline.index).toBeGreaterThan(ring[0].index);
+
+    // The pseudo ring is not switched off anywhere: it keeps the base geometry.
+    const offs = RULES.filter(
+      (r) => /\[role='tab'\][^,{]*::before/.test(r.selector) && /content:\s*none/.test(r.body)
+    );
+    expect(offs.map((r) => r.selector)).toEqual([]);
+
+    // Its colour: the OS ring's under more contrast, the user's own Highlight under forced
+    // colours, kept as written.
+    expect(inContext(`${trigger}::before`, OS_MEDIA).body).toMatch(/border-color:\s*var\(--ring\)/);
+    const forced = inContext(`${trigger}::before`, '@media (forced-colors: active)');
+    expect(forced.body).toMatch(/border-color:\s*Highlight/);
+    expect(forced.body).toContain('forced-color-adjust: none');
+    expect(forced.index).toBeGreaterThan(outline.index);
   });
 
   it('paints the focused sidebar resize handle, not a hover-grade hairline', () => {

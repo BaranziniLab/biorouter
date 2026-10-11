@@ -9083,11 +9083,22 @@ code [class~='token'] {
     outline-offset: -2px !important;
   }
 
-  /* A Radix tab trigger's default focus mark is a ring drawn on `::before`
-     (see the tab rules above). This block gives the trigger the OS ring as an
-     outline instead, so the pseudo ring stands down: one ring, not two. */
-  [role='tab'][data-orientation]:focus-visible::before {
-    content: none;
+  /* A Radix tab trigger's focus mark is a 2px ring drawn on `::before`, sized
+     to the label (see the tab rules above). Here it KEEPS that ring and takes
+     the OS ring's colour; the outline above stands down, so it is still one
+     ring, not two. The outline used to win instead, and an outline is drawn
+     round the BOX: a trigger has no side padding, so at a 2px offset it hugged
+     the label ("Chat" touched it), and the 36px box sits 4px below the
+     settings band's top edge, which cut the ring's top off (vision V4-16,
+     forced colours). The pseudo ring stands 4px clear of the glyphs and inside
+     the trigger's height, the same geometry as normal colours. Forced colours
+     name `Highlight` for it in the block below. */
+  [role='tab'][data-orientation]:not(.br-tab):focus-visible {
+    outline: none !important;
+  }
+
+  [role='tab'][data-orientation]:not(.br-tab):focus-visible::before {
+    border-color: var(--ring);
   }
 }
 
@@ -9145,6 +9156,14 @@ code [class~='token'] {
      owns its `::after` (the drag hairline), so it is left alone. */
   [role='tab'][data-state='active']:not(.br-tab)::after {
     background-color: Highlight;
+    forced-color-adjust: none;
+  }
+
+  /* A Radix trigger's focus ring is its `::before` border (the OS block
+     above keeps it and drops the outline). A border colour is forced like a
+     fill, so it is named in the user's own focus colour and left as written. */
+  [role='tab'][data-orientation]:not(.br-tab):focus-visible::before {
+    border-color: Highlight;
     forced-color-adjust: none;
   }
 
