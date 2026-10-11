@@ -1,5 +1,59 @@
-import { RefObject, useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { shouldShowTabOverflowMenu } from './yieldLadder';
+
+/**
+ * Keeps a ResizeObserver (and, for the edge fade, a `scroll` listener) on whatever
+ * element `ref` holds NOW, and moves them when it holds a different one.
+ *
+ * Both hooks below used to attach in `useEffect(..., [ref, measure])`. A ref object
+ * is identity-stable, so that effect ran once, at the hook's mount: a list that was
+ * not in the DOM yet (the preview panel renders its tablist only once a tab is
+ * open) was never watched, and a list that unmounted and came back was watched at
+ * its old, detached element. Scrolling does not re-render, so the edge flags then
+ * went stale while the person scrolled (WS-PREVIEW-2).
+ *
+ * The attach rides the layout effect that already runs after every render and
+ * re-measures, so a list that mounts in a render of the component calling the hook
+ * is picked up in that same commit. It compares the element and `measure`, so a
+ * render that changes neither does nothing. The detach is on unmount only.
+ */
+function useWatchedElement(
+  ref: RefObject<HTMLElement | null>,
+  measure: () => void,
+  listenToScroll: boolean
+) {
+  const attached = useRef<{ el: HTMLElement; measure: () => void; detach: () => void } | null>(
+    null
+  );
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const current = attached.current;
+    if (current && current.el === el && current.measure === measure) return;
+    current?.detach();
+    attached.current = null;
+    if (!el) return;
+    if (listenToScroll) el.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    attached.current = {
+      el,
+      measure,
+      detach: () => {
+        if (listenToScroll) el.removeEventListener('scroll', measure);
+        observer?.disconnect();
+      },
+    };
+  });
+
+  useEffect(
+    () => () => {
+      attached.current?.detach();
+      attached.current = null;
+    },
+    []
+  );
+}
 
 /**
  * Rung 3 of the yield ladder (D-32), as one rule for every tab strip.
@@ -15,7 +69,9 @@ import { shouldShowTabOverflowMenu } from './yieldLadder';
  * strip was `overflow-hidden`, so its tabs did not even scroll. They were simply
  * clipped and unreachable.
  *
- * @param ref the element with `overflow-x: auto` that holds the tabs
+ * @param ref the element with `overflow-x: auto` that holds the tabs. It may mount
+ *   after the hook does, or be replaced by another element; it is watched wherever
+ *   it is as of the latest render.
  * @param tabCount how many tabs it holds
  */
 export function useTabStripOverflow(ref: RefObject<HTMLElement | null>, tabCount: number): boolean {
@@ -43,13 +99,7 @@ export function useTabStripOverflow(ref: RefObject<HTMLElement | null>, tabCount
     measure();
   });
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref, measure]);
+  useWatchedElement(ref, measure, false);
 
   return overflowing;
 }
@@ -73,7 +123,10 @@ const NOT_SCROLLED: TabStripScrolledEdges = { start: false, end: false };
  * scroll. State changes only when an end flips, so scrolling re-renders the strip
  * at most twice per pass.
  *
- * @param ref the element with `overflow-x: auto` that holds the tabs
+ * @param ref the element with `overflow-x: auto` that holds the tabs. It may mount
+ *   after the hook does (the preview panel renders its list once a tab is open) or
+ *   be replaced by another element; the listener follows it on the render that
+ *   changes it, so the component calling the hook must be the one that renders it.
  */
 export function useTabStripScrolledEdges(
   ref: RefObject<HTMLElement | null>
@@ -96,17 +149,7 @@ export function useTabStripScrolledEdges(
     measure();
   });
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.addEventListener('scroll', measure, { passive: true });
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
-    observer?.observe(el);
-    return () => {
-      el.removeEventListener('scroll', measure);
-      observer?.disconnect();
-    };
-  }, [ref, measure]);
+  useWatchedElement(ref, measure, true);
 
   return edges;
 }
