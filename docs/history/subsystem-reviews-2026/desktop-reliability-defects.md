@@ -198,7 +198,7 @@ traffic. No real provider credential or existing user session was used.
 - A controlled provider 401 kept the transcript and composer visible. It exposed a
   duplicate persisted/structured error and a generic error classification; both were
   corrected during this pass. The resulting view contains one inline failure and no
-  full-page `Failed to Load Session` or `Honk!` state.
+  full-page `Failed to Load Session` or error-boundary state.
 - The final provider 401 check was repeated after rebuilding and restarting the real
   development backend. The new turn again produced exactly one inline authentication
   failure, left the composer enabled, and reported no renderer or console errors.

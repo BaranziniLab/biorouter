@@ -143,7 +143,7 @@ into the user's **global** store and read the user's **global** knowledge bases:
 - `crates/biorouter-mcp/src/agent_drafter/mod.rs:659` — `default_root()` → `choose_app_strategy(...).in_config_dir("agent_drafter")`
 - `crates/biorouter-mcp/src/agent_drafter/mod.rs:876` — `skills_root_for_export()`
 - `crates/biorouter-mcp/src/knowledge/paths.rs:34` — `knowledge_root()`, *and* with a different
-  strategy tuple (`io/biorouter/biorouter` vs `Block/Block/biorouter` at `lib.rs:6`)
+  strategy tuple (`io/biorouter/biorouter` vs the tuple defined at `lib.rs:6`)
 
 They exist because `biorouter-mcp` cannot depend on `biorouter` (circular), where the authoritative
 `Paths::get_dir` lives (`crates/biorouter/src/config/paths.rs:7`).
@@ -639,7 +639,7 @@ state object. The five starters pass all of them.
   1. an app naming an uninstalled skill loses the (already-failing) `skills` extension;
   2. a worker that relied on driving the UI loses it unless it opts into `worker_ui`;
   3. an app with `orchestration.agents` loses the generic `subagent` tool.
-- **One migration:** `knowledge_root()`'s strategy tuple changes (`io/biorouter` → `Block/Block`),
+- **One migration:** `knowledge_root()`'s strategy tuple changes (`io/biorouter` → the tuple defined at `lib.rs:6`),
   which is identical on XDG and differs only on Windows. Ship a one-time path check.
 
 ## How the citations were verified
