@@ -100,7 +100,66 @@ describe('Settings > App > About > Version: one-click flow', () => {
     expect(await screen.findByText(/Downloading 1\.86\.0/i)).toBeTruthy();
     emitAct({ event: 'download-progress', data: { percent: 40 } });
     expect(screen.getByText('40%')).toBeTruthy();
-    expect(screen.getByRole('button', { name: aboutCopy.checkForUpdates })).toBeDisabled();
+    // Busy, not `disabled`: a focused button that turns `disabled` hands focus to <body> in
+    // Chromium (V4-R3-4). It still reads as unavailable to a screen reader, and the press does
+    // nothing.
+    const check = screen.getByRole('button', { name: aboutCopy.checkForUpdates });
+    expect(check).not.toBeDisabled();
+    expect(check).toHaveAttribute('aria-disabled', 'true');
+    expect(check).toHaveAttribute('aria-busy', 'true');
+    expect(check).toHaveClass('br-action-busy');
+    fireEvent.click(check);
+    expect(checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('keeps the button a live control while a check runs, and ignores a second press (V4-R3-4)', async () => {
+    let finish: (v: unknown) => void = () => {};
+    checkForUpdates.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    render(<UpdateSection />);
+    const check = screen.getByRole('button', { name: aboutCopy.checkForUpdates });
+    // Idle: an ordinary button, no busy state advertised.
+    expect(check).not.toHaveAttribute('aria-busy');
+    expect(check).not.toHaveAttribute('aria-disabled');
+    expect(check).not.toHaveClass('br-action-busy');
+
+    check.focus();
+    fireEvent.click(check);
+    expect(await screen.findByText(/Checking for updates/i)).toBeTruthy();
+    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+
+    // Under way: the same node, still enabled and still focused.
+    const busy = screen.getByRole('button', { name: aboutCopy.checkForUpdates });
+    expect(busy).toBe(check);
+    expect(busy).not.toBeDisabled();
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    expect(document.activeElement).toBe(busy);
+    fireEvent.click(busy);
+    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+
+    // The verdict lands: the button is an ordinary one again.
+    emitAct({ event: 'update-not-available' });
+    await act(async () => finish({ updateInfo: {}, error: null }));
+    expect(await screen.findByText(/up to date/i)).toBeTruthy();
+    expect(busy).not.toHaveAttribute('aria-busy');
+    expect(busy).not.toHaveAttribute('aria-disabled');
+    expect(busy).not.toHaveClass('br-action-busy');
+    fireEvent.click(busy);
+    expect(checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the same button node from the check through the download to Restart to update', async () => {
+    render(<UpdateSection />);
+    const check = screen.getByRole('button', { name: aboutCopy.checkForUpdates });
+    check.focus();
+    fireEvent.click(check);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' } });
+    emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
+    // One element in one position: keyboard focus rides through the label change.
+    const restart = await screen.findByRole('button', { name: aboutCopy.restartToUpdate });
+    expect(restart).toBe(check);
+    expect(document.activeElement).toBe(restart);
+    expect(restart).not.toHaveAttribute('aria-busy');
   });
 
   it('keeps the verdicts, "up to date" and a failure, for a check made in this panel', () => {

@@ -17,7 +17,7 @@ const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 /**
  * The Version row's status line. Whatever keeps the action busy is always said, whoever started
  * it: a ready update, a check under way and a download in progress (the startup check finds
- * updates before this panel opens, and a disabled button with no reason beside it reads as
+ * updates before this panel opens, and a dimmed button with no reason beside it reads as
  * broken). The verdicts, "up to date" and a failure, answer a check made HERE, so they show
  * only after one.
  */
@@ -139,8 +139,15 @@ export default function UpdateSection() {
       <Button
         variant="secondary"
         size="sm"
-        onClick={checkForUpdates}
-        disabled={busy}
+        className={busy ? 'br-action-busy' : undefined}
+        // A check or download under way is `aria-busy`, not `disabled`: Chromium hands focus to
+        // <body> the moment a focused button turns `disabled`, so a keyboard user who pressed
+        // Enter here lost their place in the About list (vision round 3, V4-R3-4; the same class
+        // as V3-R2-1). The press is ignored here instead, `.br-action-busy` (main.css) dims it,
+        // and the status line beside it says what is going on.
+        aria-disabled={busy || undefined}
+        aria-busy={busy || undefined}
+        onClick={busy ? undefined : checkForUpdates}
         aria-label={aboutCopy.checkForUpdates}
       >
         {aboutCopy.checkForUpdates}
