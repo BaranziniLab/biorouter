@@ -44,7 +44,9 @@ async fn served_page_token(addr: std::net::SocketAddr) -> String {
         .find("\"wsToken\":\"")
         .expect("the page carries its socket token")
         + "\"wsToken\":\"".len();
-    html[start..start + 32].to_string()
+    html.get(start..start + 32)
+        .expect("the socket token is 32 ASCII hex characters")
+        .to_string()
 }
 
 /// Straight to the loopback listener, whatever proxy the environment names.
