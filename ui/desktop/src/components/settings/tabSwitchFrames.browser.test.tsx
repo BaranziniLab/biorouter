@@ -19,14 +19,17 @@
  * what the app already held.
  *
  * What is stubbed, and why: Models (not what is measured), Configuration, the Usage, Update, Reset
- * and theme sections, the permissions dialog, and the Privacy panel. Privacy is frozen privacy UI,
- * and its switch is the one control on the App tab that still waits for the daemon on a visit. The
- * Chat tab is the Approvals section and the Spellcheck row; the App tab is the real
- * `AppSettingsSection` (General: menu bar, Dock, Prevent sleep, Never open tabs, Show costs).
+ * and theme sections, the permissions dialog, and the served privacy statement (it renders in both
+ * positions of the switch and does not wait on it). The Chat tab is the Approvals section and the
+ * Spellcheck row; the App tab is the real `AppSettingsSection` (General: menu bar, Dock, Prevent
+ * sleep, Never open tabs, Show costs) and the real Privacy panel, whose switch starts from the
+ * app's config cache (ruling 27): the snapshot of `GET /config` the app loads when it starts, long
+ * before Settings opens, and the one every privacy badge and the composer's off note paint from.
  *
  * "The instrument": a first visit with nothing warm is held, and a bundle whose controls ignore
- * the last answer is held on a later visit too. A sampler that cannot see a hold would pass
- * anything.
+ * the last answer is held on a later visit too. The Privacy tiers switch has its own two: an empty
+ * cache holds it unpainted (nothing is claimed before the daemon is heard), and a panel that ignores
+ * the cache is held on every visit. A sampler that cannot see a hold would pass anything.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -109,20 +112,23 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
   {
     filter: /\/ConfigContext$/,
     contents: `
-      // The daemon, 600 ms late (a page sets __daemonDelayMs), answering from __config.
+      // The daemon, 600 ms late (a page sets __daemonDelayMs), answering from __config, and the
+      // app's config cache (__configCache), which the app loaded when it started.
       const api = {
         read: async (key) => {
           await new Promise((done) => setTimeout(done, window.__daemonDelayMs || 0));
           return (window.__config || {})[key];
         },
         upsert: async () => {},
+        get config() {
+          return window.__configCache;
+        },
       };
       export const useConfig = () => api;
     `,
   },
   { filter: /\/ModelsSection$/, contents: `export default () => null;` },
   { filter: /\/ConfigSettings$/, contents: `export default () => null;` },
-  { filter: /\/PrivacyPanel$/, contents: `export default () => null;` },
   { filter: /\/UpdateSection$/, contents: `export default () => null;` },
   { filter: /\/UsageSection$/, contents: `export default () => null;` },
   { filter: /\/ResetPanel$/, contents: `export default () => null;` },
@@ -131,8 +137,13 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
   { filter: /\/ThemeFamilySelector$/, contents: `export default () => null;` },
   { filter: /\/PermissionRulesModal$/, contents: `export default () => null;` },
   {
+    // The Privacy panel's served statement is not fetched here: no copy, so it renders nothing.
     filter: /\/disclosureCopy$/,
-    contents: `export const readDisclosureAcknowledgement = async () => null;`,
+    contents: `
+      export const readDisclosureAcknowledgement = async () => null;
+      export const useDisclosure = () => ({ copy: null });
+      export const disclosureTitle = () => '';
+    `,
   },
   {
     // The Chat tab, cut to the rows whose values the daemon and the main process hold.
@@ -152,13 +163,24 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
   },
 ];
 
-/** Where a mutated bundle puts a defect back. Must match, or throw. */
-const NO_SEED: [string, string] = [
-  'useState<T | undefined>(() => recall<T>(key))',
-  'useState<T | undefined>(undefined)',
-];
+/** A defect a mutated bundle puts back into one source file (relative to this one). Must match, or throw. */
+type Mutation = { file: string; from: string; to: string };
 
-function stubPlugin(mutation?: [string, string]): Plugin {
+/** Controls that ignore the last answer. */
+const NO_SEED: Mutation = {
+  file: 'lastKnown.ts',
+  from: 'useState<T | undefined>(() => recall<T>(key))',
+  to: 'useState<T | undefined>(undefined)',
+};
+
+/** The Privacy panel before ruling 27: its switch ignores the config cache and waits for the daemon. */
+const NO_CACHE_SEED: Mutation = {
+  file: 'privacy/PrivacyPanel.tsx',
+  from: 'cachedSwitch === undefined ? null : privacyTiersEnabledFromConfig(cachedSwitch)',
+  to: 'null',
+};
+
+function stubPlugin(mutation?: Mutation): Plugin {
   return {
     name: 'stubs',
     setup(b) {
@@ -178,11 +200,16 @@ function stubPlugin(mutation?: [string, string]): Plugin {
       b.onLoad({ filter: /\.css$/ }, () => ({ contents: '', loader: 'js' }));
       if (mutation) {
         let hit = false;
-        b.onLoad({ filter: /settings\/lastKnown\.ts$/ }, () => {
-          const source = readFileSync(resolve(here, 'lastKnown.ts'), 'utf8');
-          if (!source.includes(mutation[0])) throw new Error('the mutation matches nothing');
+        const path = resolve(here, mutation.file);
+        b.onLoad({ filter: /\.tsx?$/ }, (args) => {
+          if (args.path !== path) return undefined;
+          const source = readFileSync(path, 'utf8');
+          if (!source.includes(mutation.from)) throw new Error('the mutation matches nothing');
           hit = true;
-          return { contents: source.replace(mutation[0], mutation[1]), loader: 'ts' };
+          return {
+            contents: source.replace(mutation.from, mutation.to),
+            loader: path.endsWith('.tsx') ? 'tsx' : 'ts',
+          };
         });
         b.onEnd(() => {
           if (!hit) throw new Error('the mutated module was never loaded');
@@ -215,7 +242,7 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-async function bundle(mutation?: [string, string]): Promise<string> {
+async function bundle(mutation?: Mutation): Promise<string> {
   const out = await build({
     stdin: { contents: ENTRY, loader: 'tsx', resolveDir: here, sourcefile: 'entry.tsx' },
     bundle: true,
@@ -237,7 +264,10 @@ async function bundle(mutation?: [string, string]): Promise<string> {
  */
 const SETUP = `
   window.__daemonDelayMs = 600;
-  window.__config = { BIOROUTER_MODE: 'approve', BIOROUTER_MAX_TURNS: 25, WORKSPACE_ANNOUNCE_ONLY: true };
+  window.__config = { BIOROUTER_MODE: 'approve', BIOROUTER_MAX_TURNS: 25, WORKSPACE_ANNOUNCE_ONLY: true,
+    BIOROUTER_PRIVACY_TIERS: 'on' };
+  // The app loaded GET /config when it started; a page that sets __emptyConfigCache has not yet.
+  window.__configCache = window.__emptyConfigCache ? {} : { ...window.__config };
   const held = { menuBar: false, dock: true, wakelock: false, spellcheck: false };
   const late = (key) => async () => {
     await new Promise((done) => setTimeout(done, 600));
@@ -310,12 +340,14 @@ const APP_SWITCHES: Array<[string, string]> = [
   ['Show in Dock', 'true'],
   ['Prevent sleep while running', 'false'],
   ['Never open tabs automatically', 'true'],
+  ['Privacy tiers', 'true'],
 ];
 
 describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)', () => {
   let browser: Browser | null = null;
   let script = '';
   let noSeedScript = '';
+  let noCacheSeedScript = '';
   let css = '';
 
   beforeAll(async () => {
@@ -326,6 +358,7 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
     }
     script = await bundle();
     noSeedScript = await bundle(NO_SEED);
+    noCacheSeedScript = await bundle(NO_CACHE_SEED);
     css = PREFLIGHT + readTokens() + primitiveBlocks() + SETTINGS_CSS;
   }, 120_000);
 
@@ -333,12 +366,16 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
     await browser?.close();
   }, 120_000);
 
-  /** Settings, open on Models, with the daemon and the main process 600 ms late. */
-  async function open(bundleScript = script): Promise<Page> {
+  /**
+   * Settings, open on Models, with the daemon and the main process 600 ms late, and the config
+   * cache loaded unless `emptyCache`.
+   */
+  async function open(bundleScript = script, { emptyCache = false } = {}): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 900, height: 900 } });
     await tab.setContent(
       `<!doctype html><html><head><style>${css}</style></head><body><div id="root"></div></body></html>`
     );
+    if (emptyCache) await tab.addScriptTag({ content: 'window.__emptyConfigCache = true;' });
     await tab.addScriptTag({ content: SETUP });
     await tab.addScriptTag({ content: PROBE });
     await tab.addScriptTag({ content: bundleScript });
@@ -498,6 +535,48 @@ describe('the first frames of a Settings tab switch, in a real browser (V4-R7-2)
         ].sort()
       );
       expect(held.every((control) => control.hidden)).toBe(true);
+      // Not held: the config cache was loaded when the app started, so even a first visit paints
+      // the Privacy tiers switch with the daemon's answer.
+      const privacy = app.commits[0].switches.find((control) => control.name === 'Privacy tiers');
+      expect(privacy && atRest(privacy), 'Privacy tiers, from the cache').toBe(true);
+      expect(privacy!.checked).toBe('true');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('the instrument: an empty config cache holds the Privacy tiers switch unpainted until the daemon answers', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(script, { emptyCache: true });
+    try {
+      await tab.waitForTimeout(900);
+      const app = fromFirst(await visit(tab, 'App'), (sample) => sample.switches.length > 0);
+      for (const sample of [...app.commits, ...app.frames]) {
+        const privacy = sample.switches.find((control) => control.name === 'Privacy tiers');
+        expect(privacy, 'the Privacy tiers switch holds its place').toBeDefined();
+        expect(privacy!.pending && privacy!.hidden, JSON.stringify(privacy)).toBe(true);
+      }
+      // The panel's own read still runs, and the switch shows what the daemon says.
+      const toggle = tab.getByRole('switch', { name: 'Privacy tiers' });
+      await toggle.waitFor({ timeout: 2000 });
+      expect(await toggle.getAttribute('aria-checked')).toBe('true');
+      expect(await toggle.getAttribute('data-pending')).toBeNull();
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('the instrument: a Privacy panel that ignores the config cache is held on every visit', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(noCacheSeedScript);
+    try {
+      await tab.waitForTimeout(900);
+      for (const round of ['first', 'second']) {
+        const app = fromFirst(await visit(tab, 'App'), (sample) => sample.switches.length > 0);
+        const privacy = app.commits[0].switches.find((control) => control.name === 'Privacy tiers');
+        expect(privacy?.pending, `${round} visit: ${JSON.stringify(privacy)}`).toBe(true);
+        await visit(tab, 'Models');
+      }
     } finally {
       await tab.close();
     }

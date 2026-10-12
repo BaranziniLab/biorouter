@@ -7,6 +7,7 @@ import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
   value: undefined as unknown,
+  config: undefined as Record<string, unknown> | undefined,
   read: vi.fn(),
   upsert: vi.fn(),
   getPrivacyDisclosure: vi.fn(),
@@ -14,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../ConfigContext', () => ({
-  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
+  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert, config: mocks.config }),
 }));
 
 // Task 30A: the panel's permanent statement is SERVED, so the test serves it.
@@ -39,6 +40,7 @@ describe('Settings > Privacy', () => {
     // it outlives `cleanup()` and has to be dropped between tests.
     __resetDisclosureStoreForTests();
     mocks.value = undefined;
+    mocks.config = undefined;
     mocks.read.mockImplementation(async () => mocks.value);
     // A STATEFUL stand-in for the daemon: a write that resolves is a write that
     // landed, so a later read sees it. The panel now reads the key back after
@@ -478,6 +480,53 @@ describe('Settings > Privacy', () => {
       );
       expect(strip).not.toHaveTextContent(/outside the app/i);
       expect(strip).toHaveTextContent(PATH);
+    });
+  });
+
+  /**
+   * Vision round 8, V4-R7-2. The panel mounts with the App tab, and the switch was held unpainted
+   * until the daemon answered, on every visit. The config cache already holds that answer (every
+   * badge and the composer's off note paint from it), so the panel starts from it, and still reads
+   * the daemon on mount and shows what that says.
+   */
+  describe('first paint from the config cache', () => {
+    const hang = () => mocks.read.mockImplementation(() => new Promise(() => {}));
+
+    it('draws the switch in the first render when the cache holds the answer', () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'on' };
+      hang();
+      render(<PrivacyPanel />);
+      const toggle = screen.getByRole('switch', { name: /Privacy tiers/ });
+      expect(toggle).toBeChecked();
+      expect(toggle).not.toHaveAttribute('data-pending');
+      expect(screen.getByRole('region', { name: 'Privacy' })).not.toHaveAttribute('aria-busy');
+    });
+
+    it('draws a stored off, and the strip that says so, in the first render', () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'off' };
+      hang();
+      render(<PrivacyPanel />);
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).not.toBeChecked();
+      expect(screen.getByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
+    });
+
+    it('claims nothing while the cache is empty: the switch holds its place, unpainted', () => {
+      mocks.config = {};
+      hang();
+      render(<PrivacyPanel />);
+      expect(screen.queryByRole('switch', { name: /Privacy tiers/ })).toBeNull();
+      expect(screen.queryByTestId('privacy-enforcement-off-strip')).toBeNull();
+    });
+
+    it('still reads the daemon and shows what it says when that differs from the cache', async () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'on' };
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked();
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: /Privacy tiers/ })).not.toBeChecked()
+      );
+      expect(screen.getByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
     });
   });
 });

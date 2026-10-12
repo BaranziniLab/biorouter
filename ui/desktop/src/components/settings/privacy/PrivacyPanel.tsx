@@ -45,14 +45,27 @@ export { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig };
  * model can read a private base, and the dialog says so in those words.
  */
 export default function PrivacyPanel() {
-  const { read, upsert } = useConfig();
+  const { read, upsert, config } = useConfig();
   // Task 30A (DR-17 req. 3). ⚠ Unconditional — the copy is fetched and shown in
   // BOTH toggle positions. Passing `enabled` here would be the plausible wrong
   // implementation: it would take the disclosure away in exactly the
   // configuration where the exposure is largest.
   const { copy: disclosure } = useDisclosure();
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [record, setRecord] = useState<PrivacyTiersRecord | null>(null);
+  // Started from the config cache when it already holds the daemon's answer, which is the snapshot
+  // every badge and the composer's off note paint from (`usePrivacyTiersEnabled`): the daemon
+  // always serves this key, so it is present exactly when the cache has loaded, and a panel that
+  // started from `null` on every visit to the App tab drew this one switch late (vision round 8,
+  // V4-R7-2). The read below still runs on mount and replaces the seed, and the switch only ever
+  // shows what the daemon HOLDS: a seed is the daemon's own last answer, never a guess.
+  const cachedSwitch = config?.[PRIVACY_TIERS_KEY];
+  const [enabled, setEnabled] = useState<boolean | null>(() =>
+    cachedSwitch === undefined ? null : privacyTiersEnabledFromConfig(cachedSwitch)
+  );
+  const [record, setRecord] = useState<PrivacyTiersRecord | null>(() =>
+    cachedSwitch === undefined
+      ? null
+      : privacyTiersRecordFromConfig(config?.[PRIVACY_TIERS_RECORD_KEY])
+  );
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
