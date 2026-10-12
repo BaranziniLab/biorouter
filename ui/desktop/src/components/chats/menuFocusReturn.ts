@@ -37,10 +37,12 @@ export function keepFocusOffAfterPointerClose(event: Event): void {
  * closed with a KEY (Escape, or Enter or Space on Cancel) gives focus to `target`, the control the
  * menu was opened from (V1-R8-1).
  *
- * The shared dialog layer (`ui/dialog.tsx`) gives focus back after a menu pick only when the pick
- * was a key press as well. A Delete chosen with the pointer and then dismissed with Escape left
- * focus on `<body>`, and the next Tab started again at the top of the window. The menu item that
- * held focus is gone by then, but the row still knows which control opened its menu.
+ * The shared dialog layer (`ui/dialog.tsx`) gives focus back after a key close to a trigger the
+ * menu names, but not to a ContextMenu's remembered focus after a pointer pick, which may be a
+ * control the person was not on. So a Delete picked with the pointer from a row's right-click menu
+ * and then dismissed with Escape would leave focus on `<body>`, and the next Tab would start again
+ * at the top of the window. The menu item that held focus is gone by then, but the row still knows
+ * which control opened its menu.
  *
  * A dialog closed with the pointer leaves focus alone, for the reason above: a focused row keeps
  * its hover-revealed ⋯ on screen (`:focus-within`) after the pointer has left it. The browser

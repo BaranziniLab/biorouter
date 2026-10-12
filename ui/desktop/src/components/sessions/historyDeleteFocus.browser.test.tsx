@@ -4,9 +4,10 @@
  *
  * Right-click a row (or press its ⋯), choose "Delete chat…" with the pointer, then press Escape:
  * focus fell to `<body>` and the next Tab began at the top of the window. The shared dialog rule
- * gives focus back after a menu pick only when the pick was a key; the row now says which of its
- * controls opened the menu, and a dialog closed with a key gives focus back to it. A dialog closed
- * with the pointer leaves focus alone.
+ * now gives focus back after a key close to a trigger the menu names, but not to a right-click
+ * menu's remembered focus after a pointer pick; the row says which of its controls opened the
+ * menu, and a dialog closed with a key gives focus back to it. A dialog closed with the pointer
+ * leaves focus alone.
  *
  * jsdom has no `:focus-visible` and no real input modality, so the real `SessionListView` is
  * bundled with esbuild and driven with Playwright's mouse and keyboard in Chromium, under

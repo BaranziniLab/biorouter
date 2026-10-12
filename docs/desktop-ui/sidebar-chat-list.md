@@ -417,9 +417,11 @@ A close by keyboard does hand it back (`chats/menuFocusReturn.ts`).
 The Delete chat… dialog follows the same rule when it closes (vision V1-R8-1). Closed with a key
 (Escape, or Enter or Space on Cancel), it gives focus back to the control the menu was opened from:
 the row for the right-click menu, the row's `⋯` for its own menu. That holds however Delete was
-chosen. The shared dialog rule (`ui/dialog.tsx`) returns focus after a menu pick only when the pick
-was a key as well, so a Delete chosen with the pointer and then dismissed with Escape left focus on
-`<body>`, and the next Tab began at the window's first control. Closed with the pointer, the dialog
+chosen. The shared dialog rule (`ui/dialog.tsx`) returns focus after a key close to a trigger the
+menu names, but not to a right-click menu's remembered focus after a pointer pick, which may be a
+control the person was not on. Without the row's own handler, a Delete chosen with the pointer from
+the right-click menu and then dismissed with Escape left focus on `<body>`, and the next Tab began at
+the window's first control. Closed with the pointer, the dialog
 leaves focus alone, so no row keeps its `⋯` pinned. A deleted chat takes no focus back. History's
 Delete dialog does the same, with the row's open button and its `⋯`
 (`returnFocusAfterKeyClose`).
