@@ -15,11 +15,15 @@ import { lastInputWasKey } from '../../ui/inputTrail';
  * when the dialog opens; only a real browser shows it (`KnowledgeView.focusReturn.browser.test`).
  *
  * The caller names the opener itself instead: the selector's trigger, held in `triggerRef`. The
- * rules are the menus' own, so a pointer user is never shown a ring they did not ask for:
+ * rule is the dialog primitive's own, which asks how the dialog was CLOSED and not how it was
+ * opened (`useReturnFocusToOpener`, V1-R8-1), so a pointer user is never shown a ring they did not
+ * ask for and a keyboard user is never dropped onto `<body>`:
  *
- * - It gives focus back only when the dialog was opened with the KEYBOARD and is closed with the
- *   keyboard too. A script focus after a mouse click can wear a keyboard ring (the same reason
- *   `useReturnFocusToOpener` gives nothing back for a pointer pick).
+ * - It gives focus back when the dialog is closed with the KEYBOARD (Escape, or Enter on a
+ *   button), however it was opened. A trigger clicked open, "Manage bases..." clicked and Escape
+ *   used to leave focus on `<body>` and the next Tab began at the top of the window (V3-R9-1). A
+ *   close with the pointer gives nothing back: a script focus after a mouse click can wear a
+ *   keyboard ring, and the person is already where they pointed.
  * - It needs the trigger to be on the page. The empty states' buttons open the manager too, and
  *   the trigger is drawn only while a base is primary, so those are connected controls the dialog
  *   primitive returns to by itself and this stands aside. (If the person makes a base primary in
@@ -32,15 +36,15 @@ import { lastInputWasKey } from '../../ui/inputTrail';
  */
 export function useSelectorFocusReturn() {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  // The dialog was opened with a key: the one case this gives focus back in.
-  const armed = useRef(false);
+  // An open that has not been answered yet: the one close after it is the one this decides.
+  const pending = useRef(false);
   // Between `opened` and `closed`: the manager is up, or the chooser is standing in for it.
   const isOpen = useRef(false);
 
   /** The manager (or the chooser) is opening, by whatever the last input was. */
   const opened = useCallback(() => {
     isOpen.current = true;
-    armed.current = lastInputWasKey();
+    pending.current = true;
   }, []);
 
   /** The dialog was dismissed for good (not swapped for the chooser). */
@@ -50,8 +54,8 @@ export function useSelectorFocusReturn() {
 
   /** Radix's close-focus hook for the manager; it runs before the dialog primitive's own return. */
   const onCloseAutoFocus = useCallback((event: Event) => {
-    if (isOpen.current || !armed.current) return;
-    armed.current = false;
+    if (isOpen.current || !pending.current) return;
+    pending.current = false;
     const active = document.activeElement;
     const content = event.target instanceof Node ? event.target : null;
     if (active && active !== document.body && content && !content.contains(active)) return;

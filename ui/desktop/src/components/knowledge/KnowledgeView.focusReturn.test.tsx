@@ -160,9 +160,10 @@ describe('closing the knowledge-base manager', () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  // The menus' own rule (`useReturnFocusToOpener`): a script focus after a POINTER pick could
-  // draw a keyboard ring on a control the person clicked, so a pointer pick gives nothing back.
-  it('does not move focus to the selector after a pointer pick', async () => {
+  // V3-R9-1: the dialog primitive's own rule (`useReturnFocusToOpener`, V1-R8-1) asks how the
+  // dialog was CLOSED, not how it was opened. Click the selector, click "Manage bases...", press
+  // Escape: focus used to be left on <body> and the next Tab began at the top of the window.
+  it('gives focus back to the selector after a pointer pick closed with Escape', async () => {
     const user = userEvent.setup();
     render(<KnowledgeView />);
     const trigger = screen.getByRole('button', { name: TRIGGER_NAME });
@@ -173,11 +174,46 @@ describe('closing the knowledge-base manager', () => {
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('gives it back through the chooser after a pointer pick: Escape, then Escape again', async () => {
+    const user = userEvent.setup();
+    render(<KnowledgeView />);
+    const trigger = screen.getByRole('button', { name: TRIGGER_NAME });
+
+    await user.click(trigger);
+    await user.click(await screen.findByTestId('knowledge-kb-open-create'));
+    await screen.findByRole('dialog', { name: knowledgeCopy.format.title });
+
+    await user.keyboard('{Escape}');
+    await screen.findByRole('dialog', { name: knowledgeCopy.manager.title });
+    expect(screen.queryByRole('dialog', { name: knowledgeCopy.format.title })).toBeNull();
+    expect(trigger).not.toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  // The other half of the rule: a script focus after a mouse click could draw a keyboard ring on
+  // a control the person clicked, so a pointer in, pointer out visit gives nothing back.
+  it('does not move focus to the selector after a pointer pick closed with the pointer', async () => {
+    const user = userEvent.setup();
+    render(<KnowledgeView />);
+    const trigger = screen.getByRole('button', { name: TRIGGER_NAME });
+
+    await user.click(trigger);
+    await user.click(await screen.findByTestId('knowledge-kb-open-manager'));
+    const dialog = await screen.findByRole('dialog', { name: knowledgeCopy.manager.title });
+
+    await user.click(dialog.querySelector('button[class*="absolute"]') as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(trigger).not.toHaveFocus();
   });
 
-  // The pick was a key press, but the person then closed the dialog with the mouse: the rule is
-  // about how it was CLOSED too, as it is for a menu-opened dialog.
+  // The pick was a key press, but the person then closed the dialog with the mouse: the close
+  // decides, as it does for a menu-opened dialog.
   it('does not move focus to the selector when the dialog is closed with the pointer', async () => {
     const user = userEvent.setup();
     render(<KnowledgeView />);

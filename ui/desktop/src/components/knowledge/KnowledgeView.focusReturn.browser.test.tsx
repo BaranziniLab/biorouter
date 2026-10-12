@@ -12,6 +12,10 @@
  * is `BODY` with no dialog open). The same on the "Create knowledge base…" row, where Escape from
  * the chooser lands in the manager and the next Escape landed on `<body>`.
  *
+ * V3-R9-1 widened it: the dialog primitive's rule is that the CLOSE decides (V1-R8-1), so a
+ * manager opened with the pointer and closed with Escape also lands on the selector, ringed, and
+ * one closed with the pointer gets nothing, however it was opened.
+ *
  * This lays the real view out in Chromium, with the real selector, picker, manager and chooser,
  * `styles/main.css` compiled by Tailwind over the classes the bundle uses, and the real exit
  * motion (no `reducedMotion`), and presses keys with the page's own keyboard.
@@ -115,6 +119,8 @@ const launchChromium = async (): Promise<Browser | null> => {
 const TRIGGER = '[data-testid="knowledge-kb-selector-trigger"]';
 const MANAGE = '[data-testid="knowledge-kb-open-manager"]';
 const CREATE = '[data-testid="knowledge-kb-open-create"]';
+/** The dialog's corner close button: the pointer's way out. */
+const DIALOG_X = '[role="dialog"] button[class*="absolute"]';
 
 describe('closing the knowledge-base manager (Chromium)', () => {
   let browser: Browser | null = null;
@@ -179,6 +185,10 @@ describe('closing the knowledge-base manager (Chromium)', () => {
 
   const dialogCount = (page: Page): Promise<number> =>
     page.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+
+  /** Does the focused control match `:focus-visible`, the browser's verdict on drawing a ring? */
+  const ringed = (page: Page): Promise<boolean> =>
+    page.evaluate(() => Boolean(document.activeElement?.matches(':focus-visible')));
 
   /** Enter on the focused trigger, ArrowDown to the row, Enter on it: keys only, no pointer. */
   async function keyboardPick(page: Page, row: string) {
@@ -257,7 +267,10 @@ describe('closing the knowledge-base manager (Chromium)', () => {
     }
   });
 
-  it('does not move focus to the selector after a pointer pick', async (ctx) => {
+  // V3-R9-1: the close decides, as the dialog primitive's own rule does (V1-R8-1). The trigger
+  // clicked open, "Manage bases..." clicked, Escape: `activeElement` was `BODY` with no dialog
+  // open, and the next Tab began at the top of the window.
+  it('gives focus back to the selector after a pointer pick closed with Escape, ringed', async (ctx) => {
     if (!browser) return ctx.skip();
     const page = await open();
     try {
@@ -267,7 +280,65 @@ describe('closing the knowledge-base manager (Chromium)', () => {
 
       await page.keyboard.press('Escape');
       await dialogsGone(page);
+      await landsOn(page, 'knowledge-kb-selector-trigger');
+      // A key closed it, so the browser draws the keyboard ring on the control it lands on.
+      expect(await ringed(page)).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('gives it back from Create after a pointer pick: Escape to the manager, the next Escape to the selector', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open();
+    try {
+      await page.click(TRIGGER);
+      await page.click(CREATE);
+      await landsOn(page, 'knowledge-format-name');
+
+      await page.keyboard.press('Escape');
+      await landsOn(page, 'knowledge-kb-create');
+
+      await page.keyboard.press('Escape');
+      await dialogsGone(page);
+      await landsOn(page, 'knowledge-kb-selector-trigger');
+      expect(await ringed(page)).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+
+  // The other half: a script focus after a mouse click could draw a keyboard ring on a control
+  // the person clicked, so a pointer in, pointer out visit gives nothing back.
+  it('does not move focus to the selector after a pointer pick closed with the pointer', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open();
+    try {
+      await page.click(TRIGGER);
+      await page.click(MANAGE);
+      await dialogHasFocus(page);
+
+      await page.click(DIALOG_X);
+      await dialogsGone(page);
       // Absence cannot be polled for: give the focus scope's deferred return time to have run.
+      await page.waitForTimeout(600);
+      expect(await focused(page)).not.toBe('knowledge-kb-selector-trigger');
+      expect(await dialogCount(page)).toBe(0);
+    } finally {
+      await page.close();
+    }
+  });
+
+  // A key pick closed with the pointer is the same close: nothing is given back.
+  it('does not move focus to the selector after a keyboard pick closed with the pointer', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const page = await open();
+    try {
+      await keyboardPick(page, MANAGE);
+      await dialogHasFocus(page);
+
+      await page.click(DIALOG_X);
+      await dialogsGone(page);
       await page.waitForTimeout(600);
       expect(await focused(page)).not.toBe('knowledge-kb-selector-trigger');
       expect(await dialogCount(page)).toBe(0);
