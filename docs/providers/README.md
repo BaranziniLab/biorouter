@@ -56,16 +56,16 @@ checks can be compared line for line.
   availability, tool calling at the size of a real first turn, streaming and speed, and records
   the security invariants the sidecar must not regress. Both were rewritten on 2026-10-10 for
   llama.cpp build b11429.
-- **[Local inference validation](local-inference-validation.md)**: tested source revisions,
-  local checks, live model quality and workflow failures, and remaining verification/delivery
-  work for the local inference fix. The privacy-corrected source's six compilation boundaries
-  and 9,328 workspace tests pass, as do 21 local gates and five verified fresh executables.
-  Binary promotion/preparation provenance are complete. The Gemma partial run retains its
-  quality failure and disk interruption; remaining live validation and delivery are pending.
-  Status: Draft; in progress.
-- **[Local inference handoff](local-inference-handoff.md)**: the in-progress fix for local models
-  returning JSON instead of acting (Ollama context truncation, Llama Server hardening, tool-call
-  protocol robustness): what is done on the branch and what remains. Status: In progress.
+- **[Local inference validation record](../history/local-inference-2026-10/local-inference-validation.md)**: the historical source-scoped local and
+  live validation record for the local inference fix. The privacy-corrected code passes six compilation
+  boundaries, 9,328 workspace tests, 21 local gates and five fresh-executable checks. Interim H1
+  passes all 16 CI checks with the original Windows failure retained. Gemma G/R6 and historical
+  Qwen/Gemma model-quality, interruption and workflow failures remain explicit; final roster outcomes and
+  the expected archive destination/completion-proof procedure are recorded separately. Final-head status is in
+  [PR #393's checks](https://github.com/BaranziniLab/biorouter/pull/393/checks).
+- **[Local inference handoff record](../history/local-inference-2026-10/local-inference-handoff.md)**: implementation, investigation and
+  delivery references for Ollama context truncation, Llama Server hardening and tool-call
+  robustness, including source/binary lineage and current quality/coverage limitations.
 - **[`ollama/`](ollama/README.md)**: the **Ollama** (`ollama`) local provider, which drives an
   Ollama server the user runs. It has its own index and holds two documents:
   [context window and settings](ollama/context-window-and-settings.md), on the native

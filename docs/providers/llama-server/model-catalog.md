@@ -15,7 +15,7 @@ to about 2,000 tokens. Historical probes with Biorouter's whole ~31,000-40,000-t
 recorded 18 of 18 structured calls through Ollama for Qwen3.8 27B and Gemma 4 31B, and 9 of 9
 through llama.cpp for Qwen3.8. Those probes check tool-call transport, not semantic grounding
 or task-scope compliance. The catalog was cut to those two; the
-[validation report](../local-inference-validation.md) records the broader task results.
+[validation report](../../history/local-inference-2026-10/local-inference-validation.md) records the broader task results.
 
 ## The two models
 
