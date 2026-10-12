@@ -1,0 +1,123 @@
+[
+  {
+    "name": "write counts every line it wrote, a blank one included",
+    "calls": [{ "command": "write", "path": "/p/a.md", "file_text": "a\n\nb\n" }],
+    "added": 3,
+    "removed": 0
+  },
+  {
+    "name": "write without a final newline counts its last line",
+    "calls": [{ "command": "write", "path": "/p/a.md", "file_text": "a\nb" }],
+    "added": 2,
+    "removed": 0
+  },
+  {
+    "name": "create is write under another name",
+    "calls": [{ "command": "create", "path": "/p/a.md", "file_text": "x\n" }],
+    "added": 1,
+    "removed": 0
+  },
+  {
+    "name": "str_replace counts only the lines that changed",
+    "calls": [
+      { "command": "str_replace", "path": "/p/a", "old_str": "a\nb\nc", "new_str": "a\nB\nc\nd" }
+    ],
+    "added": 2,
+    "removed": 1
+  },
+  {
+    "name": "str_replace inside one line changes that line",
+    "calls": [{ "command": "str_replace", "path": "/p/a", "old_str": "1", "new_str": "2" }],
+    "added": 1,
+    "removed": 1
+  },
+  {
+    "name": "str_replace that deletes lines only removes",
+    "calls": [
+      { "command": "str_replace", "path": "/p/a", "old_str": "a\nb\nc\n", "new_str": "a\n" }
+    ],
+    "added": 0,
+    "removed": 2
+  },
+  {
+    "name": "str_replace whose old and new text match changes nothing",
+    "calls": [{ "command": "str_replace", "path": "/p/a", "old_str": "same\n", "new_str": "same" }],
+    "added": 0,
+    "removed": 0
+  },
+  {
+    "name": "a carriage return is not a change",
+    "calls": [{ "command": "str_replace", "path": "/p/a", "old_str": "a\r\nb", "new_str": "a\nb" }],
+    "added": 0,
+    "removed": 0
+  },
+  {
+    "name": "a unified diff counts its hunk lines, not its headers",
+    "calls": [
+      {
+        "command": "str_replace",
+        "path": "/p/f",
+        "diff": "--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n--- d\n+++ d\n"
+      }
+    ],
+    "added": 2,
+    "removed": 2
+  },
+  {
+    "name": "insert counts the lines it inserted",
+    "calls": [{ "command": "insert", "path": "/p/a", "insert_line": 3, "new_str": "x\ny\n" }],
+    "added": 2,
+    "removed": 0
+  },
+  {
+    "name": "view, an undo with nothing to undo and an unknown command count nothing",
+    "calls": [
+      { "command": "view", "path": "/p/a" },
+      { "command": "undo_edit", "path": "/p/z" },
+      { "command": "delete", "path": "/p/a" }
+    ],
+    "added": 0,
+    "removed": 0
+  },
+  {
+    "name": "a call missing its text counts nothing",
+    "calls": [
+      { "command": "write", "path": "/p/a" },
+      { "command": "str_replace", "path": "/p/a", "old_str": "x" },
+      { "command": "insert", "path": "/p/a", "insert_line": 1 }
+    ],
+    "added": 0,
+    "removed": 0
+  },
+  {
+    "name": "an undo reverses the last edit of that file",
+    "calls": [
+      { "command": "write", "path": "/p/a", "file_text": "a\nb\n" },
+      { "command": "str_replace", "path": "/p/a", "old_str": "a", "new_str": "A" },
+      { "command": "undo_edit", "path": "/p/a" }
+    ],
+    "added": 4,
+    "removed": 2
+  },
+  {
+    "name": "two undos walk back two edits",
+    "calls": [
+      { "command": "write", "path": "/p/a", "file_text": "a\n" },
+      { "command": "insert", "path": "/p/a", "insert_line": 1, "new_str": "b\nc" },
+      { "command": "undo_edit", "path": "/p/a" },
+      { "command": "undo_edit", "path": "/p/a" }
+    ],
+    "added": 3,
+    "removed": 3
+  },
+  {
+    "name": "an undo reverses only its own file",
+    "calls": [
+      { "command": "write", "path": "/p/a", "file_text": "a\n" },
+      { "command": "write", "path": "/p/b", "file_text": "b\nc\n" },
+      { "command": "undo_edit", "path": "/p/a" }
+    ],
+    "added": 3,
+    "removed": 1
+  }
+]

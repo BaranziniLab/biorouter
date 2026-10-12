@@ -1246,6 +1246,62 @@ async fn case28_error_result_still_carries_call_telemetry() {
     assert_eq!(calls[0]["tool"], "developer__shell");
 }
 
+// The Chat summary's Code figure read `+0 −0` for a chat whose script wrote a
+// file (final check, 2026-10-12). A record's `args` is cut at 2 KB, so a real
+// file's write cannot be measured from the records; the script measures its
+// edits from the full arguments and carries the total.
+#[tokio::test]
+async fn case31_result_meta_measures_the_edits_its_records_truncate() {
+    let m = manager().await;
+    let (_dir, dir_s) = workdir_tempdir();
+    let path_s = format!("{dir_s}/notes.md");
+    let result = exec_result(
+        &m,
+        &format!(
+            r##"
+            import {{ text_editor }} from "developer";
+            const path = "{path_s}";
+            const body = Array.from({{ length: 500 }}, (_, i) => "line " + i).join("\n") + "\n";
+            text_editor({{ command: "write", path, file_text: body }});
+            text_editor({{ command: "str_replace", path, old_str: "line 7\n", new_str: "line seven\n" }});
+            text_editor({{ command: "str_replace", path, old_str: "line 9\n", new_str: "line nine\n" }});
+            text_editor({{ command: "undo_edit", path }});
+            let failed = false;
+            try {{
+                text_editor({{ command: "str_replace", path, old_str: "absent", new_str: "x" }});
+            }} catch (e) {{
+                failed = true;
+            }}
+            text_editor({{ command: "view", path }});
+            record_result({{ failed }});
+            "##
+        ),
+    )
+    .await;
+
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "the script recovered: {:?}",
+        result.content
+    );
+    let meta = result.meta.expect("telemetry meta");
+    let write_args = meta.0["biorouter/tool-calls"][0]["args"]
+        .as_str()
+        .expect("the write is recorded");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(write_args).is_err(),
+        "the precondition: the write's recorded args are truncated past parsing"
+    );
+    // 500 written, one line changed twice, the second change undone; the
+    // failed replacement and the view change nothing.
+    assert_eq!(
+        meta.0.get("biorouter/code-delta"),
+        Some(&json!({ "added": 503, "removed": 3 })),
+        "{:?}",
+        meta.0
+    );
+}
+
 #[tokio::test]
 async fn case25_calling_a_non_function_explains_itself() {
     let m = manager().await;

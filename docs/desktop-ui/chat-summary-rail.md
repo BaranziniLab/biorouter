@@ -189,7 +189,15 @@ and 12px for labels.
   primitive's own track is `--background-muted`, which is the fill itself and would vanish.
 - **Statistics**: a `dl` of 28px rows: Tool calls, Tokens (with an InfoTip saying what is
   counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words. A count of
-  zero is muted, so a chat that touched no code shows no red. A figure that is not known yet is
+  zero is muted, so a chat that touched no code shows no red. Code is the lines this chat's
+  successful `text_editor` edits added and removed (`summary/codeDelta.ts`), never anything read
+  off text: it used to match diff-shaped strings anywhere in the transcript, so a chat whose
+  script wrote a file read `+0 −0` and a chat that only read code read `+0 −9` (final check,
+  2026-10-12). A direct call is measured from its own arguments; a Code Execution script carries
+  `biorouter/code-delta`, which the daemon measures from each sub-call's full arguments
+  (`agents/code_delta.rs`), because a sub-call's record keeps its arguments cut at 2 KB and a
+  record past the meta budget is dropped. A file written by a shell command is not counted:
+  nothing says how many lines it changed. A figure that is not known yet is
   an empty value in a row that keeps its label and its 28px, never a stand-in the load then
   replaces: all four while the transcript loads, and Tokens until the chat's usage ledger has
   answered (`useCostTracking`'s `ledgerSettled`, `summaryTokensValue`). Before that, the
@@ -298,6 +306,7 @@ or the pointer is over the summary.
 | `hooks/useCostTracking.ledger.test.tsx` | `ledgerSettled` false with no rows while the usage request is pending, settled on rows, on none and on a failure, never one chat's ledger for another's, and a refresh of the same chat keeps its answer |
 | `components/BaseChat.costLedger.test.tsx` | On the real hook and the real footer `CostTracker`: no Tokens value and no cost while the ledger is pending, then exactly one reading ("N/A" and no cost for an uncertified row; "2.2M" and the priced counters for a ledger with no rows) |
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, empty values (and `aria-busy`) for figures not known yet, the gap above the statistics, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
+| `components/summary/codeDelta.test.ts` | The Code figure from edits only: a script's write counted from its record, the daemon's script total preferred over truncated or dropped records (and kept when the script failed later), nothing from diff-shaped text, a grep, a `git show` or a quoted snippet, no failed or unanswered call, an undo paired with its own file's last edit; and `codeDeltaCases.json`, the table the daemon's `agents::code_delta` tests also run, so the two tallies cannot drift. `tests/code_execution_integration.rs` `case31` holds the daemon's total against a real script whose write record is truncated |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count, and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `components/summary/summaryPopover.browser.test.tsx` | In Chromium, with the whole stylesheet, in a band shaped like BaseChat's header: the old wiring landing on the band line and past the window (the instrument); the popover 4px below the band line and 8px above the window's bottom with its body scrolling, at 1300x900, beside a side preview, at a device pixel ratio of 2 and in a 600px window; a short list at its natural height |
 | `components/alerts/toastClearance.test.ts` (WS-MOTION's) | The two class names the toast stack steps aside for, each held at the component that renders it; the stack joining the docked card's column (as wide as the card, right edges aligned, 8px under it, or at the rail top over a card that fills the rail), never left of it over the conversation; and 16px left of the popover |
