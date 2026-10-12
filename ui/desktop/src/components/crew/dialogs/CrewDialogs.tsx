@@ -64,10 +64,11 @@ export interface CrewDialogsProps {
  * - the header hairline, so every dialog that renders through `ModalShell` has the same chrome, not
  *   only the scrolling four (QA Q2-26).
  *
- * The confirmations (`kind: 'confirm'`) take none of these: they render the app's shared
- * `ConfirmationModal` and `DangerousConfirmDialog`, which compose the dialog primitive directly and
- * keep the header and outlined Cancel they have on every privacy surface in the app. Their
- * typed-name field gets the focus edge through `confirmations.tsx`'s own mark instead.
+ * The confirmations (`kind: 'confirm'`) render the app's shared `ConfirmationModal` and
+ * `DangerousConfirmDialog`. Both are `ModalShell`s (V4-10, V3-R7-1), so they take these defaults
+ * too and have the same anatomy they have on every privacy surface in the app. Their typed-name
+ * field also gets the focus edge through `confirmations.tsx`'s own mark, which reaches a
+ * confirmation mounted outside this provider.
  */
 export const CREW_DIALOG_DEFAULTS: ModalShellDefaults = {
   anchor: 'top',

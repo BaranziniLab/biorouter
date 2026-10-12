@@ -1,12 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './dialog';
+import { ModalShell } from '../ModalShell';
 import { Button } from './button';
 import { Input } from './input';
 import { lastInputWasKey } from './inputTrail';
@@ -44,6 +37,16 @@ import { lastInputWasKey } from './inputTrail';
  *  3. **No key confirms.** Nothing here is a `<form>`, and Return inside the
  *     field is explicitly swallowed, so the muscle-memory "type, Enter" that
  *     ends every other dialog in this app cannot end this one.
+ *
+ * It is a `ModalShell` at size `sm`, like `ConfirmationModal`, so it has the one
+ * dialog anatomy (vision round 7, V3-R7-1): pinned at the top edge, the title in
+ * the header above its rule, 16px insets and the footer row. It used to be a raw
+ * `DialogContent` (480px, centred, 24px insets, no rule), so "Make "Soul"
+ * public?" sat in the middle of the window while every other dialog opened from
+ * the Knowledge band sat at the top. The description is the dialog's
+ * description (`describedBy`) in body text, as it was. Inside an area that sets
+ * `ModalShellDefaultsContext` (Crew) it takes that area's defaults, as
+ * `ConfirmationModal` does: Crew returns focus itself on close.
  */
 export interface DangerousConfirmDialogProps {
   open: boolean;
@@ -95,8 +98,8 @@ export function DangerousConfirmDialog({
   onPhraseChange,
 }: DangerousConfirmDialogProps) {
   const fieldId = useId();
+  const descriptionId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
   const [typed, setTyped] = useState('');
 
   // A dialog reopened for a different subject must not arrive pre-satisfied by
@@ -111,63 +114,27 @@ export function DangerousConfirmDialog({
   const satisfied = phrase === undefined || normalize(typed) === normalize(phrase);
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && !busy && onCancel()}>
-      <DialogContent
-        dismissible={!busy}
-        {...(description ? {} : { 'aria-describedby': undefined })}
-        ref={boxRef}
-        className="sm:max-w-[480px]"
-        // (2) above. A key open lands on Cancel; any other open rests on the
-        // box, the same quiet open the shared dialog gives every pointer open.
-        // This dialog places focus itself, so `dialog.tsx` leaves it alone.
-        onOpenAutoFocus={(event) => {
-          event.preventDefault();
-          if (lastInputWasKey()) cancelRef.current?.focus();
-          else boxRef.current?.focus({ preventScroll: true });
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          {description ? <DialogDescription>{description}</DialogDescription> : null}
-        </DialogHeader>
-
-        {children}
-
-        {phrase !== undefined && (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor={fieldId} className="text-label text-text-default">
-              {fieldLabel}
-            </label>
-            <div className="flex min-w-0 items-center gap-2">
-              <Input
-                id={fieldId}
-                value={typed}
-                autoComplete="off"
-                spellCheck={false}
-                disabled={busy}
-                onChange={(event) => {
-                  setTyped(event.target.value);
-                  onPhraseChange?.(event.target.value);
-                }}
-                // (3) above. With no surrounding `<form>` this is already inert,
-                // and it is written down anyway: the day someone wraps this in a
-                // form for the layout, the destructive action must not acquire a
-                // keyboard shortcut as a side effect.
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.preventDefault();
-                }}
-                className="min-w-0 flex-1 font-mono"
-              />
-              {/* Beside the field, so the user is comparing against the thing
-                  itself rather than remembering it from the prose above. */}
-              <code className="shrink-0 rounded-inner bg-background-muted px-2 py-1 font-mono text-code text-text-muted select-all">
-                {phrase}
-              </code>
-            </div>
-          </div>
-        )}
-
-        <DialogFooter className="pt-2">
+    <ModalShell
+      open={open}
+      onOpenChange={(next) => !next && !busy && onCancel()}
+      // Busy is in flight: no ×, no Escape, no backdrop, as `dismissible={!busy}` was.
+      purpose={busy ? 'required' : 'info'}
+      size="sm"
+      title={title}
+      describedBy={description ? descriptionId : undefined}
+      bodyClassName="flex flex-col gap-3"
+      // (2) above. A key open lands on Cancel; any other open rests on the
+      // box, the same quiet open the shared dialog gives every pointer open.
+      // This dialog places focus itself, so `dialog.tsx` leaves it alone. The
+      // event is dispatched on the dialog's own node, so `currentTarget` is the box.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        const box = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+        if (lastInputWasKey()) cancelRef.current?.focus();
+        else box?.focus({ preventScroll: true });
+      }}
+      footer={
+        <>
           <Button ref={cancelRef} type="button" variant="secondary" onClick={onCancel}>
             {cancelLabel}
           </Button>
@@ -179,8 +146,50 @@ export function DangerousConfirmDialog({
           >
             {confirmLabel}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {description ? (
+        <p id={descriptionId} className="text-body text-text-muted">
+          {description}
+        </p>
+      ) : null}
+
+      {children}
+
+      {phrase !== undefined && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId} className="text-label text-text-default">
+            {fieldLabel}
+          </label>
+          <div className="flex min-w-0 items-center gap-2">
+            <Input
+              id={fieldId}
+              value={typed}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              onChange={(event) => {
+                setTyped(event.target.value);
+                onPhraseChange?.(event.target.value);
+              }}
+              // (3) above. With no surrounding `<form>` this is already inert,
+              // and it is written down anyway: the day someone wraps this in a
+              // form for the layout, the destructive action must not acquire a
+              // keyboard shortcut as a side effect.
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.preventDefault();
+              }}
+              className="min-w-0 flex-1 font-mono"
+            />
+            {/* Beside the field, so the user is comparing against the thing
+                itself rather than remembering it from the prose above. */}
+            <code className="shrink-0 rounded-inner bg-background-muted px-2 py-1 font-mono text-code text-text-muted select-all">
+              {phrase}
+            </code>
+          </div>
+        </div>
+      )}
+    </ModalShell>
   );
 }

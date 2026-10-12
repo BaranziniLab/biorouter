@@ -184,9 +184,10 @@
 }
 
 /* The same edge for a confirmation's typed-name field (Make public, Allow Public, Remove from the
-   workspace). A confirmation renders the app's shared `DangerousConfirmDialog`, not a `ModalShell`,
-   so it never carries `crew-dialog`; it does hold `confirmations.tsx`'s hidden `crew-confirmation`
-   mark, which `:has()` finds without anything writing a class onto the primitive (QA Q2-25). The
+   workspace). A confirmation renders the app's shared `DangerousConfirmDialog`. That is a
+   `ModalShell` now (V3-R7-1), so inside `CrewDialogs` it carries `crew-dialog` too; this rule keys
+   on `confirmations.tsx`'s hidden `crew-confirmation` mark instead, which `:has()` finds wherever
+   the confirmation mounts, without anything writing a class onto the primitive (QA Q2-25). The
    primitive's `Input` paints `--background-default`, the ground the accent is measured on above. */
 [data-slot='dialog-content']:has(.crew-confirmation)
   :read-write:focus-visible:not([aria-invalid='true']) {

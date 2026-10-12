@@ -451,8 +451,10 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
     const content = field.closest('[data-slot="dialog-content"]');
     expect(content).toBe(dialog);
     expect(content?.querySelector('.crew-confirmation')).not.toBeNull();
-    // And the mark is not the ModalShell class, which this primitive never gets.
-    expect(dialog).not.toHaveClass('crew-dialog');
+    // The typed confirmation is a ModalShell now (V3-R7-1), so inside the area it carries the
+    // area's class as well, as `ConfirmationModal` does; the mark is what still reaches a
+    // confirmation mounted outside `CrewDialogs`.
+    expect(dialog).toHaveClass('crew-dialog');
   });
 
   it('puts the class and the header hairline on every dialog it hosts', async () => {
