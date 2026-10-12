@@ -158,7 +158,7 @@ describe('the / palette’s Crew rows', () => {
       const items = ref.current?.getDisplayFiles() ?? [];
       expect(items.some((item) => item.itemType === 'Builtin' && item.name === 'crew')).toBe(false);
       expect(await screen.findByText(CREW_EXTENSION_DESCRIPTION)).toBeInTheDocument();
-      expect(CREW_EXTENSION_DESCRIPTION).toBe('Crew tools extension (advanced)');
+      expect(CREW_EXTENSION_DESCRIPTION).toBe('Crew tools (advanced)');
       expect(screen.queryByText(/human-approved channel context/)).toBeNull();
     }
   );

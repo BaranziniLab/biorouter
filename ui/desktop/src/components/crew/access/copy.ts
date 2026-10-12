@@ -297,8 +297,6 @@ export const accessCopy = {
   /** A destination whose channel name this computer has not seen: the workspace instead. */
   chatDestinationWorkspace: (workspace: string) => `a channel in ${workspace}`,
   chatDestinationUnknown: 'a Crew channel',
-  /** The Crew row of the chat's extension menu while a grant is active. */
-  extensionLocked: 'On while this chat has Crew access. Revoke access to turn it off.',
 
   // ── Errors ─────────────────────────────────────────────────────────────────────────────────
   revokeFallback: 'Crew couldn’t complete that action.',

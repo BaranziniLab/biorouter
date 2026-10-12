@@ -954,7 +954,23 @@ mod tests {
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
+        assert!(PLATFORM_EXTENSIONS["crew"].default_enabled);
         assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
+    }
+
+    /// Crew is a capability, not an extension: the desktop lists it in Settings → Chat →
+    /// Capabilities and leaves it off the Extensions page, and this side agrees, so Extension
+    /// Manager refuses to enable or disable it (`capability_management_refusal`) and the
+    /// agent's extension listings leave it out.
+    #[test]
+    fn crew_is_a_capability() {
+        let crew = ExtensionConfig::Platform {
+            name: "crew".to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        assert!(crew.is_capability());
     }
 
     #[test]

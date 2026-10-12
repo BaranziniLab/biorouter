@@ -5615,6 +5615,7 @@ mod tests {
             ("Todo", "todo"),
             ("Web & Documents", "webdocuments"),
             ("Agent Drafter", "agent_drafter"),
+            ("Crew", "crew"),
         ] {
             let target = resolve_bundled_extension(label).expect(label);
             assert_eq!(target.key(), id);

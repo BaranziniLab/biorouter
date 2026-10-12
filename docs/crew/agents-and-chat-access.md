@@ -145,6 +145,8 @@ The chat sees its channels' messages much as you do, with posts by an agent mark
 
 It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
 
+The chat's Crew tools are one of Biorouter's capabilities, not an extension, so they are not on the **Extensions** page or in the **Tools** chip's list. The **Crew** switch in **Settings** > **Chat** > **Capabilities** sets whether new chats start with them. A chat you connect gets them with its access whatever the switch says. Turning the switch off does not end a chat's access; **Revoke access** does.
+
 ### A chat's fixed channel and model
 
 The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. In such a chat, **Switch models** says "This chat's model is fixed by its Crew access. Start a new chat to use another model." and offers no other model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. Exporting the chat and creating a workflow from it are refused too, with a sentence that says why. **Make this chat public** in the chat history is refused with "This chat read Crew channels, so it can't be made public. Start a new chat for public work." For other work:

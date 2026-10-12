@@ -78,12 +78,13 @@ export const CREW_COMMAND_BEFORE_FIRST_MESSAGE = COMPOSER_COPY.commands.crewBefo
 // first for any query it starts with. Round 3 still found the second row confusing, so the
 // extension's row is left out of any list that shows the `/crew` command. It stays reachable: a
 // query aimed at extensions ("/ext", "/ext:crew") never matches the command, so that list shows
-// the extension's row — labelled as the tools, for someone who knows they want them.
+// the row, labelled as the tools, for someone who knows they want them. Crew is a capability now,
+// so the row is `ext:Crew` from `CAPABILITIES` and is there whether or not the chat has it on.
 
-/** The Crew extension's row, when a query reaches it without the `/crew` command. */
+/** The Crew capability's `/ext:` row, when a query reaches it without the `/crew` command. */
 export const CREW_EXTENSION_DESCRIPTION = COMPOSER_COPY.commands.crewExtension;
 
-/** The Crew platform extension's key (as `isCrewExtensionName` in `crew/access` reads it). */
+/** The Crew capability's key (`crew` in `CAPABILITIES`, the daemon's `PLATFORM_EXTENSIONS`). */
 const isCrewExtensionItem = (item: DisplayItem) =>
   item.itemType === 'Extension' && item.relativePath.trim().toLowerCase() === 'crew';
 

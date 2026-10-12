@@ -11,8 +11,6 @@ import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
-import { isCrewExtensionName, useChatCrewAccessState } from '../crew/access/chatCrewAccess';
-import { accessCopy } from '../crew/access/copy';
 import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
@@ -51,7 +49,6 @@ export interface ExtensionRow {
   /** The name a person reads, as the catalogue spells it (see `extensionDisplayName`). */
   title: string;
   pairingRefused: boolean;
-  lockedByCrew: boolean;
   disabled: boolean;
   pending: boolean;
 }
@@ -88,10 +85,6 @@ export function useExtensionPicker(
    * on it — a tier nobody could read must not wall a working tool.
    */
   const pairingTier = useBoundProviderTier();
-  // A Crew-scoped chat's access ends only through Revoke. Switching the Crew extension off leaves
-  // the grant active, so while it is active the Crew row stays on and says where Revoke is. Read
-  // from the chat's own lookup; this menu never fetches it.
-  const crewAccessState = useChatCrewAccessState(sessionId);
   const [searchQuery, setSearchQuery] = useState('');
   const isOpen = open;
   const onOpenRequestRef = useRef(onOpenRequest);
@@ -363,17 +356,9 @@ export function useExtensionPicker(
    * leaves the fourth looking broken, which is the failure this state exists to
    * remove.
    */
-  const crewLocked = useCallback(
-    (ext: FixedExtensionEntry) =>
-      crewAccessState === 'active' && ext.enabled && isCrewExtensionName(ext.name),
-    [crewAccessState]
-  );
   const toggleableExtensions = useMemo(
-    () =>
-      sortedExtensions.filter(
-        (ext) => !extensionPairingRefused(ext.name, pairingTier) && !crewLocked(ext)
-      ),
-    [sortedExtensions, pairingTier, crewLocked]
+    () => sortedExtensions.filter((ext) => !extensionPairingRefused(ext.name, pairingTier)),
+    [sortedExtensions, pairingTier]
   );
 
   /**
@@ -382,9 +367,10 @@ export function useExtensionPicker(
    * Two independent decisions, and they are easy to conflate:
    *
    * 1. *What is counted* — user-installed extensions only. Shipped capabilities
-   *    (Developer, Biorouter Copilot, Auto Visualiser, Memory, Knowledge,
-   *    Agent Drafter, Todo, Chat Recall, Extension Manager, Code Execution,
-   *    Skills) are excluded; see the note inside. A chat whose only extensions
+   *    (every entry of `CAPABILITIES`: Developer, Biorouter Copilot, Web &
+   *    Documents, Auto Visualiser, Memory, Knowledge, Agent Drafter, Todo, Chat
+   *    Recall, Extension Manager, Code Execution, Skills, Workspace Control and
+   *    Crew) are excluded; see the note inside. A chat whose only extensions
    *    are capabilities therefore reads `0`, and that is the number meaning
    *    "you have added none", not the v1.89.0 P-04 defect wearing the same face.
    * 2. *Where the number comes from* — the SESSION's extensions, which is what
@@ -533,17 +519,15 @@ export function useExtensionPicker(
         // tell the user why the tool did nothing. The row stays, disabled, and
         // says why on a visible second line.
         const pairingRefused = extensionPairingRefused(ext.name, pairingTier);
-        const lockedByCrew = crewLocked(ext);
         return {
           ext,
           title: titleOf(ext),
           pairingRefused,
-          lockedByCrew,
-          disabled: bulkInFlight || pairingRefused || lockedByCrew,
+          disabled: bulkInFlight || pairingRefused,
           pending: pendingExtensionNames.has(ext.name),
         };
       }),
-    [sortedExtensions, titleOf, pairingTier, crewLocked, bulkInFlight, pendingExtensionNames]
+    [sortedExtensions, titleOf, pairingTier, bulkInFlight, pendingExtensionNames]
   );
 
   const bulk =
@@ -592,7 +576,7 @@ export function ExtensionsPanel({
       emptyText={picker.query ? EXTENSIONS_COPY.noMatch : EXTENSIONS_COPY.empty}
       inputRef={inputRef}
     >
-      {picker.rows.map(({ ext, title, pairingRefused, lockedByCrew, disabled, pending }) => (
+      {picker.rows.map(({ ext, title, pairingRefused, disabled, pending }) => (
         <PickerRow
           key={ext.name}
           name={title}
@@ -601,19 +585,11 @@ export function ExtensionsPanel({
           busy={pending}
           onToggle={() => picker.toggle(ext, !ext.enabled)}
           badge={isBuiltInExtension(ext) ? <BuiltInBadge /> : undefined}
-          note={
-            pairingRefused
-              ? EXTENSIONS_COPY.pairingRefused
-              : lockedByCrew
-                ? accessCopy.extensionLocked
-                : undefined
-          }
+          note={pairingRefused ? EXTENSIONS_COPY.pairingRefused : undefined}
           description={
             pairingRefused
               ? EXTENSIONS_COPY.pairingRefusedReason
-              : lockedByCrew
-                ? undefined
-                : ext.description || (isBuiltInExtension(ext) ? uiCopy.builtInHelp : undefined)
+              : ext.description || (isBuiltInExtension(ext) ? uiCopy.builtInHelp : undefined)
           }
         />
       ))}

@@ -123,6 +123,32 @@ describe('ExtensionsSection — Workspace is a capability, not an extension', ()
   });
 });
 
+/**
+ * Crew is a capability too: it ships with Biorouter (`PLATFORM_EXTENSIONS["crew"]` in
+ * `crates/biorouter/src/agents/extension.rs`), and its switch is in Settings → Chat →
+ * Capabilities. The daemon lists it as `{ type: 'platform', name: 'crew' }`.
+ */
+describe('ExtensionsSection — Crew is a capability, not an extension', () => {
+  it('does not render Crew among the extensions, on or off', async () => {
+    mocks.extensionsList = [
+      { type: 'platform', name: 'crew', description: 'Crew', bundled: true, enabled: false },
+      {
+        type: 'stdio',
+        name: 'medcp',
+        description: 'Local clinical MCP',
+        cmd: 'node',
+        args: ['server.js'],
+        enabled: true,
+      },
+    ];
+    render(<ExtensionsSection />);
+
+    await screen.findByText('Local clinical MCP');
+    expect(screen.queryByRole('switch', { name: /crew/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^crew$/i)).not.toBeInTheDocument();
+  });
+});
+
 const customEntry = {
   type: 'stdio',
   name: 'medcp',

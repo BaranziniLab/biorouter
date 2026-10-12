@@ -123,6 +123,25 @@ export const CAPABILITIES: CapabilityMeta[] = [
       'Work across several chats: open, read and steer other chats, and run subagents in visible tabs.',
     defaultEnabled: true,
   },
+  {
+    /*
+     * Crew ships with Biorouter (`PLATFORM_EXTENSIONS["crew"]`), so it is a
+     * capability like Workspace Control above, and this entry moves it off the
+     * Extensions page, its count, the Tools popover and the load toast's
+     * denominator at once. The switch writes the same `crew` entry in
+     * `config.yaml` the Extensions page did, so a saved on or off carries over.
+     *
+     * It is the default for new chats only. A chat a person connects with
+     * `/crew`, and a Crew task, get the tools from their grant
+     * (`grant_session` and `configure_run_agent` in `routes/crew.rs`), and only
+     * Revoke ends that access.
+     */
+    key: 'crew',
+    label: 'Crew',
+    description:
+      'Lets a chat you connect with /crew read its Crew channels and post updates there.',
+    defaultEnabled: true,
+  },
 ];
 
 /** Set of normalized capability keys, for quick membership checks. */

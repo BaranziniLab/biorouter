@@ -11,7 +11,7 @@
  * - `useAgentAccessCount` — the channel header's agent-access chip.
  *
  * Outside Crew, `useChatCrewAccess` + `ChatCrewAccessBar` give an ordinary chat its Crew state, and
- * `useChatCrewAccessState` lets the chat's extension menu read it without fetching.
+ * `useChatCrewAccessState` lets the model picker read it without fetching.
  */
 export { AccessList, type AccessListProps } from './AccessList';
 export { AccessTab, type AccessTabProps } from './AccessTab';
@@ -33,7 +33,6 @@ export {
   type AgentAccessCount,
 } from './accessRows';
 export {
-  isCrewExtensionName,
   useChatCrewAccess,
   useChatCrewAccessState,
   type ChatCrewAccess,

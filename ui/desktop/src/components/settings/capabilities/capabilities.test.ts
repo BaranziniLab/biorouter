@@ -16,6 +16,7 @@ const expectedDefaults = {
   agent_drafter: true,
   chatrecall: false,
   workspace: true,
+  crew: true,
 };
 
 describe('capabilities', () => {
@@ -29,7 +30,14 @@ describe('capabilities', () => {
       expect(isCapabilityDefaultEnabled(extension), extension.name).toBe(extension.enabled);
     }
 
-    for (const name of ['todo', 'chatrecall', 'extensionmanager', 'skills', 'code_execution']) {
+    for (const name of [
+      'todo',
+      'chatrecall',
+      'extensionmanager',
+      'skills',
+      'code_execution',
+      'crew',
+    ]) {
       expect(isCapabilityExtension({ name }), name).toBe(true);
     }
   });
