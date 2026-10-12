@@ -459,4 +459,16 @@ describe('CopilotControl', () => {
       timeout: 4000,
     });
   });
+
+  it('draws the computer name at 600, not preflight bold (V4-R7-6)', async () => {
+    // A bare <strong> takes Tailwind preflight's `bolder`, which computes to 700;
+    // the type system draws only 400 and 600. jsdom has no preflight, so this case
+    // pins the class; copilotEmphasisWeight.browser.test.tsx reads the weight.
+    render(<CopilotControl sessionId="task-a" />);
+    await screen.findByRole('button', { name: 'Allow control and sharing' });
+    const name = screen.getByText(status.target);
+    expect(name.tagName).toBe('STRONG');
+    expect(name).toHaveClass('font-semibold');
+    expect(name.className).not.toMatch(/\bfont-(bold|extrabold|black)\b/);
+  });
 });

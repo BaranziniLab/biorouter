@@ -331,7 +331,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
       </div>
       <div id={detailsId} hidden={!detailsVisible} className="mt-2 space-y-2">
         <p className="break-words">
-          Computer: <strong>{status.target}</strong>
+          Computer: <strong className="font-semibold">{status.target}</strong>
         </p>
         {browser && (
           <p className="text-text-muted">
