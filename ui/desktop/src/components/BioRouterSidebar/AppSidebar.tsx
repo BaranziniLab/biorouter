@@ -26,10 +26,11 @@ import { Badge } from '../ui/badge';
 import { attentionBadgeText } from '../crew/attention/crewAttention';
 import { useCrewAttention } from '../crew/attention/useCrewAttention';
 import RecentChats from './RecentChats';
-import useSidebarSessions from './useSidebarSessions';
+import useSidebarSessions, { sessionsInTurn } from './useSidebarSessions';
 import { sidebarCopy } from './copy';
 import { isDefaultSidebarChatView } from './sidebarChatView';
 import { useSidebarChatView } from './useSidebarChatView';
+import { isBrowserSurface } from '../../utils/surface';
 import './sidebar.css';
 
 function preloadHome(): void {
@@ -172,9 +173,13 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // Any view but the default sorts or groups the whole list, so it reads every
   // page first (spec 3.4 "Paging"); the default keeps lazy 10-row paging.
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
+  // A chat whose turn starts moves to the top under "Last activity" then, not
+  // when the turn finishes (see `turnSessionIds`).
+  const turnSessionIds = useMemo(() => sessionsInTurn(runningChats), [runningChats]);
   const { sessions, hasMore, isLoading, isLoadingAll, loadMore } = useSidebarSessions({
     loadAll: !isDefaultSidebarChatView(chatView),
     openSessionId: currentSessionId,
+    turnSessionIds,
   });
   const runningSessionIds = useMemo(
     () =>
@@ -183,6 +188,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   );
   const homeDir = (window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined) ?? null;
   const isMac = window.electron?.platform === 'darwin';
+  const showShortcutHint = !isBrowserSurface();
 
   useEffect(() => {
     const currentItem = [...primaryItems, ...componentItems, settingsItem].find(
@@ -320,7 +326,12 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               check-contrast.mjs can assert it on every row fill. */}
           <IconComponent className="br-nav-row-icon" />
           <span className="br-nav-row-label">{entry.label}</span>
-          {isAction ? (
+          {/* The shortcut is the Electron menu's accelerator, which a page
+              served by `biorouter serve` never receives (and in a Windows or
+              Linux browser Ctrl+T is the browser's own new tab), so the
+              browser surface draws no hint rather than one that does nothing
+              (SD-8). */}
+          {isAction && showShortcutHint ? (
             <span className="br-nav-row-hint" aria-hidden="true">
               {sidebarCopy.shortcut.newChat(isMac)}
             </span>

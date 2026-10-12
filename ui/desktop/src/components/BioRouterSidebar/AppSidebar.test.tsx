@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { SessionSummary } from '../../api';
 import { ChatProvider } from '../../contexts/ChatContext';
 import type { ChatType } from '../../types/chat';
+import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import {
   SIDEBAR_OVERLAY_BODY_CLASS,
   Sidebar,
@@ -481,5 +482,47 @@ describe('the band and the chat header draw one hairline', () => {
 
     const sidebar = readFileSync(join(__dirname, 'AppSidebar.tsx'), 'utf8');
     expect(sidebar).toContain(`className="h-chrome shrink-0 border-b ${token}"`);
+  });
+});
+
+/**
+ * SD-8: a control that can never work here says so. New chat's shortcut is the Electron menu's
+ * `CmdOrCtrl+T` accelerator (`main.ts`); a page served by `biorouter serve` never receives it, and
+ * in a Windows or Linux browser Ctrl+T opens the browser's own tab. The final check pressed both
+ * chords on the browser surface and nothing opened, under a row that read "Ctrl+T". The renderer
+ * gets no Ctrl+T handler of its own: that chord belongs to the browser.
+ */
+describe('New chat’s shortcut hint', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('is not drawn on the browser surface, where no shortcut opens a chat', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+
+    const newChat = screen.getByTestId('sidebar-new-chat-button');
+    expect(newChat).toHaveTextContent(/^New chat$/);
+    expect(newChat.querySelector('.br-nav-row-hint')).toBeNull();
+    expect(screen.queryByText('Ctrl+T')).toBeNull();
+    expect(screen.queryByText('⌘T')).toBeNull();
+    expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();
+  });
+
+  it('is drawn in the desktop app, where the menu accelerator opens a chat', async () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+
+    const hint = screen.getByTestId('sidebar-new-chat-button').querySelector('.br-nav-row-hint');
+    expect(hint).not.toBeNull();
+    expect(hint).toHaveTextContent(window.electron?.platform === 'darwin' ? '⌘T' : 'Ctrl+T');
+    expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();
   });
 });
