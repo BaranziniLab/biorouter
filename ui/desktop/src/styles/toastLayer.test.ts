@@ -282,3 +282,47 @@ describe('a menu the person opened stands above a toast', () => {
     expect(dialog).toMatch(/'biorouter-modal-surface [^']*fixed[^']*z-\[var\(--z-modal\)\]/);
   });
 });
+
+/**
+ * Vision V2-R7-4, checklist 15. A toast covered find in chat's count and buttons, and the
+ * docked Chat summary's first rows, because all three dock in the same corner. The stack now
+ * steps below find and left of the summary (`components/alerts/toastClearance.ts`, whose own
+ * test holds the geometry; Chromium's is `alerts/toastClearance.browser.test.tsx`). This holds
+ * the two ends that live elsewhere: the stylesheet turns the measured move into a `translate`
+ * that leaves `top` alone, and App starts the watcher.
+ */
+describe('a toast steps out of the way of find in chat and the Chat summary', () => {
+  function rule(selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = CSS.match(new RegExp(`\\n${escaped}\\s*\\{([^}]*)\\}`));
+    if (!match) throw new Error(`no rule for ${selector} in main.css`);
+    return match[1];
+  }
+
+  it('moves the container by a translate, only ever left and down, never by its top', () => {
+    expect(rule('.Toastify__toast-container')).toMatch(
+      /translate:\s*calc\(-1 \* var\(--toast-clear-x, 0px\)\) var\(--toast-clear-y, 0px\);/
+    );
+    // The resting corner is still the token, so the drag-band floor above still holds.
+    expect(APP).toContain("top: 'var(--toast-inset-top)'");
+  });
+
+  it('glides only once placed, snaps during a resize, and not at all under reduced motion', () => {
+    expect(rule('.Toastify__toast-container[data-toast-placed]')).toMatch(
+      /transition:\s*translate var\(--dur-fast-max\) var\(--ease-out\);/
+    );
+    expect(CSS).toMatch(
+      /body\.biorouter-window-resizing \.Toastify__toast-container,\s*body\.biorouter-sidebar-resizing \.Toastify__toast-container\s*\{\s*transition-duration:\s*0ms;/
+    );
+    expect(CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.Toastify__toast-container\[data-toast-placed\]\s*\{\s*transition:\s*none;/
+    );
+  });
+
+  it('starts the watcher once, beside the container', () => {
+    expect(APP).toMatch(
+      /import \{ watchToastClearance \} from '\.\/components\/alerts\/toastClearance'/
+    );
+    expect(APP).toMatch(/useEffect\(\(\) => watchToastClearance\(\), \[\]\);/);
+  });
+});

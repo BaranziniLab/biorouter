@@ -2527,6 +2527,39 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   pointer-events: auto;
 }
 
+/* @ws WS-MOTION begin: toast clears the corner */
+/* A toast steps out of the way of what already sits in its corner (vision
+   V2-R7-4, checklist 15): below find in chat, left of the docked Chat summary
+   and of its popover. `components/alerts/toastClearance.ts` measures what is
+   really in the stack's way and writes how far to move on the container;
+   this turns it into a `translate`, so `top` stays `--toast-inset-top` and the
+   move is only ever down or left, never into the drag band (issue #74).
+
+   It glides over `--dur-fast-max` only once the container has been placed
+   (`data-toast-placed`, set a frame after its first placement), so a toast
+   that arrives while find is open appears below the bar rather than sliding
+   there. It snaps while the window or the sidebar is being resized, and under
+   reduced motion. */
+.Toastify__toast-container {
+  translate: calc(-1 * var(--toast-clear-x, 0px)) var(--toast-clear-y, 0px);
+}
+
+.Toastify__toast-container[data-toast-placed] {
+  transition: translate var(--dur-fast-max) var(--ease-out);
+}
+
+body.biorouter-window-resizing .Toastify__toast-container,
+body.biorouter-sidebar-resizing .Toastify__toast-container {
+  transition-duration: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .Toastify__toast-container[data-toast-placed] {
+    transition: none;
+  }
+}
+/* @ws WS-MOTION end: toast clears the corner */
+
 /* @ws WS-MOTION begin: toast yields to an open menu */
 /* A menu or popover the person opened stands above a toast (vision V1-R7-1).
    Menus sit at `--z-modal-dropdown` (500) and the toast layer at `--z-toast`

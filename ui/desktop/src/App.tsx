@@ -13,6 +13,7 @@ import { openSharedSessionFromDeepLink } from './sessionLinks';
 import { type SharedSessionDetails } from './sharedSessions';
 import { ErrorUI } from './components/ErrorBoundary';
 import { TOAST_SURFACE_CLASS_NAME } from './components/alerts/NotificationSurface';
+import { watchToastClearance } from './components/alerts/toastClearance';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer, cssTransition } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
@@ -411,6 +412,9 @@ export function AppInner() {
     shownScreen.current = screen;
     dismissScreenToasts();
   }, [screen]);
+  // V2-R7-4. A toast steps below find in chat and left of the Chat summary
+  // instead of covering them; the corner stays theirs while they are open.
+  useEffect(() => watchToastClearance(), []);
 
   const [chat, setChat] = useState<ChatType>({
     sessionId: '',

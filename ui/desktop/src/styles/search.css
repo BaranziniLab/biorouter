@@ -38,8 +38,9 @@
    viewport `position: relative` as soon as a search starts, and from then on
    the viewport is the containing block and the bar scrolls off with the text
    (vision V2-02). It sits 8px under the header band and 16px in from the right
-   edge, where a toast also lands; the toast is transient and above it
-   (`--z-toast`), so the toast wins.
+   edge, where a toast also lands. A toast there steps 8px below the bar for as
+   long as it is open, instead of covering its count and buttons
+   (`components/alerts/toastClearance.ts`, vision V2-R7-4).
 
    Width: compact, like an editor's find widget, and never wider than the
    transcript's measure or the cell less its gutters. Nothing geometric
