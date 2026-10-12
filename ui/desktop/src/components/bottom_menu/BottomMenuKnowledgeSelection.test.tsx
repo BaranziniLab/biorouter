@@ -164,6 +164,37 @@ describe('BottomMenuKnowledgeSelection', () => {
     );
   });
 
+  /**
+   * UI defect 3 (final check, 2026-10-12): each row's switch is named by the
+   * base's name, as every switch on the Extensions page is. Not by the row's
+   * label, which says the state ("Soul, visible to this chat"): a switch's name
+   * never changes with its state (spec 2.6). It stays out of the accessibility
+   * tree, so a screen reader hears each row once (the option).
+   */
+  it('names each row’s switch by the base’s name, and keeps the row the one control', async () => {
+    mocks.state.hiddenKbIds = ['brainstorm'];
+    render(<BottomMenuKnowledgeSelection />);
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    await screen.findByRole('listbox', { name: KNOWLEDGE_COPY.listLabel });
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getAllByRole('switch', { hidden: true })).toHaveLength(2);
+
+    const soul = screen.getByRole('switch', { name: 'Soul', hidden: true });
+    expect(screen.getByRole('option', { name: 'Soul, visible to this chat' })).toContainElement(
+      soul
+    );
+    expect(soul).toHaveAttribute('aria-checked', 'true');
+    const brainstorm = screen.getByRole('switch', { name: 'brainstorm', hidden: true });
+    expect(
+      screen.getByRole('option', { name: KNOWLEDGE_COPY.rowLabel('brainstorm', true) })
+    ).toContainElement(brainstorm);
+    expect(brainstorm).toHaveAttribute('aria-checked', 'false');
+
+    // The row is still what a click toggles.
+    fireEvent.click(screen.getByRole('option', { name: /^brainstorm/ }));
+    expect(mocks.toggleKbHidden).toHaveBeenCalledWith('brainstorm');
+  });
+
   it('toggles a base with one write when its row is chosen', () => {
     render(<BottomMenuKnowledgeSelection />);
     fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));

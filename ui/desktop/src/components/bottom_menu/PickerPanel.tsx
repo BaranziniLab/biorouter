@@ -22,6 +22,24 @@ import { TOOLS_COPY } from './copy';
  * multi-select listbox. The switch at its end is the picture of that state, so
  * it is hidden from assistive tech and takes no pointer events: the row is the
  * control.
+ *
+ * The picture is still named, by the row's visible name through
+ * `aria-labelledby`, as every switch on the Extensions page is (UI defect 3,
+ * final check 2026-10-12: anything that reads the DOM found three lists of
+ * unnamed switches). Its wrapper hides it, not an `aria-hidden` of its own: an
+ * element hidden by its own attribute has no name at all.
+ *
+ * ⚠ **So the option is named by reference, never from its content.** Chromium
+ * reads a hidden descendant into a name built from content in more than one
+ * case: a focusable element under `aria-hidden` (the switch is a `<button>`,
+ * focusable at `tabIndex={-1}`), and any element with generated content (the
+ * switch's `::after` hit target). Either one made every option say its name
+ * twice once the switch had one ("extensions 1 extensions 1"), measured in
+ * Chromium's own accessibility tree, where jsdom and Playwright's aria snapshot
+ * both said it once; `inert` on the wrapper did not help. So the option points at
+ * its visible text (the title line, then the note) with `aria-labelledby`, or
+ * carries `label` as its `aria-label`, and nothing else inside it can reach its
+ * name. `toolsPopover.browser.test.tsx` reads Chromium's tree to pin it.
  */
 export interface PickerPanelProps {
   /** The listbox's accessible name ("Extensions"). */
@@ -132,13 +150,25 @@ export function PickerRow({
   description,
   'data-testid': testId,
 }: PickerRowProps) {
+  // The switch's name: the row's name alone. Not `label`, which may say the
+  // state ("Soul, visible to this chat"), and a switch's name never changes with
+  // its state (spec 2.6); not the badge or the count beside it either.
+  const nameId = React.useId();
+  // The option's name, by reference (see the file's header): the title line,
+  // then the note. `label` replaces both, so the two are never set together
+  // (`aria-labelledby` would win over `aria-label`).
+  const titleId = React.useId();
+  const noteId = React.useId();
+  const labelledBy = label ? undefined : note ? `${titleId} ${noteId}` : titleId;
   // The name, its badge and its count are one line, and the line is what the
   // description hangs from: a pointer resting on the "Built-in" badge gets the
   // row's tooltip too (the badge cannot hold a help glyph of its own inside a
   // row that is itself the control).
   const title = (
-    <span className="br-picker-row__title">
-      <span className="br-picker-row__name">{name}</span>
+    <span id={titleId} className="br-picker-row__title">
+      <span id={nameId} className="br-picker-row__name">
+        {name}
+      </span>
       {badge}
       {meta && <span className="br-picker-row__meta">{meta}</span>}
     </span>
@@ -155,6 +185,7 @@ export function PickerRow({
       selected={checked}
       disabled={disabled}
       aria-label={label}
+      aria-labelledby={labelledBy}
       // The tooltip is for the pointer; a screen reader hears the same text as
       // the row's description while the arrow keys rest on it. Not a hidden
       // child: text inside the option would become part of its name.
@@ -174,7 +205,11 @@ export function PickerRow({
         ) : (
           title
         )}
-        {note && <span className="br-picker-row__note">{note}</span>}
+        {note && (
+          <span id={noteId} className="br-picker-row__note">
+            {note}
+          </span>
+        )}
       </span>
       <span className="br-picker-row__switch" aria-hidden="true">
         <Switch
@@ -185,7 +220,9 @@ export function PickerRow({
           onClick={(event) => event.stopPropagation()}
           disabled={disabled}
           tabIndex={-1}
-          aria-hidden="true"
+          // Hidden by the wrapper, never by its own `aria-hidden` (see the file's
+          // header): named like the Extensions page's switches.
+          aria-labelledby={nameId}
         />
       </span>
     </CommandItem>
