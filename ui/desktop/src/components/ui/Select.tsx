@@ -3,6 +3,7 @@ import ReactSelect, {
   components as selectComponents,
   type ClearIndicatorProps,
   type DropdownIndicatorProps,
+  type MenuProps,
   type OptionProps,
 } from 'react-select';
 import { CheckIcon, ChevronDown, X } from '../icons/app-icons';
@@ -155,6 +156,20 @@ function SelectDropdownIndicator(props: DropdownIndicatorProps) {
   );
 }
 
+/**
+ * The open menu names itself the way the Radix menus do: `data-slot="select-content"` with
+ * `data-state="open"` (the name a Radix Select would carry, D-08). react-select mounts the menu
+ * only while it is open, so the state never reads anything else. The toast layer reads these two
+ * attributes ("toast yields to an open menu" in main.css): a menu the person opened stands above
+ * a standing toast, as a dropdown, context menu or popover does (WS-MOTION, V1-R7-1).
+ */
+export const SELECT_MENU_SLOT = 'select-content';
+
+function SelectMenu(props: MenuProps) {
+  const slot: Record<string, string> = { 'data-slot': SELECT_MENU_SLOT, 'data-state': 'open' };
+  return <selectComponents.Menu {...props} innerProps={{ ...props.innerProps, ...slot }} />;
+}
+
 function SelectClearIndicator(props: ClearIndicatorProps) {
   return (
     <selectComponents.ClearIndicator {...props}>
@@ -171,6 +186,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         Option: SelectOption,
         DropdownIndicator: SelectDropdownIndicator,
         ClearIndicator: SelectClearIndicator,
+        Menu: SelectMenu,
         ...props.components,
       }}
       unstyled

@@ -31,7 +31,7 @@ describe('the shared Select’s chosen option', () => {
     const source = readFileSync(join(__dirname, 'Select.tsx'), 'utf8');
     // Ours first, the caller's last: a call site that passes its own `components` still wins.
     expect(source).toMatch(
-      /components=\{\{\s*Option: SelectOption,\s*DropdownIndicator: SelectDropdownIndicator,\s*ClearIndicator: SelectClearIndicator,\s*\.\.\.props\.components,\s*\}\}/
+      /components=\{\{\s*Option: SelectOption,\s*DropdownIndicator: SelectDropdownIndicator,\s*ClearIndicator: SelectClearIndicator,\s*Menu: SelectMenu,\s*\.\.\.props\.components,\s*\}\}/
     );
     expect(source).toMatch(/option:\s*\(base\)\s*=>\s*\(\{\s*\.\.\.base,\s*display:\s*'flex'/);
   });
