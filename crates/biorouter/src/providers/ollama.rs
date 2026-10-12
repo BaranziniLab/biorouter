@@ -128,6 +128,21 @@ const BUILTIN_WINDOW_SETTING: &str = "OLLAMA_NUM_CTX";
 /// which `BIOROUTER_CONTEXT_LIMIT` is the way to set.
 const CUSTOM_WINDOW_SETTING: &str = "BIOROUTER_CONTEXT_LIMIT";
 
+/// The setting that bounds how long the built-in provider waits on a silent
+/// server.
+const BUILTIN_TIMEOUT_SETTING: &str = "OLLAMA_TIMEOUT";
+/// The same for an Ollama-engine provider declared in a `custom_providers`
+/// file: that file's `timeout_seconds`.
+const CUSTOM_TIMEOUT_SETTING: &str = "timeout_seconds";
+
+/// The settings a provider's errors tell the person to change: the built-in
+/// provider's, or a custom provider's.
+#[derive(Clone, Copy)]
+struct SettingNames {
+    window: &'static str,
+    timeout: &'static str,
+}
+
 /// An output budget below this is spent on reasoning before an answer begins,
 /// so a request that pins one gets thinking off unless Deep effort asked for it.
 /// `biorouter configure` probes with 50 tokens: qwen3.8:27b at its default
@@ -1865,6 +1880,13 @@ pub struct OllamaProvider {
     /// nothing.
     #[serde(skip)]
     window_setting: &'static str,
+    /// How long this server may stay silent before a request is given up on,
+    /// and the setting that changes it, both named when that happens
+    /// ([`waited_too_long`]).
+    #[serde(skip)]
+    idle: Duration,
+    #[serde(skip)]
+    timeout_setting: &'static str,
     /// The `num_ctx` chosen per model, once. Only filled from a resolution that
     /// had `/api/show`'s answer, so a server that was briefly unreachable is
     /// asked again rather than pinned to a window chosen without the model's
@@ -1909,7 +1931,10 @@ impl OllamaProvider {
             true,
             Self::metadata().name,
             read_settings(config),
-            BUILTIN_WINDOW_SETTING,
+            SettingNames {
+                window: BUILTIN_WINDOW_SETTING,
+                timeout: BUILTIN_TIMEOUT_SETTING,
+            },
         )
     }
 
@@ -1931,7 +1956,10 @@ impl OllamaProvider {
             config.supports_streaming.unwrap_or(true),
             config.name.clone(),
             OllamaSettings::defaults(),
-            CUSTOM_WINDOW_SETTING,
+            SettingNames {
+                window: CUSTOM_WINDOW_SETTING,
+                timeout: CUSTOM_TIMEOUT_SETTING,
+            },
         )
     }
 
@@ -1942,7 +1970,7 @@ impl OllamaProvider {
         supports_streaming: bool,
         name: String,
         settings: OllamaSettings,
-        window_setting: &'static str,
+        names: SettingNames,
     ) -> Result<Self> {
         let auth = AuthMethod::Custom(Box::new(NoAuth));
         let resolved_base_url = base_url.to_string();
@@ -1958,7 +1986,9 @@ impl OllamaProvider {
             name,
             resolved_base_url,
             settings,
-            window_setting,
+            window_setting: names.window,
+            idle,
+            timeout_setting: names.timeout,
             windows: Mutex::new(HashMap::new()),
             live_context_limit: AtomicUsize::new(0),
             openai_compat: AtomicBool::new(false),
@@ -2400,6 +2430,7 @@ impl OllamaProvider {
                 .await
             })
             .await
+            .map_err(|e| waited_too_long(e, self.idle, self.timeout_setting, check.text_bytes))
             .inspect_err(|e| {
                 let _ = log.provider_error(e);
             })?;
@@ -2579,6 +2610,7 @@ impl OllamaProvider {
             })
             .await
             .map_err(|e| v1_capability_error(e, &self.model.model_name))
+            .map_err(|e| waited_too_long(e, self.idle, self.timeout_setting, check.text_bytes))
             .inspect_err(|e| {
                 let _ = log.provider_error(e);
             })?;
@@ -2597,6 +2629,50 @@ impl OllamaProvider {
             !tools.is_empty(),
         ))
     }
+}
+
+/// A request this server answered with nothing at all for `idle`, as the error
+/// the person reads; any other error is returned as it came.
+///
+/// Ollama sends no byte while it reads a prompt, so the first sign of a prompt
+/// too long for this computer is this bound firing before the reply begins.
+/// It used to arrive as "Request failed: error sending request for url
+/// (.../api/chat) (timeout)", which names neither the bound nor the prompt, and
+/// as a network blip the agent re-sent the whole prompt once more behind the
+/// first. Diagnostics 20261006_2: an Intel Mac reading about 25 prompt tokens a
+/// second against a first prompt of about 37,000 tokens and a 600-second
+/// bound. [`ProviderError::IdleTimeout`] is re-sent by nobody.
+///
+/// The token count is the request's text at four bytes a token, rounded: an
+/// order of magnitude to act on, not a measurement.
+fn waited_too_long(
+    error: ProviderError,
+    idle: Duration,
+    timeout_setting: &str,
+    text_bytes: usize,
+) -> ProviderError {
+    if !super::retry::is_timeout(&error) || matches!(error, ProviderError::IdleTimeout(_)) {
+        return error;
+    }
+    let tokens = ((text_bytes / 4 + 500) / 1000).max(1) * 1000;
+    let tokens = tokens
+        .to_string()
+        .as_bytes()
+        .rchunks(3)
+        .rev()
+        .map(|digits| String::from_utf8_lossy(digits).into_owned())
+        .collect::<Vec<_>>()
+        .join(",");
+    let waited = match idle.as_secs() {
+        1 => "1 second".to_string(),
+        seconds => format!("{seconds} seconds"),
+    };
+    ProviderError::IdleTimeout(format!(
+        "Ollama sent nothing back for {waited}, so Biorouter stopped waiting. This request's \
+         prompt is about {tokens} tokens, and a computer without a fast GPU can take longer \
+         than that just to read it. Raise {timeout_setting}, or turn off extensions this chat \
+         does not need so the prompt is shorter."
+    ))
 }
 
 /// R19 on the `/v1` fallback: OpenAI's error shape carries the same sentence
@@ -5384,5 +5460,52 @@ mod tests {
             .to_string();
         assert!(text.contains("reasoning only"), "{text}");
         assert!(!text.contains("could not parse"), "{text}");
+    }
+
+    /// Diagnostics 20261006_2: what the reporter would read when the built-in
+    /// provider's 600-second bound fires before Ollama has read their 164,005
+    /// bytes of prompt. Anything that is not a timeout passes through as it
+    /// came.
+    #[test]
+    fn a_timeout_before_the_reply_names_the_setting_and_the_prompt_size() {
+        let timed_out = ProviderError::RequestFailed(
+            "error sending request for url (http://127.0.0.1:11434/api/chat) (timeout)".to_string(),
+        );
+        let error = waited_too_long(
+            timed_out,
+            Duration::from_secs(OLLAMA_TIMEOUT),
+            BUILTIN_TIMEOUT_SETTING,
+            164_005,
+        );
+        let ProviderError::IdleTimeout(text) = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(
+            text,
+            "Ollama sent nothing back for 600 seconds, so Biorouter stopped waiting. This \
+             request's prompt is about 41,000 tokens, and a computer without a fast GPU can take \
+             longer than that just to read it. Raise OLLAMA_TIMEOUT, or turn off extensions this \
+             chat does not need so the prompt is shorter."
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        assert!(super::super::retry::is_timeout(&error));
+
+        let others = || {
+            [
+                ProviderError::RequestFailed(
+                    "error sending request for url (http://127.0.0.1:9/api/chat) (failed to \
+                     connect to 127.0.0.1:9)"
+                        .to_string(),
+                ),
+                ProviderError::ServerError("502".to_string()),
+                ProviderError::IdleTimeout("already said".to_string()),
+            ]
+        };
+        for (other, unchanged) in others().into_iter().zip(others()) {
+            assert_eq!(
+                waited_too_long(other, Duration::from_secs(600), "X", 10),
+                unchanged
+            );
+        }
     }
 }
