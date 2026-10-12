@@ -1739,6 +1739,53 @@ struct ScriptOutput {
     /// with `record_result(undefined)` print the same `text`, and only the
     /// first means the script never tried to hand anything back.
     recorded: bool,
+    /// [`string_result_member_hints`] for a script that ran to its END.
+    ///
+    /// Reading a property a string lacks only throws when something is then
+    /// called on it (`result5.stdout.trim()`, F13). Read and passed straight
+    /// to `record_result`, it is a silent `undefined`, and an object of
+    /// undefined values serialises as `{}`. Measured (2026-10-12 rerun,
+    /// ministral-3:8b on Ollama, the factorial task): both `shell` runs
+    /// returned their output (9 and 26 bytes, `5! = 120` and 20!), the script
+    /// recorded `{ outputN5: result5.output, outputN20: result20.output }`,
+    /// and the model was shown `Result: {}` ten times with nothing saying
+    /// why, until the task hit its 1,800-second limit.
+    string_reads: Vec<String>,
+}
+
+/// What the model is told about a script that ran to its end: the recorded
+/// result, plus what it needs when that result cannot show what the script's
+/// tool calls returned.
+fn script_result_text(output: &ScriptOutput, calls: usize) -> String {
+    // F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran both
+    // factorial commands but handed nothing to `record_result`
+    // came back as a bare "Result: undefined", and the model ran
+    // them again and again, unable to see what they printed.
+    let mut text = if !output.recorded && calls > 0 {
+        format!(
+            "Result: {}\nThe script's {calls} tool call(s) completed successfully, \
+             so there is no need to run them again. It did not call record_result, \
+             so nothing they returned was passed back: to see a value, pass it to \
+             record_result(value), for example record_result({{ first, second }}).",
+            output.text
+        )
+    } else {
+        format!("Result: {}", output.text)
+    };
+    if !output.string_reads.is_empty() {
+        let lead = if output.recorded && calls > 0 {
+            format!("The script's {calls} tool call(s) completed successfully, but it read")
+        } else {
+            "The script read".to_string()
+        };
+        text.push_str(&format!(
+            "\n{lead} properties a string does not have, so those values were undefined, and \
+             record_result leaves undefined values out (an object holding only undefined \
+             values shows as {{}}). {}",
+            output.string_reads.join(" ")
+        ));
+    }
+    text
 }
 
 /// [`run_js_script`]'s text alone: what the engine-level tests compare.
@@ -1856,6 +1903,8 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, S
                 Ok(ScriptOutput {
                     text: result,
                     recorded,
+                    string_reads: STRING_RESULTS
+                        .with(|seen| string_result_member_hints(code, tools, &seen.borrow())),
                 })
             }
         }
@@ -2632,22 +2681,7 @@ impl CodeExecutionClient {
 
         match js_result {
             Ok(output) => {
-                // F13 rerun (GLM 4.7 Flash, 2026-10-12): scripts that ran both
-                // factorial commands but handed nothing to `record_result`
-                // came back as a bare "Result: undefined", and the model ran
-                // them again and again, unable to see what they printed.
-                let calls = collected.completed_call_count();
-                let text = if !output.recorded && calls > 0 {
-                    format!(
-                        "Result: {}\nThe script's {calls} tool call(s) completed successfully, \
-                         so there is no need to run them again. It did not call record_result, \
-                         so nothing they returned was passed back: to see a value, pass it to \
-                         record_result(value), for example record_result({{ first, second }}).",
-                        output.text
-                    )
-                } else {
-                    format!("Result: {}", output.text)
-                };
+                let text = script_result_text(&output, collected.completed_call_count());
                 let mut contents = vec![Content::text(text)];
                 contents.append(&mut collected.content);
                 let mut result = CallToolResult::success(contents);
@@ -4801,6 +4835,40 @@ record_result(todo_write({ content: "- [ ] run factorial.py" }));"#,
         assert_eq!(result_text(&no_calls), "Result: undefined");
     }
 
+    /// F07 rerun (ministral-3:8b, 2026-10-12), through the real handler: a
+    /// script that ran to its end and recorded a property of a tool's STRING
+    /// result was shown a bare `Result: {}`. It now says the call completed,
+    /// that the property was undefined, and how to read the string.
+    #[tokio::test]
+    async fn a_recorded_property_of_a_string_result_is_explained_not_shown_as_empty() {
+        let read = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });
+record_result({ status: out.output });"#,
+        )
+        .await;
+        assert_eq!(read.is_error, Some(false));
+        let text = result_text(&read);
+        assert!(text.starts_with("Result: {}\n"), "{text}");
+        assert!(
+            text.contains("The script's 1 tool call(s) completed successfully, but it read")
+                && text.contains("`out` holds what `todo_write` returned")
+                && text.contains("`out.output` is undefined")
+                && text.contains("`out.trim()`"),
+            "{text}"
+        );
+
+        let whole = execute_with_todo(
+            r#"import { todo_write } from "todo";
+const out = todo_write({ content: "- [ ] run factorial.py" });
+record_result({ status: out.trim() });"#,
+        )
+        .await;
+        let text = result_text(&whole);
+        assert!(!text.contains("holds what"), "{text}");
+        assert!(!text.contains("a string does not have"), "{text}");
+    }
+
     #[tokio::test]
     async fn nested_todo_metadata_records_real_updates_without_adding_model_content() {
         let temp = tempfile::tempdir().unwrap();
@@ -5909,6 +5977,97 @@ record_result({
             error.contains("`result20.stdout` is undefined"),
             "every such variable is named, got: {error}"
         );
+    }
+
+    /// The script ministral-3:8b wrote in the F07 rerun (live 2026-10-12, the
+    /// factorial task), paths shortened: both runs succeed, and it records
+    /// `.output` off the string `shell` handed back, which nothing throws on.
+    const MINISTRAL_FACTORIAL_SCRIPT: &str = r#"import { shell } from "developer";
+
+// Run the script for N=5
+const result5 = shell({
+  command: "python3 factorial.py 5"
+});
+
+// Run the script for N=20
+const result20 = shell({
+  command: "python3 factorial.py 20"
+});
+
+// Return results
+record_result({
+  outputN5: result5.output,
+  outputN20: result20.output
+});"#;
+
+    /// F07 rerun: a script that runs to its end with a property of a string
+    /// result in what it records is told why its result is `{}`, naming every
+    /// such read, after saying its calls completed.
+    #[test]
+    fn recording_a_property_of_a_string_result_explains_the_empty_result() {
+        let tools = one_tool("developer", "shell");
+        let output = run_js_script(
+            MINISTRAL_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect("nothing throws on reading a missing property");
+        assert_eq!(output.text, "{}");
+        assert!(output.recorded);
+
+        let text = script_result_text(&output, 2);
+        assert!(text.starts_with("Result: {}\n"), "{text}");
+        assert!(
+            text.contains("The script's 2 tool call(s) completed successfully, but it read")
+                && text.contains("an object holding only undefined values shows as {}"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "`result5` holds what `shell` returned, and in this run that was a string"
+            ) && text.contains("`result5.output` is undefined")
+                && text.contains("`result20.output` is undefined")
+                && text.contains("`result5.trim()`"),
+            "every read must be named, with the fix, got: {text}"
+        );
+    }
+
+    /// The same script handed JSON objects is reading real properties, and a
+    /// script that records the string itself reads nothing missing: neither
+    /// is told anything beyond its result.
+    #[test]
+    fn a_complete_script_is_not_told_about_reads_that_work() {
+        let tools = one_tool("developer", "shell");
+        let objects = run_js_script(
+            MINISTRAL_FACTORIAL_SCRIPT,
+            &tools,
+            answer_tool_calls_with(r#"{"output": "5! = 120"}"#),
+        )
+        .expect("an object result has the property");
+        assert!(
+            objects.string_reads.is_empty(),
+            "{:?}",
+            objects.string_reads
+        );
+        assert_eq!(
+            script_result_text(&objects, 2),
+            format!("Result: {}", objects.text)
+        );
+
+        let strings = run_js_script(
+            r#"import { shell } from "developer";
+const result5 = shell({ command: "python3 factorial.py 5" });
+record_result({ result5, lines: result5.split("\n").length });"#,
+            &tools,
+            answer_tool_calls_with("5! = 120\n"),
+        )
+        .expect("string members work on a string result");
+        assert!(
+            strings.string_reads.is_empty(),
+            "{:?}",
+            strings.string_reads
+        );
+        assert!(strings.text.contains("5! = 120"), "{}", strings.text);
     }
 
     /// A JSON result IS an object, so the hint — a statement about what the
