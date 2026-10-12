@@ -23,6 +23,7 @@ activities:
   - Test error boundaries and security controls
   - Validate the Settings reset contract and its active-work safety gate
   - Verify provider error handling, conversation-scoped reasoning, and saved-credential deletion safeguards
+  - Verify local inference executes tools and preserves results across turns
   - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
   - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
   - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
@@ -36,7 +37,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, office, advanced"
+    description: "Which test phases to run: all, basic, extensions, computer_use, crew, apps, previews, subagents, knowledge, workflows, reset, providers, local_inference, office, advanced"
   
   - key: test_depth
     input_type: string
@@ -891,6 +892,27 @@ prompt: |
      not establish those outcomes. Do not initiate a real login or alter the user's CLI installation.
 
   Log results to: {{ workspace_dir }}/phase4c_provider_boundaries.md
+  {% endif %}
+
+  {% if test_depth != "fixture_only" and (test_phases == "all" or "local_inference" in test_phases) %}
+  ## PHASE 4D: Local Inference Tool Execution
+
+  Run this phase only when the harness has selected an approved local Ollama or Llama Server
+  model. Otherwise report BLOCKED. Keep the selected provider, model and settings unchanged.
+  Work only in {{ workspace_dir }}/local-inference/. Do not build the repository, download
+  models, inspect credentials, or change the user's Ollama daemon settings.
+
+  1. Use a real tool to create factorial.py in that directory. It must print math.factorial(10).
+     Execute the saved file, require exit 0 and stdout exactly 3628800, then read it back.
+  2. Create notes.txt containing exactly these lines: urine, plasma, URINE, serum, urine,
+     saliva, Urine, tissue, urine. Count case-insensitive whole-word matches using a tool.
+     Require exactly 5 and identify the saved file in the answer.
+  3. Read notes.txt again in a later tool call and independently verify the same count.
+     A description of a command, invented tool name, or JSON displayed instead of a real
+     tool result is FAIL. Record the tool names and actual results.
+  4. Write phase4d_local_inference.md with PASS or FAIL for each assertion and any observed
+     provider error. Do not claim a context window or memory measurement that was not
+     exposed by the harness. The external verifier checks the saved scripts and outputs.
   {% endif %}
 
   ## 📊 PHASE 5: Final Report Generation

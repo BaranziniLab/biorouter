@@ -18,6 +18,10 @@ use biorouter::config::{
 use biorouter::conversation::message::Message;
 use biorouter::model::ModelConfig;
 use biorouter::providers::provider_test::test_provider_configuration;
+// Whether Ollama serves a model from ollama.com instead of this machine (a
+// `cloud` or `-cloud` tag). The provider's own rule, not a copy of it: the
+// copy that used to live here had to be pinned to the provider's test cases.
+use biorouter::providers::utils::is_ollama_cloud_model;
 use biorouter::providers::{create, providers, retry_operation, RetryConfig};
 use biorouter::session::SessionType;
 use cliclack::spinner;
@@ -133,6 +137,23 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Where a Llama Server catalog model comes from, for the picker: Hugging Face,
+/// or an Ollama copy it can reuse. The Ollama tag named is a GGUF-only one when
+/// the catalog has it: the bare tag (`qwen3.8:27b`) is a manifest list that
+/// pulls an MLX build on Apple Silicon, which llama-server cannot load, so
+/// naming it sent a Mac user to pull a copy that is never reused.
+fn llamacpp_source_label(entry: &biorouter::providers::llamacpp::CatalogEntry) -> String {
+    match entry
+        .ollama_gguf_names
+        .first()
+        .copied()
+        .or(entry.ollama_name)
+    {
+        Some(tag) => format!("Hugging Face, or Ollama {tag} if pulled"),
+        None => "Hugging Face".to_string(),
+    }
+}
+
 /// First-time "just give me a local model" path: pick from the curated
 /// Llama Server catalog, then start the bundled llama-server (the first run
 /// downloads the model from Hugging Face).
@@ -144,11 +165,12 @@ async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
     let labels: Vec<String> = MODEL_CATALOG
         .iter()
         .map(|e| {
-            let source = e
-                .ollama_name
-                .map(|name| format!("Ollama {name}"))
-                .unwrap_or_else(|| "Hugging Face fallback".to_string());
-            format!("{} · {} · {}", e.display_name, e.download_size, source)
+            format!(
+                "{} · {} · {}",
+                e.display_name,
+                e.download_size,
+                llamacpp_source_label(e)
+            )
         })
         .collect();
     let mut select = cliclack::select("Choose a local model (downloaded on first use)")
@@ -162,7 +184,7 @@ async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
     config.set_param("LLAMACPP_PORT", LLAMACPP_DEFAULT_PORT.to_string())?;
 
     let _ = cliclack::log::info(
-        "The first run uses Ollama's local model store when available; otherwise a fallback GGUF download can take several minutes.",
+        "The first run reuses a copy already on disk (the Hugging Face cache, or a GGUF pulled into Ollama); otherwise it downloads 18-19 GB, which can take a while.",
     );
     let spin = spinner();
     spin.start("Starting Llama Server and testing the model...");
@@ -451,6 +473,82 @@ fn interactive_model_search(models: &[String]) -> anyhow::Result<String> {
     }
 }
 
+/// The models `configure` offers first, each with the hint shown beside it.
+///
+/// For Ollama these are the pulled tags of Biorouter's two supported local
+/// models ([`OLLAMA_RECOMMENDED_MODELS`], default first), a quantization
+/// variant of either included (`qwen3.8:27b-q4_K_M`). Ollama declares no known
+/// models (its list is whatever the user pulled), so before this the dialog
+/// listed the pulled tags alphabetically and pre-selected the first: on a
+/// machine holding `deepseek-r1:8b` and `qwen3.8:27b`, Enter chose a model that
+/// never calls tools. For every other provider these are its known models the
+/// listing returned, as before.
+///
+/// ⚠ A cloud tag is never a variant. `gemma4:31b-cloud` starts with
+/// `gemma4:31b-`, and it is a real Ollama cloud model: Ollama forwards it to
+/// ollama.com. It used to be offered here as "Recommended: Gemma 4 31B",
+/// pre-selected, with the "neither is pulled" advice suppressed, so Enter saved
+/// a model that sends every prompt off the machine under the label of the
+/// supported local one.
+///
+/// [`OLLAMA_RECOMMENDED_MODELS`]: biorouter::providers::ollama::OLLAMA_RECOMMENDED_MODELS
+fn suggested_models(
+    provider_name: &str,
+    models: &[String],
+    known_models: &[String],
+) -> Vec<(String, String)> {
+    if provider_name == "ollama" {
+        use biorouter::providers::ollama::OLLAMA_RECOMMENDED_MODELS;
+        let mut suggested = Vec::new();
+        for recommended in OLLAMA_RECOMMENDED_MODELS {
+            let variant_prefix = format!("{}-", recommended.tag);
+            let hint = format!("Recommended: {}", recommended.display_name);
+            suggested.extend(
+                models
+                    .iter()
+                    .filter(|m| *m == recommended.tag)
+                    .chain(models.iter().filter(|m| m.starts_with(&variant_prefix)))
+                    .filter(|m| !is_ollama_cloud_model(m))
+                    .map(|m| (m.clone(), hint.clone())),
+            );
+        }
+        return suggested;
+    }
+    known_models
+        .iter()
+        .filter(|name| models.contains(name))
+        .map(|name| (name.clone(), "Recommended".to_string()))
+        .collect()
+}
+
+/// What `configure` says when this Ollama has neither supported model pulled:
+/// which two to pull, and why choosing another is a gamble.
+fn ollama_recommendation_note(models: &[String]) -> Option<String> {
+    use biorouter::providers::ollama::OLLAMA_RECOMMENDED_MODELS;
+    if !suggested_models("ollama", models, &[]).is_empty() {
+        return None;
+    }
+    let pair = OLLAMA_RECOMMENDED_MODELS
+        .iter()
+        .map(|m| {
+            format!(
+                "{} ({}, about {} GB)",
+                m.tag, m.display_name, m.approx_download_gb
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let default = OLLAMA_RECOMMENDED_MODELS
+        .first()
+        .map(|m| m.tag)
+        .unwrap_or(biorouter::providers::ollama::OLLAMA_DEFAULT_MODEL);
+    Some(format!(
+        "Biorouter supports two local models on Ollama: {pair}. Neither is pulled on this \
+         Ollama yet. Run `ollama pull {default}`, then run `biorouter configure` again. Other \
+         models may write tool calls as text instead of making them."
+    ))
+}
+
 fn select_model_from_list(
     models: &[String],
     provider_meta: &biorouter::providers::base::ProviderMetadata,
@@ -458,21 +556,26 @@ fn select_model_from_list(
     const MAX_MODELS: usize = 10;
     const UNLISTED_MODEL_KEY: &str = "__unlisted__";
 
+    let known_models: Vec<String> = provider_meta
+        .known_models
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    let suggested = suggested_models(&provider_meta.name, models, &known_models);
+    if provider_meta.name == "ollama" {
+        if let Some(note) = ollama_recommendation_note(models) {
+            let _ = cliclack::log::info(note);
+        }
+    }
+
     // Smart model selection:
     // If we have more than MAX_MODELS models, show the recommended models with additional search option.
     // Otherwise, show all models without search.
     if models.len() > MAX_MODELS {
-        let recommended_models: Vec<String> = provider_meta
-            .known_models
-            .iter()
-            .map(|m| m.name.clone())
-            .filter(|name| models.contains(name))
-            .collect();
-
-        if !recommended_models.is_empty() {
-            let mut model_items: Vec<(String, String, &str)> = recommended_models
+        if !suggested.is_empty() {
+            let mut model_items: Vec<(String, String, String)> = suggested
                 .iter()
-                .map(|m| (m.clone(), m.clone(), "Recommended"))
+                .map(|(m, hint)| (m.clone(), m.clone(), hint.clone()))
                 .collect();
 
             model_items.insert(
@@ -480,7 +583,7 @@ fn select_model_from_list(
                 (
                     "search_all".to_string(),
                     "Search all models...".to_string(),
-                    "Search complete model list",
+                    "Search complete model list".to_string(),
                 ),
             );
 
@@ -488,7 +591,7 @@ fn select_model_from_list(
                 model_items.push((
                     UNLISTED_MODEL_KEY.to_string(),
                     "Enter a model not listed...".to_string(),
-                    "",
+                    String::new(),
                 ));
             }
 
@@ -507,14 +610,13 @@ fn select_model_from_list(
             Ok(interactive_model_search(models)?)
         }
     } else {
-        let mut model_items: Vec<(String, String, &str)> =
-            models.iter().map(|m| (m.clone(), m.clone(), "")).collect();
+        let mut model_items = short_model_list(&provider_meta.name, models, &suggested);
 
         if provider_meta.allows_unlisted_models {
             model_items.push((
                 UNLISTED_MODEL_KEY.to_string(),
                 "Enter a model not listed...".to_string(),
-                "",
+                String::new(),
             ));
         }
 
@@ -528,6 +630,46 @@ fn select_model_from_list(
             Ok(selection)
         }
     }
+}
+
+/// The hint beside an Ollama cloud model in the list.
+const OLLAMA_CLOUD_MODEL_HINT: &str = "Cloud model: Ollama sends it to ollama.com (public)";
+
+/// The whole list, when it is short enough to show without a search. For
+/// Ollama the supported models come first, so the pre-selected first item (what
+/// Enter chooses) is one of them, and cloud models come last with a hint saying
+/// where they run: with neither supported model pulled, Enter would otherwise
+/// choose whatever sorts first, `gemma4:31b-cloud` ahead of `llama3.1:8b`.
+/// Other providers keep the listing's order.
+fn short_model_list(
+    provider_name: &str,
+    models: &[String],
+    suggested: &[(String, String)],
+) -> Vec<(String, String, String)> {
+    if provider_name != "ollama" {
+        return models
+            .iter()
+            .map(|m| (m.clone(), m.clone(), String::new()))
+            .collect();
+    }
+    let rest = models
+        .iter()
+        .filter(|m| !suggested.iter().any(|(p, _)| p == *m));
+    let (cloud, local): (Vec<&String>, Vec<&String>) = rest.partition(|m| is_ollama_cloud_model(m));
+    suggested
+        .iter()
+        .map(|(m, hint)| (m.clone(), m.clone(), hint.clone()))
+        .chain(
+            local
+                .into_iter()
+                .map(|m| (m.clone(), m.clone(), String::new())),
+        )
+        .chain(
+            cloud
+                .into_iter()
+                .map(|m| (m.clone(), m.clone(), OLLAMA_CLOUD_MODEL_HINT.to_string())),
+        )
+        .collect()
 }
 
 fn prompt_unlisted_model(
@@ -2909,5 +3051,133 @@ mod typed_settings_tests {
             assert!(home.ends_with("secrets.yaml"), "{home}");
         }
         assert!(MAX_TURNS_REFUSAL.ends_with('.'));
+    }
+}
+
+#[cfg(test)]
+mod llamacpp_picker_tests {
+    use super::llamacpp_source_label;
+    use biorouter::providers::llamacpp::MODEL_CATALOG;
+
+    /// The picker never sends a user to pull a bare manifest-list tag, which
+    /// is an MLX build on Apple Silicon that llama-server cannot reuse.
+    #[test]
+    fn the_picker_names_the_ollama_gguf_tag_llama_server_can_reuse() {
+        for entry in MODEL_CATALOG {
+            let label = llamacpp_source_label(entry);
+            if let Some(gguf) = entry.ollama_gguf_names.first() {
+                assert!(label.contains(gguf), "{label}");
+            }
+            if let Some(bare) = entry.ollama_name {
+                if !entry.ollama_gguf_names.is_empty() {
+                    assert!(
+                        !label.contains(&format!("Ollama {bare} ")),
+                        "{label} names the manifest-list tag"
+                    );
+                }
+            }
+            assert!(label.starts_with("Hugging Face"), "{label}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ollama_model_choice_tests {
+    use super::{
+        ollama_recommendation_note, short_model_list, suggested_models, OLLAMA_CLOUD_MODEL_HINT,
+    };
+    use biorouter::providers::ollama::{OLLAMA_DEFAULT_MODEL, OLLAMA_RECOMMENDED_MODELS};
+
+    fn tags(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Ollama's list is whatever was pulled, sorted by name, and the dialog
+    /// pre-selects its first entry. Here that was `deepseek-r1:8b`, a model that
+    /// never calls tools (2026-10 protocol survey); the supported pair must come
+    /// first, default first, quantization variants included.
+    #[test]
+    fn the_supported_ollama_models_come_first_and_the_default_is_preselected() {
+        let pulled = tags(&[
+            "deepseek-r1:8b",
+            "gemma4:31b",
+            "llama3.1:8b",
+            "qwen3.8:27b",
+            "qwen3.8:27b-q4_K_M",
+            "qwen3.8:latest",
+        ]);
+        let suggested = suggested_models("ollama", &pulled, &[]);
+        let names: Vec<&str> = suggested.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(names, ["qwen3.8:27b", "qwen3.8:27b-q4_K_M", "gemma4:31b"]);
+        assert!(suggested
+            .iter()
+            .all(|(_, hint)| hint.starts_with("Recommended")));
+
+        let items = short_model_list("ollama", &pulled, &suggested);
+        assert_eq!(items[0].0, OLLAMA_DEFAULT_MODEL);
+        assert_eq!(
+            items.len(),
+            pulled.len(),
+            "every pulled model is still offered"
+        );
+        let rest: Vec<&str> = items[3..].iter().map(|(m, _, _)| m.as_str()).collect();
+        assert_eq!(rest, ["deepseek-r1:8b", "llama3.1:8b", "qwen3.8:latest"]);
+    }
+
+    #[test]
+    fn other_providers_keep_their_order() {
+        let listed = tags(&["b-model", "a-model"]);
+        let suggested = suggested_models("openai", &listed, &tags(&["a-model"]));
+        assert_eq!(
+            suggested,
+            [("a-model".to_string(), "Recommended".to_string())]
+        );
+        let items = short_model_list("openai", &listed, &suggested);
+        let names: Vec<&str> = items.iter().map(|(m, _, _)| m.as_str()).collect();
+        assert_eq!(names, ["b-model", "a-model"]);
+    }
+
+    #[test]
+    fn a_machine_without_either_supported_model_is_told_which_to_pull() {
+        let note = ollama_recommendation_note(&tags(&["llama3.1:8b"])).unwrap();
+        for recommended in OLLAMA_RECOMMENDED_MODELS {
+            assert!(note.contains(recommended.tag), "{note}");
+        }
+        assert!(
+            note.contains(&format!("ollama pull {OLLAMA_DEFAULT_MODEL}")),
+            "{note}"
+        );
+        assert!(ollama_recommendation_note(&tags(&["gemma4:31b"])).is_none());
+        assert!(ollama_recommendation_note(&tags(&["qwen3.8:27b-q4_K_M"])).is_none());
+    }
+
+    /// `gemma4:31b-cloud` starts with the supported tag plus `-`, and Ollama
+    /// sends it to ollama.com. It was labelled "Recommended: Gemma 4 31B",
+    /// pre-selected, and the pull advice was suppressed, so Enter saved a model
+    /// that sends every prompt off the machine. It is no variant, the advice
+    /// stands, and it sorts after every local model with a hint saying where it
+    /// runs.
+    #[test]
+    fn a_cloud_tag_is_never_the_recommended_local_model() {
+        let pulled = tags(&["gemma4:31b-cloud", "llama3.1:8b"]);
+        assert!(suggested_models("ollama", &pulled, &[]).is_empty());
+        assert!(ollama_recommendation_note(&pulled).is_some());
+
+        let items = short_model_list("ollama", &pulled, &[]);
+        let names: Vec<&str> = items.iter().map(|(m, _, _)| m.as_str()).collect();
+        assert_eq!(names, ["llama3.1:8b", "gemma4:31b-cloud"]);
+        assert!(items[0].2.is_empty());
+        assert_eq!(items[1].2, OLLAMA_CLOUD_MODEL_HINT);
+
+        // Next to the supported model, the cloud tag still is not one.
+        let pulled = tags(&["gemma4:31b", "gemma4:31b-cloud", "qwen3.8:27b-CLOUD"]);
+        let suggested = suggested_models("ollama", &pulled, &[]);
+        let names: Vec<&str> = suggested.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(names, ["gemma4:31b"]);
+        let items = short_model_list("ollama", &pulled, &suggested);
+        assert_eq!(items[0].0, "gemma4:31b");
+        assert!(items[1..]
+            .iter()
+            .all(|(_, _, h)| h == OLLAMA_CLOUD_MODEL_HINT));
     }
 }

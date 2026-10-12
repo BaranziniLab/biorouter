@@ -17,7 +17,24 @@ pub struct ApiClient {
     auth: AuthMethod,
     default_headers: HeaderMap,
     timeout: Duration,
+    /// How `timeout` is applied; see [`TimeoutMode`].
+    timeout_mode: TimeoutMode,
     tls_config: Option<TlsConfig>,
+}
+
+/// How an [`ApiClient`] applies its `timeout`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimeoutMode {
+    /// `timeout` is the deadline for the whole request, streamed body included.
+    Overall,
+    /// No overall deadline; `timeout` only bounds silence between reads.
+    ///
+    /// For local inference servers (Ollama, Llama Server). A healthy local turn
+    /// can stream for longer than any fixed deadline on a slow machine, and a
+    /// deadline that fires mid-stream kills a working generation and, being
+    /// classified transient, re-sends the whole prompt to a server that is still
+    /// busy with the abandoned one. What has to be bounded there is a stall.
+    IdleOnly,
 }
 
 /// Overall request-timeout default (seconds). Deliberately generous so a healthy
@@ -60,6 +77,7 @@ fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
 fn tune_client_builder(
     builder: reqwest::ClientBuilder,
     timeout: Duration,
+    mode: TimeoutMode,
 ) -> reqwest::ClientBuilder {
     let connect = std::env::var("BIOROUTER_HTTP_CONNECT_TIMEOUT_SECS")
         .ok()
@@ -80,13 +98,24 @@ fn tune_client_builder(
     // An explicit BIOROUTER_HTTP_READ_TIMEOUT_SECS is still honoured verbatim —
     // if an operator asks for a tighter stall detector they get one. Only the
     // DEFAULT is lifted to cover the caller's own timeout.
+    //
+    // ⚠ The 300 s floor applies to `Overall` only. For `IdleOnly` the caller's
+    // `timeout` IS the stall bound — it is the only bound such a client has —
+    // so a floor under it silently overrode the provider's own setting: an
+    // `OLLAMA_TIMEOUT` of 60 s still waited five minutes on a hung server.
     let read = std::env::var("BIOROUTER_HTTP_READ_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| 300.max(timeout.as_secs()));
+        .unwrap_or_else(|| match mode {
+            TimeoutMode::Overall => 300.max(timeout.as_secs()),
+            TimeoutMode::IdleOnly => timeout.as_secs(),
+        });
+    let builder = match mode {
+        TimeoutMode::Overall => builder.timeout(timeout),
+        TimeoutMode::IdleOnly => builder,
+    };
     builder
         .redirect(same_origin_redirect_policy())
-        .timeout(timeout)
         .connect_timeout(Duration::from_secs(connect))
         .read_timeout(Duration::from_secs(read))
         .tcp_keepalive(Duration::from_secs(30))
@@ -283,7 +312,25 @@ impl ApiClient {
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {
-        let mut client_builder = tune_client_builder(Client::builder(), timeout);
+        Self::build(host, auth, timeout, TimeoutMode::Overall)
+    }
+
+    /// A client for a local inference server: no overall deadline, and `idle`
+    /// bounds only the silence between reads (prefill included, since a local
+    /// server sends nothing until the prompt is processed). See
+    /// [`TimeoutMode::IdleOnly`]. `BIOROUTER_HTTP_READ_TIMEOUT_SECS` still
+    /// overrides the stall bound, as it does for every client.
+    pub fn with_idle_timeout(host: String, auth: AuthMethod, idle: Duration) -> Result<Self> {
+        Self::build(host, auth, idle, TimeoutMode::IdleOnly)
+    }
+
+    fn build(
+        host: String,
+        auth: AuthMethod,
+        timeout: Duration,
+        timeout_mode: TimeoutMode,
+    ) -> Result<Self> {
+        let mut client_builder = tune_client_builder(Client::builder(), timeout, timeout_mode);
 
         // Configure TLS if needed
         let tls_config = TlsConfig::from_config()?;
@@ -299,13 +346,15 @@ impl ApiClient {
             auth,
             default_headers: HeaderMap::new(),
             timeout,
+            timeout_mode,
             tls_config,
         })
     }
 
     fn rebuild_client(&mut self) -> Result<()> {
-        let mut client_builder = tune_client_builder(Client::builder(), self.timeout)
-            .default_headers(self.default_headers.clone());
+        let mut client_builder =
+            tune_client_builder(Client::builder(), self.timeout, self.timeout_mode)
+                .default_headers(self.default_headers.clone());
 
         // Configure TLS if needed
         if let Some(ref tls_config) = self.tls_config {
@@ -479,6 +528,7 @@ impl fmt::Debug for ApiClient {
             .field("host", &self.host)
             .field("auth", &"[auth method]")
             .field("timeout", &self.timeout)
+            .field("timeout_mode", &self.timeout_mode)
             .field("default_headers", &self.default_headers)
             .finish_non_exhaustive()
     }
@@ -599,6 +649,154 @@ mod tests {
             );
         })
         .await;
+    }
+
+    /// A one-connection HTTP/1.1 server that streams `ticks` chunked lines,
+    /// `interval` apart — the shape of a local model streaming tokens. With
+    /// `stall_after: Some(n)` it goes silent for `stall` before chunk `n`, the
+    /// shape of a hung server.
+    async fn serve_ticks(
+        ticks: usize,
+        interval: Duration,
+        stall_after: Option<(usize, Duration)>,
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match socket.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            // Write errors are expected once the client gives up.
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .await;
+            for tick in 0..ticks {
+                if let Some((at, stall)) = stall_after {
+                    if tick == at {
+                        tokio::time::sleep(stall).await;
+                    }
+                }
+                let line = format!("tick{tick}\n");
+                let _ = socket
+                    .write_all(format!("{:x}\r\n{line}\r\n", line.len()).as_bytes())
+                    .await;
+                let _ = socket.flush().await;
+                tokio::time::sleep(interval).await;
+            }
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn no_auth() -> AuthMethod {
+        AuthMethod::BearerToken("test-token".to_string())
+    }
+
+    /// IdleOnly sets NO overall deadline: a body that streams steadily for
+    /// longer than the bound — a slow machine's healthy local generation —
+    /// completes, where an Overall client with the same bound kills it.
+    #[tokio::test]
+    async fn idle_only_client_outlives_its_bound_while_bytes_keep_arriving() {
+        let bound = Duration::from_secs(1);
+        // 6 ticks 300 ms apart: ~1.8 s of body, every gap well under the bound.
+        let host = serve_ticks(6, Duration::from_millis(300), None).await;
+        let client = ApiClient::with_idle_timeout(host, no_auth(), bound).unwrap();
+        let body = client
+            .response_get("stream")
+            .await
+            .expect("headers arrive at once")
+            .text()
+            .await
+            .expect("a steady stream longer than the bound must complete");
+        assert!(body.contains("tick0") && body.contains("tick5"), "{body}");
+    }
+
+    /// Overall still means overall: the same steady stream, the same bound,
+    /// dies mid-body.
+    #[tokio::test]
+    async fn overall_client_still_applies_its_deadline_to_the_streamed_body() {
+        let host = serve_ticks(6, Duration::from_millis(300), None).await;
+        let client = ApiClient::with_timeout(host, no_auth(), Duration::from_secs(1)).unwrap();
+        let error = client
+            .response_get("stream")
+            .await
+            .expect("headers arrive at once")
+            .text()
+            .await
+            .expect_err("an overall deadline must cut a body that outlasts it");
+        assert!(error.is_timeout(), "{error:?}");
+    }
+
+    /// IdleOnly still bounds a STALL: a server that goes silent mid-body is
+    /// abandoned after the idle bound rather than waited on forever.
+    ///
+    /// The bound is the caller's own `idle`, with no 300 s floor under it (the
+    /// floor is `Overall`'s). Before that was so, this 1 s client waited the
+    /// whole 5 s stall. `BIOROUTER_HTTP_READ_TIMEOUT_SECS` is held UNSET while
+    /// the client is built, which is when it is read, so an operator's override
+    /// in the test environment cannot make this pass for the wrong reason.
+    #[tokio::test]
+    async fn idle_only_client_abandons_a_stalled_body() {
+        let host = serve_ticks(
+            3,
+            Duration::from_millis(50),
+            Some((1, Duration::from_secs(5))),
+        )
+        .await;
+        let client = {
+            let _env = env_lock::lock_env([("BIOROUTER_HTTP_READ_TIMEOUT_SECS", None::<&str>)]);
+            ApiClient::with_idle_timeout(host, no_auth(), Duration::from_secs(1)).unwrap()
+        };
+        let started = std::time::Instant::now();
+        let error = client
+            .response_get("stream")
+            .await
+            .expect("headers arrive at once")
+            .text()
+            .await
+            .expect_err("a body that stalls past the idle bound must fail");
+        assert!(error.is_timeout() || error.is_body(), "{error:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "abandoned at the idle bound, not at the end of the stall: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The explicit override still wins over an IdleOnly client's own bound,
+    /// in both directions.
+    #[tokio::test]
+    async fn the_read_timeout_override_still_beats_an_idle_bound() {
+        let host = serve_ticks(
+            3,
+            Duration::from_millis(50),
+            Some((1, Duration::from_secs(5))),
+        )
+        .await;
+        let client = {
+            let _env = env_lock::lock_env([("BIOROUTER_HTTP_READ_TIMEOUT_SECS", Some("1"))]);
+            ApiClient::with_idle_timeout(host, no_auth(), Duration::from_secs(600)).unwrap()
+        };
+        let started = std::time::Instant::now();
+        client
+            .response_get("stream")
+            .await
+            .expect("headers arrive at once")
+            .text()
+            .await
+            .expect_err("the operator's 1 s stall bound applies, not the client's 600 s");
+        assert!(started.elapsed() < Duration::from_secs(4));
     }
 
     #[tokio::test]

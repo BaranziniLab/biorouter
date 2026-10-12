@@ -40,6 +40,13 @@ import {
   announceSessionBinding,
   subscribeAppModelSelectionChanges,
 } from '../utils/sessionBindingSync';
+import {
+  acceleratorMemoryLabel,
+  detectedMemoryText,
+  llamaMemoryWarning,
+  windowsVramNote,
+} from './settings/models/localModelMemory';
+import { localModelsCopy } from './settings/models/copy';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -256,14 +263,6 @@ const privacyBarrierMessage = (barrier: PrivacyBarrierBody) => {
   );
   return lines.join('\n');
 };
-
-const acceleratorMemoryLabel = (kind: string | undefined) =>
-  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
-
-const acceleratorMemoryExplanation = (kind: string | undefined) =>
-  kind === 'apple_unified'
-    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
-    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
@@ -865,34 +864,21 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     const warnings: string[] = [];
     const entry = llamaWarmupDialog.entry;
     const system = llamaWarmupDialog.status.system;
-    const memory = system.accelerator_memory_gib;
-    const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
 
-    if (entry && typeof memory === 'number' && memory < entry.recommended_gpu_memory_gib) {
-      warnings.push(
-        `This machine reports ${memory} GiB ${memoryLabel}; ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
-      );
-    } else if (!entry) {
+    if (entry) {
+      // The daemon's verdict, in words. A "use Gemma 4 on 16 GB machines"
+      // line used to follow here for every model over 16 GiB; the catalog
+      // has no laptop-sized model any more, so it pointed at nothing.
+      const warning = llamaMemoryWarning(entry, system);
+      if (warning) warnings.push(warning);
+    } else {
       warnings.push(
         'Custom Hugging Face specs are not memory-rated here. Start with a small quantization or lower LLAMACPP_CONTEXT_SIZE on laptop hardware.'
       );
-    } else if (entry && memory == null) {
-      warnings.push(
-        `Biorouter could not detect VRAM. ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
-      );
     }
 
-    if (entry && entry.recommended_gpu_memory_gib > 16) {
-      warnings.push(
-        `${entry.display_name} is above the 16 GB laptop tier. On 16 GB machines, use Gemma 4 unless the app reports enough GPU-addressable memory.`
-      );
-    }
-
-    if (system.os.toLowerCase().includes('windows')) {
-      warnings.push(
-        'On Windows, make sure free VRAM is high enough for the model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
-      );
-    }
+    const windowsNote = windowsVramNote(system);
+    if (windowsNote) warnings.push(windowsNote);
 
     return warnings;
   }, [llamaWarmupDialog]);
@@ -1015,14 +1001,14 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                 </WarmupDetailRow>
                 <WarmupDetailRow label="Detected GPU memory">
                   {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
-                    ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
+                    ? detectedMemoryText(llamaWarmupDialog.status.system)
                     : acceleratorMemoryLabel(
                         llamaWarmupDialog.status.system.accelerator_memory_kind
                       )}
                 </WarmupDetailRow>
                 <WarmupDetailRow label="Recommended GPU memory">
                   {llamaWarmupDialog.entry
-                    ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
+                    ? localModelsCopy.gigabytes(llamaWarmupDialog.entry.recommended_gpu_memory_gib)
                     : 'unknown'}
                 </WarmupDetailRow>
               </div>

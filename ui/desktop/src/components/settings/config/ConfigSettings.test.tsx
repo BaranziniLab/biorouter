@@ -11,7 +11,7 @@ import type { ConfigData } from '../../../types/config';
 
 const configSnapshot: ConfigData = {
   BIOROUTER_PROVIDER: 'ollama', // stale: what the app booted with
-  BIOROUTER_MODEL: 'qwen3.6',
+  BIOROUTER_MODEL: 'qwen3.8:27b',
   OLLAMA_HOST: 'localhost',
 };
 

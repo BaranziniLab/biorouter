@@ -21,7 +21,10 @@ acceptable for which data classifications, and what to do before sending data at
 > options: **Llama Server** (`llamacpp`, a bundled llama.cpp sidecar, ranked first and the
 > first card a new user sees) and **Ollama**. Both run the model on your own device, so
 > neither transmits your data to an external service — that property is what the guidance
-> below rests on, and it holds for both. Which of them your institution *authorises* for
+> below rests on, and it holds for both. One exception: an Ollama **cloud model** (a tag such as
+> `gpt-oss:120b-cloud`, or any tag ending in `-cloud`) is not run on your device. Ollama answers
+> it by forwarding the conversation to ollama.com, so Biorouter treats it as a public model
+> (since 2026-10). Which of them your institution *authorises* for
 > regulated data is a separate question this page cannot answer; confirm with UCSF IT. See
 > [choosing a model provider](../getting-started/choosing-a-model-provider.md).
 
@@ -36,7 +39,8 @@ Different providers have fundamentally different data handling policies:
   processed within infrastructure governed by UCSF's institutional agreements. These may offer
   stronger privacy protections than personal API accounts.
 - **Local models** (bundled Llama Server, Ollama) — data is processed entirely on your own
-  device. Nothing is transmitted to any external service.
+  device. Nothing is transmitted to any external service. An Ollama cloud model is the
+  exception: Ollama sends it to ollama.com, and Biorouter classifies it as public.
 - **Subscription-billed coding agents** (Claude Code, Codex) — a vendor CLI on your own machine
   runs the turn on your own consumer subscription. The subprocess is local but the **inference is
   not**: it happens at Anthropic or OpenAI, on a plan that carries **no BAA and no zero-data-

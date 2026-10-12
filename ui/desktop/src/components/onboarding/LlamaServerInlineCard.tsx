@@ -14,7 +14,13 @@ import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServer
 import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
 import { localModelsCopy } from '../settings/models/copy';
-import { factsLine, fitLine } from '../settings/models/localModelFacts';
+import { factsLine } from '../settings/models/localModelFacts';
+import {
+  fitLine,
+  fitWarning,
+  llamaMemoryWarning,
+  windowsVramNote,
+} from '../settings/models/localModelMemory';
 import { llamaCopy } from './copy';
 import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -39,14 +45,6 @@ const initialModelFor = (status: LlamaCppStatusResponse | null): string =>
       status.catalog[0]?.name ||
       ''
     : '';
-
-const acceleratorMemoryLabel = (kind: string | undefined) =>
-  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
-
-const acceleratorMemoryExplanation = (kind: string | undefined) =>
-  kind === 'apple_unified'
-    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
-    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
@@ -316,21 +314,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       })),
     [catalog]
   );
-  const modelMemoryWarning = useMemo(() => {
-    if (!selectedEntry || !system) return null;
-    const detected = system.accelerator_memory_gib;
-    if (typeof detected === 'number' && detected >= selectedEntry.recommended_gpu_memory_gib) {
-      return null;
-    }
-    const detectedText =
-      typeof detected === 'number'
-        ? localModelsCopy.memoryAmount(
-            detected,
-            acceleratorMemoryLabel(system.accelerator_memory_kind)
-          )
-        : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
-    return `${selectedEntry.display_name} recommends ${localModelsCopy.gpuMemory(selectedEntry.recommended_gpu_memory_gib)}. This machine reports ${detectedText}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`;
-  }, [selectedEntry, system]);
+  // From the daemon's `suitability_status`, not re-derived from the raw numbers: a 64 GiB Intel
+  // Mac clears every memory figure, so a `detected >= recommended` check started it without a word
+  // while the daemon rated it CPU-only (#393). The sentence is the shared one in
+  // `localModelMemory`, which Settings' Local models asks too.
+  const modelMemoryWarning = useMemo(
+    () => (selectedEntry && system ? llamaMemoryWarning(selectedEntry, system) : null),
+    [selectedEntry, system]
+  );
 
   const handleStart = (model: string) => {
     if (isStarting || isConnecting) return;
@@ -348,15 +339,13 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
    * before a start says it again at the moment of decision; the separate shortfall sentences this
    * list used to carry repeated it (vision FR-R2-6). The panel used to add "This model is above the
    * 16 GB laptop tier" whenever a model recommended more than 16 GB, too (vision FR-R1-4). What is
-   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count.
+   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count. The
+   * shared note leaves it out on a CPU-only machine, where system RAM is exactly what counts.
    */
   const resourceWarnings = useMemo(() => {
     if (!system || !selectedEntry) return [];
-    return system.os.toLowerCase().includes('windows')
-      ? [
-          'Windows needs enough free VRAM for the selected model and context window; regular system RAM does not satisfy the GPU memory recommendation.',
-        ]
-      : [];
+    const windows = windowsVramNote(system);
+    return windows ? [windows] : [];
   }, [selectedEntry, system]);
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
@@ -385,12 +374,10 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     return null;
   })();
 
-  const largeWarning =
-    selectedEntry?.suitability_status === 'above_recommendation'
-      ? system?.os === 'macos'
-        ? localModelsCopy.largeForThisMac
-        : localModelsCopy.largeForThisComputer
-      : null;
+  // The one warning word the summary carries, and only when the daemon says the model does not fit
+  // here: "Large for this Mac", "Below the 32 GB minimum" or "CPU only, slow" (#393), the words a
+  // Settings row says.
+  const summaryWarning = selectedEntry ? fitWarning(selectedEntry, system) : null;
   const detail = localModelsCopy.detail;
   const fallbackState = fallbackDownloadState(selectedEntry);
 
@@ -438,8 +425,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               </div>
             </Field>
 
-            {/* One facts line, the Settings row's (speed · size · context, and "Large for this
-                Mac" only when it is), as the closed Advanced disclosure's summary; the ids, paths
+            {/* One facts line, the Settings row's (speed · size · context, and the fit warning
+                only when there is one), as the closed Advanced disclosure's summary; the ids, paths
                 and the fit sentence are behind it (vision FR-R1-3, FR-S-2). It used to be a box
                 of seven lines and a warning, and pushed the panel's only action below the fold.
                 "Advanced" is the first-run path's one disclosure word (FR-R4-5); it read
@@ -451,10 +438,10 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                   <span data-testid="llamacpp-size-speed">
                     {/* No size: the option and the button already say it (FR-R2-6). */}
                     {factsLine(selectedEntry, { size: false })}
-                    {largeWarning ? (
+                    {summaryWarning ? (
                       <>
                         {' · '}
-                        <span className="text-text-warning">{largeWarning}</span>
+                        <span className="text-text-warning">{summaryWarning}</span>
                       </>
                     ) : null}
                   </span>

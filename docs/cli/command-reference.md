@@ -95,7 +95,27 @@ biorouter models list ollama --format json
 
 # Set the default provider and model
 biorouter models set --provider openai --model gpt-6-sol
+
+# Local models for Llama Server: the catalog, what is downloaded, and from where
+biorouter models local list
+biorouter models local list --format json
+
+# Download a model ahead of time, then stop the server again
+biorouter models local pull qwen3.8-27b
+
+# Delete a downloaded model's Hugging Face files
+biorouter models local rm gemma4-31b
 ```
+
+`models local` works on the shared model store directly, so it needs no running app or daemon.
+`local list` labels each downloaded model with the copy Llama Server would start from: the
+Hugging Face cache first, then a GGUF pulled into Ollama. `local pull` resolves a name the way a
+chat does, so a name from an earlier catalog (such as `gemma4` or `qwen3.5-4b`) downloads the
+model it now runs, `qwen3.8-27b`, and says so; when the retired model's own Hugging Face
+download is still on disk, it also says how to free it. `local rm` resolves a name exactly, so
+`local rm gemma4` deletes the files that retired model left behind and never the default
+model's. A model pulled through Ollama is removed with `ollama rm`. See the
+[Llama Server model catalog](../providers/llama-server/model-catalog.md).
 
 ### version
 

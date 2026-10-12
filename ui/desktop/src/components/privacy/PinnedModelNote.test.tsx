@@ -118,7 +118,7 @@ describe('PinnedModelNote', () => {
    */
   it('says nothing when the selected model would be admitted here', async () => {
     mocks.currentProvider = 'ollama';
-    mocks.currentModel = 'qwen3.6';
+    mocks.currentModel = 'qwen3.8:27b';
     mocks.getProviders.mockResolvedValue([...CATALOG, providerRow('ollama', 'Ollama', 'private')]);
     const { container } = render(<PinnedModelNote session={chat('private')} />);
     await waitFor(() => expect(mocks.getProviders).toHaveBeenCalled());
@@ -204,7 +204,7 @@ describe('what the chip and gauge are told to state', () => {
    */
   it('states the binding even when the selection would be admitted here', async () => {
     mocks.currentProvider = 'ollama';
-    mocks.currentModel = 'qwen3.6';
+    mocks.currentModel = 'qwen3.8:27b';
     mocks.getProviders.mockResolvedValue([...CATALOG, providerRow('ollama', 'Ollama', 'private')]);
     const { result } = renderHook(() => usePinnedModel(chat('private'), undefined));
     await waitFor(() => expect(result.current.effectiveModel).toEqual(BINDING));
@@ -292,7 +292,7 @@ describe('what the chip and gauge are told to state', () => {
   });
 
   it('prefers what a turn reported over the row', async () => {
-    const reported = { provider: 'llamacpp', model: 'gemma4' };
+    const reported = { provider: 'llamacpp', model: 'qwen3.8-27b' };
     const { result } = renderHook(() => usePinnedModel(chat('private'), reported));
     await waitFor(() => expect(result.current.effectiveModel).toEqual(reported));
   });
@@ -322,9 +322,9 @@ describe('the pure half', () => {
     expect(
       chatBinding(session({ model_config: { model_name: 'gpt-5.2' } as never }), {
         provider: 'llamacpp',
-        model: 'gemma4',
+        model: 'qwen3.8-27b',
       })
-    ).toEqual({ provider: 'llamacpp', model: 'gemma4' });
+    ).toEqual({ provider: 'llamacpp', model: 'qwen3.8-27b' });
     // A chat that has never run has no binding of its own.
     expect(chatBinding(session({ provider_name: null }), undefined)).toBeUndefined();
     expect(chatBinding(undefined, undefined)).toBeUndefined();

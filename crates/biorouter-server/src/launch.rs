@@ -74,7 +74,7 @@ static LAUNCH: RwLock<Option<LaunchState>> = RwLock::new(None);
 ///
 /// [`biorouter::privacy::CAPABILITY_CONFIG_KEYS`] **verbatim** — the same list
 /// `/config/upsert` and `/config/remove` already use to decide *"is this write a
-/// tier raise?"* — plus `BIOROUTER_MODEL`.
+/// tier raise?"*, which since 2026-10-10 includes `BIOROUTER_MODEL`.
 ///
 /// Reusing that list rather than writing a second one is the whole point:
 /// `privacy::config_keys`'s scan of the tier-input files is what keeps it honest,
@@ -86,16 +86,16 @@ static LAUNCH: RwLock<Option<LaunchState>> = RwLock::new(None);
 /// loopback moves `ollama` from Public to Private with `BIOROUTER_PROVIDER`
 /// untouched (`self_hosted_tier`) — the same escalation through another key.
 ///
-/// `BIOROUTER_MODEL` is **not** a capability key — no `tier()` implementation
-/// reads the model name — and it is pinned here for a different reason: the
-/// exemption is for the operator's own declaration, and `/agent/start` binds
-/// *both* halves of it (`configured_new_session_provider`). Its classification
-/// lives in `privacy::config_keys::NOT_CAPABILITY_CONFIG_KEYS`.
+/// `BIOROUTER_MODEL` used to be chained on here by hand, because no `tier()`
+/// read the model name and so it was not a capability key — yet the exemption
+/// is for the operator's own declaration, and `/agent/start` binds *both* halves
+/// of it (`configured_new_session_provider`). Since 2026-10-10 `ollama`'s
+/// `tier()` reads the model name (a `-cloud` tag is Public through a loopback
+/// host), so the key is in the capability list and the derivation covers it.
+/// The test below still names it, so a change that drops it from the list
+/// cannot silently unpin the model half of the bind.
 pub fn pinned_config_keys() -> impl Iterator<Item = &'static str> {
-    biorouter::privacy::CAPABILITY_CONFIG_KEYS
-        .iter()
-        .copied()
-        .chain(std::iter::once("BIOROUTER_MODEL"))
+    biorouter::privacy::CAPABILITY_CONFIG_KEYS.iter().copied()
 }
 
 fn sample_capability_config() -> Vec<(&'static str, Option<String>)> {
@@ -182,10 +182,11 @@ pub fn launcher_declared_a_user_action_key_in_env() -> bool {
 mod tests {
     use super::*;
 
-    /// The pinned set is the capability list plus the model, and it is *derived*
-    /// rather than transcribed — so this asserts the derivation, not a copy.
+    /// The pinned set is the capability list, which includes the model, and it
+    /// is *derived* rather than transcribed — so this asserts the derivation,
+    /// not a copy.
     #[test]
-    fn the_pinned_set_is_the_capability_list_plus_the_model() {
+    fn the_pinned_set_is_the_capability_list_including_the_model() {
         let pinned: Vec<&str> = pinned_config_keys().collect();
         for key in biorouter::privacy::CAPABILITY_CONFIG_KEYS {
             assert!(
@@ -193,10 +194,12 @@ mod tests {
                 "{key} decides capability but is not pinned to the launch configuration"
             );
         }
+        // `/agent/start` binds the configured model as well as the provider, so
+        // the exemption must pin both halves of the operator's declaration.
         assert!(pinned.contains(&"BIOROUTER_MODEL"));
         assert_eq!(
             pinned.len(),
-            biorouter::privacy::CAPABILITY_CONFIG_KEYS.len() + 1,
+            biorouter::privacy::CAPABILITY_CONFIG_KEYS.len(),
             "the pinned set grew a key of its own; it must stay a derivation: {pinned:?}"
         );
     }

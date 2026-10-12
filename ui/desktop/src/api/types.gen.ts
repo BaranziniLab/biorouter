@@ -2699,7 +2699,8 @@ export type ListWorkflowResponse = {
 
 export type LlamaCppDeleteRequest = {
     /**
-     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `qwen3.8-27b`), retired catalog name (whose
+     * own cache is deleted), or raw Hugging Face spec.
      */
     model: string;
 };
@@ -2714,7 +2715,8 @@ export type LlamaCppDeleteResponse = {
 
 export type LlamaCppEnsureRequest = {
     /**
-     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `qwen3.8-27b`) or raw Hugging Face spec. A
+     * retired catalog name starts the default model.
      */
     model: string;
 };
@@ -2780,15 +2782,16 @@ export type LlamaCppStatusResponse = {
     system: LlamaCppSystemInfo;
 };
 
-export type LlamaCppSuitability = 'suitable' | 'above_recommendation' | 'unknown_resources';
+export type LlamaCppSuitability = 'suitable' | 'above_recommendation' | 'below_minimum' | 'cpu_only' | 'unknown_resources';
 
 export type LlamaCppSystemInfo = {
     /**
-     * Apple Silicon unified memory, or detected discrete VRAM elsewhere.
+     * Apple Silicon unified memory, system RAM on a CPU-only machine, or
+     * detected discrete VRAM elsewhere.
      */
     accelerator_memory_gib?: number | null;
     /**
-     * `apple_unified`, `vram`, or `unknown_vram`.
+     * `apple_unified`, `cpu_only`, `vram`, or `unknown_vram`.
      */
     accelerator_memory_kind: string;
     default_context_size: number;
@@ -2803,7 +2806,8 @@ export type LlamaCppSystemInfo = {
 
 export type LlamaCppWarmupRequest = {
     /**
-     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `qwen3.8-27b`) or raw Hugging Face spec. A
+     * retired catalog name warms the default model.
      */
     model: string;
 };
@@ -3476,6 +3480,88 @@ export type ObserveRequest = {
     channel_id?: string | null;
     initial?: Initial;
 };
+
+export type OllamaContextWindowResponse = {
+    /**
+     * The `num_ctx` Biorouter sends for this model to the configured server:
+     * `OLLAMA_NUM_CTX`, else a context limit set on the model
+     * (`BIOROUTER_CONTEXT_LIMIT`, or a predefined model's limit), else the
+     * memory tier (64k, or 128k with 64 GiB or more), capped at the window
+     * the model was trained for. Null when the server could not describe the
+     * model (unreachable, not Ollama, or the model is not pulled).
+     */
+    context_window?: number | null;
+    model: string;
+};
+
+export type OllamaRecommendationsResponse = {
+    /**
+     * The Ollama server the provider talks to: `OLLAMA_HOST` resolved exactly
+     * as the provider (and the Ollama CLI) resolve it, so the desktop probes
+     * the server a chat will actually use.
+     */
+    base_url: string;
+    /**
+     * The model the Ollama provider uses when none is chosen.
+     */
+    default_model: string;
+    /**
+     * Whether `OLLAMA_HOST` is set, in the config file or the environment.
+     * Onboarding writes the default only when it is not: it used to write
+     * `localhost` unconditionally, replacing a remote host the user had chosen.
+     */
+    host_configured: boolean;
+    /**
+     * The memory the Ollama provider sizes its context window by
+     * (`providers::ollama::sizing_memory`): unified memory on Apple Silicon,
+     * system RAM on an Intel Mac, detected VRAM elsewhere — on Linux an NVIDIA
+     * GPU's, never system RAM. Null when it could not be measured.
+     */
+    memory_gib?: number | null;
+    /**
+     * `apple_unified`, `cpu_only`, `vram`, or `unknown_vram`.
+     */
+    memory_kind: string;
+    /**
+     * GPU-addressable memory below which the recommended models are below
+     * their practical minimum.
+     */
+    min_memory_gib: number;
+    /**
+     * Default first.
+     */
+    models: Array<OllamaRecommendedModel>;
+    suitability: OllamaSuitability;
+    /**
+     * One or two sentences for the user, written for this machine.
+     */
+    suitability_message: string;
+    tier: ProviderTier;
+};
+
+/**
+ * One model Biorouter recommends pulling into Ollama.
+ */
+export type OllamaRecommendedModel = {
+    /**
+     * Approximate download size, in GB.
+     */
+    approx_download_gb: number;
+    display_name: string;
+    /**
+     * True for the model the Ollama provider uses when none is chosen.
+     */
+    is_default: boolean;
+    /**
+     * The tag to `ollama pull` (e.g. `qwen3.8:27b`).
+     */
+    tag: string;
+};
+
+/**
+ * Whether this machine can run the recommended models at a usable speed.
+ */
+export type OllamaSuitability = 'suitable' | 'below_minimum' | 'cpu_only' | 'unknown_resources';
 
 /**
  * The part of an installed package's record the interface needs. The full
@@ -10262,6 +10348,57 @@ export type MemoryInventoryResponses = {
 };
 
 export type MemoryInventoryResponse2 = MemoryInventoryResponses[keyof MemoryInventoryResponses];
+
+export type OllamaContextWindowData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The Ollama model tag, e.g. `qwen3.8:27b`.
+         */
+        model: string;
+    };
+    url: '/ollama/context_window';
+};
+
+export type OllamaContextWindowErrors = {
+    /**
+     * Empty model name, or OLLAMA_HOST is not a usable address
+     */
+    400: unknown;
+};
+
+export type OllamaContextWindowResponses = {
+    /**
+     * The context window Biorouter uses for this Ollama model (null when the server could not describe it)
+     */
+    200: OllamaContextWindowResponse;
+};
+
+export type OllamaContextWindowResponse2 = OllamaContextWindowResponses[keyof OllamaContextWindowResponses];
+
+export type OllamaRecommendedData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ollama/recommended';
+};
+
+export type OllamaRecommendedErrors = {
+    /**
+     * OLLAMA_HOST is not a usable address
+     */
+    400: unknown;
+};
+
+export type OllamaRecommendedResponses = {
+    /**
+     * The Ollama models Biorouter recommends, this machine's memory, and the configured Ollama server
+     */
+    200: OllamaRecommendationsResponse;
+};
+
+export type OllamaRecommendedResponse = OllamaRecommendedResponses[keyof OllamaRecommendedResponses];
 
 export type GetPrivacyDisclosureData = {
     body?: never;

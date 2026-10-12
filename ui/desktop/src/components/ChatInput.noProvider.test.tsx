@@ -54,6 +54,10 @@ vi.mock('./MentionPopover', () => {
 vi.mock('../api', () => ({
   getSession: vi.fn(async () => ({ data: { privacy_tier: 'public' } })),
   llamacppStatus: vi.fn(async () => ({ data: {} })),
+  // An Ollama chat's gauge asks the daemon for the window it really runs with.
+  ollamaContextWindow: vi.fn(async () => ({
+    data: { model: 'qwen3.8:27b', context_window: null },
+  })),
   updateWorkingDir: vi.fn(async () => ({ data: {} })),
 }));
 
@@ -114,7 +118,7 @@ describe('the composer with no model configured', () => {
   });
 
   it('does not reject a persisted chat model when the global provider is unset', () => {
-    renderComposer({ provider: 'ollama', model: 'qwen3:8b' });
+    renderComposer({ provider: 'ollama', model: 'qwen3.8:27b' });
     expect(screen.queryByTestId('composer-no-model-hint')).toBeNull();
   });
 

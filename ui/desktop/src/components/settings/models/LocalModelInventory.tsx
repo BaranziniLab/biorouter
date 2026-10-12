@@ -5,6 +5,7 @@ import { errorMessage } from '../../../utils/conversionUtils';
 import {
   checkOllamaStatus,
   deleteOllamaModel,
+  ollamaTagsForModelFile,
   pullOllamaModel,
   type PullProgress,
 } from '../../../utils/ollamaDetection';
@@ -27,19 +28,17 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
-import { factsLine, fitVerdict, isInstalled, stateWord } from './localModelFacts';
+import { factsLine, isInstalled, stateWord } from './localModelFacts';
+import {
+  acceleratorMemoryLabel,
+  fitVerdict,
+  fitWarning,
+  llamaMemoryWarning,
+} from './localModelMemory';
 import './models.css';
 
 const formatContext = (value: number | null | undefined) =>
   typeof value === 'number' ? value.toLocaleString() : 'unknown';
-
-const acceleratorMemoryLabel = (kind: string | undefined) =>
-  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
-
-const acceleratorMemoryExplanation = (kind: string | undefined) =>
-  kind === 'apple_unified'
-    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
-    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
 const progressLabel = (progress: PullProgress) => {
   if (progress.total && progress.completed) {
@@ -191,24 +190,12 @@ export default function LocalModelInventory() {
     (model: LlamaCppModel, confirmLabel: string) =>
       new Promise<boolean>((resolve) => {
         const system = snapshot?.system;
-        if (!system || model.suitability_status === 'suitable') {
+        const message = system ? llamaMemoryWarning(model, system) : null;
+        if (!message) {
           resolve(true);
           return;
         }
-
-        const detected =
-          typeof system.accelerator_memory_gib === 'number'
-            ? localModelsCopy.memoryAmount(
-                system.accelerator_memory_gib,
-                acceleratorMemoryLabel(system.accelerator_memory_kind)
-              )
-            : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
-        setPendingResourceConfirm({
-          confirmLabel,
-          // The same three sentences the OS dialog carried, in the same order.
-          message: `${model.display_name} recommends ${localModelsCopy.gpuMemory(model.recommended_gpu_memory_gib)}. This machine reports ${detected}. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`,
-          resolve,
-        });
+        setPendingResourceConfirm({ confirmLabel, message, resolve });
       }),
     [snapshot?.system]
   );
@@ -221,7 +208,14 @@ export default function LocalModelInventory() {
         poll: false,
       });
       try {
-        if (model.ollama_name) {
+        // Not on Apple Silicon: there the bare Ollama tag (`qwen3.8:27b`) is a
+        // manifest list that resolves to the MLX build, which llama-server
+        // cannot load. The pull "succeeded", the toast said installed, and the
+        // row went on reading "Needs download" over ~19 GB the user could not
+        // use. The daemon's own download fetches the pinned GGUF instead.
+        const ollamaPullIsLoadable =
+          llamaServerStore.getSnapshot().status?.system.accelerator_memory_kind !== 'apple_unified';
+        if (model.ollama_name && ollamaPullIsLoadable) {
           const ollama = await checkOllamaStatus();
           // The Ollama check may settle after this flow lost the operation
           // (deadline timeout, or a newer retry superseded it). A stale flow
@@ -233,7 +227,9 @@ export default function LocalModelInventory() {
             const pulled = await pullOllamaModel(model.ollama_name, (progress) => {
               llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
-            if (!pulled) throw new Error(`Ollama could not pull ${model.ollama_name}`);
+            if (!pulled.ok) {
+              throw new Error(`Ollama could not pull ${model.ollama_name}: ${pulled.error}`);
+            }
             // End the operation BEFORE reporting success: a pull that
             // completes after its deadline (or after being superseded) must
             // not toast stale success, and ending first also disarms the
@@ -334,13 +330,33 @@ export default function LocalModelInventory() {
       setDeleteAction({ model: model.name, message: 'Deleting local model…' });
       try {
         let deletedSomething = false;
+        let deletedTags: string[] = [];
         if (model.download_source === 'ollama' && model.ollama_name) {
           const ollama = await checkOllamaStatus();
           if (!ollama.isRunning) {
             throw new Error('Ollama must be running to delete an Ollama-managed model.');
           }
-          deletedSomething = await deleteOllamaModel(model.ollama_name);
-          if (!deletedSomething) throw new Error(`Ollama could not delete ${model.ollama_name}`);
+          // The tags that hold the file this row lists — NOT `ollama_name`.
+          // On Apple Silicon the bare tag is the MLX build and the file comes
+          // from a GGUF tag beside it, so deleting `ollama_name` removed the
+          // model the Ollama provider chats with and left this one in place.
+          const tags = model.model_path
+            ? await ollamaTagsForModelFile(model.model_path, model.ollama_name)
+            : [];
+          if (tags.length === 0) {
+            throw new Error(
+              `Biorouter could not tell which Ollama tag holds ${model.display_name}'s model file${
+                model.model_path ? ` (${model.model_path})` : ''
+              }, so it deleted nothing. Run \`ollama list\` and remove that tag with \`ollama rm <tag>\`.`
+            );
+          }
+          for (const tag of tags) {
+            if (!(await deleteOllamaModel(tag))) {
+              throw new Error(`Ollama could not delete ${tag}`);
+            }
+            deletedTags = [...deletedTags, tag];
+          }
+          deletedSomething = true;
         }
 
         if (model.fallback_download_status === 'downloaded') {
@@ -354,7 +370,12 @@ export default function LocalModelInventory() {
         }
         toastService.success({
           title: 'Local model deleted',
-          msg: `${model.display_name} was removed from local storage.`,
+          msg:
+            deletedTags.length > 0
+              ? `${model.display_name} was removed from local storage (Ollama ${
+                  deletedTags.length === 1 ? 'tag' : 'tags'
+                } ${deletedTags.join(', ')}).`
+              : `${model.display_name} was removed from local storage.`,
         });
         await refresh();
       } catch (err) {
@@ -390,10 +411,6 @@ export default function LocalModelInventory() {
   };
 
   const detail = localModelsCopy.detail;
-  const largeWarning =
-    snapshot?.system.os === 'macos'
-      ? localModelsCopy.largeForThisMac
-      : localModelsCopy.largeForThisComputer;
 
   return (
     <SettingSection
@@ -462,6 +479,7 @@ export default function LocalModelInventory() {
               : null;
           const isInstalling = mine?.kind === 'install' || mine?.kind === 'start';
           const items = rowItems(model, busy);
+          const warning = fitWarning(model, snapshot?.system);
 
           return (
             <RowContextMenu key={model.name} items={items}>
@@ -476,8 +494,8 @@ export default function LocalModelInventory() {
                     </span>
                   </div>
                   {/* One line under the name: the facts, or what is happening to the model
-                      right now. The warning word shows only when the model is bigger than this
-                      computer's memory recommendation. */}
+                      right now. The warning word shows only when the daemon rated the model
+                      above this computer's recommendation, below its minimum, or CPU only. */}
                   {busyLabel ? (
                     <span
                       role="status"
@@ -489,10 +507,10 @@ export default function LocalModelInventory() {
                   ) : (
                     <span className="text-supporting text-text-muted">
                       {factsLine(model)}
-                      {model.suitability_status === 'above_recommendation' ? (
+                      {warning ? (
                         <>
                           {' · '}
-                          <span className="text-text-warning">{largeWarning}</span>
+                          <span className="text-text-warning">{warning}</span>
                         </>
                       ) : null}
                     </span>
@@ -671,7 +689,12 @@ export default function LocalModelInventory() {
         title={localModelsCopy.confirmDelete.title}
         message={
           pendingDelete
-            ? localModelsCopy.confirmDelete.message(pendingDelete.ollama_name ?? pendingDelete.name)
+            ? // Not `ollama_name`: that tag may be a different build from the
+              // file this row lists (see `runDelete`), and naming it here told
+              // the user the wrong model was about to go.
+              pendingDelete.download_source === 'ollama'
+              ? localModelsCopy.confirmDelete.ollamaMessage(pendingDelete.display_name)
+              : localModelsCopy.confirmDelete.message(pendingDelete.display_name)
             : ''
         }
         confirmLabel={localModelsCopy.confirmDelete.confirm}

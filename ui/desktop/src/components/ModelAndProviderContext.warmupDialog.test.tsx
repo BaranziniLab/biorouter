@@ -240,8 +240,8 @@ describe('the local-model warm-up dialog fits the window', () => {
 
   it('draws the warnings as a note and the detail as a filled panel, with no outlined box', async () => {
     const dialog = await openTheSheet();
-    // The 8 GiB machine against a 64 GiB recommendation, and Windows: two warnings, in one note.
-    const note = within(dialog).getByText(/recommends 64 GiB GPU-addressable memory/);
+    // The 8 GB machine against a 64 GB recommendation, and Windows: two warnings, in one note.
+    const note = within(dialog).getByText(/recommends 64 GB GPU-addressable memory/);
     expect(note.closest('.br-fill-surface')).not.toBeNull();
     expect(dialog.querySelector('.biorouter-modal-panel')).not.toBeNull();
     // Nothing in the body still names the sizes this redesign retired, or the outline it dropped.

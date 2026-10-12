@@ -235,7 +235,24 @@ const NON_OPENAI_TOKEN_MARGIN: f64 = 1.15;
 /// (the costly dead-end this guards against), so non-OpenAI providers get a
 /// small safe margin. The happy path uses the provider-reported token total and
 /// never touches this.
-pub fn provider_token_calibration(provider_name: &str) -> f64 {
+///
+/// Keyed on what the INSTANCE serves, not only on its registry name: a
+/// provider whose inference runs on this machine (the built-in `ollama` and
+/// `llamacpp`, and a declarative `ollama_compatible` provider registered under
+/// any name) is serving an open-weights model through its own tokenizer, so
+/// every one of them gets the same non-OpenAI margin — even one that happens to
+/// be named `openai` or `azure`.
+pub fn provider_token_calibration(provider: &dyn crate::providers::base::Provider) -> f64 {
+    calibration_for(
+        provider.get_name(),
+        crate::providers::utils::runs_on_this_machine(provider),
+    )
+}
+
+fn calibration_for(provider_name: &str, runs_on_this_machine: bool) -> f64 {
+    if runs_on_this_machine {
+        return NON_OPENAI_TOKEN_MARGIN;
+    }
     match provider_name {
         // Native OpenAI tokenizer (o200k / cl100k) — the estimate is accurate.
         "openai" | "azure" => 1.0,
@@ -329,17 +346,87 @@ mod tests {
     #[test]
     fn test_provider_token_calibration() {
         // OpenAI-family providers use the native o200k tokenizer: no inflation.
-        assert_eq!(provider_token_calibration("openai"), 1.0);
-        assert_eq!(provider_token_calibration("azure"), 1.0);
+        assert_eq!(calibration_for("openai", false), 1.0);
+        assert_eq!(calibration_for("azure", false), 1.0);
 
         // Non-OpenAI providers get a conservative safety margin (> 1.0) because
         // o200k under-counts their tokenizers.
         for name in ["anthropic", "google", "bedrock", "ollama", "openrouter"] {
             assert!(
-                provider_token_calibration(name) > 1.0,
+                calibration_for(name, false) > 1.0,
                 "expected a safety margin for {name}"
             );
         }
+    }
+
+    /// Every provider whose inference runs on this machine shares ONE
+    /// calibration, whatever it is registered as: the built-in local providers,
+    /// a declarative `ollama_compatible` provider under its own name, and even
+    /// an `openai`-named provider repointed at a local server.
+    #[test]
+    fn local_providers_share_one_calibration_whatever_their_name() {
+        let local: Vec<f64> = ["ollama", "llamacpp", "my_lab_ollama", "openai", "azure"]
+            .into_iter()
+            .map(|name| calibration_for(name, true))
+            .collect();
+        assert!(
+            local.iter().all(|c| *c == NON_OPENAI_TOKEN_MARGIN),
+            "{local:?}"
+        );
+    }
+
+    /// Through a provider INSTANCE: the same registry name gets the OpenAI
+    /// calibration off this machine and the shared local one on it, so the
+    /// answer follows `affiliation()`, not `get_name()`.
+    #[test]
+    fn calibration_reads_the_provider_instance() {
+        use crate::conversation::message::Message;
+        use crate::model::ModelConfig;
+        use crate::privacy::affiliation::ModelAffiliation;
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use crate::providers::errors::ProviderError;
+        use rmcp::model::Tool;
+
+        /// Shaped like a self-hosted provider: Local and Private together while
+        /// its host is loopback, neither once it is repointed elsewhere.
+        struct NamedOpenAi(Option<ModelAffiliation>);
+
+        #[async_trait::async_trait]
+        impl Provider for NamedOpenAi {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "openai"
+            }
+            fn tier(&self) -> crate::privacy::ProviderTier {
+                match self.0 {
+                    Some(_) => crate::privacy::ProviderTier::Private,
+                    None => crate::privacy::ProviderTier::Public,
+                }
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                self.0
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("local-model")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("only asked for its calibration")
+            }
+        }
+
+        assert_eq!(provider_token_calibration(&NamedOpenAi(None)), 1.0);
+        assert_eq!(
+            provider_token_calibration(&NamedOpenAi(Some(ModelAffiliation::Local))),
+            NON_OPENAI_TOKEN_MARGIN
+        );
     }
 
     #[tokio::test]

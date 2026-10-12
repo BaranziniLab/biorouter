@@ -437,7 +437,16 @@ pub fn create_request(
     messages: &[Message],
     tools: &[Tool],
 ) -> Result<Value> {
-    let anthropic_messages = format_messages(messages);
+    // Unsigned thinking — another provider's, see `without_unsigned_thinking`
+    // — is never replayed to Claude. A non-Claude model behind an
+    // Anthropic-compatible API keeps receiving what it always did.
+    let anthropic_messages = if requires_signed_thinking(&model_config.model_name)
+        && messages.iter().any(has_unsigned_thinking)
+    {
+        format_messages(&without_unsigned_thinking(messages))
+    } else {
+        format_messages(messages)
+    };
     let tool_specs = format_tools(tools);
     let system_spec = format_system(system);
 
@@ -700,17 +709,70 @@ pub fn without_replayed_thinking<'a, I>(messages: I) -> Vec<Message>
 where
     I: IntoIterator<Item = &'a Message>,
 {
+    without_thinking_where(messages, |content| {
+        matches!(
+            content,
+            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+        )
+    })
+}
+
+/// Whether `model_name` is a Claude model, on any host — Anthropic, Bedrock
+/// (`anthropic.claude-…`, `us.anthropic.claude-…`), Vertex, Databricks
+/// (`databricks-claude-…`). Claude refuses a replayed `thinking` block that
+/// does not carry the signature Anthropic issued for it.
+pub fn requires_signed_thinking(model_name: &str) -> bool {
+    model_name.to_ascii_lowercase().contains("claude")
+}
+
+/// Whether `message` holds a thinking block with no signature.
+pub fn has_unsigned_thinking(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|content| matches!(content, MessageContent::Thinking(t) if t.signature.is_empty()))
+}
+
+/// The conversation without UNSIGNED thinking blocks, joined the way
+/// [`without_replayed_thinking`] joins: an assistant message left empty is
+/// dropped, and the two messages it separated merge when they share a role.
+///
+/// An unsigned block can only have come from another provider: the local
+/// servers (Ollama's `/api/chat`, llama-server) and the OpenAI-compatible
+/// decoder store the thinking they show as `Thinking` with an EMPTY signature,
+/// because there is no signature to keep. A chat that started on one of them
+/// and was switched to Claude used to replay those blocks verbatim, and Claude
+/// refuses a thinking block whose signature does not verify — every request in
+/// that chat failed. Claude's own blocks are always signed, so dropping the
+/// unsigned ones never drops Claude's reasoning; the other model's thinking is
+/// not Claude's to continue anyway. Signed blocks and redacted blocks pass
+/// through untouched.
+pub fn without_unsigned_thinking<'a, I>(messages: I) -> Vec<Message>
+where
+    I: IntoIterator<Item = &'a Message>,
+{
+    without_thinking_where(
+        messages,
+        |content| matches!(content, MessageContent::Thinking(thinking) if thinking.signature.is_empty()),
+    )
+}
+
+/// The agent-visible messages with every content item `drop` matches removed;
+/// see [`without_replayed_thinking`] for why an emptied message is dropped and
+/// its neighbours joined.
+fn without_thinking_where<'a, I>(
+    messages: I,
+    drop: impl Fn(&MessageContent) -> bool,
+) -> Vec<Message>
+where
+    I: IntoIterator<Item = &'a Message>,
+{
     let mut out: Vec<Message> = Vec::new();
     let mut dropped_between = false;
     for message in messages.into_iter().filter(|m| m.is_agent_visible()) {
         let mut stripped = message.clone();
         let before = stripped.content.len();
-        stripped.content.retain(|content| {
-            !matches!(
-                content,
-                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
-            )
-        });
+        stripped.content.retain(|content| !drop(content));
         if stripped.content.is_empty() && before > 0 {
             dropped_between = true;
             continue;
@@ -1293,8 +1355,98 @@ mod tests {
     use super::*;
     use crate::agents::effort::{ReasoningEffort, DEEP_THINKING_BUDGET_TOKENS};
     use crate::conversation::message::Message;
+    use rmcp::model::CallToolRequestParams;
     use rmcp::object;
     use serde_json::json;
+
+    /// A chat that began on a local model (Ollama, Llama Server) — the shape
+    /// the agent stores: an unsigned thinking-only row before a tool row, then
+    /// an answer with unsigned thinking — and then moved to Claude, where
+    /// Claude itself answered with signed thinking.
+    fn history_started_on_a_local_model() -> Vec<Message> {
+        let call = CallToolRequestParams {
+            task: None,
+            name: "developer__shell".into(),
+            arguments: Some(object!({"command": "ls"})),
+            meta: None,
+        };
+        vec![
+            Message::user().with_text("first question"),
+            Message::assistant().with_thinking("LOCAL-THOUGHT-ONE", ""),
+            Message::assistant().with_tool_request("call-1", Ok(call)),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![rmcp::model::Content::text("a.txt")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::assistant()
+                .with_thinking("LOCAL-THOUGHT-TWO", "")
+                .with_text("first answer"),
+            Message::user().with_text("second question"),
+            Message::assistant()
+                .with_thinking("CLAUDE-THOUGHT", "SIG-CLAUDE")
+                .with_text("second answer"),
+            Message::user().with_text("third question"),
+        ]
+    }
+
+    /// Claude refuses a thinking block whose signature does not verify, so the
+    /// unsigned blocks another provider left in the chat must never reach a
+    /// Claude request — before, every request in such a chat failed. Claude's
+    /// own signed block still replays, the turns around the dropped blocks
+    /// keep their place, and a non-Claude model behind an Anthropic-compatible
+    /// API receives exactly what it did before.
+    #[test]
+    fn unsigned_thinking_from_another_provider_never_reaches_claude() -> Result<()> {
+        let history = history_started_on_a_local_model();
+        for model in ["claude-sonnet-4-5", "claude-opus-5"] {
+            let payload =
+                create_request(&ModelConfig::new_or_fail(model), "system", &history, &[])?;
+            let body = payload.to_string();
+            assert!(!body.contains("LOCAL-THOUGHT"), "{model}: {body}");
+            assert!(
+                body.contains("CLAUDE-THOUGHT") && body.contains("SIG-CLAUDE"),
+                "{model}: Claude's own signed block still replays"
+            );
+            let roles: Vec<&str> = payload["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["role"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                roles,
+                [
+                    "user",
+                    "assistant",
+                    "user",
+                    "assistant",
+                    "user",
+                    "assistant",
+                    "user"
+                ],
+                "{model}: the thinking-only row is gone and the roles still alternate"
+            );
+            assert!(body.contains("first answer") && body.contains("call-1"));
+        }
+
+        let other = create_request(
+            &ModelConfig::new_or_fail("kimi-k2-thinking"),
+            "system",
+            &history,
+            &[],
+        )?
+        .to_string();
+        assert!(
+            other.contains("LOCAL-THOUGHT-TWO"),
+            "a non-Claude model keeps its old payload: {other}"
+        );
+        Ok(())
+    }
 
     // BR-63: `deep` is how a user asks Anthropic for extended thinking without
     // setting a process-wide env var. The API rejects a temperature other than 1

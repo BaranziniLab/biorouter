@@ -17,25 +17,20 @@
 <div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter v{{LATEST_VERSION}} picks when you configure a provider without naming a model. An existing setup keeps its saved main model.</p></div>
 
 <h2 id="providers-local">Local</h2>
-<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
+<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Model and CLI name</th><th>Download</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td><strong>Gemma 4 E4B</strong><br><code>gemma4</code></td><td>9.6 GB</td><td>Default under 64 GiB</td></tr>
-    <tr><td><strong>Gemma 4 E2B</strong><br><code>gemma4-e2b</code></td><td>3.1 GB</td><td>Smallest; good on 16 GiB</td></tr>
-    <tr><td><strong>Gemma 4 12B</strong><br><code>gemma4-12b</code></td><td>7.6 GB</td><td>Default at 64 GiB or more</td></tr>
-    <tr><td><strong>Gemma 4 26B</strong><br><code>gemma4-26b</code></td><td>18 GB</td><td>Mixture of experts; 48 GiB</td></tr>
-    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>20 GB</td><td>Largest Gemma 4; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 35B</strong><br><code>qwen3.6</code></td><td>24 GB</td><td>Mixture of experts; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 27B</strong><br><code>qwen3.6-27b</code></td><td>17 GB</td><td>Dense; 48 GiB</td></tr>
+    <tr><td><strong>Qwen3.8 27B</strong><br><code>qwen3.8-27b</code></td><td>19 GB</td><td>Default on every machine</td></tr>
+    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>18 GB</td><td>Google's own 4-bit build</td></tr>
   </tbody>
 </table></div>
-<p>The memory figures are what the GPU can use; on a Mac, that is the unified memory. The two mixture of experts models use about 3B to 4B parameters per token, so they are fast once loaded, but they are large downloads. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
-<pre><code>biorouter models local pull gemma4-12b
+<p>Both models need 32 GiB of memory the GPU can use, and 48 GiB is recommended; on a Mac, that is the unified memory. On a smaller machine they still run, slowly. On an Intel Mac the bundled server has no GPU acceleration, so replies come at a few tokens per second. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. A model name from an earlier version, such as <code>gemma4</code> or <code>gemma4-12b</code>, now runs Qwen3.8 27B. To download a model before you need it:</p>
+<pre><code>biorouter models local pull qwen3.8-27b
 biorouter models local list</code></pre>
-<p>The context window is sized to your memory (128k tokens at 64 GiB or more, 64k at 16 GiB or more, otherwise 32k). Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
-<p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Pull a model (<code>ollama pull qwen3</code>) and select it. Default model: <code>qwen3</code>.</p>
-<div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public.</p></div>
+<p>The context window is sized to your memory: 128k tokens at 48 GiB or more, otherwise 64k. Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
+<p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Use Ollama 0.32.12 or later, which <code>qwen3.8:27b</code> needs, pull a model (<code>ollama pull qwen3.8:27b</code>) and select it. Default model: <code>qwen3.8:27b</code>. Biorouter also supports <code>gemma4:31b</code>. Other models may write their tool calls as text instead of making them. Biorouter sets the context window it needs; <code>OLLAMA_NUM_CTX</code> overrides it.</p>
+<div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public. An Ollama cloud model is public too, even on this computer's Ollama, because Ollama answers it from ollama.com.</p></div>
 
 <h2 id="providers-institutional">Institutional</h2>
 <p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>
@@ -127,12 +122,12 @@ npm install -g @openai/codex@latest</code></pre></li>
 <h2 id="providers-switching">Switch models</h2>
 <p><strong>In a chat.</strong> Choose the model chip in the composer, then <strong>Change model…</strong>, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
 <p><strong>In a terminal.</strong> <code>biorouter models set</code> changes the default provider and model, and the same flags on <code>biorouter session</code> or <code>biorouter run</code> change them for one chat. Name only a provider other than your default, and it runs its own default model:</p>
-<pre><code>biorouter models set --provider ollama --model qwen3
-biorouter session --provider llamacpp --model gemma4
+<pre><code>biorouter models set --provider ollama --model qwen3.8:27b
+biorouter session --provider llamacpp --model gemma4-31b
 biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p><strong>In a workflow.</strong> A workflow can name its own model, so everyone who opens it starts on that model if they have that provider set up:</p>
 <pre><code>settings:
   biorouter_provider: llamacpp
-  biorouter_model: gemma4-12b</code></pre>
+  biorouter_model: qwen3.8-27b</code></pre>
 <p><strong>Lead and worker.</strong> Set <code class="code-token">BIOROUTER_LEAD_MODEL</code> (and <code class="code-token">BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
 </div>

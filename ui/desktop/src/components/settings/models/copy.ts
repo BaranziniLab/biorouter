@@ -58,8 +58,12 @@ export const localModelsCopy = {
   /** The one warning word a row shows, and only when the model is bigger than the machine's memory. */
   largeForThisMac: 'Large for this Mac',
   largeForThisComputer: 'Large for this computer',
+  /** The daemon's `below_minimum`: under the least memory the model loads in. */
+  belowMinimum: (gib: number) => `Below the ${gigabytes(gib)} minimum`,
+  /** The daemon's `cpu_only`: no GPU acceleration here (an Intel Mac, the Linux CPU build). */
+  cpuOnly: 'CPU only, slow',
   /**
-   * Whether a model fits this machine, in words (`fitVerdict` / `fitLine` in `localModelFacts`).
+   * Whether a model fits this machine, in words (`fitVerdict` / `fitLine` in `localModelMemory`).
    * It replaces the daemon's sentence ("Recommended for this machine: 128 GiB apple_unified meets
    * the 32 GiB recommendation."), which repeated its row's label and printed a machine id on a
    * reading surface (vision FR-R2-6).
@@ -87,12 +91,14 @@ export const localModelsCopy = {
   warmUpModel: 'Warm up model',
   installModel: 'Install model',
   /**
-   * The states beside `installed`. A model has ONE of the three words (`stateWord` in
-   * `LocalModelInventory`), and the row's trailing slot, its facts line and the info dialog's Status
+   * The states beside `installed`. A model has ONE of these words (`stateWord` in
+   * `localModelFacts`), and the row's trailing slot, its facts line and the info dialog's Status
    * row all read it: a model that is partly downloaded in Ollama with its fallback GGUF whole is
    * "Installed" in all three, not "Installed", "Partial download" and "Fallback ready".
    */
   status: {
+    /** Installed, and Ollama holds the file: Delete removes it from Ollama. */
+    inOllama: 'Downloaded in Ollama',
     partial: 'Partial download',
     needsDownload: 'Needs download',
   },
@@ -127,10 +133,18 @@ export const localModelsCopy = {
     fallbackConfirm: 'Continue',
     cancel: 'Cancel',
   },
+  /**
+   * Both sentences name the model by its display name, never `ollama_name`: that tag may be a
+   * different build from the file the row lists, and naming it told a person the wrong model was
+   * about to go (#393).
+   */
   confirmDelete: {
     title: 'Delete this local model?',
     message: (name: string) =>
       `${name} will be removed from the local model inventory. You can download it again later.`,
+    /** A model whose file Ollama holds: Delete removes every tag that uses that file. */
+    ollamaMessage: (name: string) =>
+      `${name}'s model file will be deleted from Ollama, under every tag that uses it. You can download it again later.`,
     confirm: 'Delete',
     cancel: 'Cancel',
   },

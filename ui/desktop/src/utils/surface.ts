@@ -70,7 +70,7 @@ export function isBrowserSurface(): boolean {
  *
  * ⚠ **This list is a mirror and can drift.** It exists because the generic
  * config editor (`settings/config/ConfigSettings.tsx`) renders every non-secret
- * key as an editable field, and only these five 409 — so a blanket disable
+ * key as an editable field, and only these six 409 — so a blanket disable
  * there would be wrong about most of the page. Nothing enforces the agreement:
  * if a key is added to the Rust constant it must be added here too, and the
  * cost of missing one is a Save button that still produces the agent-facing
@@ -84,6 +84,10 @@ export const HOST_MANAGED_CONFIG_KEYS: readonly string[] = [
   'BIOROUTER_LEAD_PROVIDER',
   'OLLAMA_HOST',
   'LLAMACPP_EXTERNAL_HOST',
+  // A capability key since 2026-10: `ollama`'s `tier()` reads the model name
+  // (a `-cloud` tag is Public through a loopback host), so `/config/upsert`
+  // refuses it on a browser surface exactly as it refuses `OLLAMA_HOST`.
+  'BIOROUTER_MODEL',
 ];
 
 /** Would writing `key` over HTTP be refused on a browser-served surface? */

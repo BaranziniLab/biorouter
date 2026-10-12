@@ -170,6 +170,7 @@ export const workflowFormCopy = {
   modelName: 'Model name',
   temperature: 'Temperature',
   defaultPlaceholder: 'Default',
+  modelNamePlaceholder: 'e.g. claude-opus-5, qwen3.8-27b',
   temperaturePlaceholder: '0 to 2',
 
   knowledgeBases: 'Knowledge bases',

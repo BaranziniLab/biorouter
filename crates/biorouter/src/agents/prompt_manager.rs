@@ -16,14 +16,44 @@ use crate::{
 };
 use std::path::Path;
 
-/// Local time at hour granularity, e.g. `2026-07-12 14:00`. Hour (not
-/// minute/second) granularity keeps the rendered system prompt byte-identical
-/// within the hour so multi-session prompt caching still hits; Local (not UTC)
-/// matches the MOIM `<info-msg>` clock so the model never sees two contradictory
-/// timezones. Computed fresh at each `build()` (not frozen at construction) so a
-/// long-lived agent's clock never goes stale.
-fn current_hour_timestamp() -> String {
-    chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
+/// How finely the system prompt states the clock.
+///
+/// Local (not UTC) either way, matching the MOIM `<info-msg>` clock so the
+/// model never sees two contradictory timezones. Computed fresh at each
+/// `build()` (not frozen at construction) so a long-lived agent's clock never
+/// goes stale. The per-request MOIM carries the minute-precise time, so the
+/// coarse clock here costs the model nothing it cannot read elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptClock {
+    /// `2026-07-12 14:00`: byte-identical within the hour, so a hosted
+    /// provider's multi-session prompt cache still hits.
+    Hour,
+    /// `2026-07-12`, for a local engine (Llama Server, Ollama). The clock sits
+    /// near the TOP of the prompt (character ~605), so a change there throws
+    /// away everything after it in the server's prompt cache. Measured on
+    /// qwen3.8:27b (MLX, 2026-10-10): the first request after an hour boundary
+    /// reused 8,191 of 30,745 tokens and spent 107 s re-reading the rest — a
+    /// stall a hosted model never shows, once an hour, in every long chat.
+    Day,
+}
+
+fn render_prompt_clock(now: chrono::DateTime<chrono::Local>, clock: PromptClock) -> String {
+    match clock {
+        PromptClock::Hour => now.format("%Y-%m-%d %H:00").to_string(),
+        PromptClock::Day => now.format("%Y-%m-%d").to_string(),
+    }
+}
+
+/// Is inference for this provider a local engine, whose prompt cache a long
+/// prefill must refill? One of the two local providers by name (a LAN Ollama
+/// prefills on the same kind of hardware), or any provider whose instance runs
+/// on this machine (`providers::utils::runs_on_this_machine`).
+pub fn is_local_engine(provider_name: &str, runs_on_this_machine: bool) -> bool {
+    runs_on_this_machine
+        || matches!(
+            provider_name.to_ascii_lowercase().as_str(),
+            "llamacpp" | "ollama"
+        )
 }
 
 /// BR-3: which system-prompt variant to render for the active model.
@@ -47,10 +77,22 @@ pub enum PromptVariant {
 impl PromptVariant {
     /// Choose a variant for `(provider_name, model_name)`.
     ///
+    /// `runs_on_this_machine` is the provider INSTANCE's own answer — the
+    /// caller passes `providers::utils::runs_on_this_machine(provider)`,
+    /// which is true exactly while the resolved endpoint is loopback. It is
+    /// what lets an `ollama_compatible` provider registered under any name
+    /// (declarative providers register by `config.name`, and their registry
+    /// metadata deliberately claims `runs_locally: false`) be prompted the
+    /// same as the built-in `ollama` for the same engine and model (OLL-20).
+    ///
     /// `BIOROUTER_SYSTEM_PROMPT_VARIANT` (`default` | `small_local`) pins the
     /// choice for testing / power users; otherwise the provider/model-keyed
     /// table decides, defaulting to [`PromptVariant::Default`].
-    pub fn select(provider_name: &str, model_name: &str) -> PromptVariant {
+    pub fn select(
+        provider_name: &str,
+        model_name: &str,
+        runs_on_this_machine: bool,
+    ) -> PromptVariant {
         if let Ok(pinned) = Config::global().get_param::<String>("BIOROUTER_SYSTEM_PROMPT_VARIANT")
         {
             match pinned.trim().to_ascii_lowercase().as_str() {
@@ -62,27 +104,70 @@ impl PromptVariant {
                 ),
             }
         }
-        select_variant_from_table(provider_name, model_name)
+        select_variant_from_table(provider_name, model_name, runs_on_this_machine)
     }
+}
+
+/// The smallest parameter count, in billions, that gets the strong-model
+/// prompt on a local engine. The two shipped local models are 27B (Qwen3.8)
+/// and 31B (Gemma 4); the overlay's "single tool call per turn" and the rest
+/// of its hand-holding under-use them, and every common size from here up
+/// (27, 30, 31, 32, 34, 35, 70, 72 …) is a capable agent model.
+const LARGE_LOCAL_MIN_BILLIONS: f64 = 24.0;
+
+/// The parameter count a model name states, in billions: `27b`, `0.8b`,
+/// `8x7b` (an MoE's total, 56). The LARGEST stated size wins, so an MoE tag
+/// such as `30b-a3b` reads as its 30B total.
+///
+/// A size must stand alone between separators. That is what keeps `e4b`
+/// (Gemma's "effective 4B") and `a3b` (an MoE's ACTIVE parameters) from being
+/// read as sizes, and keeps a version number (`qwen3.8`) out of it.
+fn model_parameter_billions(model_name: &str) -> Option<f64> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)(?:x(\d+(?:\.\d+)?))?b(?:$|[^a-z0-9])")
+            .expect("static regex")
+    });
+    let model = model_name.to_ascii_lowercase();
+    re.captures_iter(&model)
+        .filter_map(|captures| {
+            let size: f64 = captures.get(1)?.as_str().parse().ok()?;
+            match captures.get(2) {
+                Some(experts) => Some(size * experts.as_str().parse::<f64>().ok()?),
+                None => Some(size),
+            }
+        })
+        .reduce(f64::max)
 }
 
 /// Provider/model → variant rules, first match wins, `Default` as the fallback.
 /// Kept deliberately tiny (BR-3: "keep variants minimal / avoid sprawl").
 ///
-/// The local providers ship small, weak models by default (Llama Server's
-/// Qwen3.5-4B / Gemma-4, Ollama's local tags), so they get the extra
-/// scaffolding — except when the model name says a *large* model is loaded
-/// locally, which needs no hand-holding.
-fn select_variant_from_table(provider_name: &str, model_name: &str) -> PromptVariant {
-    let provider = provider_name.to_ascii_lowercase();
+/// A local engine gets the extra scaffolding unless its model name states a
+/// LARGE model (`LARGE_LOCAL_MIN_BILLIONS`) or says `large`. A local engine is
+/// one of the two local providers by name, or any provider whose instance
+/// runs on this machine.
+///
+/// ⚠ This used to be a list of whole markers (`70b`, `72b`, `65b`, `34b`), so
+/// both shipped local models — `qwen3.8:27b` and `gemma4:31b` — got the
+/// small-model overlay, including its advice to use Developer `shell`
+/// directly in a chat where that tool was only reachable through Code
+/// Execution.
+fn select_variant_from_table(
+    provider_name: &str,
+    model_name: &str,
+    runs_on_this_machine: bool,
+) -> PromptVariant {
     let model = model_name.to_ascii_lowercase();
 
-    if matches!(provider.as_str(), "llamacpp" | "ollama") {
-        const LARGE_LOCAL_MARKERS: &[&str] = &["70b", "72b", "65b", "34b", "large"];
-        if LARGE_LOCAL_MARKERS.iter().any(|m| model.contains(m)) {
-            return PromptVariant::Default;
-        }
-        return PromptVariant::SmallLocal;
+    if is_local_engine(provider_name, runs_on_this_machine) {
+        let large = model.contains("large")
+            || model_parameter_billions(&model).is_some_and(|b| b >= LARGE_LOCAL_MIN_BILLIONS);
+        return if large {
+            PromptVariant::Default
+        } else {
+            PromptVariant::SmallLocal
+        };
     }
 
     PromptVariant::Default
@@ -119,6 +204,19 @@ struct SystemPromptContext {
     knowledge_search_available: bool,
     developer_shell_available: bool,
     developer_text_editor_available: bool,
+    /// The tool is on the model's OWN tool list this turn, as opposed to
+    /// reachable at all. Code Execution mode keeps `available` true while it
+    /// moves Developer behind `code_execution__execute_code`; the small-local
+    /// overlay used to read `available` alone and told a model to "use Developer
+    /// `shell`" that it had never been offered — the reporter's
+    /// `{"name": "shell", …}` text calls (repro r9).
+    developer_shell_directly_callable: bool,
+    developer_text_editor_directly_callable: bool,
+    /// Reachable, but only from a `code_execution__execute_code` script: Code
+    /// Execution mode is on, `execute_code` is on the list, and the Developer
+    /// tool is not.
+    developer_shell_via_code_execution: bool,
+    developer_text_editor_via_code_execution: bool,
     code_execute_available: bool,
     current_date_time: String,
     biorouter_mode: BioRouterMode,
@@ -140,12 +238,23 @@ pub struct SystemPromptBuilder<'a, M> {
     code_execution_mode: bool,
     checklist_enforcement: bool,
     variant: PromptVariant,
+    local_engine: bool,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// BR-3: select the per-model prompt variant (default: strong-model base).
     pub fn with_prompt_variant(mut self, variant: PromptVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Whether the bound provider is a local engine ([`is_local_engine`]). The
+    /// clock is then rendered by the day, not the hour, so the engine's prompt
+    /// cache survives an hour boundary (see [`PromptClock::Day`]). Separate
+    /// from the variant on purpose: both shipped local models are large enough
+    /// for the `Default` variant, and they are the ones that pay the prefill.
+    pub fn with_local_engine(mut self, local_engine: bool) -> Self {
+        self.local_engine = local_engine;
         self
     }
 
@@ -212,6 +321,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
     }
 
     pub fn build(self) -> String {
+        self.build_at(chrono::Local::now())
+    }
+
+    /// [`Self::build`] with the clock read as `now` — the seam that lets a test
+    /// build twice "an hour apart".
+    fn build_at(self, now: chrono::DateTime<chrono::Local>) -> String {
         let Self {
             manager,
             extensions_info,
@@ -221,17 +336,24 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             code_execution_mode,
             checklist_enforcement,
             variant,
+            local_engine,
         } = self;
         let (extensions_info, hints) =
             prepare_injected_context(extensions_info, frontend_instructions, hints);
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
+        let clock = if local_engine {
+            PromptClock::Day
+        } else {
+            PromptClock::Hour
+        };
         let mut context = build_system_prompt_context(
             manager,
             extensions_info,
             biorouter_mode,
             subagents_enabled,
             code_execution_mode,
+            render_prompt_clock(now, clock),
         );
         context.checklist_enforcement = checklist_enforcement;
         let base_prompt = render_base_prompt(manager, variant, &context);
@@ -297,6 +419,7 @@ fn build_system_prompt_context(
     biorouter_mode: BioRouterMode,
     subagents_enabled: bool,
     code_execution_mode: bool,
+    live_clock: String,
 ) -> SystemPromptContext {
     let (capabilities, extensions): (Vec<_>, Vec<_>) = extensions_info
         .into_iter()
@@ -338,13 +461,27 @@ fn build_system_prompt_context(
     let skill_load_available = capability_has_tool(&capabilities, "skills", "loadSkill");
     let knowledge_search_available = capability_has_tool(&capabilities, "knowledge", "kb_search");
 
+    let developer_shell_available = capability_has_tool(&capabilities, "developer", "shell");
+    let developer_text_editor_available =
+        capability_has_tool(&capabilities, "developer", "text_editor");
+    let developer_shell_directly_callable =
+        capability_has_direct_tool(&capabilities, "developer", "shell");
+    let developer_text_editor_directly_callable =
+        capability_has_direct_tool(&capabilities, "developer", "text_editor");
+    let code_execute_directly_callable = code_execution_mode
+        && capability_has_direct_tool(&capabilities, "codeexecution", "execute_code");
+
     SystemPromptContext {
-        developer_shell_available: capability_has_tool(&capabilities, "developer", "shell"),
-        developer_text_editor_available: capability_has_tool(
-            &capabilities,
-            "developer",
-            "text_editor",
-        ),
+        developer_shell_available,
+        developer_text_editor_available,
+        developer_shell_directly_callable,
+        developer_text_editor_directly_callable,
+        developer_shell_via_code_execution: code_execute_directly_callable
+            && developer_shell_available
+            && !developer_shell_directly_callable,
+        developer_text_editor_via_code_execution: code_execute_directly_callable
+            && developer_text_editor_available
+            && !developer_text_editor_directly_callable,
         code_execute_available: capability_has_tool(&capabilities, "codeexecution", "execute_code"),
         capabilities,
         extensions,
@@ -358,10 +495,7 @@ fn build_system_prompt_context(
         extension_resource_tools_directly_callable,
         skill_load_available,
         knowledge_search_available,
-        current_date_time: manager
-            .fixed_timestamp
-            .clone()
-            .unwrap_or_else(current_hour_timestamp),
+        current_date_time: manager.fixed_timestamp.clone().unwrap_or(live_clock),
         biorouter_mode,
         is_autonomous: biorouter_mode == BioRouterMode::Auto,
         enable_subagents: subagents_enabled,
@@ -446,9 +580,9 @@ impl PromptManager {
             system_prompt_override: None,
             system_prompt_extras: Vec::new(),
             named_system_prompt_extras: BTreeMap::new(),
-            // Left unset: the clock is computed live per `build()` (hour
-            // granularity) so it stays cache-stable within the hour yet never
-            // freezes at agent-construction time.
+            // Left unset: the clock is computed live per `build()` (hour or,
+            // for a local engine, day granularity) so it stays cache-stable
+            // yet never freezes at agent-construction time.
             fixed_timestamp: None,
         }
     }
@@ -498,6 +632,7 @@ impl PromptManager {
             code_execution_mode: false,
             checklist_enforcement: false,
             variant: PromptVariant::Default,
+            local_engine: false,
         }
     }
 
@@ -576,6 +711,16 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+
+    /// The appended small-local overlay, heading included.
+    fn small_local_overlay(prompt: &str) -> &str {
+        let start = prompt
+            .find("# Running on a Smaller Model")
+            .expect("the small-local overlay is appended");
+        prompt
+            .get(start..)
+            .expect("a match starts on a char boundary")
+    }
 
     fn capability_with_tools(name: &str, tools: &[&str]) -> ExtensionInfo {
         let mut info = ExtensionInfo::capability(name, "focused capability guidance", false);
@@ -744,6 +889,57 @@ mod tests {
             prompt.contains(&expected_before) || prompt.contains(&expected_after),
             "system prompt must render the live Local hour clock (minutes pinned to :00)"
         );
+    }
+
+    /// A local engine's prompt must not change at an hour boundary: the clock
+    /// sits near the top of the prompt, so a change there costs the engine its
+    /// whole prompt cache (measured: 107 s of prefill on qwen3.8:27b). The
+    /// control half shows the same two builds DO differ for a hosted model, so
+    /// the first half cannot pass merely because no clock was rendered.
+    #[test]
+    fn a_local_engine_prompt_is_byte_identical_across_an_hour_boundary() {
+        use chrono::TimeZone;
+        let before = chrono::Local
+            .with_ymd_and_hms(2026, 7, 12, 10, 59, 0)
+            .single()
+            .expect("an unambiguous local time");
+        let after = chrono::Local
+            .with_ymd_and_hms(2026, 7, 12, 11, 1, 0)
+            .single()
+            .expect("an unambiguous local time");
+        let manager = PromptManager::new();
+        let build = |local_engine: bool, now| {
+            manager
+                .builder()
+                .with_local_engine(local_engine)
+                .build_at(now)
+        };
+
+        let local_before = build(true, before);
+        assert_eq!(local_before, build(true, after));
+        assert!(
+            local_before.contains("The current date and time is 2026-07-12."),
+            "a local engine still gets the date"
+        );
+
+        let hosted_before = build(false, before);
+        assert!(hosted_before.contains("The current date and time is 2026-07-12 10:00."));
+        assert_ne!(
+            hosted_before,
+            build(false, after),
+            "a hosted model keeps the hour clock"
+        );
+    }
+
+    /// The engines whose prompt cache the day clock protects: the two local
+    /// providers by name (wherever they run) and anything running here.
+    #[test]
+    fn local_engines_are_the_local_providers_and_anything_on_this_machine() {
+        assert!(is_local_engine("ollama", false));
+        assert!(is_local_engine("LlamaCpp", false));
+        assert!(is_local_engine("my_lab_ollama", true));
+        assert!(!is_local_engine("my_lab_ollama", false));
+        assert!(!is_local_engine("anthropic", false));
     }
 
     #[test]
@@ -1293,29 +1489,98 @@ mod tests {
     /// small-local variant and everything else to the strong-model default.
     #[test]
     fn test_prompt_variant_table() {
-        // Local providers → small-local scaffolding.
-        assert_eq!(
-            select_variant_from_table("llamacpp", "qwen3.5-4b"),
-            PromptVariant::SmallLocal
-        );
-        assert_eq!(
-            select_variant_from_table("ollama", "gemma4:latest"),
-            PromptVariant::SmallLocal
-        );
+        // Local providers with a small model → small-local scaffolding.
+        for (provider, model) in [
+            ("llamacpp", "qwen3.5-4b"),
+            ("llamacpp", "gemma4"),
+            ("ollama", "gemma4:latest"),
+            ("ollama", "qwen3:8b"),
+            ("ollama", "gemma4:e4b"),
+            // An MoE's ACTIVE size is not its size, and a 3B model is small.
+            ("ollama", "llama3.2:3b"),
+        ] {
+            assert_eq!(
+                select_variant_from_table(provider, model, false),
+                PromptVariant::SmallLocal,
+                "{provider}/{model}"
+            );
+        }
         // Strong commercial / institution-hosted → base prompt only.
+        for (provider, model) in [
+            ("anthropic", "claude-sonnet-4"),
+            ("openai", "gpt-5.2"),
+            ("versa_azure", "gpt-5.6-sol"),
+        ] {
+            assert_eq!(
+                select_variant_from_table(provider, model, false),
+                PromptVariant::Default,
+                "{provider}/{model}"
+            );
+        }
+        // A *large* model run locally does not need the extra hand-holding —
+        // including both shipped local models, under either engine's spelling.
+        for (provider, model) in [
+            ("ollama", "llama3.3:70b"),
+            ("ollama", "qwen3.8:27b"),
+            ("ollama", "qwen3.8:27b-q4_K_M"),
+            ("ollama", "gemma4:31b"),
+            ("ollama", "gemma4:31b-it-q4_K_M"),
+            ("llamacpp", "qwen3.8-27b"),
+            ("llamacpp", "gemma4-31b"),
+            ("llamacpp", "ggml-org/Qwen3.8-27B-GGUF:Q4_K_M"),
+            ("llamacpp", "google/gemma-4-31B-it-qat-q4_0-gguf:Q4_0"),
+            ("ollama", "qwen3:30b-a3b"),
+            ("ollama", "qwen2.5-coder:32b"),
+            ("ollama", "mixtral:8x7b"),
+            ("ollama", "mistral-large"),
+        ] {
+            assert_eq!(
+                select_variant_from_table(provider, model, false),
+                PromptVariant::Default,
+                "{provider}/{model}"
+            );
+        }
+    }
+
+    /// OLL-20: a provider whose INSTANCE runs on this machine is prompted like
+    /// the built-in local providers whatever it is registered as — a
+    /// declarative `ollama_compatible` provider registers under its own name.
+    #[test]
+    fn a_provider_running_on_this_machine_is_prompted_like_a_local_one() {
         assert_eq!(
-            select_variant_from_table("anthropic", "claude-sonnet-4"),
-            PromptVariant::Default
+            select_variant_from_table("my_lab_ollama", "qwen3:8b", true),
+            PromptVariant::SmallLocal
         );
         assert_eq!(
-            select_variant_from_table("openai", "gpt-5.2"),
-            PromptVariant::Default
+            select_variant_from_table("my_lab_ollama", "qwen3:8b", false),
+            PromptVariant::Default,
+            "the same name off this machine is not assumed local"
         );
-        // A *large* model run locally does not need the extra hand-holding.
         assert_eq!(
-            select_variant_from_table("ollama", "llama3.3:70b"),
+            select_variant_from_table("my_lab_ollama", "qwen3.8:27b", true),
             PromptVariant::Default
         );
+    }
+
+    /// Sizes are read only where they stand alone, so Gemma's `e4b`, an MoE's
+    /// `a3b`, and a version number are never mistaken for a parameter count.
+    #[test]
+    fn model_parameter_sizes_are_read_from_standalone_markers_only() {
+        for (model, expected) in [
+            ("qwen3.8:27b", Some(27.0)),
+            ("qwen3.8-27b", Some(27.0)),
+            ("ggml-org/qwen3.8-27b-gguf:q4_k_m", Some(27.0)),
+            ("gemma4:31b-it-q4_k_m", Some(31.0)),
+            ("qwen3.5:0.8b", Some(0.8)),
+            ("qwen3:30b-a3b", Some(30.0)),
+            ("mixtral:8x7b", Some(56.0)),
+            ("gemma4:e4b", None),
+            ("gemma4", None),
+            ("qwen3.8", None),
+            ("gpt-5.6-sol", None),
+        ] {
+            assert_eq!(model_parameter_billions(model), expected, "{model}");
+        }
     }
 
     /// BR-3: the small-local variant appends the scaffolding overlay, while the
@@ -1383,6 +1648,18 @@ mod tests {
             p.contains("Prefer the simplest effective tool for the job"),
             "missing small-local tool-routing discipline"
         );
+        // L3 / R8 (protocol matrix, Ollama 0.40.2): "after each tool result,
+        // briefly note what you learned and the next step" made llama3.1 write
+        // a sentence before its JSON call — which then leaked as text instead
+        // of being parsed — or narrate the next step and stop mid-task.
+        assert!(
+            p.contains("act on it directly") && p.contains("Do not narrate a plan"),
+            "missing act-without-narrating discipline"
+        );
+        assert!(
+            !p.contains("briefly note what you learned"),
+            "the overlay must not ask the model to narrate between tool calls"
+        );
         assert!(
             !p.contains("Developer `shell`")
                 && !p.contains("Developer `text_editor`")
@@ -1416,6 +1693,102 @@ mod tests {
             .build();
         assert!(code_execution_only.contains("Use the Code Execution capability only"));
         assert!(!code_execution_only.contains("When Developer `shell` is available"));
+    }
+
+    /// Repro r9: with Code Execution mode on, Developer is reachable only from
+    /// an `execute_code` script and is NOT on the model's tool list. The
+    /// overlay used to say "When Developer `shell` is available, use it" there
+    /// anyway, and a small model wrote `{"name": "shell", …}` as text. It must
+    /// now name the one route that exists, and never contradict it by telling
+    /// the model to avoid Code Execution for simple work.
+    #[test]
+    fn small_local_overlay_routes_developer_through_code_execution_when_hidden() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let mut developer = capability_with_tools("developer", &["shell", "text_editor"]);
+        developer.directly_callable_tools.clear();
+        let code_execution = capability_with_tools(
+            "code_execution",
+            &["execute_code", "read_module", "search_modules"],
+        );
+
+        let hidden = manager
+            .builder()
+            .with_extension(developer.clone())
+            .with_extension(code_execution.clone())
+            .with_code_execution_mode(true)
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        let overlay = small_local_overlay(&hidden);
+        assert!(
+            !overlay.contains("When Developer `shell` is available")
+                && !overlay.contains("When Developer `text_editor` is available"),
+            "{overlay}"
+        );
+        assert!(
+            overlay.contains("Developer `shell` is not a tool you can call by name")
+                && overlay.contains(r#"import { shell } from "developer";"#)
+                && overlay.contains("Developer `text_editor` is not a tool you can call by name")
+                && overlay.contains(r#"import { text_editor } from "developer";"#),
+            "{overlay}"
+        );
+        assert!(
+            !overlay.contains("Use the Code Execution capability only when"),
+            "must not steer the model away from the only route to Developer: {overlay}"
+        );
+        assert!(overlay.contains("for file and command work through its `developer` module"));
+
+        // The same roster with Developer directly callable (Code Execution off):
+        // the direct advice, and the "only when" clause for Code Execution.
+        let direct = manager
+            .builder()
+            .with_extension(capability_with_tools(
+                "developer",
+                &["shell", "text_editor"],
+            ))
+            .with_extension(code_execution)
+            .with_code_execution_mode(false)
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        let overlay = small_local_overlay(&direct);
+        assert!(overlay.contains("When Developer `shell` is available"));
+        assert!(overlay.contains("When Developer `text_editor` is available"));
+        assert!(overlay.contains("Use the Code Execution capability only when"));
+        assert!(!overlay.contains("is not a tool you can call by name"));
+
+        // Hidden, and no `execute_code` to reach it with: name no route at all.
+        let unreachable = manager
+            .builder()
+            .with_extension(developer)
+            .with_extension(capability_with_tools("code_execution", &["read_module"]))
+            .with_code_execution_mode(true)
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        let overlay = small_local_overlay(&unreachable);
+        assert!(!overlay.contains("Developer `shell`"), "{overlay}");
+        assert!(!overlay.contains("Developer `text_editor`"), "{overlay}");
+    }
+
+    /// The whole small-local overlay as a small model sees it in the
+    /// reporter's setup — Code Execution mode on, Developer reachable only
+    /// through `execute_code`. Snapshotted alone, so a base-prompt edit does
+    /// not churn it.
+    #[test]
+    fn small_local_overlay_under_code_execution() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let mut developer = capability_with_tools("developer", &["shell", "text_editor"]);
+        developer.directly_callable_tools.clear();
+        let prompt = manager
+            .builder()
+            .with_extension(developer)
+            .with_extension(capability_with_tools(
+                "code_execution",
+                &["execute_code", "read_module", "search_modules"],
+            ))
+            .with_code_execution_mode(true)
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        let overlay = small_local_overlay(&prompt);
+        assert_snapshot!(overlay)
     }
 
     /// BR-3: a full custom prompt override is already complete, so the overlay

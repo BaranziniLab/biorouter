@@ -17,9 +17,9 @@ the credential variable itself among all other settings, read
 [Environment variables](../configuration/environment-variables.md). Note that this folder
 is not an inventory of every shipping provider: BioRouter has 40+ provider modules under
 `crates/biorouter/src/providers/`, and only the few named below — the two reference pages in
-this folder, plus the bundled Llama Server and the two coding-agent providers in the
-subdirectories — are documented here. Every other provider is documented only by its own
-source module.
+this folder, plus the two local providers (the bundled Llama Server and Ollama) and the two
+coding-agent providers in the subdirectories — are documented here. Every other provider is
+documented only by its own source module.
 
 ## Documents
 
@@ -46,18 +46,35 @@ checks can be compared line for line.
   research data** — a consumer subscription carries no BAA and no zero-data-retention
   agreement, so both providers are `ProviderTier::Public` and the privacy bind gate refuses
   them to any session classified private.
-- **[`llama-server/`](llama-server/README.md)** — verification material
-  for the bundled **Llama Server** (`llamacpp`) local provider and its managed sidecar.
-  It has its own index and currently holds a single document, the
-  [Llama Server model catalog QA checklist](llama-server/model-catalog-qa-checklist.md).
-  That checklist — plus the automated
-  `llamacpp_survey` harness that executes most of it — walks every model in the catalog
-  for availability, correctness, tool-calling, streaming, speed, and robustness, and
-  records the security invariants the sidecar must not regress. It is **superseded in
-  part**: the test procedure still holds, but the catalog contents, the `--ctx-size`
-  default, and the thinking-control flag have all changed since it was written, so
-  re-derive the model list and launch flags from the `llamacpp.rs` and
-  `llamacpp_sidecar.rs` sources before running it.
+- **[`llama-server/`](llama-server/README.md)**: the bundled **Llama Server** (`llamacpp`)
+  local provider and its managed sidecar. It has its own index and holds two documents: the
+  [model catalog](llama-server/model-catalog.md), which describes the two models it offers
+  (Qwen3.8 27B, the default, and Gemma 4 31B), what a name from an earlier catalog does, how
+  the sidecar finds a copy on disk, and its context, request and thinking policy; and the
+  [model catalog QA checklist](llama-server/model-catalog-qa-checklist.md), which with the
+  `llamacpp_integration` suite and the `llamacpp_survey` harness verifies each model's
+  availability, tool calling at the size of a real first turn, streaming and speed, and records
+  the security invariants the sidecar must not regress. Both were rewritten on 2026-10-10 for
+  llama.cpp build b11429.
+- **[Local inference validation record](../history/local-inference-2026-10/local-inference-validation.md)**: the historical source-scoped local and
+  live validation record for the local inference fix. The privacy-corrected code passes six compilation
+  boundaries, 9,328 workspace tests, 21 local gates and five fresh-executable checks. Interim H1
+  passes all 16 CI checks with the original Windows failure retained. Gemma G/R6 and historical
+  Qwen/Gemma model-quality, interruption and workflow failures remain explicit; final roster outcomes and
+  the expected archive destination/completion-proof procedure are recorded separately. Final-head status is in
+  [PR #393's checks](https://github.com/BaranziniLab/biorouter/pull/393/checks).
+- **[Local inference handoff record](../history/local-inference-2026-10/local-inference-handoff.md)**: implementation, investigation and
+  delivery references for Ollama context truncation, Llama Server hardening and tool-call
+  robustness, including source/binary lineage and current quality/coverage limitations.
+- **[`ollama/`](ollama/README.md)**: the **Ollama** (`ollama`) local provider, which drives an
+  Ollama server the user runs. It has its own index and holds two documents:
+  [context window and settings](ollama/context-window-and-settings.md), on the native
+  `/api/chat` request, how the context window is chosen and why a cut prompt is refused rather
+  than answered (the cause of the 2026-10 "model returns JSON instead of doing the task"
+  report), and every `OLLAMA_*` setting; and
+  [tool-call protocols](ollama/tool-call-protocols.md), on how Ollama reads each model's tool
+  calls, what 12 models returned on the wire, which local models work as an agent and which to
+  avoid, and the guards on recovering a call a model wrote as text.
 
 ## Related documentation
 

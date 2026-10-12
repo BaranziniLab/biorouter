@@ -279,12 +279,27 @@ pub const NOT_DESTINATION_CONFIG_KEYS: &[(&str, &str)] = &[
     ("GCP_MAX_RETRY_INTERVAL_MS", "retry policy"),
     ("LITELLM_TIMEOUT", "transport timeout"),
     ("OLLAMA_TIMEOUT", "transport timeout"),
+    ("OLLAMA_NUM_CTX", "token budget, sent to the same host"),
+    ("OLLAMA_KEEP_ALIVE", "model residency on the same host"),
+    ("OLLAMA_THINK", "reasoning control, sent to the same host"),
     ("OPENAI_TIMEOUT", "transport timeout"),
     ("LLAMACPP_TIMEOUT", "transport timeout"),
     ("LLAMACPP_STARTUP_TIMEOUT", "sidecar readiness deadline"),
     ("LLAMACPP_CONTEXT_SIZE", "token budget"),
     ("LLAMACPP_ENABLE_THINKING", "sampling option"),
     ("LLAMACPP_SPEC_TYPE", "decoding option"),
+    (
+        "LLAMACPP_PARALLEL",
+        "the bundled server's slot count; it keeps its port",
+    ),
+    // Handed to the bundled server's child environment as `HF_TOKEN`, which
+    // llama-server sends only to the Hugging Face endpoint it downloads from.
+    // No config key moves that endpoint: llama.cpp reads it from the process
+    // environment (`MODEL_ENDPOINT` / `HF_ENDPOINT`), never from config.yaml.
+    (
+        "LLAMACPP_HF_TOKEN",
+        "a download credential, not where it goes",
+    ),
     (
         "LLAMACPP_EXTRA_ARGS",
         "arguments to the bundled server, which keeps its port",

@@ -653,22 +653,16 @@ fn estimate_message_tokens(message: &Message) -> usize {
         + ESTIMATE_TOKENS_PER_MESSAGE
 }
 
-/// A byte-count-based token estimate for the whole request (system prompt +
-/// agent-visible messages + tool schemas). No tokenizer, no allocation per
-/// message — it walks the text that is already in memory.
-fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+/// The bytes the system prompt and tool schemas put in a request, plus their
+/// per-item token overhead: the part of a request that compaction can never
+/// shrink.
+fn fixed_request_bytes(system_prompt: &str, tools: &[Tool]) -> (usize, usize) {
     let mut bytes = system_prompt.len();
     let mut overhead = if system_prompt.is_empty() {
         0
     } else {
         ESTIMATE_TOKENS_PER_MESSAGE
     };
-
-    for message in messages.iter().filter(|m| m.is_agent_visible()) {
-        overhead += ESTIMATE_TOKENS_PER_MESSAGE;
-        bytes += message_payload_bytes(message);
-    }
-
     for tool in tools {
         bytes += tool.name.len();
         bytes += tool.description.as_ref().map(|d| d.len()).unwrap_or(0);
@@ -677,8 +671,141 @@ fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[T
             .unwrap_or(0);
         overhead += ESTIMATE_TOKENS_PER_MESSAGE;
     }
+    (bytes, overhead)
+}
+
+/// A byte-count-based token estimate for the whole request (system prompt +
+/// agent-visible messages + tool schemas). No tokenizer, no allocation per
+/// message — it walks the text that is already in memory.
+fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+    let (mut bytes, mut overhead) = fixed_request_bytes(system_prompt, tools);
+
+    for message in messages.iter().filter(|m| m.is_agent_visible()) {
+        overhead += ESTIMATE_TOKENS_PER_MESSAGE;
+        bytes += message_payload_bytes(message);
+    }
 
     ((bytes as f64) / bytes_per_token()).ceil() as usize + overhead
+}
+
+/// More bytes per token than any tokenizer BioRouter talks to spends on the
+/// text it sends — the large-vocabulary ones (Gemma's 262k, Qwen's 152k, o200k)
+/// average 3–4.5 on English, code and JSON. Dividing by this gives a request
+/// size a real tokenizer can only EXCEED, which is what makes
+/// [`request_token_floor`] a floor.
+const MAX_PLAUSIBLE_BYTES_PER_TOKEN: f64 = 8.0;
+
+/// The fewest tokens the request can possibly occupy: its plain text divided by
+/// [`MAX_PLAUSIBLE_BYTES_PER_TOKEN`].
+///
+/// Counts only what every formatter sends as text. Images are left out (a
+/// base64 megabyte is a few thousand tokens, not 125k), and so are thinking
+/// blocks, which most formatters drop from history — anything left out can only
+/// lower the floor, never raise it past the truth.
+fn request_token_floor(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+    let (mut bytes, _) = fixed_request_bytes(system_prompt, tools);
+    for message in messages.iter().filter(|m| m.is_agent_visible()) {
+        bytes += message_payload_bytes(message);
+        for content in &message.content {
+            bytes = bytes.saturating_sub(match content {
+                MessageContent::Image(image) => image.data.len(),
+                MessageContent::Thinking(thinking) => thinking.thinking.len(),
+                MessageContent::RedactedThinking(redacted) => redacted.data.len(),
+                _ => 0,
+            });
+        }
+    }
+    ((bytes as f64) / MAX_PLAUSIBLE_BYTES_PER_TOKEN).floor() as usize
+}
+
+/// An upper bound on the bytes the agent-visible conversation puts in a
+/// request: its messages serialised whole. Used wherever the conversation's
+/// SHARE of a request is the question, because there over-sizing it is the
+/// safe direction — and [`message_payload_bytes`] skips embedded resources.
+fn conversation_upper_bytes(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.is_agent_visible())
+        .map(|m| serde_json::to_string(m).map_or(0, |json| json.len()))
+        .sum()
+}
+
+/// The part of `current_tokens` the system prompt and tool schemas take, split
+/// by bytes — or `None` when the caller did not supply them, because nothing
+/// else can tell them apart from the conversation.
+///
+/// ⚠ The conversation is sized as its SERIALISED messages, not with
+/// [`message_payload_bytes`]: that walk skips embedded resources, and a file
+/// view from `text_editor` is one, so a chat of file reads would look like all
+/// prompt and never compact. Over-sizing the conversation can only shrink the
+/// share this returns — it can let a useless compaction through, never stop
+/// one that would have helped.
+fn fixed_share_of(
+    current_tokens: usize,
+    messages: &[Message],
+    cold_path_context: Option<(&str, &[Tool])>,
+) -> Option<usize> {
+    let (system_prompt, tools) = cold_path_context?;
+    let (fixed_bytes, _) = fixed_request_bytes(system_prompt, tools);
+    let total_bytes = fixed_bytes + conversation_upper_bytes(messages);
+    (total_bytes > 0).then(|| {
+        ((current_tokens as f64) * (fixed_bytes as f64) / (total_bytes as f64)).floor() as usize
+    })
+}
+
+/// How much of a context window a conversation must have left to do anything
+/// at all once compaction has done its best: a summary, the user's message, a
+/// tool result and a reply. A tenth of the window, and never under this.
+const MIN_WORKING_TOKENS: u64 = 2048;
+
+/// LC-1: a context overflow that compacting the conversation cannot fix, as the
+/// one sentence the turn should end with — or `None` when compaction may help.
+///
+/// Compaction shrinks the CONVERSATION; the system prompt and the tool schemas
+/// are rebuilt in full for every request. When those alone fill the window, the
+/// overflow ladder spends four summarisation round-trips (minutes each on a
+/// local model) and then fails anyway with a sentence that tells the user to
+/// shorten their message. Measured: BioRouter's built-in extensions bootstrap at
+/// ~31k Qwen3.8 tokens, so a 32k llama.cpp window or Ollama's 4096 default can
+/// never hold a single turn whatever is compacted.
+///
+/// Decided only when `overflow_detail` names both sizes (llama-server's and
+/// Ollama's typed overflow, via [`crate::providers::utils::context_overflow_message`]);
+/// any other provider's overflow keeps the ladder. Asked by the reply loop's
+/// `ContextLengthExceeded` arm before every rung, with the system prompt, tools
+/// and messages the overflowing request was built from. The server's own prompt
+/// count is split between the fixed part and the conversation in proportion to
+/// their bytes, so the figure is in the model's own tokens, not o200k's.
+pub fn overflow_beyond_compaction(
+    overflow_detail: &str,
+    system_prompt: &str,
+    tools: &[Tool],
+    messages: &[Message],
+) -> Option<String> {
+    let (prompt_tokens, window) = crate::providers::utils::context_overflow_sizes(overflow_detail)?;
+    if window == 0 {
+        return None;
+    }
+    let (fixed_bytes, _) = fixed_request_bytes(system_prompt, tools);
+    // Over-sized (see `conversation_upper_bytes`), so the fixed share is
+    // under-stated: a wrong answer here keeps a compaction that might have
+    // helped rather than ending a turn it could have saved.
+    let total_bytes = fixed_bytes + conversation_upper_bytes(messages);
+    if fixed_bytes == 0 || total_bytes == 0 {
+        return None;
+    }
+    let fixed_tokens =
+        ((prompt_tokens as f64) * (fixed_bytes as f64) / (total_bytes as f64)).round() as u64;
+    let reserve = MIN_WORKING_TOKENS.max(window / 10);
+    if fixed_tokens.saturating_add(reserve) <= window {
+        return None;
+    }
+    Some(format!(
+        "This model's context window is {window} tokens, and Biorouter's instructions and tool \
+         descriptions alone take about {fixed_tokens} of them, so compacting the conversation \
+         cannot make room. Turn off some extensions, raise the model's context window if the \
+         model supports a larger one, or choose a model with a larger window, then try again."
+    ))
 }
 
 /// Check if messages exceed the auto-compaction threshold
@@ -690,6 +817,13 @@ fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[T
 /// systematically undercounts and lets such a session slip past the real
 /// context window without compacting (BR-15). Pass `None` only when they are
 /// genuinely unavailable — the estimate then falls back to messages-only.
+///
+/// ⚠ A `true` computed WITHOUT them is not final. The skip for a window the
+/// fixed prompt alone fills needs them too, so a caller that saves the
+/// assembly by passing `None` must ask again with them before it compacts —
+/// as the turn start in `Agent::reply` does. Otherwise it disagrees with the
+/// background check (which always has them) about the same session, and
+/// compacts in the foreground every turn.
 pub async fn check_if_compaction_needed(
     provider: &dyn Provider,
     conversation: &Conversation,
@@ -714,8 +848,44 @@ pub async fn check_if_compaction_needed(
     }
     let threshold_tokens = (context_limit as f64 * threshold) as usize;
 
-    let (current_tokens, token_source) = match session.total_tokens {
-        Some(tokens) => (tokens as usize, "session metadata"),
+    // The provider-reported figure is trusted only while it is at least the
+    // fewest tokens this request can possibly be. Ollama's `/v1` silently kept
+    // the first 4 and last ~2046 tokens of a 31k-token prompt and REPORTED
+    // `prompt_tokens: 2046`, so every later turn read "2% of the window" and
+    // never compacted while the model worked from the tail of its tool list. A
+    // compaction also stores only the summary's own size here, under a verbatim
+    // tail that can be far larger. Either way the stored number undercounts and
+    // the estimate below is the honest answer.
+    let reported = session
+        .total_tokens
+        .map(|tokens| usize::try_from(tokens).unwrap_or(0));
+    let trusted = match (reported, cold_path_context) {
+        (Some(reported), context) => {
+            let (system_prompt, tools) = context.unwrap_or_default();
+            let floor = request_token_floor(messages, system_prompt, tools);
+            if reported >= floor {
+                Some(reported)
+            } else {
+                debug!(
+                    reported,
+                    floor,
+                    "Compaction check: provider-reported usage is below what this request \
+                     can possibly occupy (truncated by the server, or stored by a compaction); \
+                     estimating instead"
+                );
+                None
+            }
+        }
+        (None, _) => None,
+    };
+
+    // o200k under-counts non-OpenAI tokenizers, so inflate the raw estimate by a
+    // small, conservative per-provider margin to keep the trigger calibrated
+    // across providers.
+    let calibration = crate::token_counter::provider_token_calibration(provider);
+
+    let (current_tokens, token_source) = match trusted {
+        Some(tokens) => (tokens, "session metadata"),
         None => {
             // BR-15: the fallback estimate must include the system prompt and tool
             // schemas — frequently the two largest contributors — or it undercounts
@@ -723,15 +893,16 @@ pub async fn check_if_compaction_needed(
             // couldn't supply them. For a toolshim model the tools are folded into
             // the system prompt and the tool list is empty; both are passed through
             // verbatim, so the count is correct either way.
+            //
+            // ⚠ A repro (2026-10) read "byte estimate 48910 <= threshold 102400" as
+            // proof that this estimate leaves the system prompt and tools out. It
+            // does not: 48,910 is the 133 KB request / 3 bytes per token x 1.15.
+            // What was wrong was the 128000-token window the threshold came from —
+            // Ollama was really serving 4096.
             let (system_prompt, tools): (String, Vec<Tool>) = match cold_path_context {
                 Some((system, tools)) => (system.to_string(), tools.to_vec()),
                 None => (String::new(), Vec::new()),
             };
-
-            // o200k under-counts non-OpenAI tokenizers, so inflate the raw
-            // estimate by a small, conservative per-provider margin to keep the
-            // trigger calibrated across providers.
-            let calibration = crate::token_counter::provider_token_calibration(provider.get_name());
 
             // BR-56: a cheap byte-based upper estimate first. The exact count is a
             // tiktoken BPE encode of the whole request — megabytes of history on a
@@ -785,7 +956,30 @@ pub async fn check_if_compaction_needed(
     let usage_ratio = current_tokens as f64 / context_limit as f64;
 
     // Auto-compact-disabled thresholds already returned above.
-    let needs_compaction = usage_ratio > threshold;
+    let mut needs_compaction = usage_ratio > threshold;
+
+    // Compaction shrinks the CONVERSATION; the system prompt and tool schemas
+    // are rebuilt in full for every request. If they ALONE are over the
+    // threshold, compacting cannot get the request under it — and, run anyway,
+    // it fires again on every turn, summarising away each new exchange as soon
+    // as it happens. A 32k window under BioRouter's ~31k-token bootstrap is
+    // exactly that. Leave it to the request: it fits, or the server's overflow
+    // reaches the reactive path, which can name the window to the user.
+    if needs_compaction {
+        if let Some(fixed_tokens) = fixed_share_of(current_tokens, messages, cold_path_context) {
+            if fixed_tokens >= threshold_tokens {
+                warn!(
+                    current_tokens,
+                    fixed_tokens,
+                    threshold_tokens,
+                    context_limit,
+                    "Compaction skipped: the system prompt and tools alone are over the \
+                     compaction threshold, so summarising the conversation cannot help"
+                );
+                needs_compaction = false;
+            }
+        }
+    }
 
     debug!(
         "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}%, needs compaction: {}, source: {}",
@@ -854,11 +1048,20 @@ pub fn eager_compaction_enabled() -> bool {
 /// to happen (the threshold check passed) and just before the summarization call.
 /// The caller uses it to fire the `PreCompact` hook so — unlike firing it around
 /// every turn boundary — it never fires on a turn that ends under budget.
+///
+/// `fixed_prompt` is the system prompt and tool schemas the turn that just
+/// ended was sent with, for [`check_if_compaction_needed`]'s `cold_path_context`.
+/// ⚠ This path runs after EVERY turn (eager compaction is on by default), so
+/// passing `None` here undoes the check's skip for a window the fixed prompt
+/// alone fills: a 32k local window under the ~31k bootstrap reported ~96% after
+/// each turn, and each exchange was summarised away in the background, on the
+/// one-slot local server the next message then queued behind.
 pub async fn run_eager_compaction(
     provider: Arc<dyn Provider>,
     session_manager: Arc<crate::session::SessionManager>,
     session_config: crate::agents::types::SessionConfig,
     threshold: f64,
+    fixed_prompt: Option<(&str, &[Tool])>,
     on_before_compact: impl FnOnce(),
 ) -> Result<EagerCompactionOutcome> {
     let (session, basis) = session_manager
@@ -870,14 +1073,15 @@ pub async fn run_eager_compaction(
     let conversation = crate::conversation::without_bedrock_reasoning(&stored_conversation);
 
     // Re-check the threshold against fresh, provider-reported usage. On the happy
-    // path `session.total_tokens` was just written by the completed turn, so no
-    // cold-path system/tool estimate is needed (pass `None`).
+    // path `session.total_tokens` was just written by the completed turn; the
+    // fixed prompt is still passed, because it is what lets the check discount
+    // a truncated report and skip a compaction that cannot help.
     if !check_if_compaction_needed(
         provider.as_ref(),
         &conversation,
         Some(threshold),
         &session,
-        None,
+        fixed_prompt,
     )
     .await?
     {
@@ -1704,21 +1908,27 @@ mod tests {
             total_tokens: None,
             ..Default::default()
         };
-        let conversation =
-            Conversation::new_unvalidated(vec![Message::user().with_text("hello there")]);
+        // ~400 tokens of conversation: about half the threshold on its own.
+        // Big enough that compacting it is worth something — two words under an
+        // oversized prompt is the case compaction CANNOT help, pinned in
+        // `compaction_is_skipped_when_the_fixed_prompt_alone_is_over_the_threshold`.
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("hello there"),
+            Message::assistant().with_text("reply ".repeat(400)),
+        ]);
 
-        // Messages-only estimate: a two-word user turn is far under 80% of 1000.
+        // Messages-only estimate: under 80% of 1000.
         let without =
             check_if_compaction_needed(&provider, &conversation, Some(0.8), &session, None)
                 .await
                 .unwrap();
-        assert!(!without, "tiny message alone should not trip the threshold");
+        assert!(!without, "the messages alone should not trip the threshold");
 
-        // A large system prompt plus a tool pushes the same conversation over.
-        let big_system = "word ".repeat(1200);
+        // A system prompt plus a tool pushes the same conversation over.
+        let big_system = "word ".repeat(450);
         let tool = Tool::new(
             "big_tool".to_string(),
-            "A tool with a long description ".repeat(20),
+            "A tool with a long description ".repeat(5),
             std::sync::Arc::new(serde_json::Map::new()),
         );
         let with = check_if_compaction_needed(
@@ -1733,6 +1943,236 @@ mod tests {
         assert!(
             with,
             "including the system prompt + tool schemas should trip the threshold"
+        );
+    }
+
+    /// The reporter's shape: a ~133 KB request whose server truncated it and
+    /// REPORTED the truncated size (Ollama `/v1`, `prompt_tokens: 2046`).
+    fn truncated_bootstrap() -> (String, Vec<Tool>) {
+        // Word-shaped text, not one repeated byte: the exact count below runs a
+        // real BPE, which is slow on a single 80 KB "word".
+        let system = "word ".repeat(16_140);
+        let tool = Tool::new(
+            "workspace__workspace_send_prompt".to_string(),
+            "tool ".repeat(10_000),
+            std::sync::Arc::new(serde_json::Map::new()),
+        );
+        (system, vec![tool])
+    }
+
+    /// A provider-reported total below what the request can possibly occupy is
+    /// not believed: the check falls back to the estimate. Before this, a
+    /// server that truncated the prompt and REPORTED the truncated size (Ollama
+    /// `/v1`, `prompt_tokens: 2046` for 31k) read as "barely used" on every
+    /// turn, so a conversation that had genuinely outgrown the window was never
+    /// compacted while the server kept dropping the head of the prompt.
+    #[tokio::test]
+    async fn reported_usage_below_the_request_floor_is_not_trusted() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 32_768);
+        // A modest prompt under a long conversation: compaction is the fix.
+        let system = "word ".repeat(2_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("read the log"),
+            Message::assistant().with_text("line ".repeat(40_000)),
+        ]);
+        let truncated = crate::session::Session {
+            total_tokens: Some(2046),
+            ..Default::default()
+        };
+        for context in [Some((system.as_str(), &[][..])), None] {
+            assert!(
+                check_if_compaction_needed(
+                    &provider,
+                    &conversation,
+                    Some(0.8),
+                    &truncated,
+                    context
+                )
+                .await
+                .unwrap(),
+                "a 2046-token report for a ~210 KB request is a truncation, not its size \
+                 (cold context: {})",
+                context.is_some()
+            );
+        }
+
+        // A plausible report is still trusted as-is: the floor never overrides
+        // a provider that counted the whole request.
+        let (system, tools) = truncated_bootstrap();
+        let short =
+            Conversation::new_unvalidated(vec![Message::user().with_text("count the urine")]);
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 128_000);
+        let honest = crate::session::Session {
+            total_tokens: Some(31_052),
+            ..Default::default()
+        };
+        assert!(!check_if_compaction_needed(
+            &provider,
+            &short,
+            Some(0.8),
+            &honest,
+            Some((system.as_str(), tools.as_slice())),
+        )
+        .await
+        .unwrap());
+    }
+
+    /// When the system prompt and tools ALONE are over the threshold,
+    /// compacting the conversation cannot get under it, and doing it anyway
+    /// would summarise every new exchange on every turn. The check says no; the
+    /// request then fits, or overflows into the reactive path.
+    #[tokio::test]
+    async fn compaction_is_skipped_when_the_fixed_prompt_alone_is_over_the_threshold() {
+        let (system, tools) = truncated_bootstrap();
+        // Qwen3.8's real count for that bootstrap, in a 32k llama.cpp window.
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 32_768);
+        let session = crate::session::Session {
+            total_tokens: Some(31_052),
+            ..Default::default()
+        };
+        let short =
+            Conversation::new_unvalidated(vec![Message::user().with_text("count the urine")]);
+        let context = Some((system.as_str(), tools.as_slice()));
+        assert!(
+            !check_if_compaction_needed(&provider, &short, Some(0.8), &session, context)
+                .await
+                .unwrap()
+        );
+        // Without the fixed part nothing tells it apart from the conversation,
+        // so the check answers as it always did.
+        assert!(
+            check_if_compaction_needed(&provider, &short, Some(0.8), &session, None)
+                .await
+                .unwrap()
+        );
+
+        // The same window with a LONG conversation making up the overage:
+        // compaction is exactly the fix, and still runs.
+        let system = "word ".repeat(2_000);
+        let long = Conversation::new_unvalidated(vec![
+            Message::user().with_text("read the log"),
+            Message::assistant().with_text("line ".repeat(20_000)),
+        ]);
+        let session = crate::session::Session {
+            total_tokens: Some(30_000),
+            ..Default::default()
+        };
+        assert!(check_if_compaction_needed(
+            &provider,
+            &long,
+            Some(0.8),
+            &session,
+            Some((system.as_str(), &[][..]))
+        )
+        .await
+        .unwrap());
+    }
+
+    /// A conversation of file views is all embedded resources, which the
+    /// payload walk does not count. The fixed share must still see it as
+    /// conversation, or such a chat would never compact.
+    #[test]
+    fn the_fixed_share_counts_embedded_resources_as_conversation() {
+        use rmcp::model::{Content, ResourceContents};
+        let view = Content::resource(ResourceContents::TextResourceContents {
+            uri: "file:///notes.txt".into(),
+            mime_type: Some("text/plain".into()),
+            text: "note ".repeat(20_000),
+            meta: None,
+        });
+        let conversation = vec![
+            Message::assistant().with_tool_request(
+                "call-1",
+                Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: "developer__text_editor".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(rmcp::model::CallToolResult::success(vec![view])),
+            ),
+        ];
+        let system = "word ".repeat(2_000);
+        let fixed = fixed_share_of(30_000, &conversation, Some((system.as_str(), &[])))
+            .expect("the fixed part was supplied");
+        assert!(
+            fixed < 3_000,
+            "the 100 KB file view is conversation: {fixed}"
+        );
+        assert_eq!(fixed_share_of(30_000, &conversation, None), None);
+    }
+
+    /// The floor is a floor: it never exceeds what any tokenizer could make of
+    /// the text, and images / thinking (which formatters send as something
+    /// else, or not at all) do not raise it.
+    #[test]
+    fn request_token_floor_ignores_images_and_thinking() {
+        let text_only = vec![Message::user().with_text("a".repeat(8_000))];
+        assert_eq!(request_token_floor(&text_only, "", &[]), 1_000);
+
+        let with_payloads = vec![Message::user()
+            .with_text("a".repeat(8_000))
+            .with_image("i".repeat(1_000_000), "image/png")
+            .with_thinking("t".repeat(80_000), "sig")];
+        assert_eq!(request_token_floor(&with_payloads, "", &[]), 1_000);
+        assert_eq!(
+            request_token_floor(&text_only, &"s".repeat(800), &[]),
+            1_100
+        );
+    }
+
+    /// LC-1: when the instructions and tools ALONE fill the window the server
+    /// reported, the overflow is answered with one sentence naming both sizes
+    /// instead of four compactions that cannot help.
+    #[test]
+    fn an_overflow_the_fixed_prompt_causes_is_beyond_compaction() {
+        let (system, tools) = truncated_bootstrap();
+        let conversation = vec![Message::user().with_text("count the urine")];
+        for window in [4096_u64, 8192, 32_768] {
+            let detail = crate::providers::utils::context_overflow_message(31_052, window);
+            let notice = overflow_beyond_compaction(&detail, &system, &tools, &conversation)
+                .unwrap_or_else(|| panic!("a {window}-token window cannot hold the bootstrap"));
+            assert!(notice.contains(&format!("{window} tokens")), "{notice}");
+            assert!(notice.contains("Turn off some extensions"), "{notice}");
+            assert!(
+                notice.contains("raise the model's context window"),
+                "{notice}"
+            );
+            // Almost all of the request is the fixed part, so the figure is
+            // close to the server's own count.
+            assert!(
+                notice.contains("about 310") || notice.contains("about 309"),
+                "{notice}"
+            );
+        }
+    }
+
+    /// A long CONVERSATION on top of a modest prompt is exactly what compaction
+    /// is for, so the ladder keeps it; so does any overflow whose sizes the
+    /// detail does not name.
+    #[test]
+    fn an_overflow_the_conversation_causes_keeps_the_compaction_ladder() {
+        let system = "x".repeat(20_000);
+        let conversation = vec![
+            Message::user().with_text("read the log"),
+            Message::assistant().with_text("y".repeat(400_000)),
+        ];
+        let detail = crate::providers::utils::context_overflow_message(110_000, 65_536);
+        assert_eq!(
+            overflow_beyond_compaction(&detail, &system, &[], &conversation),
+            None
+        );
+        assert_eq!(
+            overflow_beyond_compaction(
+                "This model's maximum context length is 128000 tokens",
+                &"x".repeat(900_000),
+                &[],
+                &conversation
+            ),
+            None
         );
     }
 
@@ -2290,6 +2730,7 @@ mod tests {
             Arc::clone(&manager),
             eager_session_config(&id),
             0.8,
+            None,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -2418,6 +2859,7 @@ mod tests {
             Arc::clone(&manager),
             eager_session_config(&id),
             0.8,
+            None,
             || {},
         )
         .await
@@ -2474,6 +2916,7 @@ mod tests {
             Arc::clone(&manager),
             eager_session_config(&id),
             0.8,
+            None,
             || {},
         )
         .await
@@ -2510,6 +2953,7 @@ mod tests {
             Arc::clone(&manager),
             eager_session_config(&id),
             0.8,
+            None,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -2535,6 +2979,64 @@ mod tests {
             reloaded.messages().iter().all(|m| m.is_agent_visible()),
             "nothing should be hidden when compaction did not run"
         );
+    }
+
+    /// The background half of the fixed-prompt skip. Eager compaction runs
+    /// after every turn by default, so a check made there without the system
+    /// prompt and tools undid the turn-start skip: a 32k window under the ~31k
+    /// bootstrap reported ~95% after each turn, and every exchange was
+    /// summarised away in the background as soon as it happened.
+    #[tokio::test]
+    async fn eager_compaction_is_not_needed_when_the_fixed_prompt_alone_is_over_the_threshold() {
+        let (system, tools) = truncated_bootstrap();
+        let messages = vec![
+            Message::user().with_text("count the urine"),
+            Message::assistant().with_text("There are three samples."),
+        ];
+        // Qwen3.8's real count for that bootstrap, in a 32k llama.cpp window.
+        let (_temp, manager, id) = eager_test_session(messages, 31_052).await;
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(
+            Message::assistant().with_text("<mock summary>"),
+            32_768,
+        ));
+
+        let before_compact = std::sync::atomic::AtomicBool::new(false);
+        let outcome = run_eager_compaction(
+            Arc::clone(&provider),
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            Some((system.as_str(), tools.as_slice())),
+            || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::NotNeeded);
+        assert!(!before_compact.load(std::sync::atomic::Ordering::SeqCst));
+        let reloaded = manager
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            reloaded.messages().iter().all(|m| m.is_agent_visible()),
+            "the exchange must not be summarised away"
+        );
+
+        // The control: without the fixed prompt (what this path passed before),
+        // the same session IS summarised.
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            None,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
     }
 }
 
@@ -2889,6 +3391,7 @@ mod pin_tests {
             std::sync::Arc::clone(&manager),
             eager_session_config(&id),
             0.8,
+            None,
             || {},
         )
         .await

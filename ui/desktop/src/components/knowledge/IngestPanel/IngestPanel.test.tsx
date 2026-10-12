@@ -163,7 +163,7 @@ describe('IngestPanel model selection', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     render(<IngestPanel />);
@@ -171,7 +171,7 @@ describe('IngestPanel model selection', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
       )
     );
   });
@@ -300,7 +300,7 @@ describe('IngestPanel model loading state', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     render(<IngestPanel />);
@@ -308,13 +308,13 @@ describe('IngestPanel model loading state', () => {
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     expect(trigger).toHaveAccessibleName(
-      knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+      knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
     );
 
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
     await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
     expect(mocks.checkModel).toHaveBeenCalledWith({
-      body: { model: { provider: 'ollama', model: 'qwen3.6:latest' } },
+      body: { model: { provider: 'ollama', model: 'qwen3.8:27b' } },
     });
   });
 
@@ -344,14 +344,14 @@ describe('IngestPanel model freshness', () => {
     mocks.knowledge.primaryKb = {
       id: 'kb-1',
       name: 'Notes',
-      default_model: { provider: 'ollama', model: 'qwen3.6:latest' },
+      default_model: { provider: 'ollama', model: 'qwen3.8:27b' },
     };
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
       )
     );
 
@@ -362,7 +362,7 @@ describe('IngestPanel model freshness', () => {
 
     // Not "settles on the right model eventually" — the base that is no longer
     // primary must never be named once the switch has been committed.
-    expect(modelLabels()).not.toContain('ollama / qwen3.6:latest');
+    expect(modelLabels()).not.toContain('ollama / qwen3.8:27b');
     expect(trigger).toHaveAccessibleName(
       knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
     );
@@ -384,11 +384,11 @@ describe('IngestPanel model freshness', () => {
     // fixture, so nothing the resolver reads changes when the base does — the
     // choice must be scoped to kb-1 by construction, not by a dependency array.
     await act(async () => {
-      mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.6:latest' });
+      mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.8:27b' });
     });
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.6:latest', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
       )
     );
 

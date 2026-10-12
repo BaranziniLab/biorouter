@@ -264,7 +264,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
   /**
    * SD-1. Save writes `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER` and
-   * `BIOROUTER_PROVIDER` — three of the five capability keys — and the disable
+   * `BIOROUTER_PROVIDER` — three of the six capability keys — and the disable
    * branch *removes* two of them, which `/config/remove` guards identically.
    * Both directions 409 in a browser.
    */

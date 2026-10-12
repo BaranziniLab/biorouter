@@ -204,7 +204,8 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
     contents: `
       export const checkOllamaStatus = async () => ({ isRunning: false });
       export const deleteOllamaModel = async () => false;
-      export const pullOllamaModel = async () => false;
+      export const ollamaTagsForModelFile = async () => [];
+      export const pullOllamaModel = async () => ({ ok: false, error: 'stub' });
     `,
   },
 ];

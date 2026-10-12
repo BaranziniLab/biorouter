@@ -6,7 +6,7 @@
 <p><code>~/.config/biorouter/config.yaml</code> holds the provider and model, the permission mode, turn limits, the extensions under the <code>extensions</code> key, and the other general settings. The app writes it when you change Settings, <code>biorouter configure</code> writes it from a terminal, and you can edit it by hand.</p>
 <pre>
 <code>BIOROUTER_PROVIDER: llamacpp
-BIOROUTER_MODEL: gemma4
+BIOROUTER_MODEL: qwen3.8-27b
 BIOROUTER_MODE: smart_approve
 BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
@@ -58,7 +58,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
-    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>gemma4</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>qwen3.8-27b</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>

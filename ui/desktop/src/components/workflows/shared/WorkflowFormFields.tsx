@@ -660,7 +660,9 @@ export function WorkflowFormFields({
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
-                      placeholder={copy.defaultPlaceholder}
+                      // A model id, not a model that must exist: the field is
+                      // free text and the provider decides.
+                      placeholder={copy.modelNamePlaceholder}
                     />
                   </Field>
                 )}

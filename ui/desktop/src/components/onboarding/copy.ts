@@ -165,28 +165,61 @@ export const commercialCopy = {
   },
 } as const;
 
-/** Ollama's panel (`OllamaInlineCard`). Sentence case, and no exclamation marks in a toast. */
+/**
+ * Ollama's panel (`OllamaInlineCard`). Sentence case, and no exclamation marks in a toast.
+ *
+ * The models are the daemon's recommendations (`GET /ollama/recommended`), never a tag written
+ * here. Every status names a host the user chose, so "not detected" says where it looked.
+ */
 export const ollamaCopy = {
   checking: 'Checking for Ollama…',
-  checkingModel: 'Checking for model…',
-  notDetected: 'Ollama not detected',
-  running: (model: string, state: string) =>
-    `Ollama running · ${model}${
-      state === 'available' ? ' ready' : state === 'not-available' ? ' not installed' : ''
+  checkingModels: 'Checking for models…',
+  /** "Ollama not detected", or "Ollama not detected at http://127.0.0.1:11500" for a chosen host. */
+  notDetected: (host?: string) => `Ollama not detected${host ? ` at ${host}` : ''}`,
+  /**
+   * "Ollama running · qwen3.8:27b ready". The model part waits until Ollama has said what it has
+   * pulled; before that the status says only that the server answers.
+   */
+  running: (host?: string, model?: { tag: string; installed: boolean }) =>
+    `Ollama running${host ? ` at ${host}` : ''}${
+      model ? ` · ${model.tag} ${model.installed ? 'ready' : 'not installed'}` : ''
     }`,
+  /** A server this screen cannot ask (the CSP admits only 127.0.0.1): this computer's, at ::1. */
+  atHost: (host: string) => `Ollama at ${host}`,
+  /** The same, on another computer. */
+  onAnotherComputer: (host: string) => `Ollama on another computer · ${host}`,
+  remoteNote: (host: string) =>
+    `Biorouter is set to use the Ollama server at ${host}. This screen can only check an Ollama at 127.0.0.1, so it cannot see which models that server has. Pull the model there first, then connect.`,
+  pullCommand: (tag: string) => `ollama pull ${tag}`,
+  /** The daemon answered with nothing usable; a refusal is shown in its own words instead. */
+  noRecommendations: 'Biorouter could not read its recommended Ollama models.',
+  tryAgain: 'Try again',
+  model: 'Model',
+  /**
+   * An option of the Model picker: "Qwen3.8 27B (recommended) · ~18 GB · Needs download", the
+   * Llama Server picker's words. A server this screen cannot ask has no state word: it is not
+   * guessed.
+   */
+  recommended: (name: string) => `${name} (recommended)`,
+  approxSize: (gb: number) => `~${gb} GB`,
+  installed: 'Installed',
+  needsDownload: 'Needs download',
   install: 'Install Ollama',
   waiting: 'Waiting for Ollama to start…',
-  /** The model's name is on the status line; the button says what it does and its size. */
-  downloadModel: 'Download model (11 GB)',
+  /** The model's name is in the picker above; the button says what it does and its size. */
+  downloadModel: (gb: number) => `Download model (~${gb} GB)`,
+  downloading: (tag: string) => `Downloading ${tag}…`,
   startingDownload: 'Starting download…',
   use: 'Use Ollama',
   connecting: 'Connecting…',
   detectedToast: 'Ollama is running',
   detectedToastDetail: 'You can connect to it now.',
   downloadedToast: 'Model downloaded',
-  downloadedToastDetail: (model: string) => `Downloaded ${model}.`,
+  downloadedToastDetail: (name: string, tag: string) => `${name} (${tag}) is ready in Ollama.`,
   downloadFailed: 'Download failed',
-  downloadFailedDetail: (model: string) => `Could not download ${model}. Try again.`,
+  /** Ollama's own reason: a failed pull used to be reported as a download. */
+  downloadFailedDetail: (tag: string, reason: string) =>
+    `Ollama could not download ${tag}: ${reason}`,
   connectedToast: 'Connected to Ollama',
   connectedToastDetail: (model: string) => `Chats start on ${model}.`,
   connectFailed: 'Connection failed',

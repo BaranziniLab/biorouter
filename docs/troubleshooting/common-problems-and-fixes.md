@@ -66,15 +66,31 @@ This error occurs when the input provided to biorouter exceeds the maximum token
 
 ### Using the Ollama provider
 
-Ollama provides local LLMs, which means you must first [download Ollama and run a model](../getting-started/choosing-a-model-provider.md#ollama-local) before attempting to use this provider with biorouter. If you do not have the model downloaded, you'll run into the following error:
+Ollama provides local LLMs, which means you must first [install Ollama and pull a model](../getting-started/choosing-a-model-provider.md#ollama-local) before attempting to use this provider with biorouter. Two errors mean that step is missing (both measured with Ollama 0.40.2):
 
 ```text
-ExecutionError("error sending request for url (http://localhost:11434/v1/chat/completions)")
+Request failed: error sending request for url (http://127.0.0.1:11434/api/chat) (failed to connect to 127.0.0.1:11434, check that the port is correct).
 ```
 
-Another thing to note is that the DeepSeek models do not support tool calling, so all biorouter [extensions must be disabled](../extensions/extensions-and-skills-guide.md#managing-extensions) to use one of these models. Unfortunately, without the use of tools, there is not much biorouter will be able to do autonomously if using DeepSeek. However, Ollama's other models such as `qwen2.5` do support tool calling and can be used with biorouter extensions.
+means no Ollama server answered: start Ollama, or check `OLLAMA_HOST`. Versions of biorouter before October 2026 named `/v1/chat/completions` in this message instead of `/api/chat`.
 
-> **Note.** The provider guide gives `qwen3` as biorouter's current default Ollama model. See [Ollama (local)](../getting-started/choosing-a-model-provider.md#ollama-local) for the models it lists today.
+```text
+Request failed: Ollama model not found: qwen3.8:27b is not downloaded on this Ollama server. Run: ollama pull qwen3.8:27b  (Ollama said: model 'qwen3.8:27b' not found).
+```
+
+means the server is running but the model is not pulled; run the command it names.
+
+Use one of the two recommended models, `qwen3.8:27b` (the default) or `gemma4:31b`. Many other Ollama models cannot call tools reliably: some write every tool call as JSON text, some return empty replies, and some (such as `deepseek-r1:8b`) never call a tool and invent its output. [Tool-call protocols](../providers/ollama/tool-call-protocols.md#which-models-to-use) lists what 12 models did and which to avoid.
+
+### The model writes JSON instead of calling tools
+
+If a local model answers with text such as `{"name": "developer__shell", "arguments": {...}}` instead of running the tool:
+
+1. **Update Ollama** to 0.32.12 or later, which the recommended model `qwen3.8:27b` needs. Versions before 0.12.6 also cut a prompt that does not fit the context window instead of refusing it, and a model that sees only the end of biorouter's instructions writes invented tool calls as text. Biorouter now discards a reply to a prompt the server cut and says so, but it cannot make an old server stop cutting.
+2. **Read the error.** A prompt that does not fit now stops the turn with a message naming the prompt size and the window. If it says biorouter's instructions and tools alone fill the window, set `OLLAMA_NUM_CTX` higher or turn off extensions you are not using.
+3. **Switch to a recommended model**, `qwen3.8:27b` or `gemma4:31b`. Some models, such as `qwen2.5-coder:7b`, write every call as text through Ollama whatever the prompt. Biorouter runs such a call only when the whole reply is the call, every tool it names was offered, and its arguments are valid for that tool; a call that follows other text is shown as text.
+
+[Context window and settings](../providers/ollama/context-window-and-settings.md) explains how biorouter sizes the window and catches a cut prompt.
 
 ### Connection error with the Ollama provider on WSL
 

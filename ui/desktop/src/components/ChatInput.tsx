@@ -35,8 +35,9 @@ import { Workflow } from '../workflow';
 import MessageQueue, { canSteerMessage } from './MessageQueue';
 import { steerUnavailableReason } from './privacy/steerUnavailableCopy';
 import { detectInterruption } from '../utils/interruptionDetector';
-import { getSession, llamacppStatus, Message } from '../api';
+import { getSession, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
+import { liveContextWindow } from '../utils/liveContextWindow';
 import type { SessionClassification } from '../api/types.gen';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
@@ -511,6 +512,9 @@ export default function ChatInput({
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   // Counts window lookups so only the newest one may settle (see loadProviderDetails).
   const tokenLimitRequestRef = useRef(0);
+  // The chat's state one render ago, so the idle re-read below fires once per
+  // finished turn rather than on every render.
+  const previousGaugeChatStateRef = useRef(chatState);
   // The model the footer ring must measure for now: this chat's binding, else the
   // app's selection. `tokenLimitModel` is the model the window in `tokenLimit`
   // was looked up for. The ring draws a window only when the two agree, and
@@ -1387,17 +1391,20 @@ export default function ChatInput({
 
   // Load providers and get current model's token limit
   const loadProviderDetails = async () => {
-    // Only the newest lookup may settle the window. The composer mounts before
-    // the chat's row names its binding (run 1 measures the app's selected
-    // model, run 2 the chat's pinned one), and a person can change model twice
-    // quickly; an older run that finishes later is about a model this chat is
-    // no longer bound to, and the footer ring draws whatever window is marked
-    // loaded.
+    // Only the newest lookup may settle the window, checked after every await.
+    // The composer mounts before the chat's row names its binding (run 1
+    // measures the app's selected model, run 2 the chat's pinned one), a person
+    // can change model twice quickly, and the Ollama branch of
+    // `liveContextWindow` waits on the daemon's `/api/show` probe of
+    // `OLLAMA_HOST`, up to 15 s against a host that drops packets. An older run
+    // that finishes later is about a model this chat is no longer bound to, and
+    // the footer ring draws whatever window is marked loaded.
     const request = ++tokenLimitRequestRef.current;
+    const current = () => request === tokenLimitRequestRef.current;
     // The model this lookup answers for, from the render that started it.
     const forModel = contextModel;
     const settle = (limit: number, loaded: boolean) => {
-      if (request !== tokenLimitRequestRef.current) return;
+      if (!current()) return;
       setTokenLimit(limit);
       setIsTokenLimitLoaded(loaded);
       setTokenLimitModel(forModel);
@@ -1415,6 +1422,7 @@ export default function ChatInput({
       // entirely. When nothing is pinned, or the pin names what is already
       // selected, this resolves to exactly what it always did.
       const selected = await getCurrentModelAndProvider();
+      if (!current()) return;
       const model = effectiveModel?.model ?? selected.model;
       const provider = effectiveModel?.provider ?? selected.provider;
       if (!model || !provider) {
@@ -1428,22 +1436,15 @@ export default function ChatInput({
         return;
       }
 
-      // Llama Server (local models): the real context window is a live property
-      // of the loaded model, read from the running server's /props. Prefer it
-      // over any static catalog/default so the gauge matches the CLI/backend
-      // (e.g. a 262k model instead of the 128k fallback). Only when the sidecar
-      // has reported a window; otherwise fall through to the static logic.
-      if (provider === 'llamacpp') {
-        try {
-          const status = await llamacppStatus();
-          const ctx = status.data?.sidecar?.context_size;
-          if (typeof ctx === 'number' && ctx > 0) {
-            settle(ctx, true);
-            return;
-          }
-        } catch (e) {
-          console.warn('Failed to read llama-server context window, using fallback:', e);
-        }
+      // Local models (Llama Server, Ollama): the real context window is a
+      // property of the running server, not of the model's name. Prefer it over
+      // any static catalog/default so the gauge matches what the agent works
+      // with; only when the server has not said does the static logic below run.
+      const live = await liveContextWindow(provider, model);
+      if (!current()) return;
+      if (live !== null) {
+        settle(live, true);
+        return;
       }
 
       // First, check predefined models from environment (highest priority)
@@ -1455,6 +1456,7 @@ export default function ChatInput({
       }
 
       const providers = await getProviders(true);
+      if (!current()) return;
 
       // Find the provider details for the current provider
       const currentProvider = providers.find((p) => p.name === provider);
@@ -1490,6 +1492,21 @@ export default function ChatInput({
     loadProviderDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentModel, currentProvider, effectiveModel?.provider, effectiveModel?.model]);
+
+  useEffect(() => {
+    const previous = previousGaugeChatStateRef.current;
+    previousGaugeChatStateRef.current = chatState;
+    const provider = effectiveModel?.provider ?? currentProvider;
+    // Ollama can lower its automatic window after the runner's first load.
+    if (
+      chatState === ChatState.Idle &&
+      previous !== ChatState.Idle &&
+      (provider === 'ollama' || provider === 'llamacpp')
+    ) {
+      void loadProviderDetails();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatState, currentProvider, effectiveModel?.provider]);
 
   // Cleanup effect for component unmount - prevent memory leaks
   useEffect(() => {

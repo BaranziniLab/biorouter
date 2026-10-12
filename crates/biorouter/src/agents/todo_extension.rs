@@ -243,6 +243,15 @@ impl TodoClient {
         let message = self
             .with_state(session_id, move |state| {
                 state.set_from_markdown(&content);
+                // A write that names no item is refused, and `with_state`
+                // persists nothing on an error, so the existing checklist
+                // survives. It used to succeed as "Todo list set: 0 item(s)",
+                // silently replacing the list with nothing (PR #393 F07
+                // rerun, ministral-3:8b: five such writes, then the
+                // repetition guard). Blank content still clears the list.
+                if state.items.is_empty() && !content.trim().is_empty() {
+                    return Err(no_checklist_items_message(&content));
+                }
                 if max_items > 0 && state.items.len() > max_items {
                     return Err(format!(
                         "Todo list too long: {} items (max: {})",
@@ -515,6 +524,26 @@ impl TodoClient {
             ),
         ]
     }
+}
+
+/// The refusal for a `todo_write` whose `content` names no checklist item:
+/// the format, and the first line that was not one.
+fn no_checklist_items_message(content: &str) -> String {
+    let first = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let first: String = if first.chars().count() > 80 {
+        format!("{}…", first.chars().take(80).collect::<String>())
+    } else {
+        first.to_string()
+    };
+    format!(
+        "0 checklist items parsed, so the checklist was left unchanged. Write one item per \
+         line, like `- [ ] step` (`- [~]` in progress, `- [!]` blocked, `- [x]` done). The \
+         first line was `{first}`."
+    )
 }
 
 /// Read a required string argument.
@@ -1106,6 +1135,63 @@ mod tests {
         let reinjected = client.get_moim(&id).await.unwrap();
         assert!(reinjected.contains("- [x] (#1) shipped"), "{reinjected}");
         assert!(reinjected.contains("  - [ ] (#3) step one"), "{reinjected}");
+    }
+
+    /// PR #393 F07 rerun (ministral-3:8b, 2026-10-12): `-  [  ] Create…` and
+    /// `-   [ ] Create…` parsed as nothing, and each write answered "Todo
+    /// list set: 0 item(s)" as a success until the repetition guard fired.
+    /// The spacing is read as written, and a write that still names no item
+    /// is refused with the format, leaving the existing list in place.
+    #[tokio::test]
+    async fn todo_write_reads_loose_spacing_and_refuses_a_write_that_names_no_item() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo loose spacing").await;
+
+        let loose = call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({
+                "content": "-  [  ] Create factorial.py\n-   [ ] Run it for N=5\n- [ x ] Plan"
+            }),
+        )
+        .await;
+        assert_eq!(loose.is_error, Some(false), "{}", text(&loose));
+        assert_eq!(text(&loose), "Todo list set: 3 item(s)");
+
+        let nothing = call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "1. Create factorial.py\n2. Run it"}),
+        )
+        .await;
+        assert_eq!(nothing.is_error, Some(true));
+        let refusal = text(&nothing);
+        assert!(
+            refusal.contains("0 checklist items parsed")
+                && refusal.contains("left unchanged")
+                && refusal.contains("`- [ ] step`")
+                && refusal.contains("`1. Create factorial.py`"),
+            "{refusal}"
+        );
+        let reinjected = client.get_moim(&id).await.unwrap();
+        assert!(
+            reinjected.contains("- [ ] (#1) Create factorial.py")
+                && reinjected.contains("- [x] (#3) Plan"),
+            "the refused write must leave the list: {reinjected}"
+        );
+
+        // Blank content still clears it.
+        let cleared = call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "  \n"}),
+        )
+        .await;
+        assert_eq!(cleared.is_error, Some(false), "{}", text(&cleared));
+        assert_eq!(text(&cleared), "Todo list set: 0 item(s)");
     }
 
     #[tokio::test]

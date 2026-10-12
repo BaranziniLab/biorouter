@@ -103,7 +103,7 @@
   <li><strong>Public.</strong> Claude Code and Codex use the vendor's command line tool, installed and signed in to your own plan; Biorouter never sees the credential. Anthropic, OpenAI and Google Gemini need an API key from that provider. The others ask for that provider's own key or account credentials.</li>
 </ul>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them when you save. From a terminal, run <code>biorouter configure</code> and choose <strong>Configure Providers</strong>. <a href="#providers">Models and providers</a> lists every provider and its default model, and <a href="#vaulting">Security</a> explains where credentials are kept.</p>
-<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model or a private data extension, it stays private, and Biorouter refuses to switch it to a public model. To change that, choose <strong>Make this chat public</strong> in Chat history, or run <code>biorouter session declassify</code>. See <a href="#privacy">Private and public</a>.</p>
+<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, an Ollama cloud model, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model or a private data extension, it stays private, and Biorouter refuses to switch it to a public model. To change that, choose <strong>Make this chat public</strong> in Chat history, or run <code>biorouter session declassify</code>. See <a href="#privacy">Private and public</a>.</p>
 <div class="note"><p><strong>UCSF researchers:</strong> use the two Versa providers on the Institutional tab. Azure OpenAI and Amazon Bedrock on the Public tab stay public even if you point them at a UCSF endpoint, because Biorouter cannot check where they send data.</p></div>
 
 <h2 id="getstarted-first-chat">Start a chat</h2>
@@ -360,7 +360,7 @@ biorouter run --workflow variants.yaml --params gene=HLA-DRB1
 biorouter run --workflow variants.yaml --explain</code></pre>
 <p>For an unattended run, pin the model and set a limit, as below. The flags are under <a href="#cli-ref-run">Reference</a>, and the exit code says why a run stopped (<a href="#cli-exit-codes">Exit codes</a>).</p>
 <pre>
-<code>biorouter run --no-session --provider llamacpp --model gemma4 \
+<code>biorouter run --no-session --provider llamacpp --model qwen3.8-27b \
   --output-format json --max-turns 10 \
   -t "Check samples.csv for duplicate sample IDs"</code></pre>
 
@@ -456,8 +456,8 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code>providers</code></td><td>Every provider.</td></tr>
     <tr><td><code>list</code></td><td>The models one provider offers, as <code>models list ollama</code>.</td></tr>
     <tr><td><code>set</code></td><td>Set the default, as <code>--provider P --model M</code>.</td></tr>
-    <tr><td><code>local list</code></td><td>The Llama Server catalog and what is downloaded. Also <code>ls</code>.</td></tr>
-    <tr><td><code>local pull</code></td><td>Download a model ahead of time: a catalog name such as <code>gemma4</code>, or a Hugging Face <code>owner/repo:QUANT</code>.</td></tr>
+    <tr><td><code>local list</code></td><td>The Llama Server catalog, what is downloaded, and which copy it starts from. Also <code>ls</code>.</td></tr>
+    <tr><td><code>local pull</code></td><td>Download a model ahead of time: a catalog name, <code>qwen3.8-27b</code> or <code>gemma4-31b</code>, or a Hugging Face <code>owner/repo:QUANT</code>. A name from an earlier version downloads the model it now runs.</td></tr>
     <tr><td><code>local rm</code></td><td>Delete a downloaded model. Also <code>delete</code>.</td></tr>
   </tbody>
 </table></div>
@@ -654,25 +654,20 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter v1.92.1 picks when you configure a provider without naming a model. An existing setup keeps its saved main model.</p></div>
 
 <h2 id="providers-local">Local</h2>
-<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
+<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Model and CLI name</th><th>Download</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td><strong>Gemma 4 E4B</strong><br><code>gemma4</code></td><td>9.6 GB</td><td>Default under 64 GiB</td></tr>
-    <tr><td><strong>Gemma 4 E2B</strong><br><code>gemma4-e2b</code></td><td>3.1 GB</td><td>Smallest; good on 16 GiB</td></tr>
-    <tr><td><strong>Gemma 4 12B</strong><br><code>gemma4-12b</code></td><td>7.6 GB</td><td>Default at 64 GiB or more</td></tr>
-    <tr><td><strong>Gemma 4 26B</strong><br><code>gemma4-26b</code></td><td>18 GB</td><td>Mixture of experts; 48 GiB</td></tr>
-    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>20 GB</td><td>Largest Gemma 4; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 35B</strong><br><code>qwen3.6</code></td><td>24 GB</td><td>Mixture of experts; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 27B</strong><br><code>qwen3.6-27b</code></td><td>17 GB</td><td>Dense; 48 GiB</td></tr>
+    <tr><td><strong>Qwen3.8 27B</strong><br><code>qwen3.8-27b</code></td><td>19 GB</td><td>Default on every machine</td></tr>
+    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>18 GB</td><td>Google's own 4-bit build</td></tr>
   </tbody>
 </table></div>
-<p>The memory figures are what the GPU can use; on a Mac, that is the unified memory. The two mixture of experts models use about 3B to 4B parameters per token, so they are fast once loaded, but they are large downloads. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
-<pre><code>biorouter models local pull gemma4-12b
+<p>Both models need 32 GiB of memory the GPU can use, and 48 GiB is recommended; on a Mac, that is the unified memory. On a smaller machine they still run, slowly. On an Intel Mac the bundled server has no GPU acceleration, so replies come at a few tokens per second. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. A model name from an earlier version, such as <code>gemma4</code> or <code>gemma4-12b</code>, now runs Qwen3.8 27B. To download a model before you need it:</p>
+<pre><code>biorouter models local pull qwen3.8-27b
 biorouter models local list</code></pre>
-<p>The context window is sized to your memory (128k tokens at 64 GiB or more, 64k at 16 GiB or more, otherwise 32k). Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
-<p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Pull a model (<code>ollama pull qwen3</code>) and select it. Default model: <code>qwen3</code>.</p>
-<div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public.</p></div>
+<p>The context window is sized to your memory: 128k tokens at 48 GiB or more, otherwise 64k. Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
+<p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Use Ollama 0.32.12 or later, which <code>qwen3.8:27b</code> needs, pull a model (<code>ollama pull qwen3.8:27b</code>) and select it. Default model: <code>qwen3.8:27b</code>. Biorouter also supports <code>gemma4:31b</code>. Other models may write their tool calls as text instead of making them. Biorouter sets the context window it needs; <code>OLLAMA_NUM_CTX</code> overrides it.</p>
+<div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public. An Ollama cloud model is public too, even on this computer's Ollama, because Ollama answers it from ollama.com.</p></div>
 
 <h2 id="providers-institutional">Institutional</h2>
 <p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>
@@ -764,13 +759,13 @@ npm install -g @openai/codex@latest</code></pre></li>
 <h2 id="providers-switching">Switch models</h2>
 <p><strong>In a chat.</strong> Choose the model chip in the composer, then <strong>Change model…</strong>, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
 <p><strong>In a terminal.</strong> <code>biorouter models set</code> changes the default provider and model, and the same flags on <code>biorouter session</code> or <code>biorouter run</code> change them for one chat. Name only a provider other than your default, and it runs its own default model:</p>
-<pre><code>biorouter models set --provider ollama --model qwen3
-biorouter session --provider llamacpp --model gemma4
+<pre><code>biorouter models set --provider ollama --model qwen3.8:27b
+biorouter session --provider llamacpp --model gemma4-31b
 biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p><strong>In a workflow.</strong> A workflow can name its own model, so everyone who opens it starts on that model if they have that provider set up:</p>
 <pre><code>settings:
   biorouter_provider: llamacpp
-  biorouter_model: gemma4-12b</code></pre>
+  biorouter_model: qwen3.8-27b</code></pre>
 <p><strong>Lead and worker.</strong> Set <code class="code-token">BIOROUTER_LEAD_MODEL</code> (and <code class="code-token">BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
 </div>
 
@@ -801,7 +796,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
   </div>
   <figcaption>What is private, and what it makes private in turn.</figcaption>
 </figure>
-<p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
+<p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public, and so is an Ollama cloud model (a tag such as <code>gpt-oss:120b-cloud</code>), because Ollama sends it to ollama.com. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
 <p>A private chat, model, extension or knowledge base shows a padlock and the word Private. Public ones show the word Public.</p>
 
 <h2 id="privacy-becomes">How a chat becomes private</h2>
@@ -1854,7 +1849,7 @@ biorouter session attach &lt;id&gt;</code></pre>
 <p><code>~/.config/biorouter/config.yaml</code> holds the provider and model, the permission mode, turn limits, the extensions under the <code>extensions</code> key, and the other general settings. The app writes it when you change Settings, <code>biorouter configure</code> writes it from a terminal, and you can edit it by hand.</p>
 <pre>
 <code>BIOROUTER_PROVIDER: llamacpp
-BIOROUTER_MODEL: gemma4
+BIOROUTER_MODEL: qwen3.8-27b
 BIOROUTER_MODE: smart_approve
 BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
@@ -1906,7 +1901,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
-    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>gemma4</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>qwen3.8-27b</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>

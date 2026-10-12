@@ -53,16 +53,42 @@ vi.mock('../../ConfigContext', () => ({
 vi.mock('../../InAppTerminalDock', () => ({
   default: () => <div data-testid="in-app-terminal-dock" />,
 }));
-// Ollama is running and has its model, so its panel offers "Use Ollama" (never a real request).
-vi.mock('../../../utils/ollamaDetection', () => ({
+// Ollama is running and has the daemon's recommended model, so its panel offers "Use Ollama"
+// (never a real request: the recommendations come from `/ollama/recommended` through this module).
+vi.mock('../../../utils/ollamaDetection', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOllamaSetup: vi.fn(async () => ({
+    recommendations: {
+      models: [
+        {
+          tag: 'qwen3.8:27b',
+          display_name: 'Qwen3.8 27B',
+          approx_download_gb: 18,
+          is_default: true,
+        },
+      ],
+      default_model: 'qwen3.8:27b',
+      min_memory_gib: 32,
+      memory_gib: 64,
+      memory_kind: 'apple_unified',
+      suitability: 'suitable',
+      suitability_message: '',
+      base_url: 'http://localhost:11434/',
+      host_configured: false,
+      tier: 'private',
+    },
+    host: 'http://127.0.0.1:11434',
+    reachable: true,
+    private: true,
+  })),
   checkOllamaStatus: vi.fn(async () => ({ isRunning: true, host: 'http://127.0.0.1:11434' })),
-  getOllamaModels: vi.fn(async () => []),
-  hasModel: vi.fn(async () => true),
-  pullOllamaModel: vi.fn(async () => false),
+  getOllamaModels: vi.fn(async () => [
+    { name: 'qwen3.8:27b', model: 'qwen3.8:27b', size: 1, digest: 'd', modified_at: '' },
+  ]),
+  pullOllamaModel: vi.fn(async () => ({ ok: false, error: 'not in a test' })),
   deleteOllamaModel: vi.fn(async () => false),
   pollForOllama: vi.fn(() => () => {}),
   getOllamaDownloadUrl: () => 'https://ollama.com/download',
-  getPreferredModel: () => 'gpt-oss:20b',
 }));
 
 function provider(

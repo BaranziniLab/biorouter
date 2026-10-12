@@ -6695,6 +6695,63 @@
         ]
       }
     },
+    "/ollama/context_window": {
+      "get": {
+        "tags": [
+          "super::routes::ollama"
+        ],
+        "operationId": "ollama_context_window",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "description": "The Ollama model tag, e.g. `qwen3.8:27b`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The context window Biorouter uses for this Ollama model (null when the server could not describe it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaContextWindowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty model name, or OLLAMA_HOST is not a usable address"
+          }
+        }
+      }
+    },
+    "/ollama/recommended": {
+      "get": {
+        "tags": [
+          "super::routes::ollama"
+        ],
+        "operationId": "ollama_recommended",
+        "responses": {
+          "200": {
+            "description": "The Ollama models Biorouter recommends, this machine's memory, and the configured Ollama server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OllamaRecommendationsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OLLAMA_HOST is not a usable address"
+          }
+        }
+      }
+    },
     "/privacy/disclosure": {
       "get": {
         "tags": [
@@ -14218,7 +14275,7 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
+            "description": "Catalog model name (e.g. `qwen3.8-27b`), retired catalog name (whose\nown cache is deleted), or raw Hugging Face spec."
           }
         }
       },
@@ -14246,7 +14303,7 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
+            "description": "Catalog model name (e.g. `qwen3.8-27b`) or raw Hugging Face spec. A\nretired catalog name starts the default model."
           }
         }
       },
@@ -14392,6 +14449,8 @@
         "enum": [
           "suitable",
           "above_recommendation",
+          "below_minimum",
+          "cpu_only",
           "unknown_resources"
         ]
       },
@@ -14409,13 +14468,13 @@
           "accelerator_memory_gib": {
             "type": "integer",
             "format": "int64",
-            "description": "Apple Silicon unified memory, or detected discrete VRAM elsewhere.",
+            "description": "Apple Silicon unified memory, system RAM on a CPU-only machine, or\ndetected discrete VRAM elsewhere.",
             "nullable": true,
             "minimum": 0
           },
           "accelerator_memory_kind": {
             "type": "string",
-            "description": "`apple_unified`, `vram`, or `unknown_vram`."
+            "description": "`apple_unified`, `cpu_only`, `vram`, or `unknown_vram`."
           },
           "default_context_size": {
             "type": "integer",
@@ -14446,7 +14505,7 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
+            "description": "Catalog model name (e.g. `qwen3.8-27b`) or raw Hugging Face spec. A\nretired catalog name warms the default model."
           }
         }
       },
@@ -15950,6 +16009,124 @@
           }
         },
         "additionalProperties": false
+      },
+      "OllamaContextWindowResponse": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "context_window": {
+            "type": "integer",
+            "description": "The `num_ctx` Biorouter sends for this model to the configured server:\n`OLLAMA_NUM_CTX`, else a context limit set on the model\n(`BIOROUTER_CONTEXT_LIMIT`, or a predefined model's limit), else the\nmemory tier (64k, or 128k with 64 GiB or more), capped at the window\nthe model was trained for. Null when the server could not describe the\nmodel (unreachable, not Ollama, or the model is not pulled).",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      },
+      "OllamaRecommendationsResponse": {
+        "type": "object",
+        "required": [
+          "models",
+          "default_model",
+          "min_memory_gib",
+          "memory_kind",
+          "suitability",
+          "suitability_message",
+          "base_url",
+          "host_configured",
+          "tier"
+        ],
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "description": "The Ollama server the provider talks to: `OLLAMA_HOST` resolved exactly\nas the provider (and the Ollama CLI) resolve it, so the desktop probes\nthe server a chat will actually use."
+          },
+          "default_model": {
+            "type": "string",
+            "description": "The model the Ollama provider uses when none is chosen."
+          },
+          "host_configured": {
+            "type": "boolean",
+            "description": "Whether `OLLAMA_HOST` is set, in the config file or the environment.\nOnboarding writes the default only when it is not: it used to write\n`localhost` unconditionally, replacing a remote host the user had chosen."
+          },
+          "memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The memory the Ollama provider sizes its context window by\n(`providers::ollama::sizing_memory`): unified memory on Apple Silicon,\nsystem RAM on an Intel Mac, detected VRAM elsewhere — on Linux an NVIDIA\nGPU's, never system RAM. Null when it could not be measured.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "memory_kind": {
+            "type": "string",
+            "description": "`apple_unified`, `cpu_only`, `vram`, or `unknown_vram`."
+          },
+          "min_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "GPU-addressable memory below which the recommended models are below\ntheir practical minimum.",
+            "minimum": 0
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OllamaRecommendedModel"
+            },
+            "description": "Default first."
+          },
+          "suitability": {
+            "$ref": "#/components/schemas/OllamaSuitability"
+          },
+          "suitability_message": {
+            "type": "string",
+            "description": "One or two sentences for the user, written for this machine."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ProviderTier"
+          }
+        }
+      },
+      "OllamaRecommendedModel": {
+        "type": "object",
+        "description": "One model Biorouter recommends pulling into Ollama.",
+        "required": [
+          "tag",
+          "display_name",
+          "approx_download_gb",
+          "is_default"
+        ],
+        "properties": {
+          "approx_download_gb": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Approximate download size, in GB.",
+            "minimum": 0
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "True for the model the Ollama provider uses when none is chosen."
+          },
+          "tag": {
+            "type": "string",
+            "description": "The tag to `ollama pull` (e.g. `qwen3.8:27b`)."
+          }
+        }
+      },
+      "OllamaSuitability": {
+        "type": "string",
+        "description": "Whether this machine can run the recommended models at a usable speed.",
+        "enum": [
+          "suitable",
+          "below_minimum",
+          "cpu_only",
+          "unknown_resources"
+        ]
       },
       "PackageSummary": {
         "type": "object",

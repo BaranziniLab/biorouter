@@ -46,7 +46,7 @@ function provider(name: string, displayName: string, models: string[]): Provider
 }
 
 const OPENAI = provider('openai', 'OpenAI', ['gpt-5.5']);
-const OLLAMA = provider('ollama', 'Ollama', ['qwen3.6:latest']);
+const OLLAMA = provider('ollama', 'Ollama', ['qwen3.8:27b']);
 const CLAUDE_CODE = provider('claude_code', 'Claude Code', ['opus-5']);
 const CODEX = provider('codex', 'Codex', ['gpt-5.4-codex']);
 

@@ -1119,14 +1119,18 @@ enum LocalModelCommand {
     /// Download a local model into the shared cache without starting a chat
     #[command(about = "Download (pre-cache) a local model")]
     Pull {
-        #[arg(help = "Catalog model name (e.g. qwen3.5-4b) or a raw owner/repo:QUANT HF spec")]
+        #[arg(
+            help = "Catalog model name (qwen3.8-27b or gemma4-31b) or a raw owner/repo:QUANT HF spec; a retired catalog name downloads the model a chat naming it runs"
+        )]
         model: String,
     },
 
     /// Delete a downloaded local model to reclaim disk space
     #[command(about = "Delete a downloaded local model", visible_alias = "delete")]
     Rm {
-        #[arg(help = "Catalog model name (e.g. gemma4) or a raw owner/repo:QUANT HF spec")]
+        #[arg(
+            help = "Catalog model name (e.g. qwen3.8-27b), a retired catalog name (e.g. gemma4) to free the files it left, or a raw owner/repo:QUANT HF spec"
+        )]
         model: String,
     },
 }
@@ -3854,6 +3858,68 @@ mod default_max_turns_tests {
             fallback.contains("DEFAULT_MAX_TURNS"),
             "the configure dialog's max-turns fallback restates a literal instead of reading \
              DEFAULT_MAX_TURNS; it read 1000 while the agent used 100"
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_model_help_tests {
+    use super::Cli;
+    use biorouter::providers::llamacpp::{MODEL_CATALOG, RETIRED_MODELS};
+    use clap::CommandFactory;
+
+    fn model_arg_help(subcommand: &str) -> String {
+        let mut command = Cli::command();
+        let local = command
+            .find_subcommand_mut("models")
+            .and_then(|models| models.find_subcommand_mut("local"))
+            .expect("`biorouter models local` exists");
+        let sub = local
+            .find_subcommand_mut(subcommand)
+            .unwrap_or_else(|| panic!("`biorouter models local {subcommand}` exists"));
+        let help = sub
+            .get_arguments()
+            .find(|arg| arg.get_id() == "model")
+            .and_then(|arg| arg.get_help())
+            .map(|help| help.to_string());
+        help.unwrap_or_else(|| panic!("`{subcommand}` has a model argument with help"))
+    }
+
+    /// `pull`'s help named `qwen3.5-4b` through two catalog changes: an example
+    /// that, followed, downloaded a model no chat would run. It must name only
+    /// models the catalog offers, and the clap `help` string cannot read the
+    /// catalog itself, so this keeps the literal honest.
+    #[test]
+    fn pull_help_names_the_catalog_and_no_retired_model() {
+        let help = model_arg_help("pull");
+        for entry in MODEL_CATALOG {
+            assert!(help.contains(entry.name), "{help}");
+        }
+        for retired in RETIRED_MODELS {
+            let named = help
+                .split(|c: char| c.is_whitespace() || "(),;".contains(c))
+                .any(|word| word == retired.name);
+            assert!(!named, "pull help names retired {}: {help}", retired.name);
+        }
+    }
+
+    /// `rm` may name a retired model (deleting its files is what it is for), but
+    /// its first example must be a model the catalog offers.
+    #[test]
+    fn rm_help_leads_with_a_catalog_model() {
+        let help = model_arg_help("rm");
+        let first_catalog_name = MODEL_CATALOG
+            .iter()
+            .filter_map(|entry| help.find(entry.name))
+            .min()
+            .expect("rm help names a catalog model");
+        let first_retired_name = RETIRED_MODELS
+            .iter()
+            .filter_map(|retired| help.find(&format!("e.g. {}", retired.name)))
+            .min();
+        assert!(
+            first_retired_name.is_none_or(|at| first_catalog_name < at),
+            "{help}"
         );
     }
 }
