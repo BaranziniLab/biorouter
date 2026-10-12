@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import LlamaServerInlineCard from './LlamaServerInlineCard';
 import { llamaCopy } from './copy';
 import { localModelsCopy } from '../settings/models/copy';
@@ -430,7 +430,14 @@ describe('LlamaServerInlineCard', () => {
       expect(note).not.toBeNull();
       const view = render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
       fireEvent.click(await screen.findByRole('button', { name: llamaCopy.advanced }));
-      expect(await screen.findByTestId('llamacpp-details')).toHaveTextContent(note as string);
+      const details = await screen.findByTestId('llamacpp-details');
+      // The Memory row's InfoTip (principle 2), not a row of its own labelled "Detected memory".
+      expect(
+        within(details).getByRole('button', {
+          name: `About ${localModelsCopy.windowsVramLabel}`,
+        })
+      ).toHaveAccessibleDescription(note as string);
+      expect(within(details).queryByText(localModelsCopy.detail.detectedMemory)).toBeNull();
       view.unmount();
       resetLlamaServerStoreForTests();
 

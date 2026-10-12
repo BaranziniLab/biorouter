@@ -45,6 +45,19 @@ export const stateWord = (model: LlamaCppModel) =>
 export const speedWord = (model: LlamaCppModel) => model.speed_hint.split(/[,;—]/)[0].trim();
 
 /**
+ * The catalog's speed hint without its memory clause, for an Expected speed row: "Moderate, dense
+ * 27B" from "Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended" (#393). The
+ * memory figures are the Memory rows' to say, in GB (vision FR-R4-5), and saying them twice, in two
+ * units, a line apart, was the defect.
+ */
+export const speedDetail = (model: LlamaCppModel) =>
+  model.speed_hint
+    .split(';')
+    .map((clause) => clause.trim())
+    .filter((clause, index) => index === 0 || !/\bGi?B\b/.test(clause))
+    .join('; ');
+
+/**
  * The one facts line under a model's name (`Fast · 9.6 GB · 128k context`). The speed word stays
  * because the per-row speed hint was asked for (#35); the rest of the hint, the family, the
  * model id and the fit sentence are in the info dialog.

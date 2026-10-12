@@ -53,6 +53,14 @@ export const llamaCopy = {
   fallbackDownloaded: 'Downloaded',
   fallbackPartial: 'Partial',
   fallbackIfNeeded: 'Only if needed',
+  /**
+   * The confirmation before a start the daemon did not rate suitable: its sentence is the shared
+   * memory warning (`llamaMemoryWarning`), said at the moment of decision.
+   */
+  confirmLoadTitle: (name?: string) => `Load ${name ?? 'this model'} anyway?`,
+  confirmLoad: 'Load model',
+  chooseAnother: 'Choose another model',
+  confirmLoadFallback: 'This model may exceed the available GPU memory.',
 } as const;
 
 /** The institutional gateway form a Versa row opens in place (`InstitutionalSetupCard`). */
@@ -177,19 +185,32 @@ export const ollamaCopy = {
   /** "Ollama not detected", or "Ollama not detected at http://127.0.0.1:11500" for a chosen host. */
   notDetected: (host?: string) => `Ollama not detected${host ? ` at ${host}` : ''}`,
   /**
-   * "Ollama running · qwen3.8:27b ready". The model part waits until Ollama has said what it has
-   * pulled; before that the status says only that the server answers.
+   * "Ollama running", or "Ollama running at http://127.0.0.1:11500" for a chosen host. Whether the
+   * chosen model is pulled is its option's word in the picker ("Installed", "Needs download"); the
+   * status used to say it again with the model's tag (principles 4 and 10).
    */
-  running: (host?: string, model?: { tag: string; installed: boolean }) =>
-    `Ollama running${host ? ` at ${host}` : ''}${
-      model ? ` · ${model.tag} ${model.installed ? 'ready' : 'not installed'}` : ''
-    }`,
+  running: (host?: string) => `Ollama running${host ? ` at ${host}` : ''}`,
+  /**
+   * The first word of the status line on a server the provider's tier makes Public (another
+   * computer, or `0.0.0.0`): the row sits under Local, whose tier line says nothing leaves this
+   * machine, so the panel says it first. The note under it says what that means.
+   */
+  publicTier: 'Public',
+  /** The public server's privacy note. Always visible (principle 2): it is a privacy disclosure. */
+  publicNote: (host: string) =>
+    `Biorouter treats the Ollama server at ${host} as public, not private: it counts only localhost, 127.0.0.1 and ::1 as this computer. Chats send their prompts and files to that server, and a private chat cannot use it.`,
   /** A server this screen cannot ask (the CSP admits only 127.0.0.1): this computer's, at ::1. */
   atHost: (host: string) => `Ollama at ${host}`,
   /** The same, on another computer. */
   onAnotherComputer: (host: string) => `Ollama on another computer · ${host}`,
-  remoteNote: (host: string) =>
-    `Biorouter is set to use the Ollama server at ${host}. This screen can only check an Ollama at 127.0.0.1, so it cannot see which models that server has. Pull the model there first, then connect.`,
+  /**
+   * A server this screen cannot ask: one instruction, with its reason in an InfoTip (vision
+   * FR-S-3). It was a three-sentence paragraph that named the host a third time.
+   */
+  remoteInstruction: 'Pull the model on that server first, then connect.',
+  remoteTipLabel: 'pulling on that server',
+  remoteTip:
+    'This screen can only check an Ollama at 127.0.0.1, so it cannot see which models that server has.',
   pullCommand: (tag: string) => `ollama pull ${tag}`,
   /** The daemon answered with nothing usable; a refusal is shown in its own words instead. */
   noRecommendations: 'Biorouter could not read its recommended Ollama models.',

@@ -14,7 +14,8 @@ import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServer
 import { Disclosure } from '../ui/disclosure';
 import { Field } from '../ui/field';
 import { localModelsCopy } from '../settings/models/copy';
-import { factsLine } from '../settings/models/localModelFacts';
+import { factsLine, speedDetail } from '../settings/models/localModelFacts';
+import { InfoTip } from '../ui/info-tip';
 import {
   fitLine,
   fitWarning,
@@ -339,14 +340,11 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
    * before a start says it again at the moment of decision; the separate shortfall sentences this
    * list used to carry repeated it (vision FR-R2-6). The panel used to add "This model is above the
    * 16 GB laptop tier" whenever a model recommended more than 16 GB, too (vision FR-R1-4). What is
-   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count. The
-   * shared note leaves it out on a CPU-only machine, where system RAM is exactly what counts.
+   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count. It is
+   * that row's InfoTip (principle 2), not a row of its own labelled "Detected memory". The shared
+   * note leaves it out on a CPU-only machine, where system RAM is exactly what counts.
    */
-  const resourceWarnings = useMemo(() => {
-    if (!system || !selectedEntry) return [];
-    const windows = windowsVramNote(system);
-    return windows ? [windows] : [];
-  }, [selectedEntry, system]);
+  const windowsNote = system && selectedEntry ? windowsVramNote(system) : null;
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
@@ -453,7 +451,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                     <DetailRow label={llamaCopy.download}>
                       {modelDownloadNote(selectedEntry)}
                     </DetailRow>
-                    <DetailRow label={detail.expectedSpeed}>{selectedEntry.speed_hint}</DetailRow>
+                    {/* The hint without its memory clause, which the Memory row says in GB. */}
+                    <DetailRow label={detail.expectedSpeed}>{speedDetail(selectedEntry)}</DetailRow>
                     {/* The summary's one number, kept when Advanced opens (vision FR-R3-6: the
                         rows that replaced "Fast · 256k context" never said the window). */}
                     {localModelsCopy.contextAmount(selectedEntry.context_limit) ? (
@@ -462,12 +461,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                       </DetailRow>
                     ) : null}
                     {/* The fit in plain words, with the two numbers it rests on (FR-R2-6). */}
-                    <DetailRow label={detail.memory}>{fitLine(selectedEntry, system)}</DetailRow>
-                    {resourceWarnings.map((warning) => (
-                      <DetailRow key={warning} label={detail.detectedMemory}>
-                        {warning}
-                      </DetailRow>
-                    ))}
+                    <DetailRow label={detail.memory}>
+                      {fitLine(selectedEntry, system)}
+                      {windowsNote ? (
+                        <InfoTip label={localModelsCopy.windowsVramLabel} help={windowsNote} />
+                      ) : null}
+                    </DetailRow>
                     {selectedEntry.ollama_name ? (
                       <DetailRow label={detail.ollamaModel} machine>
                         {selectedEntry.ollama_name}
@@ -544,10 +543,10 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       </div>
       <ConfirmationModal
         isOpen={pendingModelStart !== null}
-        title={`Load ${selectedEntry?.display_name ?? 'this model'} anyway?`}
-        message={modelMemoryWarning ?? 'This model may exceed the available GPU memory.'}
-        confirmLabel="Load model"
-        cancelLabel="Choose another model"
+        title={llamaCopy.confirmLoadTitle(selectedEntry?.display_name)}
+        message={modelMemoryWarning ?? llamaCopy.confirmLoadFallback}
+        confirmLabel={llamaCopy.confirmLoad}
+        cancelLabel={llamaCopy.chooseAnother}
         onConfirm={() => {
           const model = pendingModelStart;
           setPendingModelStart(null);

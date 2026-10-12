@@ -21,7 +21,11 @@
  * use (vision FR-R4-5). The daemon counts memory in GiB; a Mac's own About window calls the same
  * figure GB.
  */
-import type { LlamaCppModel, LlamaCppSystemInfo } from '../../../api';
+import type {
+  LlamaCppModel,
+  LlamaCppSystemInfo,
+  OllamaRecommendationsResponse,
+} from '../../../api';
 import { localModelsCopy } from './copy';
 
 type MachineMemory = Pick<
@@ -29,30 +33,30 @@ type MachineMemory = Pick<
   'os' | 'accelerator_memory_gib' | 'accelerator_memory_kind'
 >;
 
-const { gigabytes, memoryAmount } = localModelsCopy;
+const { memoryAmount, memoryKind, memoryMeaning, memoryWarning } = localModelsCopy;
 
 /** What `accelerator_memory_gib` measures on this machine, as a noun. */
 export const acceleratorMemoryLabel = (kind: string | undefined) => {
   switch (kind) {
     case 'apple_unified':
-      return 'unified memory';
+      return memoryKind.unified;
     case 'cpu_only':
-      return 'system RAM';
+      return memoryKind.systemRam;
     default:
-      return 'VRAM';
+      return memoryKind.vram;
   }
 };
 
 export const acceleratorMemoryExplanation = (kind: string | undefined) => {
   switch (kind) {
     case 'apple_unified':
-      return 'On Apple Silicon, unified memory is the relevant GPU memory budget.';
+      return memoryMeaning.unified;
     case 'cpu_only':
       // An Intel Mac lands here: upstream builds the macOS x64 llama-server
       // without Metal, so its discrete GPU is never used.
-      return 'Llama Server has no GPU acceleration on this machine (an Intel Mac, or the Linux CPU build), so models run on the processor out of system RAM, at a few tokens per second.';
+      return memoryMeaning.cpuOnly;
     default:
-      return 'On Windows, Linux and other discrete-GPU systems, this means VRAM, not regular system RAM.';
+      return memoryMeaning.vram;
   }
 };
 
@@ -63,32 +67,33 @@ export const detectedMemoryText = (system: MachineMemory) =>
         system.accelerator_memory_gib,
         acceleratorMemoryLabel(system.accelerator_memory_kind)
       )
-    : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
+    : localModelsCopy.unknownMemory(acceleratorMemoryLabel(system.accelerator_memory_kind));
 
 /**
  * The warning to show before starting, installing or switching to `model`, or
- * `null` when the daemon rated it suitable for this machine.
+ * `null` when the daemon rated it suitable for this machine. It is said at the
+ * moment of decision (a confirmation), so it is a whole sentence, not an InfoTip.
  */
 export function llamaMemoryWarning(model: LlamaCppModel, system: MachineMemory): string | null {
-  const kind = system.accelerator_memory_kind;
+  const name = model.display_name;
   const detected = detectedMemoryText(system);
-  const explanation = acceleratorMemoryExplanation(kind);
-  const minimum = gigabytes(model.min_gpu_memory_gib);
-  const recommended = gigabytes(model.recommended_gpu_memory_gib);
+  const meaning = acceleratorMemoryExplanation(system.accelerator_memory_kind);
+  const minimum = model.min_gpu_memory_gib;
+  const recommended = model.recommended_gpu_memory_gib;
   switch (model.suitability_status) {
     case 'suitable':
       return null;
     case 'cpu_only':
       // Memory is not the problem here, so no "recommends N GB": a 64 GB
       // Intel Mac clears every figure and is still a CPU.
-      return `${model.display_name} would run without GPU acceleration on this machine (${detected}). ${explanation} Expect several minutes before the first reply of each chat.`;
+      return memoryWarning.cpuOnly(name, detected, meaning);
     case 'below_minimum':
-      return `${model.display_name} needs at least ${minimum} of GPU-addressable memory (${recommended} recommended). This machine reports ${detected}, so it may fail to load or run very slowly. ${explanation}`;
+      return memoryWarning.belowMinimum(name, minimum, recommended, detected, meaning);
     case 'above_recommendation':
-      return `${model.display_name} recommends ${localModelsCopy.gpuMemory(model.recommended_gpu_memory_gib)}. This machine reports ${detected}. ${explanation}`;
+      return memoryWarning.aboveRecommendation(name, recommended, detected, meaning);
     case 'unknown_resources':
     default:
-      return `Biorouter could not detect this machine's GPU memory. ${model.display_name} needs at least ${minimum} of GPU-addressable memory (${recommended} recommended). ${explanation}`;
+      return memoryWarning.unknown(name, minimum, recommended, meaning);
   }
 }
 
@@ -98,7 +103,7 @@ export function llamaMemoryWarning(model: LlamaCppModel, system: MachineMemory):
  */
 export const windowsVramNote = (system: MachineMemory) =>
   system.os.toLowerCase().includes('windows') && system.accelerator_memory_kind !== 'cpu_only'
-    ? 'On Windows, make sure free VRAM is high enough for the model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
+    ? localModelsCopy.windowsVram
     : null;
 
 const isMac = (system: MachineMemory | null | undefined) => system?.os === 'macos';
@@ -167,22 +172,62 @@ export const fitLine = (model: LlamaCppModel, system: MachineMemory | null | und
 };
 
 /**
- * The same verdict in a model picker's row detail, or `null` to say nothing
- * (a model the catalog does not know).
+ * The same verdict in a model picker's row detail, or `null` to say nothing (a model the catalog
+ * does not know). The words are the Settings row's and first run's (`fitVerdict`): the picker said
+ * "Recommended here", "Needs 48 GB GPU memory" and "VRAM unknown" for the verdicts those surfaces
+ * call "Fits this Mac", "Large for this Mac" and "VRAM not detected", three words for one fact.
  */
-export const pickerFitLabel = (model: LlamaCppModel | undefined) => {
-  switch (model?.suitability_status) {
+export const pickerFitLabel = (
+  model: LlamaCppModel | undefined,
+  system: MachineMemory | null | undefined
+) => (model ? fitVerdict(model, system) : null);
+
+/**
+ * Ollama's verdict on this machine, as the Llama Server rows word it: the word a person sees
+ * (`Below the 32 GB minimum`, `CPU only, slow`, `VRAM not detected`), whether it is a warning,
+ * and its explanation for an InfoTip, in GB. `null` on a machine the daemon rated suitable.
+ *
+ * The daemon's `suitability_message` is a two or three sentence paragraph in GiB; it used to be
+ * printed as a warning box under the picker. The verdict is still the daemon's (`suitability`);
+ * only the words are the renderer's, as `fitVerdict`'s are.
+ */
+export const ollamaFit = (
+  recommendations: Pick<
+    OllamaRecommendationsResponse,
+    'suitability' | 'memory_gib' | 'memory_kind' | 'min_memory_gib'
+  >
+): { word: string; warning: boolean; help: string } | null => {
+  const {
+    suitability,
+    memory_gib: gib,
+    memory_kind: kind,
+    min_memory_gib: minimum,
+  } = recommendations;
+  const help = localModelsCopy.ollamaFitHelp;
+  switch (suitability) {
     case 'suitable':
-      return 'Recommended here';
-    case 'above_recommendation':
-      return `Needs ${gigabytes(model.recommended_gpu_memory_gib)} GPU memory`;
-    case 'below_minimum':
-      return localModelsCopy.belowMinimum(model.min_gpu_memory_gib);
-    case 'cpu_only':
-      return localModelsCopy.cpuOnly;
-    case 'unknown_resources':
-      return 'VRAM unknown';
-    default:
       return null;
+    case 'below_minimum':
+      return {
+        word: localModelsCopy.belowMinimum(minimum),
+        warning: true,
+        help: help.belowMinimum(
+          typeof gib === 'number'
+            ? memoryAmount(gib, acceleratorMemoryLabel(kind))
+            : localModelsCopy.unknownMemory(acceleratorMemoryLabel(kind))
+        ),
+      };
+    case 'cpu_only':
+      return { word: localModelsCopy.cpuOnly, warning: true, help: help.cpuOnly };
+    case 'unknown_resources':
+    default:
+      // Not "System RAM not detected" on a Linux CPU build: what was not found is a GPU.
+      return {
+        word: localModelsCopy.memoryNotDetected(
+          kind === 'apple_unified' ? memoryKind.unified : memoryKind.vram
+        ),
+        warning: false,
+        help: help.unknown(minimum),
+      };
   }
 };

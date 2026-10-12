@@ -28,13 +28,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
-import { factsLine, isInstalled, stateWord } from './localModelFacts';
-import {
-  acceleratorMemoryLabel,
-  fitVerdict,
-  fitWarning,
-  llamaMemoryWarning,
-} from './localModelMemory';
+import { factsLine, isInstalled, speedDetail, stateWord } from './localModelFacts';
+import { detectedMemoryText, fitVerdict, fitWarning, llamaMemoryWarning } from './localModelMemory';
 import './models.css';
 
 const formatContext = (value: number | null | undefined) =>
@@ -228,7 +223,7 @@ export default function LocalModelInventory() {
               llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
             if (!pulled.ok) {
-              throw new Error(`Ollama could not pull ${model.ollama_name}: ${pulled.error}`);
+              throw new Error(localModelsCopy.pullFailed(model.ollama_name, pulled.error));
             }
             // End the operation BEFORE reporting success: a pull that
             // completes after its deadline (or after being superseded) must
@@ -334,7 +329,7 @@ export default function LocalModelInventory() {
         if (model.download_source === 'ollama' && model.ollama_name) {
           const ollama = await checkOllamaStatus();
           if (!ollama.isRunning) {
-            throw new Error('Ollama must be running to delete an Ollama-managed model.');
+            throw new Error(localModelsCopy.deleteResult.ollamaNotRunning);
           }
           // The tags that hold the file this row lists — NOT `ollama_name`.
           // On Apple Silicon the bare tag is the MLX build and the file comes
@@ -345,14 +340,12 @@ export default function LocalModelInventory() {
             : [];
           if (tags.length === 0) {
             throw new Error(
-              `Biorouter could not tell which Ollama tag holds ${model.display_name}'s model file${
-                model.model_path ? ` (${model.model_path})` : ''
-              }, so it deleted nothing. Run \`ollama list\` and remove that tag with \`ollama rm <tag>\`.`
+              localModelsCopy.deleteResult.noTag(model.display_name, model.model_path)
             );
           }
           for (const tag of tags) {
             if (!(await deleteOllamaModel(tag))) {
-              throw new Error(`Ollama could not delete ${tag}`);
+              throw new Error(localModelsCopy.deleteResult.tagRefused(tag));
             }
             deletedTags = [...deletedTags, tag];
           }
@@ -369,18 +362,16 @@ export default function LocalModelInventory() {
           throw new Error('No cached local files were removed for this model.');
         }
         toastService.success({
-          title: 'Local model deleted',
+          title: localModelsCopy.deleteResult.deleted,
           msg:
             deletedTags.length > 0
-              ? `${model.display_name} was removed from local storage (Ollama ${
-                  deletedTags.length === 1 ? 'tag' : 'tags'
-                } ${deletedTags.join(', ')}).`
-              : `${model.display_name} was removed from local storage.`,
+              ? localModelsCopy.deleteResult.removedTags(model.display_name, deletedTags)
+              : localModelsCopy.deleteResult.removed(model.display_name),
         });
         await refresh();
       } catch (err) {
         toastService.error({
-          title: 'Local model delete failed',
+          title: localModelsCopy.deleteResult.failed,
           msg: errorMessage(err),
           traceback: err instanceof Error ? err.stack || '' : '',
         });
@@ -604,7 +595,8 @@ export default function LocalModelInventory() {
             <DetailRow label={detail.status}>{stateWord(selectedModel)}</DetailRow>
             <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
             <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
-            <DetailRow label={detail.expectedSpeed}>{selectedModel.speed_hint}</DetailRow>
+            {/* The hint without its memory clause: the memory rows below say it, in GB. */}
+            <DetailRow label={detail.expectedSpeed}>{speedDetail(selectedModel)}</DetailRow>
             <DetailRow label={detail.context}>
               {formatContext(selectedModel.context_limit)} tokens
             </DetailRow>
@@ -615,12 +607,7 @@ export default function LocalModelInventory() {
               {localModelsCopy.gpuMemory(selectedModel.recommended_gpu_memory_gib)}
             </DetailRow>
             <DetailRow label={detail.detectedMemory}>
-              {typeof snapshot?.system.accelerator_memory_gib === 'number'
-                ? localModelsCopy.memoryAmount(
-                    snapshot.system.accelerator_memory_gib,
-                    acceleratorMemoryLabel(snapshot.system.accelerator_memory_kind)
-                  )
-                : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
+              {snapshot ? detectedMemoryText(snapshot.system) : null}
             </DetailRow>
             {/* The verdict in words; the numbers are the three memory rows above. The daemon's
                 sentence repeated this label and printed `apple_unified` (vision FR-R2-6). */}

@@ -23,6 +23,7 @@ import {
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { pickerFitLabel } from '../localModelMemory';
+import { stateWord } from '../localModelFacts';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
 import {
   affiliationPresentation,
@@ -37,6 +38,7 @@ import {
   llamacppStatus,
   ProviderType,
   type LlamaCppModel,
+  type LlamaCppSystemInfo,
   type ProviderDetails,
   type SessionClassification,
 } from '../../../../api';
@@ -62,22 +64,10 @@ function findFirstAvailableModel(models: ModelOption[]): string | null {
   return validModels[0].value;
 }
 
-const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
-  switch (model?.download_status) {
-    case 'downloaded':
-      return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
-    case 'partial':
-      return 'Partial download';
-    case 'not_downloaded':
-      return 'Needs download';
-    default:
-      return null;
-  }
-};
-
 const llamaModelOption = (
   modelName: string,
   catalog: Map<string, LlamaCppModel>,
+  system: LlamaCppSystemInfo | null,
   selectedProvider: ProviderDetails
 ): ModelOption => {
   const entry = catalog.get(modelName);
@@ -97,7 +87,10 @@ const llamaModelOption = (
   // download is, whether they already have it, and whether it suits this machine.
   // The fallback state and the raw `owner/repo:QUANT` spec are diagnostics, not
   // selection criteria — LocalModelInventory in Settings is where those belong.
-  const detail = [entry.download_size, llamaDownloadLabel(entry), pickerFitLabel(entry)]
+  // Both words are the Settings row's: its one state word (`stateWord`: "Installed", "Downloaded
+  // in Ollama", "Partial download", "Needs download"; this list said "Downloaded" where Settings
+  // says "Installed") and its fit ("Fits this Mac", "Below the 32 GB minimum").
+  const detail = [entry.download_size, stateWord(entry), pickerFitLabel(entry, system)]
     .filter(Boolean)
     .join(' · ');
 
@@ -838,12 +831,14 @@ export const SwitchModelModal = ({
         }
 
         let llamaCatalog = new Map<string, LlamaCppModel>();
+        let llamaSystem: LlamaCppSystemInfo | null = null;
         if (selectedProvider.name === 'llamacpp') {
           try {
             const status = await llamacppStatus({ throwOnError: true });
             llamaCatalog = new Map(
               (status.data?.catalog || []).map((entry) => [entry.name, entry])
             );
+            llamaSystem = status.data?.system ?? null;
           } catch (error) {
             console.error('Failed to query Llama Server catalog:', error);
           }
@@ -851,7 +846,7 @@ export const SwitchModelModal = ({
 
         const options: ModelOption[] = modelList.map((m) =>
           selectedProvider.name === 'llamacpp'
-            ? llamaModelOption(m, llamaCatalog, selectedProvider)
+            ? llamaModelOption(m, llamaCatalog, llamaSystem, selectedProvider)
             : {
                 value: m,
                 label: m,

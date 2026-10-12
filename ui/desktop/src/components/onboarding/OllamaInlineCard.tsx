@@ -5,6 +5,7 @@ import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
 import { CopyField } from '../ui/copy-field';
 import { Field } from '../ui/field';
+import { InfoTip } from '../ui/info-tip';
 import { Progress } from '../ui/progress';
 import { Select } from '../ui/Select';
 import { Spinner } from '../ui/spinner';
@@ -21,6 +22,8 @@ import {
   type OllamaSetup,
   type PullProgress,
 } from '../../utils/ollamaDetection';
+import { localModelsCopy } from '../settings/models/copy';
+import { ollamaFit } from '../settings/models/localModelMemory';
 import './onboarding.css';
 import { ollamaCopy } from './copy';
 import { StatusPill } from './StatusPill';
@@ -232,7 +235,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
       }
       toastService.success({
         title: ollamaCopy.connectedToast,
-        msg: ollamaCopy.connectedToastDetail(selectedModel.tag),
+        msg: ollamaCopy.connectedToastDetail(selectedModel.display_name),
       });
       onSuccess();
     } catch (error) {
@@ -259,50 +262,45 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   // daemon has answered, neither claim is made.
   const isPublicServer = setup !== null && !setup.private;
 
-  // The row this panel opens sits under Local, so a public server says what it is above
-  // everything else, and the note under the status says what that means.
-  const publicLabel = isPublicServer ? (
-    <p className="text-supporting text-text-muted" data-testid="ollama-tier-label">
-      Public · Ollama server
-    </p>
-  ) : null;
+  // The row this panel opens sits under Local, whose tier line says nothing leaves this machine,
+  // so a public server's status line says "Public" first, and the note under it says what that
+  // means. One status line, not a caption over it.
+  const status = (tone: 'success' | 'warning' | 'info', words: string) => (
+    <div>
+      <StatusPill tone={tone}>
+        <span>
+          {isPublicServer ? (
+            <>
+              <span data-testid="ollama-tier-label">{ollamaCopy.publicTier}</span>
+              {' · '}
+            </>
+          ) : null}
+          <span>{words}</span>
+        </span>
+      </StatusPill>
+    </div>
+  );
 
   const publicNote = isPublicServer ? (
-    <WarningNote testId="ollama-public-note">
-      Biorouter treats the Ollama server at {host} as public, not private: it counts only localhost,
-      127.0.0.1 and ::1 as this computer. Chats send their prompts and files to that server, and a
-      private chat cannot use it.
-    </WarningNote>
+    <WarningNote testId="ollama-public-note">{ollamaCopy.publicNote(host)}</WarningNote>
   ) : null;
-
-  const detectedPill = (
-    <StatusPill tone="success">
-      {ollamaCopy.running(
-        namedHost,
-        selectedModel && installed
-          ? { tag: selectedModel.tag, installed: selectedInstalled }
-          : undefined
-      )}
-    </StatusPill>
-  );
-
-  const notDetectedPill = (
-    <StatusPill tone="warning">{ollamaCopy.notDetected(namedHost)}</StatusPill>
-  );
 
   // Below 32 GB, or an Intel Mac: the default is still offered (there is no
   // smaller supported model), so the warning is what tells the user what to
-  // expect. Unknown memory is said quietly; it is not a known problem.
-  const suitabilityNote =
-    recommendations && recommendations.suitability !== 'suitable' ? (
-      recommendations.suitability === 'unknown_resources' ? (
-        <p className="break-words text-supporting text-text-muted" data-testid="ollama-suitability">
-          {recommendations.suitability_message}
-        </p>
-      ) : (
-        <WarningNote testId="ollama-suitability">{recommendations.suitability_message}</WarningNote>
-      )
-    ) : null;
+  // expect. The word is the Llama Server rows' ("Below the 32 GB minimum", "CPU only, slow"), in
+  // warning ink; why is its InfoTip, in GB. Unknown memory is said quietly: it is not a known
+  // problem. The daemon's GiB paragraph used to be a warning box here (FR-R4-5, principle 2).
+  const fit = recommendations ? ollamaFit(recommendations) : null;
+  const suitabilityNote = fit ? (
+    <p
+      className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted"
+      role="note"
+      data-testid="ollama-suitability"
+    >
+      <span className={fit.warning ? 'text-text-warning' : undefined}>{fit.word}</span>
+      <InfoTip label={localModelsCopy.memoryLabel} help={fit.help} />
+    </p>
+  ) : null;
 
   const isDownloading = downloadingTag !== null;
 
@@ -353,7 +351,6 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
 
   return (
     <div className="min-w-0 space-y-3">
-      {publicLabel}
       {isChecking ? (
         <div className="flex items-center gap-2 text-supporting text-text-muted">
           <Spinner size={14} />
@@ -377,32 +374,33 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
         // download (which would land on 127.0.0.1's Ollama, if there is one).
         // The memory note is shown only for this computer: on another one the
         // figure describes the wrong machine. A chat reaches the server from
-        // the daemon, so connecting is still the whole job.
+        // the daemon, so connecting is still the whole job. The pull command
+        // follows the picker, because it names the model picked there.
         <div className="space-y-3">
-          <div>
-            <StatusPill tone="info">
-              {setup.private ? ollamaCopy.atHost(host) : ollamaCopy.onAnotherComputer(host)}
-            </StatusPill>
-          </div>
+          {status(
+            'info',
+            setup.private ? ollamaCopy.atHost(host) : ollamaCopy.onAnotherComputer(host)
+          )}
           {publicNote}
+          {modelSelect}
+          {setup.private && suitabilityNote}
           <div className="space-y-2" data-testid="ollama-remote-note">
-            <p className="break-words text-supporting text-text-muted">
-              {ollamaCopy.remoteNote(host)}
+            <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
+              <span className="min-w-0">{ollamaCopy.remoteInstruction}</span>
+              <InfoTip label={ollamaCopy.remoteTipLabel} help={ollamaCopy.remoteTip} />
             </p>
             <CopyField
               value={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
               label={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
             />
           </div>
-          {setup.private && suitabilityNote}
-          {modelSelect}
           {selectedModel && (
             <div className="flex flex-wrap items-center gap-2">{connectButton}</div>
           )}
         </div>
       ) : ollamaDetected ? (
         <div className="space-y-3">
-          <div>{detectedPill}</div>
+          {status('success', ollamaCopy.running(namedHost))}
           {publicNote}
 
           {installed === null && (
@@ -472,7 +470,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
         </div>
       ) : (
         <div className="space-y-3">
-          <div>{notDetectedPill}</div>
+          {status('warning', ollamaCopy.notDetected(namedHost))}
           {publicNote}
           {suitabilityNote}
           <div className="flex flex-wrap items-center gap-2">

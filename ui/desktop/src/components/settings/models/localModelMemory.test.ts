@@ -7,9 +7,12 @@ import {
   fitVerdict,
   fitWarning,
   llamaMemoryWarning,
+  ollamaFit,
   pickerFitLabel,
   windowsVramNote,
 } from './localModelMemory';
+import { speedDetail } from './localModelFacts';
+import { localModelsCopy } from './copy';
 
 const model = (suitability_status: LlamaCppSuitability): LlamaCppModel => ({
   name: 'qwen3.8-27b',
@@ -137,7 +140,7 @@ describe('localModelMemory', () => {
           llamaMemoryWarning(model(status), machine),
           fitVerdict(model(status), machine),
           fitLine(model(status), machine),
-          pickerFitLabel(model(status)),
+          pickerFitLabel(model(status), machine),
         ].join(' ');
         expect(words, status).not.toMatch(/GiB/);
       }
@@ -183,12 +186,100 @@ describe('localModelMemory', () => {
     expect(fitWarning(model('cpu_only'), intelMac)).toBe('CPU only, slow');
   });
 
-  it('labels every suitability status in a picker row, with the row words for the new two', () => {
-    expect(pickerFitLabel(model('below_minimum'))).toBe('Below the 32 GB minimum');
-    expect(pickerFitLabel(model('cpu_only'))).toBe('CPU only, slow');
-    expect(pickerFitLabel(model('suitable'))).toBe('Recommended here');
-    expect(pickerFitLabel(model('above_recommendation'))).toBe('Needs 48 GB GPU memory');
-    expect(pickerFitLabel(model('unknown_resources'))).toBe('VRAM unknown');
-    expect(pickerFitLabel(undefined)).toBeNull();
+  /**
+   * One vocabulary: the picker said "Recommended here", "Needs 48 GB GPU memory" and "VRAM unknown"
+   * for the verdicts Settings and first run call "Fits this Mac", "Large for this Mac" and "VRAM not
+   * detected".
+   */
+  it('labels every suitability status in a picker row with the Settings row words', () => {
+    const mac = system();
+    const pc = system({
+      os: 'linux',
+      accelerator_memory_gib: null,
+      accelerator_memory_kind: 'vram',
+    });
+    const statuses: LlamaCppSuitability[] = [
+      'suitable',
+      'above_recommendation',
+      'below_minimum',
+      'cpu_only',
+      'unknown_resources',
+    ];
+    for (const status of statuses) {
+      for (const machine of [mac, pc, intelMac]) {
+        expect(pickerFitLabel(model(status), machine), status).toBe(
+          fitVerdict(model(status), machine)
+        );
+      }
+    }
+    expect(pickerFitLabel(model('suitable'), mac)).toBe('Fits this Mac');
+    expect(pickerFitLabel(model('above_recommendation'), mac)).toBe('Large for this Mac');
+    expect(pickerFitLabel(model('unknown_resources'), pc)).toBe('VRAM not detected');
+    expect(pickerFitLabel(undefined, mac)).toBeNull();
+    for (const retired of ['Recommended here', 'GPU memory', 'VRAM unknown']) {
+      for (const status of statuses) {
+        expect(pickerFitLabel(model(status), mac) ?? '').not.toContain(retired);
+      }
+    }
+  });
+
+  /**
+   * Ollama's verdict is the machine's, one for both recommended models. It was the daemon's
+   * paragraph, in GiB, in a warning box; now it is the Llama Server rows' word and an InfoTip's
+   * reason, in GB (FR-R4-5).
+   */
+  it('words Ollama’s verdict as the rows do, with its reason in GB', () => {
+    const recs = (
+      suitability: 'suitable' | 'below_minimum' | 'cpu_only' | 'unknown_resources',
+      over: Partial<{ memory_gib: number | null; memory_kind: string }> = {}
+    ) => ({
+      suitability,
+      memory_gib: 16,
+      memory_kind: 'apple_unified',
+      min_memory_gib: 32,
+      ...over,
+    });
+    expect(ollamaFit(recs('suitable'))).toBeNull();
+
+    const below = ollamaFit(recs('below_minimum'));
+    expect(below).toEqual({
+      word: localModelsCopy.belowMinimum(32),
+      warning: true,
+      help: localModelsCopy.ollamaFitHelp.belowMinimum('16 GB unified memory'),
+    });
+
+    const cpu = ollamaFit(recs('cpu_only', { memory_gib: 64, memory_kind: 'cpu_only' }));
+    expect(cpu?.word).toBe(localModelsCopy.cpuOnly);
+    expect(cpu?.warning).toBe(true);
+
+    // A Linux CPU build reports `cpu_only` with an unknown verdict: what was not found is a GPU.
+    const linux = ollamaFit(
+      recs('unknown_resources', { memory_gib: null, memory_kind: 'cpu_only' })
+    );
+    expect(linux?.word).toBe('VRAM not detected');
+    expect(linux?.warning).toBe(false);
+    expect(ollamaFit(recs('unknown_resources', { memory_gib: null }))?.word).toBe(
+      'Unified memory not detected'
+    );
+
+    for (const verdict of [below, cpu, linux]) {
+      expect(verdict?.help).not.toMatch(/GiB/);
+      // InfoTip text: at most two sentences, about 160 characters.
+      expect(verdict?.help.length).toBeLessThanOrEqual(170);
+      expect(verdict?.help.split(/\.\s/).length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('keeps the speed and drops the memory clause from an Expected speed row', () => {
+    expect(speedDetail(model('suitable'))).toBe('Moderate');
+    expect(
+      speedDetail({
+        ...model('suitable'),
+        speed_hint: 'Moderate, dense 27B; needs 32 GiB of GPU memory, 48 GiB recommended',
+      })
+    ).toBe('Moderate, dense 27B');
+    expect(speedDetail({ ...model('suitable'), speed_hint: 'Fast, ~4B active parameters' })).toBe(
+      'Fast, ~4B active parameters'
+    );
   });
 });

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import OllamaInlineCard from './OllamaInlineCard';
 import { ollamaCopy } from './copy';
+import { localModelsCopy } from '../settings/models/copy';
 import type { OllamaRecommendationsResponse } from '../../api';
 import type * as Detection from '../../utils/ollamaDetection';
 
@@ -134,7 +135,11 @@ describe('OllamaInlineCard', () => {
     expect(screen.getByTestId('ollama-connect')).toBeInTheDocument();
   });
 
-  it('warns a machine below 32 GiB, and still offers the default', async () => {
+  /**
+   * The verdict is the daemon's; the words are the Llama Server rows' (a warning word, its reason
+   * in an InfoTip, in GB). The daemon's GiB paragraph used to be printed as a warning box.
+   */
+  it('warns a machine below 32 GB, and still offers the default', async () => {
     mocks.getOllamaSetup.mockResolvedValue(
       setup({
         memory_gib: 16,
@@ -146,9 +151,28 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     const warning = await screen.findByTestId('ollama-suitability');
-    expect(warning).toHaveTextContent('at least 32 GiB');
     expect(warning).toHaveAttribute('role', 'note');
+    expect(within(warning).getByText(localModelsCopy.belowMinimum(32))).toHaveClass(
+      'text-text-warning'
+    );
+    const tip = within(warning).getByRole('button', {
+      name: `About ${localModelsCopy.memoryLabel}`,
+    });
+    expect(tip).toHaveAccessibleDescription(
+      localModelsCopy.ollamaFitHelp.belowMinimum('16 GB unified memory')
+    );
+    expect(document.body.textContent).not.toMatch(/GiB/);
     expect(screen.getByTestId('ollama-model-select')).toHaveTextContent('Qwen3.8 27B');
+  });
+
+  it('says unmeasured memory quietly, not as a warning', async () => {
+    mocks.getOllamaSetup.mockResolvedValue(
+      setup({ memory_gib: null, memory_kind: 'unknown_vram', suitability: 'unknown_resources' })
+    );
+    render(<OllamaInlineCard onSuccess={vi.fn()} />);
+
+    const line = await screen.findByTestId('ollama-suitability');
+    expect(within(line).getByText('VRAM not detected')).not.toHaveClass('text-text-warning');
   });
 
   it('shows no warning on a suitable machine', async () => {
@@ -199,7 +223,14 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={onSuccess} />);
 
     const note = await screen.findByTestId('ollama-remote-note');
-    expect(note).toHaveTextContent('http://gpu-box.lab.example:11434');
+    // One instruction, its reason one hover or Tab away; the host is the status line's.
+    expect(note).toHaveTextContent(ollamaCopy.remoteInstruction);
+    expect(
+      within(note).getByRole('button', { name: `About ${ollamaCopy.remoteTipLabel}` })
+    ).toHaveAccessibleDescription(ollamaCopy.remoteTip);
+    expect(
+      screen.getByText(ollamaCopy.onAnotherComputer('http://gpu-box.lab.example:11434'))
+    ).toBeInTheDocument();
     expect(note).toHaveTextContent('ollama pull qwen3.8:27b');
     expect(mocks.checkOllamaStatus).not.toHaveBeenCalled();
     expect(mocks.getOllamaModels).not.toHaveBeenCalled();
@@ -405,10 +436,13 @@ describe('OllamaInlineCard', () => {
     expect(note).toHaveAttribute('role', 'note');
     expect(document.body.textContent).not.toMatch(/Free, private, offline/);
     expect(document.body.textContent).not.toMatch(/your own machine/);
-    expect(screen.getByText('Public · Ollama server')).toBeInTheDocument();
-    expect(
-      screen.getByText(ollamaCopy.onAnotherComputer('http://gpu-box.lab.example:11434'))
-    ).toBeInTheDocument();
+    // The status line says Public first: the row sits under Local, whose tier line says nothing
+    // leaves this machine.
+    const tier = screen.getByTestId('ollama-tier-label');
+    expect(tier).toHaveTextContent(ollamaCopy.publicTier);
+    expect(tier.closest('.br-status-pill')).toHaveTextContent(
+      `${ollamaCopy.publicTier} · ${ollamaCopy.onAnotherComputer('http://gpu-box.lab.example:11434')}`
+    );
   });
 
   /**
@@ -428,7 +462,9 @@ describe('OllamaInlineCard', () => {
     expect(await screen.findByTestId('ollama-model-select')).toBeInTheDocument();
     expect(mocks.checkOllamaStatus).toHaveBeenCalledWith('http://127.0.0.1:11434');
     expect(screen.getByTestId('ollama-public-note')).toBeInTheDocument();
-    expect(screen.getByText('Public · Ollama server')).toBeInTheDocument();
+    expect(screen.getByTestId('ollama-tier-label').closest('.br-status-pill')).toHaveTextContent(
+      `${ollamaCopy.publicTier} · ${ollamaCopy.running()}`
+    );
     expect(document.body.textContent).not.toMatch(/Free, private, offline/);
   });
 
@@ -459,7 +495,9 @@ describe('OllamaInlineCard', () => {
     expect(screen.queryByTestId('ollama-public-note')).toBeNull();
     expect(screen.queryByTestId('ollama-tier-label')).toBeNull();
     // The memory figure is this machine's, and this is this machine's server.
-    expect(screen.getByTestId('ollama-suitability')).toHaveTextContent('16 GiB');
+    expect(screen.getByTestId('ollama-suitability')).toHaveTextContent(
+      localModelsCopy.belowMinimum(32)
+    );
   });
 
   it('makes no privacy claim before the daemon has answered', async () => {
@@ -510,26 +548,26 @@ describe('OllamaInlineCard on the first-run standard', () => {
     const download = await screen.findByRole('button', { name: ollamaCopy.downloadModel(18) });
     expect(download).not.toHaveTextContent('qwen3.8');
     expect(download.className).not.toContain('w-full');
-    // The model is named once on the status line, and by name in the picker.
-    expect(
-      screen.getByText(ollamaCopy.running(undefined, { tag: 'qwen3.8:27b', installed: false }))
-    ).toBeInTheDocument();
+    // The model is named in the picker, by name; whether it is pulled is its option's word there.
+    // The status says only that the server answers, with no tag (principles 4 and 10).
+    expect(screen.getByText(ollamaCopy.running())).toBeInTheDocument();
+    expect(screen.queryByText(/qwen3\.8:27b/)).toBeNull();
   });
 
   it('connects with a plain, sentence-case toast', async () => {
     mocks.getOllamaModels.mockResolvedValue(tags('qwen3.8:27b'));
     const onSuccess = vi.fn();
     render(<OllamaInlineCard onSuccess={onSuccess} />);
-    expect(
-      await screen.findByText(
-        ollamaCopy.running(undefined, { tag: 'qwen3.8:27b', installed: true })
-      )
-    ).toBeInTheDocument();
+    expect(await screen.findByText(ollamaCopy.running())).toBeInTheDocument();
+    expect(await screen.findByTestId('ollama-model-select')).toHaveTextContent(
+      'Qwen3.8 27B (recommended) · ~18 GB · Installed'
+    );
     fireEvent.click(screen.getByRole('button', { name: ollamaCopy.use }));
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     const [toast] = mocks.toastSuccess.mock.calls[0] as [{ title: string; msg: string }];
     expect(toast.title).toBe(ollamaCopy.connectedToast);
-    expect(toast.msg).toBe(ollamaCopy.connectedToastDetail('qwen3.8:27b'));
+    // The model by its name, never its tag.
+    expect(toast.msg).toBe(ollamaCopy.connectedToastDetail('Qwen3.8 27B'));
     for (const title of [
       ollamaCopy.connectedToast,
       ollamaCopy.detectedToast,

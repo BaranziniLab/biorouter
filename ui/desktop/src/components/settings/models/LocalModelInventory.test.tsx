@@ -268,8 +268,10 @@ describe('LocalModelInventory', () => {
     expect(valueOf(localModelsCopy.detail.detectedMemory)).toHaveTextContent(
       /^\d+ GB unified memory$/
     );
-    // Every row the renderer words. (The Expected speed row is the catalog's own hint, verbatim.)
+    // Every row the renderer words, and the Expected speed row: the catalog's hint without its
+    // memory clause ("needs 32 GiB of GPU memory"), which the memory rows say in GB.
     for (const label of [
+      localModelsCopy.detail.expectedSpeed,
       localModelsCopy.detail.minimumMemory,
       localModelsCopy.detail.recommendedMemory,
       localModelsCopy.detail.detectedMemory,

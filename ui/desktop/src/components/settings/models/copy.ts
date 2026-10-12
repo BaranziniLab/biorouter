@@ -73,6 +73,71 @@ export const localModelsCopy = {
   /** No reading: "VRAM not detected", "Unified memory not detected". */
   memoryNotDetected: (memory: string) =>
     `${memory.charAt(0).toUpperCase()}${memory.slice(1)} not detected`,
+  /**
+   * What the daemon's memory figure measures on this machine (`accelerator_memory_kind`), as a
+   * noun after an amount: "64 GB unified memory", "64 GB system RAM", "24 GB VRAM".
+   */
+  memoryKind: {
+    unified: 'unified memory',
+    /** `cpu_only`: an Intel Mac, or the Linux CPU build of llama-server. */
+    systemRam: 'system RAM',
+    vram: 'VRAM',
+  },
+  /** A figure the daemon could not read: "unknown VRAM". */
+  unknownMemory: (memory: string) => `unknown ${memory}`,
+  /** What the figure means on this kind of machine: the last sentence of a memory warning. */
+  memoryMeaning: {
+    unified: 'On Apple Silicon, unified memory is the relevant GPU memory budget.',
+    cpuOnly:
+      'Llama Server has no GPU acceleration on this machine (an Intel Mac, or the Linux CPU build), so models run on the processor out of system RAM, at a few tokens per second.',
+    vram: 'On Windows, Linux and other discrete-GPU systems, this means VRAM, not regular system RAM.',
+  },
+  /**
+   * The sentence a confirmation says before a model the daemon did not rate suitable installs,
+   * starts or warms up (`llamaMemoryWarning`), one per verdict. `detected` is "16 GB unified
+   * memory"; `meaning` is one of {@link memoryMeaning}.
+   */
+  memoryWarning: {
+    /** No "recommends N GB": a 64 GB Intel Mac clears every figure and is still a processor. */
+    cpuOnly: (name: string, detected: string, meaning: string) =>
+      `${name} would run without GPU acceleration on this machine (${detected}). ${meaning} Expect several minutes before the first reply of each chat.`,
+    belowMinimum: (
+      name: string,
+      minimum: number,
+      recommended: number,
+      detected: string,
+      meaning: string
+    ) =>
+      `${name} needs at least ${gigabytes(minimum)} of GPU-addressable memory (${gigabytes(recommended)} recommended). This machine reports ${detected}, so it may fail to load or run very slowly. ${meaning}`,
+    aboveRecommendation: (name: string, recommended: number, detected: string, meaning: string) =>
+      `${name} recommends ${gigabytes(recommended)} GPU-addressable memory. This machine reports ${detected}. ${meaning}`,
+    unknown: (name: string, minimum: number, recommended: number, meaning: string) =>
+      `Biorouter could not detect this machine's GPU memory. ${name} needs at least ${gigabytes(minimum)} of GPU-addressable memory (${gigabytes(recommended)} recommended). ${meaning}`,
+  },
+  /**
+   * On Windows, system RAM does not count toward a model's GPU memory. An InfoTip on first run's
+   * Memory row, and a line of the warm-up dialog. Not said on a CPU-only machine, where system
+   * RAM is exactly what counts.
+   */
+  windowsVram:
+    'On Windows, make sure free VRAM is high enough for the model and context window; regular system RAM does not satisfy the GPU memory recommendation.',
+  /** The Windows note's InfoTip names it "About Windows memory". */
+  windowsVramLabel: 'Windows memory',
+  /**
+   * Ollama's verdict on this machine (`GET /ollama/recommended`), one for both recommended models.
+   * The word is the Llama Server rows' (`belowMinimum`, `cpuOnly`, `memoryNotDetected`); these are
+   * its InfoTip, in GB, in place of the daemon's GiB paragraph (FR-R4-5, principle 2).
+   */
+  ollamaFitHelp: {
+    belowMinimum: (detected: string) =>
+      `This computer reports ${detected}. The recommended models may fail to load or run very slowly, and there is no smaller one to offer.`,
+    cpuOnly:
+      'Ollama runs models on the processor on an Intel Mac, at a token or two per second. A cloud or institutional provider is much faster here.',
+    unknown: (minimum: number) =>
+      `The recommended models need at least ${gigabytes(minimum)} of GPU memory. Without a supported GPU, Ollama runs them on the processor at a token or two per second.`,
+  },
+  /** The Ollama fit word's InfoTip names it "About memory". */
+  memoryLabel: 'memory',
   /** `128 GB`, the unit of every memory amount (see `gigabytes`). */
   gigabytes,
   /** `128 GB unified memory`, `24 GB VRAM`. */
@@ -144,10 +209,27 @@ export const localModelsCopy = {
       `${name} will be removed from the local model inventory. You can download it again later.`,
     /** A model whose file Ollama holds: Delete removes every tag that uses that file. */
     ollamaMessage: (name: string) =>
-      `${name}'s model file will be deleted from Ollama, under every tag that uses it. You can download it again later.`,
+      `The ${name} model file will be deleted from Ollama, under every tag that uses it. You can download it again later.`,
     confirm: 'Delete',
     cancel: 'Cancel',
   },
+  /**
+   * What a delete reports. A model Ollama holds is deleted by the tags that hold its file, which
+   * may not be `ollama_name` (#393), so the toast names them and a failure says how to finish it.
+   */
+  deleteResult: {
+    deleted: 'Local model deleted',
+    removed: (name: string) => `${name} was removed from local storage.`,
+    removedTags: (name: string, tags: readonly string[]) =>
+      `${name} was removed from local storage (Ollama ${tags.length === 1 ? 'tag' : 'tags'} ${tags.join(', ')}).`,
+    failed: 'Local model delete failed',
+    ollamaNotRunning: 'Ollama must be running to delete a model it holds.',
+    noTag: (name: string, path?: string | null) =>
+      `Biorouter could not tell which Ollama tag holds the ${name} model file${path ? ` (${path})` : ''}, so it deleted nothing. Run \`ollama list\` and remove that tag with \`ollama rm <tag>\`.`,
+    tagRefused: (tag: string) => `Ollama could not delete ${tag}`,
+  },
+  /** An Ollama pull that failed, in Ollama's own words. */
+  pullFailed: (tag: string, reason: string) => `Ollama could not pull ${tag}: ${reason}`,
 } as const;
 
 export const modelsDangerCopy = {
