@@ -273,8 +273,9 @@ describe('a reader who scrolled up during the load keeps their rows when it sett
 
   it('leaves the reader also when the messages land inside the list’s first 50ms', async (ctx) => {
     if (!browser) return ctx.skip();
-    // The list's settle timer from its empty first render can fire while the
-    // batches are still loading, so the first settle is not always the last one.
+    // Messages that land inside the empty first render's 50ms settle timer.
+    // Until eafea1b18 that timer fired with 20 of 60 rows drawn, so the first
+    // settle was not the last; the reader is left either way.
     const tab = await open({ arriveAfter: 0 });
     await scrollBy(tab, -300);
     await tab.waitForTimeout(50);
