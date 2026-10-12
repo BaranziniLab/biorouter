@@ -12,7 +12,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('./ConfigContext', () => ({
@@ -51,8 +51,18 @@ vi.mock('./bottom_menu/ModelEffortChip', () => ({
   ),
 }));
 vi.mock('./bottom_menu/ComposerFooter', () => ({
-  ComposerFooter: ({ sessionId }: { sessionId: string | null }) => (
-    <div data-testid="composer-footer" data-session={sessionId ?? 'none'} />
+  ComposerFooter: ({
+    sessionId,
+    workingDirLocked,
+  }: {
+    sessionId: string | null;
+    workingDirLocked?: boolean;
+  }) => (
+    <div
+      data-testid="composer-footer"
+      data-session={sessionId ?? 'none'}
+      data-locked={String(workingDirLocked)}
+    />
   ),
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
@@ -95,10 +105,8 @@ beforeEach(() => {
   });
 });
 
-function renderComposer(
-  overrides: Partial<React.ComponentProps<typeof ChatInput>> = {}
-): ReturnType<typeof render> {
-  return render(
+function composerElement(overrides: Partial<React.ComponentProps<typeof ChatInput>> = {}) {
+  return (
     <ChatInput
       sessionId="chat-1"
       handleSubmit={vi.fn()}
@@ -117,6 +125,12 @@ function renderComposer(
       {...overrides}
     />
   );
+}
+
+function renderComposer(
+  overrides: Partial<React.ComponentProps<typeof ChatInput>> = {}
+): ReturnType<typeof render> {
+  return render(composerElement(overrides));
 }
 
 const card = () => document.querySelector('.biorouter-composer-card') as HTMLElement;
@@ -197,6 +211,52 @@ describe('placeholders', () => {
     renderComposer({ messagesLength: 3 });
     expect(screen.getByPlaceholderText(COMPOSER_COPY.placeholderFollowUp)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText(/navigate messages/)).toBeNull();
+  });
+});
+
+describe('followUp: the placeholder for a message the caller already shows', () => {
+  // A new chat's first send draws the person's message before the store holds it
+  // (summary/useFirstSend.ts), so for about 0.7 s the transcript has a message
+  // and `messagesLength` is still 0.
+  it('invites a follow-up while the store is still empty', () => {
+    renderComposer({ messagesLength: 0, followUp: true });
+    expect(screen.getByPlaceholderText(COMPOSER_COPY.placeholderFollowUp)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(COMPOSER_COPY.placeholderEmpty)).toBeNull();
+  });
+
+  it('changes once, with the message on screen, and not again when the store catches up', () => {
+    const { rerender } = renderComposer({ messagesLength: 0, followUp: false });
+    const field = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    const seen = [field.placeholder];
+    // The send: the row is drawn, the store is not yet holding it.
+    rerender(composerElement({ messagesLength: 0, followUp: true }));
+    seen.push(field.placeholder);
+    // The store's message lands under the same stated word.
+    rerender(composerElement({ messagesLength: 1, followUp: true }));
+    seen.push(field.placeholder);
+    expect(seen).toEqual([
+      COMPOSER_COPY.placeholderEmpty,
+      COMPOSER_COPY.placeholderFollowUp,
+      COMPOSER_COPY.placeholderFollowUp,
+    ]);
+  });
+
+  it('wins over the length when it is stated, in both directions', () => {
+    const { unmount } = renderComposer({ messagesLength: 3, followUp: false });
+    expect(screen.getByPlaceholderText(COMPOSER_COPY.placeholderEmpty)).toBeInTheDocument();
+    unmount();
+    renderComposer({ messagesLength: 0, followUp: true });
+    expect(screen.getByPlaceholderText(COMPOSER_COPY.placeholderFollowUp)).toBeInTheDocument();
+  });
+
+  it('is the placeholder and nothing else: the working folder stays unlocked', () => {
+    // `workingDirIsLocked` falls back to `messagesLength > 0`; a drawn row that the
+    // store does not hold must not lock the folder of a chat that has no message.
+    renderComposer({ messagesLength: 0, followUp: true });
+    expect(screen.getByTestId('composer-footer')).toHaveAttribute('data-locked', 'false');
+    cleanup();
+    renderComposer({ messagesLength: 2 });
+    expect(screen.getByTestId('composer-footer')).toHaveAttribute('data-locked', 'true');
   });
 });
 

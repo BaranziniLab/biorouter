@@ -313,6 +313,23 @@ interface ChatInputProps {
    */
   messagesLength?: number;
   /**
+   * Whether the placeholder invites a follow-up ("Ask a follow-up") rather than
+   * the open question ("Ask Biorouter anything…"). Presentation only: it reads
+   * nothing else and is read by nothing else.
+   *
+   * Absent, it follows `messagesLength > 0`, which is what every caller that does
+   * not track a provisional row gets. A caller that DRAWS a message before the
+   * store holds it (a new chat's first send, `summary/useFirstSend.ts`) states it
+   * here, so the placeholder changes once with what the person sees and not 0.7 s
+   * later for no event they can see.
+   *
+   * ⚠ Never fold that provisional row into `messagesLength` instead: that prop
+   * also arms the turn tier probe (`turnTierProbeRef`, a privacy read's timing)
+   * and is `workingDirIsLocked`'s fallback, and neither may move for a row the
+   * store does not hold yet.
+   */
+  followUp?: boolean;
+  /**
    * #44 — authoritative working-dir lock, derived by the owner of the session
    * metadata (BaseChat, via `deriveWorkingDirLocked`). `messagesLength` alone
    * misleads while a resumed transcript hydrates (0 for a non-empty session)
@@ -378,6 +395,7 @@ export default function ChatInput({
   accumulatedInputTokens,
   accumulatedOutputTokens,
   messagesLength = 0,
+  followUp,
   workingDirLocked,
   sessionCosts,
   modelCostRows,
@@ -2865,10 +2883,11 @@ export default function ChatInput({
             id="dynamic-textarea"
             aria-label={COMPOSER_COPY.inputLabel}
             // An invitation, never an instruction: "Ask a follow-up" once the
-            // chat has messages, the open question before that.
+            // chat has messages, the open question before that. `followUp` is
+            // the caller's word for a message it already shows.
             placeholder={
               crewHold?.placeholder ??
-              ((messagesLength ?? 0) > 0
+              ((followUp ?? (messagesLength ?? 0) > 0)
                 ? COMPOSER_COPY.placeholderFollowUp
                 : COMPOSER_COPY.placeholderEmpty)
             }
