@@ -67,6 +67,18 @@ const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
   },
 };
 
+/**
+ * The value a field starts with when nothing is saved for it: the key's declared default, else the
+ * table above. `null` when the field starts empty. The form fills fields with it, and the Configure
+ * dialog reads it to know, before the saved values arrive, whether Save can act (FR-R3-3).
+ */
+export function providerKeyDefault(
+  providerName: string,
+  parameter: { name: string; default?: string | null }
+): string | null {
+  return parameter.default ?? (PROVIDER_KEY_DEFAULTS[providerName] ?? {})[parameter.name] ?? null;
+}
+
 /** The note every host-owned field points its `aria-describedby` at. */
 const HOST_OWNED_NOTE_ID = 'provider-config-host-owned-note';
 
@@ -151,8 +163,6 @@ export default function DefaultProviderSetupForm({
     try {
       const values: { [k: string]: ConfigInput } = {};
 
-      const frontendDefaults = PROVIDER_KEY_DEFAULTS[provider.name] ?? {};
-
       for (const parameter of parameters) {
         const configKey = `${parameter.name}`;
         const configValue = (await read(configKey, parameter.secret || false)) as ConfigValue;
@@ -160,7 +170,7 @@ export default function DefaultProviderSetupForm({
         if (configValue) {
           values[parameter.name] = { serverValue: configValue };
         } else {
-          const defaultValue = parameter.default ?? frontendDefaults[parameter.name] ?? null;
+          const defaultValue = providerKeyDefault(provider.name, parameter);
           if (defaultValue !== null) {
             values[parameter.name] = { value: defaultValue };
           }
@@ -202,8 +212,7 @@ export default function DefaultProviderSetupForm({
       return hint;
     }
 
-    const defaultValue =
-      parameter.default ?? (PROVIDER_KEY_DEFAULTS[provider.name] ?? {})[parameter.name] ?? null;
+    const defaultValue = providerKeyDefault(provider.name, parameter);
     if (defaultValue !== null) {
       return defaultValue;
     }

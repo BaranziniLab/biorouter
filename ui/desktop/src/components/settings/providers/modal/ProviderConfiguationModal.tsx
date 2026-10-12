@@ -4,6 +4,7 @@ import DefaultProviderSetupForm, {
   ConfigInput,
   isHostOwnedProviderField,
   providerFieldName,
+  providerKeyDefault,
 } from './subcomponents/forms/DefaultProviderSetupForm';
 import { hostManagedDestinationRequired } from '../../../privacy/hostManagedModelCopy';
 import ProviderSetupActions from './subcomponents/ProviderSetupActions';
@@ -62,6 +63,24 @@ export default function ProviderConfigurationModal({
   );
 
   const isConfigured = provider.is_configured;
+  /**
+   * Whether every required field holds a value, which is when Save becomes the coral primary
+   * (vision FR-R3-3): until then it is secondary, the rule "Detect provider" and Versa's "Connect"
+   * already follow on the same page, so a dialog that opens on an empty key no longer offers a coral
+   * button that can only answer with "is required". It stays clickable, so a click still says
+   * which field is missing (and a browser still hears the host-managed refusal).
+   *
+   * Before the saved values arrive, a key counts as present when the provider is configured or the
+   * field starts with a default, which is what the load then fills in: Save is drawn in its final
+   * colour from the first frame instead of fading to coral as an async value lands (principle 9).
+   * Amazon Bedrock needs no key: its profile and region start on defaults, so its Save is coral at
+   * once, as is a provider with no required field.
+   */
+  const requiredReady = requiredParameters.every((parameter) => {
+    const entry = configValues[parameter.name];
+    if (entry) return Boolean(entry.value || entry.serverValue);
+    return isConfigured || providerKeyDefault(provider.name, parameter) !== null;
+  });
   // Something is SAVED for this provider even when it cannot run — a coding
   // agent whose command key names a CLI that is not installed is served
   // `is_configured: false` with a reason. Removing that saved key is still the
@@ -283,6 +302,7 @@ export default function ProviderConfigurationModal({
             providerName={provider.metadata.display_name}
             isActiveProvider={isActiveProvider}
             isSubmitting={isSubmitting}
+            ready={requiredReady}
           />
         }
       >

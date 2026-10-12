@@ -17,6 +17,11 @@ interface ProviderSetupActionsProps {
   requiredParameters?: ConfigKey[];
   isActiveProvider?: boolean;
   isSubmitting?: boolean;
+  /**
+   * Every required field has a value. Save is the coral primary only then, and secondary before
+   * (vision FR-R3-3); it stays clickable either way, so a click can say what is missing.
+   */
+  ready?: boolean;
 }
 
 /**
@@ -36,6 +41,7 @@ export default function ProviderSetupActions({
   requiredParameters,
   isActiveProvider = false,
   isSubmitting = false,
+  ready = true,
 }: ProviderSetupActionsProps) {
   if (showDeleteConfirmation) {
     if (isActiveProvider) {
@@ -83,7 +89,12 @@ export default function ProviderSetupActions({
         <Button type="button" variant="secondary" onClick={onCancel}>
           {providerSetupCopy.cancel}
         </Button>
-        <Button type="submit" onClick={onSubmit} disabled={isSubmitting}>
+        <Button
+          type="submit"
+          variant={ready ? 'default' : 'secondary'}
+          onClick={onSubmit}
+          disabled={isSubmitting}
+        >
           {isSubmitting
             ? providerSetupCopy.checking
             : requiredParameters && requiredParameters.length > 0

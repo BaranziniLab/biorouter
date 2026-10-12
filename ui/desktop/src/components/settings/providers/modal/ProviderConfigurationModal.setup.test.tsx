@@ -451,3 +451,123 @@ describe('closing with Escape', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Configure' })).toHaveFocus());
   });
 });
+
+/**
+ * Vision FR-R3-3: Configure Anthropic and GitHub Copilot opened on an empty required key with a
+ * coral Save, while "Detect provider" and Versa's "Connect" on the same page stay secondary until a
+ * key is in. Save follows that rule now: secondary until every required field has a value, coral
+ * once it can act, and still a button a click can use to hear what is missing.
+ */
+describe('Save is the coral primary only once the required fields have values (FR-R3-3)', () => {
+  const keyed = (configured: boolean) =>
+    ({
+      ...provider('claude_code'),
+      name: 'anthropic',
+      is_configured: configured,
+      metadata: {
+        ...provider('claude_code').metadata,
+        name: 'anthropic',
+        display_name: 'Anthropic',
+        config_keys: [
+          {
+            name: 'ANTHROPIC_API_KEY',
+            required: true,
+            secret: true,
+            oauth_flow: false,
+            default: null,
+          },
+          {
+            name: 'ANTHROPIC_HOST',
+            required: false,
+            secret: false,
+            oauth_flow: false,
+            default: 'https://api.anthropic.com',
+          },
+        ],
+      },
+    }) as ProviderDetails;
+  const bedrock = {
+    ...provider('claude_code'),
+    name: 'aws_bedrock',
+    metadata: {
+      ...provider('claude_code').metadata,
+      name: 'aws_bedrock',
+      display_name: 'Amazon Bedrock',
+      config_keys: [
+        {
+          name: 'AWS_PROFILE',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: 'default',
+        },
+        {
+          name: 'AWS_REGION',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: 'us-west-2',
+        },
+      ],
+    },
+  } as ProviderDetails;
+  const save = () => screen.getByRole('button', { name: providerSetupCopy.save });
+  const isCoral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+  const isSecondary = (button: HTMLElement) => button.classList.contains('br-fill-rest');
+
+  it('keeps Save secondary on an empty key and turns it coral once a key is typed', async () => {
+    render(<ProviderConfigurationModal provider={keyed(false)} onClose={vi.fn()} />);
+    const field = await screen.findByLabelText('Anthropic API key');
+    expect(isSecondary(save())).toBe(true);
+    expect(isCoral(save())).toBe(false);
+    expect(save()).toBeEnabled();
+
+    fireEvent.change(field, { target: { value: 'sk-ant-test' } });
+    expect(isCoral(save())).toBe(true);
+    expect(isSecondary(save())).toBe(false);
+
+    // Emptied again, it steps back.
+    fireEvent.change(field, { target: { value: '' } });
+    expect(isSecondary(save())).toBe(true);
+  });
+
+  it('still answers a click on the secondary Save with what is missing', async () => {
+    render(<ProviderConfigurationModal provider={keyed(false)} onClose={vi.fn()} />);
+    await screen.findByLabelText('Anthropic API key');
+    fireEvent.click(save());
+    expect(await screen.findByText('Anthropic API key is required')).toBeInTheDocument();
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it('draws a configured provider coral from the first frame, before and after its values load', async () => {
+    let answer: (value: unknown) => void = () => {};
+    mocks.read.mockImplementation(
+      (key: string) =>
+        new Promise((resolve) => {
+          if (key === 'ANTHROPIC_API_KEY') answer = resolve;
+          else resolve(null);
+        })
+    );
+    render(<ProviderConfigurationModal provider={keyed(true)} onClose={vi.fn()} />);
+    // Still loading: the saved key has not arrived, and Save is already in its final colour.
+    expect(screen.getByText(providerSetupCopy.loadingValues)).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
+    answer({ maskedValue: 'sk-a…test' });
+    expect(await screen.findByLabelText('Anthropic API key')).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
+  });
+
+  it('keeps Amazon Bedrock, which needs no key, coral before and after its defaults load', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    mocks.read.mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    render(<ProviderConfigurationModal provider={bedrock} onClose={vi.fn()} />);
+    expect(isCoral(save())).toBe(true);
+    release();
+    expect(await screen.findByDisplayValue('us-west-2')).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
+  });
+});
