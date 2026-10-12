@@ -2657,6 +2657,20 @@ fn scheduled_prompt(job: &ScheduledJob, workflow: &Workflow) -> String {
     )
 }
 
+/// Delete the chat a scheduled run made for itself when the run failed before
+/// its first message: nothing happened in it, and nobody can open it, because
+/// History lists only chats with messages. A failure to delete is logged and
+/// the run's own error still stands.
+async fn discard_unstarted_run_session(session_manager: &SessionManager, session_id: &str) {
+    if let Err(error) = session_manager.delete_session(session_id).await {
+        tracing::warn!(
+            session_id,
+            "could not delete the empty chat of a scheduled run that failed before it started: \
+             {error:#}"
+        );
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -2754,36 +2768,51 @@ async fn execute_job(
         )
         .await?;
 
-    agent.update_provider(agent_provider, &session.id).await?;
+    // Everything from here to the first message can still refuse the run: the
+    // bind, a required skill that is missing or switched off, the workflow's
+    // own setup. Such a run never started, so it must not leave its chat
+    // behind. Diagnostics 20261006_2: Daily Meditation failed its skill check
+    // every night, and each failure left one empty "Scheduled job:
+    // daily-meditation" row in the store, hidden from History because it has
+    // no messages.
+    let setup = async {
+        agent.update_provider(agent_provider, &session.id).await?;
 
-    let prepared_workflow_prompt = crate::workflow::runtime::prepare_prompt(
-        agent.config.session_manager.as_ref(),
-        &session.id,
-        &workflow,
-    )
-    .await?;
-
-    // Persist and apply the workflow before the first model call. Scheduled
-    // runs used to load only `extensions`; their declared knowledge base,
-    // required skills, instructions, and structured-output components were
-    // silently ignored until after the turn had already finished.
-    agent
-        .config
-        .session_manager
-        .update(&session.id)
-        .schedule_id(Some(job.id.clone()))
-        .workflow(Some(workflow.clone()))
-        .apply()
+        let prepared_workflow_prompt = crate::workflow::runtime::prepare_prompt(
+            agent.config.session_manager.as_ref(),
+            &session.id,
+            &workflow,
+        )
         .await?;
 
-    crate::workflow::runtime::install_prepared(
-        &agent,
-        &session.id,
-        &workflow,
-        true,
-        prepared_workflow_prompt,
-    )
-    .await?;
+        // Persist and apply the workflow before the first model call. Scheduled
+        // runs used to load only `extensions`; their declared knowledge base,
+        // required skills, instructions, and structured-output components were
+        // silently ignored until after the turn had already finished.
+        agent
+            .config
+            .session_manager
+            .update(&session.id)
+            .schedule_id(Some(job.id.clone()))
+            .workflow(Some(workflow.clone()))
+            .apply()
+            .await?;
+
+        crate::workflow::runtime::install_prepared(
+            &agent,
+            &session.id,
+            &workflow,
+            true,
+            prepared_workflow_prompt,
+        )
+        .await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = setup {
+        discard_unstarted_run_session(agent.config.session_manager.as_ref(), &session.id).await;
+        return Err(error);
+    }
 
     let mut jobs_guard = jobs.lock().await;
     if let Some((_, job_def)) = jobs_guard.get_mut(job_id.as_str()) {
@@ -3971,6 +4000,63 @@ mod tests {
         assert!(
             !scheduler.list_scheduled_jobs().await[0].currently_running,
             "the in-memory copy must be cleared too, or this process keeps skipping the job"
+        );
+    }
+
+    /// Diagnostics 20261006_2: Daily Meditation failed its required-skill check
+    /// every night, and that check runs after the run has made its chat, so
+    /// each failure left an empty "Scheduled job: daily-meditation" row in the
+    /// store. A run that fails before its first message now leaves no chat.
+    ///
+    /// Driven through `execute_job` itself, on a loopback Ollama that is not
+    /// listening: the model is never asked anything, because the skill check
+    /// comes first. The rows live in `SessionManager::instance()`, which
+    /// `Agent::new()` reads, so the run's chat is found by its job id.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_run_that_fails_before_its_first_message_leaves_no_chat() {
+        let dir = tempdir().unwrap();
+        let workflow = dir.path().join("needs_a_missing_skill.yaml");
+        fs::write(
+            &workflow,
+            "version: 1.0.0\ntitle: Needs a missing skill\ndescription: probe\nprompt: test\n\
+             extensions: []\nskills:\n- no-such-skill-20261006\n",
+        )
+        .unwrap();
+        let job_id = format!("missing-skill-{}", uuid::Uuid::new_v4().simple());
+        let overrides = HashMap::from([
+            ("BIOROUTER_PROVIDER".to_string(), "ollama".to_string()),
+            ("BIOROUTER_MODEL".to_string(), "llama3.1:8b".to_string()),
+            ("OLLAMA_HOST".to_string(), "http://127.0.0.1:9".to_string()),
+        ]);
+        let error = crate::config::with_config_overrides(
+            overrides,
+            execute_job(
+                dormant_job(&job_id, &workflow),
+                Arc::new(Mutex::new(JobsMap::new())),
+                job_id.clone(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect_err("a workflow whose required skill is missing must not run");
+        assert!(
+            error.to_string().contains("no-such-skill-20261006"),
+            "precondition: the run failed at its skill check, not before it made its chat: \
+             {error:#}"
+        );
+
+        let name = format!("Scheduled job: {job_id}");
+        let left: Vec<String> = SessionManager::instance()
+            .list_sessions_by_types_including_empty(&[SessionType::Scheduled])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|session| session.name == name)
+            .map(|session| session.id)
+            .collect();
+        assert!(
+            left.is_empty(),
+            "a run that never started left its empty chat behind: {left:?}"
         );
     }
 
