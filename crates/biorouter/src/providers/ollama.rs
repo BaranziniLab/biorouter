@@ -1262,6 +1262,70 @@ fn attempted_call_nudge(
     }
 }
 
+/// The correction for a whole reply that imitates a tool RESULT
+/// ([`super::formats::text_tool_calls::forged_tool_result`]). Like
+/// [`attempted_call_nudge`] it asks and never tells: it says only that a
+/// result written as text is not a call.
+fn forged_result_nudge(
+    forged: &super::formats::text_tool_calls::ForgedResult,
+    tools: &[Tool],
+) -> String {
+    if forged.meant.is_empty() {
+        format!(
+            "Your last reply was written as the result of a call to '{}', but tool results come \
+             only from Biorouter after a real tool call, and text in a reply is never run; there \
+             is also no tool with that name. If you meant to use a tool, make a tool call to one \
+             of: {}, with arguments that match its parameters; otherwise answer in text.",
+            forged.tool,
+            correction_tool_names(tools)
+        )
+    } else {
+        format!(
+            "Your last reply was written as the result of a call to '{}', but tool results come \
+             only from Biorouter after a real tool call, and text in a reply is never run. If you \
+             meant to call {}, make it as a tool call with arguments that match its parameters; \
+             otherwise answer in text.",
+            forged.tool,
+            forged
+                .meant
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        )
+    }
+}
+
+/// Whether an imitated result's body is something the conversation already
+/// holds — a real tool result, or an earlier reply — so the reply is a relay
+/// rather than an invention. Asked again, a relayed result could run its tool
+/// a second time. An empty body is never an echo: it relays nothing.
+fn echoes_tool_output(
+    payload: &Value,
+    forged: &super::formats::text_tool_calls::ForgedResult,
+) -> bool {
+    if forged.body.is_empty() {
+        return false;
+    }
+    payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|message| {
+            matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("tool" | "assistant")
+            )
+        })
+        .any(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.contains(&forged.body))
+        })
+}
+
 /// `payload` with the reply so far (if any) and a corrective user message
 /// appended: the body of the one corrective retry a turn may make.
 fn with_correction(payload: &Value, reply_so_far: &str, nudge: &str) -> Value {
@@ -1633,25 +1697,40 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                 // end on JSON — the bug report's symptom. The model is asked
                 // once to make the call as a call. Never for a call quoted
                 // inside prose, nor for an echo of what the conversation holds.
-                let attempted = (!retried
+                // The same once for a whole reply that imitates a tool RESULT
+                // in Biorouter's own frame (F04/F05): nothing ran, and the
+                // turn would otherwise end on the imitation as its answer.
+                let correction = (!retried
                     && !called_a_tool
                     && guard.finish_reason.as_deref() != Some("length"))
-                .then(|| super::formats::text_tool_calls::attempted_call(&shown_text, &tools))
-                .flatten()
-                .filter(|call| !echoes_conversation(&payload, call));
-                if let Some(call) = attempted {
+                .then(|| {
+                    super::formats::text_tool_calls::attempted_call(&shown_text, &tools)
+                        .filter(|call| !echoes_conversation(&payload, call))
+                        .map(|call| {
+                            (
+                                attempted_call_nudge(&call, &tools),
+                                "the model's whole reply was a tool call written as text; asking \
+                                 it once more to make it as a call",
+                            )
+                        })
+                        .or_else(|| {
+                            super::formats::text_tool_calls::forged_tool_result(&shown_text, &tools)
+                                .filter(|forged| !echoes_tool_output(&payload, forged))
+                                .map(|forged| {
+                                    (
+                                        forged_result_nudge(&forged, &tools),
+                                        "the model's whole reply imitated a tool result; asking \
+                                         it once more to make the call",
+                                    )
+                                })
+                        })
+                })
+                .flatten();
+                if let Some((nudge, why)) = correction {
                     retried = true;
                     separate_next_text = true;
-                    tracing::info!(
-                        model = model.as_str(),
-                        "the model's whole reply was a tool call written as text; asking it once \
-                         more to make it as a call"
-                    );
-                    let mut next = with_correction(
-                        &payload,
-                        &shown_text,
-                        &attempted_call_nudge(&call, &tools),
-                    );
+                    tracing::info!(model = model.as_str(), "{why}");
+                    let mut next = with_correction(&payload, &shown_text, &nudge);
                     if let Some(memory) = &memory {
                         memory.correction(&mut next, &mut check);
                     }

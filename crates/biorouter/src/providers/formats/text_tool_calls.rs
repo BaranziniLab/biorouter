@@ -524,6 +524,90 @@ pub fn attempted_call(text: &str, tools: &[Tool]) -> Option<AttemptedCall> {
     })
 }
 
+/// The tag pairs a model's own imitation of a tool result is wrapped in: the
+/// Qwen/Hermes template's RESULT tag, and the hyphenated spelling
+/// qwen2.5-coder:7b also wrote.
+const RESULT_WRAPPER_TAGS: &[(&str, &str)] = &[
+    ("<tool_response>", "</tool_response>"),
+    ("<tool-response>", "</tool-response>"),
+];
+
+/// A tool RESULT the model wrote itself, found by [`forged_tool_result`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForgedResult {
+    /// The `tool` attribute as the model wrote it.
+    pub tool: String,
+    /// What the model put inside the frame, trimmed.
+    pub body: String,
+    /// The advertised tools the name stands for: the name itself when it is
+    /// advertised, otherwise every advertised `<extension>__<name>`. Empty
+    /// when it names nothing this request offered.
+    pub meant: Vec<String>,
+}
+
+/// A WHOLE reply that is one tool result in Biorouter's own untrusted-data
+/// frame (`<tool-output untrusted="true" tool="X">…</tool-output>`), bare or
+/// wrapped in `<tool_response>`/`<tool-response>`. `None` otherwise.
+/// Detection only: nothing in it is ever run.
+///
+/// That frame is how Biorouter hands a model every tool result, and a model
+/// that cannot keep making calls can start writing it instead. Live (F04/F05,
+/// qwen2.5-coder:7b on Ollama 0.40.2, 2026-10-12): after one recovered call,
+/// every later reply in both tasks was such a frame — an invented "Task
+/// updated" for `todo__todo_update`, a file's would-be contents for a write,
+/// the JavaScript it meant to run for `code_execution__execute_code` — and
+/// each was accepted as a final answer, because its body is not a `{name,
+/// arguments}` object and so [`attempted_call`] never saw it. The model was
+/// never told that nothing had run.
+///
+/// Whole reply only, for the reason [`attempted_call`] gives: a frame quoted
+/// inside prose is indistinguishable by its text from one that was meant. The
+/// caller must also rule out an echo — a body some real tool result or
+/// earlier reply already holds — before it asks anything.
+pub fn forged_tool_result(text: &str, tools: &[Tool]) -> Option<ForgedResult> {
+    use crate::guardrails::tool_output::{TOOL_OUTPUT_FRAME_CLOSE, TOOL_OUTPUT_FRAME_OPEN};
+    if tools.is_empty() {
+        return None;
+    }
+    let trimmed = text.trim();
+    let inner = unwrap_tags(trimmed, RESULT_WRAPPER_TAGS)
+        .unwrap_or(trimmed)
+        .trim();
+    let after_open = inner.strip_prefix(TOOL_OUTPUT_FRAME_OPEN)?;
+    let (attributes, rest) = after_open.split_once('>')?;
+    let tool = attributes
+        .split_whitespace()
+        .find_map(|attribute| attribute.strip_prefix("tool=\"")?.strip_suffix('"'))
+        .filter(|tool| !tool.trim().is_empty())?;
+    let body = match rest.find(TOOL_OUTPUT_FRAME_CLOSE) {
+        Some(close) => {
+            // One frame and nothing after it: a second frame, or prose after
+            // the first, is not the shape that was measured.
+            let after = rest.get(close + TOOL_OUTPUT_FRAME_CLOSE.len()..)?;
+            if !after.trim().is_empty() {
+                return None;
+            }
+            rest.get(..close)?
+        }
+        None => rest,
+    };
+    let meant: Vec<String> = if tools.iter().any(|t| t.name == tool) {
+        vec![tool.to_string()]
+    } else {
+        let suffix = format!("__{tool}");
+        tools
+            .iter()
+            .filter(|t| t.name.ends_with(&suffix))
+            .map(|t| t.name.to_string())
+            .collect()
+    };
+    Some(ForgedResult {
+        tool: tool.to_string(),
+        body: body.trim().to_string(),
+        meant,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // R16: argument normalisation, for structured AND recovered calls.
 // ---------------------------------------------------------------------------
@@ -1685,5 +1769,86 @@ mod tests {
                 .meant,
             ["web__search", "knowledge__search"]
         );
+    }
+
+    /// F04/F05: qwen2.5-coder:7b's whole replies after its first tool result
+    /// (live, Ollama 0.40.2, 2026-10-12), verbatim but for shortened paths.
+    /// Each imitates Biorouter's own result frame; none is a call object, so
+    /// `attempted_call` never saw them, and nothing in them is recovered.
+    #[test]
+    fn a_whole_reply_in_the_tool_result_frame_is_a_forged_result() {
+        let mut code_mode = tools();
+        code_mode.push(tool(
+            "code_execution__execute_code",
+            json!({"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}),
+        ));
+        code_mode.push(tool(
+            "code_execution__read_module",
+            json!({"type": "object", "properties": {"module_path": {"type": "string"}}, "required": ["module_path"]}),
+        ));
+        code_mode.push(tool(
+            "todo__todo_update",
+            json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        ));
+        let cases: [(&str, &str, &[&str]); 4] = [
+            (
+                "<tool_response>\n<tool-output untrusted=\"true\" tool=\"todo__todo_update\">\nTask updated: Status changed to \"in_progress\" for item #1\n</tool-output>\n</tool_response>",
+                "todo__todo_update",
+                &["todo__todo_update"],
+            ),
+            (
+                "<tool_response>\n<tool-output untrusted=\"true\" tool=\"code_execution__execute_code\">\n```javascript\nimport { shell } from \"developer\";\n\nshell({\n  command: \"python3 factorial.py 20\",\n  timeout_s: 120\n});\n```\n</tool-output>\n</tool_response>",
+                "code_execution__execute_code",
+                &["code_execution__execute_code"],
+            ),
+            (
+                "<tool-response>\n<tool-output untrusted=\"true\" tool=\"read_module\">\nModule read: developer\nTool signature: \n```typescript\nimport { shell, text_editor } from \"developer\";\n```\n</tool-output>\n</tool-response>",
+                "read_module",
+                &["code_execution__read_module"],
+            ),
+            (
+                "<tool_response>\n<tool-output untrusted=\"true\" tool=\"agent_drafter__create_app\">\n{\n  \"title\": \"Factorial Calculator\"\n}\n</tool-output>\n</tool_response>",
+                "agent_drafter__create_app",
+                &[],
+            ),
+        ];
+        for (text, name, meant) in cases {
+            assert_eq!(
+                recover(text, &code_mode, Tiers::WholeMessage),
+                None,
+                "{text}"
+            );
+            assert_eq!(attempted_call(text, &code_mode), None, "{text}");
+            let forged = forged_tool_result(text, &code_mode)
+                .unwrap_or_else(|| panic!("a forged result: {text}"));
+            assert_eq!(forged.tool, name);
+            assert_eq!(forged.meant, meant, "{text}");
+            assert!(!forged.body.is_empty() && !forged.body.contains("tool-output"));
+        }
+        // Bare, with no wrapper and no closing tag.
+        let bare = forged_tool_result(
+            "<tool-output untrusted=\"true\" tool=\"developer__shell\">\nfactorial.py",
+            &code_mode,
+        )
+        .unwrap();
+        assert_eq!(bare.body, "factorial.py");
+
+        for text in [
+            // Prose before the frame: a quote is indistinguishable from an
+            // imitation, so it is never asked about.
+            "Let's start by writing the script.\n\n<tool_response>\n<tool-output untrusted=\"true\" tool=\"todo__todo_update\">\nok\n</tool-output>\n</tool_response>",
+            // Prose after it, or a second frame.
+            "<tool-output untrusted=\"true\" tool=\"todo__todo_update\">\nok\n</tool-output>\nThe task is updated.",
+            "<tool-output untrusted=\"true\" tool=\"a\">\n1\n</tool-output>\n<tool-output untrusted=\"true\" tool=\"b\">\n2\n</tool-output>",
+            // No tool named, and the frame's mention in documentation.
+            "<tool-output untrusted=\"true\">\nok\n</tool-output>",
+            "<tool-output untrusted=\"true\" tool=\"\">\nok\n</tool-output>",
+            "Everything a tool returns arrives wrapped in a `<tool-output untrusted=\"true\" tool=\"...\">` tag.",
+            // The call tag is `attempted_call`'s, not this.
+            "<tool_call>\n{\"name\": \"developer__shell\", \"arguments\": {\"command\": \"ls\"}}\n</tool_call>",
+        ] {
+            assert_eq!(forged_tool_result(text, &code_mode), None, "{text}");
+        }
+        assert_eq!(forged_tool_result(cases[0].0, &[]), None);
     }
 }
