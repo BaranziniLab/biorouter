@@ -207,6 +207,13 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       lastScrollTopRef.current = scrollTop;
 
       // Detect if user manually scrolled up from the bottom
+      // ⚠ Known edge, left on purpose: this also reads the follow's OWN scroll as the reader
+      // scrolling up when more than BOTTOM_SCROLL_THRESHOLD of content lands between the follow's
+      // `scrollTo` (in a frame) and its scroll event (the next frame), so following stops
+      // (measured by WS-SUMMARY: 432px from eight rows appended at once). Exempting that event
+      // alone would leave the view following yet short of the end, because the same event marks
+      // the reader as actively scrolling and the next frame's follow is skipped; a real fix also
+      // changes that throttle for every caller, Crew's timeline included.
       if (!currentIsAtBottom && isFollowing) {
         // user scrolled up, disabling auto-scroll
         userScrolledUpRef.current = true;
