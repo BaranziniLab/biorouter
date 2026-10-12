@@ -78,14 +78,19 @@ const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
       ? 'Local model install failed'
       : 'Could not start Llama Server';
 
-const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
+/**
+ * Where the fallback download stands, as a word after its spec: "Downloaded", "Partial", or, while
+ * Ollama's copy may serve, "Only if needed". It used to ride on the label ("Fallback GGUF, may
+ * download"), which then read as a note rather than a name (vision FR-R3-6).
+ */
+const fallbackDownloadState = (model: LlamaCppModel | undefined) => {
   switch (model?.fallback_download_status) {
     case 'downloaded':
-      return 'ready';
+      return llamaCopy.fallbackDownloaded;
     case 'partial':
-      return 'partial';
+      return llamaCopy.fallbackPartial;
     case 'not_downloaded':
-      return model?.ollama_name ? 'may download' : null;
+      return model?.ollama_name ? llamaCopy.fallbackIfNeeded : null;
     default:
       return null;
   }
@@ -381,7 +386,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         : localModelsCopy.largeForThisComputer
       : null;
   const detail = localModelsCopy.detail;
-  const fallbackState = fallbackDownloadLabel(selectedEntry);
+  const fallbackState = fallbackDownloadState(selectedEntry);
 
   return (
     <>
@@ -454,6 +459,13 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                       {modelDownloadNote(selectedEntry)}
                     </DetailRow>
                     <DetailRow label={detail.expectedSpeed}>{selectedEntry.speed_hint}</DetailRow>
+                    {/* The summary's one number, kept when Details opens (vision FR-R3-6: the
+                        rows that replaced "Fast · 256k context" never said the window). */}
+                    {localModelsCopy.contextAmount(selectedEntry.context_limit) ? (
+                      <DetailRow label={detail.context}>
+                        {localModelsCopy.contextAmount(selectedEntry.context_limit)}
+                      </DetailRow>
+                    ) : null}
                     {/* The fit in plain words, with the two numbers it rests on (FR-R2-6). */}
                     <DetailRow label={detail.memory}>{fitLine(selectedEntry, system)}</DetailRow>
                     {resourceWarnings.map((warning) => (
@@ -466,15 +478,15 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                         {selectedEntry.ollama_name}
                       </DetailRow>
                     ) : null}
-                    <DetailRow
-                      label={
-                        fallbackState
-                          ? `${detail.fallbackGguf}, ${fallbackState}`
-                          : detail.fallbackGguf
-                      }
-                      machine
-                    >
-                      {selectedEntry.hf_spec}
+                    {/* A name, and the spec it downloads in mono; where the download stands is a
+                        sans word after it, not part of the label. */}
+                    <DetailRow label={detail.fallbackDownload}>
+                      <span className="font-mono [overflow-wrap:anywhere]">
+                        {selectedEntry.hf_spec}
+                      </span>
+                      {fallbackState ? (
+                        <span className="text-text-muted"> · {fallbackState}</span>
+                      ) : null}
                     </DetailRow>
                     {selectedEntry.model_path ? (
                       <DetailRow label={detail.modelBlob} machine>

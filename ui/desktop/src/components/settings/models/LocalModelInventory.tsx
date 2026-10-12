@@ -613,7 +613,7 @@ export default function LocalModelInventory() {
             <DetailRow label={detail.ollamaModel} machine>
               {selectedModel.ollama_name ?? 'none'}
             </DetailRow>
-            <DetailRow label={detail.fallbackGguf} machine>
+            <DetailRow label={detail.fallbackDownload} machine>
               {selectedModel.hf_spec}
             </DetailRow>
             <DetailRow label={detail.officialUrl}>

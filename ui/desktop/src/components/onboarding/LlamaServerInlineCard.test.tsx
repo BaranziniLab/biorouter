@@ -248,6 +248,28 @@ describe('LlamaServerInlineCard', () => {
       // Labels are the sans face; the old "Store:" label was mono with its value.
       expect(screen.getByText(localModelsCopy.detail.modelStore)).not.toHaveClass('font-mono');
     });
+
+    // Vision FR-R3-6: opening Details replaced the summary "Fast · 128k context" with rows that
+    // never said the context window, and the fallback row's label read as a note ("Fallback GGUF,
+    // may download").
+    it('keeps the context window in Details and names the fallback row plainly', async () => {
+      render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('button', { name: llamaCopy.details }));
+      const details = await screen.findByTestId('llamacpp-details');
+      expect(details).toHaveTextContent(`${localModelsCopy.detail.context}128k`);
+
+      const label = screen.getByText(localModelsCopy.detail.fallbackDownload);
+      expect(label.tagName).toBe('DT');
+      expect(label).toHaveTextContent(/^Fallback download$/);
+      const value = label.nextElementSibling as HTMLElement;
+      // The spec in mono, where the download stands as a sans word after it.
+      expect(value).not.toHaveClass('font-mono');
+      expect(screen.getByText('google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0')).toHaveClass('font-mono');
+      expect(value).toHaveTextContent(
+        `google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0 · ${llamaCopy.fallbackIfNeeded}`
+      );
+      expect(details).not.toHaveTextContent(/GGUF,|may download/);
+    });
   });
 
   // Vision FR-R1-4: a model above 16 GB opened with "This model is above the 16 GB laptop tier"

@@ -9,6 +9,8 @@ import {
   CodingAgentLoadError,
   CodingAgentProvenance,
   StatusPill,
+  agentPlanName,
+  agentVersionNumber,
   pillFor,
   useCodingAgents,
 } from './codingAgentControls';
@@ -306,11 +308,16 @@ describe('the coding-agent controls', () => {
       );
       render(<AgentsHost onSuccess={vi.fn()} />);
 
-      expect(await screen.findByText(/Plan: max · Account: ada@example.edu/)).toBeInTheDocument();
+      expect(await screen.findByText('Max plan · ada@example.edu')).toBeInTheDocument();
       // The version is the line; where the CLI lives is a path, behind that line's tooltip
-      // (principle 10), so it is not drawn on the card.
+      // (principle 10), so it is not drawn on the card. The raw "--version" output is not either:
+      // the number alone, in mono (FR-R3-6).
       const version = screen.getByTestId('coding-agent-version-claude_code');
-      expect(version).toHaveTextContent('2.1.4 (Claude Code)');
+      expect(version).toHaveTextContent(/^Version 2\.1\.4$/);
+      expect(version.querySelector('.font-mono')).toHaveTextContent(/^2\.1\.4$/);
+      expect(version.closest('p')).toHaveTextContent(
+        /^Version 2\.1\.4 · Max plan · ada@example\.edu$/
+      );
       expect(screen.queryByText(/\/opt\/homebrew\/bin\/claude/)).toBeNull();
       expect(screen.getByText('Ready · signed in on your subscription')).toBeInTheDocument();
     });
@@ -444,5 +451,62 @@ describe('the coding-agent controls', () => {
     const line = await screen.findByTestId('coding-agent-load-error');
     expect(line).toHaveTextContent(CODING_AGENT_CHECK_FAILED);
     expect(line).not.toHaveTextContent('[object Object]');
+  });
+});
+
+/**
+ * Vision FR-R3-6: each agent's panel printed its CLI's raw `--version` line, in two shapes ("2.1.283
+ * (Claude Code) · Plan: max · Account: …", the row's name again, and "codex-cli 0.157.1"). Both read
+ * "Version <number>" now, the number in mono, then the plan and the account in the line's face.
+ */
+describe('the agent version line has one shape', () => {
+  it('takes the number out of either vendor’s --version output', () => {
+    expect(agentVersionNumber('2.1.283 (Claude Code)')).toBe('2.1.283');
+    expect(agentVersionNumber('codex-cli 0.157.1')).toBe('0.157.1');
+    expect(agentVersionNumber('codex-cli 0.158.0-alpha.2')).toBe('0.158.0-alpha.2');
+    expect(agentVersionNumber('dev build')).toBe('dev build');
+  });
+
+  it('names a plan in words', () => {
+    expect(agentPlanName('max')).toBe('Max plan');
+    expect(agentPlanName('team_premium')).toBe('Team premium plan');
+  });
+
+  const agent = (
+    over: Partial<CodingAgentAvailability> & { auth: CodingAgentAuth }
+  ): CodingAgentAvailability => ({
+    kind: 'codex',
+    providerId: 'codex',
+    displayName: 'Codex',
+    path: '/opt/homebrew/bin/codex',
+    version: 'codex-cli 0.157.1',
+    loginCommand: 'codex login',
+    installHint: 'npm install -g @openai/codex',
+    ...over,
+  });
+
+  it('draws Codex as "Version 0.157.1" with the number in mono', () => {
+    render(<CodingAgentProvenance agent={agent({ auth: { state: 'signed_in_subscription' } })} />);
+    const version = screen.getByTestId('coding-agent-version-codex');
+    expect(version.closest('p')).toHaveTextContent(/^Version 0\.157\.1$/);
+    expect(version.querySelector('.font-mono')).toHaveTextContent(/^0\.157\.1$/);
+    expect(screen.queryByText(/codex-cli/)).toBeNull();
+  });
+
+  it('draws Claude Code in the same shape, plan and account after the number', () => {
+    render(
+      <CodingAgentProvenance
+        agent={agent({
+          kind: 'claude_code',
+          providerId: 'claude_code',
+          displayName: 'Claude Code',
+          version: '2.1.283 (Claude Code)',
+          auth: { state: 'signed_in_subscription', plan: 'max', account: 'ada@example.edu' },
+        })}
+      />
+    );
+    const line = screen.getByTestId('coding-agent-version-claude_code').closest('p');
+    expect(line).toHaveTextContent(/^Version 2\.1\.283 · Max plan · ada@example\.edu$/);
+    expect(line).not.toHaveTextContent(/Plan:|Account:|\(Claude Code\)/);
   });
 });

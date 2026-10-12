@@ -245,7 +245,7 @@ describe('LocalModelInventory', () => {
 
     const machine = [
       localModelsCopy.detail.ollamaModel,
-      localModelsCopy.detail.fallbackGguf,
+      localModelsCopy.detail.fallbackDownload,
       localModelsCopy.detail.modelStore,
       localModelsCopy.detail.modelBlob,
     ];

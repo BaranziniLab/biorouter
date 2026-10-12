@@ -44,6 +44,10 @@ export const llamaCopy = {
   readyDetail: (model: string) => `Llama Server is running ${model} on your computer.`,
   /** The Details rows the Settings info dialog does not have; the rest share its labels. */
   download: 'Download',
+  /** Where the fallback download stands, after its spec in the "Fallback download" row. */
+  fallbackDownloaded: 'Downloaded',
+  fallbackPartial: 'Partial',
+  fallbackIfNeeded: 'Only if needed',
 } as const;
 
 /** The institutional gateway form a Versa row opens in place (`InstitutionalSetupCard`). */
@@ -89,6 +93,11 @@ export const agentCopy = {
   apiKeyTip:
     'With an API key a run would bill per token, and this provider removes API credentials from the environment it starts, so it cannot run this way.',
   indeterminate: 'Biorouter could not tell whether this CLI is usable.',
+  /** The panel's version line: "Version 2.1.283 · Max plan · ada@example.edu" (FR-R3-6). */
+  version: 'Version',
+  /** A CLI found on disk that printed no version. */
+  installed: 'Installed',
+  plan: (name: string) => `${name} plan`,
   checkAgain: 'Check again',
   signedIn: "I've signed in",
   checking: 'Checking…',

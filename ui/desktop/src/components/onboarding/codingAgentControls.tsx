@@ -539,21 +539,38 @@ export function CodingAgentBody({
 }
 
 /**
+ * The version number in a CLI's raw `--version` line: `2.1.283` out of "2.1.283 (Claude Code)",
+ * `0.157.1` out of "codex-cli 0.157.1". The two vendors print two shapes, and the row's own name
+ * already says which CLI it is, so the panel shows the number alone (vision FR-R3-6, principle
+ * 10). A line with no number is shown as it came.
+ */
+export function agentVersionNumber(raw: string): string {
+  return raw.match(/\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?/)?.[0] ?? raw.trim();
+}
+
+/** "max" -> "Max plan", "team_premium" -> "Team premium plan". */
+export function agentPlanName(plan: string): string {
+  const words = plan.replace(/[_-]+/g, ' ').trim();
+  return agentCopy.plan(`${words.charAt(0).toUpperCase()}${words.slice(1)}`);
+}
+
+/**
  * The version line, when the probe resolved a version or a path. The version is what a person
  * reads; where the CLI lives is a path, so it sits behind the line's tooltip (principle 10, V4-26)
  * instead of on the row in mono. The line takes focus, like a provider's description, so the
  * tooltip is reachable by keyboard. With a path and no version the line says only that the CLI was
  * found.
+ *
+ * Both agents' lines have one shape (vision FR-R3-6): "Version 2.1.283 · Max plan · ada@…" and
+ * "Version 0.157.1", the number in mono at the line's 12px (a version is a machine string,
+ * principle 3) and everything else in the line's sans face.
  */
 export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailability }) {
   // The plan and the account join the version on one line (FR-R1-8): a ready agent's panel was a
   // version line, a plan line and a paragraph before its button.
   const plan =
     agent.auth.state === 'signed_in_subscription'
-      ? [
-          agent.auth.plan ? `Plan: ${agent.auth.plan}` : null,
-          agent.auth.account ? `Account: ${agent.auth.account}` : null,
-        ]
+      ? [agent.auth.plan ? agentPlanName(agent.auth.plan) : null, agent.auth.account ?? null]
           .filter(Boolean)
           .join(' · ')
       : '';
@@ -565,7 +582,13 @@ export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailabilit
       data-testid={`coding-agent-version-${agent.providerId}`}
       className="cursor-default rounded-element biorouter-focus-surface"
     >
-      {agent.version ?? 'Installed'}
+      {agent.version ? (
+        <>
+          {agentCopy.version} <span className="font-mono">{agentVersionNumber(agent.version)}</span>
+        </>
+      ) : (
+        agentCopy.installed
+      )}
     </span>
   ) : null;
   return (

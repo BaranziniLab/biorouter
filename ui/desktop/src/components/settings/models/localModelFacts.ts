@@ -22,7 +22,7 @@ export const hasPartialDownload = (model: LlamaCppModel) =>
  *
  * - Installed: either copy is whole. The model works, so that is what a person is told; which copy
  *   serves it (and the other's half-finished download) is the daemon's business, and the dialog's
- *   Ollama model, Fallback GGUF and Model store rows say where things are.
+ *   Ollama model, Fallback download and Model store rows say where things are.
  * - Partial download: nothing is whole yet and something has started. The Install button is the
  *   action.
  * - Needs download: nothing has started. The row says nothing about it; the button is the cue.

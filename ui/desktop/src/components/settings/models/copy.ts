@@ -24,6 +24,12 @@ export const defaultModelCopy = {
   manageName: 'Configure providers',
 } as const;
 
+/** `256k`: a context window in thousands of tokens, the unit every row, summary and detail uses. */
+const contextAmount = (tokens: number | null | undefined) => {
+  if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return null;
+  return `${Math.round(tokens / 1024).toLocaleString()}k`;
+};
+
 export const localModelsCopy = {
   section: 'Local models',
   sectionHelp:
@@ -59,10 +65,11 @@ export const localModelsCopy = {
   recommendedMemory: (gib: number) => `${gib} GiB recommended`,
   /** Row facts joined with a middle dot: `4.2 GB · 128k context`. */
   contextWindow: (tokens: number | null | undefined) => {
-    if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return null;
-    const thousands = Math.round(tokens / 1024);
-    return `${thousands.toLocaleString()}k context`;
+    const amount = contextAmount(tokens);
+    return amount ? `${amount} context` : null;
   },
+  /** A Details row's value: `256k`, beside the label "Context". */
+  contextAmount,
   close: 'Close',
   warmUpModel: 'Warm up model',
   installModel: 'Install model',
@@ -90,7 +97,11 @@ export const localModelsCopy = {
     /** First run's Details row: the fit, the memory reported and the memory recommended, in one. */
     memory: 'Memory',
     ollamaModel: 'Ollama model',
-    fallbackGguf: 'Fallback GGUF',
+    /**
+     * The model file Llama Server downloads when it cannot load Ollama's copy. It read "Fallback
+     * GGUF, may download" on first run, a label that read as a note (vision FR-R3-6).
+     */
+    fallbackDownload: 'Fallback download',
     officialUrl: 'Official URL',
     modelStore: 'Model store',
     modelBlob: 'Model blob',
