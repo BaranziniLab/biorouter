@@ -150,8 +150,9 @@ interface CommandChipProps {
  * is where the daemon reads a command (`utils/composerCommand.ts`). It is the
  * same accent {@link Badge} as a reference chip, with the same 14px glyph, name
  * ink and 16px remove control (`.br-composer-chip-action`), so a command and a
- * reference read as one kind of attached object. The command is said in words for a screen reader and on
- * hover, since the label alone does not say a command will run.
+ * reference read as one kind of attached object; `composer/commandChip.browser.test.tsx`
+ * compares the two in Chromium. The command is said in words for a screen
+ * reader and on hover, since the label alone does not say a command will run.
  */
 export function CommandChip({ command, onRemove, className }: CommandChipProps) {
   const Icon = COMMAND_ICONS[command];
