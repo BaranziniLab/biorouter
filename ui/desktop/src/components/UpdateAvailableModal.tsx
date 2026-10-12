@@ -227,9 +227,10 @@ export default function UpdateAvailableModal() {
 
         {downloaded && (
           <p className="text-body text-text-default">
-            The update has been downloaded. Click <strong>Restart &amp; update</strong> and
-            Biorouter will reopen on the new version automatically. Your settings, chats, and
-            extensions are preserved.
+            The update has been downloaded. Click{' '}
+            <strong className="font-semibold">Restart &amp; update</strong> and Biorouter will
+            reopen on the new version automatically. Your settings, chats, and extensions are
+            preserved.
           </p>
         )}
 

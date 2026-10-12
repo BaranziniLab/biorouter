@@ -187,6 +187,24 @@ describe('UpdateAvailableModal — one-click flow', () => {
 
     expect(await screen.findByRole('button', { name: /Restart & Update/i })).toBeTruthy();
   });
+
+  it('names the button it points at in 600, never a bare strong (V4-R7-6)', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
+    requestModal({
+      phase: 'downloaded',
+      latestVersion: '1.86.0',
+      percent: 100,
+      usingFallback: false,
+    });
+    const dialog = await screen.findByRole('dialog');
+    // A bare <strong> takes preflight's `bolder`, which computes to 700; the type system draws 600.
+    // jsdom has no preflight, so the class is what this can see (Chromium measures the weight in
+    // ui/modalEmphasisWeight.browser.test.tsx).
+    const strong = Array.from(dialog.querySelectorAll('strong'));
+    expect(strong.map((s) => s.textContent)).toEqual(['Restart & update']);
+    expect(strong[0]).toHaveClass('font-semibold');
+  });
 });
 
 describe('UpdateAvailableModal — assisted (non-mac) download', () => {

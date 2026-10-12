@@ -116,4 +116,21 @@ describe('WorkflowWarningModal', () => {
     expect(screen.getByText('Summarizes a cohort.')).toBeInTheDocument();
     expect(screen.getByTestId('markdown')).toHaveTextContent('Read the table.');
   });
+
+  it('draws the two field names at 600, never a bare strong (V4-R7-6)', () => {
+    render(
+      <WorkflowWarningModal
+        isOpen
+        onConfirm={() => {}}
+        onCancel={() => {}}
+        workflowDetails={details}
+      />
+    );
+    // A bare <strong> takes preflight's `bolder`, which computes to 700; the type system draws 600.
+    // jsdom has no preflight, so the class is what this can see (Chromium measures the weight in
+    // modalEmphasisWeight.browser.test.tsx).
+    const strong = Array.from(screen.getByRole('dialog').querySelectorAll('strong'));
+    expect(strong.map((s) => s.textContent)).toEqual(['Title', 'Description']);
+    for (const s of strong) expect(s).toHaveClass('font-semibold');
+  });
 });
