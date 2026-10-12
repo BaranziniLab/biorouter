@@ -56,6 +56,12 @@ jobs:
       - name: Check the docs privacy checker still catches what it must
         run: node --test landing/scripts/check-docs-privacy.test.mjs
 
+      # The site's look rules: the type scale, two weights, tracking tokens, no
+      # caps labels, the shared easing and the control heights. It reads the
+      # stylesheets as text, and its mutants show each rule failing first.
+      - name: Check the site stylesheets keep the look rules
+        run: node --test landing/scripts/look-rules.test.mjs
+
       - name: Check the BAAM private set agrees in all three committed copies
         run: node landing/scripts/check-consistency.mjs --check
 
@@ -84,6 +90,21 @@ jobs:
 
       - name: Check the BAAM shelf's privacy badges and facet in a browser
         run: node --test landing/scripts/baam-privacy-facet.test.mjs
+
+      # Fills before lines (owner message 13, R-27). look-rules.test.mjs above
+      # reads the stylesheets as text; this reads what the pages PAINT at 1440
+      # and 390 wide, so a rule that is written right and still loses the
+      # cascade, or a box the animations build from script, fails here.
+      - name: Check the site paints fills, not outlines, in a browser
+        run: node --test landing/scripts/fill-rules.browser.test.mjs
+
+      # Layout that holds still (vision round 2, V5-R2-1 and V5-R2-2). The wall
+      # animation's composers keep the model's name at 390, 360 and 320 wide, and
+      # opening a BAAM row moves none of its GitHub link, download button or
+      # chevron out from under the pointer. Both are measurements, which jsdom
+      # cannot take; this reads the real pages in the same chromium.
+      - name: Check the site's layout holds still in a browser
+        run: node --test landing/scripts/layout-stability.browser.test.mjs
 
   deploy:
     needs: check

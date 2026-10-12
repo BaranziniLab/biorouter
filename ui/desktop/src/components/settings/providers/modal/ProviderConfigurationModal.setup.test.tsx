@@ -9,6 +9,8 @@ import type {
   CodingAgentKind,
 } from '../../../onboarding/codingAgentStatus';
 import ProviderConfigurationModal from './ProviderConfiguationModal';
+import { providerSetupCopy } from '../copy';
+import { uiCopy } from '../../../ui/copy';
 
 const mocks = vi.hoisted(() => ({
   submit: vi.fn(),
@@ -34,7 +36,6 @@ vi.mock('../../../onboarding/codingAgentStatus', async () => ({
 vi.mock('../../../InAppTerminalDock', () => ({
   default: () => <div data-testid="setup-terminal" />,
 }));
-vi.mock('./subcomponents/ProviderLogo', () => ({ default: () => null }));
 
 function fixture(kind: CodingAgentKind, auth: CodingAgentAuth): CodingAgentAvailability {
   return {
@@ -178,7 +179,14 @@ it('rechecks a failed configuration retry and offers the new sign-in state', asy
 
 it('explains Claude Code subscription setup without asking for an API key', async () => {
   render(<ProviderConfigurationModal provider={provider('claude_code')} onClose={vi.fn()} />);
-  expect(screen.getByText(/No API key is needed here/)).toBeInTheDocument();
+  // The explanation is the title's InfoTip (vision FR-R3-2), not a subtitle under the title. The
+  // tip is named for the provider, not the title (FR-R4-5).
+  const title = providerSetupCopy.configure('Claude Code');
+  expect(
+    screen.getByRole('button', { name: uiCopy.infoTipName('Claude Code') })
+  ).toHaveAccessibleDescription(providerSetupCopy.agentIntro('Claude Code'));
+  expect(screen.queryByRole('button', { name: uiCopy.infoTipName(title) })).toBeNull();
+  expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
   expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
 });
 
@@ -222,7 +230,9 @@ it('keeps Anthropic API configuration separate from Claude Code setup', async ()
     },
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={apiProvider} onClose={vi.fn()} />);
-  expect(screen.getByText(/Add your API key/)).toBeInTheDocument();
+  // The key field is what asks for the key; a line under the title that restated it is gone.
+  expect(await screen.findByLabelText('Anthropic API key')).toBeInTheDocument();
+  expect(screen.queryByText(/Add your API key/)).not.toBeInTheDocument();
   expect(screen.queryByText(/subscription sign-in/)).not.toBeInTheDocument();
   expect(mocks.status).not.toHaveBeenCalled();
 });
@@ -250,9 +260,31 @@ it('does not ask a provider with no secret for an API key', () => {
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={llama} onClose={vi.fn()} />);
   expect(screen.queryByText(/API key\(s\)/)).not.toBeInTheDocument();
-  expect(
-    screen.getByText('Llama Server needs no API key. Adjust how Biorouter reaches it.')
-  ).toBeInTheDocument();
+  // Why there is no key field is the title's InfoTip, so every Configure dialog on the first-run
+  // path has the same anatomy: a title over a rule, no subtitle (vision FR-R3-2). The InfoTip is
+  // named for the provider, "About Llama Server", not "About Configure Llama Server" (FR-R4-5).
+  const title = providerSetupCopy.configure('Llama Server');
+  const tip = screen.getByTestId('provider-config-title-info');
+  expect(tip).toHaveAccessibleName(uiCopy.infoTipName('Llama Server'));
+  expect(tip).toHaveAccessibleDescription(
+    'Llama Server needs no API key. Adjust how Biorouter reaches it.'
+  );
+  expect(screen.getByRole('dialog', { name: title })).not.toHaveAttribute('aria-describedby');
+});
+
+it('keeps the delete consequence visible under the title, not in an InfoTip', async () => {
+  render(
+    <ProviderConfigurationModal
+      provider={{ ...provider('claude_code'), is_configured: true }}
+      onClose={vi.fn()}
+    />
+  );
+  fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.remove }));
+  const dialog = await screen.findByRole('dialog', {
+    name: providerSetupCopy.deleteTitle('Claude Code'),
+  });
+  expect(dialog).toHaveAccessibleDescription(providerSetupCopy.deleteConsequence);
+  expect(screen.queryByTestId('provider-config-title-info')).not.toBeInTheDocument();
 });
 
 describe.each(['codex', 'claude_code'] as const)(
@@ -372,16 +404,16 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   } as ProviderDetails;
   render(<ProviderConfigurationModal provider={azure} onClose={vi.fn()} />);
 
-  fireEvent.change(await screen.findByLabelText(/\(AZURE_OPENAI_DEPLOYMENT_NAME\)/), {
+  fireEvent.change(await screen.findByLabelText('Azure OpenAI deployment name'), {
     target: { value: 'my-gpt-6-sol' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
   // W2-PRV-13: the field's name in words, not its env var.
-  expect(await screen.findByText('Azure OpenAI Endpoint is required')).toBeInTheDocument();
+  expect(await screen.findByText('Azure OpenAI endpoint is required')).toBeInTheDocument();
   expect(mocks.submit).not.toHaveBeenCalled();
 
-  fireEvent.change(screen.getByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/), {
+  fireEvent.change(screen.getByLabelText('Azure OpenAI endpoint'), {
     target: { value: 'https://contoso.openai.azure.com' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -422,5 +454,125 @@ describe('closing with Escape', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(screen.getByRole('button', { name: 'Configure' })).toHaveFocus());
+  });
+});
+
+/**
+ * Vision FR-R3-3: Configure Anthropic and GitHub Copilot opened on an empty required key with a
+ * coral Save, while "Detect provider" and Versa's "Connect" on the same page stay secondary until a
+ * key is in. Save follows that rule now: secondary until every required field has a value, coral
+ * once it can act, and still a button a click can use to hear what is missing.
+ */
+describe('Save is the coral primary only once the required fields have values (FR-R3-3)', () => {
+  const keyed = (configured: boolean) =>
+    ({
+      ...provider('claude_code'),
+      name: 'anthropic',
+      is_configured: configured,
+      metadata: {
+        ...provider('claude_code').metadata,
+        name: 'anthropic',
+        display_name: 'Anthropic',
+        config_keys: [
+          {
+            name: 'ANTHROPIC_API_KEY',
+            required: true,
+            secret: true,
+            oauth_flow: false,
+            default: null,
+          },
+          {
+            name: 'ANTHROPIC_HOST',
+            required: false,
+            secret: false,
+            oauth_flow: false,
+            default: 'https://api.anthropic.com',
+          },
+        ],
+      },
+    }) as ProviderDetails;
+  const bedrock = {
+    ...provider('claude_code'),
+    name: 'aws_bedrock',
+    metadata: {
+      ...provider('claude_code').metadata,
+      name: 'aws_bedrock',
+      display_name: 'Amazon Bedrock',
+      config_keys: [
+        {
+          name: 'AWS_PROFILE',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: 'default',
+        },
+        {
+          name: 'AWS_REGION',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: 'us-west-2',
+        },
+      ],
+    },
+  } as ProviderDetails;
+  const save = () => screen.getByRole('button', { name: providerSetupCopy.save });
+  const isCoral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+  const isSecondary = (button: HTMLElement) => button.classList.contains('br-fill-rest');
+
+  it('keeps Save secondary on an empty key and turns it coral once a key is typed', async () => {
+    render(<ProviderConfigurationModal provider={keyed(false)} onClose={vi.fn()} />);
+    const field = await screen.findByLabelText('Anthropic API key');
+    expect(isSecondary(save())).toBe(true);
+    expect(isCoral(save())).toBe(false);
+    expect(save()).toBeEnabled();
+
+    fireEvent.change(field, { target: { value: 'sk-ant-test' } });
+    expect(isCoral(save())).toBe(true);
+    expect(isSecondary(save())).toBe(false);
+
+    // Emptied again, it steps back.
+    fireEvent.change(field, { target: { value: '' } });
+    expect(isSecondary(save())).toBe(true);
+  });
+
+  it('still answers a click on the secondary Save with what is missing', async () => {
+    render(<ProviderConfigurationModal provider={keyed(false)} onClose={vi.fn()} />);
+    await screen.findByLabelText('Anthropic API key');
+    fireEvent.click(save());
+    expect(await screen.findByText('Anthropic API key is required')).toBeInTheDocument();
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it('draws a configured provider coral from the first frame, before and after its values load', async () => {
+    let answer: (value: unknown) => void = () => {};
+    mocks.read.mockImplementation(
+      (key: string) =>
+        new Promise((resolve) => {
+          if (key === 'ANTHROPIC_API_KEY') answer = resolve;
+          else resolve(null);
+        })
+    );
+    render(<ProviderConfigurationModal provider={keyed(true)} onClose={vi.fn()} />);
+    // Still loading: the saved key has not arrived, and Save is already in its final colour.
+    expect(screen.getByText(providerSetupCopy.loadingValues)).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
+    answer({ maskedValue: 'sk-a…test' });
+    expect(await screen.findByLabelText('Anthropic API key')).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
+  });
+
+  it('keeps Amazon Bedrock, which needs no key, coral before and after its defaults load', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    mocks.read.mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    render(<ProviderConfigurationModal provider={bedrock} onClose={vi.fn()} />);
+    expect(isCoral(save())).toBe(true);
+    release();
+    expect(await screen.findByDisplayValue('us-west-2')).toBeInTheDocument();
+    expect(isCoral(save())).toBe(true);
   });
 });

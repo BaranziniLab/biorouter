@@ -128,11 +128,15 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
     await mainWindow.screenshot({ path: 'test-results/bioroffice-1-extensions.png' });
   });
 
-  test('2. Open Add extension modal and load bioroffice.brxt', async () => {
-    await mainWindow.click('button:has-text("Add extension")', { timeout: 5000 });
+  test('2. Open the install-from-file dialog and load bioroffice.brxt', async () => {
+    // The band's one Add menu (spec 3.11); the file route is its second item.
+    await mainWindow.getByRole('button', { name: 'Add', exact: true }).click({ timeout: 5000 });
+    await mainWindow.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     // PLAYWRIGHT_BRXT_FILE hook returns our path without a native dialog
-    await mainWindow.click('button:has-text("Browse file")', { timeout: 5000 });
+    await mainWindow
+      .getByRole('button', { name: /Drop a \.brxt file here/ })
+      .click({ timeout: 5000 });
     await expect(mainWindow.locator('text=BiorOffice').first()).toBeVisible({ timeout: 20000 });
     await mainWindow.screenshot({ path: 'test-results/bioroffice-2-manifest.png' });
   });
@@ -237,7 +241,7 @@ test.describe('BiorOffice .brxt — real install + agent usage', () => {
         created = true;
         break;
       }
-      for (const label of ['Always Allow', 'Allow Once', 'Allow']) {
+      for (const label of ['Always allow', 'Allow once', 'Allow']) {
         const allowBtn = mainWindow.locator(`button:has-text("${label}")`).first();
         if (await allowBtn.isVisible({ timeout: 200 }).catch(() => false)) {
           await allowBtn.click().catch(() => {});

@@ -1,0 +1,460 @@
+import { act, render } from '@testing-library/react';
+import { StrictMode, useRef } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  SUMMARY_RAIL_EXIT_FALLBACK_MS,
+  SUMMARY_RAIL_SHOW_SETTLE_MS,
+  summaryRailChat,
+  useSummaryRail,
+  type SummaryRailController,
+  type UseSummaryRailOptions,
+} from './useSummaryRail';
+import { resetSummaryRailPreferenceForTests } from '../components/Layout/summaryRailPreference';
+
+// Every observer the hook made, and whether it is still connected: a callback
+// that fires on a disconnected observer would hide the bug StrictMode exposed
+// (V2-01), where the only observer had been disconnected by the simulated unmount.
+let observers: Array<{ callback: () => void; connected: boolean }> = [];
+const originalResizeObserver = globalThis.ResizeObserver;
+const pane = { width: 1152 };
+
+type HarnessProps = Omit<UseSummaryRailOptions, 'splitPaneRef'>;
+
+let latest: SummaryRailController;
+let commits: Array<Pick<SummaryRailController, 'rendered' | 'still' | 'shown'>> = [];
+
+function Harness(props: HarnessProps) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const attach = (element: HTMLDivElement | null) => {
+    if (element) {
+      Object.defineProperty(element, 'clientWidth', {
+        configurable: true,
+        get: () => pane.width,
+      });
+    }
+    ref.current = element;
+  };
+  const rail = useSummaryRail({ splitPaneRef: ref, ...props });
+  latest = rail;
+  commits.push({ rendered: rail.rendered, still: rail.still, shown: rail.shown });
+  return <div ref={attach} {...rail.splitPaneProps} data-testid="split" />;
+}
+
+const defaults: HarnessProps = {
+  active: true,
+  chatPhase: 'idle',
+  isMobile: false,
+  previewMode: null,
+  previewWidth: 0,
+};
+
+function mount(over: Partial<HarnessProps> = {}, { strict = false } = {}) {
+  const props = { ...defaults, ...over };
+  const tree = () =>
+    strict ? (
+      <StrictMode>
+        <Harness {...props} />
+      </StrictMode>
+    ) : (
+      <Harness {...props} />
+    );
+  const view = render(tree());
+  return {
+    ...view,
+    update: (next: Partial<HarnessProps>) => {
+      Object.assign(props, next);
+      view.rerender(tree());
+    },
+  };
+}
+
+function resizeTo(width: number) {
+  pane.width = width;
+  act(() => {
+    for (const observer of observers) if (observer.connected) observer.callback();
+  });
+}
+
+beforeEach(() => {
+  observers = [];
+  commits = [];
+  pane.width = 1152;
+  window.localStorage.clear();
+  resetSummaryRailPreferenceForTests();
+  class FakeResizeObserver {
+    private entry: { callback: () => void; connected: boolean };
+    constructor(callback: () => void) {
+      this.entry = { callback, connected: false };
+      observers.push(this.entry);
+    }
+    observe() {
+      this.entry.connected = true;
+    }
+    disconnect() {
+      this.entry.connected = false;
+    }
+    unobserve() {}
+  }
+  globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+});
+
+afterEach(() => {
+  globalThis.ResizeObserver = originalResizeObserver;
+  vi.useRealTimers();
+  window.localStorage.clear();
+  resetSummaryRailPreferenceForTests();
+});
+
+describe('useSummaryRail', () => {
+  it('measures before the first paint: no observer callback and no timer needed', () => {
+    vi.useFakeTimers();
+    const { getByTestId } = mount();
+    expect(latest.shown).toBe(true);
+    expect(latest.width).toBe(280);
+    expect(latest.mode).toBe('rail');
+    const split = getByTestId('split');
+    expect(split).toHaveAttribute('data-summary-rail', '');
+    expect(split.style.getPropertyValue('--summary-rail-width')).toBe('280px');
+  });
+
+  it('appears at rest on mount: a tab switch or reload does not animate it', () => {
+    const onGlide = vi.fn();
+    mount({ onGlide });
+    expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+    expect(onGlide).not.toHaveBeenCalled();
+  });
+
+  it('opens the popover instead where it does not fit', () => {
+    pane.width = 1000;
+    const { getByTestId } = mount();
+    expect(latest.shown).toBe(false);
+    expect(latest.mode).toBe('popover');
+    expect(getByTestId('split')).not.toHaveAttribute('data-summary-rail');
+  });
+
+  it('hides at once when the pane narrows', () => {
+    vi.useFakeTimers();
+    mount();
+    expect(latest.shown).toBe(true);
+    resizeTo(1000);
+    expect(latest.shown).toBe(false);
+    expect(latest.rendered).toBe(false);
+  });
+
+  it('shows only after the width has held still for the settle delay', () => {
+    vi.useFakeTimers();
+    pane.width = 1000;
+    mount();
+    expect(latest.shown).toBe(false);
+    resizeTo(1152);
+    expect(latest.shown).toBe(false);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS - 10));
+    // Another sample restarts the settle.
+    resizeTo(1160);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS - 1));
+    expect(latest.shown).toBe(false);
+    act(() => vi.advanceTimersByTime(1));
+    expect(latest.shown).toBe(true);
+    // A geometry change appears at rest.
+    expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+  });
+
+  it('keeps the return buffer after a measured hide', () => {
+    vi.useFakeTimers();
+    mount();
+    resizeTo(1055);
+    expect(latest.shown).toBe(false);
+    resizeTo(1067);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+    expect(latest.shown).toBe(false);
+    resizeTo(1068);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+    expect(latest.shown).toBe(true);
+  });
+
+  it('hides in the same render a side preview takes the room, and returns when it closes', () => {
+    const view = mount();
+    expect(latest.shown).toBe(true);
+    view.update({ previewMode: 'side', previewWidth: 512 });
+    expect(latest.shown).toBe(false);
+    view.update({ previewMode: null, previewWidth: 0 });
+    expect(latest.shown).toBe(true);
+    view.update({ previewMode: 'stack', previewWidth: 0 });
+    expect(latest.shown).toBe(false);
+  });
+
+  it('stays hidden in an empty chat and on a phone-width browser', () => {
+    const view = mount({ active: false });
+    expect(latest.shown).toBe(false);
+    expect(latest.mode).toBe('popover');
+    view.update({ active: true, isMobile: true });
+    expect(latest.shown).toBe(false);
+    expect(latest.mode).toBe('popover');
+  });
+
+  it('animates when the first turn starts, and glides the conversation left by half the rail', () => {
+    const onGlide = vi.fn();
+    const view = mount({ active: false, onGlide });
+    commits = [];
+    view.update({ active: true, chatPhase: 'running' });
+    expect(latest.shown).toBe(true);
+    // The commit that mounted the card carried `still: false`; the card latches it.
+    expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
+    expect(onGlide).toHaveBeenCalledWith(140, 'open');
+    // Only that one commit: later geometry changes are still again.
+    expect(latest.still).toBe(true);
+  });
+
+  describe("a new chat's first turn (V2-08)", () => {
+    const empty = {
+      clean: true,
+      messageCount: 0,
+      loading: false,
+      running: false,
+      creatingChat: false,
+    };
+
+    it('counts from the commit that starts creating the chat, before any message exists', () => {
+      expect(summaryRailChat(empty)).toEqual({ active: false, chatPhase: 'idle' });
+      expect(summaryRailChat({ ...empty, clean: false, creatingChat: true })).toEqual({
+        active: true,
+        chatPhase: 'running',
+      });
+      // The created chat loads, then its message arrives with the stream.
+      expect(
+        summaryRailChat({ ...empty, clean: false, creatingChat: true, loading: true })
+      ).toEqual({ active: true, chatPhase: 'loading' });
+      expect(
+        summaryRailChat({
+          ...empty,
+          clean: false,
+          creatingChat: true,
+          messageCount: 1,
+          running: true,
+        })
+      ).toEqual({ active: true, chatPhase: 'running' });
+      // `isCreatingSession` is never cleared after a chat is created: once the
+      // message is in the transcript it no longer makes an idle chat "running".
+      expect(
+        summaryRailChat({ ...empty, clean: false, creatingChat: true, messageCount: 2 })
+      ).toEqual({ active: true, chatPhase: 'idle' });
+    });
+
+    it('is not active in the empty state, nor while a workflow form waits', () => {
+      expect(summaryRailChat({ ...empty, creatingChat: true }).active).toBe(false);
+      expect(summaryRailChat({ ...empty, clean: false }).active).toBe(false);
+    });
+
+    it('enters and glides ONCE, in the creating commit, and stays put as the chat fills', () => {
+      const onGlide = vi.fn();
+      const view = mount({ ...summaryRailChat(empty), onGlide });
+      expect(latest.shown).toBe(false);
+      commits = [];
+      view.update(summaryRailChat({ ...empty, clean: false, creatingChat: true }));
+      expect(latest.shown).toBe(true);
+      expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
+      expect(onGlide).toHaveBeenCalledWith(140, 'open');
+      view.update(summaryRailChat({ ...empty, clean: false, creatingChat: true, loading: true }));
+      view.update(
+        summaryRailChat({
+          ...empty,
+          clean: false,
+          creatingChat: true,
+          messageCount: 1,
+          running: true,
+        })
+      );
+      expect(latest.shown).toBe(true);
+      expect(onGlide).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('a chat that becomes active because its history arrived appears at rest', () => {
+    // A tab opened from History, or restored after a restart, mounts empty and
+    // fills from the store: the chat turns active, but no turn started here.
+    it('after a fetch (loading, then idle with the transcript)', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'loading', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'idle' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('after a cached transcript lands in one step (idle, then idle with messages)', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'idle', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'idle' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('when the reloaded chat is rejoining a turn that is still running', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'loading', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'running' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a chat known to have messages keeps the rail while its transcript loads (V2-R5-6)', () => {
+    // BaseChat in `LoadingConversation`: not clean (the state is not idle), no
+    // messages yet, not running.
+    const loading = {
+      clean: false,
+      messageCount: 0,
+      loading: true,
+      running: false,
+      creatingChat: false,
+    };
+
+    it('is active, in the loading phase, when the row says the chat has messages', () => {
+      expect(summaryRailChat({ ...loading, knownToHaveMessages: true })).toEqual({
+        active: true,
+        chatPhase: 'loading',
+      });
+      // Nothing known (a workflow chat before its first run is not listed, and
+      // a row the app has not read yet says nothing): the old answer.
+      expect(summaryRailChat(loading)).toEqual({ active: false, chatPhase: 'loading' });
+      expect(summaryRailChat({ ...loading, knownToHaveMessages: false }).active).toBe(false);
+      // The flag means nothing once the load is over: the transcript decides.
+      expect(
+        summaryRailChat({ ...loading, loading: false, clean: true, knownToHaveMessages: true })
+      ).toEqual({ active: false, chatPhase: 'idle' });
+    });
+
+    it('seats the rail at rest from the first frame and never moves the column as the load ends', () => {
+      const onGlide = vi.fn();
+      const view = mount({
+        ...summaryRailChat({ ...loading, knownToHaveMessages: true }),
+        onGlide,
+      });
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      commits = [];
+      // The transcript lands: idle with its messages, the row no longer read.
+      view.update(summaryRailChat({ ...loading, loading: false, messageCount: 12 }));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+      expect(commits.every((c) => c.rendered && c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('stays at rest when the loaded chat rejoins a running turn', () => {
+      const onGlide = vi.fn();
+      const view = mount({
+        ...summaryRailChat({ ...loading, knownToHaveMessages: true }),
+        onGlide,
+      });
+      commits = [];
+      view.update(summaryRailChat({ ...loading, loading: false, messageCount: 3, running: true }));
+      expect(latest.shown).toBe(true);
+      expect(commits.every((c) => c.rendered && c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+  });
+
+  it('closes on a toggle: plays the exit, then drops the column and glides back', () => {
+    const onGlide = vi.fn();
+    mount({ onGlide });
+    act(() => latest.toggle());
+    expect(latest.preference).toBe('closed');
+    expect(latest.shown).toBe(false);
+    expect(latest.rendered).toBe(true);
+    expect(latest.state).toBe('closed');
+    expect(onGlide).not.toHaveBeenCalled();
+    act(() => latest.onExited());
+    expect(latest.rendered).toBe(false);
+    expect(onGlide).toHaveBeenCalledWith(-140, 'close');
+    // A second report changes nothing.
+    act(() => latest.onExited());
+    expect(onGlide).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the column after the exit fallback when the card never reports', () => {
+    vi.useFakeTimers();
+    mount();
+    act(() => latest.toggle());
+    expect(latest.rendered).toBe(true);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_EXIT_FALLBACK_MS));
+    expect(latest.rendered).toBe(false);
+  });
+
+  it('opens on a toggle with its entrance and a glide', () => {
+    window.localStorage.setItem('biorouter:summary-rail', 'closed');
+    resetSummaryRailPreferenceForTests();
+    const onGlide = vi.fn();
+    mount({ onGlide });
+    expect(latest.shown).toBe(false);
+    expect(latest.mode).toBe('rail');
+    commits = [];
+    act(() => latest.toggle());
+    expect(latest.shown).toBe(true);
+    expect(latest.preference).toBe('open');
+    expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
+    expect(onGlide).toHaveBeenCalledWith(140, 'open');
+  });
+
+  describe('under StrictMode (the renderer mounts in it, renderer.tsx)', () => {
+    // V2-01: the simulated unmount ran the observer's teardown, and the attach
+    // effect then saw the same element and kept the dead observer, so the rail
+    // never re-measured after mount: it kept a stale width while the window,
+    // the sidebar and the preview moved under it.
+    it('keeps exactly one live observer after the simulated unmount', () => {
+      mount({}, { strict: true });
+      expect(observers.filter((o) => o.connected)).toHaveLength(1);
+    });
+
+    it('still hides at once when the pane narrows, and shows again after the settle', () => {
+      vi.useFakeTimers();
+      mount({}, { strict: true });
+      expect(latest.shown).toBe(true);
+      resizeTo(1032);
+      expect(latest.shown).toBe(false);
+      expect(latest.rendered).toBe(false);
+      resizeTo(1152);
+      act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+    });
+
+    it('shows once a pane measured too narrow at mount widens (the sidebar collapsing after a reload)', () => {
+      vi.useFakeTimers();
+      pane.width = 812;
+      mount({}, { strict: true });
+      expect(latest.shown).toBe(false);
+      resizeTo(1100);
+      act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+    });
+
+    it('disconnects its observer on a real unmount', () => {
+      const view = mount({}, { strict: true });
+      view.unmount();
+      expect(observers.filter((o) => o.connected)).toHaveLength(0);
+    });
+  });
+
+  it('does not glide back for a rail the grid already dropped mid-exit', () => {
+    vi.useFakeTimers();
+    const onGlide = vi.fn();
+    mount({ onGlide });
+    act(() => latest.toggle());
+    resizeTo(1000);
+    expect(latest.rendered).toBe(false);
+    act(() => latest.onExited());
+    expect(onGlide).not.toHaveBeenCalled();
+    // A later geometry change is not mistaken for the close.
+    resizeTo(1152);
+    act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+    expect(onGlide).not.toHaveBeenCalled();
+  });
+});

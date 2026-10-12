@@ -38,11 +38,71 @@ const MESSAGES = [
   'Which medical mystery might the knowledge graph help solve today?',
 ] as const;
 
-export function Greeting({
-  className = 'mt-1 text-2xl font-semibold tracking-tight',
-  animate = true,
-  tabId,
-}: GreetingProps) {
+/**
+ * Home has no tab, so it has no lifetime to remember. Its greeting fades in on
+ * the FIRST arrival of this window's life and is at rest on every later one
+ * (principle 9: a surface that mounts because of navigation appears at rest).
+ * The vision review measured the old behaviour replaying on every return to
+ * Home, Crew to Home included.
+ *
+ * The flag is mirrored into `sessionStorage`, which a renderer reload keeps
+ * and a new window does not: a reload is also "appears at rest", while a new
+ * window is an arrival of its own and fades once. Storage that throws (blocked
+ * site data) falls back to the module flag, which still holds for the life of
+ * the renderer.
+ */
+const WINDOW_ARRIVAL_KEY = 'biorouter-greeting-arrived';
+let windowArrived = false;
+
+function windowArrivalPending(): boolean {
+  if (windowArrived) return false;
+  try {
+    if (window.sessionStorage.getItem(WINDOW_ARRIVAL_KEY) !== null) {
+      windowArrived = true;
+      return false;
+    }
+  } catch {
+    // Blocked storage: the module flag decides.
+  }
+  return true;
+}
+
+function markWindowArrival() {
+  windowArrived = true;
+  try {
+    window.sessionStorage.setItem(WINDOW_ARRIVAL_KEY, '1');
+  } catch {
+    // Blocked storage: the module flag still holds for this renderer.
+  }
+}
+
+/**
+ * Tests only: forget that this window's untabbed greeting has arrived. With
+ * `{ reload: true }` only the module flag goes, as it does when the renderer
+ * reloads and `sessionStorage` survives.
+ */
+export function resetGreetingArrivalForTests({ reload = false }: { reload?: boolean } = {}) {
+  windowArrived = false;
+  if (reload) return;
+  try {
+    window.sessionStorage.removeItem(WINDOW_ARRIVAL_KEY);
+  } catch {
+    // Nothing to forget.
+  }
+}
+
+/**
+ * The arrival sentence, in the `title` role (24/32/400). Home and an empty chat
+ * each pass their own class (Home adds `text-wrap: balance`, the empty chat
+ * centres it); the default is the role alone.
+ *
+ * Motion: one 175ms fade of the whole line (`useTextAnimator`), and only on an
+ * arrival. A chat tab fades on its first appearance and is still when the same
+ * tab remounts (a split, a move between panes, a return from Settings); Home
+ * fades once per window. Every remount draws a new sentence all the same: the
+ * rotation is product voice, and changing words is not motion.
+ */
+export function Greeting({ className = 'text-title', animate = true, tabId }: GreetingProps) {
   const [lifetime] = useState(() => {
     const existing = tabId ? tabGreetings.get(tabId) : undefined;
     if (existing) return existing;
@@ -53,33 +113,22 @@ export function Greeting({
     if (tabId) tabGreetings.set(tabId, created);
     return created;
   });
-  const [firstAppearance] = useState(() => !lifetime.shown);
+  // Read here, recorded in the layout effect below: an initialiser must stay
+  // pure, because React may call it twice.
+  const [firstAppearance] = useState(() => (tabId ? !lifetime.shown : windowArrivalPending()));
   const { message } = lifetime;
   const messageRef = useTextAnimator({ text: message, enabled: animate && firstAppearance });
   useLayoutEffect(() => {
     lifetime.shown = true;
-  }, [lifetime]);
+    if (!tabId) markWindowArrival();
+  }, [lifetime, tabId]);
 
-  // ⚠ The accessible name lives on the `h1`, and the split text is hidden from
-  // assistive technology.
-  //
-  // `split-type` replaces the single text node with one `<div class="char">` per
-  // CHARACTER, and emits no ARIA of its own. Without this, the app's only
-  // orienting heading on an empty chat is announced letter by letter - "W h a t
-  // i n s i g h t s …" - and heading navigation and word-level review are both
-  // broken. It happens on every arrival for anyone who has not turned on
-  // reduced motion, which is the majority.
-  //
-  // `aria-label` rather than a visually-hidden duplicate: the visible text is
-  // the same string, so a second copy in the DOM would be one more thing to
-  // keep in sync for no gain. `aria-hidden` on the span is the half that
-  // matters - the label alone would not stop the character soup being read as
-  // the heading's content.
+  // The sentence is one text node, so the heading's name is the sentence. (The
+  // per-character unroll this replaced needed an `aria-label` here and an
+  // `aria-hidden` span, or the heading was announced letter by letter.)
   return (
-    <h1 className={className} aria-label={message}>
-      <span ref={messageRef} aria-hidden="true">
-        {message}
-      </span>
+    <h1 className={className}>
+      <span ref={messageRef}>{message}</span>
     </h1>
   );
 }

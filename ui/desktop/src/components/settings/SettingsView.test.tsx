@@ -1,21 +1,34 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView';
 import { CONFIGURATION_ENABLED } from '../../updates';
+import { SETTINGS_SECTION_IDS } from './settingsSections';
+import { settingsShellCopy } from './app/copy';
+import { recall } from './lastKnown';
 
 // Every section but Privacy is stubbed, and each stub is identifiable, so this
-// file can assert both that the Privacy panel is really mounted — the failure
+// file can assert both that the Privacy panel is really mounted (the failure
 // mode being a settings component that is declared and plausible but has zero
-// consumers repo-wide, so it renders for nobody — and WHERE it sits relative to
+// consumers repo-wide, so it renders for nobody) and WHERE it sits relative to
 // its neighbours.
-vi.mock('./models/ModelsSection', () => ({ default: () => <div /> }));
-vi.mock('./chat/ChatSettingsSection', () => ({ default: () => <div /> }));
+vi.mock('./models/ModelsSection', () => ({
+  default: () => <div data-testid="section-models" />,
+}));
+vi.mock('./chat/ChatSettingsSection', () => ({
+  default: () => (
+    <div data-testid="section-chat">
+      <section id={SETTINGS_SECTION_IDS.approvals} data-testid="section-approvals">
+        <h2>Approvals</h2>
+        <div className="biorouter-settings-row" data-testid="row-approval-mode" />
+      </section>
+      {/* A section with no row in it (a card, a list of its own): the wash covers it whole. */}
+      <section id={SETTINGS_SECTION_IDS.display} data-testid="section-display" />
+    </div>
+  ),
+}));
 vi.mock('./app/AppSettingsSection', () => ({
   default: () => <div data-testid="section-app" />,
-}));
-vi.mock('./app/WorkspaceSettingsSection', () => ({
-  WorkspaceSettingsSection: () => <div data-testid="section-workspace" />,
 }));
 vi.mock('./config/ConfigSettings', () => ({
   default: () => <div data-testid="section-config" />,
@@ -28,6 +41,30 @@ vi.mock('../ConfigContext', () => ({
   }),
 }));
 
+// The served privacy statement is asked for when Settings opens, not when the App tab does. The
+// real function runs (the panel's own hook shares its store); this only counts the asks.
+const disclosureAsks = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../privacy/disclosureCopy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../privacy/disclosureCopy')>();
+  return {
+    ...actual,
+    readDisclosureAcknowledgement: () => {
+      disclosureAsks.count += 1;
+      return actual.readDisclosureAcknowledgement();
+    },
+  };
+});
+
+// The Usage row's read is asked for when Settings opens too (V4-R7-3). It goes through the API
+// client, which this file does not stub, so the warm-up is a spy: this file asserts that Settings
+// asks, `warmSettings.test.ts` and `loadUsage.test.tsx` cover what happens next.
+const usageWarmups = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./usage/loadUsage', () => ({
+  warmUsageSnapshot: () => {
+    usageWarmups.count += 1;
+  },
+}));
+
 const renderSettings = (viewOptions = {}) =>
   render(<SettingsView onClose={() => {}} setView={() => {}} viewOptions={viewOptions} />);
 
@@ -38,7 +75,62 @@ function sectionOrder(): string[] {
   );
 }
 
+const scrollIntoView = vi.fn();
+
+beforeEach(() => {
+  scrollIntoView.mockReset();
+  Element.prototype.scrollIntoView = scrollIntoView;
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('SettingsView', () => {
+  /**
+   * Vision round 2, V4-R2-1. The statement is the tallest thing in Privacy and arrives on its own
+   * request, so a panel that fetched it only when the App tab opened pushed every row below it
+   * down 100px a moment after the tab appeared. Settings asks for it while it opens, on a tab that
+   * is not the App tab, so the answer is waiting when the person gets there.
+   */
+  it('asks for the privacy statement on open, before the App tab is visited', () => {
+    disclosureAsks.count = 0;
+    renderSettings();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    expect(disclosureAsks.count).toBe(1);
+  });
+
+  /**
+   * Vision round 8, V4-R7-2. Each tab mounts when it is chosen, and a control that has to read its
+   * value first is an empty box for the first frames of the visit. Settings opens on Models, which
+   * shows none of the Chat or App values, so it asks for them while it opens and the first visit
+   * to either tab has an answer to start from (`warmSettings.test.ts` has the reads themselves).
+   */
+  it('asks for the Chat and App values on open, before either tab is visited', async () => {
+    expect(recall('approvalMode')).toBeUndefined();
+    expect(recall('maxTurns')).toBeUndefined();
+    renderSettings();
+    expect(screen.queryByTestId('section-chat')).toBeNull();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    // The stubbed daemon answers "nothing saved" to every key: Autonomous, and no Max turns.
+    await act(async () => {});
+    expect(recall('approvalMode')).toBe('auto');
+    expect(recall('maxTurns')).toBeNull();
+    expect(recall('announceOnly')).toBe(false);
+  });
+
+  /**
+   * Vision round 8, V4-R7-3. The Usage row seeds from the last month-to-date read, and the first
+   * visit to the App tab in a process has none, so Settings asks for it while it opens too.
+   */
+  it('asks for this month’s usage once on open, before the App tab is visited', async () => {
+    usageWarmups.count = 0;
+    renderSettings();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    await act(async () => {});
+    expect(usageWarmups.count).toBe(1);
+  });
+
   /**
    * ⚠ **Privacy is a SECTION of App, not a tab.** It shipped as a fourth tab,
    * which made it read as a separate product rather than a property of this
@@ -56,13 +148,13 @@ describe('SettingsView', () => {
 
   /**
    * The operator's order, and it is the point of the change: Configuration,
-   * Privacy, Workspace, then everything `AppSettingsSection` owns — which ends
-   * with Updates, so Updates stays at the bottom of the page.
+   * Privacy, then everything `AppSettingsSection` owns (General, which now holds
+   * the old one-row Workspace section, Appearance, Usage, About, Danger zone).
    *
    * Asserted as document order rather than by eyeballing the JSX, because the
    * JSX is exactly what a later edit reorders.
    */
-  it('orders the App tab: Configuration, Privacy, Workspace, then the rest', async () => {
+  it('orders the App tab: Configuration, Privacy, then the rest', async () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByTestId('settings-app-tab'));
@@ -70,8 +162,8 @@ describe('SettingsView', () => {
 
     const order = sectionOrder();
     const expected = CONFIGURATION_ENABLED
-      ? ['section-config', 'section-privacy', 'section-workspace', 'section-app']
-      : ['section-privacy', 'section-workspace', 'section-app'];
+      ? ['section-config', 'section-privacy', 'section-app']
+      : ['section-privacy', 'section-app'];
     expect(order).toEqual(expected);
   });
 
@@ -86,6 +178,154 @@ describe('SettingsView', () => {
   });
 });
 
+describe('the Settings band', () => {
+  /**
+   * One 44px band holds the title and the three tabs (spec §3.13): no description paragraph,
+   * no tab strip of its own under the header, and text-only tabs.
+   */
+  it('holds the title and the three text-only tabs, and no description', () => {
+    renderSettings();
+    const band = screen.getByTestId('page-header');
+    expect(within(band).getByRole('heading', { level: 1 })).toHaveTextContent(
+      settingsShellCopy.title
+    );
+    const tabs = within(band).getAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      settingsShellCopy.tabs.models,
+      settingsShellCopy.tabs.chat,
+      settingsShellCopy.tabs.app,
+    ]);
+    for (const tab of tabs) expect(tab.querySelector('svg')).toBeNull();
+    expect(within(band).queryByText(/Manage models/)).toBeNull();
+  });
+
+  it('names the tab list, so a screen reader hears what the tabs switch', () => {
+    renderSettings();
+    expect(screen.getByRole('tablist', { name: settingsShellCopy.tabsLabel })).toBeInTheDocument();
+  });
+
+  it('keeps the tab test ids the e2e suite reads', () => {
+    renderSettings();
+    for (const id of ['settings-models-tab', 'settings-chat-tab', 'settings-app-tab']) {
+      expect(screen.getByTestId(id)).toBeInTheDocument();
+    }
+  });
+
+  /**
+   * Radix makes every panel a Tab stop, and a panel has no focus treatment by design, so one Tab
+   * from the tab list used to land on a stop with nothing drawn (vision V4-05). Every Settings
+   * panel opens with a control, so each leaves the Tab order and Tab goes to the control.
+   */
+  it('keeps the panels out of the Tab order, so Tab goes from the tabs to the first control', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
+    for (const id of ['settings-chat-tab', 'settings-app-tab']) {
+      await user.click(screen.getByTestId(id));
+      expect(screen.getByRole('tabpanel')).toHaveAttribute('tabindex', '-1');
+    }
+  });
+
+  it('opens on Models, or on the tab a deep link names', () => {
+    const { unmount } = renderSettings();
+    expect(screen.getByTestId('settings-models-tab')).toHaveAttribute('data-state', 'active');
+    unmount();
+    renderSettings({ section: 'modes' });
+    expect(screen.getByTestId('settings-chat-tab')).toHaveAttribute('data-state', 'active');
+  });
+});
+
+describe('Settings scrolling', () => {
+  const viewport = () =>
+    document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') as HTMLElement;
+
+  /** One scroller holds all three tabs; a tab change starts the next tab at its top. */
+  it('starts each tab at the top', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    viewport().scrollTop = 600;
+    await user.click(screen.getByTestId('settings-chat-tab'));
+    expect(viewport().scrollTop).toBe(0);
+  });
+
+  it('scrolls a deep-linked section into view and washes its first row', async () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    renderSettings({ section: 'modes' });
+    const section = screen.getByTestId('section-approvals');
+    const row = screen.getByTestId('row-approval-mode');
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'start' }));
+    expect(scrollIntoView.mock.contexts[0]).toBe(section);
+    // The control the link names, not the whole section around it.
+    expect(row).toHaveClass('br-highlight');
+    expect(section).not.toHaveClass('br-highlight');
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(row).not.toHaveClass('br-highlight');
+  });
+
+  it('washes the whole section when it holds no row, and ends the wash with its animation', async () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    renderSettings({ section: 'styles' });
+    const section = screen.getByTestId('section-display');
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(section).toHaveClass('br-highlight');
+
+    // A child's animation bubbles up and must not end the wash early...
+    const child = document.createElement('span');
+    section.appendChild(child);
+    act(() => {
+      child.dispatchEvent(new Event('animationend', { bubbles: true }));
+    });
+    expect(section).toHaveClass('br-highlight');
+
+    // ...the section's own does.
+    act(() => {
+      section.dispatchEvent(new Event('animationend'));
+    });
+    expect(section).not.toHaveClass('br-highlight');
+  });
+
+  it('starts a different tab at the top when a deep link switches to it', async () => {
+    const { rerender } = renderSettings();
+    viewport().scrollTop = 600;
+    rerender(
+      <SettingsView onClose={() => {}} setView={() => {}} viewOptions={{ section: 'app' }} />
+    );
+    expect(screen.getByTestId('settings-app-tab')).toHaveAttribute('data-state', 'active');
+    expect(viewport().scrollTop).toBe(0);
+  });
+
+  it('jumps instead of gliding when the person prefers reduced motion', async () => {
+    const matchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('reduce'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    try {
+      vi.useFakeTimers({ toFake: ['requestAnimationFrame'] });
+      renderSettings({ section: 'modes' });
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
+    } finally {
+      window.matchMedia = matchMedia;
+    }
+  });
+});
+
 /**
  * Settings reads the CHAT measure (760px), not the fluid page measure
  * (operator decision, 2026-09-07): it is a column of labelled rows, so width
@@ -93,43 +333,33 @@ describe('SettingsView', () => {
  * showing more.
  *
  * ⚠ **What this can and cannot see.** jsdom has no layout engine and never runs
- * Tailwind, so `getBoundingClientRect()` here is zero for every box and the
- * WIDTH is unassertable — the alignment was measured in a real browser instead
- * (see the PR). What is assertable is the attribute that selects the width, and
- * that all three boxes agree on it: the header, the tab strip and the scrolling
- * body are three separate `ReadableContent`s meeting at one left edge, so a
- * size on one and not its siblings is a visible step in that edge rather than
- * an invisible inconsistency. The count is pinned so that a fourth column added
- * on the default size fails here rather than shipping a step, and
- * `styles/measures.test.ts` closes the remaining case this file cannot see: a
- * `<ReadableContent` written with no `size` prop at all.
+ * Tailwind, so the WIDTH is unassertable here; what is assertable is the
+ * attribute that selects it. The band is not a reading column (it runs edge to
+ * edge), so the body is the one column, and it is pinned so that a second
+ * column added on the default size fails here rather than shipping a step in
+ * the left edge. `styles/measures.test.ts` closes the remaining case this file
+ * cannot see: a `<ReadableContent` written with no `size` prop at all.
  */
 describe('SettingsView sits on the chat measure', () => {
   const readableColumns = () =>
     [...document.querySelectorAll('.biorouter-readable-content')] as HTMLElement[];
 
-  it('renders exactly three reading columns, all of them the chat size', () => {
+  it('renders one reading column, on the chat size', () => {
     renderSettings();
 
     const columns = readableColumns();
-    expect(columns).toHaveLength(3);
+    expect(columns).toHaveLength(1);
     for (const column of columns) expect(column.dataset.size).toBe('chat');
   });
 
-  /**
-   * The tab strip and the body are inside `Tabs`, so switching tabs re-renders
-   * the body. Asserted on the App tab as well because that is the tab with the
-   * most sections under it, and the one a later edit is most likely to wrap in
-   * a column of its own.
-   */
-  it('keeps every column on the chat size after switching tabs', async () => {
+  it('keeps the column on the chat size after switching tabs', async () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByTestId('settings-app-tab'));
     await screen.findByRole('switch', { name: /Privacy tiers/ });
 
     const columns = readableColumns();
-    expect(columns).toHaveLength(3);
+    expect(columns).toHaveLength(1);
     for (const column of columns) expect(column.dataset.size).toBe('chat');
   });
 

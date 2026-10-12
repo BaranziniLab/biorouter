@@ -1,18 +1,39 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import ApplicationsView, { ApplicationItem } from './ApplicationsView';
+import { appsCopy } from './copy';
 import { notifySessionListChanged } from '../../utils/sessionListCache';
 
-vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({ children }: { children: ReactNode }) => <>{children}</>,
+vi.mock('../ui/scroll-area', () => ({
+  ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
+
+/** Radix opens a dropdown on pointerdown, not click. */
+function openRowMenu(title = 'Cohort Explorer') {
+  fireEvent.pointerDown(screen.getByRole('button', { name: appsCopy.moreActionsNamed(title) }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
+
+/** Open a row's `⋯` menu once the row is on screen, and find one of its items. */
+async function rowMenuItem(title: string, item: string) {
+  fireEvent.pointerDown(
+    await screen.findByRole('button', { name: appsCopy.moreActionsNamed(title) }),
+    { button: 0, ctrlKey: false }
+  );
+  return screen.findByRole('menuitem', { name: item });
+}
+
+const chatCopy = appsCopy.buildChat;
 
 vi.mock('../../toasts', () => ({
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
 }));
 
 const app = {
@@ -24,31 +45,32 @@ const app = {
 };
 
 describe('ApplicationItem', () => {
-  it('keeps every action keyboard-accessible when hover controls are visually collapsed', async () => {
-    const user = userEvent.setup();
-    const onLaunch = vi.fn();
-
+  const renderItem = (overrides: Partial<Parameters<typeof ApplicationItem>[0]> = {}) =>
     render(
       <ApplicationItem
         app={app}
-        onLaunch={onLaunch}
+        onLaunch={vi.fn()}
         onOpenConversation={vi.fn()}
         onExport={vi.fn()}
         onDelete={vi.fn()}
+        {...overrides}
       />
     );
 
-    const launch = screen.getByRole('button', { name: 'Launch Cohort Explorer in browser' });
+  /**
+   * Spec 3.10: Launch and `⋯` are the row's only visible actions, revealed on
+   * hover or focus by opacity alone, so they stay in the tab order.
+   */
+  it('keeps Launch and the menu keyboard-reachable while they are visually hidden', async () => {
+    const user = userEvent.setup();
+    const onLaunch = vi.fn();
+    renderItem({ onLaunch });
+
+    const launch = screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') });
+    expect(launch.closest('.br-row-actions')).not.toBeNull();
     expect(
-      screen.getByRole('button', {
-        name: 'Open the chat where Cohort Explorer was built',
-      })
+      screen.getByRole('button', { name: appsCopy.moreActionsNamed('Cohort Explorer') })
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Export Cohort Explorer to a folder' })
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete Cohort Explorer' })).toBeInTheDocument();
-    expect(launch.parentElement).toHaveClass('sm:group-focus-within:opacity-100');
 
     await user.tab();
     expect(launch).toHaveFocus();
@@ -56,177 +78,172 @@ describe('ApplicationItem', () => {
     expect(onLaunch).toHaveBeenCalledTimes(1);
   });
 
-  it('disables duplicate launch and export actions while they are in flight', () => {
-    const { container } = render(
-      <ApplicationItem
-        app={app}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-        isLaunching
-        isExporting
-      />
-    );
+  it('holds the other verbs in the row menu, Delete last and destructive', async () => {
+    const user = userEvent.setup();
+    const onOpenConversation = vi.fn();
+    renderItem({ onOpenConversation });
 
-    expect(
-      screen.getByRole('button', { name: 'Launch Cohort Explorer in browser' })
-    ).toBeDisabled();
-    expect(
-      screen.getByRole('button', { name: 'Export Cohort Explorer to a folder' })
-    ).toBeDisabled();
-    expect(container.firstElementChild).toHaveAttribute('aria-busy', 'true');
+    openRowMenu();
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      appsCopy.openChat,
+      appsCopy.exportItem,
+      appsCopy.delete,
+    ]);
+    expect(items[2]).toHaveAttribute('data-variant', 'destructive');
+    // The items that open a dialog carry the ellipsis (V3-21): Export… and Delete….
+    expect(items[1]).toHaveTextContent('Export…');
+    expect(items[2]).toHaveTextContent('Delete…');
+    await user.click(items[0]);
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
   });
 
-  // The click-time check can take a moment; a control that shows nothing
-  // invites a second click or a walk to another page.
-  it('shows the chat check in progress on the control itself, under the same name', () => {
-    const props = {
-      app,
-      buildChat: { kind: 'available', sessionId: 'session-1', via: 'self' } as const,
-      onLaunch: vi.fn(),
-      onOpenConversation: vi.fn(),
-      onExport: vi.fn(),
-      onDelete: vi.fn(),
-    };
-    const { rerender } = render(<ApplicationItem {...props} />);
-    const name = 'Open the chat where Cohort Explorer was built';
-    expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-busy');
-    expect(screen.getByRole('button', { name }).querySelector('.animate-spin')).toBeNull();
+  it('opens the same menu on a right-click of the row', async () => {
+    renderItem();
 
-    rerender(<ApplicationItem {...props} isOpeningChat />);
-
-    const chat = screen.getByRole('button', { name });
-    expect(chat).toHaveAttribute('aria-busy', 'true');
-    expect(chat.querySelector('svg.animate-spin')).not.toBeNull();
-    expect(chat).toHaveClass('cursor-wait');
+    fireEvent.contextMenu(screen.getByText('Cohort Explorer'));
+    expect(await screen.findByRole('menuitem', { name: appsCopy.delete })).toBeInTheDocument();
   });
 
-  it('shows surface badges without exposing internal theme metadata', () => {
-    render(
-      <ApplicationItem
-        app={{
-          ...app,
-          theme: { pack: 'midnight' },
-          surface: {
-            actions: [{ name: 'focus_node' }, { name: 'reset_view' }],
-            signals: [{ name: 'node_selected' }],
-          },
-        }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
+  it('refuses duplicate launch and export actions while they are in flight', async () => {
+    renderItem({ isLaunching: true, isExporting: true });
+
+    // Working, not disabled: a focused button that turns `disabled` hands focus to <body> in
+    // Chromium (V3-R2-1); `launch` itself refuses a second press for the same app.
+    const launch = screen.getByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') });
+    expect(launch).toBeEnabled();
+    expect(launch).toHaveClass('br-action-busy');
+    expect(screen.getByTestId('app-row')).toHaveAttribute('aria-busy', 'true');
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: appsCopy.exportItem })).toHaveAttribute(
+      'aria-disabled',
+      'true'
     );
+  });
+
+  /** Two lines: the title, then "{model} · {kb}" in the sans face, no icons. */
+  it('says the model and the knowledge base on one sans line', () => {
+    renderItem({
+      app: {
+        ...app,
+        updated_at: 1750000000,
+        agent: {
+          model: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+          knowledge_base: 'ms-cohort',
+        },
+      },
+    });
+
+    // The line is one paragraph; the facts are its first run (a build-chat note would follow).
+    const line = screen.getByTestId('app-row-meta');
+    expect(line.tagName).toBe('P');
+    expect(line.textContent).toBe('claude-sonnet-4-5 · ms-cohort');
+    expect(within(line).getByText('claude-sonnet-4-5 · ms-cohort')).toBeInTheDocument();
+    expect(line.closest('.font-mono')).toBeNull();
+    // The description gives way to the facts; the row has two lines.
+    expect(screen.queryByText('Explore a paired cohort.')).toBeNull();
+    // At rest the row shows its relative time in the meta slot, not a date line.
+    expect(screen.getByTestId('app-row').querySelector('.br-row-actions-meta time')).not.toBeNull();
+  });
+
+  it('puts the declared surface in the kind badge’s help, not in a second badge', () => {
+    renderItem({
+      app: {
+        ...app,
+        theme: { pack: 'midnight' },
+        surface: {
+          actions: [{ name: 'focus_node' }, { name: 'reset_view' }],
+          signals: [{ name: 'node_selected' }],
+        },
+      },
+    });
 
     expect(screen.queryByText('midnight')).not.toBeInTheDocument();
-    expect(screen.getByText('2 actions · 1 signal')).toBeInTheDocument();
+    const kind = screen.getByText('agentic');
+    expect(kind).toHaveAccessibleDescription('2 actions · 1 signal');
   });
 
-  it('renders no surface badge for a plain v1 manifest', () => {
-    render(
-      <ApplicationItem
-        app={{ ...app, theme: { pack: 'biorouter' } }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
+  it('renders no surface help for a plain v1 manifest', () => {
+    renderItem({ app: { ...app, theme: { pack: 'biorouter' } } });
 
     expect(screen.queryByText('biorouter')).toBeNull();
     expect(screen.queryByText(/\d+ actions?/)).toBeNull();
     expect(screen.queryByText(/\d+ signals?/)).toBeNull();
   });
 
+  // The click-time check can take a moment; the row says it is working, and the item does not
+  // start a second check while the first is out.
+  it('shows the chat check in progress on the row, and holds the item while it runs', async () => {
+    const buildChat = { kind: 'available', sessionId: 'session-1', via: 'self' } as const;
+    const { rerender } = renderItem({ buildChat });
+    expect(screen.getByTestId('app-row')).toHaveAttribute('aria-busy', 'false');
+
+    rerender(
+      <ApplicationItem
+        app={app}
+        buildChat={buildChat}
+        isOpeningChat
+        onLaunch={vi.fn()}
+        onOpenConversation={vi.fn()}
+        onExport={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId('app-row')).toHaveAttribute('aria-busy', 'true');
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: appsCopy.openChat })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+  });
+
   /**
-   * ⚠ `aria-disabled`, not `disabled`. A native disabled button has
-   * `pointer-events: none` (no tooltip) and leaves the tab order, so the user
-   * would see a gray icon and have no way to learn the chat is gone.
+   * A chat that is gone is said twice: at rest on the meta line (the menu is out of sight until
+   * the row is hovered), and in the menu, where the item names the reason in place of the action
+   * and cannot be chosen. Refresh checks again.
    */
-  it('grays out a deleted build chat but keeps it focusable, labelled and clickable', async () => {
-    const user = userEvent.setup();
+  it('says a deleted build chat at rest, and names it in the menu as unavailable', async () => {
     const onOpenConversation = vi.fn();
-    render(
-      <ApplicationItem
-        app={app}
-        buildChat={{ kind: 'deleted' }}
-        onLaunch={vi.fn()}
-        onOpenConversation={onOpenConversation}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
+    renderItem({ buildChat: { kind: 'deleted' }, onOpenConversation });
 
-    const chat = screen.getByRole('button', {
-      name: 'The chat where Cohort Explorer was built was deleted',
-    });
-    expect(chat).toHaveAttribute('aria-disabled', 'true');
-    expect(chat).not.toBeDisabled();
-    expect(chat).toHaveAttribute('title', 'The chat where Cohort Explorer was built was deleted');
-    expect(chat).toHaveClass('opacity-50', 'cursor-not-allowed');
-    // Visible without hovering the row.
-    expect(screen.getByText('Build chat deleted')).toBeInTheDocument();
+    expect(screen.getByTestId('app-build-chat-note')).toHaveTextContent(chatCopy.deletedNote);
+    openRowMenu();
+    const item = await screen.findByRole('menuitem', { name: chatCopy.deletedNote });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.queryByRole('menuitem', { name: appsCopy.openChat })).toBeNull();
 
-    await user.tab();
-    await user.tab();
-    expect(chat).toHaveFocus();
-    // The click still reaches the view, which re-checks and says why.
-    await user.keyboard('{Enter}');
-    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    fireEvent.click(item);
+    expect(onOpenConversation).not.toHaveBeenCalled();
   });
 
-  it('explains an app with no recorded chat instead of hiding the control', () => {
-    render(
-      <ApplicationItem
-        app={{ ...app, session_id: undefined }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
+  it('explains an app with no recorded chat instead of hiding the item', async () => {
+    renderItem({ app: { ...app, session_id: undefined } });
 
+    expect(screen.getByTestId('app-build-chat-note')).toHaveTextContent(chatCopy.noneNote);
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: chatCopy.noneNote })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+  });
+
+  it('keeps the item enabled while the check has not answered', async () => {
+    renderItem({ buildChat: { kind: 'unknown' } });
+
+    expect(screen.queryByTestId('app-build-chat-note')).toBeNull();
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: appsCopy.openChat })).not.toHaveAttribute(
+      'aria-disabled'
+    );
+  });
+
+  it('names a subagent run as what it is', async () => {
+    renderItem({ buildChat: { kind: 'available', sessionId: 'child', via: 'subagent' } });
+
+    openRowMenu();
     expect(
-      screen.getByRole('button', { name: 'No chat was recorded for Cohort Explorer' })
-    ).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByText('No build chat recorded')).toBeInTheDocument();
-  });
-
-  it('keeps the control enabled while the check has not answered', () => {
-    render(
-      <ApplicationItem
-        app={app}
-        buildChat={{ kind: 'unknown' }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    const chat = screen.getByRole('button', {
-      name: 'Open the chat where Cohort Explorer was built',
-    });
-    expect(chat).not.toHaveAttribute('aria-disabled');
-    expect(screen.queryByText(/Build chat/)).toBeNull();
-  });
-
-  it('names a subagent run as what it is', () => {
-    render(
-      <ApplicationItem
-        app={app}
-        buildChat={{ kind: 'available', sessionId: 'child', via: 'subagent' }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={vi.fn()}
-      />
-    );
-
-    expect(
-      screen.getByRole('button', { name: 'Open the subagent run that built Cohort Explorer' })
+      await screen.findByRole('menuitem', { name: appsCopy.openSubagentRun })
     ).not.toHaveAttribute('aria-disabled');
   });
 
@@ -237,30 +254,40 @@ describe('ApplicationItem', () => {
   it('renders an unreadable app with its error and only Delete', async () => {
     const user = userEvent.setup();
     const onDelete = vi.fn();
-    render(
-      <ApplicationItem
-        app={{
-          id: 'half-written',
-          title: 'half-written',
-          kind: 'static',
-          broken: 'manifest.json: expected value at line 1 column 1',
-        }}
-        onLaunch={vi.fn()}
-        onOpenConversation={vi.fn()}
-        onExport={vi.fn()}
-        onDelete={onDelete}
-      />
-    );
+    renderItem({
+      app: {
+        id: 'half-written',
+        title: 'half-written',
+        kind: 'static',
+        broken: 'manifest.json: expected value at line 1 column 1',
+      },
+      onDelete,
+    });
 
-    expect(screen.getByText(/can't read this app's manifest/)).toBeInTheDocument();
+    expect(screen.getByText(appsCopy.broken.message)).toBeInTheDocument();
     expect(
       screen.getByText('manifest.json: expected value at line 1 column 1')
     ).toBeInTheDocument();
+    // Two lines, like every row: the badge says the state and carries what it means as its
+    // help; the second line is the parser's reason. No third line of prose.
+    const badge = screen.getByText(appsCopy.broken.badge);
+    expect(badge).toHaveAccessibleDescription(appsCopy.broken.message);
+    expect(screen.getByText(appsCopy.broken.message)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
+    const row = screen.getByTestId('app-row');
+    expect(row.querySelectorAll('p')).toHaveLength(1);
+    expect(screen.getByTestId('app-broken-reason')).toHaveTextContent(
+      'manifest.json: expected value at line 1 column 1'
+    );
     expect(screen.queryByRole('button', { name: /Launch/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /chat/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /More actions/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Export/ })).toBeNull();
 
-    const remove = screen.getByRole('button', { name: 'Delete half-written' });
+    const remove = screen.getByRole('button', {
+      name: appsCopy.broken.deleteNamed('half-written'),
+    });
     expect(remove).toBeEnabled();
     await user.click(remove);
     expect(onDelete).toHaveBeenCalledTimes(1);
@@ -341,7 +368,26 @@ describe('ApplicationsView build chat', () => {
       </MemoryRouter>
     );
 
-  const chatButton = async (name: string | RegExp) => screen.findByRole('button', { name });
+  /** A row, by its app's title. */
+  const rowOf = (title: string) =>
+    screen.getByText(title).closest('[data-testid="app-row"]') as HTMLElement;
+
+  /** The row's at-rest build-chat note, or null when the chat item says enough. */
+  const noteOf = (title = 'Cohort Explorer') =>
+    within(rowOf(title)).queryByTestId('app-build-chat-note');
+
+  /** Wait for the row's check to answer with `text`. */
+  const waitForNote = (text: string, title = 'Cohort Explorer') =>
+    waitFor(() => expect(noteOf(title)).toHaveTextContent(text));
+
+  /** Choose "Open the chat it was built in" (or `label`) from a row's `⋯` menu. */
+  const chooseChat = async (
+    user: ReturnType<typeof userEvent.setup>,
+    title = 'Cohort Explorer',
+    label: string = appsCopy.openChat
+  ) => {
+    await user.click(await rowMenuItem(title, label));
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -389,7 +435,7 @@ describe('ApplicationsView build chat', () => {
       json(sessionRow('session-1', APP_CREATED - 60, { name: 'Cohort app', user_set_name: true }));
     renderView();
 
-    await user.click(await chatButton('Open the chat where Cohort Explorer was built'));
+    await chooseChat(user);
 
     const pair = await screen.findByTestId('pair');
     expect(pair).toHaveTextContent('?resumeSessionId=session-1');
@@ -405,42 +451,40 @@ describe('ApplicationsView build chat', () => {
   });
 
   /**
-   * The user's report: the button opened a tab that failed with "Failed to
+   * The user's report: the control opened a tab that failed with "Failed to
    * resume session: Session not found", and the tab was saved, so it came back.
-   * Now the row says so up front and a click opens nothing.
+   * Now the row says so up front, and the menu names the reason in place of the
+   * action and opens nothing.
    */
-  it('grays out a deleted chat, says so, and never navigates to it', async () => {
+  it('says a deleted chat on the row, names it in the menu, and never navigates to it', async () => {
     const { toastError } = await import('../../toasts');
-    const user = userEvent.setup();
     renderView();
 
-    const chat = await chatButton('The chat where Cohort Explorer was built was deleted');
-    expect(chat).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByText('Build chat deleted')).toBeInTheDocument();
+    await waitForNote(chatCopy.deletedNote);
+    const item = await rowMenuItem('Cohort Explorer', chatCopy.deletedNote);
+    expect(item).toHaveAttribute('aria-disabled', 'true');
 
-    await user.click(chat);
+    fireEvent.click(item);
 
-    await waitFor(() =>
-      expect(toastError).toHaveBeenCalledWith({
-        title: 'Cohort Explorer',
-        msg: 'The chat where this app was built has been deleted.',
-      })
-    );
+    expect(toastError).not.toHaveBeenCalled();
     expect(screen.queryByTestId('pair')).toBeNull();
+    expect(sessionReads('session-1')).toHaveLength(1);
     expect(fetchMock.mock.calls.some(([input]) => urlOfRequest(input).includes('/agent/'))).toBe(
       false
     );
   });
 
   // A 404 can also have been a store error (`buildChat.ts`), so a row that
-  // reads "deleted" is not the last word: the click asks again.
-  it('opens a chat that read as deleted when the click finds it after all', async () => {
+  // reads "deleted" is not the last word: Refresh asks again.
+  it('opens a chat that read as deleted once Refresh finds it after all', async () => {
     const user = userEvent.setup();
     renderView();
-    const chat = await chatButton('The chat where Cohort Explorer was built was deleted');
+    await waitForNote(chatCopy.deletedNote);
 
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
-    await user.click(chat);
+    await user.click(screen.getByRole('button', { name: appsCopy.refresh }));
+    await waitFor(() => expect(noteOf()).toBeNull());
+    await chooseChat(user);
 
     expect(await screen.findByTestId('pair')).toHaveTextContent('?resumeSessionId=session-1');
   });
@@ -449,10 +493,11 @@ describe('ApplicationsView build chat', () => {
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED + 86_400));
     renderView();
 
-    expect(
-      await chatButton('The chat where Cohort Explorer was built no longer exists')
-    ).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByText('Build chat no longer exists')).toBeInTheDocument();
+    await waitForNote(chatCopy.replacedNote);
+    expect(await rowMenuItem('Cohort Explorer', chatCopy.replacedNote)).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
   });
 
   // An older chat that reuses the id is caught only when it had gone quiet
@@ -464,18 +509,18 @@ describe('ApplicationsView build chat', () => {
       );
     renderView();
 
-    expect(
-      await chatButton('The chat where Cohort Explorer was built no longer exists')
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.replacedNote);
   });
 
   it('says a chat this surface may not open cannot be opened here', async () => {
     sessions['session-1'] = () => new Response('', { status: 403 });
     renderView();
 
-    expect(
-      await chatButton("The chat where Cohort Explorer was built can't be opened here")
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.unreachableNote);
+    expect(await rowMenuItem('Cohort Explorer', chatCopy.unreachableNote)).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
   });
 
   it('leads to the parent conversation when a subagent run built the app', async () => {
@@ -490,7 +535,7 @@ describe('ApplicationsView build chat', () => {
     sessions['parent-1'] = () => json(sessionRow('parent-1', APP_CREATED - 600));
     renderView();
 
-    await user.click(await chatButton('Open the chat where Cohort Explorer was built'));
+    await chooseChat(user);
 
     expect(await screen.findByTestId('pair')).toHaveTextContent('?resumeSessionId=parent-1');
   });
@@ -506,7 +551,7 @@ describe('ApplicationsView build chat', () => {
       );
     renderView();
 
-    await user.click(await chatButton('Open the subagent run that built Cohort Explorer'));
+    await chooseChat(user, 'Cohort Explorer', appsCopy.openSubagentRun);
 
     expect(await screen.findByTestId('pair')).toHaveTextContent('?resumeSessionId=session-1');
   });
@@ -521,23 +566,23 @@ describe('ApplicationsView build chat', () => {
     sessions['session-1'] = () => Promise.reject(new TypeError('Failed to fetch'));
     renderView();
 
-    const chat = await chatButton('Open the chat where Cohort Explorer was built');
+    await screen.findByText('Cohort Explorer');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
-    expect(chat).not.toHaveAttribute('aria-disabled');
+    expect(noteOf()).toBeNull();
 
     delete sessions['session-1'];
-    await user.click(chat);
+    const item = await rowMenuItem('Cohort Explorer', appsCopy.openChat);
+    expect(item).not.toHaveAttribute('aria-disabled');
+    await user.click(item);
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: 'Cohort Explorer',
-        msg: 'The chat where this app was built has been deleted.',
+        msg: chatCopy.deletedRefusal,
       })
     );
     expect(screen.queryByTestId('pair')).toBeNull();
-    expect(
-      await chatButton('The chat where Cohort Explorer was built was deleted')
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.deletedNote);
   });
 
   it('does not navigate when the click-time check is not answered', async () => {
@@ -546,12 +591,12 @@ describe('ApplicationsView build chat', () => {
     sessions['session-1'] = () => new Response('', { status: 503 });
     renderView();
 
-    await user.click(await chatButton('Open the chat where Cohort Explorer was built'));
+    await chooseChat(user);
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: 'Cohort Explorer',
-        msg: "Couldn't reach Biorouter to check that chat. Try again.",
+        msg: chatCopy.unansweredRefusal,
       })
     );
     expect(screen.queryByTestId('pair')).toBeNull();
@@ -565,7 +610,7 @@ describe('ApplicationsView build chat', () => {
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     renderView();
 
-    await chatButton('Open the chat where Second App was built');
+    await screen.findByText('Second App');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
     // Give any second read the chance to show up before asserting it did not.
     await act(async () => {
@@ -577,16 +622,15 @@ describe('ApplicationsView build chat', () => {
   it('flips the row the moment the chat is deleted in any window, without asking again', async () => {
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     renderView();
+    await screen.findByText('Cohort Explorer');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
-    expect(await chatButton('Open the chat where Cohort Explorer was built')).toBeInTheDocument();
+    expect(noteOf()).toBeNull();
 
     act(() => {
       notifySessionListChanged({ removed: 'session-1' });
     });
 
-    expect(
-      await chatButton('The chat where Cohort Explorer was built was deleted')
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.deletedNote);
     expect(sessionReads('session-1')).toHaveLength(1);
   });
 
@@ -605,11 +649,11 @@ describe('ApplicationsView build chat', () => {
     const user = userEvent.setup();
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     renderView();
-    const chat = await chatButton('Open the chat where Cohort Explorer was built');
+    await screen.findByText('Cohort Explorer');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
 
     const held = holdReads();
-    await user.click(chat);
+    await chooseChat(user);
     await waitFor(() => expect(held).toHaveLength(1));
     act(() => {
       notifySessionListChanged({ removed: 'session-1' });
@@ -621,14 +665,12 @@ describe('ApplicationsView build chat', () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: 'Cohort Explorer',
-        msg: 'The chat where this app was built has been deleted.',
+        msg: chatCopy.deletedRefusal,
       })
     );
     expect(screen.queryByTestId('pair')).toBeNull();
     // The stale 200 did not put the row back either.
-    expect(
-      await chatButton('The chat where Cohort Explorer was built was deleted')
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.deletedNote);
   });
 
   it('does not navigate on an answer a newer Refresh is still re-checking', async () => {
@@ -636,13 +678,13 @@ describe('ApplicationsView build chat', () => {
     const user = userEvent.setup();
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     renderView();
-    const chat = await chatButton('Open the chat where Cohort Explorer was built');
+    await screen.findByText('Cohort Explorer');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
 
     const held = holdReads();
-    await user.click(chat);
+    await chooseChat(user);
     await waitFor(() => expect(held).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.refresh }));
     await waitFor(() => expect(held).toHaveLength(2));
 
     await act(async () => {
@@ -651,7 +693,7 @@ describe('ApplicationsView build chat', () => {
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
         title: 'Cohort Explorer',
-        msg: 'Biorouter was still checking that chat. Try again.',
+        msg: chatCopy.stillChecking,
       })
     );
     expect(screen.queryByTestId('pair')).toBeNull();
@@ -661,7 +703,7 @@ describe('ApplicationsView build chat', () => {
       held[1](json(sessionRow('session-1', APP_CREATED - 60)));
     });
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
-    await user.click(await chatButton('Open the chat where Cohort Explorer was built'));
+    await chooseChat(user);
     expect(await screen.findByTestId('pair')).toHaveTextContent('?resumeSessionId=session-1');
   });
 
@@ -702,11 +744,11 @@ describe('ApplicationsView build chat', () => {
           </Routes>
         </MemoryRouter>
       );
-      const chat = await chatButton('Open the chat where Cohort Explorer was built');
+      await screen.findByText('Cohort Explorer');
       await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
 
       const held = holdReads();
-      await user.click(chat);
+      await chooseChat(user);
       await waitFor(() => expect(held).toHaveLength(1));
       await user.click(screen.getByRole('button', { name: 'Go to Settings' }));
       expect(await screen.findByTestId('settings')).toBeInTheDocument();
@@ -738,15 +780,14 @@ describe('ApplicationsView build chat', () => {
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     sessions['session-2'] = () => json(sessionRow('session-2', APP_CREATED - 60));
     renderView();
-    const first = await chatButton('Open the chat where Cohort Explorer was built');
-    const second = await chatButton('Open the chat where Second App was built');
+    await screen.findByText('Second App');
     await waitFor(() => expect(sessionReads()).toHaveLength(2));
 
     const heldFirst = holdReads();
     const heldSecond: ((answer: Response) => void)[] = [];
     sessions['session-2'] = () => new Promise<Response>((resolve) => heldSecond.push(resolve));
-    await user.click(first);
-    await user.click(second);
+    await chooseChat(user, 'Cohort Explorer');
+    await chooseChat(user, 'Second App');
     await waitFor(() => expect(heldSecond).toHaveLength(1));
     expect(heldFirst).toHaveLength(1);
 
@@ -768,33 +809,28 @@ describe('ApplicationsView build chat', () => {
     const user = userEvent.setup();
     sessions['session-1'] = () => json(sessionRow('session-1', APP_CREATED - 60));
     renderView();
+    await screen.findByText('Cohort Explorer');
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
 
     delete sessions['session-1'];
-    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.refresh }));
 
-    expect(
-      await chatButton('The chat where Cohort Explorer was built was deleted')
-    ).toHaveAttribute('aria-disabled', 'true');
+    await waitForNote(chatCopy.deletedNote);
     expect(sessionReads('session-1')).toHaveLength(2);
   });
 
   it('explains an app with no recorded chat and reads nothing for it', async () => {
     const { toastError } = await import('../../toasts');
-    const user = userEvent.setup();
     appsList = [{ ...builtApp, session_id: undefined }];
     renderView();
 
-    const chat = await chatButton('No chat was recorded for Cohort Explorer');
-    expect(chat).toHaveAttribute('aria-disabled', 'true');
-    await user.click(chat);
+    await screen.findByText('Cohort Explorer');
+    await waitForNote(chatCopy.noneNote);
+    const item = await rowMenuItem('Cohort Explorer', chatCopy.noneNote);
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(item);
 
-    await waitFor(() =>
-      expect(toastError).toHaveBeenCalledWith({
-        title: 'Cohort Explorer',
-        msg: 'No chat was recorded for this app.',
-      })
-    );
+    expect(toastError).not.toHaveBeenCalled();
     expect(sessionReads()).toHaveLength(0);
     expect(screen.queryByTestId('pair')).toBeNull();
   });
@@ -808,7 +844,9 @@ describe('ApplicationsView build chat', () => {
     renderView();
 
     expect(await screen.findByText('bad json')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete half-written' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: appsCopy.broken.deleteNamed('half-written') })
+    ).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Launch half-written in browser' })).toBeNull();
     // Nothing is looked up for it.
     await waitFor(() => expect(sessionReads('session-1')).toHaveLength(1));
@@ -877,24 +915,91 @@ describe('ApplicationsView', () => {
   });
 
   /**
-   * The header comes from `Layout/PageHeader`, so this asserts the two things
-   * that were the view's own before it did: that the action lands in the
-   * control strip under the description rather than beside the title, and that
-   * the `page-transition` class — which matches no CSS rule in this repo — did
-   * not survive the move.
+   * The band (spec 3.10): the title with its help in an InfoTip, the filter and
+   * Refresh at the trailing edge, and no primary (an app is built from a chat).
    */
-  it('renders the shared page header with Refresh in its control strip', async () => {
+  it('renders the band with the filter and Refresh, and no primary', async () => {
     const { container } = renderView();
 
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Built apps' })
     ).toBeInTheDocument();
-    expect(screen.getByText(/Apps you built with Agent Drafter/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Built apps' })).toHaveAccessibleDescription(
+      appsCopy.info
+    );
 
-    const strip = container.querySelector('.biorouter-settings-control-strip');
+    const strip = container.querySelector('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
-    expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh' }));
+    expect(strip).toContainElement(screen.getByRole('button', { name: appsCopy.refresh }));
+    expect(strip).toContainElement(screen.getByRole('searchbox', { name: appsCopy.filterLabel }));
+    expect(strip?.querySelector('.bg-background-accent')).toBeNull();
     expect(container.querySelector('.page-transition')).toBeNull();
+  });
+
+  it('filters the rows from the band', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+    expect(screen.queryByText('Cohort Explorer')).toBeNull();
+    expect(screen.getByRole('heading', { name: appsCopy.noMatchTitle })).toBeInTheDocument();
+  });
+
+  /**
+   * V3-R7-2: a filter that matches nothing is the compact tile, as Workflows and Extensions draw
+   * it, not the full empty state's `min-h-[clamp(17rem,48vh,25rem)]` box. The full box centred
+   * its tile 84 to 92 px lower than the same state on the sibling views (Chromium measures the
+   * real offset in `ApplicationsView.noMatch.browser.test.tsx`; jsdom has no layout).
+   */
+  it('draws a filter with no match as the compact tile, not the full empty state', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+
+    const title = screen.getByRole('heading', { level: 2, name: appsCopy.noMatchTitle });
+    const section = title.closest('section') as HTMLElement;
+    expect(section).toHaveAccessibleDescription(appsCopy.noMatchDescription);
+    expect(section.className).toContain('py-12');
+    expect(section.className).not.toMatch(/min-h-/);
+    // The empty state is the other state: it never shows beside a no-match.
+    expect(screen.queryByRole('heading', { name: appsCopy.emptyTitle })).toBeNull();
+  });
+
+  /**
+   * V3-R7-2, the other half: with nothing built there is nothing for a filter to miss, so the
+   * empty state stays whatever is typed (Workflows decides it the same way), and keeps its full
+   * height.
+   */
+  it('keeps the empty state when nothing is built, whatever the filter says', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue(okJson([]));
+    renderView();
+    const title = await screen.findByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+
+    await user.type(screen.getByRole('searchbox', { name: appsCopy.filterLabel }), 'nothing');
+
+    const kept = screen.getByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+    expect(kept).toBe(title);
+    expect(kept.closest('section')).toHaveAccessibleDescription(appsCopy.emptyDescription);
+    expect(kept.closest('section')?.className).toMatch(/min-h-/);
+    expect(screen.queryByRole('heading', { name: appsCopy.noMatchTitle })).toBeNull();
+  });
+
+  it('brings the rows back when the filter is cleared', async () => {
+    const user = userEvent.setup();
+    renderView();
+    expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
+
+    const filter = screen.getByRole('searchbox', { name: appsCopy.filterLabel });
+    await user.type(filter, 'nothing');
+    expect(screen.queryByText('Cohort Explorer')).toBeNull();
+    await user.clear(filter);
+
+    expect(screen.getByText('Cohort Explorer')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: appsCopy.noMatchTitle })).toBeNull();
   });
 
   it('shows skeleton rows while the first load is in flight, not a line of prose', async () => {
@@ -938,7 +1043,7 @@ describe('ApplicationsView', () => {
     renderView();
 
     await user.click(
-      await screen.findByRole('button', { name: 'Launch Cohort Explorer in browser' })
+      await screen.findByRole('button', { name: appsCopy.launchNamed('Cohort Explorer') })
     );
 
     await waitFor(() => expect(openAppInBrowser).toHaveBeenCalledWith('cohort-explorer'));
@@ -976,10 +1081,9 @@ describe('ApplicationsView', () => {
 
     renderView();
 
-    expect(
-      await screen.findByRole('heading', { level: 2, name: 'No apps built yet' })
-    ).toBeInTheDocument();
-    expect(screen.getByText(/use Agent Drafter to build a dashboard app/)).toBeInTheDocument();
+    const title = await screen.findByRole('heading', { level: 2, name: appsCopy.emptyTitle });
+    expect(title.closest('section')).toHaveAccessibleDescription(appsCopy.emptyDescription);
+    expect(within(title.closest('section') as HTMLElement).queryByRole('button')).toBeNull();
   });
 
   /**
@@ -994,10 +1098,10 @@ describe('ApplicationsView', () => {
     expect(await screen.findByText('Cohort Explorer')).toBeInTheDocument();
 
     appsRoute = () => ({ ok: false, status: 500, text: async () => 'boom' }) as Response;
-    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await user.click(screen.getByRole('button', { name: appsCopy.refresh }));
 
     const note = await screen.findByRole('alert');
-    expect(note).toHaveTextContent('Could not load apps: HTTP 500: boom');
+    expect(note).toHaveTextContent(appsCopy.loadFailed('HTTP 500: boom'));
     expect(within(note).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
     expect(screen.getByText('Cohort Explorer')).toBeInTheDocument();
 

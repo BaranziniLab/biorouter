@@ -1,6 +1,7 @@
 import React from 'react';
-import { AlertTriangle, Copy } from './icons/app-icons';
-import { MessageMetaAction } from './MessageMeta';
+import { AlertTriangle, Check, Copy } from './icons/app-icons';
+import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { transcriptCopy } from './transcript/copy';
 import { useTransientValue } from '../hooks/useTransientFlag';
 import { toastError } from '../toasts';
 import { copyToClipboard } from '../utils/clipboard';
@@ -20,7 +21,11 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
 
   const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
     // Read before the first await: React clears `currentTarget` once dispatch ends.
-    const host = event.currentTarget.parentElement;
+    // The message is the host for the document-selection fallback; a cluster
+    // that is still fading in is no worse a host than its parent was.
+    const host =
+      event.currentTarget.closest<HTMLElement>('.br-message-actions-scope') ??
+      event.currentTarget.parentElement;
     try {
       if (contentRef?.current) {
         // Clone the DOM node to avoid innerHTML re-serialization
@@ -62,21 +67,37 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
     // looking — on the control they pressed, and once in the corner.
     markOutcome('failed');
     toastError({
-      title: 'Copy failed',
-      msg: 'Biorouter could not write to the clipboard. Select the message and copy it with your keyboard.',
+      title: transcriptCopy.message.copyFailed,
+      msg: transcriptCopy.message.copyFailedHelp,
     });
   };
 
   const failed = outcome === 'failed';
+  const label =
+    outcome === 'copied'
+      ? transcriptCopy.message.copied
+      : failed
+        ? transcriptCopy.message.copyFailed
+        : transcriptCopy.message.copyMessage;
 
+  // A glyph button that answers in its tooltip ("Copied"), so its width never
+  // jumps (Crew's `CopyIconButton`). The name follows the state.
   return (
-    <MessageMetaAction
+    <TranscriptIconButton
       onClick={handleCopy}
-      icon={failed ? <AlertTriangle /> : <Copy />}
-      aria-label="Copy message"
-      className={failed ? 'text-text-warning hover:text-text-warning' : undefined}
-    >
-      {outcome === 'copied' ? 'Copied!' : failed ? 'Copy failed' : 'Copy'}
-    </MessageMetaAction>
+      label={label}
+      tip={outcome === null ? transcriptCopy.message.copy : label}
+      holdTip={outcome !== null}
+      tone={failed ? 'warning' : 'default'}
+      icon={
+        outcome === 'copied' ? (
+          <Check aria-hidden="true" />
+        ) : failed ? (
+          <AlertTriangle aria-hidden="true" />
+        ) : (
+          <Copy aria-hidden="true" />
+        )
+      }
+    />
   );
 }

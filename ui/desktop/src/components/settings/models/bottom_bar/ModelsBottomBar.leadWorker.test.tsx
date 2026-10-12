@@ -106,6 +106,12 @@ function daemonHolds(
  * `pointerdown`, not on `click` — the gesture
  * `ModelsBottomBar.browserSurface.test.tsx` uses on this chip.
  */
+/** The model menu's notes live in one InfoTip; its hidden description holds them. */
+function modelNotes(): string {
+  const id = screen.queryByTestId('model-notes-info')?.getAttribute('aria-describedby');
+  return (id && document.getElementById(id)?.textContent) || '';
+}
+
 async function openChipMenu() {
   await screen.findByRole('button', { name: /Current model:/ });
   fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
@@ -201,7 +207,7 @@ describe('a lead/worker pair saved in another window', () => {
     const { unmount } = renderBar();
     await openChipMenu();
     await waitFor(() =>
-      expect(screen.getByTestId('lead-worker-handover-note')).toHaveTextContent(
+      expect(modelNotes()).toContain(
         'Lead/worker mode. claude-opus-5 answers the first 2 turns of a chat; gpt-4.1-mini-2025-04-14 takes the rest.'
       )
     );
@@ -209,17 +215,13 @@ describe('a lead/worker pair saved in another window', () => {
 
     renderBar('20260610_28');
     await openChipMenu();
-    await waitFor(() =>
-      expect(screen.getByTestId('lead-worker-handover-note')).toHaveTextContent(
-        /claude-opus-5 answers the first 2 turns/
-      )
-    );
+    await waitFor(() => expect(modelNotes()).toMatch(/claude-opus-5 answers the first 2 turns/));
   });
 
   it('says nothing about a pair when none is configured', async () => {
     renderBar();
     await openChipMenu();
-    expect(screen.queryByTestId('lead-worker-handover-note')).toBeNull();
+    expect(modelNotes()).not.toMatch(/Lead\/worker mode/);
   });
 
   /**
@@ -260,6 +262,49 @@ describe('a lead/worker pair saved in another window', () => {
     await waitFor(() => expect(trigger).toHaveAccessibleName(/gpt-5\.2-2025-12-11/));
     expect(trigger).not.toHaveAccessibleName(/lead|worker/);
     await openChipMenu();
-    expect(screen.queryByTestId('lead-worker-handover-note')).toBeNull();
+    expect(modelNotes()).not.toMatch(/Lead\/worker mode/);
+  });
+});
+
+/**
+ * V2-R8-3. A new chat's first send remounts the composer (it moves from the
+ * empty chat's centre to the bar under the transcript). The pair read is handed
+ * to the replacement, so its chip does not name the worker for the frames
+ * before its own read lands and then the lead again.
+ */
+describe('a remounted composer keeps the pair it had read', () => {
+  function Seat({ centre }: { centre: boolean }) {
+    const bar = (
+      <ModelsBottomBar
+        sessionId={null}
+        privacyTier={undefined}
+        dropdownRef={dropdownRef}
+        setView={vi.fn()}
+        alerts={[]}
+        handOffKey="tab-1"
+      />
+    );
+    return (
+      <div>
+        {centre ? <section>{bar}</section> : <p />}
+        {!centre && <footer>{bar}</footer>}
+      </div>
+    );
+  }
+
+  it('names the lead in the replacement’s first commit, its own read still held', async () => {
+    daemonHolds(LEAD, selection.model);
+    const view = render(<Seat centre />);
+    const first = await screen.findByRole('button', { name: /Current model:/ });
+    await waitFor(() => expect(first).toHaveAccessibleName(/claude-opus-5 \(lead\)/));
+
+    // The replacement's reads never answer here: whatever it names, it names
+    // from what it was handed.
+    mocks.read.mockImplementation(() => new Promise(() => {}));
+    view.rerender(<Seat centre={false} />);
+    const second = screen.getByRole('button', { name: /Current model:/ });
+    expect(second).not.toBe(first);
+    expect(second).toHaveAccessibleName(/claude-opus-5 \(lead\)/);
+    expect(second).not.toHaveAccessibleName(/gpt-4\.1-mini/);
   });
 });

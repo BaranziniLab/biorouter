@@ -208,3 +208,47 @@ describe('ChatTabStrip — the subagent badge', () => {
     expect(badgeIn(view.container, 'tab-1')).not.toBeNull();
   });
 });
+
+/**
+ * Spec 3.3 sweep (WS-ICONS-8): a Crew task is recognised by its folder before
+ * its title, and a tab holds only the title, so the strip takes each chat's
+ * listed folder. A Crew task the person renamed keeps its Crew glyph in its tab
+ * as it does in the sidebar row beside it.
+ */
+describe('ChatTabStrip: a renamed Crew task stays Crew', () => {
+  const crewTab = {
+    tabId: 'crew-1',
+    sessionId: 'crew-session',
+    title: 'Renamed task',
+    userSetName: true,
+  };
+  const base = {
+    tabs: [crewTab],
+    activeTabId: 'crew-1',
+    runningSessionIds: [],
+    onSelect: vi.fn(),
+    onClose: vi.fn(),
+    onReorder: vi.fn(),
+    reserveTitlebar: false,
+    isCompactSidebarOverlayOpen: false,
+  };
+  const kindOf = (container: HTMLElement) =>
+    container
+      .querySelector('[data-tab-id="crew-1"] [data-chat-kind]')
+      ?.getAttribute('data-chat-kind');
+
+  it('draws the Crew glyph from the listed folder', () => {
+    const { container } = render(
+      <ChatTabStrip
+        {...base}
+        sessionWorkingDirs={{ 'crew-session': '/Users/x/.local/share/biorouter/crew/tasks' }}
+      />
+    );
+    expect(kindOf(container)).toBe('crew');
+  });
+
+  it('without a folder the renamed task reads as a plain chat (the title is all it has)', () => {
+    const { container } = render(<ChatTabStrip {...base} />);
+    expect(kindOf(container)).toBe('chat');
+  });
+});

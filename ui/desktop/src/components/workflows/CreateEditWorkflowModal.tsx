@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useForm } from '@tanstack/react-form';
-import { Workflow, generateDeepLink, Parameter } from '../../workflow';
-import { Check, Copy, ExternalLink, Play, Save } from '../icons/app-icons';
+import { Workflow, Parameter } from '../../workflow';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
-import { Input } from '../ui/input';
+import { ModalShell } from '../ModalShell';
 
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
-import { useTransientFlag } from '../../hooks/useTransientFlag';
+import { workflowFormCopy as copy } from './copy';
 
 interface CreateEditWorkflowModalProps {
   isOpen: boolean;
@@ -90,7 +88,6 @@ export default function CreateEditWorkflowModal({
     });
     return storeSubscriptionCleanup(subscription);
   }, [form]);
-  const [copied, markCopied] = useTransientFlag(2000);
   const [isSaving, setIsSaving] = useState(false);
 
   // Extensions for the workflow (editable)
@@ -204,88 +201,16 @@ export default function CreateEditWorkflowModal({
     return basicValidation;
   };
 
-  const [deeplink, setDeeplink] = useState('');
-  const [isGeneratingDeeplink, setIsGeneratingDeeplink] = useState(false);
-  const [deeplinkError, setDeeplinkError] = useState(false);
+  /** Why `validateForm` said no, in one line: the missing fields, or the schema. */
+  const validationMessage = () => (requiredFieldsAreFilled() ? copy.invalidSchema : copy.invalid);
 
-  // Generate deeplink whenever workflow configuration changes
-  useEffect(() => {
-    let isCancelled = false;
-
-    const generateLink = async () => {
-      if (
-        !title.trim() ||
-        !description.trim() ||
-        (!instructions.trim() && !(prompt || '').trim())
-      ) {
-        setDeeplink('');
-        setDeeplinkError(false);
-        return;
-      }
-
-      setIsGeneratingDeeplink(true);
-      try {
-        const currentWorkflow = getCurrentWorkflow();
-        const link = await generateDeepLink(currentWorkflow);
-        if (!isCancelled) {
-          setDeeplink(link);
-          setDeeplinkError(false);
-        }
-      } catch (error) {
-        console.error('Failed to generate deeplink:', error);
-        if (!isCancelled) {
-          setDeeplink('');
-          setDeeplinkError(true);
-        }
-      } finally {
-        if (!isCancelled) {
-          setIsGeneratingDeeplink(false);
-        }
-      }
-    };
-
-    generateLink();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [
-    title,
-    description,
-    instructions,
-    prompt,
-    activities,
-    parameters,
-    jsonSchema,
-    settings,
-    workflowExtensions,
-    getCurrentWorkflow,
-  ]);
-
-  const canCopyDeeplink = Boolean(deeplink) && !isGeneratingDeeplink && !deeplinkError;
-
-  const handleCopy = () => {
-    if (!canCopyDeeplink) {
-      return;
-    }
-
-    navigator.clipboard
-      .writeText(deeplink)
-      .then(() => {
-        markCopied();
-      })
-      .catch((err) => {
-        console.error('Failed to copy the text:', err);
-      });
-  };
+  const savedTitle = (title?: string) =>
+    isCreateMode ? copy.created((title || '').trim()) : copy.saved((title || '').trim());
 
   const handleSaveWorkflowClick = async () => {
     if (isSaving) return;
     if (!validateForm()) {
-      toastError({
-        title: 'Validation failed',
-        msg: 'Fill in the required fields and fix the JSON schema.',
-      });
+      toastError({ title: copy.couldNotSave, msg: validationMessage() });
       return;
     }
 
@@ -297,16 +222,13 @@ export default function CreateEditWorkflowModal({
 
       onClose(true);
 
-      toastSuccess({
-        title: (workflow.title || '').trim(),
-        msg: 'Workflow saved',
-      });
+      toastSuccess({ title: savedTitle(workflow.title) });
     } catch (error) {
       console.error('Failed to save workflow:', error);
 
       toastError({
-        title: 'Save failed',
-        msg: `Failed to save workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        title: copy.couldNotSave,
+        msg: error instanceof Error ? error.message : String(error),
         traceback: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -317,10 +239,7 @@ export default function CreateEditWorkflowModal({
   const handleSaveAndRunWorkflowClick = async () => {
     if (isSaving) return;
     if (!validateForm()) {
-      toastError({
-        title: 'Validation failed',
-        msg: 'Fill in the required fields and fix the JSON schema.',
-      });
+      toastError({ title: copy.couldNotSave, msg: validationMessage() });
       return;
     }
 
@@ -343,16 +262,13 @@ export default function CreateEditWorkflowModal({
         saved_workflow_id
       );
 
-      toastSuccess({
-        title: workflow.title,
-        msg: 'Workflow saved and started',
-      });
+      toastSuccess({ title: savedTitle(workflow.title) });
     } catch (error) {
       console.error('Failed to save and run workflow:', error);
 
       toastError({
-        title: 'Save and run failed',
-        msg: `Failed to save and run workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        title: copy.couldNotSave,
+        msg: error instanceof Error ? error.message : String(error),
         traceback: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -362,126 +278,50 @@ export default function CreateEditWorkflowModal({
 
   if (!isOpen) return null;
 
+  // A workflow that does not exist yet is created, not saved (spec 3.10); the same two buttons
+  // read Save and Save and run once there is a file to write over.
+  const progressLabel = isCreateMode ? copy.creating : copy.saving;
+
+  // One editor shape (spec 3.10): `ModalShell size="lg" scrollBody`, a title and nothing under
+  // it. Sharing is not part of editing; it lives on the Workflows row menu ("Copy link").
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isSaving && onClose(false)}>
-      <DialogContent
-        dismissible={!isSaving}
-        className="flex h-[90vh] w-[90vw] max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-[90vw] lg:max-w-4xl"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 pr-14 border-b border-border-subtle flex-shrink-0">
-          <div>
-            <DialogTitle>{isCreateMode ? 'Create workflow' : 'Edit workflow'}</DialogTitle>
-            <DialogDescription className="text-supporting text-text-muted mt-0.5">
-              {isCreateMode
-                ? 'Define agent behavior and capabilities for reusable chats.'
-                : 'Edit the workflow to change agent behavior.'}{' '}
-              <a
-                href="http://biorouter.ucsf.edu/docs"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 text-block-teal hover:underline"
-              >
-                Learn more
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </DialogDescription>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          <WorkflowFormFields
-            form={form}
-            extensions={workflowExtensions}
-            onExtensionsChange={setWorkflowExtensions}
-          />
-
-          {/* Deep Link Display */}
-          {requiredFieldsAreFilled() && (
-            <div className="biorouter-modal-panel w-full p-4 rounded-container mt-6">
-              <label
-                htmlFor="workflow-share-link"
-                className="block text-label text-text-default mb-2"
-              >
-                Share link
-              </label>
-              <div className="flex items-center">
-                <Input
-                  id="workflow-share-link"
-                  type="text"
-                  readOnly
-                  value={
-                    isGeneratingDeeplink
-                      ? 'Generating link…'
-                      : deeplinkError
-                        ? 'Could not generate a share link'
-                        : deeplink
-                  }
-                  onFocus={(e) => e.currentTarget.select()}
-                  aria-invalid={deeplinkError}
-                  className="flex-1 text-code font-mono"
-                />
-                {/* V7 — `ml-2` is the only class left, and it is spacing
-                    BETWEEN this button and the field beside it rather than
-                    geometry inside it. `px-3 py-2 rounded-element flex
-                    items-center` was the primitive's own job four times over,
-                    and the bare `flex` additionally flips the cva base's
-                    `inline-flex` through tailwind-merge. */}
-                <Button
-                  type="button"
-                  onClick={handleCopy}
-                  variant="outline"
-                  disabled={!canCopyDeeplink}
-                  aria-label={copied ? 'Link copied' : 'Copy share link'}
-                  className="ml-2"
-                >
-                  {copied ? (
-                    <Check className="w-4 h-4 text-text-success" />
-                  ) : (
-                    <Copy className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
-              <p className="text-supporting text-text-muted mt-1">
-                Anyone with this link can open this workflow in Biorouter. Paste it into a browser,
-                or send it to a collaborator.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between p-6 border-t border-border-subtle">
-          <Button
-            onClick={() => onClose(false)}
-            variant="ghost"
-            disabled={isSaving}
-            className="px-4 py-2 text-text-muted rounded-element hover:bg-overlay-hover transition-colors"
-          >
-            Close
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isSaving) onClose(false);
+      }}
+      size="lg"
+      purpose="form"
+      scrollBody
+      title={isCreateMode ? copy.newTitle : copy.editTitle}
+      footer={
+        <>
+          <Button onClick={() => onClose(false)} variant="secondary" disabled={isSaving}>
+            {copy.cancel}
           </Button>
-
-          <div className="flex gap-3">
-            <Button
-              onClick={handleSaveWorkflowClick}
-              disabled={!requiredFieldsAreFilled() || isSaving}
-              variant="outline"
-            >
-              <Save className="w-4 h-4" />
-              {isSaving ? 'Saving...' : 'Save workflow'}
-            </Button>
-            <Button
-              onClick={handleSaveAndRunWorkflowClick}
-              disabled={!requiredFieldsAreFilled() || isSaving}
-              variant="default"
-            >
-              <Play className="w-4 h-4" />
-              {isSaving ? 'Saving...' : 'Save & run workflow'}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+          <Button
+            onClick={handleSaveWorkflowClick}
+            disabled={!requiredFieldsAreFilled() || isSaving}
+            variant="secondary"
+          >
+            {isSaving ? progressLabel : isCreateMode ? copy.create : copy.save}
+          </Button>
+          <Button
+            onClick={handleSaveAndRunWorkflowClick}
+            disabled={!requiredFieldsAreFilled() || isSaving}
+          >
+            {isSaving ? progressLabel : isCreateMode ? copy.createAndRun : copy.saveAndRun}
+          </Button>
+        </>
+      }
+    >
+      <div className="py-4">
+        <WorkflowFormFields
+          form={form}
+          extensions={workflowExtensions}
+          onExtensionsChange={setWorkflowExtensions}
+        />
+      </div>
+    </ModalShell>
   );
 }

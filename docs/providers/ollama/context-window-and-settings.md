@@ -276,10 +276,10 @@ a model the chat has since switched away from.
 | `BIOROUTER_CONTEXT_LIMIT` | A context limit for the model; the window for a custom `ollama`-engine provider. | none |
 
 `OLLAMA_HOST`, `OLLAMA_TIMEOUT` and `OLLAMA_NUM_CTX` appear in the Ollama provider's settings
-form (**Settings** > **Models** > **Configure providers**). Set `OLLAMA_KEEP_ALIVE` and
-`OLLAMA_THINK` in `config.yaml` or as environment variables; for every `OLLAMA_*` key an
-environment variable wins over `config.yaml`. `BIOROUTER_CONTEXT_LIMIT` is read from the
-environment only.
+form (open **Settings** > **Models** and choose **Manage…** on the **Providers** row). Set
+`OLLAMA_KEEP_ALIVE` and `OLLAMA_THINK` in `config.yaml` or as environment variables; for every
+`OLLAMA_*` key an environment variable wins over `config.yaml`. `BIOROUTER_CONTEXT_LIMIT` is
+read from the environment only.
 
 ## Privacy tier
 

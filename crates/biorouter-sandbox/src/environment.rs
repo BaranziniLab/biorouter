@@ -4,11 +4,11 @@ use std::{env, ffi::OsString};
 
 /// BioRouter's own environment namespaces. Everything outside them belongs to
 /// the user or the OS and is passed through to children untouched.
-const BIOROUTER_ENV_PREFIXES: &[&str] = &["BIOROUTER_", "GOOSE_"];
+const BIOROUTER_ENV_PREFIXES: &[&str] = &["BIOROUTER_"];
 
 /// The daemon's private server configuration. Nothing in this namespace may
 /// reach a process running agent-controlled code.
-const DAEMON_PRIVATE_PREFIXES: &[&str] = &["BIOROUTER_SERVER__", "GOOSE_SERVER__"];
+const DAEMON_PRIVATE_PREFIXES: &[&str] = &["BIOROUTER_SERVER__"];
 
 /// Credential-shaped names applied only inside BioRouter's own namespaces.
 const BIOROUTER_SECRET_MARKERS: &[&str] = &[

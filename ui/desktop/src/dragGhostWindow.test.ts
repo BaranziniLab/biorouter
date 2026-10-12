@@ -286,6 +286,22 @@ describe('GHOST_PROBE_SCRIPT', () => {
     expect(GHOST_PROBE_SCRIPT).toContain('data-grab-y');
     expect(GHOST_PROBE_SCRIPT).toContain('--accent-bar');
   });
+
+  it('folds the tab’s transparent 1px edge into the inset, so the label lands where the DOM ghost’s does', () => {
+    // The tab keeps a transparent 1px border (R-27) with 10px of padding; the
+    // ghost window draws no border, so its padding must be 11px.
+    const el = document.createElement('div');
+    el.className = 'br-tab-ghost';
+    el.style.paddingLeft = '10px';
+    el.style.borderLeft = '1px solid transparent';
+    document.body.append(el);
+    try {
+      const probed = (0, eval)(GHOST_PROBE_SCRIPT) as { style: { paddingX: string } };
+      expect(probed.style.paddingX).toBe('11px');
+    } finally {
+      el.remove();
+    }
+  });
 });
 
 // ── The lifecycle ──────────────────────────────────────────────────────────
@@ -720,5 +736,34 @@ describe('the main-process half, read from main.ts', () => {
     expect(released, 'commit never releases the ghost').toBeGreaterThan(-1);
     expect(firstReturn, 'commit has no early return left to guard').toBeGreaterThan(-1);
     expect(released).toBeLessThan(firstReturn);
+  });
+});
+
+/**
+ * Spec 2.1 and 3.16: the ghost's fallback look speaks the app's one UI stack
+ * (`--font-body`, the website's Arial-first stack) and draws the app's chat
+ * glyph, so a torn-off tab does not change face or icon the moment the probe
+ * comes back empty.
+ */
+describe('the ghost fallback matches the app', () => {
+  it('uses the --font-body stack from main.css, byte for byte (whitespace aside)', () => {
+    const css = readFileSync(join(__dirname, 'styles/main.css'), 'utf8');
+    const match = css.match(/--font-body:\s*([^;]+);/);
+    expect(match, 'no --font-body in main.css').not.toBeNull();
+    const normalise = (value: string) => value.replace(/\s+/g, ' ').trim();
+    expect(normalise(DEFAULT_GHOST_STYLE.fontFamily)).toBe(normalise(match![1]));
+    // And it survives the sanitiser it is the fallback for.
+    expect(sanitizeCssValue(DEFAULT_GHOST_STYLE.fontFamily, 'x')).toBe(
+      normalise(DEFAULT_GHOST_STYLE.fontFamily)
+    );
+  });
+
+  it('draws the chat bubble the strip draws, at the app stroke', () => {
+    const html = ghostWindowHtml(
+      { ...DEFAULT_GHOST_SPEC, title: 'Cohort query' },
+      { transparent: true }
+    );
+    expect(html).toContain('stroke-width="1.5"');
+    expect(html).toContain('M3 8a3.5 3.5 0 0 1 3.5-3.5h11A3.5 3.5 0 0 1 21 8v5.5');
   });
 });

@@ -1563,6 +1563,22 @@ mod tests {
     }
 
     #[test]
+    fn catalog_descriptions_do_not_describe_a_tier() {
+        // Ruling 26 (FR-R3-6): the Llama Server panel's Memory row states the fit in GB, so a
+        // catalog description must not describe the machine as a tier ("above the laptop
+        // tier" half contradicted that row on a large machine). The gemma4-12b entry it was
+        // first written for is retired; the rule holds for every entry still listed.
+        for entry in MODEL_CATALOG {
+            assert!(
+                !entry.description.to_lowercase().contains("tier"),
+                "{}'s description should state memory, not a tier: {}",
+                entry.name,
+                entry.description
+            );
+        }
+    }
+
+    #[test]
     fn the_catalog_is_exactly_the_two_supported_models() {
         let names: Vec<_> = MODEL_CATALOG.iter().map(|e| e.name).collect();
         assert_eq!(names, vec!["qwen3.8-27b", "gemma4-31b"]);

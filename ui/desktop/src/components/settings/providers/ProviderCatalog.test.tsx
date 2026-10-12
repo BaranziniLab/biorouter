@@ -1,9 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
-import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
+import ProviderCatalog, {
+  AGENT_PROBE_WAIT_MS,
+  defaultCatalogTab,
+  tabFromHint,
+} from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
+import { catalogCopy, customProviderCopy, providerPageCopy, providerRowSummary } from './copy';
+import { agentCopy } from '../../onboarding/copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import type { CodingAgentAuth, CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
 
@@ -388,15 +394,35 @@ describe('ProviderCatalog — AI agents', () => {
     );
   };
 
+  // The ready pill is not in this table: on a CONFIGURED agent it would be the same news as
+  // "Configured" (see 'says one status'), so it is asserted on a row that is not set up yet.
   it.each([
     ['not_installed', 'Not installed'],
     ['signed_out', 'Installed · not signed in'],
     ['signed_in_with_api_key', 'Signed in with an API key'],
-    ['signed_in_subscription', 'Ready · signed in on your subscription'],
   ] as const)('renders the %s pill on the agent row', async (state, label) => {
     withAgents([agent('claude_code', { state } as CodingAgentAuth)]);
     clickTab('commercial');
     expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it('invites setup with the ready pill on an agent that is not configured yet', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('claude_code', { state: 'signed_in_subscription' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('claude_code', { is_configured: false }, 'Claude Code')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('commercial');
+    const row = await screen.findByTestId('provider-card-claude_code');
+    expect(
+      await within(row).findByText('Ready · signed in on your subscription')
+    ).toBeInTheDocument();
+    expect(within(row).queryByText('Configured')).toBeNull();
   });
 
   it('renders the indeterminate pill and its detail', async () => {
@@ -479,10 +505,12 @@ describe('ProviderCatalog — AI agents', () => {
     render(<CatalogWithLiveList />);
     clickTab('commercial');
     const row = await screen.findByTestId('provider-card-codex');
-    await within(row).findByText('Ready · signed in on your subscription');
+    // The row opens only once the probe has been read, so the probe is in before the status is.
+    fireEvent.click(await screen.findByTestId('provider-row-toggle-codex'));
+    // One status: a configured, ready agent says "Configured" and nothing else.
     expect(within(row).getByText('Configured')).toBeInTheDocument();
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('provider-row-toggle-codex'));
     fireEvent.click(screen.getByTestId('coding-agent-recheck-codex'));
 
     await within(row).findByText('Not installed');
@@ -560,11 +588,16 @@ describe('ProviderCatalog — AI agents', () => {
     const row = await screen.findByTestId('provider-card-codex');
     await within(row).findByText('Not installed');
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Configure' }));
+    fireEvent.click(within(row).getByRole('button', { name: catalogCopy.configureRow('Codex') }));
     fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
 
-    await within(row).findByText('Ready · signed in on your subscription');
-    expect(within(row).getByText('Configured')).toBeInTheDocument();
+    // The corrected command re-probed: the stale "Not installed" is gone, and the ready agent
+    // says "Configured" alone.
+    await waitFor(() => {
+      expect(within(row).getByText('Configured')).toBeInTheDocument();
+      expect(within(row).queryByText('Not installed')).toBeNull();
+    });
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
     expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
     expect(screen.getByTestId('switch-model-modal')).toBeInTheDocument();
     expect(mocks.fetchCodingAgentStatus).toHaveBeenCalledTimes(3);
@@ -595,13 +628,107 @@ describe('ProviderCatalog — AI agents', () => {
     expect(mocks.upsert).toHaveBeenCalledWith('CODEX_COMMAND', 'codex', false);
   });
 
-  /** The control: a usable agent keeps its check, so the case above is not "never show it". */
-  it('keeps the Configured check on an agent that is ready', async () => {
+  /**
+   * The control: a usable agent keeps its check, so the case above is not "never show it". And it
+   * keeps it ALONE (V4-26): a ready, configured agent used to say "Ready · signed in…" beside
+   * "Configured", the same news twice on one row.
+   */
+  it('says one status on an agent that is ready and configured', async () => {
     withAgents([agent('claude_code', { state: 'signed_in_subscription' })]);
     clickTab('commercial');
     const row = await screen.findByTestId('provider-card-claude_code');
-    await within(row).findByText('Ready · signed in on your subscription');
+    // The toggle exists only once the probe has been read.
+    await screen.findByTestId('provider-row-toggle-claude_code');
     expect(within(row).getByText('Configured')).toBeInTheDocument();
+    expect(within(row).queryByText('Ready · signed in on your subscription')).toBeNull();
+  });
+
+  // FR-R3-4 (principle 3, one family per line): the daemon's backticked command used to be drawn
+  // as a mono run inside a sans line ("Run `biorouter configure` and select copilot"); the line and
+  // its tooltip are now one face, and a one-sentence line drops its closing period.
+  it('draws a daemon description in one face, without the marks or a closing period', async () => {
+    const row = provider('anthropic', {}, 'Anthropic');
+    row.metadata.description = 'Uses your own installed `claude` command-line app.';
+    render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+    clickTab('commercial');
+    const description = await screen.findByTestId('provider-description-anthropic');
+    expect(description).toHaveTextContent(/^Uses your own installed claude command-line app$/);
+    expect(description.querySelector('code')).toBeNull();
+  });
+
+  // FR-R3-4: the rows UCSF users choose from said two clauses each, with "API Key" capitalised and a
+  // "+"; GitHub Copilot's told a person to run a CLI its own dialog does not need; Xiaomi MiMo's
+  // named an environment variable. Each shows a short line, and the daemon's sentence stays what
+  // the row's control is described by.
+  it.each([
+    [
+      'versa_azure',
+      'Versa API Azure',
+      'institutional',
+      'UCSF ChatGPT via Azure OpenAI. API Key only; endpoint and deployment are pre-configured.',
+    ],
+    [
+      'versa_bedrock',
+      'Versa API Bedrock',
+      'institutional',
+      'UCSF Anthropic models via Amazon Bedrock. Access key + secret only; endpoint and region are pre-configured.',
+    ],
+    [
+      'github_copilot',
+      'GitHub Copilot',
+      'commercial',
+      'GitHub Copilot. Run `biorouter configure` and select copilot to set up.',
+    ],
+    [
+      'xiaomi_mimo',
+      'Xiaomi MiMo',
+      'commercial',
+      'Xiaomi MiMo models via an OpenAI-compatible API. Set XIAOMI_MIMO_HOST to your MiMo endpoint.',
+    ],
+  ] as const)(
+    'gives %s a short line and keeps the daemon sentence as its description',
+    async (name, display, tab, sentence) => {
+      const backend = tab === 'institutional' ? { ...PRIVATE_REMOTE, institutions: UCSF } : {};
+      const row = provider(name, backend, display);
+      row.metadata.description = sentence;
+      render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+      clickTab(tab);
+      const line = await screen.findByTestId(`provider-description-${name}`);
+      expect(line).toHaveTextContent(providerRowSummary[name]);
+      expect(line).not.toHaveTextContent(/pre-configured|biorouter configure|XIAOMI_MIMO_HOST|\+/);
+      const action = within(screen.getByTestId(`provider-actions-${name}`)).getByRole('button');
+      expect(action).toHaveAccessibleDescription(sentence.replace(/`/g, ''));
+    }
+  );
+
+  // FR-R1-8: the daemon's sentence ("Uses the Claude subscription you are already signed in to,
+  // through your own installed `claude` command. No API key. Requires …") was cut mid-word, with a
+  // mono command inside a sans sentence. The row says the plan in one short line; the sentence is
+  // its tooltip.
+  it('gives an agent row a short line of its own, with the daemon’s sentence in its tooltip', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
+    const row = provider('claude_code', {}, 'Claude Code');
+    row.metadata.description = 'Uses the Claude subscription, through your own `claude` command.';
+    render(<ProviderCatalog providers={[row]} mode="settings" configuredProvider={null} />);
+    clickTab('commercial');
+    const line = await screen.findByTestId('provider-description-claude_code');
+    expect(line).toHaveTextContent(agentCopy.rowSummary('Claude'));
+    expect(line.querySelector('code')).toBeNull();
+  });
+
+  it('puts the disclosure chevron after the name, so every title starts on one x', async () => {
+    withAgents([agent('claude_code', { state: 'signed_out' })]);
+    clickTab('commercial');
+    const toggle = await screen.findByTestId('provider-row-toggle-claude_code');
+    const name = within(toggle).getByText('Claude Code');
+    const chevron = toggle.querySelector('.br-provider-chevron');
+    expect(chevron).not.toBeNull();
+    // The name comes first in the toggle's DOM, and nothing precedes it.
+    expect(toggle.querySelector('p, svg')).toBe(name);
+    expect(name.compareDocumentPosition(chevron!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chevron).toHaveAttribute('data-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(chevron).toHaveAttribute('data-expanded', 'true');
   });
 
   it('puts the agents ahead of the pinned API providers, in their fixed order', async () => {
@@ -640,10 +767,22 @@ describe('ProviderCatalog — modes', () => {
     expect(await screen.findByTestId('provider-row-panel-llamacpp')).toBeInTheDocument();
     expect(screen.queryByTestId('provider-row-panel-ollama')).toBeNull();
 
-    // One at a time: opening the second closes the first.
+    // Each row opens on its own: opening the second leaves the first open, because closing a
+    // panel above the clicked row moved that row out from under the pointer (vision FR-R4-2).
     fireEvent.click(screen.getByTestId('provider-row-toggle-ollama'));
     expect(screen.getByTestId('provider-row-panel-ollama')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-row-panel-llamacpp')).toBeInTheDocument();
+    expect(screen.getByTestId('provider-row-toggle-llamacpp')).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    );
+
+    // And each closes on its own.
+    fireEvent.click(screen.getByTestId('provider-row-toggle-llamacpp'));
     expect(screen.queryByTestId('provider-row-panel-llamacpp')).toBeNull();
+    expect(screen.getByTestId('provider-row-panel-ollama')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('provider-row-toggle-ollama'));
+    expect(screen.queryByTestId('provider-row-panel-ollama')).toBeNull();
   });
 
   it('leaves local rows as click-to-configure in settings mode', () => {
@@ -659,29 +798,52 @@ describe('ProviderCatalog — modes', () => {
   });
 
   /**
-   * ⚠ The institutional setup form is offered only where it configures one of
-   * that section's own providers. A form written for UCSF's Versa endpoints
-   * under another institution's heading would ask for the wrong credentials and
-   * bind the wrong gateway.
+   * ⚠ The institutional setup form is offered only by a row it sets up. A form written for UCSF's
+   * Versa endpoints opened from another institution's gateway would ask for the wrong credentials
+   * and bind the wrong gateway.
+   *
+   * FR-R1-6 / FR-S-6: the ROW is the selector. The tab used to list the two Versa rows (which
+   * opened the Configure dialog) and under them a second form with its own gateway switch.
    */
-  it('offers the institutional setup form only under an institution it configures', () => {
+  it('opens a Versa row into its own gateway form in place, with no second form below the rows', () => {
     const { unmount } = render(
       <ProviderCatalog
-        providers={[provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF })]}
+        providers={[
+          provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF, is_configured: false }),
+          provider('versa_bedrock', {
+            ...PRIVATE_REMOTE,
+            institutions: UCSF,
+            is_configured: false,
+          }),
+        ]}
         mode="onboarding"
         configuredProvider={null}
       />
     );
     clickTab('institutional');
-    expect(screen.getByLabelText('UCSF-hosted provider')).toBeInTheDocument();
+    // Nothing is open, and there is no form below the rows.
+    expect(screen.queryByLabelText('API key')).toBeNull();
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-versa_bedrock'));
+    const panel = screen.getByTestId('provider-row-panel-versa_bedrock');
+    expect(within(panel).getByLabelText('Access key ID')).toBeInTheDocument();
+    expect(within(panel).queryByRole('radiogroup')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('provider-row-toggle-versa_azure'));
+    expect(
+      within(screen.getByTestId('provider-row-panel-versa_azure')).getByLabelText('API key')
+    ).toBeInTheDocument();
     unmount();
 
+    // Another institution's gateway opens nothing of UCSF's.
     render(
       <ProviderCatalog
         providers={[
           provider('someone_elses_gateway', {
             ...PRIVATE_REMOTE,
             institutions: [{ id: 'elsewhere', display_name: 'Elsewhere University' }],
+            is_configured: false,
           }),
         ]}
         mode="onboarding"
@@ -690,7 +852,22 @@ describe('ProviderCatalog — modes', () => {
     );
     clickTab('institutional');
     expect(screen.getByText('Elsewhere University')).toBeInTheDocument();
-    expect(screen.queryByLabelText('UCSF-hosted provider')).toBeNull();
+    expect(screen.queryByTestId('provider-row-toggle-someone_elses_gateway')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
+  });
+
+  it('chooses a configured Versa gateway on a click, as any configured row is', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('versa_azure', { ...PRIVATE_REMOTE, institutions: UCSF })]}
+        mode="onboarding"
+        configuredProvider={null}
+      />
+    );
+    clickTab('institutional');
+    expect(screen.queryByTestId('provider-row-toggle-versa_azure')).toBeNull();
+    fireEvent.click(screen.getByTestId('provider-card-versa_azure'));
+    expect(screen.getByTestId('switch-model-modal')).toBeInTheDocument();
   });
 
   it('puts the paste-a-key detector at the top of the API section in onboarding only', () => {
@@ -702,7 +879,7 @@ describe('ProviderCatalog — modes', () => {
       />
     );
     clickTab('commercial');
-    expect(screen.getByLabelText('Commercial provider API key')).toBeInTheDocument();
+    expect(screen.getByLabelText('API key')).toBeInTheDocument();
     unmount();
 
     render(
@@ -713,7 +890,7 @@ describe('ProviderCatalog — modes', () => {
       />
     );
     clickTab('commercial');
-    expect(screen.queryByLabelText('Commercial provider API key')).toBeNull();
+    expect(screen.queryByLabelText('API key')).toBeNull();
   });
 
   it('opens on the bound provider tab without being told which one that is', async () => {
@@ -816,21 +993,6 @@ describe('a declarative provider nobody has set up', () => {
  * made it, so the catalog's update carries that proof.
  */
 describe('updating a custom provider', () => {
-  // The editable form's streaming switch measures itself, which jsdom cannot.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('sends the proof that the user made the change', async () => {
     mocks.getCustomProvider.mockResolvedValue({
       data: {
@@ -859,11 +1021,387 @@ describe('updating a custom provider', () => {
     );
     fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.update }));
     await waitFor(() => expect(mocks.updateCustomProvider).toHaveBeenCalledTimes(1));
     expect(mocks.updateCustomProvider.mock.calls[0][0]).toMatchObject({
       path: { id: 'custom_lab' },
       headers: { 'X-User-Action': 'test-key' },
     });
+  });
+});
+
+/**
+ * The catalog's anatomy (codex simplicity redesign, spec 3.13): rows on the settings row
+ * geometry, a section's reason behind an InfoTip beside its heading, the institution line as a
+ * quiet question with its answer one hover away, and no bordered card anywhere in a panel.
+ */
+describe('ProviderCatalog — anatomy', () => {
+  it('draws a provider as a settings row, with no tile and no card', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    const row = screen.getByTestId('provider-card-anthropic');
+    expect(row).toHaveClass('biorouter-settings-row');
+    expect(row.className).not.toMatch(/rounded-container|py-3|px-4/);
+    // The list is the shared settings list, so the rows share one hairline recipe.
+    expect(row.parentElement).toHaveClass('biorouter-settings-list');
+    // ...and the catalog opts out of the line by the shared scope (R-27), which draws it again in
+    // forced colours; `providers.css` keys the hovered row's fill on this same element.
+    const catalog = row.closest('.br-provider-catalog');
+    expect(catalog).not.toBeNull();
+    expect(catalog).toHaveClass('br-rows-flat');
+  });
+
+  it('puts "Add custom provider" in the API list as a row', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    const add = screen.getByTestId('add-custom-provider-card');
+    expect(add).toHaveClass('biorouter-settings-row');
+    expect(add).toHaveTextContent(catalogCopy.addCustom);
+    expect(add.querySelector('svg')).not.toBeNull();
+  });
+
+  it('gives the agents’ section its reason as an InfoTip beside the heading', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({
+      agents: [agent('claude_code', { state: 'signed_out' })],
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('claude_code', {}, 'Claude Code'), provider('anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('commercial');
+    const section = await screen.findByTestId('catalog-section-agents');
+    expect(
+      within(section).getByRole('heading', { name: 'AI agents · your subscription' })
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole('button', { name: 'About AI agents · your subscription' })
+    ).toBeInTheDocument();
+    // No paragraph under the heading.
+    expect(section.querySelector('h2 + p')).toBeNull();
+  });
+
+  it('gives an institution’s section no tip: its note would only list the rows beneath it', () => {
+    render(
+      <ProviderCatalog
+        providers={[
+          provider('versa_azure', {
+            ...PRIVATE_REMOTE,
+            institutions: UCSF,
+            resolved_tier: 'private',
+            affiliation: { kind: 'institutions', institutions: UCSF },
+          }),
+        ]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('institutional');
+    const section = screen.getByTestId('catalog-section-ucsf');
+    expect(within(section).getByRole('heading', { name: 'UCSF' })).toBeInTheDocument();
+    expect(within(section).queryByRole('button', { name: /^About / })).toBeNull();
+  });
+
+  it('asks "Don’t see your institution?" in one quiet line, with the answer in its InfoTip', () => {
+    render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
+    clickTab('institutional');
+    const line = screen.getByTestId('other-institutions-note');
+    expect(line).toHaveTextContent(catalogCopy.otherInstitutions);
+    expect(line.className).not.toMatch(/border|rounded/);
+    const tip = within(line).getByRole('button', {
+      name: `About ${catalogCopy.otherInstitutions}`,
+    });
+    expect(tip).toBeInTheDocument();
+    // Words, not an arrow.
+    expect(catalogCopy.otherInstitutionsHelp).not.toMatch(/→/);
+  });
+
+  it('opens a panel with its tier line, not a heading that repeats the tab', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('llamacpp', PRIVATE_LOCAL, 'Llama Server')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('local');
+    expect(screen.queryByRole('heading', { name: /Private · Local/ })).toBeNull();
+    expect(document.querySelector('.br-provider-tier-note')).toHaveTextContent(
+      /^Private because inference runs on this machine/
+    );
+  });
+
+  // V4-05 (request WS-PRIMITIVES-3). Radix makes every panel a Tab stop and this one draws no
+  // focus edge, so Tab from the tab list would land on a panel that shows nothing.
+  it('hands the panel’s Tab stop to its first control when it has rows', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('llamacpp', PRIVATE_LOCAL, 'Llama Server')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    clickTab('local');
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('tabindex', '-1');
+    expect(within(panel).getAllByRole('button').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the panel as a Tab stop when it has no control to hand it to', () => {
+    render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
+    clickTab('institutional');
+    const panel = screen.getByRole('tabpanel');
+    expect(within(panel).getByTestId('catalog-empty-institutional')).toBeInTheDocument();
+    expect(panel).toHaveAttribute('tabindex', '0');
+  });
+});
+
+/**
+ * FR-R1-1 (first-run vision round 1). The first screen painted Local with "Nothing here yet." while
+ * the list was in flight, filled it a beat later, then switched itself to Public when the agent
+ * probe answered: a false empty state and a tab change under the pointer. A held catalog draws a
+ * skeleton until its opening tab is known and then opens there at rest, and keeps it.
+ */
+describe('ProviderCatalog — settling (FR-R1-1)', () => {
+  const rows = [
+    provider('llamacpp', PRIVATE_LOCAL, 'Llama Server'),
+    provider('claude_code', {}, 'Claude Code'),
+    provider('anthropic', {}, 'Anthropic'),
+  ];
+  const ready = { agents: [agent('claude_code', { state: 'signed_in_subscription' })] };
+
+  /** A probe that answers only when the test says so. */
+  const pendingProbe = () => {
+    let answer!: (value: unknown) => void;
+    mocks.fetchCodingAgentStatus.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    return (value: unknown) => answer(value);
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Held: the skeleton, and the three tab labels drawn with none selected (FR-R2-1: the band
+   * holds still while the catalog settles, rather than growing its tabs at the end of the hold).
+   */
+  const expectHeld = () => {
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
+    expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+    expect(screen.queryByRole('tabpanel')).toBeNull();
+  };
+
+  it('draws the skeleton, never an empty tab, while the provider list loads', () => {
+    render(<ProviderCatalog providers={[]} loading mode="onboarding" configuredProvider={null} />);
+    expectHeld();
+    expect(screen.queryByText(catalogCopy.emptyTab)).toBeNull();
+  });
+
+  it('waits for the agent probe when it can decide the tab, then opens on its answer at rest', async () => {
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    // The list is in, but a signed-in agent would open Public, so Local is not drawn first.
+    expectHeld();
+
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('commercial');
+    expect(screen.queryByRole('status', { name: providerPageCopy.loading })).toBeNull();
+  });
+
+  it('opens without the probe once the wait is over, and a late answer never moves the tab', async () => {
+    vi.useFakeTimers();
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    expectHeld();
+
+    act(() => {
+      vi.advanceTimersByTime(AGENT_PROBE_WAIT_MS);
+    });
+    expect(openTab()).toBe('local');
+
+    // The probe answers after the catalog opened: the person is already reading Local.
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('local');
+  });
+
+  // The probe never answers here and its wait is 2.5 s; `waitFor` gives up after 1 s, so opening
+  // inside it is opening without the probe (the disclosure copy, a resolved mock, is what it waits
+  // for: a microtask).
+  it('does not wait for the probe when a bound provider already decides the tab', async () => {
+    pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider="anthropic"
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('commercial'));
+  });
+
+  it('does not wait for the probe when a route hint decides the tab', async () => {
+    pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="local"
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('local'));
+  });
+
+  it('holds while the bound provider has not been read yet', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
+    const { rerender } = render(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider={undefined}
+        holdUntilSettled
+      />
+    );
+    expectHeld();
+    rerender(
+      <ProviderCatalog
+        providers={rows}
+        mode="settings"
+        configuredProvider="anthropic"
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('commercial'));
+  });
+
+  /** A disclosure fetch that answers only when the test says so. */
+  const pendingDisclosure = () => {
+    let answer!: (value: unknown) => void;
+    mocks.getPrivacyDisclosure.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    return (value: unknown) => answer(value);
+  };
+
+  // FR-R2-1: the API section's disclosure line arrived 300 ms after Public was drawn and pushed
+  // the key field and every row down 40px under a still pointer. The held catalog now opens with
+  // the line already in place.
+  it('holds until the disclosure copy has answered, so Public opens with its line in place', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    const answer = pendingDisclosure();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    // The probe is in and would open Public, but the line it carries is not.
+    await act(async () => {});
+    expectHeld();
+    expect(mocks.getPrivacyDisclosure).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      answer({
+        data: { title_template: '{provider}', long: 'L', short: 'Short line', acknowledged: true },
+      })
+    );
+    expect(openTab()).toBe('commercial');
+    // The first paint of the open tab has the line, above the rows it would have pushed.
+    expect(screen.getByTestId('non-private-model-note')).toHaveTextContent('Short line');
+  });
+
+  it('opens when the disclosure cannot be fetched, since the note then draws nothing', async () => {
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    mocks.getPrivacyDisclosure.mockRejectedValue(new Error('offline'));
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    await waitFor(() => expect(openTab()).toBe('commercial'));
+    expect(screen.queryByTestId('non-private-model-note')).toBeNull();
+  });
+
+  it('opens without the disclosure once the wait is over', async () => {
+    vi.useFakeTimers();
+    mocks.fetchCodingAgentStatus.mockResolvedValue(ready);
+    pendingDisclosure();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    await act(async () => {});
+    expectHeld();
+    act(() => {
+      vi.advanceTimersByTime(AGENT_PROBE_WAIT_MS);
+    });
+    expect(openTab()).toBe('commercial');
+  });
+
+  // A catalog that opens on Local (or any catalog in Settings) starts the fetch on mount, so the
+  // first visit to Public finds the copy already in the store.
+  it('asks for the disclosure when the catalog mounts, not when Public is opened', async () => {
+    render(<ProviderCatalog providers={rows} mode="settings" configuredProvider="llamacpp" />);
+    expect(openTab()).toBe('local');
+    await waitFor(() => expect(mocks.getPrivacyDisclosure).toHaveBeenCalledTimes(1));
+  });
+
+  // The person's pick during the hold is kept: it is their choice, and the panel opens on it at
+  // rest when the catalog settles.
+  it('keeps a tab picked while the catalog is held, and opens on it once settled', async () => {
+    const answer = pendingProbe();
+    render(
+      <ProviderCatalog
+        providers={rows}
+        mode="onboarding"
+        configuredProvider={null}
+        holdUntilSettled
+      />
+    );
+    expectHeld();
+    clickTab('institutional');
+    expect(screen.getByTestId('catalog-tab-institutional')).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('status', { name: providerPageCopy.loading })).toBeInTheDocument();
+    await act(async () => answer(ready));
+    expect(openTab()).toBe('institutional');
+    expect(screen.queryByRole('status', { name: providerPageCopy.loading })).toBeNull();
   });
 });

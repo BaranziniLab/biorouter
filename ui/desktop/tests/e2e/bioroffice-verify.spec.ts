@@ -148,7 +148,7 @@ test.describe('BiorOffice — dynamic skills + live agent usage', () => {
         created = true;
         break;
       }
-      for (const label of ['Always Allow', 'Allow Once', 'Allow']) {
+      for (const label of ['Always allow', 'Allow once', 'Allow']) {
         const allowBtn = mainWindow.locator(`button:has-text("${label}")`).first();
         if (await allowBtn.isVisible({ timeout: 200 }).catch(() => false)) {
           await allowBtn.click().catch(() => {});

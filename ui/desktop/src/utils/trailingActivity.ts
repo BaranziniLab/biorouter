@@ -7,6 +7,9 @@ import {
   getToolRequests,
   getToolResponses,
 } from '../types/message';
+import { transcriptCopy } from '../components/transcript/copy';
+
+const activityCopy = transcriptCopy.activity;
 
 export type TrailingPhase = 'thinking' | 'running' | 'compacting' | 'steering' | 'steerQueued';
 
@@ -131,7 +134,7 @@ export function deriveTrailingActivity({
     if (!pendingSteer) return null;
     return {
       phase: 'steerQueued',
-      label: 'Your message will be added after you answer the card',
+      label: activityCopy.waitingForAnswer,
       steerText: pendingSteer.text,
       since: undefined,
     };
@@ -150,9 +153,7 @@ export function deriveTrailingActivity({
         : outstandingToolName(last);
     return {
       phase: 'steering',
-      label: runningTool
-        ? `Your message will be added when ${runningTool} finishes`
-        : 'Steering the current turn',
+      label: runningTool ? activityCopy.steeringAfter(runningTool) : activityCopy.steering,
       steerText: pendingSteer.text,
       since: pendingSteer.since,
     };
@@ -163,15 +164,17 @@ export function deriveTrailingActivity({
   const since = lastMessageAt ?? turnStartedAt;
 
   if (chatState === ChatState.Compacting) {
-    return { phase: 'compacting', label: 'Compacting the chat', since };
+    return { phase: 'compacting', label: activityCopy.compacting, since };
   }
 
   // (c) THE CASE THIS FEATURE EXISTS FOR: a tool just returned, the model is
   //     mid round-trip, and nothing at all is on screen. A tool-response
   //     message is role 'user' with only toolResponse content, which
-  //     ProgressiveMessageList renders as an empty div.
+  //     ProgressiveMessageList renders as an empty div. It reads "Thinking",
+  //     as Codex's does: the model is working on the result, and one word for
+  //     every wait on the model is easier to scan than two.
   if (last.role === 'user' && isToolResponseOnly(last)) {
-    return { phase: 'thinking', label: 'Working on the result', since };
+    return { phase: 'thinking', label: activityCopy.thinking, since };
   }
 
   // (d) The assistant message with tool calls is still last and some calls have
@@ -186,16 +189,17 @@ export function deriveTrailingActivity({
       if (outstanding > 0) {
         return {
           phase: 'running',
-          label: outstanding === 1 ? 'Running the tool' : `Running ${outstanding} tools`,
+          label:
+            outstanding === 1 ? activityCopy.runningOne : activityCopy.runningMany(outstanding),
           since: undefined,
         };
       }
     }
     // (e) Assistant prose is streaming in. The visible text IS the feedback.
     if (hasVisibleText(last)) return null;
-    return { phase: 'thinking', label: 'Thinking', since };
+    return { phase: 'thinking', label: activityCopy.thinking, since };
   }
 
   // (f) User just submitted; nothing back yet.
-  return { phase: 'thinking', label: 'Thinking', since };
+  return { phase: 'thinking', label: activityCopy.thinking, since };
 }

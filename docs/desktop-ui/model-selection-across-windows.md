@@ -33,7 +33,7 @@ from onboarding, and every one of them ends in `ModelAndProviderContext.changeMo
 | a chat not yet started | **that chat only**: the pick is held, the chip names it, and it is bound with the same per-chat `/agent/update_provider` right after `/agent/start` creates the chat, before its first message is sent | the same as for a chat that exists, box included |
 | a chat, with the box ticked | that chat **and** the app-wide selection | the box's hint: new chats in every window will start on it |
 | a chat with Crew access | nothing: its grant fixes its model | "This chat's model is fixed by its Crew access. Start a new chat to use another model.", with every control that could change it disabled |
-| Home, Settings → Models, onboarding | the app-wide selection, the only thing there is to change | "Select the provider and model new chats start on, in every window. Existing chats keep their own model." |
+| Home, Settings → Models, onboarding | the app-wide selection, the only thing there is to change | "Applies to new chats in every window. Existing chats keep their model." (one line; it was two until vision round 1, V4-28, and it stays visible because it says what the switch changes before the click) |
 
 The success toast names which of the three happened (`switchedModelMessage`), and the chip's
 dropdown, where there is no chat, is headed **Model for new chats** with the line "New chats

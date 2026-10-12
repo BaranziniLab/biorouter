@@ -175,6 +175,22 @@ describe('InAppTerminalDock', () => {
     expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(1);
     expect(window.electron.disposeTerminalSession).not.toHaveBeenCalled();
   });
+  it('shortens the home folder to ~ only at a path separator', async () => {
+    // `appConfig.get` answers '/Users/wgu' for BIOROUTER_HOME_DIR (beforeEach).
+    // A sibling folder that shares the prefix must not read '~2/work'.
+    const { unmount } = render(
+      <InAppTerminalDock open workingDir="/Users/wgu2/work" onClose={vi.fn()} />
+    );
+    expect(screen.getByText('/Users/wgu2/work')).toBeInTheDocument();
+    expect(screen.queryByText('~2/work')).not.toBeInTheDocument();
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalled());
+    unmount();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu/work" onClose={vi.fn()} />);
+    expect(screen.getByText('~/work')).toBeInTheDocument();
+    await waitFor(() => expect(window.electron.createTerminalSession).toHaveBeenCalledTimes(2));
+  });
+
   it('opens with a visible active tab and lets users add another terminal tab', async () => {
     const user = userEvent.setup();
 

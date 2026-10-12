@@ -1133,7 +1133,7 @@ cmd_landing() {
   news_tag="$(perl -0ne 'my ($news) = /^### News\n(.*?)(?=^#{1,3} |\z)/ms or exit; print $1 if $news =~ m{releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)}' "$content")"
   [ "$about_tag" = "$v" ] \
     || missing="$missing
-  - $about: its newest news row links v${about_tag:-<none found>}. Add a row above it in the .news-list, in that row's shape: href https://github.com/BaranziniLab/biorouter/releases/tag/v$v, the publish day and month, an <h3> headline and a <p> summary from docs/releases/notes/v$v.md."
+  - $about: its newest news row links v${about_tag:-<none found>}. Add a row above it in the .news-list, in that row's shape: href https://github.com/BaranziniLab/biorouter/releases/tag/v$v, the publish day and month, an <h3> headline and a <p> summary from docs/releases/notes/v$v.md. Keep the list at five rows: move the oldest visible row into .news-list-earlier (inside <details class=\"news-more\">). The date is the day GitHub shows for the release (UTC), the day the Download page shows."
   [ "$news_tag" = "$v" ] \
     || missing="$missing
   - $content: its newest '### News' entry links v${news_tag:-<none found>}. Add '1. **Biorouter v$v Release**' with its Link and What's new above it, and renumber the entries below."

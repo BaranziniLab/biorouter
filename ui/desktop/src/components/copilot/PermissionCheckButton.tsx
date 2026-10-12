@@ -1,17 +1,14 @@
-import { Check, Loader2 } from '../icons/app-icons';
+import { Check } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { Spinner } from '../ui/spinner';
 import type { RuntimeVerdict } from './CopilotSetup';
+import { copilotSetupCopy } from './copy';
 
 /**
  * The result sentence. Never colour alone: the icon and the words both carry the
  * meaning, so the outcome survives a monochrome or colour-blind reading.
  */
-const RESULT: Record<RuntimeVerdict, string> = {
-  ready: 'All OS permissions are allowed.',
-  blocked: 'A required OS permission is missing — see the detail above.',
-  unavailable: 'The native runtime is unavailable — see the repair steps above.',
-  unverified: 'The backend could not confirm OS permissions — see the detail above.',
-};
+const RESULT: Record<RuntimeVerdict, string> = copilotSetupCopy.verdicts;
 
 /**
  * The permission re-check control, shared by the in-chat panel and Settings so
@@ -46,15 +43,21 @@ export function PermissionCheckButton({
   const showResult = !checking && checked && verdict !== undefined;
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {/* `aria-disabled`, not `disabled`: a disabled button that held focus hands it to <body>, so a
+          keyboard user who pressed Enter here lost their place. The press is ignored while the
+          check runs; `aria-busy` and the spinner say so. */}
       <Button
         size="sm"
-        variant="outline"
-        disabled={checking}
+        variant="secondary"
+        aria-disabled={checking || undefined}
         aria-busy={checking}
-        onClick={onCheck}
+        className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        onClick={() => {
+          if (!checking) onCheck();
+        }}
       >
-        {checking && <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />}
-        {checking ? 'Checking…' : label}
+        {checking && <Spinner />}
+        {checking ? copilotSetupCopy.checking : label}
       </Button>
       {/* Announced on arrival: the visible detail above may be byte-identical to
           what was already there, so the confirmation is the only signal that the

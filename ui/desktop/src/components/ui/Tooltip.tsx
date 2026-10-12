@@ -28,8 +28,12 @@ import { cn } from '../../utils';
 export const TOOLTIP_SURFACE_CLASS_NAME =
   'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-container px-2 py-1.5 text-left font-sans text-supporting font-medium whitespace-normal';
 
+/** The app's label-tooltip delay, and the window in which a neighbour opens without one. */
+export const TOOLTIP_DELAY_MS = 500;
+export const TOOLTIP_SKIP_DELAY_MS = 300;
+
 function TooltipProvider({
-  delayDuration = 500,
+  delayDuration = TOOLTIP_DELAY_MS,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
@@ -38,6 +42,49 @@ function TooltipProvider({
       delayDuration={delayDuration}
       {...props}
     />
+  );
+}
+
+/**
+ * True below an `AppTooltipProvider` (spec 2.6). A `Tooltip` mounts its own provider only when
+ * this is false, so a component test or the artifact harness, which render tooltips with no
+ * ancestor provider, keep working (Radix throws without one), while inside the app every tooltip
+ * shares ONE provider and Radix's skip-delay works: once one label tooltip is showing, moving to
+ * a neighbour opens the next at once instead of waiting another 500ms.
+ *
+ * ⚠ The fallback keys on this context, never on "is there any Radix provider above me". A plain
+ * `<TooltipProvider delayDuration={0}>` higher up (the app shell's, in `ui/sidebar.tsx`) would
+ * otherwise become every tooltip's provider and open them all instantly.
+ */
+const AppTooltipProviderContext = React.createContext(false);
+
+/** Whether this subtree sits under the app-level tooltip provider. */
+export function useHasAppTooltipProvider(): boolean {
+  return React.useContext(AppTooltipProviderContext);
+}
+
+/**
+ * The one app-level tooltip provider: 500ms to open a label tooltip, 300ms skip-delay between
+ * neighbours. A root that wants a different delay (the InfoTip's 200ms, the sidebar hover card's
+ * 700ms) passes `delayDuration` on its own `Tooltip`.
+ */
+function AppTooltipProvider({
+  children,
+  delayDuration = TOOLTIP_DELAY_MS,
+  skipDelayDuration = TOOLTIP_SKIP_DELAY_MS,
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return (
+    <TooltipPrimitive.Provider
+      data-slot="tooltip-provider"
+      delayDuration={delayDuration}
+      skipDelayDuration={skipDelayDuration}
+      {...props}
+    >
+      <AppTooltipProviderContext.Provider value={true}>
+        {children}
+      </AppTooltipProviderContext.Provider>
+    </TooltipPrimitive.Provider>
   );
 }
 
@@ -123,18 +170,20 @@ function Tooltip({
     [controlled, onOpenChange]
   );
 
-  return (
-    <TooltipProvider>
-      <TooltipFocusGateContext.Provider value={programmaticFocus}>
-        <TooltipPrimitive.Root
-          data-slot="tooltip"
-          open={open}
-          onOpenChange={handleOpenChange}
-          {...props}
-        />
-      </TooltipFocusGateContext.Provider>
-    </TooltipProvider>
+  const hasAppProvider = React.useContext(AppTooltipProviderContext);
+  const root = (
+    <TooltipFocusGateContext.Provider value={programmaticFocus}>
+      <TooltipPrimitive.Root
+        data-slot="tooltip"
+        open={open}
+        onOpenChange={handleOpenChange}
+        {...props}
+      />
+    </TooltipFocusGateContext.Provider>
   );
+  // Under the app provider the root shares it; anywhere else (a test, the artifact harness) it
+  // brings its own, at the same 500ms.
+  return hasAppProvider ? root : <TooltipProvider>{root}</TooltipProvider>;
 }
 
 function TooltipTrigger({
@@ -168,7 +217,9 @@ function TooltipContent({
         sideOffset={sideOffset}
         className={cn(
           TOOLTIP_SURFACE_CLASS_NAME,
-          'animate-in fade-in-0 duration-[120ms] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-[120ms]',
+          // Fade in over `--dur-fast`, out over `--dur-fast-min`: the durations are authored in
+          // main.css on `[data-slot='tooltip-content']` (`br-tooltip-motion`), not literals here.
+          'br-tooltip-motion animate-in fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
           className
         )}
         {...props}
@@ -179,4 +230,4 @@ function TooltipContent({
   );
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, AppTooltipProvider };

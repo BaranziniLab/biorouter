@@ -1,14 +1,8 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './dialog';
+import { ModalShell } from '../ModalShell';
 import { Button } from './button';
 import { Input } from './input';
+import { lastInputWasKey } from './inputTrail';
 
 /**
  * Issue #56. The one typed-confirmation primitive in the app, shared by every
@@ -27,13 +21,32 @@ import { Input } from './input';
  *  1. **The phrase gates the button.** A field that is rendered but never
  *     consulted is the likely wrong implementation when there is nothing to
  *     copy, and it looks identical in a screenshot.
- *  2. **Cancel holds initial focus.** `dialog.tsx` renders a close button
- *     whenever `showCloseButton = dismissible`, and it is the first focusable
- *     node in the content — so Radix's default `onOpenAutoFocus` puts focus one
- *     Tab away from the destructive action. This overrides it.
+ *  2. **Nothing with an action holds initial focus by accident.** Radix's
+ *     default `onOpenAutoFocus` takes the first tabbable node, which here is the
+ *     phrase field or a control in the preview, chosen by layout rather than on
+ *     purpose. This overrides it. A dialog opened with a KEY puts focus on
+ *     Cancel, ringed, because there the ring is the point. Any other open (a
+ *     click, a pointer pick from a menu, a dialog the app raised itself) rests
+ *     on the dialog box: after a pointer pick in a menu Chromium rings every
+ *     focus a script moves, so Cancel wore the keyboard ring after a mouse
+ *     click (vision round 6, V3-R6-2). The box draws no ring
+ *     (`.biorouter-modal-surface:focus`), a screen reader reads the title and
+ *     the message from it, and the next Tab reaches the field or Cancel, both
+ *     before the destructive button in the DOM. Either way the destructive
+ *     button is never the first stop.
  *  3. **No key confirms.** Nothing here is a `<form>`, and Return inside the
  *     field is explicitly swallowed, so the muscle-memory "type, Enter" that
  *     ends every other dialog in this app cannot end this one.
+ *
+ * It is a `ModalShell` at size `sm`, like `ConfirmationModal`, so it has the one
+ * dialog anatomy (vision round 7, V3-R7-1): pinned at the top edge, the title in
+ * the header above its rule, 16px insets and the footer row. It used to be a raw
+ * `DialogContent` (480px, centred, 24px insets, no rule), so "Make "Soul"
+ * public?" sat in the middle of the window while every other dialog opened from
+ * the Knowledge band sat at the top. The description is the dialog's
+ * description (`describedBy`) in body text, as it was. Inside an area that sets
+ * `ModalShellDefaultsContext` (Crew) it takes that area's defaults, as
+ * `ConfirmationModal` does: Crew returns focus itself on close.
  */
 export interface DangerousConfirmDialogProps {
   open: boolean;
@@ -85,6 +98,7 @@ export function DangerousConfirmDialog({
   onPhraseChange,
 }: DangerousConfirmDialogProps) {
   const fieldId = useId();
+  const descriptionId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const [typed, setTyped] = useState('');
 
@@ -100,62 +114,28 @@ export function DangerousConfirmDialog({
   const satisfied = phrase === undefined || normalize(typed) === normalize(phrase);
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && !busy && onCancel()}>
-      <DialogContent
-        dismissible={!busy}
-        {...(description ? {} : { 'aria-describedby': undefined })}
-        className="sm:max-w-[480px]"
-        // (2) above. Radix's default lands on the close button `dialog.tsx`
-        // renders; the destructive button must never be the thing focus is
-        // sitting next to when the dialog opens.
-        onOpenAutoFocus={(event) => {
-          event.preventDefault();
-          cancelRef.current?.focus();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          {description ? <DialogDescription>{description}</DialogDescription> : null}
-        </DialogHeader>
-
-        {children}
-
-        {phrase !== undefined && (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor={fieldId} className="text-sm text-text-default">
-              {fieldLabel}
-            </label>
-            <div className="flex min-w-0 items-center gap-2">
-              <Input
-                id={fieldId}
-                value={typed}
-                autoComplete="off"
-                spellCheck={false}
-                disabled={busy}
-                onChange={(event) => {
-                  setTyped(event.target.value);
-                  onPhraseChange?.(event.target.value);
-                }}
-                // (3) above. With no surrounding `<form>` this is already inert,
-                // and it is written down anyway: the day someone wraps this in a
-                // form for the layout, the destructive action must not acquire a
-                // keyboard shortcut as a side effect.
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') event.preventDefault();
-                }}
-                className="min-w-0 flex-1 font-mono"
-              />
-              {/* Beside the field, so the user is comparing against the thing
-                  itself rather than remembering it from the prose above. */}
-              <code className="shrink-0 rounded bg-background-muted px-2 py-1 font-mono text-sm text-text-muted select-all">
-                {phrase}
-              </code>
-            </div>
-          </div>
-        )}
-
-        <DialogFooter className="pt-2">
-          <Button ref={cancelRef} type="button" variant="outline" onClick={onCancel}>
+    <ModalShell
+      open={open}
+      onOpenChange={(next) => !next && !busy && onCancel()}
+      // Busy is in flight: no ×, no Escape, no backdrop, as `dismissible={!busy}` was.
+      purpose={busy ? 'required' : 'info'}
+      size="sm"
+      title={title}
+      describedBy={description ? descriptionId : undefined}
+      bodyClassName="flex flex-col gap-3"
+      // (2) above. A key open lands on Cancel; any other open rests on the
+      // box, the same quiet open the shared dialog gives every pointer open.
+      // This dialog places focus itself, so `dialog.tsx` leaves it alone. The
+      // event is dispatched on the dialog's own node, so `currentTarget` is the box.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        const box = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+        if (lastInputWasKey()) cancelRef.current?.focus();
+        else box?.focus({ preventScroll: true });
+      }}
+      footer={
+        <>
+          <Button ref={cancelRef} type="button" variant="secondary" onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button
@@ -166,8 +146,50 @@ export function DangerousConfirmDialog({
           >
             {confirmLabel}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {description ? (
+        <p id={descriptionId} className="text-body text-text-muted">
+          {description}
+        </p>
+      ) : null}
+
+      {children}
+
+      {phrase !== undefined && (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId} className="text-label text-text-default">
+            {fieldLabel}
+          </label>
+          <div className="flex min-w-0 items-center gap-2">
+            <Input
+              id={fieldId}
+              value={typed}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              onChange={(event) => {
+                setTyped(event.target.value);
+                onPhraseChange?.(event.target.value);
+              }}
+              // (3) above. With no surrounding `<form>` this is already inert,
+              // and it is written down anyway: the day someone wraps this in a
+              // form for the layout, the destructive action must not acquire a
+              // keyboard shortcut as a side effect.
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.preventDefault();
+              }}
+              className="min-w-0 flex-1 font-mono"
+            />
+            {/* Beside the field, so the user is comparing against the thing
+                itself rather than remembering it from the prose above. */}
+            <code className="shrink-0 rounded-inner bg-background-muted px-2 py-1 font-mono text-code text-text-muted select-all">
+              {phrase}
+            </code>
+          </div>
+        </div>
+      )}
+    </ModalShell>
   );
 }

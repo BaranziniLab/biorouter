@@ -5,12 +5,17 @@ import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils
 import { getTextContent } from '../types/message';
 import { Message } from '../api';
 import MessageCopyLink from './MessageCopyLink';
-import { MessageMeta, MessageMetaAction } from './MessageMeta';
+import { MessageActions, MessageMetaAction } from './MessageMeta';
 import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
-import { ChevronDown, ChevronUp, Edit, Send } from './icons/app-icons';
+import { ArrowUp, ChevronDown, ChevronUp, Pencil } from './icons/app-icons';
 import { Button } from './ui/button';
+import { InfoTip } from './ui/info-tip';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { transcriptCopy } from './transcript/copy';
 import { CommandChip, ResourceRefChip, ResourceRefText } from './ResourceRefChip';
+import { composerCardSurfaceClassName } from './composer/composerCard';
 import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
 import {
   composerTextOfSent,
@@ -74,6 +79,10 @@ export default function UserMessage({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  // Set when the editor closes by the person's own act (Cancel, Escape, Save),
+  // so focus goes back to the Edit button that opened it instead of to the body.
+  const restoreEditFocus = useRef(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [hasBeenEdited, setHasBeenEdited] = useState(false);
@@ -176,6 +185,14 @@ export default function UserMessage({
     return () => window.clearTimeout(timer);
   }, [clampState]);
 
+  // The editor replaced the bubble, and with it the button the person pressed:
+  // when it closes, hand focus back to that button's successor.
+  useEffect(() => {
+    if (isEditing || !restoreEditFocus.current) return;
+    restoreEditFocus.current = false;
+    editButtonRef.current?.focus();
+  }, [isEditing]);
+
   // Effect to handle message content changes and ensure persistence
   useEffect(() => {
     // If we're not editing, update the edit content to match the current message
@@ -255,13 +272,14 @@ export default function UserMessage({
   }, []);
 
   const handleSave = useCallback(
-    (editType: 'diverge' | 'edit' = 'diverge') => {
+    (editType: 'diverge' | 'edit') => {
       if (editContent.trim().length === 0) {
-        setError('Message cannot be empty');
+        setError(transcriptCopy.edit.empty);
         return;
       }
 
       if (editContent.trim() === displayText.trim()) {
+        restoreEditFocus.current = true;
         setIsEditing(false);
         return;
       }
@@ -271,6 +289,7 @@ export default function UserMessage({
         if (onMessageUpdate(message.id, editContent, editType) === false) return;
         setHasBeenEdited(true);
       }
+      restoreEditFocus.current = true;
       setIsEditing(false);
     },
     [editContent, displayText, onMessageUpdate, message.id]
@@ -279,6 +298,7 @@ export default function UserMessage({
   // Handle cancel action
   const handleCancel = useCallback(() => {
     window.electron.logInfo('Cancel clicked - reverting to original content');
+    restoreEditFocus.current = true;
     setIsEditing(false);
     setEditContent(editableText(displayText)); // Reset to original content
     setError(null);
@@ -305,9 +325,10 @@ export default function UserMessage({
         e.preventDefault();
         handleRemoveEditCommand();
       } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        // ⌘↵ is the card's primary action, Save, the same as its filled button.
         e.preventDefault();
         window.electron.logInfo('Cmd+Enter detected, calling handleSave');
-        handleSave();
+        handleSave('edit');
       }
     },
     [editCommand, handleCancel, handleRemoveEditCommand, handleSave]
@@ -321,9 +342,50 @@ export default function UserMessage({
     }
   }, [editContent, isEditing]);
 
+  const steerState = deliveryUnconfirmed
+    ? {
+        word: transcriptCopy.steer.notDelivered,
+        help: transcriptCopy.steer.notDeliveredHelp,
+      }
+    : message.metadata?.steerOutcome === 'unanswered'
+      ? {
+          word: transcriptCopy.steer.notAnswered,
+          help: transcriptCopy.steer.notAnsweredHelp,
+        }
+      : null;
+
+  // The message's floating actions. They float over the bubble's top right,
+  // or, when a provenance chip sits there, on the chip's line to its left
+  // (`message-meta.css`), so they never cover the chip.
+  const actions = (
+    <MessageActions
+      align="end"
+      timestamp={hasBeenEdited ? transcriptCopy.message.edited(timestamp) : timestamp}
+    >
+      <TranscriptIconButton
+        ref={editButtonRef}
+        onClick={handleEditClick}
+        label={transcriptCopy.message.editNamed(displayText)}
+        tip={transcriptCopy.message.edit}
+        aria-expanded={isEditing}
+        icon={<Pencil aria-hidden="true" />}
+      />
+      {/* Copy takes the whole thing, collapsed or not: the clamp is a view
+          state, never a content state. Both payloads are already safe: the
+          plain-text one is `displayText` itself, and the HTML one is cloned
+          from `contentRef`, the text div INSIDE the clipped bubble, which holds
+          every line whatever the cap above it says. */}
+      <MessageCopyLink text={displayText} contentRef={contentRef} />
+    </MessageActions>
+  );
+
   return (
-    <div className="br-message-meta-scope w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
-      <div className="flex flex-col group">
+    // The whole row is the actions' scope: hovering or focusing anything in it
+    // shows the floating cluster over the bubble's top right. The row's own
+    // entrance and its gap to the message above belong to the list
+    // (`ProgressiveMessageList`), which knows whether it arrived live.
+    <div className="br-message-actions-scope w-full">
+      <div className="flex flex-col">
         {/* BR-71 §5: a message injected from another session is labeled in the
             transcript for as long as it exists — including while it is being
             edited, which is why this sits above the isEditing branch. Ordinary
@@ -331,12 +393,28 @@ export default function UserMessage({
             so the wrapper is only mounted when there is something to say. */}
         {provenance && (
           <div className="flex justify-end mb-1">
-            <ProvenanceChip provenance={provenance} />
+            <div className="br-message-actions-chip flex min-w-0 max-w-full items-center gap-2">
+              {!isEditing && actions}
+              <ProvenanceChip provenance={provenance} />
+            </div>
           </div>
         )}
         {isEditing ? (
-          // Truly wide, centered, in-place edit box replacing the bubble
-          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-container border border-border-subtle p-3 my-2">
+          // Editing a message is writing in a composer, so this is the
+          // composer's card (ruling 21): its surface is the one class list
+          // ChatInput's card reads (`composer/composerCard.ts`), the page ground
+          // with the resting hairline whose 1px edge turns the accent while the
+          // textarea has focus (R-32), and no fill. The buttons inside rest as
+          // they do on any page ground. Inside the 760 column: no second box
+          // around the textarea, and no line explaining the buttons, whose
+          // tooltips do.
+          <div
+            data-testid="message-edit-card"
+            className={cn(
+              'w-full rounded-container px-4 pt-3 pb-2 text-text-default',
+              composerCardSurfaceClassName
+            )}
+          >
             {(editCommand || editRefs.length > 0) && (
               <div
                 data-testid="edit-reference-rail"
@@ -359,61 +437,64 @@ export default function UserMessage({
               value={editProse}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
-              className="w-full resize-none bg-transparent text-body text-text-default placeholder:text-text-muted border border-border-emphasized rounded-element p-3 transition-colors focus:border-border-strong"
+              rows={3}
+              className="block w-full resize-none border-0 bg-transparent p-0 text-body text-text-default outline-none placeholder:text-text-muted"
               style={{
-                minHeight: '120px',
                 maxHeight: '300px',
                 fontFamily: 'inherit',
                 wordBreak: 'break-word',
                 overflowWrap: 'break-word',
               }}
-              placeholder="Edit your message..."
-              aria-label="Edit message content"
+              placeholder={transcriptCopy.edit.placeholder}
+              aria-label={transcriptCopy.edit.textbox}
               aria-describedby={error ? `error-${message.id}` : undefined}
             />
-            {/* Error message */}
             {error && (
               <div
                 id={`error-${message.id}`}
-                className="text-text-danger text-supporting mt-2 mb-2"
+                className="text-text-danger text-supporting mt-2"
                 role="alert"
                 aria-live="polite"
               >
                 {error}
               </div>
             )}
-            <div className="flex justify-between items-center gap-3 mt-3">
-              <div className="text-supporting text-text-muted min-w-0">
-                <span className="font-semibold">Edit in place</span> updates this chat.{' '}
-                <span className="font-semibold">Diverge</span> creates a new one.
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
-                  Cancel
-                </Button>
-                <Button
-                  onClick={() => handleSave('edit')}
-                  variant="secondary"
-                  aria-label="Edit message in place"
-                  title="Update the message in this chat"
-                >
-                  Edit in place
-                </Button>
-                <Button
-                  onClick={() => handleSave('diverge')}
-                  aria-label="Diverge with the edited message"
-                  title="Create a new chat from the edited message"
-                >
-                  Diverge
-                </Button>
-              </div>
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <Button
+                onClick={handleCancel}
+                variant="ghost"
+                size="sm"
+                aria-label={transcriptCopy.edit.cancelLabel}
+              >
+                {transcriptCopy.edit.cancel}
+              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button onClick={() => handleSave('diverge')} variant="secondary" size="sm">
+                    {transcriptCopy.edit.saveAsNew}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{transcriptCopy.edit.saveAsNewHelp}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button onClick={() => handleSave('edit')} size="sm">
+                    {transcriptCopy.edit.save}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{transcriptCopy.edit.saveHelp}</TooltipContent>
+              </Tooltip>
             </div>
           </div>
         ) : (
           // Normal message display
           <div className="message flex justify-end w-full">
-            <div className="flex-col max-w-[85%] w-fit min-w-0">
-              <div className="flex flex-col group min-w-0">
+            {/* The bubble's column anchors the floating cluster, so the
+                cluster's right edge is the bubble's (the layout e2e measures
+                exactly that, against `data-message-meta`). */}
+            <div className="br-message-actions-anchor flex flex-col max-w-[85%] w-fit min-w-0">
+              {!provenance && actions}
+              <div className="flex flex-col min-w-0">
                 {/* The user's turn is tinted only so the eye can find the boundary
                     when scrolling. It is NOT an accent surface — a solid coral block
                     shouts on a canvas whose whole thesis is calm (design.md §4.18).
@@ -499,7 +580,7 @@ export default function UserMessage({
                       aria-expanded={isOpen}
                       aria-controls={clampBodyId}
                     >
-                      {isOpen ? 'Show less' : 'Show more'}
+                      {isOpen ? transcriptCopy.message.showLess : transcriptCopy.message.showMore}
                     </MessageMetaAction>
                     <span
                       data-testid="message-clamp-count"
@@ -539,59 +620,29 @@ export default function UserMessage({
                     Stored so the words are never lost, and drawn as what it is
                     — it used to look exactly like a delivered message, sitting
                     unanswered in the middle of the conversation. */}
-                {(deliveryUnconfirmed || message.metadata?.steerOutcome === 'unanswered') && (
+                {steerState && (
                   <div
                     data-testid="steer-unanswered"
                     className="mt-1.5 flex items-center justify-end gap-2.5 text-supporting text-text-muted"
                   >
-                    <span>
-                      {deliveryUnconfirmed
-                        ? 'Delivery unconfirmed. Check the transcript before sending again.'
-                        : 'Not answered: the turn ended before the agent read this.'}
+                    <span className="inline-flex items-center gap-1">
+                      {steerState.word}
+                      <InfoTip label={steerState.word} help={steerState.help} />
                     </span>
                     {onSendAgain && (
                       <MessageMetaAction
                         onClick={() => onSendAgain(displayText)}
-                        icon={<Send />}
-                        aria-label="Send this message again"
+                        icon={<ArrowUp />}
+                        aria-label={transcriptCopy.message.sendAgainLabel}
                       >
-                        Send again
+                        {transcriptCopy.message.sendAgain}
                       </MessageMetaAction>
                     )}
                   </div>
                 )}
-
-                <MessageMeta align="end" timestamp={timestamp}>
-                  <MessageMetaAction
-                    onClick={handleEditClick}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleEditClick();
-                      }
-                    }}
-                    icon={<Edit />}
-                    aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
-                    aria-expanded={isEditing}
-                  >
-                    Edit
-                  </MessageMetaAction>
-                  {/* Copy takes the whole thing, collapsed or not: the clamp is
-                      a view state, never a content state. Both payloads are
-                      already safe — the plain-text one is `displayText` itself,
-                      and the HTML one is cloned from `contentRef`, the text div
-                      INSIDE the clipped bubble, which holds every line whatever
-                      the cap above it says. */}
-                  <MessageCopyLink text={displayText} contentRef={contentRef} />
-                </MessageMeta>
               </div>
             </div>
           </div>
-        )}
-
-        {/* Edited indicator */}
-        {hasBeenEdited && !isEditing && (
-          <div className="text-supporting text-text-muted mt-1 text-right">Edited</div>
         )}
       </div>
     </div>

@@ -341,7 +341,7 @@ pub async fn handle_web(
         .next()
         .ok_or_else(|| anyhow::anyhow!("Could not resolve address: {}", host))?;
 
-    println!("\n🪿 Starting biorouter web server");
+    println!("\nStarting biorouter web server");
     println!("   Provider: {} | Model: {}", provider_name, model);
     println!(
         "   Working directory: {}",

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Loader2 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { Spinner } from './ui/spinner';
 import { ModalShell } from './ModalShell';
 import { NotificationContent, type NotificationStatus } from './alerts/NotificationSurface';
 import { startNewSession } from '../sessions';
@@ -12,7 +12,7 @@ import { startChatFailureNotice } from '../utils/startChatFailure';
 import { useNavigation } from '../hooks/useNavigation';
 import { formatExtensionErrorMessage } from '../utils/extensionErrorUtils';
 import { getInitialWorkingDir } from '../utils/workingDir';
-import { formatExtensionName } from './settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from './settings/extensions/extensionDisplayName';
 import { useTransientValue } from '../hooks/useTransientFlag';
 
 export interface ExtensionLoadingStatus {
@@ -44,7 +44,7 @@ interface ExtensionLoadingToastProps {
 // Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
 function StatusDot({ status }: { status: ExtensionLoadingStatus['status'] }) {
   if (status === 'loading') {
-    return <Loader2 className="w-3.5 h-3.5 animate-spin text-text-info" />;
+    return <Spinner size={14} className="text-text-info" />;
   }
   return (
     <span
@@ -93,19 +93,19 @@ function ExtensionLoadReport({
         extensions.length !== 1 ? 's' : ''
       } failed to load.`}
       footer={
-        <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+        <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
           Close
         </Button>
       }
     >
       <div className="space-y-3 py-3">
         {extensions.map((ext) => (
-          <div key={ext.name} className="flex items-start gap-2.5 text-[13px]">
+          <div key={ext.name} className="flex items-start gap-2.5 text-secondary">
             <span className="flex-none mt-1">
               <StatusDot status={ext.status} />
             </span>
             <div className="flex-1 min-w-0">
-              <div className="truncate text-text-default">{formatExtensionName(ext.name)}</div>
+              <div className="truncate text-text-default">{extensionDisplayName(ext.name)}</div>
               {ext.status === 'error' && ext.error && (
                 <>
                   <div className="mt-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
@@ -129,7 +129,7 @@ function ExtensionLoadReport({
                         markCopied(ext.name);
                       }}
                     >
-                      {copiedExtension === ext.name ? 'Copied!' : 'Copy error'}
+                      {copiedExtension === ext.name ? 'Copied' : 'Copy error'}
                     </Button>
                   </div>
                 </>
@@ -159,11 +159,16 @@ export function GroupedExtensionLoadingToast({
   const errorCount = extensions.filter((ext) => ext.status === 'error').length;
   const failedNames = extensions
     .filter((ext) => ext.status === 'error')
-    .map((ext) => formatExtensionName(ext.name));
-  const builtinFailureNames = builtinFailures.map(formatExtensionName);
+    .map((ext) => extensionDisplayName(ext.name));
+  // Never `map(extensionDisplayName)` bare: `map` passes the index as the second
+  // argument, which is the resolver's `registry`.
+  const builtinFailureNames = builtinFailures.map((name) => extensionDisplayName(name));
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
-  // than a count (the all-success case has no meaningful denominator). On
+  // than a count (the all-success case has no meaningful denominator); the
+  // toast service no longer raises a clean run at all (vision V2-14, see
+  // `toastService.extensionLoading`), so that line only shows in a direct
+  // render. On
   // PARTIAL failure a bare "N failed" hides how much still works, so we lead
   // with what landed — "3 of 4 extensions loaded" — and name the casualties
   // underneath.

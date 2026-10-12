@@ -1,0 +1,192 @@
+/*
+ * The provider catalog's row geometry (codex simplicity redesign, spec 3.13).
+ *
+ * A provider row is the shared settings row (`.biorouter-settings-row .br-setting-row`: the
+ * 40px floor, the straight hairline, one hover wash) with a name over a one-line description on
+ * the left and a status plus one action on the right. Authored here, next to the component,
+ * rather than as new Tailwind strings: a newly written utility can silently fail to generate
+ * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+
+/* "Configured": a success dot and a word, as the Scheduler's status does. */
+.br-provider-configured {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* The accordion rows (coding agents, and the local providers during first run): the whole
+   identity is one button so the row opens by keyboard and announces its state. */
+.br-provider-row-toggle {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  text-align: start;
+}
+
+/* An accordion row's keyboard focus is the ROW's, drawn the way a row that is itself the focus
+   target draws it (`main.css`, "row focus": `--background-focus` and an inset 2px `--border-focus`
+   edge at the row's radius), and the toggle inside it draws none of its own (vision FR-R2-3). The
+   toggle used to take the base layer's control fallback: the same fill and edge, but square and
+   flush against the title and the second line, a box drawn inside the row's rounded wash, where
+   every other control in the panel has a rounded, padded surface. The scoped selector out-ranks
+   the catalog's hover paint below (0,5,0), so a focused row under the pointer still reads as
+   focused; the plain one covers a row outside a catalog. The forced-colours focus ring at the end
+   of `main.css` is an outline, which is left alone here. */
+.biorouter-settings-row.br-setting-row:has(> .br-provider-row-toggle:focus-visible),
+.br-provider-catalog.br-rows-flat
+  .biorouter-settings-row.br-setting-row:has(> .br-provider-row-toggle:focus-visible) {
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-provider-row-toggle:focus-visible {
+  background-color: transparent;
+  box-shadow: none;
+}
+
+/* The disclosure glyph follows the name, so every title starts on the same x. It points down at
+   rest ("opens") and turns over when the row is open. */
+.br-provider-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--dur-fast-max) var(--ease-out);
+}
+
+.br-provider-chevron[data-expanded='true'] {
+  transform: rotate(180deg);
+}
+
+/* What an open row reveals, on the row's own inset. */
+.br-provider-panel {
+  padding: 4px 12px 16px;
+}
+
+/* A line of the catalog's tab panel: the tier note under the tabs, and the institutions line. */
+.br-provider-tier-note {
+  margin-block-end: 16px;
+  padding-inline: 12px;
+}
+
+.br-provider-other-institutions {
+  display: flex;
+  align-items: center;
+  margin-block-start: 12px;
+  padding-inline: 12px;
+}
+
+/*
+ * The provider page's own chrome (`ProviderSettingsPage`, and the first-run page in
+ * `ProviderGuard`, which carries the same class for the same reasons). The page is outside the app shell, so
+ * it has no sidebar and none of the shell's top-band bookkeeping (`routeOwnsTopBand`), and it
+ * does the two things that bookkeeping would do (vision round 2, V4-14: the band sat at y=32
+ * under a separate 32px strip, 76px of chrome where Settings has 44):
+ *
+ * - The band starts at y=0 and IS the window-drag region, as every band is (principle 1). The
+ *   32px `.titlebar-drag-region` strip `App.tsx` paints is `position: fixed` above everything at
+ *   z-index 50, so it would sit over the band's top 32px and take the clicks meant for Back, the
+ *   InfoTip and the tabs. It stops taking pointer events while this page is mounted, which is
+ *   `body.biorouter-chat-route-active .titlebar-drag-region` in `main.css` keyed on the page
+ *   instead of a body class (AppLayout owns that class, and the page is not inside AppLayout; a
+ *   `:has()` on the page cannot leak past its unmount). The strip's own drag rect comes earlier
+ *   in tree order than the band's, and Electron folds drag rects in tree order, so the band's
+ *   `no-drag` controls still subtract from it.
+ * - The band's leading edge is the titlebar reserve, `--br-provider-band-lead` (set by the page
+ *   from `getTitlebarControlInset`), because the macOS traffic lights sit over the band's left
+ *   end here. It is padding, not margin: nothing earlier in tree order is `no-drag` on this
+ *   route, so the drag rect may as well run from x=0 as the strip did.
+ *
+ * The band keeps the shared `--sidebar` paint (no override): it is the same recessed ground as
+ * Settings' band, so the page reads as the Settings it was opened from, and the controls inside
+ * it rest one step deeper on it as they do there (`.br-ground-recessed`, which the band carries).
+ * Authored here, not as Tailwind strings, because a newly written utility can silently fail to
+ * generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+body:has(.br-provider-page) .titlebar-drag-region {
+  pointer-events: none;
+}
+
+.br-provider-page .biorouter-page-header-bar {
+  padding-inline-start: var(--br-provider-band-lead, 16px);
+}
+
+/* The band's tab slot: the catalog draws Local, Institutional and Public into it. The tabs sit
+   on the title's line (the list stretches to the band and each trigger fills it, so the underline
+   lands on the band's hairline), 16px after the title. */
+.br-provider-band-tabs-host {
+  display: flex;
+  min-inline-size: 0;
+  align-self: stretch;
+  margin-inline-start: 16px;
+}
+
+.br-provider-band-tabs {
+  align-self: stretch;
+}
+
+.br-provider-band-tabs > [role='tab'] {
+  height: 100%;
+}
+
+/* First run's setup forms sit on the rows' text inset, so a field starts where a row's name does
+   and ends where a row's button does (V4-29). */
+.br-provider-inset {
+  padding-inline: 12px;
+}
+
+/* A checkbox row in a provider form (Add provider's "This is a local model" and "Provider supports
+   streaming responses"). The Checkbox draws its 16px square centred in a 24px hit target, so the
+   square sat 4px inside the labels and fields above it (vision V4-R4-5); the row moves back 4px so
+   the square starts on their edge, as Switch models' `.br-model-check-row` does. */
+.br-provider-check-row {
+  display: flex;
+  align-items: center;
+  margin-inline-start: -4px;
+}
+
+/*
+ * ROWS ARE FILLS, NOT LINES (owner message 13, R-27, design.md 9.11). Provider rows are two-line
+ * blocks with 8px of air above and below, so the air and the hover fill tell them apart and the
+ * rule under every row goes. That is the shared decision, said once in the rows block of
+ * `main.css`: the catalog root carries `.br-rows-flat` (`ProviderCatalog`), which drops only the
+ * `::after` (the 1px transparent bottom edge stays, so nothing moves) and draws it again in forced
+ * colours, where every fill, the hover wash included, is repainted as Canvas and the line is all
+ * that tells one row from the next.
+ *
+ * A hovered row is a washed row, and the shared rows block already steps a control inside it back
+ * one ground (`--br-control-ground`: the page ground; `--br-control-hover`: the strong step; the
+ * neutral track one in). What is left here is the PAINT of the row. The shared wash is the page
+ * ink at 5%: in light it lands on the rest fill's value, but in dark on the canvas it lands at rgb(30, 30, 29), where the button resting on the
+ * page ground (rgb(27, 27, 25)) is 1.03:1 off its row and has no box (measured in Chromium,
+ * `firstRunFill.browser.test.tsx`). The row paints `--br-row-fill` instead, the token a card is
+ * painted in: rgb(35, 35, 32) there, which leaves the button 1.10:1 off it, and the same
+ * rgb(244, 244, 242) as the wash in light. First run stands on the same page ground (R-34), so the
+ * one recipe serves both surfaces. The focus-visible half is for a row a keyboard is in; a row
+ * that is itself the focus target keeps its own focus fill.
+ *
+ * The selector names `.br-provider-catalog.br-rows-flat` (one element) on purpose: Settings' own
+ * `.br-rows-flat` hover paint (`settings.css`, `--background-fill`) has the same reach, and which
+ * of the two wins must not depend on the order the style sheets are bundled in. This one
+ * out-ranks it by specificity.
+ */
+.br-provider-catalog {
+  --br-row-fill: var(--background-fill);
+  --br-row-control-hover: var(--background-fill-strong);
+}
+
+.br-provider-catalog.br-rows-flat
+  .biorouter-settings-row:not(.tint-selected, :focus-visible):is(:hover, :has(:focus-visible)) {
+  background-color: var(--br-row-fill);
+  --br-control-hover: var(--br-row-control-hover);
+}
+
+/* The catalog while it settles (`ProviderCatalog`, `holdUntilSettled`/`loading`): the tier line and
+   three 40px rows on the rows' own inset, so the reveal changes what is drawn, not where. */
+.br-provider-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-inline: 12px;
+}

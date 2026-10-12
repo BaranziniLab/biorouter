@@ -1993,6 +1993,8 @@ describe('a post still on its way when the person moves to another channel (REND
       sent = crew.send();
     });
     await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    // The post itself, not only the held Send: its digest is awaited before it is asked for.
+    await waitFor(() => expect(messagePosts()).toHaveLength(1));
     act(() => crew.selectChannel(analysis.id));
     await opened(analysis.id);
     return { post, sent };
@@ -2111,6 +2113,8 @@ describe('a post still on its way when the person moves to another channel (REND
       methodsSent = crew.send();
     });
     await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    // Each post itself, in order, not only its held Send (the digest is awaited before the post).
+    await waitFor(() => expect(messagePosts()).toHaveLength(1));
     act(() => crew.selectChannel(analysis.id));
     await opened(analysis.id);
     act(() => crew.setBody('for #analysis'));
@@ -2119,6 +2123,7 @@ describe('a post still on its way when the person moves to another channel (REND
       analysisSent = crew.send();
     });
     await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    await waitFor(() => expect(messagePosts()).toHaveLength(2));
     act(() => crew.selectChannel(methods.id));
     await opened(methods.id);
     await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
@@ -2258,6 +2263,9 @@ describe('a post still on its way when the person moves to another channel (REND
         sent = crew.send();
       });
       await waitFor(() => expect(crew.isPending('send')).toBe(true));
+      // Send is held before the post is asked for (its digest is awaited first): wait for the post
+      // itself, or a test that refuses it at once rejects a promise nothing is waiting on yet.
+      await waitFor(() => expect(messagePosts()).toHaveLength(1));
       return { first, sent };
     }
 

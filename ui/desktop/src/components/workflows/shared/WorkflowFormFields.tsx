@@ -1,18 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { Parameter } from '../../../workflow';
-import { ChevronDown } from '../../icons/app-icons';
 
 import ParameterInput from '../../parameter/ParameterInput';
 import WorkflowActivityEditor from '../WorkflowActivityEditor';
 import JsonSchemaEditor from './JsonSchemaEditor';
 import InstructionsEditor from './InstructionsEditor';
 import { Button } from '../../ui/button';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
+import { Disclosure } from '../../ui/disclosure';
+import { Field } from '../../ui/field';
+import { InfoTip, useInfoTipId } from '../../ui/info-tip';
+import { Input } from '../../ui/input';
+import { Textarea } from '../../ui/textarea';
 import { WorkflowFormApi, WorkflowFormData } from './workflowFormSchema';
 import { getExtensions } from '../../../api';
-import type { ExtensionConfig } from '../../../api';
+import type { ExtensionConfig, ExtensionEntry } from '../../../api';
+import { getFriendlyTitle } from '../../settings/extensions/subcomponents/ExtensionList';
+import { GroupLabel } from './GroupLabel';
 import { WorkflowResourceItem, WorkflowResourcePicker } from './WorkflowResourcePicker';
 import { storeSubscriptionCleanup } from '../../../utils/storeSubscription';
+import { workflowFormCopy as copy } from '../copy';
 
 // Type for field API to avoid linting issues - use any to bypass complex type constraints
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,6 +71,65 @@ export const extractTemplateVariables = (content: string): string[] => {
   return variables;
 };
 
+/**
+ * A field whose label row also holds an action ("Open editor"): the `Field` recipe (a
+ * `text-label` label, its InfoTip as the label's sibling, a 6px gap, the control, then one
+ * `text-supporting` line, the error in danger ink), written out because `Field` has no slot
+ * beside its label. The control is told about the help and the error by `aria-describedby`.
+ */
+function FieldWithAction({
+  id,
+  label,
+  info,
+  action,
+  error,
+  children,
+}: {
+  id: string;
+  label: string;
+  info?: string;
+  action?: React.ReactNode;
+  error?: React.ReactNode;
+  children: React.ReactElement<Record<string, unknown>>;
+}) {
+  const infoId = useInfoTipId();
+  const errorId = `${id}-help`;
+  const control = React.cloneElement(children, {
+    id,
+    'aria-describedby':
+      [info ? infoId : null, error ? errorId : null].filter(Boolean).join(' ') || undefined,
+    'aria-invalid': error ? true : undefined,
+  });
+  return (
+    <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-slot="field">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center">
+          <label htmlFor={id} className="text-label text-text-default">
+            {label}
+          </label>
+          {info && <InfoTip label={label} help={info} id={infoId} />}
+        </div>
+        {action}
+      </div>
+      {control}
+      {error ? (
+        <p id={errorId} className="text-supporting text-text-danger" data-slot="field-error">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** "Initial prompt (optional)": optional fields are marked, required ones are not. */
+function OptionalLabel({ children }: { children: string }) {
+  return (
+    <>
+      {children} <span className="font-normal text-text-muted">{copy.optional}</span>
+    </>
+  );
+}
+
 export function WorkflowFormFields({
   form,
   extensions = [],
@@ -88,11 +153,7 @@ export function WorkflowFormFields({
   const [showInstructionsEditor, setShowInstructionsEditor] = useState(false);
   const [newParameterName, setNewParameterName] = useState('');
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
-  const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
-  const inputClass =
-    'w-full h-9 rounded-element border-0 bg-background-default px-3 text-body text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-overlay-hover focus:bg-background-default ';
-  const textareaClass =
-    'w-full rounded-element border-0 bg-background-default px-3 py-2 text-body text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-overlay-hover focus:bg-background-default resize-none';
+  const [availableExtensions, setAvailableExtensions] = useState<ExtensionEntry[]>([]);
 
   useEffect(() => {
     getExtensions({ throwOnError: false }).then((res) => {
@@ -257,17 +318,21 @@ export function WorkflowFormFields({
     });
   }, [form.state.values.parameters]);
 
+  const firstError = (field: FormFieldApi) =>
+    field.state.meta.errors.length > 0 ? field.state.meta.errors[0] : undefined;
+  const values = form.state.values;
+  const advancedSummary = copy.advancedSummary(
+    values.settings?.biorouter_model || null,
+    values.parameters.filter((parameter: Parameter) => parameter.key?.trim()).length,
+    extensions.length
+  );
+
   return (
-    <div className="space-y-4" data-testid="workflow-form">
-      {/* Title Field */}
+    <div className="flex flex-col gap-4" data-testid="workflow-form">
       <form.Field name="title">
         {(field: FormFieldApi<string>) => (
-          <div>
-            <label htmlFor="workflow-title" className="block text-label text-text-default mb-2">
-              Title <span className="text-text-danger">*</span>
-            </label>
-            <input
-              id="workflow-title"
+          <Field id="workflow-title" label={copy.title} error={firstError(field)} required>
+            <Input
               type="text"
               value={field.state.value}
               onChange={(e) => {
@@ -275,29 +340,22 @@ export function WorkflowFormFields({
                 onTitleChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`${inputClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
-              placeholder="Workflow title"
+              placeholder={copy.titlePlaceholder}
               data-testid="title-input"
             />
-            {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
-            )}
-          </div>
+          </Field>
         )}
       </form.Field>
 
-      {/* Description Field */}
       <form.Field name="description">
         {(field: FormFieldApi<string>) => (
-          <div>
-            <label
-              htmlFor="workflow-description"
-              className="block text-label text-text-default mb-2"
-            >
-              Description <span className="text-text-danger">*</span>
-            </label>
-            <input
-              id="workflow-description"
+          <Field
+            id="workflow-description"
+            label={copy.description}
+            error={firstError(field)}
+            required
+          >
+            <Input
               type="text"
               value={field.state.value}
               onChange={(e) => {
@@ -305,60 +363,48 @@ export function WorkflowFormFields({
                 onDescriptionChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`${inputClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
-              placeholder="Brief description of what this workflow does"
+              placeholder={copy.descriptionPlaceholder}
               data-testid="description-input"
             />
-            {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
-            )}
-          </div>
+          </Field>
         )}
       </form.Field>
 
-      {/* Instructions Field */}
       <form.Field name="instructions">
         {(field: FormFieldApi<string>) => (
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label htmlFor="workflow-instructions" className="block text-label text-text-default">
-                Instructions <span className="text-text-danger">*</span>
-              </label>
-              <Button
-                type="button"
-                onClick={() => setShowInstructionsEditor(true)}
-                variant="ghost"
-                size="sm"
-                className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
-              >
-                Open editor
-              </Button>
-            </div>
-            <textarea
+          <>
+            <FieldWithAction
               id="workflow-instructions"
-              value={field.state.value}
-              onChange={(e) => {
-                field.handleChange(e.target.value);
-                onInstructionsChange?.(e.target.value);
-              }}
-              onBlur={() => {
-                field.handleBlur();
-                updateParametersFromFields();
-              }}
-              className={`${textareaClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
-              placeholder="Detailed instructions for the AI, hidden from the user"
-              rows={8}
-              data-testid="instructions-input"
-            />
-            <p className="text-supporting text-text-muted mt-1">
-              Use {`{{parameter_name}}`} to define parameters that can be filled in when running the
-              workflow.
-            </p>
-            {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
-            )}
+              label={copy.instructions}
+              info={copy.instructionsInfo}
+              error={firstError(field)}
+              action={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowInstructionsEditor(true)}
+                >
+                  {copy.openEditor}
+                </Button>
+              }
+            >
+              <Textarea
+                value={field.state.value}
+                onChange={(e) => {
+                  field.handleChange(e.target.value);
+                  onInstructionsChange?.(e.target.value);
+                }}
+                onBlur={() => {
+                  field.handleBlur();
+                  updateParametersFromFields();
+                }}
+                placeholder={copy.instructionsPlaceholder}
+                rows={8}
+                data-testid="instructions-input"
+              />
+            </FieldWithAction>
 
-            {/* Instructions editor modal */}
             <InstructionsEditor
               isOpen={showInstructionsEditor}
               onClose={() => setShowInstructionsEditor(false)}
@@ -368,24 +414,20 @@ export function WorkflowFormFields({
                 onInstructionsChange?.(value);
                 updateParametersFromFields();
               }}
-              error={field.state.meta.errors.length > 0 ? field.state.meta.errors[0] : undefined}
+              error={firstError(field)}
             />
-          </div>
+          </>
         )}
       </form.Field>
 
-      {/* Initial prompt field */}
       <form.Field name="prompt">
         {(field: FormFieldApi<string | undefined>) => (
-          <div>
-            <label htmlFor="workflow-prompt" className="block text-label text-text-default mb-2">
-              Initial prompt
-            </label>
-            <p className="text-supporting text-text-muted mt-2 mb-2">
-              (optional — instructions or a prompt are required)
-            </p>
-            <textarea
-              id="workflow-prompt"
+          <Field
+            id="workflow-prompt"
+            label={<OptionalLabel>{copy.prompt}</OptionalLabel>}
+            info={copy.promptInfo}
+          >
+            <Textarea
               value={field.state.value || ''}
               onChange={(e) => {
                 field.handleChange(e.target.value);
@@ -395,42 +437,32 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className={textareaClass}
-              placeholder="Pre-filled prompt when the workflow starts"
+              placeholder={copy.promptPlaceholder}
               rows={3}
               data-testid="prompt-input"
             />
-          </div>
+          </Field>
         )}
       </form.Field>
 
-      {/* Advanced Section - Collapsible */}
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-6">
-        <CollapsibleTrigger className="flex w-full items-baseline gap-2 rounded-element bg-background-medium px-3 py-2.5 transition-colors hover:bg-overlay-hover">
-          <ChevronDown
-            className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 relative top-0.5 ${advancedOpen ? 'rotate-0' : '-rotate-90'}`}
-          />
-          <span className="text-label text-text-default">Advanced options</span>
-          <span className="text-supporting text-text-muted">
-            Activities, parameters, model, resources
-          </span>
-        </CollapsibleTrigger>
-
-        <CollapsibleContent className="mt-4 space-y-5">
-          {/* Activities Field */}
+      {/* The closed section states its defaults, so nothing it hides is a surprise. */}
+      <Disclosure
+        label={copy.advanced}
+        summary={advancedSummary}
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+      >
+        <div className="flex flex-col gap-5 pt-2">
           <form.Field name="activities">
             {(field: FormFieldApi<string[]>) => (
-              <div>
-                <WorkflowActivityEditor
-                  activities={field.state.value}
-                  setActivities={(activities) => field.handleChange(activities)}
-                  onBlur={updateParametersFromFields}
-                />
-              </div>
+              <WorkflowActivityEditor
+                activities={field.state.value}
+                setActivities={(activities) => field.handleChange(activities)}
+                onBlur={updateParametersFromFields}
+              />
             )}
           </form.Field>
 
-          {/* Parameters Field */}
           <form.Field name="parameters">
             {(field: FormFieldApi<Parameter[]>) => {
               const handleAddParameter = () => {
@@ -452,19 +484,11 @@ export function WorkflowFormFields({
                 }
               };
 
-              const handleKeyPress = (e: React.KeyboardEvent) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleAddParameter();
-                }
-              };
-
               const handleDeleteParameter = (parameterKey: string) => {
                 const updatedParams = field.state.value.filter(
                   (param: Parameter) => param.key !== parameterKey
                 );
                 field.handleChange(updatedParams);
-                // Remove from expanded set if it was expanded
                 setExpandedParameters((prev) => {
                   const newSet = new Set(prev);
                   newSet.delete(parameterKey);
@@ -485,106 +509,113 @@ export function WorkflowFormFields({
               };
 
               return (
-                <div>
-                  <label className="block text-label text-text-default mb-1">Parameters</label>
-                  <p className="text-text-muted text-body space-y-2 pb-4">
-                    Parameters will be automatically detected from {`{{parameter_name}}`} syntax in
-                    instructions/prompt/activities or you can manually add them below.
-                  </p>
-
-                  {/* Add Parameter Input - Always Visible */}
-                  <div className="flex gap-2 mb-4">
-                    <input
+                <div
+                  className="flex flex-col gap-1.5"
+                  role="group"
+                  aria-labelledby="workflow-parameters-label"
+                >
+                  <GroupLabel
+                    id="workflow-parameters-label"
+                    label={copy.parameters}
+                    info={copy.parametersInfo}
+                  />
+                  <div className="flex gap-2">
+                    <Input
+                      machine
                       type="text"
                       value={newParameterName}
                       onChange={(e) => setNewParameterName(e.target.value)}
-                      onKeyPress={handleKeyPress}
-                      placeholder="Enter parameter name..."
-                      className={inputClass}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddParameter();
+                        }
+                      }}
+                      aria-label={copy.parameterPlaceholder}
+                      placeholder={copy.parameterPlaceholder}
                     />
                     <Button
                       type="button"
+                      variant="secondary"
                       onClick={handleAddParameter}
                       disabled={!newParameterName.trim()}
-                      variant="ghost"
-                      size="sm"
-                      className="rounded-element bg-background-medium hover:bg-overlay-hover"
                     >
-                      Add parameter
+                      {copy.addParameter}
                     </Button>
                   </div>
 
-                  {field.state.value.length > 0 &&
-                    field.state.value
-                      .filter((parameter: Parameter) => parameter.key && parameter.key.trim()) // Filter out empty parameters
-                      .map((parameter: Parameter) => {
-                        const currentValues = form.state.values;
-                        const isUnused = !isParameterUsed(
-                          parameter.key,
-                          currentValues.instructions,
-                          currentValues.prompt,
-                          currentValues.activities
-                        );
+                  {field.state.value
+                    .filter((parameter: Parameter) => parameter.key && parameter.key.trim())
+                    .map((parameter: Parameter) => {
+                      const currentValues = form.state.values;
+                      const isUnused = !isParameterUsed(
+                        parameter.key,
+                        currentValues.instructions,
+                        currentValues.prompt,
+                        currentValues.activities
+                      );
 
-                        return (
-                          <ParameterInput
-                            key={parameter.key}
-                            parameter={parameter}
-                            isUnused={isUnused}
-                            isExpanded={expandedParameters.has(parameter.key)}
-                            onToggleExpanded={handleToggleExpanded}
-                            onDelete={handleDeleteParameter}
-                            onChange={(name, value) => {
-                              const updatedParams = field.state.value.map((param: Parameter) =>
-                                param.key === name ? { ...param, ...value } : param
-                              );
-                              field.handleChange(updatedParams);
-                            }}
-                          />
-                        );
-                      })}
+                      return (
+                        <ParameterInput
+                          key={parameter.key}
+                          parameter={parameter}
+                          isUnused={isUnused}
+                          isExpanded={expandedParameters.has(parameter.key)}
+                          onToggleExpanded={handleToggleExpanded}
+                          onDelete={handleDeleteParameter}
+                          onChange={(name, value) => {
+                            const updatedParams = field.state.value.map((param: Parameter) =>
+                              param.key === name ? { ...param, ...value } : param
+                            );
+                            field.handleChange(updatedParams);
+                          }}
+                        />
+                      );
+                    })}
                 </div>
               );
             }}
           </form.Field>
 
-          {/* JSON Schema Field */}
           <form.Field name="jsonSchema">
             {(field: FormFieldApi<string | undefined>) => (
-              <div>
-                <label className="block text-label text-text-default mb-1">
-                  Response JSON Schema
-                </label>
-                <p className="text-text-muted text-body space-y-2 pb-4">
-                  Define the expected structure of the AI's response using JSON Schema format
-                </p>
-                <div className="flex items-center justify-between mb-2">
+              <div
+                className="flex flex-col gap-1.5"
+                role="group"
+                aria-labelledby="workflow-schema-label"
+              >
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <GroupLabel
+                    id="workflow-schema-label"
+                    label={copy.responseSchema}
+                    info={copy.responseSchemaInfo}
+                  />
                   <Button
                     type="button"
-                    onClick={() => setShowJsonSchemaEditor(true)}
                     variant="ghost"
                     size="sm"
-                    className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
+                    onClick={() => setShowJsonSchemaEditor(true)}
                   >
-                    Open editor
+                    {copy.openEditor}
                   </Button>
                 </div>
 
                 {field.state.value && field.state.value.trim() && (
-                  <div
-                    className={`rounded-element bg-background-medium p-3 ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
+                  <pre
+                    className={`max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-element border bg-background-fill p-3 font-mono text-code text-text-default ${
+                      field.state.meta.errors.length > 0
+                        ? 'border-border-danger'
+                        : 'border-transparent'
+                    }`}
                   >
-                    <pre className="text-code font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
-                      {field.state.value}
-                    </pre>
-                  </div>
+                    {field.state.value}
+                  </pre>
                 )}
 
-                {field.state.meta.errors.length > 0 && (
-                  <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
+                {firstError(field) && (
+                  <p className="text-supporting text-text-danger">{firstError(field)}</p>
                 )}
 
-                {/* JSON Schema Editor Modal */}
                 <JsonSchemaEditor
                   isOpen={showJsonSchemaEditor}
                   onClose={() => setShowJsonSchemaEditor(false)}
@@ -593,157 +624,132 @@ export function WorkflowFormFields({
                     field.handleChange(value);
                     onJsonSchemaChange?.(value);
                   }}
-                  error={
-                    field.state.meta.errors.length > 0 ? field.state.meta.errors[0] : undefined
-                  }
+                  error={firstError(field)}
                 />
               </div>
             )}
           </form.Field>
 
-          {/* Model Settings */}
-          <div className="space-y-3 rounded-element bg-background-muted/60 p-3">
-            <div className="flex items-baseline justify-between gap-3">
-              <div>
-                <label className="block text-label text-text-default">Model settings</label>
-                <p className="mt-0.5 text-supporting text-text-muted">
-                  Optional workflow-specific provider, model, and temperature.
-                </p>
-              </div>
-              <span className="shrink-0 text-supporting text-text-muted">
-                Global default if blank
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
+          {/* The model override: three fields, no tinted block. Blank means the
+              person's default model, which the group's help says once. */}
+          <div
+            className="flex flex-col gap-1.5"
+            role="group"
+            aria-labelledby="workflow-model-label"
+          >
+            <GroupLabel id="workflow-model-label" label={copy.model} info={copy.modelInfo} />
+            <div className="grid grid-cols-3 gap-3">
               <form.Field name="settings.biorouter_provider">
                 {(field: FormFieldApi<string | undefined>) => (
-                  <div>
-                    <label className="block text-caps text-text-muted mb-1">Provider</label>
-                    <input
+                  <Field id="workflow-provider" label={copy.provider}>
+                    <Input
+                      machine
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
-                      // Local providers first, matching the ordering every
-                      // other provider surface uses (Local before Institutional
-                      // before Commercial). The old placeholder named only
-                      // "anthropic, openai" and so silently implied the
-                      // subscription-backed and local providers were not
-                      // options here.
-                      placeholder="e.g. llamacpp, ollama, anthropic, claude_code"
-                      className={inputClass}
+                      placeholder={copy.defaultPlaceholder}
                     />
-                  </div>
+                  </Field>
                 )}
               </form.Field>
               <form.Field name="settings.biorouter_model">
                 {(field: FormFieldApi<string | undefined>) => (
-                  <div>
-                    <label className="block text-caps text-text-muted mb-1">Model</label>
-                    <input
+                  <Field id="workflow-model" label={copy.modelName}>
+                    <Input
+                      machine
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
                       // A model id, not a model that must exist: the field is
-                      // free text and the provider decides. The old example
-                      // named a model from a superseded generation.
-                      placeholder="e.g. claude-opus-5, qwen3.8-27b"
-                      className={inputClass}
+                      // free text and the provider decides.
+                      placeholder={copy.modelNamePlaceholder}
                     />
-                  </div>
+                  </Field>
+                )}
+              </form.Field>
+              <form.Field name="settings.temperature">
+                {(field: FormFieldApi<number | undefined>) => (
+                  <Field id="workflow-temperature" label={copy.temperature}>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      value={field.state.value ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        field.handleChange(v === '' ? undefined : parseFloat(v));
+                      }}
+                      placeholder={copy.temperaturePlaceholder}
+                      className="tabular-nums"
+                    />
+                  </Field>
                 )}
               </form.Field>
             </div>
-            <form.Field name="settings.temperature">
-              {(field: FormFieldApi<number | undefined>) => (
-                <div>
-                  <label className="block text-caps text-text-muted mb-1">
-                    Temperature{' '}
-                    <span className="normal-case font-normal">(0 to 2, blank = default)</span>
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={field.state.value ?? ''}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      field.handleChange(v === '' ? undefined : parseFloat(v));
-                    }}
-                    placeholder="e.g. 0.7"
-                    className={inputClass}
-                  />
-                </div>
-              )}
-            </form.Field>
           </div>
 
-          {(onKnowledgeBaseIdsChange || onSkillIdsChange || onExtensionsChange) && (
-            <div className="space-y-4">
-              {onKnowledgeBaseIdsChange && (
-                <WorkflowResourcePicker
-                  label="Knowledge bases"
-                  description="Choose which knowledge bases this workflow can search and which one is focused by default."
-                  items={knowledgeBaseItems}
-                  selectedIds={selectedKnowledgeBaseIds}
-                  onSelectedIdsChange={onKnowledgeBaseIdsChange}
-                  defaultId={defaultKnowledgeBaseId}
-                  onDefaultIdChange={onDefaultKnowledgeBaseIdChange}
-                  // A chat with no pinned primary is captured as `default: null`,
-                  // and the daemon never infers one from `visible`
-                  // (`plan_knowledge_selection`) — so the workflow really will
-                  // have no default, and every chat it starts will have no write
-                  // target. That is the intent, not a bug, and the card said
-                  // nothing about it while its own description promised "which
-                  // one is focused by default": the reader had no way to tell
-                  // which of the two they were looking at.
-                  noDefaultText={
-                    'No default — this workflow will not focus one. Chats it starts search ' +
-                    'every base above, and a write that names no base asks which one to use.'
-                  }
-                  notice={knowledgeBaseNotice}
-                  emptyText="No knowledge bases found"
-                  searchPlaceholder="Search knowledge bases..."
-                  noun="KB"
-                />
-              )}
-
-              {onSkillIdsChange && (
-                <WorkflowResourcePicker
-                  label="Skills"
-                  description="Choose the skills this workflow should prefer when the skills extension is enabled."
-                  items={skillItems}
-                  selectedIds={selectedSkillIds}
-                  onSelectedIdsChange={onSkillIdsChange}
-                  emptyText="No skills found"
-                  searchPlaceholder="Search skills..."
-                  noun="skill"
-                />
-              )}
-
-              {onExtensionsChange && (
-                <WorkflowResourcePicker
-                  label="Extensions"
-                  description="Choose which extensions are active for this workflow. Empty means Biorouter uses the global default."
-                  items={availableExtensions.map((ext) => ({
-                    id: ext.name,
-                    label: ext.name,
-                    description: ext.description,
-                  }))}
-                  selectedIds={extensions.map((ext) => ext.name)}
-                  onSelectedIdsChange={(ids) => {
-                    const selected = availableExtensions.filter((ext) => ids.includes(ext.name));
-                    onExtensionsChange(selected);
-                  }}
-                  emptyText="No extensions configured"
-                  searchPlaceholder="Search extensions..."
-                  noun="extension"
-                />
-              )}
-            </div>
+          {onKnowledgeBaseIdsChange && (
+            <WorkflowResourcePicker
+              label={copy.knowledgeBases}
+              description={copy.knowledgeBasesInfo}
+              items={knowledgeBaseItems}
+              selectedIds={selectedKnowledgeBaseIds}
+              onSelectedIdsChange={onKnowledgeBaseIdsChange}
+              defaultId={defaultKnowledgeBaseId}
+              onDefaultIdChange={onDefaultKnowledgeBaseIdChange}
+              // A chat with no pinned primary is captured as `default: null`,
+              // and the daemon never infers one from `visible`
+              // (`plan_knowledge_selection`), so the workflow really will have
+              // no default, and every chat it starts will have no write target.
+              // That is the intent, not a bug, so the card says "No default" in
+              // words and what it costs in that line's help.
+              noDefaultText={copy.noDefaultKnowledgeBase}
+              notice={knowledgeBaseNotice}
+              emptyText={copy.noKnowledgeBases}
+              searchPlaceholder={copy.searchKnowledgeBases}
+              noun="KB"
+            />
           )}
-        </CollapsibleContent>
-      </Collapsible>
+
+          {onSkillIdsChange && (
+            <WorkflowResourcePicker
+              label={copy.skills}
+              description={copy.skillsInfo}
+              items={skillItems}
+              selectedIds={selectedSkillIds}
+              onSelectedIdsChange={onSkillIdsChange}
+              emptyText={copy.noSkills}
+              searchPlaceholder={copy.searchSkills}
+              noun="skill"
+            />
+          )}
+
+          {onExtensionsChange && (
+            <WorkflowResourcePicker
+              label={copy.extensions}
+              description={copy.extensionsInfo}
+              // The row is named as the Extensions page names it (Chat Recall, Biorouter
+              // Copilot), never by its config key (principle 10). The key stays what is saved
+              // and what the picker's search also matches, so a typed `computercontroller`
+              // still finds its row.
+              items={availableExtensions.map((ext) => ({
+                id: ext.name,
+                label: getFriendlyTitle(ext),
+                description: ext.description,
+              }))}
+              selectedIds={extensions.map((ext) => ext.name)}
+              onSelectedIdsChange={(ids) => {
+                const selected = availableExtensions.filter((ext) => ids.includes(ext.name));
+                onExtensionsChange(selected);
+              }}
+              emptyText={copy.noExtensions}
+              searchPlaceholder={copy.searchExtensions}
+              noun="extension"
+            />
+          )}
+        </div>
+      </Disclosure>
     </div>
   );
 }

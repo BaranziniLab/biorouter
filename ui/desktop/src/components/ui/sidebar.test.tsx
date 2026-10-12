@@ -1234,3 +1234,111 @@ describe('the overlay class is shared, not re-spelled', () => {
     expect(panel().parentElement).toHaveAttribute('data-side', 'left');
   });
 });
+
+/**
+ * Spec 3.4 acceptance: "the sidebar's tooltips open after the app delay, not instantly". The shell
+ * used to wrap the whole app in `<TooltipProvider delayDuration={0}>`, which every tooltip would
+ * have inherited once tooltips stopped bringing their own provider (2.6). It is the app provider
+ * now: nothing at 150ms, the tip at 500ms.
+ */
+describe('tooltips inside the app shell wait for the app delay', () => {
+  it('does not open a tooltip on hover at once, and opens it after the delay', async () => {
+    const { Tooltip, TooltipContent, TooltipTrigger } = await import('./Tooltip');
+    const user = userEvent.setup();
+    render(
+      <SidebarProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button type="button">All chats</button>
+          </TooltipTrigger>
+          <TooltipContent>All chats</TooltipContent>
+        </Tooltip>
+      </SidebarProvider>
+    );
+    await user.hover(screen.getByRole('button', { name: 'All chats' }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 150)));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(await screen.findByRole('tooltip', {}, { timeout: 1500 })).toHaveTextContent(
+      'All chats'
+    );
+  });
+});
+
+/**
+ * The provider marks `<body>` resizing on every window resize, so the motion rule holds wherever
+ * it is mounted. It promises nothing about listeners registered before it. Vision V3-02 made it a
+ * CAPTURING listener and pinned here that an earlier listener found the class: jsdom runs capture
+ * listeners first at the target, as the DOM spec says, but Chromium fires window `resize`
+ * listeners in registration order whatever their capture flag (measured in Chrome 155, vision
+ * V1-R4-1, for a real resize and for `dispatchEvent` alike). So that case passed here while the
+ * first crossing of the 1120 rung after a load slid in the app. Whatever moves the sidebar on a
+ * resize holds the window itself (`AppLayout`'s width watcher; the real ordering is pinned in
+ * Chromium by `Layout/sidebarAutoCollapseMotion.browser.test.tsx`).
+ */
+describe('a window resize marks <body> resizing', () => {
+  afterEach(() => {
+    document.body.classList.remove('biorouter-window-resizing');
+  });
+
+  it('marks <body> in registration order, as Chromium does, with no capture-phase claim', () => {
+    const seen: Array<[string, boolean]> = [];
+    const record = (name: string) => () =>
+      seen.push([name, document.body.classList.contains('biorouter-window-resizing')]);
+    function Listener({ name }: { name: string }) {
+      useEffect(() => {
+        const onResize = record(name);
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+      }, [name]);
+      return null;
+    }
+    function LaterListener() {
+      // The provider's own effect runs after its children's; this one runs after the provider's.
+      const [mounted, setMounted] = useState(false);
+      useEffect(() => setMounted(true), []);
+      return mounted ? <Listener name="later" /> : null;
+    }
+    render(
+      <SidebarProvider>
+        <Listener name="earlier" />
+        <LaterListener />
+      </SidebarProvider>
+    );
+
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    // A capturing marker would make jsdom answer [earlier, true] here, which Chromium never does.
+    expect(seen).toEqual([
+      ['earlier', false],
+      ['later', true],
+    ]);
+  });
+
+  it('lifts the class once the resize settles, and on unmount', () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<SidebarProvider>{null}</SidebarProvider>);
+      act(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      expect(document.body).toHaveClass('biorouter-window-resizing');
+      act(() => {
+        vi.advanceTimersByTime(179);
+      });
+      expect(document.body).toHaveClass('biorouter-window-resizing');
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(document.body).not.toHaveClass('biorouter-window-resizing');
+
+      act(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+      unmount();
+      expect(document.body).not.toHaveClass('biorouter-window-resizing');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

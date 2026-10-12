@@ -60,7 +60,7 @@ Key Rust dependencies:
 - **minijinja** — Jinja-style template engine for workflows
 - **tokio-cron-scheduler** — Cron-based job scheduling
 - **sqlx (SQLite)** — Persistent session and schedule storage
-- **etcetera** — Cross-platform config path resolution (`~/.config/biorouter/` on macOS/Linux)
+- **etcetera** — Cross-platform config path resolution (`~/.config/biorouter/` on macOS/Linux, `%APPDATA%\UCSF\biorouter\config\` on Windows)
 
 ### Frontend — Electron + React
 

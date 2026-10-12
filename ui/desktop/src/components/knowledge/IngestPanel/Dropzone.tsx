@@ -1,20 +1,21 @@
 import { useCallback, useRef, useState } from 'react';
-import { FileStack, FolderTree, Info, Upload } from '../../icons/app-icons';
+import { Clipboard, FileStack, FolderTree, Upload } from '../../icons/app-icons';
+import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
+import { InfoTip } from '../../ui/info-tip';
+import { knowledgeCopy } from '../copy';
 import type { StagedFileCandidate } from './fileValidation';
 
 interface Props {
   onFiles: (files: StagedFileCandidate[]) => void | Promise<void>;
   onPathPickRequested: () => void | Promise<void>;
+  /** Summon the paste box. "Paste text" lives inside the dropzone (spec 3.12). */
+  onPasteText: () => void;
+  /**
+   * Something is being dragged over the rail (`useFileDrop`). The box does not own the drop any
+   * more, the whole rail does, so the box only shows the answer.
+   */
+  dragging?: boolean;
 }
 
 function labelFromPath(path: string): string {
@@ -59,15 +60,30 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
   return [...candidates.values()];
 }
 
-export function Dropzone({ onFiles, onPathPickRequested }: Props) {
+/**
+ * The Sources rail's drop target: the WHOLE rail, not the box in it (V3-12, kept by R-33).
+ *
+ * The box fills the rail's free height again (R-33), but it yields that room to the paste box and
+ * the staged list as they appear, so a file let go on a staged row, on the paste box's frame or on
+ * the footer must still stage. `IngestPanel` spreads `dropProps` on the rail's root and hands
+ * `dragging` to the box and to the rail: the box takes its drag fill and edge, and the rail draws
+ * an accent edge around itself (`.br-knowledge-rail`), so a held file gets an answer even when a
+ * long staged list has scrolled the box out of view. The rail carries no fill.
+ *
+ * ⚠ **Text fields are left alone.** A drag that starts or lands inside the paste box's fields is a
+ * text drag; claiming it would cancel the browser's own insertion.
+ */
+export function useFileDrop(onFiles: Props['onFiles']) {
   const [dragging, setDragging] = useState(false);
-  const [chooserOpen, setChooserOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   // Counter-based drag tracking prevents flicker when cursor moves over child elements.
   const dragCounterRef = useRef(0);
 
+  const inTextField = (e: React.DragEvent) =>
+    e.target instanceof Element && e.target.closest('input, textarea, [contenteditable]') !== null;
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
+      if (inTextField(e)) return;
       e.preventDefault();
       dragCounterRef.current = 0;
       setDragging(false);
@@ -79,48 +95,62 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
     [onFiles]
   );
 
+  const dropProps = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+      dragCounterRef.current++;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (inTextField(e)) return;
+      e.preventDefault();
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) setDragging(false);
+    },
+    onDrop,
+  };
+
+  return { dragging, dropProps };
+}
+
+export function Dropzone({ onFiles, onPathPickRequested, onPasteText, dragging = false }: Props) {
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   function openChooser() {
     setChooserOpen(true);
   }
 
   return (
     <>
+      {/* The box a person aims at. A press anywhere on it opens the chooser, as it always has; the
+          keyboard reaches the same thing through the label's own button, because a
+          `role="button"` box cannot also hold the "Paste text" button and the InfoTip (an
+          interactive control inside another).
+
+          ⚠ **Only a press INSIDE the box counts.** React bubbles a synthetic
+          event up the React tree, not the DOM tree, so a click on the InfoTip's
+          floating text (portaled out of this box) would otherwise arrive here
+          and open the chooser over the tip being read.
+
+          ⚠ **It fills the rail's free height, and it does not own the drop** (R-33 over V3-12).
+          V3-12 cut it to its content (about 160px), which left a small box over an empty rail; the
+          owner wants the side-panel scale back. Its size is authored on `.br-knowledge-dropzone`
+          (grow into the scroller's free height, yield it to the paste box and the staged list, a
+          240px floor), not written here, because a sizing utility that fails to generate would put
+          the small box back silently. The drop is the rail's (`useFileDrop`). */}
       <div
-        role="button"
-        tabIndex={0}
-        onClick={openChooser}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            openChooser();
-          }
+        data-testid="knowledge-ingest-dropzone"
+        onClick={(e) => {
+          if (e.currentTarget.contains(e.target as Node)) openChooser();
         }}
-        onDragEnter={(e) => {
-          e.preventDefault();
-          dragCounterRef.current++;
-          setDragging(true);
-        }}
-        onDragOver={(e) => {
-          e.preventDefault();
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault();
-          dragCounterRef.current--;
-          if (dragCounterRef.current === 0) setDragging(false);
-        }}
-        onDrop={onDrop}
-        /* ⚠ **`flex-1` here is what closes the rail's empty middle, and it is a
-           FUNCTIONAL fix rather than a cosmetic one.** The body packs its
-           children at the top and the digest footer is pinned at the bottom, so
-           an unstaged rail showed a tall hole between them — a box of nothing
-           inside a bordered card. Letting the DROP TARGET absorb that slack
-           means the target is largest exactly when you have nothing staged and
-           are about to drop something, and shrinks back toward its floor as
-           staged rows claim the space. `min-h` is that floor, and it is the
-           114px this box measured before it could grow — the fixed 330px it
-           replaced was too tall at every pane size, which is a different bug
-           and must not come back through this door. */
-        className={`relative flex min-h-[7.125rem] flex-1 cursor-pointer flex-col justify-center rounded-container border px-4 py-4 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
+        data-dragging={dragging ? 'true' : undefined}
+        className="br-knowledge-dropzone relative flex cursor-pointer flex-col items-center justify-center gap-1 rounded-container px-4 py-4 text-center"
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -136,105 +166,91 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             e.target.value = '';
           }}
         />
-        {/* The medallion is `EmptyState`'s own plate: a 48px `rounded-container`
-            box with a 24px icon (`empty-state.tsx:34-35`). Not `rounded-full` —
-            A-04 restricts that to status dots, the switch knob and avatars, and
-            a 48px circle is none of them. The 24px icon follows what SHIPS: the
-            primitive draws `h-6 w-6` while `--icon-banner` says 20px, and that
-            disagreement is a design-system item rather than something this
-            surface silently picks a side of. */}
-        {/* ⚠ **330px → ~132px** (R-06), and every pixel of it came off
-            decoration rather than function. Measured in Chrome at the rail's
-            true 300px width, the dropzone was 330px tall of which 260px was a
-            48px medallion, two paragraphs totalling 251 characters wrapping to
-            three and four lines, and a ten-chip extension row wrapping to three
-            rows — in a rail whose resting content already ran 899px inside a
-            745px viewport. What survives is the affordance; what moved behind
-            the ⓘ is the reference material, which a user needs once and then
-            never again. */}
-        <div
-          className={`mx-auto flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
+        {/* A 32px `rounded-element` plate with a 16px icon: the dropzone's own
+            mark, deliberately smaller than `EmptyState`'s 48px plate, because
+            this is a control in a 300px rail and not a page's empty state. */}
+        {/* Named for what a press does (it opens the chooser), not only for the drag its words
+            describe; the name starts with those words (copy.ts, `dropButtonName`). */}
+        <button
+          type="button"
+          aria-label={knowledgeCopy.ingest.dropButtonName}
+          className="flex flex-col items-center gap-2 rounded-element px-2 py-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            openChooser();
+          }}
         >
-          <Upload className="h-4 w-4" aria-hidden="true" />
+          <span
+            aria-hidden="true"
+            className="br-knowledge-drop-plate flex h-8 w-8 items-center justify-center rounded-element"
+          >
+            <Upload className="h-icon-row w-icon-row" />
+          </span>
+          <span className="text-label">{knowledgeCopy.ingest.dropLabel}</span>
+        </button>
+        <div className="flex items-center justify-center gap-1 text-supporting text-text-muted">
+          <span>{knowledgeCopy.ingest.dropHint}</span>
+          <InfoTip
+            label={knowledgeCopy.ingest.dropInfoLabel}
+            help={knowledgeCopy.ingest.dropInfo}
+            side="bottom"
+            align="center"
+          />
         </div>
-        <div className="mt-2 text-label">Drag and drop to stage</div>
-        <div className="mt-1 flex items-center justify-center gap-1 text-supporting text-text-muted">
-          <span>PDF, Office, web pages, folders</span>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                tabIndex={0}
-                role="button"
-                aria-label="Which files can be staged"
-                className="biorouter-focus-surface rounded-inner px-0.5 text-text-subtle"
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
-              >
-                <Info className="h-icon-row w-icon-row" aria-hidden="true" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-[17rem]">
-              Readable files are staged one by one: .pdf, .pptx, .xlsx, .docx, .csv, .md, .html,
-              .txt, plus folders and archives, which are unpacked in the backend. Binaries are
-              skipped. <span className="text-text-default">Import from .brkb</span> stays in the
-              knowledge-base menu for full knowledge-base archives.
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        {/* "Paste text" is a second way IN, so it sits with the first one rather
+            than as a full-width slab under the dropzone (spec 3.12). */}
+        <Button
+          data-testid="knowledge-ingest-paste-text"
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPasteText();
+          }}
+        >
+          <Clipboard aria-hidden="true" />
+          {knowledgeCopy.ingest.pasteText}
+        </Button>
       </div>
 
-      <Dialog open={chooserOpen} onOpenChange={setChooserOpen}>
-        <DialogContent className="sm:max-w-[560px]">
-          <DialogHeader>
-            <DialogTitle>Stage knowledge sources</DialogTitle>
-            <DialogDescription>
-              Choose how you want to bring material into the staging queue. Folders and archives are
-              unpacked in the backend so their readable contents can be staged separately.
-            </DialogDescription>
-          </DialogHeader>
+      <ModalShell
+        open={chooserOpen}
+        onOpenChange={setChooserOpen}
+        size="md"
+        title={knowledgeCopy.ingest.chooserTitle}
+        subtitle={knowledgeCopy.ingest.chooserSubtitle}
+        bodyClassName="pb-4"
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            data-testid="knowledge-ingest-browse-files"
+            type="button"
+            onClick={() => {
+              setChooserOpen(false);
+              inputRef.current?.click();
+            }}
+            className="biorouter-modal-row flex items-center gap-3 rounded-element px-4 py-3 text-left transition-colors tint-interactive"
+          >
+            <FileStack className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
+            <span className="text-label">{knowledgeCopy.ingest.chooseFiles}</span>
+          </button>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <button
-              data-testid="knowledge-ingest-browse-files"
-              type="button"
-              onClick={() => {
-                setChooserOpen(false);
-                inputRef.current?.click();
-              }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
-            >
-              <FileStack className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-label">Choose files</div>
-              <p className="mt-1 text-supporting text-text-muted">
-                Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
-              </p>
-            </button>
-
-            <button
-              data-testid="knowledge-ingest-browse-path"
-              type="button"
-              onClick={() => {
-                setChooserOpen(false);
-                void onPathPickRequested();
-              }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
-            >
-              <FolderTree className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-label">Choose folder or archive</div>
-              <p className="mt-1 text-supporting text-text-muted">
-                Let Biorouter unpack archives, skip binaries, and stage readable children one by one
-                for curation.
-              </p>
-            </button>
-          </div>
-
-          <DialogFooter>
-            <Button type="button" variant="secondary" onClick={() => setChooserOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <button
+            data-testid="knowledge-ingest-browse-path"
+            type="button"
+            onClick={() => {
+              setChooserOpen(false);
+              void onPathPickRequested();
+            }}
+            className="biorouter-modal-row flex items-center gap-3 rounded-element px-4 py-3 text-left transition-colors tint-interactive"
+          >
+            <FolderTree className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
+            <span className="text-label">{knowledgeCopy.ingest.chooseFolder}</span>
+          </button>
+        </div>
+      </ModalShell>
     </>
   );
 }

@@ -15,23 +15,17 @@ interface ChatKindIconProps {
    */
   testId?: string;
   /**
-   * This is the chat the user is currently in.
-   *
-   * ⚠ It exists to fix a THREE-way ink precedence that no single caller could
-   * express: active beats private beats default. The sidebar wants its selected
-   * row in the accent-bar ink; a private chat wants the accent ink; everything
-   * else wants the subtle ink. Left to `cn`'s last-wins merge, whichever of the
-   * two the caller happened to pass would silently win — and passing the
-   * subtle ink for an inactive row would have erased the private tint on every
-   * inactive private chat. Naming the case here keeps the whole order in one
-   * place.
+   * This is the chat the user is currently in: the body takes the default
+   * ink instead of the muted one. The lock badge keeps the accent either way
+   * (it is authored CSS on `.br-icon-lock-badge`), so a private active row
+   * still shows the badge in colour.
    */
   isActive?: boolean;
 }
 
 /**
- * The one glyph that says what a chat IS — a chat, a branch, a sub-agent, an
- * app, a scheduled run, a terminal — and whether it is private.
+ * The one glyph that says what a chat IS (a chat, a Crew task, a branch, a
+ * sub-agent, an app, a scheduled run, a terminal) and whether it is private.
  *
  * ⚠ **This replaced the dense privacy dot on every chat list.** The dot was a
  * second mark sitting beside an icon that was identical for all six kinds, so a
@@ -39,9 +33,17 @@ interface ChatKindIconProps {
  * all about what any row was. Folding the tier into the glyph frees the row and
  * removes a mark the eye had to learn separately.
  *
- * ⚠ **The tier ink is applied here, not by the caller**, so the six surfaces
- * that draw chats cannot disagree about what private looks like — which is
- * exactly what happened when each one hung its own `PrivacyBadge`.
+ * ⚠ **Private is the lock badge, a shape, on every kind.** The glyph no
+ * longer carries a tier ink: the coral body made an all-private list a wall of
+ * coral glyphs. The ink is applied here, not by each caller, so the surfaces
+ * that draw chats cannot disagree: the body is muted at rest and default ink
+ * on the active row, and only the badge wears the family accent (authored in
+ * main.css, `.br-icon-lock-badge`). A caller's className still wins over the
+ * body ink, because it comes last.
+ *
+ * ⚠ **It always draws in a 16px slot** (`--icon-row`, authored on
+ * `.br-chat-kind-icon` in main.css), whatever size class a caller passes, so a
+ * chat glyph never sits a size below the nav icons beside it.
  *
  * ⚠ **It honours the master privacy switch** for the same reason `PrivacyBadge`
  * does (issue #56, DR-15): when nothing is enforcing tiers, a padlocked bubble
@@ -83,14 +85,11 @@ export function ChatKindIcon({
       // by every screen reader — the same trap the dense dot fell into.
       role="img"
       aria-label={label}
-      // Precedence, left to right, last wins: base → caller → tier. The tier
-      // ink sits AFTER the caller's so an inactive private chat keeps its
-      // marking, and stands down when the row is active because "you are here"
-      // is the more urgent of the two and the padlock shape still says private.
+      // Precedence, left to right, last wins: base, body ink, caller.
       className={cn(
         'br-chat-kind-icon flex-none',
-        className,
-        mark === 'private' && !isActive ? 'text-text-accent' : undefined
+        isActive ? 'text-text-default' : 'text-text-muted',
+        className
       )}
     />
   );

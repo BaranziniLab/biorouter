@@ -1,0 +1,38 @@
+/*
+ * Settings > App > Configuration editor (`ConfigSettings.tsx`, spec 3.14). Authored here, next to
+ * the one component that uses it: a newly written Tailwind utility can silently fail to generate
+ * under `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop shell geometry"), and none of this is shared.
+ *
+ * One label column serves both lists in the editor body: the privacy summary (read-only, plain
+ * rows with no box) and the editable fields below it. So every value and every field starts at the
+ * same x, and the label column is wide enough for the longest name the editor makes ("Biorouter Copilot
+ * capabilities version") on one line.
+ */
+
+.br-config-body {
+  --br-config-label-col: minmax(0, 240px);
+  padding-block: 12px;
+}
+
+/* A field row: label, input, save. `.grid` stays on the element (two browser-surface tests find a
+   row with `closest('.grid')` and take its one button); the columns are drawn here. */
+.br-config-row {
+  display: grid;
+  grid-template-columns: var(--br-config-label-col) minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+}
+
+/* The privacy summary: the same label column, so a value starts where the inputs below it do. No
+   border and no fill: it is a few read-only rows, and a box would sit inside the dialog's box. */
+.br-config-summary {
+  margin-bottom: 20px;
+}
+
+.br-config-summary-list {
+  display: grid;
+  grid-template-columns: var(--br-config-label-col) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 4px;
+}

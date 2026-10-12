@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Graph, GraphNode } from '../../../api/types.gen';
+import { knowledgeCopy } from '../copy';
 import { GraphFacetStrip } from './GraphFacetStrip';
 import { EMPTY_FACETS } from './graphFacets';
 import type { FacetState } from './graphFacets';
@@ -72,6 +73,32 @@ describe('GraphFacetStrip', () => {
   });
 
   /**
+   * Spec 3.12: the strip takes the band height every strip in the app shares
+   * (44px), its counts are sans tabular figures, and Clear explains itself in a
+   * Tooltip rather than a native `title` with an em dash in it.
+   */
+  it('is a 44px band with sans counts and no native titles', () => {
+    renderStrip(typed, true);
+    const strip = screen.getByTestId('knowledge-graph-facets');
+    expect(strip.className).toContain('h-chrome');
+    expect(strip.querySelectorAll('[title]')).toHaveLength(0);
+    expect(screen.getByText(/Showing 2 of 6/).className).not.toContain('font-mono');
+  });
+
+  /**
+   * Below the 1400px step Clear is the bare icon (its label and the "Showing N of M" readout wait
+   * for the room the Legend gives back), so the Tooltip is where the count lives. It must read
+   * the sentence the copy file writes, with parentheses and no dash.
+   */
+  it('says how many pass in Clear’s Tooltip', async () => {
+    renderStrip(typed, true);
+    await userEvent.hover(screen.getByRole('button', { name: knowledgeCopy.graph.clearFilters }));
+    const tip = await screen.findByRole('tooltip', {}, { timeout: 3000 });
+    expect(tip).toHaveTextContent(knowledgeCopy.graph.clearFiltersHint(2, 6));
+    expect(tip).toHaveTextContent('Clear filters (showing 2 of 6)');
+  });
+
+  /**
    * The collapsed controls exist at every width in the DOM — the container
    * queries decide which is VISIBLE — and each reports the count of what it
    * swallowed, so a filter the user cannot see is still reported.
@@ -92,8 +119,9 @@ describe('GraphFacetStrip', () => {
 
   /**
    * A filter is not a button, and after R-02 it is not one in the DOM either:
-   * `data-engaged` is what `.br-facet` keys its solid accent fill off, and it
-   * has to flip when a facet is actually engaged or the fill is decoration.
+   * `data-engaged` is what `.br-facet` keys its selected fill off (the strong fill under
+   * the selected wash, R-27), and it has to flip when a facet is actually engaged or the
+   * fill is decoration.
    */
   it('marks an engaged facet so the fill can change, not just a badge', () => {
     // The strip is controlled, so this asserts the MAPPING from facet state to

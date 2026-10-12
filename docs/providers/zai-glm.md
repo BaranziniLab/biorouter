@@ -44,7 +44,7 @@ backend-driven and required no z.ai-specific code.
 
 | Surface | What appears | Where it is wired |
 | --- | --- | --- |
-| Provider configuration (Settings → Models → Configure providers) | On the *Public* tab, under "API providers", in display-name order after Anthropic, OpenAI and Google; backend-driven via `GET /config/providers` | Ordering in `ui/desktop/src/components/settings/providers/providerOrdering.ts` (`pinnedThenAlphabetical`) |
+| Provider configuration (Settings → Models → Providers → Manage…) | On the *Public* tab, under "API providers", in display-name order after Anthropic, OpenAI and Google; backend-driven via `GET /config/providers` | Ordering in `ui/desktop/src/components/settings/providers/providerOrdering.ts` (`pinnedThenAlphabetical`) |
 | Provider configuration modal | `ZAI_API_KEY` (secret) + optional `ZAI_HOST` fields, rendered from backend `config_keys` | Backend-driven |
 | Onboarding | Listed under "Auto-detect from API key" | Auto-detect in `crates/biorouter/src/providers/auto_detect.rs`; text in `ui/desktop/src/components/onboarding/CommercialSetupCard.tsx` |
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `glm-*` models appear in the picker | Backend-driven |

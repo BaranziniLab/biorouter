@@ -56,7 +56,7 @@ a chat's message box), exactly as you would any other provider. A signed-in agen
 even if you have never used it in BioRouter, and choosing it saves its one setting first. The
 switch applies to that chat, and to new chats only if you tick **Also use for new chats**.
 
-You can also set it up in **Settings** > **Models** > **Configure providers**: on the **Public** tab,
+You can also set it up in **Settings** > **Models** > **Providers** > **Manage…**: on the **Public** tab,
 the agent's row under "AI agents · your subscription" offers **Use Claude Code** or **Use Codex**,
 then asks for a model. There is no key to enter. The only setting either provider has is the name or
 path of its executable, which defaults to `claude` and `codex` respectively.
@@ -155,6 +155,10 @@ the reason on the row (*"Codex is not installed, or is not on a path Biorouter s
 instead of offering a provider whose bind would fail. Fix the path, or install the CLI and press
 **Check again**, and both come back — the re-check re-reads the provider list as well as the
 status.
+
+A row says one thing about itself. A ready agent that is configured shows **Configured** alone; the
+**Ready** pill shows until the agent is set up, and every state that needs attention keeps its pill.
+In an open row the CLI's version is a line of its own, and where the CLI lives is that line's tooltip.
 
 Sign-in is deliberately **not** part of "configured". Learning it means running the CLI, and
 `GET /config/providers` runs for every provider on every settings open, under the three-second

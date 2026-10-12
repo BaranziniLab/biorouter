@@ -141,7 +141,13 @@ describe('CrewDialogs', () => {
     await waitFor(() => expect(search).toHaveFocus());
   });
 
-  it('opens a destructive confirmation on Cancel', async () => {
+  // The shared dialog reads the input that opened it (`ui/inputTrail`): a key open keeps Radix's
+  // first stop, a pointer open rests on the dialog box (V4-R5-1). Each case says which it models.
+  const keyOpen = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+  const pointerOpen = () => window.dispatchEvent(new Event('pointerdown'));
+
+  it('opens a destructive confirmation on Cancel from the keyboard', async () => {
+    keyOpen();
     renderWithCrew(<CrewDialogs />, {
       dialog: {
         kind: 'confirm',
@@ -150,6 +156,22 @@ describe('CrewDialogs', () => {
     });
     const cancel = await screen.findByRole('button', { name: 'Cancel' });
     await waitFor(() => expect(cancel).toHaveFocus());
+  });
+
+  it('opens a destructive confirmation on its box after a pointer press, never on the action', async () => {
+    pointerOpen();
+    renderWithCrew(<CrewDialogs />, {
+      dialog: {
+        kind: 'confirm',
+        confirm: { action: 'archive-channel', channelId: 'channel-general' },
+      },
+    });
+    const box = await screen.findByRole('alertdialog');
+    await waitFor(() => expect(box).toHaveFocus());
+    const cancel = within(box).getByRole('button', { name: 'Cancel' });
+    for (const button of within(box).getAllByRole('button')) {
+      if (button !== cancel) expect(button).not.toHaveFocus();
+    }
   });
 
   it('closes through the controller, and renders nothing for dialogs other areas own', async () => {
@@ -429,8 +451,10 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
     const content = field.closest('[data-slot="dialog-content"]');
     expect(content).toBe(dialog);
     expect(content?.querySelector('.crew-confirmation')).not.toBeNull();
-    // And the mark is not the ModalShell class, which this primitive never gets.
-    expect(dialog).not.toHaveClass('crew-dialog');
+    // The typed confirmation is a ModalShell now (V3-R7-1), so inside the area it carries the
+    // area's class as well, as `ConfirmationModal` does; the mark is what still reaches a
+    // confirmation mounted outside `CrewDialogs`.
+    expect(dialog).toHaveClass('crew-dialog');
   });
 
   it('puts the class and the header hairline on every dialog it hosts', async () => {
@@ -457,7 +481,7 @@ describe('Crew dialog chrome (QA Q2-25, Q2-26)', () => {
       snapshot: makeSnapshot({ pending_joins: [{ username: 'eve' }] }),
     });
     const cancel = await screen.findByRole('button', { name });
-    expect(cancel).toHaveClass('bg-background-medium');
+    expect(cancel).toHaveClass('br-fill-rest');
     expect(cancel).not.toHaveClass('border-border-emphasized');
   });
 

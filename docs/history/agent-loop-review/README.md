@@ -2,8 +2,8 @@
 
 > **What this is.** The executive report of the agentic-loop review: a walkthrough of
 > BioRouter's agent feedback loop as it ran at review time, answers to the 14 review
-> questions, a comparison against nine open-source coding agents, and the index of the
-> 28 sub-reports in this folder.
+> questions, a comparison against eight open-source coding agents, and the index of the
+> 27 sub-reports in this folder.
 > **Status:** Historical record — a point-in-time snapshot. The subsystem reviews were
 > read against commit `24cdc3a2` on `main` on 2026-07-12. Its findings became the
 > `BR-1`…`BR-67` fix campaign, which has since been implemented and merged (86
@@ -39,8 +39,8 @@ Terms used throughout this report:
   transform applied to the prompt.
 
 The review answered a fixed set of questions about how the loop worked, compared each
-answer against nine other coding agents, and merged the resulting improvement ideas
-into one program. The detailed evidence lives in the ten subsystem reviews, the nine
+answer against eight other coding agents, and merged the resulting improvement ideas
+into one program. The detailed evidence lives in the ten subsystem reviews, the eight
 external tool reports, the four comparison chapters, and the three proposal lenses
 listed below.
 
@@ -62,7 +62,7 @@ into the register:
 | [Robustness](proposal-lenses/robustness.md) | Correctness, safety, crash recovery, loop detection. |
 | [UX](proposal-lenses/ux.md) | Agent ergonomics, approvals, visibility, control. |
 
-**Comparison chapters** (`competitive-comparison/`) — BioRouter against nine agents,
+**Comparison chapters** (`competitive-comparison/`) — BioRouter against eight agents,
 one chapter per axis:
 
 - [Context injection, system prompts and environment awareness](competitive-comparison/context-and-prompts.md)
@@ -87,7 +87,6 @@ subsystem:
 **External tool reports** — moved out of this folder into the coding-agent landscape
 research set, since they describe other projects rather than BioRouter:
 
-- [Goose](../../research/coding-agent-landscape/goose.md)
 - [Cline](../../research/coding-agent-landscape/cline.md)
 - [OpenCode](../../research/coding-agent-landscape/opencode.md)
 - [Pi](../../research/coding-agent-landscape/pi.md)

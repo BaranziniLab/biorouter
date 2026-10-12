@@ -109,7 +109,7 @@ biorouter configure
 
 ### Switch or update your provider
 
-**Desktop:** to change the model of a chat, choose the model chip under its message box. To set up or change a provider, open **Settings** > **Models** > **Configure providers**, and choose **Configure** on its row.
+**Desktop:** to change the model of a chat, choose the model chip under its message box. To set up or change a provider, open **Settings** > **Models** > **Providers** > **Manage…**, and choose **Configure** on its row.
 
 **CLI:**
 
@@ -156,7 +156,7 @@ Available built-in capabilities: Developer, Biorouter Copilot, Web & Documents, 
 
 Any MCP-compatible server can be added as an extension.
 
-**Desktop:** Sidebar > Extensions > Add custom extension > enter the command and configuration.
+**Desktop:** Sidebar > Extensions > Add > Custom extension… > enter the command and configuration.
 
 **CLI example (GitHub MCP server):**
 
@@ -212,7 +212,7 @@ The main configuration file is at:
 
 ```text
 ~/.config/biorouter/config.yaml                  (macOS / Linux)
-%APPDATA%\biorouter\config\config.yaml           (Windows)
+%APPDATA%\UCSF\biorouter\config\config.yaml      (Windows)
 ```
 
 This file stores provider settings, extension configurations, and model preferences. It is shared between the Desktop app and the CLI.

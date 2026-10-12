@@ -1,16 +1,9 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { Button } from '../../ui/button';
-import { Plus, Search } from '../../icons/app-icons';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import kebabCase from 'lodash/kebabCase';
 import { useConfig, FixedExtensionEntry } from '../../ConfigContext';
 import ExtensionList from './subcomponents/ExtensionList';
 import ExtensionModal from './modal/ExtensionModal';
-import {
-  createExtensionConfig,
-  ExtensionFormData,
-  extensionToFormData,
-  getDefaultFormData,
-  nameToKey,
-} from './utils';
+import { createExtensionConfig, ExtensionFormData, extensionToFormData, nameToKey } from './utils';
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
 import { isCapabilityExtension } from '../capabilities/capabilities';
@@ -21,9 +14,17 @@ import {
 } from './chatrecallSuggestion';
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig, ProviderTier } from '../../../api/types.gen';
-import { BrxtInstallModal } from '../../BrxtInstallModal';
-import BrowseExtensionsModal from '../../baam/BrowseExtensionsModal';
 import { catalogFreshnessLine, loadRegistry, type RegistryLoad } from '../../baam/registry';
+import { EXTENSION_MODAL_COPY, EXTENSION_ROW_COPY } from './copy';
+import { EXTENSIONS_COPY } from '../../extensions/copy';
+
+/**
+ * The extensions this page lists: everything configured except the shipped capabilities, which
+ * are managed in Settings → Chat → Capabilities. The page's band counts the same list.
+ */
+export function listedExtensions(list: FixedExtensionEntry[]): FixedExtensionEntry[] {
+  return list.filter((ext) => !isCapabilityExtension(ext));
+}
 
 /** The global default provider, as the extension cards need to describe it. */
 export interface DefaultProvider {
@@ -35,21 +36,21 @@ export interface DefaultProvider {
 interface ExtensionSectionProps {
   deepLinkConfig?: ExtensionConfig;
   showEnvVars?: boolean;
-  hideButtons?: boolean;
-  disableConfiguration?: boolean;
-  customToggle?: (extension: FixedExtensionEntry) => Promise<boolean | void>;
-  selectedExtensions?: string[]; // Add controlled state
   onModalClose?: (extensionName: string) => void;
   searchTerm?: string;
 }
 
+/**
+ * The extension list and the dialogs that edit one.
+ *
+ * The page's three ways to add an extension (marketplace, a file, a custom one) belong to the
+ * page's band (`extensions/ExtensionsView.tsx`), which is the only mount; this section used to
+ * carry a button strip and two modals of its own behind a `hideButtons` prop nobody left off,
+ * and they are gone along with the props only they read.
+ */
 export default function ExtensionsSection({
   deepLinkConfig,
   showEnvVars,
-  hideButtons,
-  disableConfiguration,
-  customToggle,
-  selectedExtensions = [],
   onModalClose,
   searchTerm = '',
 }: ExtensionSectionProps) {
@@ -125,9 +126,31 @@ export default function ExtensionsSection({
 
   const [selectedExtension, setSelectedExtension] = useState<FixedExtensionEntry | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
-  const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
+  // The row whose menu opened the dialog, so closing it can go back there.
+  const openedFromRow = useRef<string | null>(null);
+
+  /**
+   * Where focus goes when the configure dialog closes. The shared dialog gives focus back to the
+   * control that was focused when it opened, and for a row's menu that control is a menu item that
+   * is gone by then, so a keyboard user landed on the page and began again at the top of a long
+   * list. The row's `⋯` button is what they used; the switch is the fallback. A row that is gone
+   * (the extension was removed or renamed) leaves the default alone.
+   */
+  const returnFocusToRow = useCallback((event: Event) => {
+    const name = openedFromRow.current;
+    openedFromRow.current = null;
+    if (!name) return;
+    const row = document.getElementById(`extension-${kebabCase(name)}`);
+    const target =
+      row?.querySelector<HTMLElement>('[data-row-action]') ??
+      row?.querySelector<HTMLElement>('[role="switch"]');
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+  }, []);
+  // True when the dialog was opened from the row's Remove… item, so it starts at the removal
+  // step and Cancel closes it instead of dropping the person into a form they never asked for.
+  const [startAtRemoval, setStartAtRemoval] = useState(false);
   const [deepLinkConfigStateVar, setDeepLinkConfigStateVar] = useState<
     ExtensionConfig | undefined | null
   >(deepLinkConfig);
@@ -143,42 +166,27 @@ export default function ExtensionsSection({
   const extensions = useMemo(() => {
     if (extensionsList.length === 0) return [];
 
-    return (
-      [...extensionsList]
-        // Shipped capabilities are managed in Settings → Chat → Capabilities.
-        .filter((ext) => !isCapabilityExtension(ext))
-        .sort((a, b) => {
-          // First sort by builtin
-          if (a.type === 'builtin' && b.type !== 'builtin') return -1;
-          if (a.type !== 'builtin' && b.type === 'builtin') return 1;
+    return listedExtensions(extensionsList).sort((a, b) => {
+      // First sort by builtin
+      if (a.type === 'builtin' && b.type !== 'builtin') return -1;
+      if (a.type !== 'builtin' && b.type === 'builtin') return 1;
 
-          // Then sort by bundled (handle null/undefined cases)
-          const aBundled = 'bundled' in a && a.bundled === true;
-          const bBundled = 'bundled' in b && b.bundled === true;
-          if (aBundled && !bBundled) return -1;
-          if (!aBundled && bBundled) return 1;
+      // Then sort by bundled (handle null/undefined cases)
+      const aBundled = 'bundled' in a && a.bundled === true;
+      const bBundled = 'bundled' in b && b.bundled === true;
+      if (aBundled && !bBundled) return -1;
+      if (!aBundled && bBundled) return 1;
 
-          // Finally sort alphabetically within each group
-          return a.name.localeCompare(b.name);
-        })
-        .map((ext) => ({
-          ...ext,
-          // Use selectedExtensions to determine enabled state in workflow editor
-          enabled: disableConfiguration ? selectedExtensions.includes(ext.name) : ext.enabled,
-        }))
-    );
-  }, [extensionsList, disableConfiguration, selectedExtensions]);
+      // Finally sort alphabetically within each group
+      return a.name.localeCompare(b.name);
+    });
+  }, [extensionsList]);
 
   const fetchExtensions = useCallback(async () => {
     await getExtensions(true); // Force refresh - this will update the context
   }, [getExtensions]);
 
   const handleExtensionToggle = async (extensionConfig: FixedExtensionEntry) => {
-    if (customToggle) {
-      await customToggle(extensionConfig);
-      return true;
-    }
-
     const toggleDirection = extensionConfig.enabled ? 'toggleOff' : 'toggleOn';
 
     await toggleExtensionDefault({
@@ -209,15 +217,14 @@ export default function ExtensionsSection({
       // suggestion on a toast the user never saw.
       toastService.success(
         {
-          title: 'Workspace Control enabled',
-          msg: 'Chat Recall pairs with it: Workspace reads and steers live chats, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
+          title: EXTENSION_ROW_COPY.chatrecallToastTitle,
+          msg: EXTENSION_ROW_COPY.chatrecallToastMessage,
         },
         // No auto-close: this is a once-per-install prompt whose flag is burned
         // as soon as it is shown, so the shared 3s default would let decision
         // 14's only suggestion expire long before its message can be read. It
-        // stays until the user dismisses it — which is also what separates it
-        // from `toggleExtensionDefault`'s own "Extension enabled for new chats"
-        // toast, fired for the same click and gone after 3s.
+        // stays until the user dismisses it. (A toggle raises no toast of its
+        // own any more: the switch is the confirmation, owner decision 6.9.)
         { autoClose: false }
       );
       markChatrecallSuggestionSeen();
@@ -227,6 +234,15 @@ export default function ExtensionsSection({
   };
 
   const handleConfigureClick = (extension: FixedExtensionEntry) => {
+    openedFromRow.current = extension.name;
+    setStartAtRemoval(false);
+    setSelectedExtension(extension);
+    setIsModalOpen(true);
+  };
+
+  const handleRemoveClick = (extension: FixedExtensionEntry) => {
+    openedFromRow.current = extension.name;
+    setStartAtRemoval(true);
     setSelectedExtension(extension);
     setIsModalOpen(true);
   };
@@ -293,6 +309,8 @@ export default function ExtensionsSection({
   };
 
   const handleDeleteExtension = async (name: string) => {
+    // The row is about to go; there is nothing to return to.
+    openedFromRow.current = null;
     handleModalClose();
 
     // Detect .brxt-installed extensions by their --directory arg pointing to extensions/
@@ -334,7 +352,7 @@ export default function ExtensionsSection({
     setShowEnvVarsStateVar(null);
 
     setIsModalOpen(false);
-    setIsAddModalOpen(false);
+    setStartAtRemoval(false);
     setSelectedExtension(null);
 
     // Clear any navigation state that might be cached
@@ -345,114 +363,47 @@ export default function ExtensionsSection({
 
   return (
     <section id="extensions">
-      <div className="">
-        {/* §10.2's staleness line. The provenance under every card below is only
-            as good as the catalogue it was read from, so how old that catalogue
-            is belongs on the same screen, once. */}
-        {catalog && catalogFreshnessLine(catalog) && (
-          <p className="text-xs text-text-subtle mb-3">
-            Marketplace catalog · {catalogFreshnessLine(catalog)}
-          </p>
-        )}
-        <ExtensionList
-          extensions={extensions}
-          onToggle={handleExtensionToggle}
-          onConfigure={handleConfigureClick}
-          disableConfiguration={disableConfiguration}
-          searchTerm={searchTerm}
-          defaultProvider={defaultProvider}
-          catalog={catalog}
+      <ExtensionList
+        extensions={extensions}
+        onToggle={handleExtensionToggle}
+        onConfigure={handleConfigureClick}
+        onRemove={handleRemoveClick}
+        searchTerm={searchTerm}
+        defaultProvider={defaultProvider}
+        catalog={catalog}
+        // §10.2's staleness line. The provenance under every row is only as good as the
+        // catalogue it was read from, so how old that catalogue is belongs on the same screen,
+        // once, in the first heading's help.
+        catalogFreshness={catalog ? catalogFreshnessLine(catalog) : null}
+      />
+
+      {/* Modal for updating an existing extension */}
+      {isModalOpen && selectedExtension && (
+        <ExtensionModal
+          title={EXTENSION_MODAL_COPY.updateTitle}
+          initialData={extensionToFormData(selectedExtension)}
+          onClose={handleModalClose}
+          onSubmit={handleUpdateExtension}
+          onDelete={handleDeleteExtension}
+          submitLabel={EXTENSION_MODAL_COPY.updateSubmit}
+          modalType={'edit'}
+          startAtRemoval={startAtRemoval}
+          onCloseAutoFocus={returnFocusToRow}
         />
-
-        {!hideButtons && (
-          <div className="flex gap-4 pt-4 w-full">
-            <Button
-              className="flex items-center gap-2 justify-center"
-              variant="default"
-              onClick={() => setIsBrxtModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add extension
-            </Button>
-            <Button
-              className="flex items-center gap-2 justify-center"
-              variant="outline"
-              onClick={() => setIsBrowseModalOpen(true)}
-            >
-              <Search className="h-4 w-4" />
-              Browse extensions
-            </Button>
-            <Button
-              className="flex items-center gap-2 justify-center"
-              variant="outline"
-              onClick={() => setIsAddModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add custom extension
-            </Button>
-          </div>
-        )}
-
-        {/* Modal for updating an existing extension */}
-        {isModalOpen && selectedExtension && (
-          <ExtensionModal
-            title="Update extension"
-            initialData={extensionToFormData(selectedExtension)}
-            onClose={handleModalClose}
-            onSubmit={handleUpdateExtension}
-            onDelete={handleDeleteExtension}
-            submitLabel="Save changes"
-            modalType={'edit'}
-          />
-        )}
-
-        {/* Modal for adding a new extension */}
-        {isAddModalOpen && (
-          <ExtensionModal
-            title="Add custom extension"
-            initialData={getDefaultFormData()}
-            onClose={handleModalClose}
-            onSubmit={handleAddExtension}
-            submitLabel="Add extension"
-            modalType={'add'}
-          />
-        )}
-
-        {/* Modal for adding extension from deeplink*/}
-        {deepLinkConfigStateVar && showEnvVarsStateVar && (
-          <ExtensionModal
-            title="Add custom extension"
-            initialData={extensionToFormData({
-              ...deepLinkConfig,
-              enabled: true,
-            } as FixedExtensionEntry)}
-            onClose={handleModalClose}
-            onSubmit={handleAddExtension}
-            submitLabel="Add extension"
-            modalType={'add'}
-          />
-        )}
-      </div>
-      {isBrxtModalOpen && (
-        <BrxtInstallModal onClose={() => setIsBrxtModalOpen(false)} onInstalled={fetchExtensions} />
       )}
-      {isBrowseModalOpen && (
-        <BrowseExtensionsModal
-          onClose={() => setIsBrowseModalOpen(false)}
-          onInstalled={fetchExtensions}
-          installedNames={new Set(extensions.map((e) => e.name.toLowerCase()))}
-          /* Issue #116. An installed marketplace row opens the very same
-             configuration modal the card's gear opens — this screen owns both,
-             so there is no reason to make the user find the card first. */
-          onConfigureInstalled={(entry) => {
-            const key = nameToKey(entry.extension_name ?? entry.name);
-            const match =
-              extensions.find((e) => nameToKey(e.name) === key) ??
-              extensions.find((e) => nameToKey(e.name) === nameToKey(entry.id));
-            if (!match) return;
-            setIsBrowseModalOpen(false);
-            handleConfigureClick(match);
-          }}
+
+      {/* Modal for adding extension from deeplink*/}
+      {deepLinkConfigStateVar && showEnvVarsStateVar && (
+        <ExtensionModal
+          title={EXTENSIONS_COPY.customTitle}
+          initialData={extensionToFormData({
+            ...deepLinkConfig,
+            enabled: true,
+          } as FixedExtensionEntry)}
+          onClose={handleModalClose}
+          onSubmit={handleAddExtension}
+          submitLabel={EXTENSIONS_COPY.customSubmit}
+          modalType={'add'}
         />
       )}
     </section>

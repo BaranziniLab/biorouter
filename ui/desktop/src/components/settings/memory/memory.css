@@ -1,0 +1,106 @@
+/*
+ * Settings > Chat > Memory (`MemorySection.tsx`, spec 3.14). Authored here, next to the one
+ * component that uses it: a newly written Tailwind utility can silently fail to generate under
+ * `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop shell geometry"), and none of this is shared.
+ *
+ * The rows themselves are the shared settings row (`.biorouter-settings-row` + `.br-setting-row`);
+ * only what is particular to a memory store is drawn here.
+ */
+
+/* The Refresh glyph is the 28px rung; the section header is a 24px band, so it overhangs by 2px
+   on each side instead of making Memory's header taller than every other section's. */
+.br-memory-refresh {
+  margin-block: -2px;
+}
+
+/* A store is a heading over its own rows, with 12px of air before the next store's heading, so the
+   two stores read as two lists. Rows are told apart by their rhythm and the hover fill, not by a
+   rule each (R-27); Settings switches the shared row's hairline off by scope (`settings.css`). */
+.br-memory-store + .br-memory-store {
+  margin-top: 12px;
+}
+
+.br-memory-store-head {
+  display: flex;
+  min-block-size: 28px;
+  min-inline-size: 0;
+  align-items: center;
+  padding-inline: 12px;
+}
+
+.br-memory-store-title {
+  margin: 0;
+  min-inline-size: 0;
+}
+
+/* Right-aligned, so the count lines up with the category counts under it. */
+.br-memory-store-count {
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+
+/* The store's folder, inside its InfoTip: a machine string on its own line, mono, breakable. */
+.br-memory-path {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* An empty store or no project: one muted row, with the InfoTip beside the words. */
+.br-memory-empty {
+  display: flex;
+  min-block-size: var(--row-height);
+  align-items: center;
+  padding-inline: 12px;
+}
+
+/* The disclosure: the chevron and the category name are one button that fills the row's text
+   side, so the whole name is the target.
+
+   The button owns its focus box, and the box is a control, not a text hug: 28px tall (the control
+   rung, so a one-line name is a 28px target in a 40px row) with 8px of padding on each side and a
+   matching negative start margin, so the chevron and the name stay exactly where the row's 12px
+   inset puts them while the focus fill and its 2px edge have room around them and the 8px radius
+   every filled box here wears. It was a bare 20px-tall rectangle with square corners and the
+   chevron touching its edge (measured with Tab in Chromium). The vertical padding is cancelled by
+   the margin, so a one-line row stays 40px. */
+.br-memory-toggle {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -4px 0 -4px -8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-element);
+  text-align: start;
+}
+
+.br-memory-toggle > svg {
+  flex: none;
+  /* 16px, the row-glyph size: a bare lucide svg is 24px and would make the row 46px tall */
+  width: 16px;
+  height: 16px;
+  /* centre it on the first 20px line of the name */
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+/* An entry row sits under its category, indented to the category's name: 12px inset + 16px
+   chevron + 8px gap. Two classes, so the shared row's padding shorthand loses to it whatever
+   order the stylesheets load in. Its text starts at the top: a long memory wraps. */
+.biorouter-settings-row.br-memory-entry {
+  align-items: flex-start;
+  padding-inline-start: 36px;
+}
+
+/* Delete is quiet until the person means it: muted ink at rest (the cluster itself is hidden
+   until the row is hovered or focused), danger ink only on the glyph's own hover or focus. */
+.br-memory-delete {
+  color: var(--text-muted);
+}
+
+.br-memory-delete:is(:hover, :focus-visible) {
+  color: var(--text-danger);
+}

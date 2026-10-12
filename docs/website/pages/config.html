@@ -12,7 +12,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
 
 <h2 id="config-files">Where files live</h2>
-<p>The paths below are for macOS and Linux. On Windows, <code>~/.config/biorouter/</code> is <code>%APPDATA%\Block\biorouter\config\</code>, and both <code>~/.local/share/biorouter/</code> and <code>~/.local/state/biorouter/</code> are <code>%APPDATA%\Block\biorouter\data\</code>. <code>biorouter info</code> prints the paths on your computer.</p>
+<p>The paths below are for macOS and Linux. On Windows, the settings sit in <code>%APPDATA%\UCSF\biorouter\config</code>, everything else, logs included, in <code>%APPDATA%\UCSF\biorouter\data</code>, and the cache in <code>%LOCALAPPDATA%\UCSF\biorouter\cache</code>. Earlier releases used a different folder on Windows. The desktop app moves it there when it starts, once no other Biorouter program is using it, and updates the paths saved inside it. If both folders exist, Biorouter uses the new one, leaves the old one as it was, and says so when it starts. <code>biorouter info</code> prints the paths on your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>What</th><th>Path</th></tr></thead>
   <tbody>

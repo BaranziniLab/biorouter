@@ -1,31 +1,39 @@
-import { FONT_SIZES, useFontSize } from '../../../hooks/useFontSize';
+import { FONT_SIZES, useFontSize, type FontSize } from '../../../hooks/useFontSize';
+import { SegmentedControl, type SegmentedOption } from '../../ui/segmented-control';
+import { appearanceCopy } from './copy';
 
-export default function FontSizeSelector() {
+export interface FontSizeSelectorProps {
+  id?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
+}
+
+const OPTIONS: SegmentedOption<FontSize>[] = FONT_SIZES.map((size) => ({
+  value: size,
+  label: appearanceCopy.textSizeOptions[size],
+  testId: `text-size-${size}-button`,
+}));
+
+/**
+ * Settings > App > Appearance > Text size. The one `SegmentedControl` (spec 2.6), replacing the
+ * native OS radios this used to be: the only native radio left in Settings, and a white disc in
+ * dark mode.
+ */
+export default function FontSizeSelector({
+  id,
+  'aria-labelledby': ariaLabelledBy,
+  'aria-describedby': ariaDescribedBy,
+}: FontSizeSelectorProps) {
   const { fontSize, setFontSize } = useFontSize();
   return (
-    <fieldset className="biorouter-settings-section">
-      <legend className="biorouter-settings-section-header text-caps text-text-muted">
-        Font size
-      </legend>
-      <p className="mb-3 text-supporting text-text-muted">Adjust text throughout Biorouter</p>
-      <div className="biorouter-settings-control-strip">
-        {FONT_SIZES.map((size) => (
-          <label
-            key={size}
-            className="flex cursor-pointer items-center gap-2 rounded-element border border-border-default px-3 py-2 text-label text-text-default has-[:checked]:bg-background-muted"
-          >
-            <input
-              type="radio"
-              name="app-font-size"
-              value={size}
-              checked={fontSize === size}
-              onChange={() => setFontSize(size)}
-              className="accent-text-default"
-            />
-            {size[0].toUpperCase() + size.slice(1)}
-          </label>
-        ))}
-      </div>
-    </fieldset>
+    <SegmentedControl<FontSize>
+      id={id}
+      options={OPTIONS}
+      value={fontSize}
+      onValueChange={setFontSize}
+      aria-labelledby={ariaLabelledBy}
+      aria-describedby={ariaDescribedBy}
+      aria-label={ariaLabelledBy ? undefined : appearanceCopy.textSize}
+    />
   );
 }

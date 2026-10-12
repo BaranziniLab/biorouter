@@ -1,4 +1,5 @@
 import { Switch } from '../../ui/switch';
+import { SettingRow } from '../../ui/setting-row';
 import { useConfig } from '../../ConfigContext';
 import { CONTEXTS, contextConfigKey } from './contexts';
 
@@ -32,32 +33,25 @@ export const ContextsSection = () => {
 
   // A fragment: the rows belong directly to the `.biorouter-settings-list` this
   // section mounts into, so they abut and `:last-child` selects the real last
-  // row rather than the last row of a nested box.
+  // row rather than the last row of a nested box. Each switch is named by its
+  // row's label and described by the row's help.
   return (
     <>
       {CONTEXTS.map((context) => {
         const stored = values[contextConfigKey(context.id)];
         const enabled = typeof stored === 'boolean' ? stored : true;
         return (
-          <div
+          <SettingRow
             key={context.id}
-            className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default"
+            label={context.label}
+            help={context.description}
+            controlId={`context-${context.id}`}
           >
-            <div className="min-w-0 flex-1">
-              <p className="text-label text-text-default">{context.label}</p>
-              <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-                {context.description}
-              </p>
-            </div>
-            <div className="flex flex-shrink-0 items-center">
-              <Switch
-                checked={enabled}
-                onCheckedChange={(checked) => handleToggle(context.id, checked)}
-                variant="mono"
-                aria-label={`Toggle ${context.label} context`}
-              />
-            </div>
-          </div>
+            <Switch
+              checked={enabled}
+              onCheckedChange={(checked) => handleToggle(context.id, checked)}
+            />
+          </SettingRow>
         );
       })}
     </>

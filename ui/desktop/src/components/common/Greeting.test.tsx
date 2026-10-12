@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Greeting, retainTabGreetings } from './Greeting';
+import { Greeting, resetGreetingArrivalForTests, retainTabGreetings } from './Greeting';
 
 const animate = vi.fn();
 vi.mock('../../hooks/use-text-animator', () => ({
@@ -13,24 +13,22 @@ vi.mock('../../hooks/use-text-animator', () => ({
 beforeEach(() => {
   animate.mockClear();
   retainTabGreetings([]);
+  resetGreetingArrivalForTests();
 });
 
 describe('Greeting', () => {
   /**
-   * ⚠ The unroll splits the sentence into one element PER CHARACTER, and
-   * `split-type` emits no ARIA at all. Without a name on the heading itself, the
-   * app's only orienting heading on an empty chat is announced letter by letter
-   * - "W h a t   i n s i g h t s …" - and heading navigation is broken with it.
-   * Everyone who has not turned on reduced motion gets that on every arrival.
+   * ⚠ The heading's name must be the sentence. The per-character unroll this
+   * replaced split the text into one element per letter, and the heading was
+   * announced letter by letter until it carried an `aria-label`. One text node
+   * needs neither the label nor a hidden copy.
    */
-  it('keeps a readable accessible name, which the per-character split destroys', () => {
+  it('is named by its sentence, read as one piece of text', () => {
     render(<Greeting />);
     const heading = screen.getByRole('heading');
-    const label = heading.getAttribute('aria-label');
-    expect(label).toMatch(/\?$/);
-    expect(label).toBe(heading.textContent);
-    // And the split text must be hidden, or it is read as the content anyway.
-    expect(heading.querySelector('span')?.getAttribute('aria-hidden')).toBe('true');
+    expect(heading.textContent).toMatch(/\?$/);
+    expect(heading).toHaveAccessibleName(heading.textContent ?? '');
+    expect(heading.querySelector('[aria-hidden]')).toBeNull();
   });
 
   it('renders one of the stock sentences', () => {
@@ -54,15 +52,50 @@ describe('Greeting', () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 
-  it('animates separate arrivals without a tab identity, and supports disabling motion', () => {
-    render(<Greeting />);
+  /**
+   * Principle 9: a surface that mounts because of navigation appears at rest.
+   * Home's greeting has no tab, so it fades on the window's first arrival and
+   * is still on every return (the vision review measured Crew to Home
+   * replaying it). Each return still draws its own sentence.
+   */
+  it('fades Home in once per window and is at rest on every return', () => {
+    const first = render(<Greeting />);
     expect(animate).toHaveBeenLastCalledWith(true);
+    first.unmount();
 
     render(<Greeting />);
-    expect(animate).toHaveBeenLastCalledWith(true);
+    expect(animate).toHaveBeenLastCalledWith(false);
+    render(<Greeting />);
+    expect(animate).toHaveBeenLastCalledWith(false);
+  });
 
+  it('keeps Home at rest after a reload, which keeps sessionStorage', () => {
+    render(<Greeting />).unmount();
+    expect(window.sessionStorage.getItem('biorouter-greeting-arrived')).not.toBeNull();
+    // A reload re-evaluates the module: the stored flag is all that survives.
+    resetGreetingArrivalForTests({ reload: true });
+    render(<Greeting />);
+    expect(animate).toHaveBeenLastCalledWith(false);
+  });
+
+  it('can be told not to move at all', () => {
     render(<Greeting animate={false} />);
     expect(animate).toHaveBeenLastCalledWith(false);
+  });
+
+  it('still fades when storage is blocked, once, on the module flag', () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    render(<Greeting />).unmount();
+    expect(animate).toHaveBeenLastCalledWith(true);
+    render(<Greeting />);
+    expect(animate).toHaveBeenLastCalledWith(false);
+    getItem.mockRestore();
+    setItem.mockRestore();
   });
 
   it('keeps its sentence stable across a re-render of the same instance', () => {

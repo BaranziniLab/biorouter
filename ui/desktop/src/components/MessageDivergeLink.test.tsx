@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import MessageDivergeLink from './MessageDivergeLink';
+import { transcriptCopy } from './transcript/copy';
+
+/** Open the message's ⋯ menu and choose "Diverge from here". */
+async function divergeFromHere() {
+  fireEvent.pointerDown(screen.getByRole('button', { name: transcriptCopy.message.more }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  fireEvent.click(
+    await screen.findByRole('menuitem', { name: transcriptCopy.message.divergeFromHere })
+  );
+}
 
 const mockDivergeSession = vi.fn();
 vi.mock('../api', () => ({
@@ -32,7 +45,7 @@ describe('MessageDivergeLink', () => {
     });
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
+    await divergeFromHere();
 
     await waitFor(() => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
@@ -67,7 +80,7 @@ describe('MessageDivergeLink', () => {
         truncateAfterId="assistant-message-1"
       />
     );
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
+    await divergeFromHere();
 
     await waitFor(() => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
@@ -86,7 +99,7 @@ describe('MessageDivergeLink', () => {
     mockDivergeSession.mockRejectedValue(new Error('boom'));
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
+    await divergeFromHere();
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
@@ -97,7 +110,7 @@ describe('MessageDivergeLink', () => {
     mockDivergeSession.mockResolvedValue({ data: { workingDir: '/x' } });
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
+    await divergeFromHere();
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
@@ -113,17 +126,17 @@ describe('MessageDivergeLink', () => {
     );
 
     render(<MessageDivergeLink sessionId="20260622_1" />);
-    const btn = screen.getByRole('button', { name: /diverge/i });
-    fireEvent.click(btn);
-    fireEvent.click(btn);
-    fireEvent.click(btn);
+    // The menu closes on the first choice; reopening it while the first branch
+    // is in flight finds the item disabled and saying so, so a second choice
+    // does nothing.
+    const user = userEvent.setup();
+    await divergeFromHere();
+    await user.click(screen.getByRole('button', { name: transcriptCopy.message.more }));
+    const item = await screen.findByRole('menuitem', { name: transcriptCopy.message.diverging });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    await user.click(item);
+    await user.keyboard('{Escape}');
 
-    // Issue #56 DR-19: the renderer mints the user-action header before it
-    // calls the API, so the request now lands a microtask after the click
-    // instead of during it. The guard itself is unchanged — clicks 2 and 3 hit
-    // a button React has already disabled — and the re-assertion after the
-    // branch opens is what still holds that, rather than `waitFor` merely
-    // catching the first of three calls.
     await waitFor(() => expect(mockDivergeSession).toHaveBeenCalledTimes(1));
     resolve({ data: { sessionId: '20260622_9', workingDir: '/x' } });
     await waitFor(() => expect(mockCreateDivergedChatWindow).toHaveBeenCalledTimes(1));

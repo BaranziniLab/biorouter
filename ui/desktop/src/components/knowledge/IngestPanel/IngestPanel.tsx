@@ -1,21 +1,25 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Clipboard } from '../../icons/app-icons';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
+import { prefersReducedMotion } from '../../../styles/motion';
 import { toastError, toastSuccess } from '../../../toasts';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { expandKnowledgePath, knowledgeFetch } from '../hooks/knowledgeRequest';
 import { useIngestStream } from '../hooks/useIngestStream';
 import { useStagedSources } from '../hooks/useStagedSources';
-import { Dropzone } from './Dropzone';
+import { Dropzone, useFileDrop } from './Dropzone';
 import { IngestModelPicker } from './IngestModelPicker';
 import { IngestWarnings } from './IngestWarnings';
 import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
+import { neighbourOf, railFocusElement, type RailFocusTarget } from './railFocus';
 import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
 import { resolveIngestModel } from './resolveIngestModel';
@@ -56,6 +60,41 @@ export function IngestPanel() {
   // The summoned box and the strip that would otherwise cover it.
   const pasteBoxRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  const quietReasonId = useId();
+
+  /**
+   * Keep a keyboard user's place when the control they pressed leaves the rail (V3-R6-1).
+   *
+   * Stage, Cancel, a row's Remove, Clear, a warning's Dismiss and Retry failed each unmount the
+   * button that held focus, and Chromium hands that to `<body>`: the person was back at the top of
+   * the page's Tab order after every one. A press names where focus goes (`placeFocus`, see
+   * `railFocus.ts` for the rule), and the first commit after it moves focus there, in a LAYOUT
+   * effect so it lands before the frame paints and there is no frame with focus on nothing.
+   *
+   * The tick is state only so a commit is certain to follow the press: the target is a ref, which
+   * would not render, and a target left waiting for some unrelated later render would move focus
+   * for no reason. It is consumed by the commit it queued, found or not, and falls back to "Paste
+   * text" (the rail's first control) when what it named is no longer there.
+   *
+   * It moves focus after a CLICK too, not only a key: a screen-reader user's activation is a click,
+   * and `:focus-visible` is the keyboard's verdict, so a pointer press that ends with focus on a
+   * button draws nothing (measured in Chromium, `sourcesRail.browser.test.tsx`).
+   */
+  const pendingFocus = useRef<RailFocusTarget | null>(null);
+  const [, setFocusTick] = useState(0);
+  function placeFocus(target: RailFocusTarget) {
+    pendingFocus.current = target;
+    setFocusTick((tick) => tick + 1);
+  }
+  useLayoutEffect(() => {
+    const target = pendingFocus.current;
+    if (!target) return;
+    pendingFocus.current = null;
+    const rail = railRef.current;
+    if (!rail) return;
+    (railFocusElement(rail, target) ?? railFocusElement(rail, { to: 'paste' }))?.focus();
+  });
 
   /**
    * The digest log belongs to the base it ran against.
@@ -89,8 +128,7 @@ export function IngestPanel() {
     if (!showPasteBox) return;
     const box = pasteBoxRef.current;
     if (!box || typeof box.scrollIntoView !== 'function') return;
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
-    box.scrollIntoView({ block: 'end', behavior: reduced ? 'auto' : 'smooth' });
+    box.scrollIntoView({ block: 'end', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
   }, [showPasteBox]);
 
   // Only the user's explicit pick lives in state, and it is stamped with the
@@ -259,6 +297,20 @@ export function IngestPanel() {
       }
       add({ kind: 'file', id: genId(), file: file.file, label: file.label, status: 'pending' });
     }
+  }
+
+  /** Remove one staged row; focus goes to the row that takes its place, else the one above, else Paste text. */
+  function removeStaged(id: string) {
+    const next = neighbourOf(items, id);
+    placeFocus(next ? { to: 'staged-remove', id: next.id } : { to: 'paste' });
+    remove(id);
+  }
+
+  /** Dismiss one warning, with the same rule. */
+  function dismissWarning(id: string) {
+    const next = neighbourOf(warnings, id);
+    placeFocus(next ? { to: 'warning-dismiss', id: next.id } : { to: 'paste' });
+    setWarnings((current) => current.filter((warning) => warning.id !== id));
   }
 
   async function onPathPickRequested() {
@@ -464,8 +516,8 @@ export function IngestPanel() {
 
   const busy = digestState !== 'idle';
   // K-04: the one primary action stays full-opacity even with nothing staged,
-  // guarded by a cursor + helper line, so it never trains the eye to ignore a
-  // permanently half-lit button.
+  // guarded by a cursor and an explanation, so it never trains the eye to ignore
+  // a permanently half-lit button.
   const nothingToDigest = !dispatchKbId || !model || items.length === 0;
   // ⚠ **There is deliberately no "choose a primary knowledge base" rung here.**
   // This panel cannot be mounted without one: `KnowledgeView` replaces its whole
@@ -485,12 +537,20 @@ export function IngestPanel() {
       ? 'Could not load your knowledge bases, so digestion is on hold.'
       : 'This knowledge base is unavailable, so digestion is on hold.'
     : modelPending
-      ? 'Checking which model this knowledge base digests with…'
+      ? knowledgeCopy.ingest.checkingModel
       : !model
         ? 'No model is configured. Choose a model above to enable digestion.'
         : items.length === 0
-          ? 'Stage a file to digest.'
+          ? knowledgeCopy.ingest.stageAFile
           : null;
+  // Spec 3.12: a visible line under Digest only when the person must act (the
+  // base is unavailable, or no model is configured). The resting reason and the
+  // model check are not problems to fix, so they ride on the button itself, in
+  // its Tooltip and its accessible description; K-04 still holds, because the
+  // button stays at full opacity and explains itself.
+  const reasonNeedsAction = kbUnavailable || (!modelPending && !model);
+  const visibleReason = !busy && reasonNeedsAction ? digestBlockedReason : null;
+  const quietReason = !busy && !reasonNeedsAction ? digestBlockedReason : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -501,60 +561,75 @@ export function IngestPanel() {
           : 'Digest staged sources';
 
   const failed = items.filter((item) => item.status === 'error');
+  // The whole rail takes a dropped file (V3-12), so a file let go on a staged row or the paste box,
+  // which the box yields its room to (R-33), still stages.
+  const fileDrop = useFileDrop(onFiles);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* ⚠ **`justify-start` and NOT `flex-1` on the children** — the gap this
-          leaves is deliberate and belongs at the BOTTOM, not the middle. R-06
-          stopped the rail scrolling at rest, which made its leftover space
-          visible for the first time: dropzone and Paste text at the top, the
-          action footer pinned at the bottom, and ~200px of nothing between them.
-          Distributing that space (`justify-between`, or growing the staged
-          list) would push the two staging affordances apart and read as two
-          unrelated groups. Keeping the group together at the top, with the slack
-          under it, is what makes the empty rail read as "nothing staged yet"
-          rather than as a layout accident — and it is where a staged list
-          actually grows into. */}
+    // ⚠ **The rail answers a held file too, not only the box** (`.br-knowledge-rail` in
+    // `main.css`). The box yields its room to the staged list, and a long list scrolls it out of
+    // view: a file held over the rail then lit nothing anywhere on screen.
+    <div
+      ref={railRef}
+      className="br-knowledge-rail flex min-h-0 flex-1 flex-col"
+      data-testid="knowledge-ingest-rail"
+      data-dragging={fileDrop.dragging ? 'true' : undefined}
+      {...fileDrop.dropProps}
+    >
+      {/* ⚠ **The dropzone is the ONE child that grows** (R-33). It takes the
+          scroller's free height, like the side panel it was before V3-12, and
+          everything else here (warnings, the paste box, the staged list, the
+          digest progress) keeps its own height under it and takes that room
+          back as it appears, the box shrinking to its 240px floor and then the
+          scroller scrolling. Nothing else may grow: a second grower splits the
+          free height and the target stops being the rail's one big thing.
+          `justify-start` stays: once the box is at its floor the children
+          overflow at the bottom, where the scroller can reach them. */}
       <div className="flex min-h-0 flex-1 flex-col justify-start gap-3 overflow-y-auto p-4">
-        <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
-        <Button
-          data-testid="knowledge-ingest-paste-text"
-          type="button"
-          variant="secondary"
-          onClick={() => setShowPasteBox(true)}
-          className="w-full"
-        >
-          <Clipboard aria-hidden="true" />
-          Paste text
-        </Button>
+        <Dropzone
+          dragging={fileDrop.dragging}
+          onFiles={onFiles}
+          onPathPickRequested={() => void onPathPickRequested()}
+          onPasteText={() => setShowPasteBox(true)}
+        />
         <IngestWarnings
           warnings={warnings}
-          onDismiss={(id) =>
-            setWarnings((current) => current.filter((warning) => warning.id !== id))
-          }
-          onClear={() => setWarnings([])}
+          onDismiss={dismissWarning}
+          onClear={() => {
+            placeFocus({ to: 'paste' });
+            setWarnings([]);
+          }}
         />
 
         {showPasteBox && (
-          // (the `br-ingest-summoned` scroll-margin hook is retired with the
-          // sticky footer that made it necessary — see the effect above)
-          // legacy note: `br-ingest-summoned` carried the scroll margin
-          // fills in. AUTHORED CSS, never an arbitrary utility: a freshly
-          // written class can silently fail to generate under
-          // `BIOROUTER_NO_HMR`, and this one is the whole fix.
+          // (no scroll-margin hook: it was retired with the sticky footer that
+          // made it necessary, see the effect above)
           <div ref={pasteBoxRef}>
             <PasteTextBox
-              onCancel={() => setShowPasteBox(false)}
+              onCancel={() => {
+                setShowPasteBox(false);
+                placeFocus({ to: 'paste' });
+              }}
               onStage={(text, title, urls) => {
-                add({ kind: 'text', id: genId(), text, title, status: 'pending' });
+                const textId = genId();
+                add({ kind: 'text', id: textId, text, title, status: 'pending' });
                 for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
                 setShowPasteBox(false);
+                // The row the paste became (the URLs it listed follow it).
+                placeFocus({ to: 'staged-row', id: textId });
               }}
             />
           </div>
         )}
 
-        <StagedList items={items} onRemove={remove} onClear={clear} />
+        <StagedList
+          items={items}
+          onRemove={removeStaged}
+          onClear={() => {
+            placeFocus({ to: 'paste' });
+            clear();
+          }}
+        />
 
         {/* State 3. Determinate on the queue — `value`/`max` are the two numbers
             the loop already knows — with `indeterminate` reserved for the
@@ -583,7 +658,10 @@ export function IngestPanel() {
               variant="secondary"
               size="sm"
               onClick={() => {
-                if (!nothingToDigest) void onDigest();
+                if (nothingToDigest) return;
+                // This button leaves with the strip the moment the run starts; Digest becomes Stop.
+                placeFocus({ to: 'digest' });
+                void onDigest();
               }}
             >
               Retry failed
@@ -593,6 +671,7 @@ export function IngestPanel() {
               variant="ghost"
               size="sm"
               onClick={() => {
+                placeFocus({ to: 'paste' });
                 for (const item of failed) remove(item.id);
               }}
             >
@@ -611,63 +690,90 @@ export function IngestPanel() {
           used to carry is gone. */}
       <div
         ref={footerRef}
-        className="flex flex-none flex-col gap-2 border-t border-border-subtle bg-background-default p-4"
+        className="flex-none border-t border-border-subtle bg-background-default p-4"
       >
-        <IngestModelPicker
-          value={model}
-          valueState={modelValueState}
-          onChange={(next) => void onDefaultModelChange(next)}
-          disabled={!dispatchKbId || savingDefaultModel}
-          saving={savingDefaultModel}
-        />
-        {/* K-04 preserved verbatim: the one primary action stays full-opacity
-            with nothing staged, guarded by a cursor and a helper line, so it
-            never trains the eye to ignore a permanently half-lit button.
-            `size="lg"` and NO className height — `size="sm" className="min-h-9"`
-            was a contradiction that forced a 28px rung to render at 36px while
-            keeping `sm`'s own 6px icon gap. */}
-        <Button
-          data-testid="knowledge-digest-button"
-          variant={busy ? 'secondary' : 'default'}
-          size="lg"
-          disabled={digestState === 'stopping'}
-          aria-disabled={(!busy && nothingToDigest) || undefined}
-          onClick={() => {
-            if (busy) {
-              onAbort();
-              return;
-            }
-            if (!nothingToDigest) void onDigest();
-          }}
-          className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
-        >
-          {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
-        </Button>
-        {digestBlockedReason && !busy && (
-          <p
-            className="text-center text-supporting text-text-muted"
-            // Only where it explains the line being shown — hung on an
-            // unrelated reason it is a tooltip about someone else's problem.
-            title={(kbUnavailable && basesError) || undefined}
-          >
-            {digestBlockedReason}
-            {/* The one state the user can act on from here: re-read the list.
-                Offered for a missing base too — a base that came back, or one
-                the prune has since cleared, both settle this line. */}
-            {kbUnavailable && (
+        {/* One column the width of the rail, and no wider than a button needs to be (V3-12): on the
+            narrow Sources tab the rail is the whole pane, and a full-width coral bar was the heaviest
+            thing on screen. */}
+        <div className="br-knowledge-ingest-actions">
+          <IngestModelPicker
+            value={model}
+            valueState={modelValueState}
+            onChange={(next) => void onDefaultModelChange(next)}
+            disabled={!dispatchKbId || savingDefaultModel}
+            saving={savingDefaultModel}
+          />
+          {/* K-04: the one primary action stays full-opacity with nothing
+              staged, guarded by a cursor and its Tooltip (a visible line only
+              when the person must act), so it never trains the eye to ignore a
+              permanently half-lit button.
+              `size="lg"` and NO className height — `size="sm" className="min-h-9"`
+              was a contradiction that forced a 28px rung to render at 36px while
+              keeping `sm`'s own 6px icon gap. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button
-                data-testid="knowledge-ingest-retry"
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="ml-1 align-baseline"
-                onClick={() => void refresh()}
+                data-testid="knowledge-digest-button"
+                variant={busy ? 'secondary' : 'default'}
+                size="lg"
+                // Stopping is `aria-busy`, not `disabled`: the person has just pressed this
+                // button, and one that turns `disabled` under a keyboard user hands focus to
+                // <body> (V3-R2-1, WS-VIEWS-A-3). The press is ignored below, and
+                // `.br-action-busy` dims it.
+                aria-disabled={
+                  (!busy && nothingToDigest) || digestState === 'stopping' || undefined
+                }
+                aria-busy={digestState === 'stopping' || undefined}
+                aria-describedby={quietReason ? quietReasonId : undefined}
+                onClick={() => {
+                  if (digestState === 'stopping') return;
+                  if (busy) {
+                    onAbort();
+                    return;
+                  }
+                  if (!nothingToDigest) void onDigest();
+                }}
+                className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''} ${digestState === 'stopping' ? 'br-action-busy' : ''}`}
               >
-                Retry
+                {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
               </Button>
-            )}
-          </p>
-        )}
+            </TooltipTrigger>
+            {quietReason && <TooltipContent side="top">{quietReason}</TooltipContent>}
+          </Tooltip>
+          {quietReason && (
+            <span id={quietReasonId} className="sr-only">
+              {quietReason}
+            </span>
+          )}
+          {visibleReason && (
+            <p
+              data-testid="knowledge-digest-reason"
+              className="flex flex-wrap items-center justify-center gap-x-1 text-center text-supporting text-text-muted"
+            >
+              <span>{visibleReason}</span>
+              {/* The raw error behind "could not load", for the person who asks.
+                  It used to be a native `title` on the line. The sentence itself
+                  stays visible: an InfoTip never carries an error alone. */}
+              {kbUnavailable && basesError && (
+                <InfoTip label={knowledgeCopy.ingest.errorDetails} help={basesError} />
+              )}
+              {/* The one state the user can act on from here: re-read the list.
+                  Offered for a missing base too — a base that came back, or one
+                  the prune has since cleared, both settle this line. */}
+              {kbUnavailable && (
+                <Button
+                  data-testid="knowledge-ingest-retry"
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void refresh()}
+                >
+                  Retry
+                </Button>
+              )}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,76 @@
+/*
+ * First run and provider setup on the fill system (owner message 13, R-27, design.md 9.11).
+ *
+ * The first-run page (`ProviderGuard`) stands on the page ground, as the `#/welcome` page and
+ * Settings do (R-34, vision FR-R1-2): only its loader keeps the muted ground the boot splash hands
+ * off to. So a box here rests where a FIELD would on that ground, the rest fill
+ * (`--background-fill`), with no resting outline.
+ *
+ * A box that holds controls also carries `.br-fill-surface` (the shared primitives block), so the
+ * field or button inside it steps back to the page ground and never sits fill on fill, and a
+ * progress track inside it takes the shared track ground one step in.
+ *
+ * Authored here, not as Tailwind strings: a newly written utility can silently fail to generate
+ * under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry"), and which ground a box rests on is
+ * a cascade question a class list cannot ask. The 1px border stays and is TRANSPARENT, never
+ * dropped: nothing moves, and forced colours draw it in the system ink, so the box keeps its edge
+ * there.
+ */
+
+.br-first-run-box,
+.br-first-run-card {
+  min-width: 0;
+  border: 1px solid transparent;
+  background-color: var(--br-control-ground, var(--background-fill));
+}
+
+/* An inline box inside an open row: a progress line, a terminal. */
+.br-first-run-box {
+  border-radius: var(--radius-element);
+}
+
+/* A standalone card: the host-managed panel on a browser surface (`privacy/HostManagedModelPanel`). */
+.br-first-run-card {
+  border-radius: var(--radius-container);
+}
+
+/* The wordmark leading the first-run band: the logo (R-29), at the sidebar's scale (20px tall,
+   `.br-sidebar-wordmark`), 16px before the title (8px here plus the band's 8px gap). Drawn at
+   rest: no entrance animation on a page that appears because of a launch (FR-S-15). */
+.br-first-run-wordmark {
+  flex: none;
+  width: auto;
+  height: calc(20px * var(--app-font-scale, 1));
+  margin-inline-end: 8px;
+}
+
+/* A status word with its dot (`StatusPill`): the catalog row's "Configured" geometry
+   (`.br-provider-configured`), so every status in the list is one size and one gap. */
+.br-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* Llama Server's Details (`LlamaServerInlineCard`): the model's one-sentence description, then
+   label and value rows on one grid, the Settings info dialog's two columns at the supporting size.
+   No box: the panel is not one, and a box never sits in a box. */
+.br-llama-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-llama-details-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  min-width: 0;
+  margin: 0;
+}
+
+.br-llama-details-list > dd {
+  margin: 0;
+}

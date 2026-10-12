@@ -250,7 +250,7 @@ You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which dis
 When the keyring is disabled, secrets are stored here:
 
 - macOS/Linux: `~/.config/biorouter/secrets.yaml`
-- Windows: `%APPDATA%\Biorouter\config\secrets.yaml`
+- Windows: `%APPDATA%\UCSF\biorouter\config\secrets.yaml`
 
 ## Extensions and package runners
 
@@ -498,9 +498,31 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 
 #### Data locations
 
-- **Configuration and Data**: `%APPDATA%\Biorouter\`
-- **Local Application Data**: `%LOCALAPPDATA%\Biorouter\`
+- **Configuration, data and logs**: `%APPDATA%\UCSF\biorouter\`
+- **Cache**: `%LOCALAPPDATA%\UCSF\biorouter\`
+- **Desktop app state**: `%APPDATA%\Biorouter\`
+- **Command line tool and helper programs**: `%LOCALAPPDATA%\Biorouter\`
 - **Secrets**: Windows Credential Manager
+
+Earlier releases kept the first two folders under a different author folder in the same two places. The desktop app moves them to the folders above when it starts, unless another Biorouter program is using the old folder at that moment; the move then waits for a later start.
+
+#### Two folders after an update
+
+If the old folder and the new one both exist, Biorouter uses the new one and leaves the old one exactly as it is. Anything saved in the old folder after the move (settings, chats, knowledge bases) does not appear in Biorouter. The desktop app says so when it starts, names the old folder and offers to open it; the daemon log says the same. This usually means an older copy of the `biorouter` command line tool ran after the update, or an earlier release of the app was opened.
+
+To recover:
+
+1. Quit Biorouter and every `biorouter` command that is running.
+2. Update the command line tool: accept the Biorouter CLI update the desktop app offers, or run `biorouter setup-path` from the new release. Until then an older copy keeps writing to the old folder.
+3. Decide which folder holds what you want to keep:
+   - **The new one.** Copy anything you need out of the old folder, then delete the old folder. Biorouter never deletes it on its own.
+   - **The old one.** Rename `%APPDATA%\UCSF\biorouter` to something else, for example `biorouter-newer`. The next time the desktop app starts, the old folder is the only one, so it is moved into place again and the paths saved inside it are updated. Copy anything you need out of the renamed folder afterwards.
+
+   Do not copy a whole folder over the other one. The chat database cannot be merged by copying, and a copied folder keeps paths that point at the folder it came from.
+
+To stop the message without deciding, tick "Do not show this again for this folder". It is shown again if a different old folder appears.
+
+If the old folder stays in use and never moves, something keeps it open: a `biorouter` command line session, an extension it started, or a program from the earlier release. Quit them, then start the desktop app again. The daemon log names the step that waited.
 
 #### Removal steps
 
@@ -512,6 +534,8 @@ You may need to uninstall biorouter or clear existing data before re-installing.
 3. Remove data directories:
 
    ```text
+   rmdir /s /q "%APPDATA%\UCSF\biorouter"
+   rmdir /s /q "%LOCALAPPDATA%\UCSF\biorouter"
    rmdir /s /q "%APPDATA%\Biorouter"
    rmdir /s /q "%LOCALAPPDATA%\Biorouter"
    ```

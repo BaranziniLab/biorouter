@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import ArtifactViewer from './ArtifactViewer';
 import type { ArtifactFilePreview } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
 
 const SCRIPT = 'library(ggplot2)\nggsave("volcano.png")\n';
 
@@ -44,14 +45,18 @@ async function renderScript() {
     </ThemeProvider>
   );
   await waitFor(() => expect(screen.getByText('2 lines')).toBeInTheDocument());
-  return screen.getByRole('button', { name: 'Copy' });
+  return screen.getByRole('button', { name: PREVIEW_COPY.copy });
 }
 
+/** The outcome is announced beside the icon-only button (spec 3.8), never only drawn. */
+const status = () => screen.getByTestId('artifact-copy-status');
+
 /**
- * The panel's status-strip Copy. A refused write was caught by an empty `catch` that "left the
+ * The preview bar's Copy. A refused write was caught by an empty `catch` that "left the
  * label alone", so in 1.90.4–1.91.2 (whose permission handler refused every write) the button
  * went on saying "Copy" and copied nothing. It now goes through the shared path in
- * `utils/clipboard.ts` and says when that path failed.
+ * `utils/clipboard.ts` and says when that path failed: the glyph turns to a check or a warning,
+ * the failure sentence is the tooltip, and the outcome is announced in a status region.
  */
 describe('ArtifactViewer — the status strip Copy', () => {
   let writeText: ReturnType<typeof vi.fn>;
@@ -76,10 +81,11 @@ describe('ArtifactViewer — the status strip Copy', () => {
       fireEvent.click(button);
     });
     expect(writeText).toHaveBeenCalledExactlyOnceWith(SCRIPT);
-    await waitFor(() => expect(button).toHaveTextContent('Copied'));
+    await waitFor(() => expect(status()).toHaveTextContent(PREVIEW_COPY.copied));
+    expect(button).toHaveAttribute('data-outcome', 'copied');
   });
 
-  it('copies through the document when the clipboard refuses, from inside the strip', async () => {
+  it('copies through the document when the clipboard refuses, from inside the bar', async () => {
     writeText.mockRejectedValue(new Error('Write permission denied'));
     let inStrip = false;
     const execCommand = installExecCommand((command) => {
@@ -96,7 +102,7 @@ describe('ArtifactViewer — the status strip Copy', () => {
       fireEvent.click(button);
     });
 
-    await waitFor(() => expect(button).toHaveTextContent('Copied'));
+    await waitFor(() => expect(status()).toHaveTextContent(PREVIEW_COPY.copied));
     expect(writeText).toHaveBeenCalledTimes(2);
     expect(execCommand).toHaveBeenCalledWith('copy');
     expect(inStrip).toBe(true);
@@ -111,6 +117,7 @@ describe('ArtifactViewer — the status strip Copy', () => {
       fireEvent.click(button);
     });
 
-    await waitFor(() => expect(button).toHaveTextContent('Copy failed'));
+    await waitFor(() => expect(status()).toHaveTextContent(PREVIEW_COPY.copyFailedShort));
+    expect(button).toHaveAttribute('data-outcome', 'failed');
   });
 });

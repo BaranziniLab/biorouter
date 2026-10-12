@@ -2,11 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
+import { Textarea } from '../../ui/textarea';
+import { knowledgeCopy } from '../copy';
 
 interface Props {
   onStage: (text: string, title: string, urls: string[]) => void;
   onCancel: () => void;
 }
+
+/** What both states of a "Will fetch" chip share: the control ground inside the card, and focus. */
+const CHIP_CLASS =
+  'biorouter-focus-surface tint-interactive bg-background-default hover:bg-background-fill-strong';
 
 /**
  * Paste-a-chunk-of-prose staging (ui-spec §4.4).
@@ -20,8 +26,18 @@ interface Props {
  *   gesture.
  * - **Detected URLs are `Badge variant="chip"` toggles**, not hand-rolled
  *   `py-0.5` spans. `asChild` so the chip IS the button and takes the global
- *   focus fill; without it an opaque `bg-background-medium` span would sit on
+ *   focus fill; without it an opaque neutral-badge span would sit on
  *   top of its own focus surface and a keyboard user would see nothing.
+ * - **A chip is a control, so inside the card it rests on the page ground**
+ *   (`bg-background-default`, hovering on `bg-background-fill-strong`; design.md 9.11
+ *   rule 3), like the Title field and Stage beside it. A neutral badge rests on the strong
+ *   step, which on this card's fill drew 1.09:1, a fill on a fill (V3-R8-1). Pressed and not
+ *   pressed differ by fill, not only by the strike-through: the selected wash is the
+ *   pressed state's. `biorouter-focus-surface` keeps the grey focus surface, which an own
+ *   `bg-*` utility would otherwise out-rank (main.css, `.biorouter-focus-surface`).
+ * - **The box is the filled card** (R-27, design.md 9.11): the subtle fill with a transparent
+ *   1px edge and no outline. `br-fill-surface` makes its fields and its Stage button rest one
+ *   ground back, on the page's, because a fill never sits on a fill.
  */
 export function PasteTextBox({ onStage, onCancel }: Props) {
   const [text, setText] = useState('');
@@ -57,25 +73,34 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-container border border-border-subtle bg-background-default p-3">
+    <div className="br-fill-surface flex flex-col gap-2 rounded-container border border-transparent bg-background-fill p-3">
       <Input
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Optional title…"
+        placeholder={knowledgeCopy.ingest.pasteTitlePlaceholder}
         aria-label="Title for the pasted source"
       />
-      <textarea
+      {/* The `Textarea` primitive, the one multi-line field: Input's edge and
+          radius, resizing vertically only. Five rows because this is a paste
+          target. It keeps its resting fill while focused and firms its own edge,
+          as every other text field does (the Write a skill textarea, the title
+          field above). It used to carry `biorouter-focus-surface`, which swapped
+          the fill for the grey focus surface the moment the box opened and took
+          the caret, so the field being typed in turned the box's darkest grey
+          (V3-R4-4). That class is for controls that paint their own background
+          and would otherwise show no focus at all. */}
+      <Textarea
         ref={textRef}
+        rows={5}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
+        placeholder={knowledgeCopy.ingest.pastePlaceholder}
         aria-label="Text to stage"
-        className="biorouter-focus-surface min-h-[100px] w-full resize-y rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-label text-text-default placeholder:text-text-muted"
       />
 
       {detectedUrls.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-element bg-background-muted px-2 py-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-supporting text-text-muted">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;
@@ -86,8 +111,8 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
                 asChild
                 className={
                   on
-                    ? 'tint-selected tint-interactive text-text-default'
-                    : 'tint-interactive text-text-muted line-through'
+                    ? CHIP_CLASS + ' tint-selected text-text-default'
+                    : CHIP_CLASS + ' text-text-muted line-through'
                 }
               >
                 <button type="button" aria-pressed={on} onClick={() => toggleUrl(u)}>
@@ -100,13 +125,15 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
       )}
 
       <div className="flex items-center justify-between gap-2">
-        <span className="text-supporting text-text-muted">{text.length} chars</span>
+        <span className="text-supporting tabular-nums text-text-muted">{text.length} chars</span>
         <div className="flex gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
             Cancel
           </Button>
+          {/* Secondary: Digest, under the rail's staged list, is the one primary action (V3-04). */}
           <Button
             type="button"
+            variant="secondary"
             size="sm"
             disabled={!text.trim()}
             onClick={() => onStage(text.trim(), title.trim() || 'Pasted knowledge', urlsToFetch)}

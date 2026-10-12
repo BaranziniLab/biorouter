@@ -25,7 +25,7 @@ function getStdioConfig(
   ];
   if (!allowedCommands.includes(cmd)) {
     toastService.handleError(
-      'Invalid Command',
+      'Invalid command',
       `Failed to install extension: Invalid command: ${cmd}. Only ${allowedCommands.join(', ')} are allowed.`,
       { shouldThrow: true }
     );
@@ -35,7 +35,7 @@ function getStdioConfig(
   const args = parsedUrl.searchParams.getAll('arg');
   if (cmd === 'npx' && args.includes('-c')) {
     toastService.handleError(
-      'Security Risk',
+      'Security risk',
       'Failed to install extension: npx with -c argument can lead to code injection',
       { shouldThrow: true }
     );
@@ -107,7 +107,7 @@ export async function addExtensionFromDeepLink(
 
   if (parsedUrl.protocol !== 'biorouter:') {
     toastService.handleError(
-      'Invalid Protocol',
+      'Invalid protocol',
       'Failed to install extension: Invalid protocol: URL must use the biorouter:// scheme',
       { shouldThrow: true }
     );
@@ -120,7 +120,7 @@ export async function addExtensionFromDeepLink(
     const value = parsedUrl.searchParams.get(field);
     if (!value || value.trim() === '') {
       toastService.handleError(
-        'Missing Field',
+        'Missing field',
         `Failed to install extension: The link is missing required field '${field}'`,
         { shouldThrow: true }
       );

@@ -1,6 +1,8 @@
+import * as React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BottomMenuSkillSelection } from './BottomMenuSkillSelection';
+import { SkillsPanel, useSkillPicker } from './BottomMenuSkillSelection';
+import { SKILLS_COPY, TOOLS_COPY } from './copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 
@@ -94,9 +96,30 @@ function serve(next: CatalogView) {
   mocks.refreshSkillCatalog.mockResolvedValue({ data: next });
 }
 
+/**
+ * The skills list as the Tools chip holds it (spec 3.7). The harness's button
+ * stands in for the chip and states the hook's count, so the count assertions
+ * read one label.
+ */
+function BottomMenuSkillSelection({ sessionId }: { sessionId: string | null }) {
+  const [open, setOpen] = React.useState(false);
+  const picker = useSkillPicker(sessionId, { open });
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={`Manage skills (${picker.activeCount} enabled)`}
+        data-answered={String(picker.answered)}
+        onClick={() => setOpen((current) => !current)}
+      />
+      {open && <SkillsPanel picker={picker} />}
+    </>
+  );
+}
+
 async function openMenu() {
-  fireEvent.pointerDown(screen.getByLabelText(/Manage skills/), { button: 0, ctrlKey: false });
-  return screen.findAllByRole('menuitemcheckbox');
+  fireEvent.click(screen.getByLabelText(/Manage skills/));
+  return screen.findAllByRole('option');
 }
 
 describe('BottomMenuSkillSelection', () => {
@@ -147,10 +170,10 @@ describe('BottomMenuSkillSelection', () => {
     });
     // ...and it must not have gone anywhere near the machine-wide file.
     expect(mocks.saveSkillOverrides).not.toHaveBeenCalled();
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'false'));
   });
 
-  it('raises a success toast only after the backend confirms, and rolls back when it refuses', async () => {
+  it('raises no success toast, and rolls back with an error when the backend refuses', async () => {
     mocks.setSessionSkills.mockRejectedValue(new Error('session not found'));
 
     render(<BottomMenuSkillSelection sessionId="20260824_1" />);
@@ -160,7 +183,7 @@ describe('BottomMenuSkillSelection', () => {
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
     expect(mocks.toastError.mock.calls[0][0].msg).toContain('session not found');
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
   });
 
   /**
@@ -211,7 +234,7 @@ describe('BottomMenuSkillSelection', () => {
 
     releaseFirst!();
     await waitFor(() => expect(order).toEqual(['disable', 'enable']));
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
   });
 
   /**
@@ -254,19 +277,34 @@ describe('BottomMenuSkillSelection', () => {
     fireEvent.click(beta);
 
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(beta).toHaveAttribute('aria-checked', 'true'));
-    expect(alpha).toHaveAttribute('aria-checked', 'false');
+    await waitFor(() => expect(beta).toHaveAttribute('aria-selected', 'true'));
+    expect(alpha).toHaveAttribute('aria-selected', 'false');
   });
 
-  it('says "for this chat" only when there is a chat', async () => {
+  /**
+   * Decision 6.9: the switch is the confirmation, so a confirmed write raises
+   * no toast. Who the change reaches is said by the scope line instead, before
+   * the click rather than after it.
+   */
+  it('says "This chat" only when there is a chat, and toasts nothing on success', async () => {
     mocks.setSessionSkills.mockResolvedValue({
       data: { catalog: view(), sessionAdd: [], sessionRemove: ['example-skill'] },
     });
-    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    const { unmount } = render(<BottomMenuSkillSelection sessionId="20260824_1" />);
     const [toggle] = await openMenu();
+    expect(screen.getByText(TOOLS_COPY.scope.thisChat)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${TOOLS_COPY.scope.about}` })
+    ).toHaveAccessibleDescription(SKILLS_COPY.helpChat);
     fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledTimes(1));
-    expect(mocks.toastSuccess.mock.calls[0][0].msg).toContain('for this chat');
+    await waitFor(() => expect(mocks.setSessionSkills).toHaveBeenCalledTimes(1));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    unmount();
+
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    await openMenu();
+    expect(screen.getByText(TOOLS_COPY.scope.newChats)).toBeInTheDocument();
+    expect(screen.queryByText(TOOLS_COPY.scope.thisChat)).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------- #113 (b)
@@ -347,7 +385,7 @@ describe('BottomMenuSkillSelection', () => {
     expect(mocks.setSessionSkills.mock.calls[0][0].body.remove).toEqual(['hyperframes']);
   });
 
-  it('shows a package bundle as one row with its member count and entry point', async () => {
+  it('shows a package bundle as one row with its member count, members in its tooltip', async () => {
     serve(
       view({
         skills: [],
@@ -374,8 +412,12 @@ describe('BottomMenuSkillSelection', () => {
     const items = await openMenu();
     expect(items).toHaveLength(1);
     expect(screen.getByText('HyperFrames')).toBeInTheDocument();
-    expect(screen.getByText('2 skills')).toBeInTheDocument();
-    expect(screen.getByText(/entry point: hyperframes/)).toBeInTheDocument();
+    expect(screen.getByText(SKILLS_COPY.bundleCount(2))).toBeInTheDocument();
+    // The members are one hover away; no entry-point subline (spec 3.7).
+    expect(screen.queryByText(/entry point/)).not.toBeInTheDocument();
+    expect(SKILLS_COPY.bundleMembers(['hyperframes', 'media-use'])).toBe(
+      'Includes hyperframes, media-use'
+    );
   });
 
   // -------------------------------------------------------------- hub (machine)
@@ -383,7 +425,7 @@ describe('BottomMenuSkillSelection', () => {
   it('applies rapid hub choices in order and leaves the final choice enabled', async () => {
     render(<BottomMenuSkillSelection sessionId={null} />);
     const [toggle] = await openMenu();
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toHaveAttribute('aria-selected', 'true');
 
     serve(
       view({
@@ -401,11 +443,11 @@ describe('BottomMenuSkillSelection', () => {
       })
     );
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'false'));
 
     serve(view());
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
     expect(mocks.overrides.get('example-skill')).toBe(true);
   });
 
@@ -421,7 +463,7 @@ describe('BottomMenuSkillSelection', () => {
     // The in-memory store is re-read, or the next save would persist the edit
     // whose write just failed.
     expect(mocks.loadSkillOverrides).toHaveBeenCalled();
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-selected', 'true'));
   });
 
   /**
@@ -474,8 +516,80 @@ describe('BottomMenuSkillSelection', () => {
     mocks.skillCatalogHandler.mockRejectedValue(new Error('daemon is down'));
     mocks.refreshSkillCatalog.mockRejectedValue(new Error('daemon is down'));
     render(<BottomMenuSkillSelection sessionId={null} />);
-    fireEvent.pointerDown(screen.getByLabelText(/Manage skills/), { button: 0, ctrlKey: false });
+    fireEvent.click(screen.getByLabelText(/Manage skills/));
     expect(await screen.findByText(/Could not read the skill catalog/)).toBeInTheDocument();
+  });
+
+  /**
+   * V2-R7-3: the Tools chip shows its number only once every list has answered
+   * for THIS chat. The catalog hook keeps its previous view until the next
+   * chat's read commits, so `answered` must not read that view as this chat's.
+   */
+  describe('answered for this chat (V2-R7-3)', () => {
+    const twoSkills = view({ skills: [skill('alpha'), skill('beta')] });
+
+    it('has not answered until the chat’s catalog lands', async () => {
+      let resolveRead: ((value: unknown) => void) | undefined;
+      mocks.skillCatalogHandler.mockReturnValue(
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        })
+      );
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      const chip = screen.getByLabelText(/Manage skills/);
+      expect(chip).toHaveAttribute('data-answered', 'false');
+
+      await act(async () => {
+        resolveRead?.({ data: twoSkills });
+        await Promise.resolve();
+      });
+      expect(chip).toHaveAttribute('data-answered', 'true');
+      expect(chip).toHaveAccessibleName('Manage skills (2 enabled)');
+    });
+
+    it('has answered for a catalog that resolves before React renders the read', async () => {
+      // The read's `loading: true` and its answer land in one batch here, so a
+      // check that waited to see `loading` go true would never answer.
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      await waitFor(() =>
+        expect(screen.getByLabelText(/Manage skills/)).toHaveAttribute('data-answered', 'true')
+      );
+    });
+
+    it('has not answered for the next chat until its own catalog lands', async () => {
+      serve(twoSkills);
+      const { rerender } = render(<BottomMenuSkillSelection sessionId="chat-a" />);
+      const chip = screen.getByLabelText(/Manage skills/);
+      await waitFor(() => expect(chip).toHaveAttribute('data-answered', 'true'));
+      expect(chip).toHaveAccessibleName('Manage skills (2 enabled)');
+
+      let resolveNext: ((value: unknown) => void) | undefined;
+      mocks.skillCatalogHandler.mockReturnValue(
+        new Promise((resolve) => {
+          resolveNext = resolve;
+        })
+      );
+      rerender(<BottomMenuSkillSelection sessionId="chat-b" />);
+      // In the very commit: chat A's catalog is still the hook's view.
+      expect(chip).toHaveAttribute('data-answered', 'false');
+      await act(async () => {});
+      expect(chip).toHaveAttribute('data-answered', 'false');
+
+      await act(async () => {
+        resolveNext?.({ data: view({ skills: [skill('gamma')] }) });
+        await Promise.resolve();
+      });
+      expect(chip).toHaveAttribute('data-answered', 'true');
+      expect(chip).toHaveAccessibleName('Manage skills (1 enabled)');
+    });
+
+    it('has answered when the catalog cannot be read', async () => {
+      mocks.skillCatalogHandler.mockRejectedValue(new Error('daemon is down'));
+      render(<BottomMenuSkillSelection sessionId="chat-1" />);
+      await waitFor(() =>
+        expect(screen.getByLabelText(/Manage skills/)).toHaveAttribute('data-answered', 'true')
+      );
+    });
   });
 });
 
@@ -495,7 +609,7 @@ describe('BottomMenuSkillSelection search', () => {
   });
 
   const search = (term: string) =>
-    fireEvent.change(screen.getByPlaceholderText('Search skills...'), { target: { value: term } });
+    fireEvent.change(screen.getByPlaceholderText(SKILLS_COPY.search), { target: { value: term } });
 
   it('finds the skills a multi-word phrase names, best match first', async () => {
     serve(view({ skills: [skill('ggplot'), skill('pdf'), skill('r-scripting')] }));
@@ -504,8 +618,8 @@ describe('BottomMenuSkillSelection search', () => {
 
     search('R scripting ggplot visualization');
 
-    await waitFor(() => expect(screen.getAllByRole('menuitemcheckbox')).toHaveLength(2));
-    const rows = screen.getAllByRole('menuitemcheckbox');
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(2));
+    const rows = screen.getAllByRole('option');
     // Catalog order is alphabetical — ggplot, pdf, r-scripting — so this is the
     // ranking and not the order the rows arrived in.
     expect(rows[0]).toHaveTextContent('r-scripting');
@@ -519,8 +633,8 @@ describe('BottomMenuSkillSelection search', () => {
 
     search('R');
 
-    await waitFor(() => expect(screen.getAllByRole('menuitemcheckbox')).toHaveLength(1));
-    expect(screen.getAllByRole('menuitemcheckbox')[0]).toHaveTextContent('r-scripting');
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1));
+    expect(screen.getAllByRole('option')[0]).toHaveTextContent('r-scripting');
   });
 
   /**

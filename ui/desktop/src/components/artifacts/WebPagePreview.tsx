@@ -9,6 +9,9 @@ import {
   X,
 } from '../icons/app-icons';
 import { cn } from '../../utils';
+import { Button } from '../ui/button';
+import { PREVIEW_COPY } from './copy';
+import { PreviewIconButton } from './PreviewBar';
 import { previewOpenTarget } from '../../utils/openInBrowser';
 
 export type EmbeddedBrowserState = {
@@ -235,18 +238,14 @@ export default function WebPagePreview({
 
   if (unavailable) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-body text-text-muted">
-        <p className="max-w-xs leading-relaxed">
-          This page can’t be opened here. Open it in your browser instead.
+      <div className="br-preview-state" data-preview-native="">
+        <p className="br-preview-state__line text-body text-text-muted">
+          {PREVIEW_COPY.pageUnavailable}
         </p>
-        <button
-          type="button"
-          onClick={() => onOpenExternal(url)}
-          className="inline-flex items-center gap-1.5 rounded-element border border-border-strong px-3 py-1.5 text-label text-text-default transition-colors hover:bg-overlay-hover"
-        >
-          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          Open in browser
-        </button>
+        <Button type="button" variant="secondary" size="sm" onClick={() => onOpenExternal(url)}>
+          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          {PREVIEW_COPY.openInBrowserShort}
+        </Button>
       </div>
     );
   }
@@ -254,8 +253,12 @@ export default function WebPagePreview({
   const busy = state?.isLoading ?? true;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background-default">
-      <div className="flex h-tab flex-none items-center gap-1 border-b border-border-subtle px-1.5">
+    // `data-preview-native`: a native view cannot move with the DOM, so the
+    // panel's switch fades this layer and never slides it (preview-panel.css).
+    <div className="flex h-full min-h-0 flex-col" data-preview-native="">
+      {/* The page's own toolbar stands in for the panel's 32px bar: same height,
+          same hairline, same 24px icon controls. */}
+      <div className="br-preview-bar br-preview-bar--browser">
         <ToolbarButton
           label="Back"
           disabled={!state?.canGoBack}
@@ -290,21 +293,29 @@ export default function WebPagePreview({
               setIsEditingAddress(true);
             }}
             onBlur={() => setIsEditingAddress(false)}
-            className="w-full min-w-0 truncate rounded-element bg-background-muted px-2 py-1 text-supporting text-text-default outline-none focus:bg-background-medium"
+            // The app's filled field (R-27): a fill at rest, the strong step under
+            // the pointer, the accent edge only while it is being typed in.
+            className="br-field h-6 w-full min-w-0 truncate rounded-element border px-2 text-secondary text-text-default transition-[color,background-color,border-color] placeholder:text-text-muted"
           />
         </form>
         {updateReady && (
-          <button
-            type="button"
+          <PreviewIconButton
+            compact
+            label={PREVIEW_COPY.updateReady}
+            hint={PREVIEW_COPY.updateReadyHint}
             disabled={busy || isSuspended}
             onClick={() => control('reload')}
-            className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
           >
-            Update ready
-          </button>
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            <span
+              className="br-preview-update-dot br-preview-update-dot--compact"
+              aria-hidden="true"
+            />
+          </PreviewIconButton>
         )}
         <ToolbarButton
           label={sharedWithAgent ? 'Stop sharing with agent' : 'Share with agent'}
+          pressed={sharedWithAgent}
           onClick={() => setSharedWithAgent((current) => !current)}
           icon={<Share2 className="h-3.5 w-3.5" aria-hidden="true" />}
         />
@@ -329,7 +340,7 @@ export default function WebPagePreview({
       {state?.error && (
         <p
           data-testid="embedded-browser-error"
-          className="flex-none border-b border-border-subtle bg-background-muted px-3 py-1.5 text-supporting text-text-muted"
+          className="flex-none bg-background-fill px-3 py-1.5 text-supporting text-text-muted"
         >
           {state.error}
         </p>
@@ -346,7 +357,7 @@ export default function WebPagePreview({
         aria-label={state?.title || url}
         className={cn(
           'relative min-h-0 flex-1 overflow-hidden',
-          isSuspended && 'bg-background-muted'
+          isSuspended && 'bg-background-fill'
         )}
       >
         {snapshotDataUrl && (
@@ -366,22 +377,25 @@ function ToolbarButton({
   icon,
   onClick,
   disabled,
+  pressed,
 }: {
   label: string;
   icon: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
+  /** A toggle (Share with agent) says it is on, by its pressed fill and to a screen reader. */
+  pressed?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
+    <PreviewIconButton
+      compact
+      label={label}
       disabled={disabled}
       onClick={onClick}
-      className="flex h-6 w-6 flex-none items-center justify-center rounded-element text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default disabled:pointer-events-none disabled:opacity-35"
+      aria-pressed={pressed}
+      className={cn(pressed && 'br-preview-icon-button--pressed')}
     >
       {icon}
-    </button>
+    </PreviewIconButton>
   );
 }

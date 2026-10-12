@@ -117,6 +117,19 @@ describe('CrossAffiliationAcceptCard', () => {
     expect(await screen.findByText(ACCEPTED)).toBeInTheDocument();
   });
 
+  // V4-R7-6, class only (privacy UI, ruling 15): the emphasised word is 600, not the preflight's
+  // `bolder` (700). `privacyEmphasisWeight.browser.test.tsx` measures the computed weight.
+  it('sets the emphasised policy word at the strong weight, 600', async () => {
+    mockReadMixingMode.mockResolvedValue('strict');
+    renderCard();
+    const notice = await screen.findByTestId('cross-affiliation-strict-notice');
+    const emphasised = notice.querySelectorAll('strong');
+    expect([...emphasised].map((el) => el.textContent)).toEqual(['strict']);
+    for (const el of emphasised) expect(el).toHaveClass('font-semibold');
+    // The space round the word is the sentence's own: prettier re-wrapped the line.
+    expect(notice).toHaveTextContent(/policy is set to strict, so your operating system/);
+  });
+
   it('does not warn about a system password under standard', async () => {
     // The other half of the same claim: `standard` must be exactly today's
     // behaviour — one in-app confirmation — so a card that showed the strict

@@ -101,7 +101,7 @@ BioRouter has **no process isolation at all**. Every guardrail sits *before*
    [safety and guardrails comparison](../../agent-loop-review/competitive-comparison/safety-and-guardrails.md)
    records "OS-level sandbox: **none**" for BioRouter, against Codex (Seatbelt/Landlock/token),
    Gemini (Seatbelt/container), OpenHands (Docker/VM), Claude Code (Bash
-   sandbox). BioRouter is one of only four comparators (with Goose, Pi, Aider)
+   sandbox). BioRouter is one of only three comparators (with Pi, Aider)
    with zero isolation.
 
 There *is* a `biorouter-sandbox` crate, but it is **container/subprocess** level

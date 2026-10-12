@@ -40,7 +40,16 @@ export interface ContextMeta {
    * is also its directory name), or a BUNDLE's directory name.
    */
   id: string;
+  /**
+   * Sentence case, and never starting with "About": the row's InfoTip is named "About {label}".
+   * (The marketplace lists the same skills by their own Title Case names; that is its page, not
+   * this row.)
+   */
   label: string;
+  /**
+   * The row's InfoTip text: two sentences at most. "Loaded only for … tasks" is said once, in the
+   * section header's tip (`chat/copy.ts`), not on each office row.
+   */
   description: string;
 }
 
@@ -57,26 +66,28 @@ export const CONTEXTS: readonly ContextMeta[] = [
   {
     id: 'office-word',
     label: 'Word documents',
-    description: 'Read, create and edit Word documents. Loaded only for relevant document tasks.',
+    description: 'Read, create and edit Word documents.',
   },
   {
     id: 'office-powerpoint',
     label: 'PowerPoint',
-    description: 'Create and edit slide decks. Loaded only for presentation tasks.',
+    description: 'Create and edit slide decks.',
   },
   {
     id: 'office-excel',
     label: 'Excel spreadsheets',
-    description: 'Work with spreadsheets, formulas and charts. Loaded only for spreadsheet tasks.',
+    description: 'Work with spreadsheets, formulas and charts.',
   },
   {
     id: 'office-pdf',
     label: 'PDF documents',
-    description: 'Read, create and process PDFs and forms. Loaded only for PDF tasks.',
+    description: 'Read, create and process PDFs and forms.',
   },
   {
     id: 'about-biorouter',
-    label: 'About Biorouter',
+    // Not "About Biorouter": the row's InfoTip is named "About {label}", and the glyph read
+    // "About About Biorouter" (V4-20).
+    label: 'Biorouter overview',
     description: 'What Biorouter is and how its pieces fit together.',
   },
   {
@@ -86,12 +97,12 @@ export const CONTEXTS: readonly ContextMeta[] = [
   },
   {
     id: 'develop-biorouter-extension',
-    label: 'Develop Biorouter Extension',
+    label: 'Develop Biorouter extension',
     description: 'Build, package and publish an extension.',
   },
   {
     id: 'develop-biorouter-skill',
-    label: 'Develop Biorouter Skill',
+    label: 'Develop Biorouter skill',
     description: 'Write, test and package a skill.',
   },
   {

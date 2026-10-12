@@ -1,7 +1,7 @@
 /**
  * E2E tests for the .brxt extension bundle feature.
  *
- * Tests 13-15 and 22: Button layout, drag-and-drop modal, invalid bundle error,
+ * Tests 13-15 and 22: The page's Add menu, drag-and-drop modal, invalid bundle error,
  * env var form, and no-env-var bundle skip.
  *
  * Notes:
@@ -149,14 +149,14 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   }
 
   // -------------------------------------------------------------------------
-  // Helper: open the BrxtInstallModal via "Add extension" button
+  // Helper: open the BrxtInstallModal from the band's Add menu ("Install from file")
   // -------------------------------------------------------------------------
   async function openBrxtModal(): Promise<void> {
-    const addBtn = await page.waitForSelector('button:has-text("Add extension")', {
-      timeout: 10000,
-      state: 'visible',
-    });
+    // The three labelled buttons became one "Add" menu in the 44px band (spec 3.11).
+    const addBtn = page.getByRole('button', { name: 'Add', exact: true });
+    await addBtn.waitFor({ timeout: 10000, state: 'visible' });
     await addBtn.click();
+    await page.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     // Wait for the dialog to appear
     await page.waitForSelector('[role="dialog"]', { timeout: 5000, state: 'visible' });
     await page.waitForTimeout(300);
@@ -176,37 +176,31 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   }
 
   // ---------------------------------------------------------------------------
-  // Test 1: Button layout in the Extensions tab header
+  // Test 1: The band's one Add menu — Browse marketplace, Install from file, Custom extension
   // ---------------------------------------------------------------------------
-  test('Extensions tab has correct button layout — Add extension, Browse extensions, Add custom extension', async () => {
+  test('Extensions tab has one Add menu — Browse marketplace, Install from file, Custom extension', async () => {
     await goToExtensions();
 
-    // Verify all three buttons are visible (UI copy is sentence case)
-    const addExtBtn = page.locator('button:has-text("Add extension")').first();
-    const browseBtn = page.locator('button:has-text("Browse extensions")').first();
-    const addCustomBtn = page.locator('button:has-text("Add custom extension")').first();
+    // The three labelled buttons are gone; their jobs are the menu's items (UI copy is sentence case).
+    await expect(page.locator('button:has-text("Browse extensions")')).toHaveCount(0);
+    await expect(page.locator('button:has-text("Add custom extension")')).toHaveCount(0);
 
-    await expect(addExtBtn).toBeVisible();
-    await expect(browseBtn).toBeVisible();
-    await expect(addCustomBtn).toBeVisible();
+    // The band's action cluster (`PageHeader`'s `.biorouter-page-header-actions`, spec 3.10)
+    // holds the filter and the Add button.
+    const cluster = page.locator('.biorouter-page-header-actions');
+    await expect(cluster.getByRole('searchbox', { name: 'Filter extensions' })).toBeVisible();
+    const addBtn = cluster.getByRole('button', { name: 'Add', exact: true });
+    await expect(addBtn).toBeVisible();
+    await addBtn.click();
 
-    // Verify DOM order in the header button row. The strip is
-    // `PageHeader`'s `.biorouter-settings-control-strip`; the `.flex.gap-3.mt-5`
-    // this used to name is the hand-rolled row that component replaced, and
-    // `styles/measures.test.ts` now bans it at the source.
-    const buttonTexts: string[] = await page.$$eval(
-      '.biorouter-settings-control-strip button',
-      (btns: Element[]) => btns.map((b) => b.textContent?.trim() ?? '')
-    );
-    const addIdx = buttonTexts.findIndex((t) => t.includes('Add extension'));
-    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse extensions'));
-    const customIdx = buttonTexts.findIndex((t) => t.includes('Add custom extension'));
+    // Verify the menu's order.
+    const items: string[] = await page
+      .getByRole('menuitem')
+      .evaluateAll((els) => els.map((el) => el.textContent?.trim() ?? ''));
+    expect(items).toEqual(['Browse marketplace', 'Install from file (.brxt)', 'Custom extension…']);
 
-    expect(addIdx).toBeGreaterThanOrEqual(0);
-    expect(browseIdx).toBeGreaterThan(addIdx);
-    expect(customIdx).toBeGreaterThan(browseIdx);
-
-    await page.screenshot({ path: 'test-results/brxt-button-layout.png' });
+    await page.screenshot({ path: 'test-results/brxt-add-menu.png' });
+    await page.keyboard.press('Escape');
   });
 
   // ---------------------------------------------------------------------------
@@ -235,7 +229,7 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(dialog.getByText('Test Extension', { exact: true })).toBeVisible();
     await expect(dialog.locator('text=1.0.0')).toBeVisible();
 
-    // The modal title should still say "Add extension" (step === 'drop')
+    // The modal title should still say "Add extension" (step === 'select')
     await expect(page.locator('[role="dialog"] [data-slot="dialog-title"]')).toHaveText(
       /Add extension/i
     );
@@ -316,9 +310,14 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(requiredLabel).toBeVisible();
     await expect(requiredLabel).toContainText('*');
 
-    // "Install Extension" button should be disabled because required field is empty
+    // "Install extension" stays pressable (Crew's dialogs); with the required field empty, a press
+    // says which value is missing, under the field, instead of installing.
     const installBtn = page.getByRole('button', { name: /Install extension/i });
-    await expect(installBtn).toBeDisabled({ timeout: 3000 });
+    await expect(installBtn).toBeEnabled({ timeout: 3000 });
+    await installBtn.click();
+    await expect(page.locator('[role="dialog"]').getByText('Enter a value')).toBeVisible({
+      timeout: 3000,
+    });
 
     // The optional var (OPTIONAL_KEY) should have a "Show N optional variables" toggle
     const showOptionalToggle = page

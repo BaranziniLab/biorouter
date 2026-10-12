@@ -7,6 +7,7 @@ import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
   value: undefined as unknown,
+  config: undefined as Record<string, unknown> | undefined,
   read: vi.fn(),
   upsert: vi.fn(),
   getPrivacyDisclosure: vi.fn(),
@@ -14,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../ConfigContext', () => ({
-  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
+  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert, config: mocks.config }),
 }));
 
 // Task 30A: the panel's permanent statement is SERVED, so the test serves it.
@@ -39,6 +40,7 @@ describe('Settings > Privacy', () => {
     // it outlives `cleanup()` and has to be dropped between tests.
     __resetDisclosureStoreForTests();
     mocks.value = undefined;
+    mocks.config = undefined;
     mocks.read.mockImplementation(async () => mocks.value);
     // A STATEFUL stand-in for the daemon: a write that resolves is a write that
     // landed, so a later read sees it. The panel now reads the key back after
@@ -65,6 +67,17 @@ describe('Settings > Privacy', () => {
     );
   });
 
+  it('is a region named by its heading, as every other settings section is', async () => {
+    render(<PrivacyPanel />);
+    const region = await screen.findByRole('region', { name: 'Privacy' });
+    expect(region).toHaveAttribute('data-privacy-panel');
+    // The heading carries the same 12px inset as every SettingSection title (br-setting-section-*),
+    // so PRIVACY lines up with GENERAL; a bare header stood 12px to the left of them.
+    expect(screen.getByRole('heading', { level: 2, name: 'Privacy' })).toHaveClass(
+      'br-setting-section-title'
+    );
+  });
+
   it('does not turn off on a single click — it asks for the phrase first', async () => {
     const user = userEvent.setup();
     render(<PrivacyPanel />);
@@ -82,6 +95,11 @@ describe('Settings > Privacy', () => {
     expect(dialog).not.toHaveTextContent(/Commercial models/);
     expect(dialog).toHaveTextContent(/stops recording which chats touched private/i);
     expect(dialog).toHaveTextContent(/cannot go back and mark anything that happened/i);
+    // The box is a fill and not an outline (owner message 13, R-27): the subtle fill, an edge kept
+    // transparent (forced colours still draw it, nothing moves) and the surface class that rests the
+    // phrase field and Cancel one ground back, so neither is fill on fill.
+    expect(dialog).toHaveClass('bg-background-fill', 'border-transparent', 'br-fill-surface');
+    expect(dialog).not.toHaveClass('border-border-subtle');
   });
 
   it('compares the phrase exactly, then writes with the confirmation', async () => {
@@ -124,6 +142,149 @@ describe('Settings > Privacy', () => {
     await waitFor(() =>
       expect(mocks.upsert).toHaveBeenCalledWith(PRIVACY_TIERS_KEY, 'on', false, DISABLE_PHRASE)
     );
+  });
+
+  /**
+   * Vision round 8, V4-R7-6. A bare `<strong>` takes preflight's `bolder`, which computes to 700, and
+   * the type system draws only 400 and 600. jsdom runs no cascade, so this pins the class on each of
+   * the four runs; `privacyPanelEmphasisWeight.browser.test.tsx` reads the computed weight in
+   * Chromium. Presentation only: the words and the test ids are the ones the cases above assert.
+   */
+  describe('emphasis weight', () => {
+    const strongs = (root: HTMLElement) => [...root.querySelectorAll('strong')];
+
+    it('draws the strip headline and the not-stopped line at 600 while enforcement is off', async () => {
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+      const strip = await screen.findByTestId('privacy-enforcement-off-strip');
+      const panel = strip.closest<HTMLElement>('[data-privacy-panel]')!;
+      expect(strongs(strip)).toHaveLength(1);
+      expect(strongs(panel).map((el) => el.textContent?.trim())).toContain(
+        'Those three are not being stopped right now. Privacy tiers are off on this machine.'
+      );
+      for (const el of strongs(panel))
+        expect(el, el.textContent ?? '').toHaveClass('font-semibold');
+    });
+
+    it('draws "every" and the second consequence at 600 in the turn-off confirmation', async () => {
+      const user = userEvent.setup();
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      const confirm = screen.getByTestId('privacy-disable-confirm');
+      expect(strongs(confirm).map((el) => el.textContent?.trim())).toEqual([
+        'every',
+        'While it is off, Biorouter stops recording which chats touched private material.',
+      ]);
+      for (const el of strongs(confirm))
+        expect(el, el.textContent ?? '').toHaveClass('font-semibold');
+    });
+  });
+
+  /**
+   * Vision round 2, V4-R2-1. The loading branch used to be a 64px skeleton that the loaded section
+   * (header, the served statement, the switch row: about 250px) replaced when the daemon answered,
+   * so every row below it moved on each open of the App tab. The section is now the same tree from
+   * its first render: nothing mounts, unmounts or reorders when the answer lands, and the switch
+   * is held at its place unpainted. jsdom computes no layout, so this pins the structure that makes
+   * the geometry equal; the measured shift is in the workstream notes.
+   */
+  describe('before the daemon has answered', () => {
+    /** A `read` that waits for `release()`, so a render can be inspected before the answer. */
+    function holdReads() {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mocks.read.mockImplementation(async () => {
+        await gate;
+        return mocks.value;
+      });
+      return release;
+    }
+
+    /** The section's children, by what they are, in the order they sit. */
+    const landmarks = () => {
+      const section = document.querySelector('[data-privacy-panel]')!;
+      return {
+        section,
+        heading: screen.queryByRole('heading', { level: 2, name: 'Privacy' }),
+        statement: screen.queryByTestId('non-private-model-statement'),
+        row: section.querySelector('[data-slot="setting-row"]'),
+        order: Array.from(section.querySelectorAll('h2, [data-testid], [data-slot="setting-row"]'))
+          .map((node) => node.getAttribute('data-testid') ?? node.getAttribute('data-slot') ?? 'h2')
+          .join(' > '),
+      };
+    };
+
+    it('is already the loaded layout, with no stand-in block', async () => {
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      // The served statement arrives on its own request, not on the switch's.
+      await screen.findByTestId('non-private-model-statement');
+
+      const before = landmarks();
+      expect(before.heading).not.toBeNull();
+      expect(before.row).not.toBeNull();
+      expect(before.row).toHaveTextContent('Privacy tiers');
+      expect(document.querySelector('[data-slot="skeleton"]')).toBeNull();
+      expect(before.order).toBe('h2 > non-private-model-statement > setting-row');
+
+      release();
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked()
+      );
+
+      // The same nodes, the same order: nothing was swapped for something taller.
+      const after = landmarks();
+      expect(after.section).toBe(before.section);
+      expect(after.heading).toBe(before.heading);
+      expect(after.statement).toBe(before.statement);
+      expect(after.row).toBe(before.row);
+      expect(after.order).toBe(before.order);
+    });
+
+    it('holds the switch at its place unpainted, and never shows it as on', async () => {
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      await screen.findByTestId('non-private-model-statement');
+
+      const held = document.querySelector('[data-slot="switch"]') as HTMLElement;
+      expect(held).not.toBeNull();
+      expect(held).toHaveAttribute('data-pending');
+      expect(held).toBeDisabled();
+      expect(held.style.visibility).toBe('hidden');
+      expect(held).toHaveAttribute('aria-checked', 'false');
+      // Out of the accessibility tree and the tab order until it has a value.
+      expect(screen.queryByRole('switch', { name: /Privacy tiers/ })).toBeNull();
+
+      release();
+      const live = await screen.findByRole('switch', { name: /Privacy tiers/ });
+      expect(live).toBe(held);
+      expect(live).not.toHaveAttribute('data-pending');
+      expect(live).toBeEnabled();
+    });
+
+    it('claims nothing about enforcement being off until it has heard that it is', async () => {
+      mocks.value = 'off';
+      const release = holdReads();
+      render(<PrivacyPanel />);
+      await screen.findByTestId('non-private-model-statement');
+
+      // `enabled` is unknown, which is not off: no strip, and the statement's "not being stopped
+      // right now" line is not printed over a machine that may be protected.
+      expect(screen.queryByTestId('privacy-enforcement-off-strip')).toBeNull();
+      expect(screen.getByTestId('non-private-model-statement')).not.toHaveTextContent(
+        /not being stopped/i
+      );
+
+      release();
+      expect(await screen.findByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
+      expect(screen.getByTestId('non-private-model-statement')).toHaveTextContent(
+        /not being stopped/i
+      );
+    });
   });
 
   it('a refused write leaves the switch showing what is true, not what was asked', async () => {
@@ -319,6 +480,53 @@ describe('Settings > Privacy', () => {
       );
       expect(strip).not.toHaveTextContent(/outside the app/i);
       expect(strip).toHaveTextContent(PATH);
+    });
+  });
+
+  /**
+   * Vision round 8, V4-R7-2. The panel mounts with the App tab, and the switch was held unpainted
+   * until the daemon answered, on every visit. The config cache already holds that answer (every
+   * badge and the composer's off note paint from it), so the panel starts from it, and still reads
+   * the daemon on mount and shows what that says.
+   */
+  describe('first paint from the config cache', () => {
+    const hang = () => mocks.read.mockImplementation(() => new Promise(() => {}));
+
+    it('draws the switch in the first render when the cache holds the answer', () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'on' };
+      hang();
+      render(<PrivacyPanel />);
+      const toggle = screen.getByRole('switch', { name: /Privacy tiers/ });
+      expect(toggle).toBeChecked();
+      expect(toggle).not.toHaveAttribute('data-pending');
+      expect(screen.getByRole('region', { name: 'Privacy' })).not.toHaveAttribute('aria-busy');
+    });
+
+    it('draws a stored off, and the strip that says so, in the first render', () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'off' };
+      hang();
+      render(<PrivacyPanel />);
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).not.toBeChecked();
+      expect(screen.getByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
+    });
+
+    it('claims nothing while the cache is empty: the switch holds its place, unpainted', () => {
+      mocks.config = {};
+      hang();
+      render(<PrivacyPanel />);
+      expect(screen.queryByRole('switch', { name: /Privacy tiers/ })).toBeNull();
+      expect(screen.queryByTestId('privacy-enforcement-off-strip')).toBeNull();
+    });
+
+    it('still reads the daemon and shows what it says when that differs from the cache', async () => {
+      mocks.config = { [PRIVACY_TIERS_KEY]: 'on' };
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked();
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: /Privacy tiers/ })).not.toBeChecked()
+      );
+      expect(screen.getByTestId('privacy-enforcement-off-strip')).toBeInTheDocument();
     });
   });
 });

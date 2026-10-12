@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { llamacppDelete, llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../../api';
 import { toastService } from '../../../toasts';
+import { errorMessage } from '../../../utils/conversionUtils';
 import {
   checkOllamaStatus,
   deleteOllamaModel,
@@ -8,55 +9,31 @@ import {
   pullOllamaModel,
   type PullProgress,
 } from '../../../utils/ollamaDetection';
-import { acceleratorMemoryLabel, inventoryFitLabel, llamaMemoryWarning } from './localModelMemory';
 import {
   compactStatusMessage,
   llamaServerStore,
   useLlamaServer,
   type LlamaServerOperation,
 } from './llamaServerStore';
-import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
-import { MODAL_SIZE } from '../../ModalShell';
+import { ModalShell } from '../../ModalShell';
 import { Note } from '../../ui/note';
+import { RowActions, RowContextMenu, type RowActionItem } from '../../ui/row-actions';
+import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
-import { cn } from '../../../utils';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
-import {
-  AlertTriangle,
-  Download,
-  ExternalLink,
-  Eye,
-  Loader2,
-  Play,
-  RefreshCw,
-  Trash2,
-} from '../../icons/app-icons';
+import { Spinner } from '../../ui/spinner';
+import { StatusDot } from '../../ui/status-dot';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { localModelsCopy } from './copy';
+import { factsLine, isInstalled, speedDetail, stateWord } from './localModelFacts';
+import { detectedMemoryText, fitVerdict, fitWarning, llamaMemoryWarning } from './localModelMemory';
+import './models.css';
 
 const formatContext = (value: number | null | undefined) =>
   typeof value === 'number' ? value.toLocaleString() : 'unknown';
-
-const isInstalled = (model: LlamaCppModel) =>
-  model.download_status === 'downloaded' || model.fallback_download_status === 'downloaded';
-
-const installedLabel = (model: LlamaCppModel) => {
-  if (model.download_status === 'downloaded') {
-    return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
-  }
-  if (model.fallback_download_status === 'downloaded') return 'Fallback ready';
-  if (model.download_status === 'partial' || model.fallback_download_status === 'partial') {
-    return 'Partial download';
-  }
-  return 'Needs download';
-};
 
 const progressLabel = (progress: PullProgress) => {
   if (progress.total && progress.completed) {
@@ -67,9 +44,7 @@ const progressLabel = (progress: PullProgress) => {
 };
 
 const operationFallbackLabel = (operation: LlamaServerOperation) =>
-  operation.kind === 'warmup'
-    ? `Warming up ${operation.model}...`
-    : `Preparing ${operation.model}...`;
+  operation.kind === 'warmup' ? `Warming up ${operation.model}…` : `Preparing ${operation.model}…`;
 
 const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
   kind === 'warmup'
@@ -78,28 +53,59 @@ const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
       ? 'Local model install failed'
       : 'Could not start Llama Server';
 
+/**
+ * One row of the info dialog's fact list. A MACHINE value (a model id, a Hugging Face spec, a path)
+ * is set in one face for all of them: mono at the supporting size, the scale's mono size for IDs
+ * (spec 5.3), so a path reads like the id above it (vision round 2, V4-R2-8). It was mono for the
+ * paths alone, at the 13px code role, while the two ids beside it were sans, and one list used two
+ * families for one kind of string. Prose values (a size, a speed, a sentence) stay in the body face.
+ * The grid aligns on the first baseline, because the value's 12px mono and the label's 13px sans do
+ * not share a line height.
+ */
 function DetailRow({
   label,
   children,
-  mono = false,
+  machine = false,
 }: {
   label: string;
   children: React.ReactNode;
-  mono?: boolean;
+  machine?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] gap-3 text-supporting">
+    <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] items-baseline gap-3 text-secondary">
       <span className="text-text-muted">{label}</span>
       <span
         className={[
           'min-w-0 text-right text-text-default',
-          mono ? 'break-all font-mono text-supporting' : 'break-words',
+          machine ? 'break-all font-mono text-supporting' : 'break-words',
         ]
           .filter(Boolean)
           .join(' ')}
       >
         {children}
       </span>
+    </div>
+  );
+}
+
+/**
+ * The info dialog's body: a container, not a control. The dialog places focus on it when it opens
+ * (`onOpenAutoFocus` below, V4-04) instead of on its first control, the Official URL, which wore
+ * the keyboard ring after a pointer pick of View info from the right-click menu: Chromium gives
+ * `:focus-visible` to every script focus on that path (the dialog box, the Close button and a bare
+ * div all match), so the only way to show no ring is to focus something that draws none.
+ * `.br-local-info-body` has no outline, and the first Tab reaches the URL.
+ */
+function InfoDialogBody({
+  children,
+  bodyRef,
+}: {
+  children: React.ReactNode;
+  bodyRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  return (
+    <div ref={bodyRef} tabIndex={-1} className="br-local-info-body space-y-2 py-3">
+      {children}
     </div>
   );
 }
@@ -138,6 +144,11 @@ export default function LocalModelInventory() {
     };
   }, []);
 
+  // The info dialog places focus on its own body when it opens (`onOpenAutoFocus` on the dialog).
+  // Where focus goes when it closes is the shared dialog's job: a keyboard pick gives focus back
+  // to the control that opened the menu, a pointer pick gives nothing back (V4-03).
+  const infoBodyRef = useRef<HTMLDivElement>(null);
+
   const busy = !!operation || !!deleteAction;
 
   const refresh = useCallback(async () => {
@@ -145,7 +156,7 @@ export default function LocalModelInventory() {
       if (mountedRef.current) setError(null);
       await llamaServerStore.refresh();
     } catch (err) {
-      if (mountedRef.current) setError(err instanceof Error ? err.message : String(err));
+      if (mountedRef.current) setError(errorMessage(err));
     } finally {
       if (mountedRef.current) setIsLoading(false);
     }
@@ -187,8 +198,8 @@ export default function LocalModelInventory() {
   const runInstall = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!(await confirmResources(model, 'Install anyway'))) return;
-      let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install...', {
+      if (!(await confirmResources(model, localModelsCopy.confirmResources.installAnyway))) return;
+      let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install…', {
         poll: false,
       });
       try {
@@ -207,15 +218,12 @@ export default function LocalModelInventory() {
           // supersede the newer operation and its timers.
           if (llamaServerStore.getSnapshot().operation?.id !== opId) return;
           if (ollama.isRunning) {
-            llamaServerStore.setOperationMessage(
-              opId,
-              `Pulling ${model.ollama_name} from Ollama...`
-            );
+            llamaServerStore.setOperationMessage(opId, `Pulling ${model.ollama_name} from Ollama…`);
             const pulled = await pullOllamaModel(model.ollama_name, (progress) => {
               llamaServerStore.setOperationMessage(opId, progressLabel(progress));
             });
             if (!pulled.ok) {
-              throw new Error(`Ollama could not pull ${model.ollama_name}: ${pulled.error}`);
+              throw new Error(localModelsCopy.pullFailed(model.ollama_name, pulled.error));
             }
             // End the operation BEFORE reporting success: a pull that
             // completes after its deadline (or after being superseded) must
@@ -236,7 +244,7 @@ export default function LocalModelInventory() {
         opId = llamaServerStore.beginOperation(
           'install',
           model.name,
-          'Starting Llama Server fallback download...'
+          'Starting Llama Server fallback download…'
         );
         const res = await llamacppEnsure({ body: { model: model.name }, throwOnError: true });
         llamaServerStore.applyStatus(res.data, opId);
@@ -258,7 +266,7 @@ export default function LocalModelInventory() {
           // Still ours: a plain driving-flow failure.
           toastService.error({
             title: 'Local model install failed',
-            msg: err instanceof Error ? err.message : String(err),
+            msg: errorMessage(err),
             traceback: err instanceof Error ? err.stack || '' : '',
           });
         }
@@ -273,8 +281,8 @@ export default function LocalModelInventory() {
   const runWarmup = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!(await confirmResources(model, 'Warm up anyway'))) return;
-      const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model...');
+      if (!(await confirmResources(model, localModelsCopy.confirmResources.warmUpAnyway))) return;
+      const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model…');
 
       try {
         const res = await llamacppWarmup({ body: { model: model.name }, throwOnError: true });
@@ -301,7 +309,7 @@ export default function LocalModelInventory() {
         } else if (llamaServerStore.getSnapshot().operation?.id === opId) {
           toastService.error({
             title: 'Local model warm-up failed',
-            msg: err instanceof Error ? err.message : String(err),
+            msg: errorMessage(err),
             traceback: err instanceof Error ? err.stack || '' : '',
           });
         }
@@ -314,14 +322,14 @@ export default function LocalModelInventory() {
 
   const runDelete = useCallback(
     async (model: LlamaCppModel) => {
-      setDeleteAction({ model: model.name, message: 'Deleting local model...' });
+      setDeleteAction({ model: model.name, message: 'Deleting local model…' });
       try {
         let deletedSomething = false;
         let deletedTags: string[] = [];
         if (model.download_source === 'ollama' && model.ollama_name) {
           const ollama = await checkOllamaStatus();
           if (!ollama.isRunning) {
-            throw new Error('Ollama must be running to delete an Ollama-managed model.');
+            throw new Error(localModelsCopy.deleteResult.ollamaNotRunning);
           }
           // The tags that hold the file this row lists — NOT `ollama_name`.
           // On Apple Silicon the bare tag is the MLX build and the file comes
@@ -332,14 +340,12 @@ export default function LocalModelInventory() {
             : [];
           if (tags.length === 0) {
             throw new Error(
-              `Biorouter could not tell which Ollama tag holds ${model.display_name}'s model file${
-                model.model_path ? ` (${model.model_path})` : ''
-              }, so it deleted nothing. Run \`ollama list\` and remove that tag with \`ollama rm <tag>\`.`
+              localModelsCopy.deleteResult.noTag(model.display_name, model.model_path)
             );
           }
           for (const tag of tags) {
             if (!(await deleteOllamaModel(tag))) {
-              throw new Error(`Ollama could not delete ${tag}`);
+              throw new Error(localModelsCopy.deleteResult.tagRefused(tag));
             }
             deletedTags = [...deletedTags, tag];
           }
@@ -356,19 +362,17 @@ export default function LocalModelInventory() {
           throw new Error('No cached local files were removed for this model.');
         }
         toastService.success({
-          title: 'Local model deleted',
+          title: localModelsCopy.deleteResult.deleted,
           msg:
             deletedTags.length > 0
-              ? `${model.display_name} was removed from local storage (Ollama ${
-                  deletedTags.length === 1 ? 'tag' : 'tags'
-                } ${deletedTags.join(', ')}).`
-              : `${model.display_name} was removed from local storage.`,
+              ? localModelsCopy.deleteResult.removedTags(model.display_name, deletedTags)
+              : localModelsCopy.deleteResult.removed(model.display_name),
         });
         await refresh();
       } catch (err) {
         toastService.error({
-          title: 'Local model delete failed',
-          msg: err instanceof Error ? err.message : String(err),
+          title: localModelsCopy.deleteResult.failed,
+          msg: errorMessage(err),
           traceback: err instanceof Error ? err.stack || '' : '',
         });
       } finally {
@@ -378,282 +382,281 @@ export default function LocalModelInventory() {
     [refresh]
   );
 
-  const renderAction = (model: LlamaCppModel) => {
-    const isInstalling =
-      (operation?.kind === 'install' || operation?.kind === 'start') &&
-      operation.model === model.name;
-    const isWarming = operation?.kind === 'warmup' && operation.model === model.name;
-    const isDeleting = deleteAction?.model === model.name;
-    return (
-      // Every one of these carries a LABEL, so none of them may use the 24px
-      // `xs` rung — `--control-compact`'s own comment says it is for a
-      // glyph-only control in an already-dense cluster. Dropping it also
-      // retires the `h-3 w-3` overrides on their glyphs (including the three
-      // spinners): the cva base supplies 16px at the default rung.
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        <Button type="button" size="sm" variant="outline" onClick={() => setSelectedModel(model)}>
-          <Eye />
-          View info
-        </Button>
-        {isInstalled(model) ? (
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => void runWarmup(model)}
-              disabled={busy}
-            >
-              {isWarming ? <Loader2 className="animate-spin" /> : <Play />}
-              Warm up
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="text-text-danger"
-              onClick={() => setPendingDelete(model)}
-              disabled={busy}
-              title="Delete local model"
-            >
-              {isDeleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
-              Delete
-            </Button>
-          </>
-        ) : (
-          // `outline`, matching View info and Warm up. The status chip beside
-          // the name already carries install state, and seven stacked coral
-          // CTAs down one list is exactly what P3 forbids.
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void runInstall(model)}
-            disabled={busy}
-          >
-            {isInstalling ? <Loader2 className="animate-spin" /> : <Download />}
-            Install
-          </Button>
-        )}
-      </div>
-    );
+  const rowItems = (model: LlamaCppModel, busyNow: boolean): RowActionItem[] => {
+    const items: RowActionItem[] = [
+      { label: localModelsCopy.viewInfo, onSelect: () => setSelectedModel(model) },
+    ];
+    if (isInstalled(model)) {
+      items.push(
+        { label: localModelsCopy.warmUp, onSelect: () => void runWarmup(model), disabled: busyNow },
+        { kind: 'separator' },
+        {
+          label: localModelsCopy.delete,
+          onSelect: () => setPendingDelete(model),
+          destructive: true,
+          disabled: busyNow,
+        }
+      );
+    }
+    return items;
   };
 
+  const detail = localModelsCopy.detail;
+
   return (
-    <div className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-caps text-text-muted">Local Model Inventory</h2>
-          <p className="mt-1 text-supporting text-text-muted">
-            {isLoading
-              ? 'Checking local models...'
-              : `${installedCount} installed · ${catalog.length} available`}
-          </p>
-        </div>
-        {/* `mr-3` so the button's BOX shares the rows' 12px inset while the
-            `text-caps` label opposite it stays flush with every other section
-            header on the page. */}
-        <Button
-          type="button"
-          shape="round"
-          variant="ghost"
-          className="mr-3"
-          onClick={() => void refresh()}
-          disabled={isLoading || busy}
-          title="Refresh local model inventory"
-        >
-          <RefreshCw className={isLoading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />
-        </Button>
-      </div>
-
-      <div className="biorouter-settings-list">
-        {error && (
-          <Note
-            tone="warning"
-            role="alert"
-            icon={AlertTriangle}
-            className="mb-2"
-            action={
-              <Button type="button" size="sm" variant="outline" onClick={() => void refresh()}>
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Note>
-        )}
-
-        {isLoading ? (
-          <div className="biorouter-settings-row px-3 py-2.5">
-            <Skeleton className="h-4 w-56" />
-            <Skeleton className="mt-2 h-3 w-80" />
-          </div>
-        ) : (
-          catalog.map((model) => {
-            const busyLabel =
-              operation && operation.model === model.name
-                ? compactStatusMessage(operation.message ?? operationFallbackLabel(operation))
-                : deleteAction && deleteAction.model === model.name
-                  ? deleteAction.message
-                  : null;
-
-            return (
-              <div key={model.name} className="biorouter-settings-row px-3 py-2.5">
-                <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <p className="min-w-0 truncate text-label text-text-default">
-                        {model.display_name}
-                      </p>
-                      <Badge tone={isInstalled(model) ? 'success' : 'neutral'}>
-                        {installedLabel(model)}
-                      </Badge>
-                      {/* ⚠ The tone stays CONDITIONAL. An unconditional
-                          `neutral` here would erase the amber "above this Mac's
-                          recommendation" signal, which is the one thing on the
-                          row that qualifies the Install action beside it. */}
-                      <Badge tone={model.suitability_status === 'suitable' ? 'neutral' : 'warning'}>
-                        {inventoryFitLabel(model)}
-                      </Badge>
-                    </div>
-                    {/* ⚠ WRAPS, never truncates. This line was `truncate`,
-                        which was survivable while Settings read the fluid page
-                        measure and the label block was ~1000px wide. On the
-                        chat measure the block is 508px (measured, 712px column
-                        minus the action group and the row's own padding) and
-                        the longest catalog entry needs 680 — so an ellipsis ate
-                        the last two fields, which are the two that identify the
-                        model: its context window and its `ollama_name`/`hf_spec`.
-                        Truncation is for a NAME whose head identifies it; this
-                        is a sentence whose tail does, so it wraps to a second
-                        line instead. The name above still truncates, correctly:
-                        the chips beside it wrap first. */}
-                    <p className="mt-1 text-supporting text-text-muted">
-                      {model.family} · {model.download_size} · {model.speed_hint} ·{' '}
-                      {formatContext(model.context_limit)} context ·{' '}
-                      {model.ollama_name ?? model.hf_spec}
-                    </p>
-                  </div>
-                  {renderAction(model)}
-                </div>
-                {/* No box. A transient progress line inside a row is the same
-                    object as the header's own status line above it, and a
-                    bordered card on a filled row was a third ground in one
-                    section. */}
-                {busyLabel && (
-                  <div className="mt-2 flex min-w-0 items-start gap-2 text-supporting text-text-muted">
-                    <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-                    <p className="min-w-0 whitespace-normal break-words">{busyLabel}</p>
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <Dialog open={!!selectedModel} onOpenChange={(open) => !open && setSelectedModel(null)}>
-        {selectedModel && (
-          <DialogContent className={cn('w-[calc(100vw-2rem)] overflow-hidden', MODAL_SIZE.lg)}>
-            <DialogHeader>
-              <DialogTitle>{selectedModel.display_name}</DialogTitle>
-              <DialogDescription>{selectedModel.description}</DialogDescription>
-            </DialogHeader>
-
-            <div className="max-h-[58vh] space-y-2 overflow-y-auto pr-1">
-              <DetailRow label="Status">{installedLabel(selectedModel)}</DetailRow>
-              <DetailRow label="Family">{selectedModel.family}</DetailRow>
-              <DetailRow label="Download">{selectedModel.download_size}</DetailRow>
-              <DetailRow label="Expected speed">{selectedModel.speed_hint}</DetailRow>
-              <DetailRow label="Context">
-                {formatContext(selectedModel.context_limit)} tokens
-              </DetailRow>
-              <DetailRow label="Minimum memory">
-                {selectedModel.min_gpu_memory_gib} GiB GPU-addressable memory
-              </DetailRow>
-              <DetailRow label="Recommended memory">
-                {selectedModel.recommended_gpu_memory_gib} GiB GPU-addressable memory
-              </DetailRow>
-              <DetailRow label="Detected memory">
-                {typeof snapshot?.system.accelerator_memory_gib === 'number'
-                  ? `${snapshot.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
-                      snapshot.system.accelerator_memory_kind
-                    )}`
-                  : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
-              </DetailRow>
-              <DetailRow label="Recommendation">{selectedModel.suitability_message}</DetailRow>
-              {/* NOT `mono`. These are the same two fields the list row behind
-                  this dialog prints in the body font, and a model id is a NAME
-                  everywhere else in the app — the composer chip, the model
-                  pickers, the onboarding cards, ApplicationsView. `mono` here
-                  made one field change face between the row and the dialog it
-                  opens. The `mono` rows below stay: those are filesystem
-                  paths, which is a job mono actually earns (D-31). */}
-              <DetailRow label="Ollama model">{selectedModel.ollama_name ?? 'none'}</DetailRow>
-              <DetailRow label="Fallback GGUF">{selectedModel.hf_spec}</DetailRow>
-              <DetailRow label="Official URL">
-                <button
-                  type="button"
-                  className="inline-flex min-w-0 items-center justify-end gap-1 text-text-accent hover:underline"
-                  onClick={() =>
-                    window.open(selectedModel.official_url, '_blank', 'noopener,noreferrer')
-                  }
-                >
-                  <span className="truncate">{selectedModel.official_url}</span>
-                  <ExternalLink className="h-3 w-3 shrink-0" />
-                </button>
-              </DetailRow>
-              <DetailRow label="Model store" mono>
-                {snapshot?.system.model_cache_dir ?? 'unknown'}
-              </DetailRow>
-              {selectedModel.model_path && (
-                <DetailRow label="Model blob" mono>
-                  {selectedModel.model_path}
-                </DetailRow>
-              )}
-            </div>
-
-            <DialogFooter className="flex-col gap-2 pt-2 sm:flex-row">
+    <SettingSection
+      id={SETTINGS_SECTION_IDS.localModels}
+      title={localModelsCopy.section}
+      help={localModelsCopy.sectionHelp}
+      action={
+        <div className="br-local-models-header-action">
+          {!isLoading && catalog.length > 0 ? (
+            <span className="text-supporting tabular-nums text-text-muted">
+              {localModelsCopy.installedCount(installedCount, catalog.length)}
+            </span>
+          ) : null}
+          {/* A glyph alone: its name is also its tooltip, as every icon action's is. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
               <Button
                 type="button"
-                variant="outline"
-                className="w-full sm:w-auto"
-                onClick={() => setSelectedModel(null)}
+                shape="round"
+                size="sm"
+                variant="ghost"
+                className="br-local-models-refresh"
+                onClick={() => void refresh()}
+                disabled={isLoading || busy}
+                aria-label={localModelsCopy.refresh}
               >
-                Close
+                {isLoading ? <Spinner /> : <RefreshCw />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{localModelsCopy.refresh}</TooltipContent>
+          </Tooltip>
+        </div>
+      }
+    >
+      {error && (
+        <Note
+          tone="warning"
+          role="alert"
+          icon={AlertTriangle}
+          className="mb-2"
+          action={
+            <Button type="button" size="sm" variant="secondary" onClick={() => void refresh()}>
+              {localModelsCopy.retry}
+            </Button>
+          }
+        >
+          {error}
+        </Note>
+      )}
+
+      {isLoading ? (
+        <div className="biorouter-settings-row br-setting-row">
+          <div className="br-setting-row-text gap-1.5">
+            <Skeleton className="h-4 w-56" />
+            <Skeleton className="h-3 w-40" />
+          </div>
+        </div>
+      ) : (
+        catalog.map((model) => {
+          const installed = isInstalled(model);
+          const mine = operation && operation.model === model.name ? operation : null;
+          const busyLabel = mine
+            ? compactStatusMessage(mine.message ?? operationFallbackLabel(mine))
+            : deleteAction && deleteAction.model === model.name
+              ? deleteAction.message
+              : null;
+          const isInstalling = mine?.kind === 'install' || mine?.kind === 'start';
+          const items = rowItems(model, busy);
+          const warning = fitWarning(model, snapshot?.system);
+
+          return (
+            <RowContextMenu key={model.name} items={items}>
+              <div
+                className="biorouter-settings-row br-setting-row"
+                data-testid={`local-model-${model.name}`}
+              >
+                <div className="br-setting-row-text">
+                  <div className="br-setting-row-head">
+                    <span className="br-setting-row-label text-label text-text-default">
+                      {model.display_name}
+                    </span>
+                  </div>
+                  {/* One line under the name: the facts, or what is happening to the model
+                      right now. The warning word shows only when the daemon rated the model
+                      above this computer's recommendation, below its minimum, or CPU only. */}
+                  {busyLabel ? (
+                    <span
+                      role="status"
+                      className="br-local-model-busy text-supporting text-text-muted"
+                    >
+                      <Spinner size={14} />
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{busyLabel}</span>
+                    </span>
+                  ) : (
+                    <span className="text-supporting text-text-muted">
+                      {factsLine(model)}
+                      {warning ? (
+                        <>
+                          {' · '}
+                          <span className="text-text-warning">{warning}</span>
+                        </>
+                      ) : null}
+                    </span>
+                  )}
+                </div>
+                <div className="br-setting-row-control br-local-model-actions">
+                  {/* The ⋯ comes first, so an Install button is the row's LAST control and ends
+                      on the same right edge as Change…, Manage… and "Installed" (V4-25). The
+                      cell it reserves is hidden at rest and opens on hover, to the left of
+                      Install, so nothing moves when the pointer arrives. */}
+                  <RowActions
+                    menu={items}
+                    size="sm"
+                    menuLabel={localModelsCopy.more(model.display_name)}
+                    // What an installed row says at rest, in the cell the ⋯ takes over on hover.
+                    meta={
+                      installed ? (
+                        <span className="br-local-model-installed">
+                          <StatusDot tone="success" />
+                          {stateWord(model)}
+                        </span>
+                      ) : undefined
+                    }
+                  />
+                  {!installed ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      // The name follows the visible word ("Install Gemma 4 12B", then "Installing Gemma 4 12B"),
+                      // so what a screen reader says always contains what the button shows.
+                      aria-label={`${
+                        isInstalling ? localModelsCopy.installing : localModelsCopy.install
+                      } ${model.display_name}`}
+                      onClick={() => void runInstall(model)}
+                      disabled={busy}
+                    >
+                      {isInstalling ? (
+                        <>
+                          <Spinner />
+                          {localModelsCopy.installing}
+                        </>
+                      ) : (
+                        localModelsCopy.install
+                      )}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </RowContextMenu>
+          );
+        })
+      )}
+
+      <ModalShell
+        open={!!selectedModel}
+        onOpenChange={(open) => !open && setSelectedModel(null)}
+        size="lg"
+        scrollBody
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          infoBodyRef.current?.focus({ preventScroll: true });
+        }}
+        title={selectedModel?.display_name ?? ''}
+        subtitle={selectedModel?.description}
+        footer={
+          selectedModel ? (
+            <>
+              <Button type="button" variant="secondary" onClick={() => setSelectedModel(null)}>
+                {localModelsCopy.close}
               </Button>
               {isInstalled(selectedModel) ? (
-                <Button
-                  type="button"
-                  className="w-full sm:w-auto"
-                  onClick={() => void runWarmup(selectedModel)}
-                  disabled={busy}
-                >
-                  Warm up model
+                <Button type="button" onClick={() => void runWarmup(selectedModel)} disabled={busy}>
+                  {localModelsCopy.warmUpModel}
                 </Button>
               ) : (
                 <Button
                   type="button"
-                  className="w-full sm:w-auto"
                   onClick={() => void runInstall(selectedModel)}
                   disabled={busy}
                 >
-                  Install model
+                  {localModelsCopy.installModel}
                 </Button>
               )}
-            </DialogFooter>
-          </DialogContent>
+            </>
+          ) : null
+        }
+      >
+        {selectedModel && (
+          <InfoDialogBody bodyRef={infoBodyRef}>
+            <DetailRow label={detail.status}>{stateWord(selectedModel)}</DetailRow>
+            <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
+            <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
+            {/* The hint without its memory clause: the memory rows below say it, in GB. */}
+            <DetailRow label={detail.expectedSpeed}>{speedDetail(selectedModel)}</DetailRow>
+            <DetailRow label={detail.context}>
+              {formatContext(selectedModel.context_limit)} tokens
+            </DetailRow>
+            <DetailRow label={detail.minimumMemory}>
+              {localModelsCopy.gpuMemory(selectedModel.min_gpu_memory_gib)}
+            </DetailRow>
+            <DetailRow label={detail.recommendedMemory}>
+              {localModelsCopy.gpuMemory(selectedModel.recommended_gpu_memory_gib)}
+            </DetailRow>
+            <DetailRow label={detail.detectedMemory}>
+              {snapshot ? detectedMemoryText(snapshot.system) : null}
+            </DetailRow>
+            {/* The verdict in words; the numbers are the three memory rows above. The daemon's
+                sentence repeated this label and printed `apple_unified` (vision FR-R2-6). */}
+            <DetailRow label={detail.recommendation}>
+              {fitVerdict(selectedModel, snapshot?.system)}
+            </DetailRow>
+            {/* Three machine values, one face: the model id and the GGUF spec are as much
+                identifiers as the path below (V4-R2-8; this said "NOT mono" when the list row
+                behind the dialog still printed them, and the row no longer does). */}
+            <DetailRow label={detail.ollamaModel} machine>
+              {selectedModel.ollama_name ?? 'none'}
+            </DetailRow>
+            <DetailRow label={detail.fallbackDownload} machine>
+              {selectedModel.hf_spec}
+            </DetailRow>
+            <DetailRow label={detail.officialUrl}>
+              <button
+                type="button"
+                className="inline-flex min-w-0 items-center justify-end gap-1 text-text-accent hover:underline"
+                onClick={() =>
+                  window.open(selectedModel.official_url, '_blank', 'noopener,noreferrer')
+                }
+              >
+                <span className="truncate">{selectedModel.official_url}</span>
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              </button>
+            </DetailRow>
+            <DetailRow label={detail.modelStore} machine>
+              {snapshot?.system.model_cache_dir ?? 'unknown'}
+            </DetailRow>
+            {selectedModel.model_path && (
+              <DetailRow label={detail.modelBlob} machine>
+                {selectedModel.model_path}
+              </DetailRow>
+            )}
+          </InfoDialogBody>
         )}
-      </Dialog>
+      </ModalShell>
 
       {/* Not `destructive`: an over-provisioned install is a slow download, not
           a deletion, and the loud variant would say the wrong thing about it. */}
       <ConfirmationModal
         isOpen={pendingResourceConfirm !== null}
-        title="Continue anyway?"
+        title={localModelsCopy.confirmResources.title}
         message={pendingResourceConfirm?.message ?? ''}
-        confirmLabel={pendingResourceConfirm?.confirmLabel ?? 'Continue'}
-        cancelLabel="Cancel"
+        confirmLabel={
+          pendingResourceConfirm?.confirmLabel ?? localModelsCopy.confirmResources.fallbackConfirm
+        }
+        cancelLabel={localModelsCopy.confirmResources.cancel}
         confirmVariant="default"
         onConfirm={() => {
           pendingResourceConfirm?.resolve(true);
@@ -670,19 +673,19 @@ export default function LocalModelInventory() {
           reopen the dialog for the duration of the delete it just started. */}
       <ConfirmationModal
         isOpen={pendingDelete !== null}
-        title="Delete this local model?"
+        title={localModelsCopy.confirmDelete.title}
         message={
           pendingDelete
             ? // Not `ollama_name`: that tag may be a different build from the
               // file this row lists (see `runDelete`), and naming it here told
               // the user the wrong model was about to go.
               pendingDelete.download_source === 'ollama'
-              ? `${pendingDelete.display_name}'s model file will be deleted from Ollama, under every tag that uses it. You can download it again later.`
-              : `${pendingDelete.display_name} will be removed from the local model inventory. You can download it again later.`
+              ? localModelsCopy.confirmDelete.ollamaMessage(pendingDelete.display_name)
+              : localModelsCopy.confirmDelete.message(pendingDelete.display_name)
             : ''
         }
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={localModelsCopy.confirmDelete.confirm}
+        cancelLabel={localModelsCopy.confirmDelete.cancel}
         confirmVariant="destructive"
         isSubmitting={deleteAction !== null}
         onConfirm={() => {
@@ -692,6 +695,6 @@ export default function LocalModelInventory() {
         }}
         onCancel={() => setPendingDelete(null)}
       />
-    </div>
+    </SettingSection>
   );
 }

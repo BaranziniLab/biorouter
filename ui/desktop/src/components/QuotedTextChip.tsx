@@ -1,6 +1,14 @@
 import { X } from './icons/app-icons';
 import type { QuoteReference } from '../utils/quotedText';
+import './composer/composer.css';
 
+/**
+ * A quotation attached to a message: where it came from, then the words, under
+ * a 2px rule with no fill (the same quiet recipe as a markdown blockquote,
+ * spec 2.1), so a quote inside the composer card or a message bubble is never
+ * a box inside a box. The source's locator (a path or an address) is in the
+ * tooltip, not on the line.
+ */
 export function QuotedTextChip({
   quote,
   onRemove,
@@ -9,18 +17,12 @@ export function QuotedTextChip({
   onRemove?: () => void;
 }) {
   return (
-    <span
-      data-testid="quoted-text-chip"
-      className="inline-flex max-w-full items-start gap-2 rounded-element border border-border-subtle bg-background-muted px-3 py-2 text-supporting text-text-default"
-    >
-      <span className="min-w-0">
-        <span className="block font-medium" title={quote.sourceLocator}>
+    <span data-testid="quoted-text-chip" className="br-quote-chip">
+      <span className="br-quote-chip__body">
+        <span className="br-quote-chip__source text-chip" title={quote.sourceLocator}>
           {quote.label}
         </span>
-        <span
-          className="block max-h-24 overflow-auto whitespace-pre-wrap break-words font-normal"
-          dir="auto"
-        >
+        <span className="br-quote-chip__text text-secondary" dir="auto">
           {quote.value}
         </span>
       </span>
@@ -29,9 +31,9 @@ export function QuotedTextChip({
           type="button"
           onClick={onRemove}
           aria-label={`Remove quote from ${quote.label}`}
-          className="shrink-0 rounded-inner p-0.5 text-text-muted hover:text-text-default"
+          className="br-composer-chip-action"
         >
-          <X className="size-3" />
+          <X className="size-3.5" aria-hidden />
         </button>
       )}
     </span>

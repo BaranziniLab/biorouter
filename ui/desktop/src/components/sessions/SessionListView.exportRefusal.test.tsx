@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
 import { clearSessionListCache } from '../../utils/sessionListCache';
 import type { Session } from '../../api';
+import { chatRowCopy } from '../chats/copy';
 
 /**
  * What the daemon answers when a Crew grant restricts the chat, as the
@@ -73,7 +74,9 @@ async function clickExport() {
       <SessionListView onSelectSession={vi.fn()} />
     </MemoryRouter>
   );
-  await user.click(await screen.findByRole('button', { name: 'Export Crew task' }));
+  // Export lives in the row's menu, the shared one the sidebar draws too.
+  await user.click(await screen.findByRole('button', { name: 'More actions for Crew task' }));
+  await user.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.export }));
 }
 
 describe('SessionListView export refusals', () => {

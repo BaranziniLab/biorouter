@@ -5,7 +5,7 @@ import {
   firstLeaf,
   leafGroupIds,
 } from './chatGroupsTypes';
-import { createInitialChatGroupsState } from './chatGroupsReducer';
+import { chatGroupsReducer, createInitialChatGroupsState } from './chatGroupsReducer';
 import { removeLeaf } from './chatGroupsLayout';
 
 export const CHAT_GROUPS_KEY_PREFIX = 'biorouter.chatgroups.v1';
@@ -205,6 +205,53 @@ export function loadChatGroupsOrInitial(
   options: LoadChatGroupsOptions = {}
 ): ChatGroupsState {
   return loadChatGroups(windowId, options) ?? createInitialChatGroupsState();
+}
+
+/**
+ * Write a chat's new name into this window's SAVED tabs. Returns whether the
+ * record changed.
+ *
+ * The tab store (`ChatGroupsProvider`) mounts with `/pair` and nowhere else,
+ * and its rename subscription lives and dies with it. The sidebar is on every
+ * route, so a rename made from a sidebar row on History, Home or Settings
+ * reached the sidebar and History and never the tab: the provider came back
+ * from this record still holding the old title, kept it across reloads, and
+ * corrected it only when the tab was made active and its own load renamed it
+ * (V2-R3-1). `useSavedTabTitleSync` calls this from the app root for every
+ * rename, so the record always holds the name the rest of the app shows.
+ *
+ * It changes titles and nothing else, through the `renameTab` action the
+ * mounted provider runs: every tab bound to `sessionId` takes the name (and
+ * `userSetName` when given), and no tab is pruned, added or moved, because the
+ * prune and the layout repair are the provider's to run when it loads. A
+ * missing or unreadable record is left alone; the provider takes the cold-boot
+ * path for it anyway.
+ *
+ * While the provider is mounted this write is redundant, not harmful: it starts
+ * from the record the provider last saved, and the provider saves its own state
+ * (with the same rename, from its own subscription) on its next commit.
+ */
+export function renameSavedTabs(
+  windowId: string,
+  sessionId: string,
+  title: string,
+  userSetName?: boolean
+): boolean {
+  if (!sessionId || !title) return false;
+  try {
+    const key = chatGroupsStorageKey(windowId);
+    const raw = localStorage.getItem(key);
+    if (!raw) return false;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isValid(parsed)) return false;
+    const next = chatGroupsReducer(parsed, { type: 'renameTab', sessionId, title, userSetName });
+    if (next === parsed) return false;
+    localStorage.setItem(key, JSON.stringify(next));
+    return true;
+  } catch {
+    // A full or unavailable quota must never take a rename down.
+    return false;
+  }
 }
 
 /** Prune keys belonging to windows that are gone. Best-effort; called on

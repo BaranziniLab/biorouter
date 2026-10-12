@@ -1,5 +1,56 @@
 import { describe, expect, it } from 'vitest';
-import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
+import type { SessionSummary } from '../../api';
+import { sortSidebarChats } from '../BioRouterSidebar/sidebarChatView';
+import { groupSessionsByParent, sortByActivity, withoutSubagents } from './sessionGrouping';
+
+describe('sortByActivity (V1-R2-8)', () => {
+  const tied = '2026-09-05T17:49:17Z';
+  const rows = [
+    { id: 'b-2', updated_at: tied, created_at: '2026-08-01T00:00:00Z' },
+    { id: 'a-9', updated_at: '2026-09-05T18:00:00Z', created_at: '2026-09-05T18:00:00Z' },
+    { id: 'c-1', updated_at: tied, created_at: '2026-09-01T00:00:00Z' },
+    { id: 'a-1', updated_at: tied, created_at: '2026-09-04T00:00:00Z' },
+    { id: 'z-0', updated_at: '2026-08-30T09:00:00Z', created_at: '2026-08-30T09:00:00Z' },
+  ];
+
+  it('is newest activity first, then id ascending among chats that share the stamp', () => {
+    expect(sortByActivity(rows).map((r) => r.id)).toEqual(['a-9', 'a-1', 'b-2', 'c-1', 'z-0']);
+  });
+
+  it('gives the same answer whatever order the daemon returned', () => {
+    const forward = sortByActivity(rows).map((r) => r.id);
+    expect(sortByActivity([...rows].reverse()).map((r) => r.id)).toEqual(forward);
+    expect(sortByActivity([rows[2], rows[4], rows[0], rows[3], rows[1]]).map((r) => r.id)).toEqual(
+      forward
+    );
+  });
+
+  it('does not touch its input', () => {
+    const input = [...rows];
+    sortByActivity(input);
+    expect(input).toEqual(rows);
+  });
+
+  it('reads created_at when updated_at is missing or unreadable', () => {
+    const odd = [
+      { id: 'x', updated_at: 'nope', created_at: '2026-09-05T11:00:00Z' },
+      { id: 'y', updated_at: null, created_at: '2026-09-05T12:00:00Z' },
+      { id: 'w', updated_at: '2026-09-05T10:00:00Z', created_at: '2026-09-01T00:00:00Z' },
+    ];
+    expect(sortByActivity(odd).map((r) => r.id)).toEqual(['y', 'x', 'w']);
+  });
+
+  /**
+   * The point of V1-R2-8: History and the sidebar are the same data in the same order. The
+   * sidebar's own sort is the reference, so a change to either tie-break fails here.
+   */
+  it('orders exactly as the sidebar orders its chats under Last activity', () => {
+    const sidebar = sortSidebarChats(rows as unknown as SessionSummary[], 'activity').map(
+      (r) => r.id
+    );
+    expect(sortByActivity(rows).map((r) => r.id)).toEqual(sidebar);
+  });
+});
 
 describe('groupSessionsByParent', () => {
   it('nests sub_agent rows under their parent and keeps orphans top-level', () => {

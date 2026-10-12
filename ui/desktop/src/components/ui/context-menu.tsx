@@ -4,13 +4,19 @@ import * as React from 'react';
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu';
 
 import { cn } from '../../utils';
-import { DROPDOWN_ROW_CLASS_NAME } from './dropdown-menu';
+import {
+  MENU_COLLISION_PADDING,
+  MENU_EASE_CLASS_NAME,
+  MENU_GROUP_LABEL_CLASS_NAME,
+  MENU_ROW_CLASS_NAME,
+  MENU_SURFACE_CLASS_NAME,
+} from './dropdown-menu';
 
 /**
  * The right-click menu, drawn from the SAME surface and row tokens as
  * `dropdown-menu.tsx`.
  *
- * ⚠ **The row string is imported, not restated.** `DROPDOWN_ROW_CLASS_NAME` is
+ * ⚠ **The row string is imported, not restated.** `MENU_ROW_CLASS_NAME` is
  * exported for exactly this: §4.5's menu row is one 32px/12px/`text-secondary`
  * rule, and a second menu that spelled its own padding and type size would
  * reintroduce the per-call-site drift that export exists to stop. A user who
@@ -45,12 +51,16 @@ const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
 
 function ContextMenuContent({
   className,
+  collisionPadding = MENU_COLLISION_PADDING,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
+        // 8px from the window's edge, the dropdown's gap (V4-R6-1): a menu opened at the cursor
+        // near the bottom of the sidebar used to end on the window's last pixel.
+        collisionPadding={collisionPadding}
         // ⚠ `no-drag`, and it is load-bearing on exactly one of the three
         // surfaces: the tab strip sits in the titlebar band, where App.tsx
         // paints a 32px `-webkit-app-region: drag` rect. This menu opens AT THE
@@ -63,7 +73,11 @@ function ContextMenuContent({
         // from its trigger.
         className={cn(
           'no-drag',
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] z-[var(--z-modal-dropdown)] max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
+          MENU_SURFACE_CLASS_NAME,
+          'max-h-(--radix-context-menu-content-available-height) overflow-x-hidden overflow-y-auto',
+          // The dropdown's ease, so a menu opened by right-click and the same menu opened from
+          // `⋯` move alike (it used to fall back to the browser's `ease`).
+          MENU_EASE_CLASS_NAME,
           className
         )}
         {...props}
@@ -74,14 +88,20 @@ function ContextMenuContent({
 
 function ContextMenuItem({
   className,
+  variant = 'default',
   ...props
-}: React.ComponentProps<typeof ContextMenuPrimitive.Item>) {
+}: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
+  variant?: 'default' | 'destructive';
+}) {
   return (
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
+      data-variant={variant}
       className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
-        "[&_svg:not([class*='text-'])]:text-text-muted",
+        MENU_ROW_CLASS_NAME,
+        // The dropdown's destructive treatment, word for word: danger ink, a 10% (dark 20%)
+        // danger wash on highlight. One destructive look whichever way the menu was opened.
+        "data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted",
         className
       )}
       {...props}
@@ -109,7 +129,7 @@ function ContextMenuLabel({
   return (
     <ContextMenuPrimitive.Label
       data-slot="context-menu-label"
-      className={cn('text-text-muted px-3 py-1.5 text-caps', className)}
+      className={cn(MENU_GROUP_LABEL_CLASS_NAME, className)}
       {...props}
     />
   );

@@ -1,5 +1,6 @@
 import { client } from '../../api/client.gen';
 import type { AppExportResult } from '../../utils/appExportRequest';
+import { appsCopy } from './copy';
 
 /**
  * The declared app contract (Apps SDK v2, Pillar 1) as serialized by the
@@ -155,14 +156,31 @@ export function exportableExtensions(app: AppManifest): string[] {
 export function exportedMessage(result: Extract<AppExportResult, { status: 'exported' }>): string {
   const { summary } = result;
   const where = /\.zip$/.test(result.target)
-    ? `Downloaded ${result.target}.`
-    : `Exported to ${result.target}.`;
+    ? appsCopy.downloaded(result.target)
+    : appsCopy.exportedTo(result.target);
   if (summary.mode !== 'full') return where;
-  const parts = [
-    `${summary.kbs.length} knowledge base${summary.kbs.length === 1 ? '' : 's'}`,
-    `${summary.skills.length} skill${summary.skills.length === 1 ? '' : 's'}`,
-  ];
-  return `${where} It carries ${parts.join(' and ')}.`;
+  return `${where} ${appsCopy.exportCarries(summary.kbs.length, summary.skills.length)}`;
+}
+
+/**
+ * What an export left out, and why, as one message of whole sentences.
+ *
+ * The notes come from two writers. The main process writes sentences ("The background service
+ * is older than this app, …."); the daemon writes clauses for a log, lower case and unstopped
+ * ("skipped knowledge base 'ms-cohort': it is private"). Joined as they come, two daemon notes
+ * ran together into one unpunctuated line. So each note starts with a capital (only a lower-case
+ * letter is raised: a note that opens on a quoted name keeps it as written) and ends with a
+ * stop. The words are the writers' own and are not otherwise changed.
+ */
+export function exportNotesMessage(notes: readonly string[]): string {
+  return notes
+    .map((note) => note.trim())
+    .filter((note) => note.length > 0)
+    .map((note) => {
+      const opened = /^[a-z]/.test(note) ? note[0].toUpperCase() + note.slice(1) : note;
+      return /[.!?]$/.test(opened) ? opened : `${opened}.`;
+    })
+    .join(' ');
 }
 
 export function configuredBaseUrl(): string {

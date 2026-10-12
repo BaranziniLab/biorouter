@@ -15,7 +15,7 @@ Quotes preserve the original selected text and source locator/revision when avai
 
 The wire format uses a JSON-escaped `biorouter-quote` envelope. Validated quotation blocks are excluded from deterministic resource-reference extraction, so examples such as `/ext:developer`, `/skill(example)` and `kb_id:fixture` remain source data. Explicit resource references outside a quote still work normally.
 
-Recents now offers **Delete conversation** with a permanent-deletion confirmation. It shares History’s authorized API request, cache removal and open-tab notification. **Copy conversation ID** uses a native write-only clipboard bridge restricted to registered app main frames; embedded frames retain no clipboard access.
+The sidebar's chat list now offers **Delete chat…** with a permanent-deletion confirmation. It shares History’s authorized API request, cache removal and open-tab notification. **Copy chat ID** uses a native write-only clipboard bridge restricted to registered app main frames; embedded frames retain no clipboard access.
 
 ## Related documentation
 

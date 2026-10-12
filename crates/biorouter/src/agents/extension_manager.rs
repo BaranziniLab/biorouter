@@ -5995,7 +5995,6 @@ mod tests {
                     return false;
                 }
                 key.starts_with("BIOROUTER_")
-                    || key.starts_with("GOOSE_")
                     || matches!(
                         key,
                         "PATH"

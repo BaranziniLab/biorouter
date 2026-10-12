@@ -3,6 +3,8 @@ import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronDown, ChevronUp } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { knowledgeCopy } from '../copy';
 import { GRAPH_PALETTE, typeFill } from '../../../styles/graphPalette';
 import type { GraphCredibilityKey, GraphMode } from '../../../styles/graphPalette';
 import { isHollowType } from './nodeMark';
@@ -178,14 +180,20 @@ export function GraphLegend({ model, mode, facets, onChange, variant = 'rail' }:
       <LegendSection title="Node types">
         {(families ?? []).map((family) => (
           <div key={family.name} className="flex flex-col gap-0.5">
-            <button
-              type="button"
-              onClick={() => toggleFamily(family.members)}
-              className="flex items-center gap-2 self-start rounded-inner text-caps leading-none text-text-muted"
-              title={`Filter by every ${family.name} type`}
-            >
-              {family.name}
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => toggleFamily(family.members)}
+                  className="flex items-center gap-2 self-start rounded-inner text-supporting text-text-muted"
+                >
+                  {family.name}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left">
+                {knowledgeCopy.graph.familyFilter(family.name)}
+              </TooltipContent>
+            </Tooltip>
             <div className="flex flex-wrap gap-1">{family.members.map(chip)}</div>
           </div>
         ))}
@@ -234,7 +242,7 @@ function LegendSection({
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   return (
-    <section className="border-b border-border-subtle px-3 py-1.5 last:border-b-0">
+    <section className="px-4 py-2">
       <div className="mb-1 flex items-center gap-1">
         <button
           type="button"
@@ -279,7 +287,7 @@ function ExtraRows({
           Referenced, no page yet
         </span>
       )}
-      {model.hasUnrecognisedTypes && <Badge tone="warning">Unrecognised type</Badge>}
+      {model.hasUnrecognisedTypes && <Badge tone="warning">Unrecognized type</Badge>}
       {model.untyped && (
         <Badge
           asChild

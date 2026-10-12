@@ -548,7 +548,7 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     const addMore = within(dialog).getByRole('button', {
       name: addPeopleCopy.addToTeam('Analysis Lab'),
     });
-    expect(addMore).toHaveClass('bg-background-medium');
+    expect(addMore).toHaveClass('br-fill-rest');
     expect(list.compareDocumentPosition(addMore) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
     expect(within(dialog).queryByText(/can add people to/)).toBeNull();

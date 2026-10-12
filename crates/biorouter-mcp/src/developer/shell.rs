@@ -1113,7 +1113,7 @@ mod tests {
             // named nothing like a secret, and still denied — this is the case
             // a deny-list of literal names would miss
             "BIOROUTER_SERVER__PAIRING",
-            "GOOSE_SERVER__SECRET_KEY",
+            "BIOROUTER_SERVER__SECRET_KEY",
         ] {
             assert!(
                 is_daemon_private_env_key(key),
@@ -1225,7 +1225,6 @@ mod tests {
                     return false;
                 }
                 key.starts_with("BIOROUTER_")
-                    || key.starts_with("GOOSE_")
                     || matches!(
                         key,
                         "PATH" | "HOME" | "BR_TEST_USER_VAR" | "SPOKEAGENT_PASSCODE"

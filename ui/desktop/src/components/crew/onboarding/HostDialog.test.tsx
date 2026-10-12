@@ -727,9 +727,7 @@ describe('HostDialog', () => {
       const dialog = screen.getByRole('dialog');
       expect(dialog).toHaveAttribute('data-anchor', 'top');
       expect(dialog).toHaveClass('crew-dialog');
-      expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass(
-        'bg-background-medium'
-      );
+      expect(screen.getByRole('button', { name: joinCopy.cancel })).toHaveClass('br-fill-rest');
     });
 
     it('keeps focus on the workspace name while the menu that opened it closes (Q2-27)', async () => {

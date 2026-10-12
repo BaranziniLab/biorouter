@@ -3,7 +3,7 @@
 > **What this is.** Chapter 4 of the four-part competitive comparison in the
 > 2026-07 agentic-loop review: how BioRouter's safety surface — lifecycle hooks,
 > the permission/approval flow, LLM judges, sandboxing, dangerous-command
-> detection, and repetition/stuck detection — compared against nine other
+> detection, and repetition/stuck detection — compared against eight other
 > open-source coding agents.
 > **Status:** Superseded — the "computed-but-discarded / dead-code" thesis this
 > chapter is built on has been resolved, so most "behind" rows are now wrong. BR-18
@@ -26,7 +26,7 @@ description of current BioRouter behaviour.
 
 The recurring finding across the three grounding reviews was a
 **"computed-but-discarded / dead-code" gap**: BioRouter had ported the *shape* of
-a state-of-the-art safety layer from Claude Code and Goose, but several
+a state-of-the-art safety layer from Claude Code, but several
 load-bearing pieces were inert at the reviewed commit. That commit was not
 recorded in the original document.
 
@@ -51,44 +51,44 @@ Four conventions used throughout:
 - **External claims** are grounded in that tool's report under
   [the coding-agent landscape research](../../../research/coding-agent-landscape/).
 
-## Comparison across ten agents
+## Comparison across nine agents
 
-The table has one column per agent, in this order: BioRouter, Goose,
-Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
+The table has one column per agent, in this order: BioRouter, Cline,
+OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
-> **Note.** The BioRouter column is superseded — see the status header. The nine
+> **Note.** The BioRouter column is superseded — see the status header. The eight
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 > Bold in the table marks a cell the review singled out — sometimes a
 > best-in-class implementation, sometimes a BioRouter gap. Which is which is
 > settled by the prose sections below, not by the formatting.
 
-| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Lifecycle hook events | 13 (all wired) | 11 | ~11 | broad plugin bus | huge typed bus | none | 6 | 7 | 11 | ~30 |
-| Hook can block | yes (4 events) | yes (PreTool/Stop) | yes | yes (throw) | yes | no | yes | yes | yes (exit 2) | yes |
-| Hook injects context | partial (2 events; PreTool drops it) | yes | yes | yes | yes | no | limited | yes | yes | yes |
-| Hook rewrites tool input | **no** | no | no | mutate args | **yes (mutate)** | no | no | **yes (updated_input)** | **yes (tool_input)** | **yes (updatedInput)** |
-| Hook rewrites tool output | no | no | yes (patch) | mutate | yes (chain) | no | no | yes | yes | yes (updatedToolOutput) |
-| Hook intercepts model req/resp | no | no | no | no | **yes** | no | no | no | **yes (Before/AfterModel)** | no |
-| PostToolUse can block | **no (observe-only)** | no | yes | yes | yes | n/a | yes | yes | yes | yes |
-| Hook config surface | file/env only | file (Open Plugins) | file | plugin/npm | TS module | none | file | declarative rules | TOML+file | settings.json |
-| Managed/enterprise policy tier | **no (2 tiers)** | no | no | no | no | no | no | no | **yes (admin wins)** | **yes (managed)** |
-| Permission modes | 4 (Auto/Approve/Smart/Chat) | 4 | Plan/Act + auto-approve | per-tool allow/ask/deny | YOLO only | confirm/yes/dry-run | policy+confirm | approval×sandbox | 4 + policy | 6 |
-| Read-only auto-approve | **broken (empty sets)** | yes (annotations) | model-classified | defaults | tool allowlist | file split | read-only exempt | untrusted mode | policy | default mode |
-| LLM permission judge | **dead code** | yes (PermissionJudge) | yes (risk classify) | no | no | no | **yes (default on)** | no | no | **yes (auto mode)** |
-| OS-level sandbox | **none** | none | subprocess sandbox | coarse (dir gate) | none (by design) | none | **Docker/VM runtime** | **Seatbelt/Landlock/token** | **Seatbelt/container** | **yes (Bash sandbox)** |
-| Dangerous-command detection | regex table (off by default, ask-only) | none | model classify | wildcard deny | opt-in ext | none | LLM risk grade | **execpolicy Starlark** | **TOML policy engine** | **classifier model** |
-| Command allow/deny rules | coarse (hashed exact args) | permission.yaml | CommandPermission | **wildcard last-wins** | allowlist | none | policy | execpolicy | **tiered TOML** | allow/ask/deny rules |
-| Supply-chain / malware check | **yes (OSV MAL-*)** | no | no | no | no | no | no | no | no | no |
-| PII/PHI guardrail | yes (local, apps-only) | no | no | no | no | no | no | no | no | protected paths |
-| Exact-duplicate tool guard | yes (>3, reason hidden) | yes (RepetitionInspector) | yes (hash) | yes (doom_loop) | none | none | yes (semantic eq) | 3-turn blocked rule | yes (hash) | internal (undoc) |
-| Staged/soft-then-hard loop stop | **no (single deny)** | no | **yes (3 warn / 5 stop)** | **yes (3 warn / 5 gate)** | no | no | yes (STUCK breaks) | no | **yes (3-layer)** | 3-in-a-row fallback |
-| Failing-approach / no-progress | **only in /goal** | no | mistake tracker | targeted scenarios | no | reflection cap | **action-error+alt+monologue** | goal audit | **LLM loop check** | classifier fallback |
-| Oscillation (A/B/A/B) detect | **no** | no | no | partial | no | no | **yes** | no | no | no |
-| Mistake-streak handling | none (generic decline) | empty-turn cap 3 | **recoverable+inject guidance** | no | no | reflections 3 | critic refine | goal blocked audit | AfterAgent retry | classifier counters |
-| Max-turns / iteration cap | 100 (soft) | 1000 | maxIterations | via overflow | **none** | 3 reflections | 500 (hard) | token budget | maxSessionTurns | subagent caps |
-| Budget cap (tokens/$/wall) | **no** | no | resource-limiter | no | no | no | **yes ($/run)** | **yes (token budget)** | no | no |
+| Aspect | BioRouter | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+|---|---|---|---|---|---|---|---|---|---|
+| Lifecycle hook events | 13 (all wired) | ~11 | broad plugin bus | huge typed bus | none | 6 | 7 | 11 | ~30 |
+| Hook can block | yes (4 events) | yes | yes (throw) | yes | no | yes | yes | yes (exit 2) | yes |
+| Hook injects context | partial (2 events; PreTool drops it) | yes | yes | yes | no | limited | yes | yes | yes |
+| Hook rewrites tool input | **no** | no | mutate args | **yes (mutate)** | no | no | **yes (updated_input)** | **yes (tool_input)** | **yes (updatedInput)** |
+| Hook rewrites tool output | no | yes (patch) | mutate | yes (chain) | no | no | yes | yes | yes (updatedToolOutput) |
+| Hook intercepts model req/resp | no | no | no | **yes** | no | no | no | **yes (Before/AfterModel)** | no |
+| PostToolUse can block | **no (observe-only)** | yes | yes | yes | n/a | yes | yes | yes | yes |
+| Hook config surface | file/env only | file | plugin/npm | TS module | none | file | declarative rules | TOML+file | settings.json |
+| Managed/enterprise policy tier | **no (2 tiers)** | no | no | no | no | no | no | **yes (admin wins)** | **yes (managed)** |
+| Permission modes | 4 (Auto/Approve/Smart/Chat) | Plan/Act + auto-approve | per-tool allow/ask/deny | YOLO only | confirm/yes/dry-run | policy+confirm | approval×sandbox | 4 + policy | 6 |
+| Read-only auto-approve | **broken (empty sets)** | model-classified | defaults | tool allowlist | file split | read-only exempt | untrusted mode | policy | default mode |
+| LLM permission judge | **dead code** | yes (risk classify) | no | no | no | **yes (default on)** | no | no | **yes (auto mode)** |
+| OS-level sandbox | **none** | subprocess sandbox | coarse (dir gate) | none (by design) | none | **Docker/VM runtime** | **Seatbelt/Landlock/token** | **Seatbelt/container** | **yes (Bash sandbox)** |
+| Dangerous-command detection | regex table (off by default, ask-only) | model classify | wildcard deny | opt-in ext | none | LLM risk grade | **execpolicy Starlark** | **TOML policy engine** | **classifier model** |
+| Command allow/deny rules | coarse (hashed exact args) | CommandPermission | **wildcard last-wins** | allowlist | none | policy | execpolicy | **tiered TOML** | allow/ask/deny rules |
+| Supply-chain / malware check | **yes (OSV MAL-*)** | no | no | no | no | no | no | no | no |
+| PII/PHI guardrail | yes (local, apps-only) | no | no | no | no | no | no | no | protected paths |
+| Exact-duplicate tool guard | yes (>3, reason hidden) | yes (hash) | yes (doom_loop) | none | none | yes (semantic eq) | 3-turn blocked rule | yes (hash) | internal (undoc) |
+| Staged/soft-then-hard loop stop | **no (single deny)** | **yes (3 warn / 5 stop)** | **yes (3 warn / 5 gate)** | no | no | yes (STUCK breaks) | no | **yes (3-layer)** | 3-in-a-row fallback |
+| Failing-approach / no-progress | **only in /goal** | mistake tracker | targeted scenarios | no | reflection cap | **action-error+alt+monologue** | goal audit | **LLM loop check** | classifier fallback |
+| Oscillation (A/B/A/B) detect | **no** | no | partial | no | no | **yes** | no | no | no |
+| Mistake-streak handling | none (generic decline) | **recoverable+inject guidance** | no | no | reflections 3 | critic refine | goal blocked audit | AfterAgent retry | classifier counters |
+| Max-turns / iteration cap | 100 (soft) | maxIterations | via overflow | **none** | 3 reflections | 500 (hard) | token budget | maxSessionTurns | subagent caps |
+| Budget cap (tokens/$/wall) | **no** | resource-limiter | no | no | no | **yes ($/run)** | **yes (token budget)** | no | no |
 
 ## Where BioRouter was ahead
 
@@ -96,15 +96,15 @@ wide and scrolls horizontally.
    enum arm is actually wired.** The hooks review counts **13 event variants** — all of
    Claude Code's public events plus `PostToolUseFailure`, `PermissionRequest`,
    `SubagentStart`, and `PostCompact` — with no dead enum arms (each has a real fire site).
-   Only Claude Code (~30 events) and Pi (a very large typed bus) expose more. Goose (11),
-   OpenHands (6), Codex (7), and Gemini (11) all cover less. The stdin payload and stdout
+   Only Claude Code (~30 events) and Pi (a very large typed bus) expose more. OpenHands (6),
+   Codex (7), and Gemini (11) all cover less. The stdin payload and stdout
    decision JSON deliberately match Claude Code's field names, so existing hook scripts port
    unchanged — a real portability win, not a lookalike.
 
 2. **Supply-chain malware gating at extension install is nearly unique.** BioRouter's
    `extension_malware_check.rs` does an OSV.dev lookup when launching a stdio MCP extension
    and denies any package flagged with a `MAL-*` advisory (guardrails review, Q5). None of
-   the nine comparators ships an equivalent published-package malware check; this is a
+   the eight comparators ships an equivalent published-package malware check; this is a
    defensible edge for an agent that one-click-installs marketplace extensions.
 
 3. **On-device PII/PHI detection with checksum validation.** `guardrails/pii.rs` is a fully
@@ -121,8 +121,8 @@ wide and scrolls horizontally.
    and comparable to OpenHands' `ConfirmationPolicy`.
 
 5. **Stop-hook block cap.** `STOP_HOOK_BLOCK_CAP = 5` bounds runaway "keep-working" loops
-   while `stop_hook_active` lets well-behaved judges exit early (hooks review). Goose caps
-   at 8; Claude Code publishes no numeric cap. This is a small correctness win over the
+   while `stop_hook_active` lets well-behaved judges exit early (hooks review). Claude Code
+   publishes no numeric cap. This is a small correctness win over the
    reference design.
 
 ## Where BioRouter was behind
@@ -152,9 +152,8 @@ Ranked by how load-bearing the gap is for autonomous safety.
    it over-prompts on everything. **OpenHands is best-in-class** and easiest to copy: the
    LLM emits a `security_risk` (LOW/MEDIUM/HIGH/UNKNOWN) per action, a pluggable
    `ConfirmRisky(threshold=HIGH, confirm_unknown=True)` policy decides when to pause,
-   read-only tools auto-pass, and analysis errors fail-safe to HIGH. Goose's live
-   `PermissionJudge` + `read_only` tool annotations and Claude Code's tool-results-stripped
-   `auto`-mode classifier are the other two working references.
+   read-only tools auto-pass, and analysis errors fail-safe to HIGH. Claude Code's
+   tool-results-stripped `auto`-mode classifier is the other working reference.
 
 3. **No OS-level sandbox at all.** BioRouter's guardrail is permission gating, not process
    isolation (per the guardrails review — no comparator note needed; the reviews describe
@@ -166,7 +165,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
    network syscalls) + **bubblewrap** namespaces; Windows via a restricted process token. On
    a sandbox denial it *escalates to an approval prompt* instead of hard-failing. OpenHands
    (Docker/VM `Workspace` backends), Gemini CLI (Seatbelt + Docker/Podman), and Claude Code
-   (Bash sandbox) all have real isolation; BioRouter, Goose, Pi, and Aider have none.
+   (Bash sandbox) all have real isolation; BioRouter, Pi, and Aider have none.
 
 4. **Dangerous-command detection is a signature scanner that is off by default and only
    ever asks.** `security/patterns.rs` is a 40+ entry regex table; even when enabled it
@@ -231,7 +230,7 @@ Ranked by how load-bearing the gap is for autonomous safety.
    git-object DB, Gemini/Claude Code shadow-repo + rewind, Aider commit-per-edit) has an undo
    safety net; BioRouter has none documented. This is adjacent to safety (it is the recovery
    mechanism that makes aggressive autonomy tolerable) and is called out as the single biggest
-   gap in both the Goose and Claude Code external reviews.
+   gap in the Claude Code external review.
 
 ## Best-in-class and worst-in-class per aspect
 
@@ -244,16 +243,16 @@ Ranked by how load-bearing the gap is for autonomous safety.
   BioRouter (allow/deny/ask/inject only, and PreTool `additionalContext` is silently dropped).
 - **Permission-judge / read-only auto-approve:** *Best* — OpenHands (per-action `security_risk`
   + `ConfirmRisky` + read-only exempt + fail-safe-HIGH). *Runner-up* — Claude Code auto-mode
-  classifier (tool results stripped = injection-resistant); Goose live `PermissionJudge`.
+  classifier (tool results stripped = injection-resistant).
   *Worst* — BioRouter (judge + read-only sets are dead code, so SmartApprove is inert) and Pi
   (YOLO, no gating by design).
 - **OS sandboxing:** *Best* — Codex CLI (Seatbelt / Landlock+seccomp+bwrap / restricted token,
   deny-by-default, escalate-on-denial). *Runner-up* — OpenHands (Docker/VM), Gemini CLI, Claude
-  Code. *Worst* — BioRouter, Goose, Aider, Pi (no isolation; Pi at least honestly declines to
+  Code. *Worst* — BioRouter, Aider, Pi (no isolation; Pi at least honestly declines to
   fake one).
 - **Dangerous-command detection:** *Best* — Codex `execpolicy` (testable Starlark rules with
   justifications + path pinning). *Runner-up* — Gemini TOML policy engine (admin-tier override).
-  *Worst* — Goose / Aider (nothing), with BioRouter close behind (regex table, off by default,
+  *Worst* — Aider (nothing), with BioRouter close behind (regex table, off by default,
   ask-only, evadable).
 - **Repetition/loop detection:** *Best* — Gemini CLI (three-layer: hash-count + content-chant
   + periodic LLM check). *Runner-up* — OpenHands `StuckDetector` (5 heuristics incl. oscillation

@@ -6,8 +6,8 @@ import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import MarkdownContent from './MarkdownContent';
 import ToolCallWithResponse from './ToolCallWithResponse';
+import { ToolCallRows } from './ToolCallRows';
 import {
-  getTextContent,
   getToolRequests,
   getToolResponses,
   getToolConfirmationContent,
@@ -21,10 +21,14 @@ import ElicitationRequest from './ElicitationRequest';
 import SecretRequestCard from './SecretRequestCard';
 import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
-import { MessageMeta } from './MessageMeta';
-import { ChevronRight } from './icons/app-icons';
+import { MessageActions } from './MessageMeta';
+import { Brain } from './icons/app-icons';
+import { TranscriptRow } from './TranscriptRow';
+import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
-import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
+import { presentStoredTurnError, TurnErrorRow } from './conversation/ChatTurnError';
+import { splitAssistantText } from './transcript/transcriptRhythm';
+import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
   filePathLookupFromPaths,
@@ -46,11 +50,10 @@ interface BioRouterMessageProps {
    */
   turnActive?: boolean;
   // Precomputed by the parent list once per render and passed down to avoid each
-  // message recomputing O(n) scans over the whole conversation (which made the
-  // list O(n²) per streaming frame). Both fall back to local computation when
-  // omitted, so the component still works standalone.
+  // message recomputing an O(n) scan over the whole chat (which made the list
+  // O(n²) per streaming frame). Falls back to a local scan when omitted, so the
+  // component still works standalone.
   messageIndex?: number;
-  toolCallChains?: ReturnType<typeof identifyConsecutiveToolCalls>;
   submitElicitationResponse?: (
     elicitationId: string,
     userData: Record<string, unknown>
@@ -68,6 +71,11 @@ interface BioRouterMessageProps {
    * surfaces that never had it.
    */
   onRunInTerminal: ((command: string) => boolean) | null;
+  /**
+   * The row was appended while the person watched (`useLiveRows`), so a
+   * failure it reports is announced. A row read back from history is not.
+   */
+  live?: boolean;
 }
 
 export default function BioRouterMessage({
@@ -78,41 +86,46 @@ export default function BioRouterMessage({
   isStreaming = false,
   turnActive = false,
   messageIndex: messageIndexProp,
-  toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
   onOpenArtifact,
   onRunInTerminal,
   workingDir,
+  live = false,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   // Collapsed by default and sticky per message while it is mounted — a thought
   // you opened stays open as the turn continues below it.
   const [thinkingOpen, setThinkingOpen] = useState(false);
 
-  let textContent = getTextContent(message);
-
-  // Strip injected context blocks that are meant for the model, not the user.
-  // The trailing (\s*\\?") also consumes any closing \" the model places after </info-msg>
-  // to wrap a quoted echo — which Markdown would otherwise render as a stray \.
-  textContent = textContent.replace(/<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi, '').trim();
-
-  const splitChainOfThought = (text: string): { visibleText: string; cotText: string | null } => {
-    const regex = /<think>([\s\S]*?)<\/think>/i;
-    const match = text.match(regex);
-    if (!match) {
-      return { visibleText: text, cotText: null };
-    }
-
-    const cotRaw = match[1].trim();
-    const visibleText = text.replace(regex, '').trim();
-
-    return {
-      visibleText,
-      cotText: cotRaw || null,
-    };
-  };
-
-  const { visibleText, cotText } = splitChainOfThought(textContent);
+  // Injected context blocks (`<info-msg>`, model-only) are stripped and the
+  // chain of thought is split off, by the same function the list's rhythm
+  // reads, so the two can never disagree about whether a message starts with
+  // prose.
+  const { visibleText, cotText } = splitAssistantText(message);
+  const toolRequests = getToolRequests(message);
+  const toolConfirmationContent = getToolConfirmationContent(message);
+  const elicitationContent = getElicitationContent(message);
+  const secretRequestContent = getSecretRequestContent(message);
+  // The thought is all there is so far: the answer has not started, and the
+  // model has not moved on to a tool call or a question either. A thought that
+  // is followed by a running tool is over ("Thought"); the tool row beside it
+  // is what is working.
+  const thinkingNow =
+    isStreaming &&
+    !visibleText &&
+    toolRequests.length === 0 &&
+    toolConfirmationContent === undefined &&
+    elicitationContent === undefined &&
+    secretRequestContent === undefined;
+  // "Thinking · 8s" while it lasts, "Thought · 8s" after, when this view
+  // watched it happen; a thought read from history has no measured length.
+  const thought = useThoughtDuration(!!cotText && thinkingNow);
+  const thinkingMeta =
+    thinkingNow && thought.since !== undefined ? (
+      <ThinkingClock since={thought.since} />
+    ) : (
+      thoughtTook(thought.tookMs)
+    );
   const imagePaths = extractImagePaths(visibleText);
   const displayText =
     imagePaths.length > 0 ? removeImagePathsFromText(visibleText, imagePaths) : visibleText;
@@ -124,7 +137,6 @@ export default function BioRouterMessage({
   );
 
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
-  const toolRequests = getToolRequests(message);
   // Use the index passed by the parent list when available (O(1)); only fall
   // back to the O(n) scan when rendered standalone.
   const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
@@ -143,19 +155,6 @@ export default function BioRouterMessage({
   const knownFilePaths = useMemo(
     () => filePathLookupFromPaths(knownFilePathsKey ? knownFilePathsKey.split('\0') : []),
     [knownFilePathsKey]
-  );
-  const toolConfirmationContent = getToolConfirmationContent(message);
-  const elicitationContent = getElicitationContent(message);
-  const secretRequestContent = getSecretRequestContent(message);
-  // Prefer the parent's single precomputed chain map; only recompute locally
-  // (the old O(n)-per-message cost) when not provided.
-  const toolCallChains = useMemo(
-    () => toolCallChainsProp ?? identifyConsecutiveToolCalls(messages),
-    [toolCallChainsProp, messages]
-  );
-  const hideTimestamp = useMemo(
-    () => shouldHideTimestamp(messageIndex, toolCallChains),
-    [messageIndex, toolCallChains]
   );
   const hasToolConfirmation = toolConfirmationContent !== undefined;
   const hasElicitation = elicitationContent !== undefined;
@@ -184,42 +183,70 @@ export default function BioRouterMessage({
 
   const quotedSelection = useTextSelection(contentRef, `${sessionId}:${message.id}`);
 
+  // The daemon's own turn-ending notice ("Ran into this error: …") is stored as
+  // an assistant message. It draws as the error row the live failure draws,
+  // never as prose holding a raw provider response (vision V2-07).
+  const storedError = useMemo(
+    () =>
+      toolRequests.length === 0 && message.content.every((content) => content.type === 'text')
+        ? presentStoredTurnError(displayText)
+        : null,
+    [displayText, message.content, toolRequests.length]
+  );
+  if (storedError) {
+    return (
+      <div className="biorouter-message flex w-full justify-start min-w-0">
+        <TurnErrorRow presentation={storedError} alert={live} testId="stored-turn-error" />
+      </div>
+    );
+  }
+
   return (
-    <div className="biorouter-message br-message-meta-scope flex w-full justify-start min-w-0">
+    <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
-        {/* Chain of thought is a disclosure, not a card. It used to be a native
-            `<details>` on a filled, bordered 4px box with the browser's own
-            triangle — the one control in the transcript the USER AGENT drew
-            rather than the app, so it could not take the app's chevron, its
-            32px row, its motion or its type role, and it was the last place a
-            marker rotated with no transition. It is now the same disclosure the
-            tool rows use: a 32px line, a 16px chevron VISIBLE AT REST (a marker
-            that appears on hover teaches nobody that the row opens), and a body
-            indented 24px to the left edge that chevron establishes. */}
+        {/* Chain of thought is a transcript row, the same line a tool call is
+            (WS-TOOLS' TranscriptRow): a 16px Brain, "Thinking" while the
+            thought is all there is so far and "Thought" once the answer has
+            started, and a chevron that opens the thought indented 24px under
+            the label. It stays open while mounted once opened, so a thought
+            you are reading does not shut as the turn continues below it. The
+            time it took follows the label ("Thought · 8s"). */}
         {cotText && (
-          <div className="mb-2">
-            <button
-              type="button"
-              onClick={() => setThinkingOpen((open) => !open)}
-              aria-expanded={thinkingOpen}
-              className="flex h-8 cursor-pointer items-center gap-2 rounded-element text-secondary text-text-muted transition-colors hover:text-text-default"
-            >
-              <ChevronRight
-                aria-hidden="true"
-                className={cn('size-4 shrink-0 transition-transform', thinkingOpen && 'rotate-90')}
-              />
-              <span>{thinkingOpen ? 'Hide thinking' : 'Show thinking'}</span>
-            </button>
-            {thinkingOpen && (
-              <div className="pl-6">
-                <MarkdownContent content={cotText} />
-              </div>
-            )}
-          </div>
+          <TranscriptRow
+            className="mb-2"
+            icon={Brain}
+            glyph="thinking"
+            label={thinkingNow ? transcriptCopy.activity.thinking : transcriptCopy.activity.thought}
+            meta={thinkingMeta}
+            running={thinkingNow}
+            body="plain"
+            open={thinkingOpen}
+            onOpenChange={setThinkingOpen}
+          >
+            <MarkdownContent content={cotText} />
+          </TranscriptRow>
         )}
 
         {displayText && (
-          <div className="flex flex-col group">
+          // The answer is the actions' scope: hovering or focusing anything in
+          // it shows the floating cluster at its top right (Crew's row
+          // actions). It comes BEFORE the words in the DOM so Tab reaches it
+          // first; nothing in the flow is reserved for it.
+          <div className="br-message-actions-scope flex flex-col">
+            {toolRequests.length === 0 && !isStreaming && (
+              <MessageActions timestamp={timestamp}>
+                {message.content.every((content) => content.type === 'text') && (
+                  <>
+                    <MessageCopyLink text={displayText} contentRef={contentRef} />
+                    <MessageDivergeLink
+                      sessionId={sessionId}
+                      truncateAfterMs={message.created}
+                      truncateAfterId={message.id ?? undefined}
+                    />
+                  </>
+                )}
+              </MessageActions>
+            )}
             <QuotedTextSelection
               source={{
                 sessionId,
@@ -243,7 +270,7 @@ export default function BioRouterMessage({
             </QuotedTextSelection>
 
             {imagePaths.length > 0 && (
-              <div className="mt-4">
+              <div className="mt-2 flex flex-col gap-2">
                 {imagePaths.map((imagePath, index) => (
                   <ImagePreview key={index} src={imagePath} />
                 ))}
@@ -252,7 +279,7 @@ export default function BioRouterMessage({
 
             {/* Render structured ImageContent blocks (new sessions) */}
             {imageContentBlocks.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
+              <div className="flex flex-wrap gap-2 mt-2">
                 {imageContentBlocks.map((block, idx) =>
                   block.type === 'image' ? (
                     <InlineImage
@@ -265,76 +292,76 @@ export default function BioRouterMessage({
                 )}
               </div>
             )}
+          </div>
+        )}
 
-            {toolRequests.length === 0 && !isStreaming && (
-              <MessageMeta timestamp={timestamp}>
-                {message.content.every((content) => content.type === 'text') && (
-                  <>
-                    <MessageCopyLink text={displayText} contentRef={contentRef} />
-                    <MessageDivergeLink
-                      sessionId={sessionId}
-                      truncateAfterMs={message.created}
-                      truncateAfterId={message.id ?? undefined}
-                    />
-                  </>
-                )}
-              </MessageMeta>
+        {/* Tool rows are lines 4px apart (a 32px pitch for 28px rows), and the
+            block sits 8px under any prose above it. A tool-only message keeps
+            no time row of its own: the answer that ends the turn carries it. */}
+        {toolRequests.length > 0 && (
+          <div className={cn('flex w-full flex-col gap-1', displayText && 'mt-2')}>
+            <ToolCallRows
+              toolRequests={toolRequests}
+              toolResponses={toolResponsesMap}
+              turnActive={turnActive}
+              renderCall={(toolRequest) => (
+                <ToolCallWithResponse
+                  sessionId={sessionId}
+                  isCancelledMessage={false}
+                  toolRequest={toolRequest}
+                  toolResponse={toolResponsesMap.get(toolRequest.id)}
+                  notifications={toolCallNotifications.get(toolRequest.id)}
+                  isStreamingMessage={isStreaming}
+                  turnActive={turnActive}
+                  onOpenArtifact={onOpenArtifact}
+                  workingDir={workingDir}
+                />
+              )}
+            />
+          </div>
+        )}
+
+        {/* The cards that ask the person to act. They are blocks of the turn,
+            so they sit 8px under anything above them in this message. */}
+        {(hasToolConfirmation ||
+          (hasElicitation && submitElicitationResponse) ||
+          secretRequestContent) && (
+          <div
+            className={cn(
+              'flex flex-col gap-2',
+              // The thinking row brings its own 8px (`mb-2`).
+              (displayText || toolRequests.length > 0) && 'mt-2'
+            )}
+          >
+            {hasToolConfirmation && (
+              <ToolCallConfirmation
+                sessionId={sessionId}
+                isCancelledMessage={false}
+                isClicked={false}
+                actionRequiredContent={toolConfirmationContent}
+              />
+            )}
+
+            {hasElicitation && submitElicitationResponse && (
+              <ElicitationRequest
+                isCancelledMessage={false}
+                isClicked={false}
+                actionRequiredContent={elicitationContent}
+                onSubmit={submitElicitationResponse}
+              />
+            )}
+
+            {/* Issue #117. Unlike every other card here it takes NO submit
+              callback: it answers the daemon directly, because routing a
+              credential back through the composer would put it in the
+              transcript. */}
+            {secretRequestContent && (
+              <SecretRequestCard
+                isCancelledMessage={false}
+                actionRequiredContent={secretRequestContent}
+              />
             )}
           </div>
-        )}
-
-        {toolRequests.length > 0 && (
-          <div className={cn(displayText && 'mt-2')}>
-            <div className="relative flex flex-col w-full">
-              <div className="flex flex-col gap-3">
-                {toolRequests.map((toolRequest) => (
-                  <div className="biorouter-message-tool" key={toolRequest.id}>
-                    <ToolCallWithResponse
-                      sessionId={sessionId}
-                      isCancelledMessage={false}
-                      toolRequest={toolRequest}
-                      toolResponse={toolResponsesMap.get(toolRequest.id)}
-                      notifications={toolCallNotifications.get(toolRequest.id)}
-                      isStreamingMessage={isStreaming}
-                      turnActive={turnActive}
-                      onOpenArtifact={onOpenArtifact}
-                      workingDir={workingDir}
-                    />
-                  </div>
-                ))}
-              </div>
-              {!isStreaming && !hideTimestamp && <MessageMeta timestamp={timestamp} />}
-            </div>
-          </div>
-        )}
-
-        {hasToolConfirmation && (
-          <ToolCallConfirmation
-            sessionId={sessionId}
-            isCancelledMessage={false}
-            isClicked={false}
-            actionRequiredContent={toolConfirmationContent}
-          />
-        )}
-
-        {hasElicitation && submitElicitationResponse && (
-          <ElicitationRequest
-            isCancelledMessage={false}
-            isClicked={false}
-            actionRequiredContent={elicitationContent}
-            onSubmit={submitElicitationResponse}
-          />
-        )}
-
-        {/* Issue #117. Unlike every other card here it takes NO submit
-            callback: it answers the daemon directly, because routing a
-            credential back through the composer would put it in the
-            transcript. */}
-        {secretRequestContent && (
-          <SecretRequestCard
-            isCancelledMessage={false}
-            actionRequiredContent={secretRequestContent}
-          />
         )}
       </div>
     </div>

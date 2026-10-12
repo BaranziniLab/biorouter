@@ -266,12 +266,12 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Switch to local' }));
 
     expect(await screen.findByText('Warm up local model')).toBeInTheDocument();
-    expect(screen.getAllByText(/8 GiB VRAM/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/8 GB VRAM/).length).toBeGreaterThanOrEqual(1);
     // The daemon's below-minimum verdict, in words — and no longer the "use
     // Gemma 4 on 16 GB machines" line, which pointed at a retired model.
     expect(
       screen.getByText(
-        /Gemma 4 31B needs at least 32 GiB of GPU-addressable memory \(48 GiB recommended\)/
+        /Gemma 4 31B needs at least 32 GB of GPU-addressable memory \(48 GB recommended\)/
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/laptop tier|use Gemma 4/);

@@ -94,7 +94,7 @@ If the split is refused because the window is already at six panes, the agent is
 
 ### Turning tabs off entirely
 
-If you would rather nothing ever appeared on its own, turn on **Settings → App → Workspace → "Never open tabs automatically"**. Conversations and subagents still run; you get a notification naming them and open them from History when you want. The agent is explicitly told no tab opened, so it cannot report one. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is off by default.
+If you would rather nothing ever appeared on its own, turn on **Settings → App → General → "Never open tabs automatically"**. Conversations and subagents still run; you get a notification naming them and open them from History when you want. The agent is explicitly told no tab opened, so it cannot report one. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is off by default.
 
 ## Delegating work you can watch
 

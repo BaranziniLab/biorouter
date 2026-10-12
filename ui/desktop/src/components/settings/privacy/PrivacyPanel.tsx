@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Switch } from '../../ui/switch';
+import { StoredSwitch } from '../StoredSwitch';
+import { SettingRow } from '../../ui/setting-row';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
-import { Skeleton } from '../../ui/skeleton';
 import { useConfig } from '../../ConfigContext';
 import { disclosureTitle, useDisclosure } from '../../privacy/disclosureCopy';
 import { DisclosureProse } from '../../privacy/DisclosureProse';
@@ -19,6 +19,8 @@ import {
   privacyTiersRecordFromConfig,
   type PrivacyTiersRecord,
 } from './privacyTiers';
+import { privacyRowCopy } from './copy';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
 // Re-exported so the panel stays the name every existing importer already
 // reaches for; the definitions live in `privacyTiers.ts` because
@@ -43,14 +45,27 @@ export { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig };
  * model can read a private base, and the dialog says so in those words.
  */
 export default function PrivacyPanel() {
-  const { read, upsert } = useConfig();
+  const { read, upsert, config } = useConfig();
   // Task 30A (DR-17 req. 3). ⚠ Unconditional — the copy is fetched and shown in
   // BOTH toggle positions. Passing `enabled` here would be the plausible wrong
   // implementation: it would take the disclosure away in exactly the
   // configuration where the exposure is largest.
   const { copy: disclosure } = useDisclosure();
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [record, setRecord] = useState<PrivacyTiersRecord | null>(null);
+  // Started from the config cache when it already holds the daemon's answer, which is the snapshot
+  // every badge and the composer's off note paint from (`usePrivacyTiersEnabled`): the daemon
+  // always serves this key, so it is present exactly when the cache has loaded, and a panel that
+  // started from `null` on every visit to the App tab drew this one switch late (vision round 8,
+  // V4-R7-2). The read below still runs on mount and replaces the seed, and the switch only ever
+  // shows what the daemon HOLDS: a seed is the daemon's own last answer, never a guess.
+  const cachedSwitch = config?.[PRIVACY_TIERS_KEY];
+  const [enabled, setEnabled] = useState<boolean | null>(() =>
+    cachedSwitch === undefined ? null : privacyTiersEnabledFromConfig(cachedSwitch)
+  );
+  const [record, setRecord] = useState<PrivacyTiersRecord | null>(() =>
+    cachedSwitch === undefined
+      ? null
+      : privacyTiersRecordFromConfig(config?.[PRIVACY_TIERS_RECORD_KEY])
+  );
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -131,34 +146,44 @@ export default function PrivacyPanel() {
     [upsert, read, readRecord, refresh]
   );
 
-  if (enabled === null) {
-    // The loading branch keeps the root AND `data-privacy-panel`: SettingsView's
-    // suite reads that attribute to assert where this panel sits among its
-    // siblings, and a branch that drops it makes the panel look unmounted.
-    return (
-      <section className="biorouter-settings-section" data-privacy-panel>
-        <Skeleton className="h-16 w-full" />
-      </section>
-    );
-  }
+  // `null` until the daemon has answered. This is NOT "off": every branch below that means off
+  // asks `off`, never `!enabled`, so a panel that has not heard yet claims nothing about the
+  // switch (it draws no enforcement-off strip and no "not being stopped" line).
+  const off = enabled === false;
 
   const offCopy = privacyTiersOffCopy(record);
 
   return (
     // `data-privacy-panel` marks this section's root so SettingsView's suite
     // can assert WHERE it sits among its siblings, not merely that it mounted.
-    <section className="biorouter-settings-section" data-privacy-panel>
+    <section
+      id={SETTINGS_SECTION_IDS.privacy}
+      // Named like every `SettingSection`, so a screen reader lists it among the page's regions.
+      aria-labelledby={`${SETTINGS_SECTION_IDS.privacy}-title`}
+      className="biorouter-settings-section"
+      data-privacy-panel
+      aria-busy={enabled === null || undefined}
+    >
       {/* No description paragraph under the heading. Its two visible siblings on
           this tab (Workspace, Appearance) are heading-only, and inventing
           privacy prose here is exactly the drift the one-definition rule exists
           to prevent — the served disclosure below is where this panel's
           statement of scope comes from. */}
-      <div className="biorouter-settings-section-header">
-        <h2 className="text-caps text-text-muted">Privacy</h2>
+      {/* The header takes the shared section-header geometry (`br-setting-section-header`: the
+          12px inset every other section's caps label has), so PRIVACY lines up with GENERAL
+          and the rest instead of standing 12px to their left. The boxes below keep the
+          column's own edge, as every row's hover fill does. */}
+      <div className="biorouter-settings-section-header br-setting-section-header">
+        <h2
+          id={`${SETTINGS_SECTION_IDS.privacy}-title`}
+          className="br-setting-section-title text-caps text-text-muted"
+        >
+          Privacy
+        </h2>
       </div>
 
       <div className="space-y-3">
-        {!enabled && (
+        {off && (
           // H3: the headline, the HOW and the path are the composer note's own
           // (`privacyTiersOffCopy`) — its one control lands here, and the two
           // must not tell the user different stories. The consequence stays
@@ -169,7 +194,8 @@ export default function PrivacyPanel() {
             testId="privacy-enforcement-off-strip"
             className="min-w-0"
           >
-            <strong>{offCopy.headline}</strong> {offCopy.how && <>{offCopy.how} </>}
+            <strong className="font-semibold">{offCopy.headline}</strong>{' '}
+            {offCopy.how && <>{offCopy.how} </>}
             Nothing on this machine is separating private chats, extensions or knowledge bases from
             public models, and Biorouter is not recording which chats touch private material. Every
             badge in the app reads <em>enforcement off</em> while this is the case.
@@ -227,13 +253,13 @@ export default function PrivacyPanel() {
               text={disclosure.settings ?? disclosure.long}
               paragraphClassName="min-w-0 [overflow-wrap:anywhere]"
             />
-            {!enabled && (
+            {off && (
               // The served copy names three things Biorouter "does stop". With
               // the master switch off it stops none of them, so reprinting that
               // paragraph unqualified would be a false statement on the very
               // screen the user turned it off from.
               <p className="min-w-0 text-text-muted">
-                <strong>
+                <strong className="font-semibold">
                   Those three are not being stopped right now. Privacy tiers are off on this
                   machine.
                 </strong>{' '}
@@ -244,29 +270,27 @@ export default function PrivacyPanel() {
         )}
       </div>
 
-      <div className="biorouter-settings-list">
-        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
-          <div className="min-w-0">
-            <p className="text-label text-text-default">Privacy tiers</p>
-            {/* ⚠ Two clauses, not three, and the third is the reason. It used to
-              end "and can't reach your knowledge bases through the shell",
-              which is false: the general filesystem read-deny did not ship, and
-              the served disclosure four elements above this one says so. A
-              panel contradicting the disclosure it renders is worse than either
-              statement alone. The triad also read as rhythm rather than fact —
-              the limb that was doing the least work was the one that was wrong.
-              Private is defined by the rule, not by naming a provider. */}
-            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-              Chats on private models stay private: a public model can&rsquo;t read them and
-              can&rsquo;t call a private extension. A private model is one your institution hosts,
-              or one that runs on this machine.
-            </p>
-          </div>
-          <Switch
+      {/* `mt-2`: the switch row sits 8px under the disclosure box above it, the gap a header has
+          over its first row, rather than touching it. */}
+      <div className="biorouter-settings-list mt-2">
+        {/* ⚠ The help is two clauses, not three, and the third is the reason. It used to end
+            "and can't reach your knowledge bases through the shell", which is false: the general
+            filesystem read-deny did not ship, and the served disclosure above says so. A panel
+            contradicting the disclosure it renders is worse than either statement alone.
+            Private is defined by the rule, not by naming a provider. The words are kept; only
+            their place moved, from a paragraph under the label into the row's InfoTip (spec
+            §3.13), which the switch also hears through `aria-describedby`. */}
+        {/* While the daemon has not answered, the row is already here with its switch held at its
+            place and not painted (`StoredSwitch`). The panel used to stand in a 64px skeleton for
+            the whole section and swap it for about 250px of header, statement and row when the
+            answer came, which moved every row below it on each open of the App tab (vision round 2,
+            V4-R2-1). The header and the served statement do not wait on the switch: the statement
+            renders in both positions, and only the strip, the "not being stopped" line and the
+            switch's value depend on the answer. */}
+        <SettingRow label={privacyRowCopy.label} help={privacyRowCopy.help}>
+          <StoredSwitch
             checked={enabled}
             disabled={busy}
-            variant="mono"
-            aria-label="Privacy tiers"
             onCheckedChange={(next) => {
               if (next) {
                 void write(true);
@@ -279,7 +303,7 @@ export default function PrivacyPanel() {
               }
             }}
           />
-        </div>
+        </SettingRow>
       </div>
 
       {/*
@@ -319,42 +343,49 @@ export default function PrivacyPanel() {
         property: the refusal is reported, the switch shows what is TRUE, and
         both controls come back out of `busy`.
 
-        So the box is corrected in place instead — a real border token, the
-        element radius, the type roles, and both footer buttons on the 32px
-        rung. `border-borderStandard` was not a token at all; it rendered only
-        because of the `@layer base` `border-color` fallback.
+        So the box is corrected in place instead: the element radius, the type
+        roles, both footer buttons on the 32px rung, and the subtle fill every
+        in-page box wears now (owner message 13, R-27) in place of an outline.
+        It is the neutral Note's recipe by hand, because a Note folds past eight
+        lines and this box must show all of its words: `bg-background-fill`, the
+        1px edge kept TRANSPARENT (forced colours draw it; nothing moves), and
+        `br-fill-surface`, so the phrase field and Cancel rest one ground back on
+        the page instead of fill on fill.
       */}
       {confirming && (
         <div
           data-testid="privacy-disable-confirm"
-          className="mt-3 space-y-3 rounded-element border border-border-subtle px-3 py-3"
+          className="br-fill-surface mt-3 space-y-2 rounded-element border border-transparent bg-background-fill px-3 py-2.5"
         >
           <p className="text-label text-text-default">
-            This turns off <strong>every</strong> privacy guardrail on this machine, for every chat.
+            This turns off <strong className="font-semibold">every</strong> privacy guardrail on
+            this machine, for every chat.
           </p>
-          {/* ⚠ The shell clause moved OUT of this list, and that is the point.
-              Everything here is a consequence of turning the switch off, so
-              listing shell reads among them told the user they were prevented
-              while it was on. They are not: §9.5's filesystem read-deny did not
-              ship. Naming it separately keeps the warning honest in both
-              directions — the list stays true, and the thing that is never
-              blocked is still disclosed rather than quietly dropped. */}
-          <p className="text-supporting text-text-default">
-            Public models will be able to call your private extensions, read private chat history,
-            and read and write your knowledge bases.
-          </p>
+          {/* The three consequences, word for word, as a list so they scan (spec §3.13; the
+              words are locked, vocabulary rule 9). ⚠ The shell clause stays OUT of this list,
+              and that is the point. Everything here is a consequence of turning the switch
+              off, so listing shell reads among them told the user they were prevented while
+              it was on. They are not: §9.5's filesystem read-deny did not ship. Naming it
+              separately keeps the warning honest in both directions: the list stays true, and
+              the thing that is never blocked is still disclosed rather than quietly dropped. */}
+          <ul className="list-disc space-y-1 pl-5 text-supporting text-text-default">
+            <li>
+              Public models will be able to call your private extensions, read private chat history,
+              and read and write your knowledge bases.
+            </li>
+            <li>
+              <strong className="font-semibold">
+                While it is off, Biorouter stops recording which chats touched private material.
+              </strong>
+            </li>
+            <li>
+              Turning it back on will protect what is already marked private, but it cannot go back
+              and mark anything that happened while it was off.
+            </li>
+          </ul>
           <p className="text-supporting text-text-default">
             Reading your saved chats, memories and Biorouter apps off the disk through the shell is
             not blocked either way.
-          </p>
-          <p className="text-supporting text-text-default">
-            <strong>
-              While it is off, Biorouter stops recording which chats touched private material.
-            </strong>
-          </p>
-          <p className="text-supporting text-text-default">
-            Turning it back on will protect what is already marked private, but it cannot go back
-            and mark anything that happened while it was off.
           </p>
           <label className="block text-supporting text-text-muted" htmlFor="privacy-disable-phrase">
             Type <code>{DISABLE_PHRASE}</code> to continue.
@@ -378,7 +409,7 @@ export default function PrivacyPanel() {
               Turn off privacy tiers
             </Button>
             <Button
-              variant="outline"
+              variant="secondary"
               onClick={() => {
                 setConfirming(false);
                 setTyped('');

@@ -866,3 +866,47 @@ describe('the shipped catalog: a short query is not the whole shelf', () => {
     expect(rankSkills(skills, '').hits.length).toBe(skills.length);
   });
 });
+
+describe('typeahead — an opt-in for a list filter the person is typing into', () => {
+  const shelf: Entry[] = [
+    { id: 'ggplot', name: 'ggplot', description: 'Grammar of graphics plots.', tags: [] },
+    { id: 'bb-cli', name: 'bb-cli', description: 'Drives a browser.', tags: [] },
+    { id: 'r-scripting', name: 'R Scripting', description: 'R code.', tags: [] },
+    { id: 'ralph', name: 'Ralph', description: 'Loops.', tags: [] },
+  ];
+  const typed = (query: string) => ids(rankEntries(query, [], shelf, fields, { typeahead: true }));
+  const plain = (query: string) => ids(rankEntries(query, [], shelf, fields));
+
+  it('changes nothing unless asked for', () => {
+    expect(plain('gg')).toEqual([]);
+    expect(plain('ggp')).toEqual(['ggplot']);
+    expect(parseQuery('gg').typeaheadTerm).toBeUndefined();
+  });
+
+  it('lets the word being typed match the start of a name, ranked under the whole word', () => {
+    expect(typed('gg')).toEqual(['ggplot']);
+    // `r` is a whole word of one name and the start of another: the query as
+    // written outranks a prefix, whatever the catalog order.
+    expect(typed('r')).toEqual(['r-scripting', 'ralph']);
+  });
+
+  it('names the term only while nothing follows it, and only if it survives as a term', () => {
+    const typing = { typeahead: true };
+    expect(parseQuery('gg', [], typing).typeaheadTerm).toBe('gg');
+    expect(parseQuery('plot gg', [], typing).typeaheadTerm).toBe('gg');
+    expect(parseQuery('gg ', [], typing).typeaheadTerm).toBeUndefined();
+    expect(parseQuery('gg!', [], typing).typeaheadTerm).toBeUndefined();
+    // Filler is dropped from the terms, so the term being typed is not one of them.
+    expect(parseQuery('ggplot the', [], typing).typeaheadTerm).toBeUndefined();
+    expect(parseQuery('', [], typing).typeaheadTerm).toBeUndefined();
+  });
+
+  it('never reads a description by prefix', () => {
+    const noName: SearchField[] = [
+      ['unrelated', Weight.Name],
+      ['grammar of graphics', Weight.Prose],
+    ];
+    const query = parseQuery('gr', [], { typeahead: true });
+    expect(scoreEntry(query, noName).score).toBe(0);
+  });
+});

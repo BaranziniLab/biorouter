@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Check, FolderPlus, Settings } from '../../icons/app-icons';
-import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import {
   Command,
   CommandEmpty,
@@ -12,9 +12,9 @@ import {
   CommandList,
   CommandSeparator,
 } from '../../ui/command';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { KbDot } from '../KbDot';
-import { kbFormatLabel, LEGACY_FORMAT_TITLE } from '../kbFormat';
 
 interface Props {
   /** Switch to the manager dialog. */
@@ -53,6 +53,7 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
     setPrimaryKbId,
   } = useKnowledge();
   const [query, setQuery] = useState('');
+  const followHintId = useId();
 
   useEffect(() => {
     // Re-read on open: a base created in chat, and a machine-wide default moved
@@ -90,23 +91,36 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
         already following the default has nothing to inherit (DR-12).
       */}
       {canFollowDefaultPrimary && defaultPrimaryKb && (
-        <div className="flex-none border-b border-border-subtle px-2 py-2">
-          <p className="text-supporting text-text-muted">
-            {primaryKbId
-              ? `This chat uses its own primary, so it no longer follows your default knowledge base, ${defaultPrimaryKb.name}.`
-              : `This chat has no primary knowledge base, even though your default is ${defaultPrimaryKb.name}. Deleting the base a chat was using leaves it this way.`}
-          </p>
-          <Button
-            data-testid="knowledge-kb-follow-default"
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="mt-2 w-full"
-            onClick={followDefaultPrimary}
-            title={`This chat will use ${defaultPrimaryKb.name}, and will keep following your default if it changes.`}
-          >
-            Follow the default ({defaultPrimaryKb.name})
-          </Button>
+        // One line (spec 3.12): the state, and the way back. What the button
+        // will do is its Tooltip and its accessible description, not a
+        // paragraph inside a 256px popover.
+        <div className="flex flex-none items-center justify-between gap-2 border-b border-border-subtle py-1 pl-3 pr-1">
+          <span className="min-w-0 truncate text-supporting text-text-muted">
+            {knowledgeCopy.selector.notFollowing}
+          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                data-testid="knowledge-kb-follow-default"
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="min-w-0 shrink"
+                aria-describedby={followHintId}
+                onClick={followDefaultPrimary}
+              >
+                <span className="truncate">
+                  {knowledgeCopy.selector.useDefault(defaultPrimaryKb.name)}
+                </span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {knowledgeCopy.selector.useDefaultHint(defaultPrimaryKb.name)}
+            </TooltipContent>
+          </Tooltip>
+          <span id={followHintId} className="sr-only">
+            {knowledgeCopy.selector.useDefaultHint(defaultPrimaryKb.name)}
+          </span>
         </div>
       )}
 
@@ -133,12 +147,10 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
                   <span data-row-name className="min-w-0 flex-1 truncate">
                     {base.name}
                   </span>
-                  <Badge
-                    uppercase
-                    title={kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined}
-                  >
-                    {kbFormatLabel(base)}
-                  </Badge>
+                  {/* No format badge on picker rows (spec 3.12): in a 256px
+                      popover it was noise, and the band names the selected
+                      base's format. The tier stays: it is what a pick commits
+                      the chat to. */}
                   {base.tier !== 'public' && <PrivacyBadge tier={base.tier} dense />}
                   {isPrimary && (
                     <Check

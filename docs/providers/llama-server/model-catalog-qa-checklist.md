@@ -149,8 +149,9 @@ Run with the dev app (`ENABLE_PLAYWRIGHT=true npm run start-gui`, see the `debug
 drive the same dev GUI from a terminal over the Chrome DevTools Protocol, see
 [debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md)):
 
-- [ ] **Provider ordering**: Settings → Configure providers: **Llama Server is first** on the
-      Local tab, before Ollama, and the tabs run Local · Institutional · Public.
+- [ ] **Provider ordering**: in Settings → Models, choose **Manage…** on the **Providers** row.
+      **Llama Server is first** on the Local tab, before Ollama, and the tabs run Local ·
+      Institutional · Public.
 - [ ] **Configure**: the Llama Server card saves with no API key and marks the provider
       configured.
 - [ ] **Onboarding card**: `LlamaServerInlineCard` lists both catalog models with their sizes

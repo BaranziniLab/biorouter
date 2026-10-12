@@ -38,22 +38,11 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({
-  CostTracker: () => null,
-}));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({
   default: () => null,
 }));
@@ -74,6 +63,7 @@ vi.mock('../api', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+import { NO_MODEL_COMPOSER_ACTION, NO_MODEL_COMPOSER_HINT } from './composerNoProvider';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -110,7 +100,6 @@ function renderComposer(effectiveModel?: { provider: string; model: string }) {
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={0}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
       effectiveModel={effectiveModel}
@@ -122,7 +111,8 @@ describe('the composer with no model configured', () => {
   it('says why, above the input, with the way out', async () => {
     renderComposer();
     const hint = await screen.findByTestId('composer-no-model-hint');
-    expect(hint).toHaveTextContent('No model yet');
+    expect(hint).toHaveTextContent(NO_MODEL_COMPOSER_HINT);
+    expect(hint).toHaveTextContent(NO_MODEL_COMPOSER_ACTION);
     fireEvent.click(screen.getByTestId('composer-no-model-action'));
     expect(setView).toHaveBeenCalledWith('ConfigureProviders');
   });

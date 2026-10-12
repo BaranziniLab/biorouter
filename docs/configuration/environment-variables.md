@@ -225,7 +225,7 @@ These variables control security-related features.
 > **Note.** When the keyring is disabled, secrets are stored here:
 >
 > * macOS/Linux: `~/.config/biorouter/secrets.yaml`
-> * Windows: `%APPDATA%\biorouter\config\secrets.yaml`
+> * Windows: `%APPDATA%\UCSF\biorouter\config\secrets.yaml`
 
 ## Browser access
 
@@ -311,7 +311,9 @@ These variables are primarily used for developing, testing, and debugging biorou
 Default locations. There is no single root: config, data, and state resolve separately, and `biorouter info` prints the ones your machine is using.
 
 - macOS and Linux: config `~/.config/biorouter`, data `~/.local/share/biorouter`, state `~/.local/state/biorouter`
-- Windows: `%APPDATA%\Block\biorouter\config` and `%APPDATA%\Block\biorouter\data` (there is no separate state directory; state falls back to data)
+- Windows: config `%APPDATA%\UCSF\biorouter\config`, data `%APPDATA%\UCSF\biorouter\data` (there is no separate state directory, so state and logs go under data), and cache `%LOCALAPPDATA%\UCSF\biorouter\cache`
+
+Earlier releases kept these folders under a different author folder on Windows. The daemon (`biorouterd`, which the desktop app starts) moves them to the folders above as it starts, both the `%APPDATA%` one and the `%LOCALAPPDATA%` one, and updates the paths saved inside (extension commands, chats, knowledge bases, schedules). The command line tool never moves them. While any other Biorouter program is using the earlier folder (a command line session, an extension, or a program from the earlier release with a file open), the move waits for a later start and the earlier folder stays in use until then. If both folders exist, the new one is used, the earlier one is left as it was, and the desktop app says so; see [two folders after an update](../troubleshooting/common-problems-and-fixes.md#two-folders-after-an-update). Nothing is moved while `BIOROUTER_PATH_ROOT` is set.
 
 When set, biorouter creates `config/`, `data/`, and `state/` subdirectories under the specified path. This is useful for isolating test environments, running multiple configurations, or CI/CD pipelines.
 

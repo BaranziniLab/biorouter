@@ -50,7 +50,9 @@ describe('SidebarUpdateButton', () => {
     emit({ event: 'update-available', data: { version: '1.89.0' } });
 
     const button = screen.getByRole('button', { name: 'Update Biorouter to 1.89.0' });
-    expect(button.textContent).toContain('UPDATE');
+    // A rail row in sentence case, not a caps "UPDATE" bar (spec 3.4, F-14).
+    expect(button).toHaveTextContent('Update to 1.89.0');
+    expect(button).toHaveAttribute('data-tone', 'update');
     fireEvent.click(button);
 
     expect(requestedState?.phase).toBe('available');

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistoryView from './SessionHistoryView';
+import { MAKE_CHAT_PUBLIC } from './copy';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 import type { Session } from '../../api';
 
@@ -78,22 +79,27 @@ afterEach(() => {
 
 describe('SessionHistoryView declassification on a browser-served surface', () => {
   /**
-   * ⚠ **Fails against `origin/main`**, which renders a live "Make public"
+   * ⚠ **Fails against `origin/main`**, which renders a live "Make this chat public"
    * button here and nothing that explains anything.
    *
-   * The note carries the short line visibly and the full reason on `title` — a
-   * tooltip would be unreachable, because `buttonVariants` sets
-   * `disabled:pointer-events-none` and the Share button two elements away has
-   * had a tooltip nobody can trigger for exactly that reason.
+   * The note carries the short line visibly and the full reason as an InfoTip on
+   * it. A tooltip on the disabled button would be unreachable, because
+   * `buttonVariants` sets `disabled:pointer-events-none` (the Share button two
+   * elements away has had a tooltip nobody can trigger for exactly that reason),
+   * and a `title` is neither reachable by Tab nor allowed to carry help (spec
+   * 2.6). The InfoTip is focusable and hands the reason to a screen reader as the
+   * note's description.
    */
   it('replaces the button with a line saying where the chat can be marked public', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderPrivatePage();
 
-    expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
+    expect(screen.queryByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeNull();
     const note = screen.getByTestId('declassify-browser-note');
     expect(note).toHaveTextContent(/needs the host/i);
-    expect(note.getAttribute('title')).toMatch(/biorouter serve/);
+    expect(note).toHaveAccessibleDescription(/biorouter serve/);
+    expect(note.getAttribute('title')).toBeNull();
+    expect(note.tabIndex).toBe(0);
     expect(mocks.declassifySession).not.toHaveBeenCalled();
   });
 
@@ -104,7 +110,7 @@ describe('SessionHistoryView declassification on a browser-served surface', () =
   it('leaves the desktop action bar fully usable', () => {
     renderPrivatePage();
 
-    expect(screen.getByRole('button', { name: 'Make public' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeInTheDocument();
     expect(screen.queryByTestId('declassify-browser-note')).toBeNull();
   });
 });

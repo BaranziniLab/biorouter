@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import UserMessage from './UserMessage';
+import { transcriptCopy } from './transcript/copy';
 import type { Message } from '../api';
 
 /**
@@ -27,9 +28,13 @@ describe('an unanswered steer', () => {
     const onSendAgain = vi.fn();
     render(<UserMessage message={steer('unanswered')} onSendAgain={onSendAgain} />);
 
-    expect(screen.getByTestId('steer-unanswered')).toHaveTextContent(
-      'Not answered: the turn ended before the agent read this.'
-    );
+    // A state word on the line, the sentence behind its InfoTip: still the
+    // description a screen reader hears, with no hover needed.
+    const line = screen.getByTestId('steer-unanswered');
+    expect(line).toHaveTextContent(transcriptCopy.steer.notAnswered);
+    expect(
+      screen.getByRole('button', { name: `About ${transcriptCopy.steer.notAnswered}` })
+    ).toHaveAccessibleDescription(transcriptCopy.steer.notAnsweredHelp);
     fireEvent.click(screen.getByRole('button', { name: 'Send this message again' }));
     expect(onSendAgain).toHaveBeenCalledWith('use the 2024 cohort');
   });
@@ -44,9 +49,12 @@ describe('an unanswered steer', () => {
     const onSendAgain = vi.fn();
     render(<UserMessage message={steer()} deliveryUnconfirmed onSendAgain={onSendAgain} />);
     expect(screen.getByText('use the 2024 cohort')).toBeVisible();
+    expect(screen.getByTestId('steer-unanswered')).toHaveTextContent(
+      transcriptCopy.steer.notDelivered
+    );
     expect(
-      screen.getByText('Delivery unconfirmed. Check the transcript before sending again.')
-    ).toBeVisible();
+      screen.getByRole('button', { name: `About ${transcriptCopy.steer.notDelivered}` })
+    ).toHaveAccessibleDescription(transcriptCopy.steer.notDeliveredHelp);
     fireEvent.click(screen.getByRole('button', { name: 'Send this message again' }));
     expect(onSendAgain).toHaveBeenCalledWith('use the 2024 cohort');
   });

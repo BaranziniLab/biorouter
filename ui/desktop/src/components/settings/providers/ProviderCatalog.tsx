@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
@@ -9,8 +10,9 @@ import {
   UpdateCustomProviderRequest,
 } from '../../../api';
 import { Plus } from '../../icons/app-icons';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
-import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
+import { InfoTip } from '../../ui/info-tip';
+import { SettingSection } from '../../ui/setting-row';
+import { CustomProviderDialog } from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { holdChatModel } from '../models/pendingChatModel';
 import type Model from '../models/modelInterface';
@@ -21,6 +23,10 @@ import { useConfig } from '../../ConfigContext';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Note } from '../../ui/note';
 import { Button } from '../../ui/button';
+import { Skeleton } from '../../ui/skeleton';
+import { llamaServerStore } from '../models/llamaServerStore';
+import { catalogCopy, customProviderCopy, providerPageCopy, providerRowSummary } from './copy';
+import './providers.css';
 import {
   RETIRED_AZURE_ENDPOINT_NOTICE,
   isRetiredAzureDefaultEndpoint,
@@ -33,11 +39,12 @@ import {
   type ProviderGroupKey,
 } from './providerOrdering';
 import { NonPrivateModelDisclosureNote } from '../../privacy/NonPrivateModelDisclosureNote';
+import { readDisclosureAcknowledgement } from '../../privacy/disclosureCopy';
 import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import LlamaServerInlineCard from '../../onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from '../../onboarding/OllamaInlineCard';
 import InstitutionalSetupCard, {
-  INSTITUTIONAL_SETUP_PROVIDER_IDS,
+  INSTITUTIONAL_SETUP_FLAVOR,
 } from '../../onboarding/InstitutionalSetupCard';
 import CommercialSetupCard, {
   type DetectedProviderSetup,
@@ -47,10 +54,20 @@ import {
   CodingAgentLoadError,
   CodingAgentProvenance,
   StatusPill,
+  isCodingAgentProviderId,
   pillFor,
   useCodingAgents,
 } from '../../onboarding/codingAgentControls';
-import type { CodingAgentAvailability } from '../../onboarding/codingAgentStatus';
+import {
+  AGENT_SUBSCRIPTION,
+  type CodingAgentAvailability,
+} from '../../onboarding/codingAgentStatus';
+import { agentCopy } from '../../onboarding/copy';
+import {
+  ViewPrimaryParticipant,
+  engageViewPrimary,
+  viewPrimaryOwner,
+} from '../../onboarding/viewPrimary';
 
 export type ProviderCatalogMode = 'settings' | 'onboarding';
 
@@ -66,8 +83,8 @@ export type ProviderCatalogMode = 'settings' | 'onboarding';
  * had five bespoke cards for five providers and no way to reach the other
  * twenty-three. They are one surface now, and the mode changes only what a row
  * *does* when it opens: settings opens the configure modal; onboarding opens the
- * provider's own setup UI, which is the same component the cards used, rendered
- * without its card chrome (see `OnboardingCardShell`).
+ * provider's own setup UI, opened in place under the row (the onboarding components,
+ * which have no card of their own).
  *
  * ## What is deliberately NOT keyed on a provider name here
  *
@@ -125,20 +142,66 @@ interface ProviderCatalogProps {
    * starts on. Ignored when {@link chatSessionId} is set.
    */
   heldChatTabId?: string | null;
+  /**
+   * The element the tab list is drawn into: the page band's tab slot (`ProviderSettingsPage`),
+   * so Local, Institutional and Public sit on the title's line like Settings' three tabs do.
+   * Omitted, the list is drawn at the top of the catalog (first run's `ProviderGuard`, which has
+   * its own welcome header). `null` means the slot is not mounted yet: nothing is drawn, and the
+   * tabs appear the moment it is.
+   */
+  tabsHost?: HTMLElement | null;
+  /**
+   * The provider list is still being fetched (`providers` is not the answer yet). The catalog
+   * draws its quiet skeleton instead of a tab that would say "Nothing here yet." about providers
+   * it has not been told about (first run, vision FR-R1-1). First run also passes it while it holds
+   * the first screen for the privacy notice's answer, so the page and the notice arrive together
+   * (FR-R4-4); it is the same skeleton, whatever the wait is for.
+   */
+  loading?: boolean;
+  /**
+   * Draw nothing but the skeleton until the opening tab is known, then open on it at rest and
+   * keep it: the provider list, `configuredProvider` (`undefined` = not read yet), the API
+   * section's disclosure copy and, when it can decide the tab (no route hint, no bound provider),
+   * the coding-agent probe; the last two are waited for at most {@link AGENT_PROBE_WAIT_MS}.
+   * Without it the first run painted Local, then switched itself to Public a second later when the
+   * probe answered, under the pointer (FR-R1-1), and the Public tab then grew a two-line disclosure
+   * above its key field 300 ms after it was drawn, moving every row under the pointer (FR-R2-1).
+   * The tab labels are drawn throughout, none selected until the catalog opens, so the band holds
+   * still too.
+   */
+  holdUntilSettled?: boolean;
 }
+
+/**
+ * How long a held catalog waits for the coding-agent probe before it opens without it. The probe
+ * spawns two vendor CLIs and answered in about 1.4 s in the first-run review; a hung CLI must not
+ * keep the first screen a skeleton. After this the probe can no longer move the tab.
+ */
+export const AGENT_PROBE_WAIT_MS = 2500;
 
 /**
  * The provider ids that open a bespoke first-run setup panel, and which one.
  *
- * ⚠ Wiring, not taxonomy — see the class note above. `institutional` is handled
- * per *section* rather than per row, because that card configures a family of
- * gateways behind its own flavour toggle and would otherwise be rendered twice
- * inside one institution.
+ * ⚠ Wiring, not taxonomy — see the class note above. The institutional gateways
+ * open their form through `INSTITUTIONAL_SETUP_FLAVOR` (the form's own table of the
+ * rows it sets up), and only while they are not set up: a configured gateway's row
+ * is chosen on a click, as any configured row is.
  */
 const ONBOARDING_SETUP: Record<string, 'llamacpp' | 'ollama'> = {
   llamacpp: 'llamacpp',
   ollama: 'ollama',
 };
+
+/**
+ * The rows open when the catalog mounts. The recommended local provider opens by default in
+ * onboarding: it is the zero-setup path, and an accordion that starts entirely closed reads as an
+ * empty screen on the one page a first-run user has no context for.
+ */
+const defaultOpenRows = (mode: ProviderCatalogMode): string[] =>
+  mode === 'onboarding' ? ['llamacpp'] : [];
+
+/** The key box's place in a tab's order of panels (`viewPrimary`); no provider id has a space. */
+const KEY_BOX_PANEL = 'paste a key';
 
 /** The tab a `?tab=` hint names, or `null` when it names nothing we have. */
 export function tabFromHint(hint: string | null | undefined): ProviderGroupKey | null {
@@ -215,16 +278,13 @@ const AddCustomProviderRow = React.memo(function AddCustomProviderRow({
 }) {
   return (
     <button
+      type="button"
       data-testid="add-custom-provider-card"
       onClick={onClick}
-      className="w-full flex items-center gap-3 py-3 px-4 rounded-container
-        cursor-pointer tint-interactive
-        transition-colors text-left"
+      className="biorouter-settings-row br-setting-row w-full cursor-pointer text-left"
     >
-      <div className="w-8 h-8 rounded-element flex items-center justify-center flex-shrink-0">
-        <Plus className="w-4 h-4 text-text-muted" />
-      </div>
-      <p className="text-label text-text-muted">Add custom provider</p>
+      <Plus className="size-4 shrink-0 text-text-muted" aria-hidden />
+      <span className="text-label text-text-muted">{catalogCopy.addCustom}</span>
     </button>
   );
 });
@@ -243,6 +303,9 @@ export default function ProviderCatalog({
   chatSessionId = null,
   chatPrivacyTier,
   heldChatTabId = null,
+  tabsHost,
+  loading = false,
+  holdUntilSettled = false,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
   const { read } = useConfig();
@@ -395,17 +458,109 @@ export default function ProviderCatalog({
     hasSubscriptionReadyAgent,
     routeHint: initialTab,
   });
-  const activeTab = chosenTab ?? computedTab;
 
-  const [openRow, setOpenRow] = useState<string | null>(() => {
-    // The recommended local provider opens by default in onboarding: it is the
-    // zero-setup path, and an accordion that starts entirely closed reads as an
-    // empty screen on the one page a first-run user has no context for.
-    return mode === 'onboarding' ? 'llamacpp' : null;
-  });
-  const toggleRow = useCallback(
-    (name: string) => setOpenRow((current) => (current === name ? null : name)),
+  /**
+   * A held catalog (`holdUntilSettled`) opens once, at rest, on the tab its inputs settle on.
+   *
+   * The probe only gets a say when it could change the answer: a route hint or a bound provider
+   * outranks it (rules 1 and 2 of {@link defaultCatalogTab}), so with either of those the catalog
+   * does not wait for two CLIs to start. Once settled the tab is frozen in `settledTab`, so a late
+   * probe (one that outlived {@link AGENT_PROBE_WAIT_MS}) or a refreshed provider list never moves
+   * it; the person's own click (`chosenTab`) still does.
+   */
+  const [probeWaitOver, setProbeWaitOver] = useState(false);
+  useEffect(() => {
+    if (!holdUntilSettled) return;
+    const timer = window.setTimeout(() => setProbeWaitOver(true), AGENT_PROBE_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [holdUntilSettled]);
+  /**
+   * The API section's standing disclosure (`NonPrivateModelDisclosureNote`) is the daemon's copy,
+   * fetched once for the app, and the note fetched it only when it mounted, so the first time
+   * Public was drawn the line arrived a beat later and pushed the key field and every API row down
+   * 40px (vision FR-R2-1). The fetch starts when the catalog mounts, whichever tab it opens on, and
+   * a held catalog waits for its answer (copy or no copy: a failed fetch renders nothing, so it is
+   * an answer too) within the same {@link AGENT_PROBE_WAIT_MS}. Read, never written: the frozen
+   * privacy module is only asked, and the note still renders exactly what it is handed.
+   */
+  const [disclosureAnswered, setDisclosureAnswered] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void readDisclosureAcknowledgement().finally(() => {
+      if (!cancelled) setDisclosureAnswered(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const ownsBoundProvider =
+    !!configuredProvider &&
+    groups.some((group) =>
+      group.providers.some((provider) => provider.name === configuredProvider)
+    );
+  const probeCanDecide = tabFromHint(initialTab) === null && !ownsBoundProvider;
+  const settling =
+    loading ||
+    (holdUntilSettled &&
+      (configuredProvider === undefined ||
+        (probeCanDecide && agentControls.isChecking && !probeWaitOver) ||
+        (!disclosureAnswered && !probeWaitOver)));
+  const [settledTab, setSettledTab] = useState<ProviderGroupKey | null>(null);
+  useEffect(() => {
+    if (holdUntilSettled && !settling && settledTab === null) setSettledTab(computedTab);
+  }, [computedTab, holdUntilSettled, settledTab, settling]);
+  const activeTab = chosenTab ?? settledTab ?? computedTab;
+
+  // First run opens the Llama Server row by default, and that panel starts on "Checking Llama
+  // Server…" until its status arrives. Asked here, while the catalog is still a skeleton, the
+  // status is usually in by the time the panel mounts, so the panel opens on its content. A read
+  // (`GET /llamacpp/status`), never a start: nothing is downloaded or run.
+  const hasLlamaServer =
+    Array.isArray(providers) && providers.some((provider) => provider.name === 'llamacpp');
+  useEffect(() => {
+    if (!isOnboarding || !hasLlamaServer) return;
+    if (llamaServerStore.getSnapshot().status !== null) return;
+    llamaServerStore.refresh().catch(() => {
+      // The panel asks again when it mounts and says so if it fails.
+    });
+  }, [hasLlamaServer, isOnboarding]);
+
+  /**
+   * The rows that are open, each on its own, starting from {@link defaultOpenRows}.
+   *
+   * ⚠ **Opening a row never closes another** (vision FR-R4-2, principle 9: never move a row under
+   * the pointer). It used to be one `openRow`, so a click on Codex with Claude Code open above it
+   * closed that panel in the same frame and Codex jumped 84px up, leaving the unmoved pointer on
+   * its coral "Use Codex" (a second click, meant to close the row, chose Codex as the provider). On
+   * Local, Ollama jumped 162px. The page is at scrollTop 0 there, so no scroll compensation could
+   * hold the row; a row only moves when something ABOVE it changes, and now nothing above a
+   * clicked row changes.
+   */
+  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(
+    () => new Set(defaultOpenRows(mode))
+  );
+  /**
+   * The order the person turned to the panels, most recent last: opening a row, or moving focus
+   * into a panel or the key box. With rows open on their own, two panels drew two coral primaries
+   * in one tab; the latest one present holds the tab's one coral button and the others draw it as
+   * secondary (vision FR-R5-2, principle 7, `onboarding/viewPrimary.tsx`).
+   */
+  const [engaged, setEngaged] = useState<readonly string[]>(() => defaultOpenRows(mode));
+  const engage = useCallback(
+    (key: string) => setEngaged((current) => engageViewPrimary(current, key)),
     []
+  );
+  const toggleRow = useCallback(
+    (name: string) => {
+      setOpenRows((current) => {
+        const next = new Set(current);
+        if (!next.delete(name)) next.add(name);
+        return next;
+      });
+      // A row that closes leaves the tab's participants, so engaging it on close changes nothing.
+      engage(name);
+    },
+    [engage]
   );
 
   const openModal = useCallback(
@@ -507,22 +662,53 @@ export default function ProviderCatalog({
   /** The first-run setup panel a row opens, or `null` when it has none. */
   const setupPanelFor = (provider: ProviderDetails): React.ReactNode => {
     if (!isOnboarding) return null;
+    // The row is the selector (FR-R1-6): an institutional gateway that is not set up opens its own
+    // form in place, for its own gateway, instead of a dialog beside a second form below the rows.
+    const gateway = INSTITUTIONAL_SETUP_FLAVOR[provider.name];
+    if (gateway && !provider.is_configured) {
+      return (
+        <InstitutionalSetupCard
+          flavor={gateway}
+          onSuccess={handleProviderReady}
+          onStartTesting={onStartTesting}
+        />
+      );
+    }
     switch (ONBOARDING_SETUP[provider.name]) {
       case 'llamacpp':
-        return <LlamaServerInlineCard chrome="bare" onSuccess={handleLocalComplete} />;
+        return <LlamaServerInlineCard onSuccess={handleLocalComplete} />;
       case 'ollama':
-        return <OllamaInlineCard chrome="bare" onSuccess={handleLocalComplete} />;
+        return <OllamaInlineCard onSuccess={handleLocalComplete} />;
       default:
         return null;
     }
   };
 
-  const renderRow = (provider: ProviderDetails) => {
+  /**
+   * Whether a row opens in place. A coding-agent row is an accordion on BOTH surfaces: its content
+   * is a live status and the guidance for it, which a modal cannot carry and which a settings user
+   * needs exactly as much as a first-run user does.
+   */
+  const opensInPlace = (provider: ProviderDetails) =>
+    agentsByProviderId.has(provider.name) || setupPanelFor(provider) !== null;
+
+  /**
+   * The panels in a tab that can hold its one coral button (`viewPrimary`): the key box, then
+   * every open row's panel, in the order they are drawn.
+   */
+  const viewPrimaryPanels = (group: OrderedProviderGroup): string[] =>
+    group.sections.flatMap((section) => [
+      ...(isOnboarding && group.key === 'commercial' && section.key === 'api'
+        ? [KEY_BOX_PANEL]
+        : []),
+      ...section.providers
+        .filter((provider) => openRows.has(provider.name) && opensInPlace(provider))
+        .map((provider) => provider.name),
+    ]);
+
+  const renderRow = (provider: ProviderDetails, primaryPanel: string | null) => {
     const agent = agentsByProviderId.get(provider.name);
     const setupPanel = setupPanelFor(provider);
-    // A coding-agent row is an accordion on BOTH surfaces: its content is a live
-    // status and the guidance for it, which a modal cannot carry and which a
-    // settings user needs exactly as much as a first-run user does.
     const expandable = agent !== undefined || setupPanel !== null;
     const retiredEndpointNotice =
       provider.name === 'azure_openai' && azureOnRetiredEndpoint ? (
@@ -530,20 +716,28 @@ export default function ProviderCatalog({
           tone="warning"
           role="status"
           testId="azure-retired-endpoint-notice"
-          className="mx-4 mb-2"
+          className="mx-3 mb-2"
           action={
             <Button
               size="sm"
               variant="secondary"
               onClick={() => void configureProviderViaModal(provider)}
             >
-              Configure
+              {catalogCopy.configure}
             </Button>
           }
         >
           {RETIRED_AZURE_ENDPOINT_NOTICE}
         </Note>
       ) : null;
+
+    // One status per row (principle 4, V4-26). A configured agent that is ready is said by
+    // "Configured" alone: its pill ("Ready · signed in on your subscription") would be the same
+    // news twice. Every state that needs attention keeps its pill, and so does a ready agent that
+    // has not been set up yet, because the pill is what invites the "Use" in its panel.
+    const agentPill = agent ? pillFor(agent.auth) : null;
+    const showAgentPill =
+      agentPill !== null && !(provider.is_configured && agentPill.tone === 'success');
 
     return (
       <React.Fragment key={provider.name}>
@@ -557,22 +751,34 @@ export default function ProviderCatalog({
           }}
           isOnboarding={isOnboarding}
           expandable={expandable}
-          expanded={expandable && openRow === provider.name}
+          expanded={expandable && openRows.has(provider.name)}
           onToggle={() => toggleRow(provider.name)}
           statusSlot={
-            agent ? (
-              <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+            showAgentPill ? (
+              <StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>
             ) : undefined
           }
+          summary={
+            isCodingAgentProviderId(provider.name)
+              ? agentCopy.rowSummary(AGENT_SUBSCRIPTION[provider.name])
+              : providerRowSummary[provider.name]
+          }
         >
-          {agent ? (
-            <div className="space-y-2">
-              <CodingAgentProvenance agent={agent} />
-              <CodingAgentBody agent={agent} controls={agentControls} />
-            </div>
-          ) : (
-            setupPanel
-          )}
+          {expandable ? (
+            <ViewPrimaryParticipant
+              holds={primaryPanel === provider.name}
+              onEngage={() => engage(provider.name)}
+            >
+              {agent ? (
+                <div className="space-y-3">
+                  <CodingAgentProvenance agent={agent} />
+                  <CodingAgentBody agent={agent} controls={agentControls} />
+                </div>
+              ) : (
+                setupPanel
+              )}
+            </ViewPrimaryParticipant>
+          ) : null}
         </ProviderCard>
         {retiredEndpointNotice}
       </React.Fragment>
@@ -581,28 +787,11 @@ export default function ProviderCatalog({
 
   const renderSection = (group: OrderedProviderGroup, section: OrderedProviderSection) => {
     const isApiSection = group.key === 'commercial' && section.key === 'api';
-    const isInstitutionSection =
-      group.key === 'institutional' &&
-      section.key !== 'unaffiliated' &&
-      section.providers.length > 0;
-    // Only offer the institutional setup form where it actually configures one of
-    // the section's providers — derived from that card's own declaration, so a
-    // second institution's gateways never get a form written for someone else's.
-    const hostsInstitutionalSetup =
-      isOnboarding &&
-      isInstitutionSection &&
-      section.providers.some((provider) =>
-        INSTITUTIONAL_SETUP_PROVIDER_IDS.includes(provider.name)
-      );
+    // A tab is one view: the panel the person turned to last holds its one coral button.
+    const primaryPanel = viewPrimaryOwner(engaged, viewPrimaryPanels(group));
 
-    return (
-      <div key={section.key} data-testid={`catalog-section-${section.key}`}>
-        {section.label && (
-          <>
-            <h3 className="text-caps text-text-muted mb-1">{section.label}</h3>
-            {section.note && <p className="text-supporting text-text-muted mb-3">{section.note}</p>}
-          </>
-        )}
+    const rows = (
+      <>
         {/*
           Issue #56, DR-17 requirement 3. The API-provider section — and only it —
           carries the standing one-line disclosure of what a model there can
@@ -611,7 +800,7 @@ export default function ProviderCatalog({
           two homes and stays wrong.
         */}
         {isApiSection && (
-          <NonPrivateModelDisclosureNote className="text-supporting text-text-muted mb-3" />
+          <NonPrivateModelDisclosureNote className="px-3 pb-2 text-supporting text-text-muted" />
         )}
         {/*
           The fastest path for someone who already holds a key, at the TOP of the
@@ -620,52 +809,57 @@ export default function ProviderCatalog({
           rows is theirs.
         */}
         {isOnboarding && isApiSection && (
-          <div className="mb-4">
-            <CommercialSetupCard
-              chrome="bare"
-              onSuccess={handleCommercialDetected}
-              onStartTesting={onStartTesting}
-            />
+          <div className="br-provider-inset mb-4">
+            <ViewPrimaryParticipant
+              holds={primaryPanel === KEY_BOX_PANEL}
+              onEngage={() => engage(KEY_BOX_PANEL)}
+            >
+              <CommercialSetupCard
+                onSuccess={handleCommercialDetected}
+                onStartTesting={onStartTesting}
+              />
+            </ViewPrimaryParticipant>
           </div>
         )}
-        <div className="divide-y divide-border-subtle">
-          {section.providers.map(renderRow)}
-          {isApiSection && (
-            <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />
-          )}
-        </div>
-        {hostsInstitutionalSetup && (
-          <div className="mt-4 border-t border-border-subtle pt-4">
-            <InstitutionalSetupCard
-              chrome="bare"
-              onSuccess={handleProviderReady}
-              onStartTesting={onStartTesting}
-            />
-          </div>
+        {section.providers.map((provider) => renderRow(provider, primaryPanel))}
+        {isApiSection && <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />}
+      </>
+    );
+
+    return (
+      <div key={section.key} data-testid={`catalog-section-${section.key}`}>
+        {section.label ? (
+          <SettingSection title={section.label} help={section.help}>
+            {rows}
+          </SettingSection>
+        ) : (
+          <div className="biorouter-settings-list">{rows}</div>
         )}
       </div>
     );
   };
 
   const renderPanel = (group: OrderedProviderGroup) => (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-caps text-text-muted mb-1 flex items-center gap-2">
-          <span className={`w-1.5 h-1.5 ${group.accentClassName} rounded-full flex-shrink-0`} />
-          {group.label}
-        </h2>
-        <p className="text-supporting text-text-muted">{group.note}</p>
-      </div>
+    <div>
+      {/* §14.5: why this tab has the tier it has. PRIVACY information, so it is a visible line,
+          never an InfoTip, and it is the only line a panel opens with: the tab already names
+          the group, and this line starts with the same words ("Private because…", "Public."). */}
+      <p className="br-provider-tier-note text-supporting text-text-muted">{group.note}</p>
 
       {group.key === 'commercial' && agentControls.loadError && !agentControls.agents && (
-        <CodingAgentLoadError message={agentControls.loadError} controls={agentControls} />
+        <div className="br-provider-inset mb-4">
+          <CodingAgentLoadError message={agentControls.loadError} controls={agentControls} />
+        </div>
       )}
 
       {group.sections.map((section) => renderSection(group, section))}
 
       {group.providers.length === 0 && group.key !== 'commercial' && (
-        <p className="text-supporting text-text-muted" data-testid={`catalog-empty-${group.key}`}>
-          Nothing here yet.
+        <p
+          className="px-3 text-supporting text-text-muted"
+          data-testid={`catalog-empty-${group.key}`}
+        >
+          {catalogCopy.emptyTab}
         </p>
       )}
 
@@ -674,20 +868,13 @@ export default function ProviderCatalog({
         than implied by an empty tab. It is the honest answer to "why is my
         university not listed?", and it names the only two outcomes available:
         Biorouter recognises the endpoint, or it does not and the account is
-        treated as public.
+        treated as public. A quiet line with the answer one hover away; the tab's own note
+        already says the public half in full.
       */}
       {group.key === 'institutional' && (
-        <div
-          className="rounded-container border border-border-subtle px-4 py-3"
-          data-testid="other-institutions-note"
-        >
-          <h3 className="text-caps text-text-muted mb-1">Other institutions</h3>
-          <p className="text-supporting text-text-muted">
-            An institution&apos;s gateway appears here once Biorouter recognizes its endpoint as
-            private. Anything else can still be added under Public → Add custom provider, and is
-            treated as public: Biorouter cannot verify where that endpoint points, so it gets none
-            of the private tier&apos;s protections.
-          </p>
+        <div className="br-provider-other-institutions" data-testid="other-institutions-note">
+          <span className="text-secondary text-text-muted">{catalogCopy.otherInstitutions}</span>
+          <InfoTip label={catalogCopy.otherInstitutions} help={catalogCopy.otherInstitutionsHelp} />
         </div>
       )}
     </div>
@@ -706,10 +893,34 @@ export default function ProviderCatalog({
   // "Configure  Provider" for every built-in declarative provider, set up or not.
   const editingName = editingProvider?.config.display_name || 'provider';
   const customModalTitle = !editingProvider
-    ? 'Add provider'
+    ? customProviderCopy.add
     : !editingProvider.isConfigured
-      ? `Set up ${editingName}`
-      : `${editable ? 'Edit' : 'Configure'} ${editingName}`;
+      ? customProviderCopy.setUp(editingName)
+      : editable
+        ? customProviderCopy.edit(editingName)
+        : customProviderCopy.configure(editingName);
+
+  const tabsList = (
+    <TabsList
+      aria-label={catalogCopy.tabsLabel}
+      className={tabsHost === undefined ? 'mb-4' : 'br-provider-band-tabs border-b-0'}
+    >
+      {groups.map((group) => (
+        <TabsTrigger
+          key={group.key}
+          value={group.key}
+          className="gap-2"
+          data-testid={`catalog-tab-${group.key}`}
+        >
+          <span
+            className={`size-1.5 ${group.accentClassName} flex-shrink-0 rounded-full`}
+            aria-hidden
+          />
+          {group.tabLabel}
+        </TabsTrigger>
+      ))}
+    </TabsList>
+  );
 
   return (
     <>
@@ -723,50 +934,66 @@ export default function ProviderCatalog({
       <HostManagedModelNote className="mb-6" />
 
       <Tabs
-        value={activeTab}
+        // While it settles no tab is selected (an empty value matches no trigger), unless the
+        // person picked one: their pick is kept and opens as soon as the panel can draw at rest.
+        value={settling ? (chosenTab ?? '') : activeTab}
         onValueChange={(value) => setChosenTab(value as ProviderGroupKey)}
-        className="flex flex-col"
+        className="br-provider-catalog br-rows-flat flex flex-col"
       >
-        {/* The same list, triggers and class Settings uses — one tab vocabulary
-            across the app, not a second one that happens to look similar. */}
-        <TabsList className="biorouter-settings-tabs justify-start w-fit border-b-0 mb-5">
-          {groups.map((group) => (
-            <TabsTrigger
+        {/* The shared underline tabs. The dot is the tier (§14.5), so it stays: it is the only
+            colour that says private from public at a glance. In the page band they sit on the
+            title's line, as Settings' do, and the band's own hairline is the one rule. They are
+            drawn while the catalog settles too, none selected, so the band does not grow its
+            tabs a second into the first run (FR-R2-1); the underline's first placement is at
+            rest (`ui/tabs`), so it appears under the settled tab without travelling. */}
+        {tabsHost === undefined ? tabsList : tabsHost ? createPortal(tabsList, tabsHost) : null}
+
+        {settling ? (
+          // The quiet skeleton at row height: the tier line, then three rows. Nothing in it can be
+          // read as an answer (no "Nothing here yet.", no selected tab), so nothing on the first
+          // screen is contradicted a second later (FR-R1-1).
+          <div
+            role="status"
+            aria-label={providerPageCopy.loading}
+            className="br-provider-skeleton"
+            data-testid="provider-catalog-loading"
+          >
+            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : (
+          /* Radix makes every panel a Tab stop, and this one draws no focus edge, so Tab from
+             the tab list would land on a panel that shows nothing. A panel with rows hands that
+             stop to its first control (V4-05, request WS-PRIMITIVES-3); one with no control to
+             hand it to (an empty institutional tab) keeps it, so a keyboard user can still reach
+             the line that explains why. */
+          groups.map((group) => (
+            <TabsContent
               key={group.key}
               value={group.key}
-              className="flex gap-2 text-label"
-              data-testid={`catalog-tab-${group.key}`}
+              className="mt-0"
+              {...(group.providers.length > 0 ? { tabIndex: -1 } : {})}
             >
-              <span
-                className={`w-1.5 h-1.5 ${group.accentClassName} rounded-full flex-shrink-0`}
-                aria-hidden
-              />
-              {group.tabLabel}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        {groups.map((group) => (
-          <TabsContent key={group.key} value={group.key} className="mt-0">
-            {renderPanel(group)}
-          </TabsContent>
-        ))}
+              {renderPanel(group)}
+            </TabsContent>
+          ))
+        )}
       </Tabs>
 
-      <Dialog open={showCustomProviderModal} onOpenChange={handleCloseCustomModal}>
-        <DialogContent aria-describedby={undefined} className="sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>{customModalTitle}</DialogTitle>
-          </DialogHeader>
-          <CustomProviderForm
-            initialData={initialData}
-            isEditable={editable}
-            hasSavedKey={editingProvider?.isConfigured ?? true}
-            onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
-            onCancel={handleCloseCustomModal}
-          />
-        </DialogContent>
-      </Dialog>
+      <CustomProviderDialog
+        open={showCustomProviderModal}
+        onOpenChange={(open) => {
+          if (!open) handleCloseCustomModal();
+        }}
+        title={customModalTitle}
+        initialData={initialData}
+        isEditable={editable}
+        hasSavedKey={editingProvider?.isConfigured ?? true}
+        onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
+        onCancel={handleCloseCustomModal}
+      />
       {configuringProvider && (
         <ProviderConfigurationModal
           provider={configuringProvider}
@@ -785,7 +1012,7 @@ export default function ProviderCatalog({
           onModelSelected={onModelSelected}
           initialProvider={switchModelProvider}
           initialModel={switchModelInitial}
-          titleOverride="Choose model"
+          titleOverride={catalogCopy.chooseModel}
         />
       )}
     </>

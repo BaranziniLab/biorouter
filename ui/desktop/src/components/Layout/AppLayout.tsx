@@ -13,11 +13,18 @@ import {
   TITLEBAR_CONTROL_RESERVE_PROPERTY,
 } from './TitlebarControls';
 import { SIDEBAR_COMPACT_WIDTH } from './yieldLadder';
+import { MOTION } from '../../styles/motion';
 
 // Rung 1's threshold. Imported, not re-declared: this is the same number the
 // titlebar reserve and the chat's compact title key off, and a local copy that
 // drifted would desynchronise the ladder from the chrome with nothing failing.
 const SIDEBAR_AUTO_COLLAPSE_WIDTH = SIDEBAR_COMPACT_WIDTH;
+
+/**
+ * The `<body>` class `main.css` keys the "layout snaps while the window moves" rule on. Spelled
+ * out here, not read from `RESIZING_CLASSES`: `styles/motion.test.ts` pins this file to the name.
+ */
+const WINDOW_RESIZING_CLASS = 'biorouter-window-resizing';
 
 /**
  * What the width watcher should do to the sidebar, given a width sample.
@@ -49,27 +56,57 @@ export function sidebarAutoCollapseAction(opts: {
 }
 
 /**
- * The routes whose own top band holds interactive controls where the 32px titlebar drag strip
- * lies: the chat (`/`, `/pair`) and Crew (`/crew`, whose workspace switcher, channel header and
- * pane header sit in that band). On them `biorouter-chat-route-active` makes the strip stop
- * taking pointer events (`main.css`), so it cannot take the clicks meant for those controls
- * (issue #74). Crew's bands declare no drag region of their own; the real-app check with the
- * sidebar open and collapsed is the only proof, because jsdom sees no drag rects.
+ * The routes rendered OUTSIDE the app shell (`App.tsx` declares them beside, not inside, the
+ * `AppLayout` route). They keep the 32px titlebar drag strip as their only drag region.
+ * `/apps` and `/standalone-app` are retired addresses that redirect home.
  */
-export function isChatRoute(pathname: string): boolean {
-  return (
-    pathname === '/' ||
-    pathname === '/pair' ||
-    pathname === '/crew' ||
-    pathname.startsWith('/crew/')
+const ROUTES_OUTSIDE_THE_SHELL = [
+  '/launcher',
+  '/welcome',
+  '/configure-providers',
+  '/apps',
+  '/standalone-app',
+] as const;
+
+/**
+ * Whether a route owns its top band: true for every route INSIDE the app shell.
+ *
+ * Every surface in the shell now opens with a 44px band of its own: the chat header (`/`,
+ * `/pair`), Crew's bands (`/crew`), and `PageHeader` everywhere else (`/settings`,
+ * `/extensions`, `/applications`, `/sessions`, `/schedules`, `/workflows`, `/skills`,
+ * `/knowledge`, `/shared-session`, `/permission`, and the `*` catch-all, whose
+ * `NotFoundView` renders `PageHeader`). Home (`/`) has no band, only its greeting, and still
+ * belongs here: nothing of its own sits under the strip either.
+ *
+ * On these routes the 32px titlebar drag strip stops taking pointer events (`main.css`,
+ * `body.biorouter-chat-route-active .titlebar-drag-region`), so it cannot take the clicks
+ * meant for the band's controls (issue #74), and the band's own drag rect (`PageHeader`'s
+ * `.biorouter-page-header-bar`, the chat header's title rect) is what drags the window.
+ *
+ * ⚠ Written as "inside the shell" rather than as a list of band routes on purpose: a new route
+ * added to the shell is covered the day it lands, so it cannot reintroduce issue #74 by being
+ * forgotten here. jsdom sees no drag rects, so the only proof that a band's controls take a
+ * click and its empty space drags the window is the real app, with the sidebar open and
+ * collapsed.
+ */
+export function routeOwnsTopBand(pathname: string): boolean {
+  return !ROUTES_OUTSIDE_THE_SHELL.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
   );
 }
 
-/** Keeps `biorouter-chat-route-active` on `<body>` exactly while a chat route is showing. */
-export function useChatRouteBodyClass(pathname: string): void {
+/**
+ * The body class the `main.css` rule keys on. The name predates the bands (it was set only on
+ * the chat and Crew routes); it is kept so the stylesheet rule, owned by the sidebar workstream,
+ * does not have to move with this predicate.
+ */
+export const TOP_BAND_ROUTE_BODY_CLASS = 'biorouter-chat-route-active';
+
+/** Keeps the top-band body class on `<body>` exactly while a band route is showing. */
+export function useTopBandRouteBodyClass(pathname: string): void {
   React.useEffect(() => {
-    document.body.classList.toggle('biorouter-chat-route-active', isChatRoute(pathname));
-    return () => document.body.classList.remove('biorouter-chat-route-active');
+    document.body.classList.toggle(TOP_BAND_ROUTE_BODY_CLASS, routeOwnsTopBand(pathname));
+    return () => document.body.classList.remove(TOP_BAND_ROUTE_BODY_CLASS);
   }, [pathname]);
 }
 
@@ -92,7 +129,26 @@ const AppLayoutContent: React.FC = () => {
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
 
-  useChatRouteBodyClass(location.pathname);
+  useTopBandRouteBodyClass(location.pathname);
+
+  /**
+   * Put `<body>` in the "window is resizing" state NOW and keep it there until the window has
+   * been still for `MOTION.resizeSettleMs` (`main.css` zeroes the sidebar's gap, panel and inset
+   * transitions under it, and `isWindowResizing()` stills the JS glides).
+   *
+   * Stable, and shared by the `resize` listener below and by the width watcher. The watcher must
+   * not wait for the listener: see the comment on that effect.
+   */
+  const holdWindowStill = React.useCallback(() => {
+    document.body.classList.add(WINDOW_RESIZING_CLASS);
+    if (resizeSettlingTimerRef.current !== null) {
+      window.clearTimeout(resizeSettlingTimerRef.current);
+    }
+    resizeSettlingTimerRef.current = window.setTimeout(() => {
+      resizeSettlingTimerRef.current = null;
+      document.body.classList.remove(WINDOW_RESIZING_CLASS);
+    }, MOTION.resizeSettleMs);
+  }, []);
 
   /**
    * Auto-collapse the sidebar when the window gets too narrow, and restore it
@@ -116,15 +172,30 @@ const AppLayoutContent: React.FC = () => {
   React.useEffect(() => {
     const updateSidebarMode = () => {
       const shouldCollapse = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
-      document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
-
       const action = sidebarAutoCollapseAction({
         wasCompact: wasCompactRef.current,
         isCompact: shouldCollapse,
         open: sidebarOpenRef.current,
         autoCollapsed: autoCollapsedSidebarRef.current,
       });
+      const crossed = wasCompactRef.current !== null && wasCompactRef.current !== shouldCollapse;
       wasCompactRef.current = shouldCollapse;
+
+      // Hold the window still while the sidebar changes sides of the rung, BEFORE anything below
+      // touches it (vision V1-R4-1). The marking listener cannot be counted on to have run first.
+      // Chromium fires window `resize` listeners in registration order whatever their capture
+      // flag, and after a load this one is registered ahead of both markers (the provider's and
+      // the one below). Only a re-run of this effect, which every change of `open` causes, moves
+      // it to the end, so only the first crossing after a load slid. React commits `setOpen` for
+      // a discrete event in the microtask right after this listener returns, and a chat reads
+      // layout in that commit, so styles resolved with the sidebar collapsed and `<body>`
+      // unmarked, and the gap's width and the panel's translate eased against the resize. The
+      // class left by the PREVIOUS event cannot be counted on either: it lapses
+      // `MOTION.resizeSettleMs` after it, and a window set to sizes by a script, or a maximise,
+      // lands the crossing on a later step. A person's own toggle is no crossing and holds
+      // nothing, so it still slides.
+      if (crossed || action !== 'none') holdWindowStill(); // @hold-before-move
+      document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
 
       if (action === 'collapse') {
         // Remember that WE took the sidebar away, so we know to give it back.
@@ -142,29 +213,23 @@ const AppLayoutContent: React.FC = () => {
       document.body.classList.remove('biorouter-sidebar-compact');
       window.removeEventListener('resize', updateSidebarMode);
     };
-  }, [isMobile, setOpen]);
+  }, [isMobile, setOpen, holdWindowStill]);
 
+  // Marks every resize, crossing or not. Its own effect, apart from the watcher, on purpose: the
+  // watcher re-runs whenever `setOpen` changes identity (every toggle), and a cleanup that lifted
+  // the class there would drop the hold a crossing has just taken, before the styles that need
+  // it are resolved. `holdWindowStill` never changes, so this one runs once.
   React.useEffect(() => {
-    const markWindowResizing = () => {
-      document.body.classList.add('biorouter-window-resizing');
-      if (resizeSettlingTimerRef.current !== null) {
-        window.clearTimeout(resizeSettlingTimerRef.current);
-      }
-      resizeSettlingTimerRef.current = window.setTimeout(() => {
-        resizeSettlingTimerRef.current = null;
-        document.body.classList.remove('biorouter-window-resizing');
-      }, 180);
-    };
-
-    window.addEventListener('resize', markWindowResizing);
+    window.addEventListener('resize', holdWindowStill);
     return () => {
-      window.removeEventListener('resize', markWindowResizing);
+      window.removeEventListener('resize', holdWindowStill);
       if (resizeSettlingTimerRef.current !== null) {
         window.clearTimeout(resizeSettlingTimerRef.current);
+        resizeSettlingTimerRef.current = null;
       }
-      document.body.classList.remove('biorouter-window-resizing');
+      document.body.classList.remove(WINDOW_RESIZING_CLASS);
     };
-  }, []);
+  }, [holdWindowStill]);
 
   // Keep every top-level route on the shared navigation mapping.
   const navigateToView = useNavigation();
@@ -181,7 +246,7 @@ const AppLayoutContent: React.FC = () => {
 
   return (
     <div
-      className="relative flex w-full flex-1 animate-fade-in"
+      className="relative flex w-full flex-1"
       style={
         {
           [TITLEBAR_CONTROL_RESERVE_PROPERTY]: `${getTitlebarControlReserve(safeIsMacOS)}px`,

@@ -8,6 +8,10 @@ import {
 } from './ui/dropdown-menu';
 import { PrivacyBadge } from './ui/PrivacyBadge';
 import { AffiliationBadge } from './ui/AffiliationBadge';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { transcriptCopy } from './transcript/copy';
 import type { ProviderAffiliation } from './privacy/providerAffiliation';
 import type { SessionClassification } from '../api';
 
@@ -48,6 +52,8 @@ interface Props {
   affiliation?: ProviderAffiliation | null;
   className?: string;
 }
+
+const copy = transcriptCopy.title;
 
 export const SessionNamePill: React.FC<Props> = ({
   name,
@@ -91,13 +97,16 @@ export const SessionNamePill: React.FC<Props> = ({
 
   return (
     <div
-      className={`inline-flex h-10 min-w-0 items-center gap-1 rounded-md no-drag ${className ?? ''}`}
+      className={`inline-flex h-10 min-w-0 items-center gap-1 no-drag ${className ?? ''}`}
       style={noDragStyle}
     >
       {editing ? (
-        <input
+        // The shared field, as every other rename in the app (Crew's included).
+        <Input
           ref={inputRef}
           value={draft}
+          maxLength={200}
+          aria-label={copy.renameField}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
           onPointerDown={(event) => event.stopPropagation()}
@@ -109,14 +118,11 @@ export const SessionNamePill: React.FC<Props> = ({
             }
           }}
           style={noDragStyle}
-          className="h-8 w-[min(360px,70vw)] min-w-[120px] bg-transparent px-1 text-sm font-medium border-b border-border-subtle"
+          className="w-[min(360px,70vw)] min-w-[120px]"
         />
       ) : (
         <>
-          <span
-            className="inline-flex h-8 max-w-full min-w-0 items-center rounded py-0 pl-1 pr-0 text-sm font-medium leading-none text-text-default"
-            title={name}
-          >
+          <span className="inline-flex h-8 max-w-full min-w-0 items-center pl-1 text-label text-text-default">
             <span className="truncate no-drag">{name}</span>
           </span>
           {privacyTier && <PrivacyBadge tier={privacyTier} className="no-drag" />}
@@ -126,23 +132,30 @@ export const SessionNamePill: React.FC<Props> = ({
               public chat is unchanged from before this landed. */}
           <AffiliationBadge affiliation={affiliation} className="no-drag min-w-0 max-w-[160px]" />
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Chat title actions"
-                title="Chat title actions"
-                className="inline-flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-                style={noDragStyle}
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="bottom" className="w-36">
-              <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    shape="round"
+                    aria-label={copy.actions}
+                    className="shrink-0 text-text-muted hover:text-text-default"
+                    style={noDragStyle}
+                    onPointerDown={(event) => event.stopPropagation()}
+                  >
+                    <MoreHorizontal aria-hidden="true" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>{transcriptCopy.message.more}</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="start" side="bottom">
+              <DropdownMenuItem onSelect={startEditing}>{copy.rename}</DropdownMenuItem>
               {onDiverge && (
                 <DropdownMenuItem disabled={!canDiverge || diverging} onSelect={handleDiverge}>
-                  {diverging ? 'Diverging…' : 'Diverge'}
+                  {diverging ? copy.diverging : copy.diverge}
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

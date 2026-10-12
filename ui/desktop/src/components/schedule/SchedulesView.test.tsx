@@ -5,7 +5,10 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
-import SchedulesView, { DELETE_SCHEDULE_MESSAGE } from './SchedulesView';
+import SchedulesView from './SchedulesView';
+import { DELETE_SCHEDULE_MESSAGE, scheduleCopy } from './copy';
+
+const MAIN_CSS = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
 
 const mocks = vi.hoisted(() => ({
   listSchedules: vi.fn(),
@@ -16,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   updateSchedule: vi.fn(),
   killRunningJob: vi.fn(),
   inspectRunningJob: vi.fn(),
+  runScheduleNow: vi.fn(),
 }));
 
 vi.mock('../../schedule', () => ({
@@ -27,6 +31,7 @@ vi.mock('../../schedule', () => ({
   updateSchedule: mocks.updateSchedule,
   killRunningJob: mocks.killRunningJob,
   inspectRunningJob: mocks.inspectRunningJob,
+  runScheduleNow: mocks.runScheduleNow,
 }));
 
 vi.mock('./ScheduleDetailView', () => ({
@@ -44,10 +49,8 @@ vi.mock('../ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
-vi.mock('../../toasts', () => ({
-  toastError: vi.fn(),
-  toastSuccess: vi.fn(),
-}));
+const toasts = vi.hoisted(() => ({ toastError: vi.fn(), toastSuccess: vi.fn() }));
+vi.mock('../../toasts', () => toasts);
 
 const schedule = {
   id: 'nightly-cohort',
@@ -76,7 +79,16 @@ beforeEach(() => {
   mocks.updateSchedule.mockResolvedValue(undefined);
   mocks.killRunningJob.mockResolvedValue({ message: 'Killed' });
   mocks.inspectRunningJob.mockResolvedValue({});
+  mocks.runScheduleNow.mockResolvedValue('run-session-1');
 });
+
+/** Radix opens a dropdown on pointerdown, not click. */
+function openRowMenu(name = 'nightly-cohort') {
+  fireEvent.pointerDown(screen.getByRole('button', { name: scheduleCopy.moreActionsNamed(name) }), {
+    button: 0,
+    ctrlKey: false,
+  });
+}
 
 describe('SchedulesView interactions', () => {
   it('exposes schedule navigation as a keyboard-activatable button without nesting actions', async () => {
@@ -99,9 +111,11 @@ describe('SchedulesView interactions', () => {
     const user = userEvent.setup();
     renderSchedules();
 
-    await user.click(await screen.findByRole('button', { name: 'Delete nightly-cohort' }));
+    await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: scheduleCopy.delete }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Delete "nightly-cohort"?' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Delete nightly-cohort?' })).toBeInTheDocument();
 
     fireEvent.pointerDown(document.body);
 
@@ -124,7 +138,9 @@ describe('SchedulesView interactions', () => {
     const user = userEvent.setup();
     renderSchedules();
 
-    await user.click(await screen.findByRole('button', { name: 'Delete nightly-cohort' }));
+    await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: scheduleCopy.delete }));
 
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent(DELETE_SCHEDULE_MESSAGE);
@@ -146,10 +162,74 @@ describe('SchedulesView interactions', () => {
     fireEvent.click(pause);
 
     expect(mocks.pauseSchedule).toHaveBeenCalledTimes(1);
-    expect(pause).toBeDisabled();
+    // Working, not disabled: a focused button that turns `disabled` hands focus to <body> in
+    // Chromium (V3-R2-1). The row says it is busy and the action is dimmed.
+    expect(pause).toBeEnabled();
+    expect(pause).toHaveClass('br-action-busy');
+    expect(screen.getByTestId('schedule-row')).toHaveAttribute('aria-busy', 'true');
 
     await act(async () => finishPause?.());
-    await waitFor(() => expect(pause).not.toBeDisabled());
+    await waitFor(() => expect(pause).not.toHaveClass('br-action-busy'));
+    expect(screen.getByTestId('schedule-row')).not.toHaveAttribute('aria-busy');
+  });
+
+  /**
+   * Keyboard focus survives a toggle (vision round 2, V3-R2-1). jsdom never moves focus off a
+   * button that turns `disabled`, so the load-bearing half of this lives in
+   * `scheduleFocus.browser.test.tsx` (real Chromium); what jsdom CAN pin is the cause: the
+   * primary action is never `disabled` while its request is out, it is the same DOM node before
+   * and after the swap from Pause to Resume, and it keeps focus there.
+   */
+  it('keeps the row action enabled, and focused, from Pause through Resume', async () => {
+    let finishPause: (() => void) | undefined;
+    mocks.pauseSchedule.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishPause = resolve;
+      })
+    );
+    const user = userEvent.setup();
+    renderSchedules();
+
+    const pause = await screen.findByRole('button', { name: 'Pause nightly-cohort' });
+    pause.focus();
+    await user.keyboard('{Enter}');
+    expect(pause).toHaveFocus();
+    expect(pause).not.toHaveAttribute('disabled');
+
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
+    await act(async () => finishPause?.());
+
+    const resume = await screen.findByRole('button', { name: 'Resume nightly-cohort' });
+    expect(resume).toBe(pause);
+    expect(resume).toHaveFocus();
+  });
+
+  it('keeps Refresh in the band focusable while a refresh is out', async () => {
+    let finish: ((jobs: unknown[]) => void) | undefined;
+    const user = userEvent.setup();
+    renderSchedules();
+    await screen.findByRole('button', { name: 'Pause nightly-cohort' });
+
+    mocks.listSchedules.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve as (jobs: unknown[]) => void;
+      })
+    );
+    const refresh = screen.getByRole('button', { name: scheduleCopy.refresh });
+    refresh.focus();
+    await user.keyboard('{Enter}');
+
+    expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    expect(refresh).not.toHaveAttribute('disabled');
+    expect(refresh).toHaveFocus();
+    // A second press while it is out starts nothing.
+    await user.keyboard('{Enter}');
+    expect(mocks.listSchedules).toHaveBeenCalledTimes(2);
+
+    await act(async () => finish?.([schedule]));
+    await waitFor(() => expect(refresh).not.toHaveAttribute('aria-disabled'));
+    expect(refresh).toHaveFocus();
   });
 
   // Issue #56, task 24 step 3(a). A cron tick that returns `Err` used to leave
@@ -167,10 +247,14 @@ describe('SchedulesView interactions', () => {
     ]);
     renderSchedules();
 
-    expect(await screen.findByText('Failed')).toBeInTheDocument();
-    expect(
-      screen.getByText(/no provider configured for the chat this schedule was created from/)
-    ).toBeInTheDocument();
+    // The last error REPLACES the meta line, in danger ink, and still says the word.
+    const line = await screen.findByText(
+      /no provider configured for the chat this schedule was created from/
+    );
+    expect(line).toHaveTextContent(/^Failed · /);
+    expect(line).toHaveClass('text-text-danger');
+    const row = line.closest('.biorouter-list-row') as HTMLElement;
+    expect(row.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'danger');
   });
 
   it('does not claim failure when the last run succeeded', async () => {
@@ -180,29 +264,83 @@ describe('SchedulesView interactions', () => {
     renderSchedules();
 
     await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
-    expect(screen.queryByText('Failed')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Failed/)).not.toBeInTheDocument();
   });
 
-  it('presents an accessible empty state that opens schedule creation', async () => {
+  /**
+   * One accent per view (spec 3.10): the band's "New schedule" is the only
+   * button. The empty state says one short sentence and offers no second copy
+   * of the primary.
+   */
+  it('presents an accessible empty state, and the band is the one way to create', async () => {
     const user = userEvent.setup();
     mocks.listSchedules.mockResolvedValueOnce([]);
     renderSchedules();
 
-    const title = await screen.findByRole('heading', { name: 'No schedules yet' });
+    const title = await screen.findByRole('heading', { name: scheduleCopy.emptyTitle });
     const emptyState = title.closest('section');
-    expect(emptyState).toHaveAccessibleDescription(
-      'Create a schedule to run a saved workflow automatically at the time you choose.'
-    );
+    expect(emptyState).toHaveAccessibleDescription(scheduleCopy.emptyDescription);
+    expect(within(emptyState as HTMLElement).queryByRole('button')).toBeNull();
 
-    // The empty state's action and the header's are the same act, so they are
-    // the same words. There are two of them on screen; the one inside the
-    // empty state is the one this test is about.
-    await user.click(
-      within(emptyState as HTMLElement).getByRole('button', {
-        name: 'New schedule',
+    expect(screen.getAllByRole('button', { name: scheduleCopy.newSchedule })).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: scheduleCopy.newSchedule }));
+    expect(screen.getByRole('dialog', { name: 'Create schedule form' })).toBeInTheDocument();
+  });
+
+  it('runs a schedule now from the row menu, and says so in one line', async () => {
+    const user = userEvent.setup();
+    renderSchedules();
+
+    await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: scheduleCopy.runNow }));
+
+    expect(mocks.runScheduleNow).toHaveBeenCalledWith('nightly-cohort');
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({ title: scheduleCopy.runStarted })
+    );
+  });
+
+  it('opens the same menu on a right-click of the row', async () => {
+    renderSchedules();
+
+    const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    fireEvent.contextMenu(open);
+
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      scheduleCopy.edit,
+      scheduleCopy.runNow,
+      scheduleCopy.delete,
+    ]);
+  });
+
+  /** Spec 6.9: the status word is the confirmation; only a failure toasts. */
+  it('pauses without a success toast, and names the schedule when it cannot', async () => {
+    mocks.pauseSchedule.mockRejectedValueOnce(new Error('daemon said no'));
+    renderSchedules();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause nightly-cohort' }));
+
+    await waitFor(() =>
+      expect(toasts.toastError).toHaveBeenCalledWith({
+        title: scheduleCopy.couldNotPause('nightly-cohort'),
+        msg: 'daemon said no',
       })
     );
-    expect(screen.getByRole('dialog', { name: 'Create schedule form' })).toBeInTheDocument();
+    expect(toasts.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The class every working action wears (the band's `busy`, a row's primary action) is
+   * authored CSS, defined once: a Tailwind `opacity-50` at the call site can silently fail to
+   * generate under BIOROUTER_NO_HMR, and `pointer-events: none` would take the tooltip with it.
+   */
+  it('defines the busy-action rule once, as authored CSS that dims and does not block', () => {
+    const rules = MAIN_CSS.match(/^\.br-action-busy \{[^}]*\}/gm) ?? [];
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatch(/opacity:\s*0\.5/);
+    expect(rules[0]).not.toMatch(/pointer-events/);
   });
 });
 
@@ -225,30 +363,23 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
   });
 
   /**
-   * The operator's decision, 2026-09-07: both header actions sit on their own
-   * line UNDER the description, not on the title row. This view shipped the
-   * §4.2 original and is the one the operator named ("the orange button that
-   * says 'New Schedule' and the little refresh icon would appear on different
-   * lines"), so the placement is pinned here rather than only in
-   * `PageHeader.test.tsx` — the primitive can be correct while this call site
-   * has quietly grown its own header back.
-   *
-   * Asserted through the DOM, not the source: `PageHeader` is what guarantees
-   * the strip, and a source grep for `<PageHeader` would pass on a view that
-   * mounted it and then put a button somewhere else as well.
+   * The band (spec 3.10): the title, its help and the actions share one 44px
+   * line, Refresh as a ghost round icon and "New schedule" as the view's one
+   * accent. This reverses the 2026-09-07 "actions on their own line" decision,
+   * recorded as reversed in astryx §4.2. Asserted through the DOM: a source grep
+   * for `<PageHeader` would pass on a view that mounted it and then put a button
+   * somewhere else as well.
    */
-  it('puts both header actions on their own line, not on the title row', async () => {
+  it('puts both header actions in the band’s action cluster', async () => {
     renderSchedules();
 
     const heading = await screen.findByRole('heading', { level: 1, name: 'Scheduler' });
-    const titleRow = heading.parentElement as HTMLElement;
-    expect(titleRow.querySelector('button')).toBeNull();
+    const band = screen.getByTestId('page-header');
+    expect(band).toContainElement(heading);
 
     const create = screen.getAllByRole('button', { name: 'New schedule' })[0];
-    const strip = create.closest('.biorouter-settings-control-strip');
+    const strip = create.closest('.biorouter-page-header-actions');
     expect(strip).not.toBeNull();
-    // Both of them, in the same strip — the refresh glyph moved off the title
-    // row with the primary rather than being left behind on it.
     expect(strip).toContainElement(screen.getByRole('button', { name: 'Refresh schedules' }));
   });
 
@@ -256,15 +387,67 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
     renderSchedules();
 
-    const paused = await screen.findByText('Paused');
+    const paused = await screen.findByText(/^Paused · /);
     // `bg-background-warning/15` is what the pill was, and rule 4 of the
     // settings vocabulary bans every hand-mixed alpha.
     for (let node: HTMLElement | null = paused; node; node = node.parentElement) {
       expect(node.className).not.toMatch(/bg-background-\w+\/\d/);
       if (node.classList.contains('biorouter-list-row')) break;
     }
-    // The hue is a dot beside the word (§3.4), not a fill behind it.
-    expect(paused.querySelector('.rounded-full')).not.toBeNull();
+    // The hue is the row's leading status dot (spec 3.10), muted for Paused.
+    const row = paused.closest('.biorouter-list-row') as HTMLElement;
+    expect(row.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'idle');
+    // …and visible (V3-16): the primitive's idle fill is the control edge's 3:1 neutral, not the
+    // 1.3:1 `--background-strong` it was, so a Paused dot is a state and not a speck.
+    expect(MAIN_CSS).toMatch(
+      /\.biorouter-status-dot\[data-tone='idle'\]\s*\{[^}]*--status-dot-fill:\s*var\(--border-control\)/
+    );
+    // Paused rows offer Resume, the one verb pair (Pause/Resume) everywhere.
+    expect(screen.getByRole('button', { name: 'Resume nightly-cohort' })).toBeInTheDocument();
+  });
+
+  /** V3-15 and V3-21: the cron reads as a phrase with its frequency, Delete… opens a dialog. */
+  it('says the cron as a phrase and marks Delete… as opening a dialog', async () => {
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, cron: '0 0 3 * * *' }]);
+    renderSchedules();
+
+    const phrase = await screen.findByText('Every day at 3:00 AM');
+    expect(phrase.textContent).not.toMatch(/\b0\d:\d\d/);
+    expect(scheduleCopy.delete).toBe('Delete…');
+  });
+
+  /**
+   * Two lines, never more: the name, then ONE meta line in the sans face with
+   * tabular figures. Asserted at the class because jsdom has no layout.
+   */
+  it('gives each row a title line and one sans meta line', async () => {
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, last_run: '2026-10-07T21:00:00Z' }]);
+    renderSchedules();
+
+    const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    const row = open.closest('[data-testid="schedule-row"]') as HTMLElement;
+    const lines = row.querySelectorAll('h3, p');
+    expect(lines).toHaveLength(2);
+    // The name's button is the heading's content: one control, nothing else inside it.
+    expect(lines[0]).toContainElement(open);
+    expect(open.querySelectorAll('button, [tabindex]')).toHaveLength(0);
+    const meta = lines[1] as HTMLElement;
+    expect(meta).toHaveTextContent(/^Scheduled · .+ · Last run /);
+    expect(meta).toHaveClass('tabular-nums');
+    expect(meta.querySelector('.font-mono')).toBeNull();
+    expect(row.querySelector('h3 svg, p svg')).toBeNull();
+  });
+
+  it('opens the detail on a click of the row, but not of its own controls', async () => {
+    renderSchedules();
+    const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    const row = open.closest('[data-testid="schedule-row"]') as HTMLElement;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause nightly-cohort' }));
+    expect(row).toBeInTheDocument();
+
+    fireEvent.click(row.querySelector('p') as HTMLElement);
+    expect(row).not.toBeInTheDocument();
   });
 
   it('puts each schedule on the shared hairline row, with no card around the list', async () => {
@@ -286,18 +469,25 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     mocks.listSchedules.mockResolvedValue([{ ...schedule, currently_running: true }]);
     renderSchedules();
 
-    const running = await screen.findByText('Running');
+    const running = await screen.findByText(/^Running · /);
     for (let node: HTMLElement | null = running; node; node = node.parentElement) {
       expect(node.className).not.toMatch(/bg-background-\w+\/\d/);
       if (node.classList.contains('biorouter-list-row')) break;
     }
-    // Motion means "still going" (astryx §4.4): only this state pulses.
-    expect(running.querySelector('.animate-pulse')).not.toBeNull();
+    // Motion means "still going" (astryx §4.4): only this state's dot is live.
+    const row = running.closest('.biorouter-list-row') as HTMLElement;
+    expect(row.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-live', 'true');
 
-    // Edit and Pause are meaningless mid-run and are replaced, not disabled.
-    expect(screen.getByRole('button', { name: 'Inspect nightly-cohort' })).toBeInTheDocument();
+    // Pause is meaningless mid-run and is replaced by Stop, not disabled.
     expect(screen.getByRole('button', { name: 'Stop nightly-cohort' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Pause nightly-cohort' })).not.toBeInTheDocument();
+    // Inspect leads the menu; Edit and Run now wait for the run.
+    openRowMenu();
+    expect(await screen.findByRole('menuitem', { name: scheduleCopy.inspectRun })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: scheduleCopy.edit })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
   });
 
   /**
@@ -306,7 +496,7 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
    */
   it('states the resting state rather than leaving the row silent', async () => {
     renderSchedules();
-    expect(await screen.findByText('Scheduled')).toBeInTheDocument();
+    expect(await screen.findByText(/^Scheduled · /)).toBeInTheDocument();
   });
 
   /**

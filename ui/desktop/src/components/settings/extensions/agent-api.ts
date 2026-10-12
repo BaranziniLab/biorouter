@@ -18,7 +18,7 @@ export async function addToAgent(
   let toastId = showToast
     ? toastService.loading({
         title: extensionName,
-        msg: `adding ${extensionName} extension...`,
+        msg: 'Adding extension…',
       })
     : 0;
 
@@ -37,7 +37,7 @@ export async function addToAgent(
       toastService.dismiss(toastId);
       toastService.success({
         title: extensionName,
-        msg: `Extension added`,
+        msg: 'Extension added',
       });
     }
     // Issue #56 DR-26 — the user's enable path, and the surface where the ruling
@@ -82,7 +82,7 @@ export async function removeFromAgent(
   let toastId = showToast
     ? toastService.loading({
         title: extensionName,
-        msg: `Removing ${extensionName} extension...`,
+        msg: 'Removing extension…',
       })
     : 0;
 
@@ -97,7 +97,7 @@ export async function removeFromAgent(
       toastService.dismiss(toastId);
       toastService.success({
         title: extensionName,
-        msg: `Extension removed`,
+        msg: 'Extension removed',
       });
     }
   } catch (error) {

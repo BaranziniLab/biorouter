@@ -10,6 +10,12 @@ import {
 import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
+import { DROPDOWN_ROW_CLASS_NAME as MENU_ROW_CLASS_NAME } from './ui/dropdown-menu';
+import { Spinner } from './ui/spinner';
+import { COMPOSER_COPY } from './composer/copy';
+import { mentionMenuPlacement } from './composer/mentionMenuPlacement';
+import { cn } from '../utils';
+import './composer/composer.css';
 import { CommandType, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import type { CatalogView } from '../api';
@@ -44,15 +50,15 @@ const CLIENT_INSERT_COMMANDS: Record<
   { description: string; insert?: string; reference?: MentionReference }
 > = {
   knowledge: {
-    description: 'Use the Knowledge capability',
+    description: COMPOSER_COPY.commands.knowledge,
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   crew: {
-    description: 'Connect this chat to a Crew channel',
+    description: COMPOSER_COPY.commands.crew,
     insert: '/crew',
   },
   diverge: {
-    description: 'Continue in a new chat with the full history. Press Enter',
+    description: COMPOSER_COPY.commands.diverge,
     insert: '/diverge',
   },
 };
@@ -63,8 +69,7 @@ const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
  * `/crew` in a chat with no session yet (UXN-8): Enter can only say to send a message first, so the
  * row says so before it is picked, and stays where people look for Crew.
  */
-export const CREW_COMMAND_BEFORE_FIRST_MESSAGE =
-  'Connect this chat to a Crew channel after your first message';
+export const CREW_COMMAND_BEFORE_FIRST_MESSAGE = COMPOSER_COPY.commands.crewBeforeFirstMessage;
 
 // ── Crew in the palette (live QA round 2, Q2-71; round 3, Q3-31) ───────────────────────────────
 // "/cr" listed two rows that both read as "crew": the `/crew` command, which connects the chat, and
@@ -76,7 +81,7 @@ export const CREW_COMMAND_BEFORE_FIRST_MESSAGE =
 // the extension's row — labelled as the tools, for someone who knows they want them.
 
 /** The Crew extension's row, when a query reaches it without the `/crew` command. */
-export const CREW_EXTENSION_DESCRIPTION = 'Crew tools extension (advanced)';
+export const CREW_EXTENSION_DESCRIPTION = COMPOSER_COPY.commands.crewExtension;
 
 /** The Crew platform extension's key (as `isCrewExtensionName` in `crew/access` reads it). */
 const isCrewExtensionItem = (item: DisplayItem) =>
@@ -221,6 +226,32 @@ const uniqueDisplayItems = (displayItems: DisplayItem[]) => {
   });
 };
 
+/** A path that lists as something with entries is a folder (the way a symlinked one reads). */
+const readsAsFolder = async (fullPath: string) => {
+  try {
+    return (await window.electron.listFiles(fullPath)).length > 0;
+  } catch {
+    return false;
+  }
+};
+
+/** A file or a folder found by scanning the chat's working directory. */
+const isFileSystemItem = (item: DisplayItem) =>
+  item.itemType === 'File' || item.itemType === 'Directory';
+
+/**
+ * What a row says under its name. A file or folder says which folder it sits in,
+ * relative to the chat's folder, and nothing at all when it sits directly in it
+ * (names, not paths: principle 10). The full path is the row's tooltip, and it is
+ * still what `extra` holds, because that is what a pick inserts. Any other row
+ * says what it is: a command's help, a skill's description.
+ */
+export const mentionRowDetail = (item: DisplayItem): string | undefined => {
+  if (!isFileSystemItem(item)) return item.extra || undefined;
+  const slash = item.relativePath.lastIndexOf('/');
+  return slash > 0 ? item.relativePath.slice(0, slash) : undefined;
+};
+
 const MAX_FILE_SCAN_RESULTS = 300;
 const MAX_FILE_DISPLAY_RESULTS = 80;
 
@@ -228,6 +259,7 @@ interface MentionPopoverProps {
   isOpen: boolean;
   onClose: () => void;
   onSelect: (filePath: string) => void;
+  /** Where the list opens from: `mentionMenuAnchor` (the text's left edge, the card's top). */
   position: { x: number; y: number };
   query: string;
   isSlashCommand: boolean;
@@ -322,6 +354,19 @@ const MentionPopover = forwardRef<
   ) => {
     const [items, setItems] = useState<DisplayItem[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    // Whether a load has answered since the menu opened as this kind of list. Until
+    // one has, an empty list is "Searching…", never "No files in this folder".
+    const [hasAnswered, setHasAnswered] = useState(false);
+    // Opening, closing, or turning from `/` to `@` starts from an empty list, reset
+    // during render so a frame never shows the other list's rows or a stale answer.
+    const listKind = !isOpen ? 'closed' : isSlashCommand ? 'commands' : 'files';
+    const [loadedKind, setLoadedKind] = useState(listKind);
+    if (loadedKind !== listKind) {
+      setLoadedKind(listKind);
+      setItems([]);
+      setIsLoading(false);
+      setHasAnswered(false);
+    }
     const popoverRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
     const currentWorkingDir = workingDir ?? getInitialWorkingDir();
@@ -338,6 +383,11 @@ const MentionPopover = forwardRef<
 
         try {
           const items = await window.electron.listFiles(dirPath);
+          // Which of these entries are folders. `listFiles` cannot say: it answers an
+          // empty list for a file and for an empty folder alike, so asking it about
+          // each entry called every file with an unfamiliar extension (a .zip) a
+          // folder. One call here names the folders of this listing (V2-10).
+          const folderNames = new Set(await window.electron.listSkillDirs(dirPath));
           const results: DisplayItem[] = [];
 
           // Common directories to prioritize or skip
@@ -517,37 +567,45 @@ const MentionPopover = forwardRef<
               continue;
             }
 
-            // Otherwise, try to determine if it's a directory
-            try {
-              await window.electron.listFiles(fullPath);
-
+            // Otherwise it is a folder only when this folder's listing says so. A symlink
+            // to a folder is not in that list (the entry is the link), but reading it
+            // answers its entries, so a non-empty answer still counts. Anything else
+            // that is there is a file whose extension is not in the list above.
+            const isFolder = folderNames.has(item) || (await readsAsFolder(fullPath));
+            if (!isFolder) {
               results.push({
-                name: item,
                 extra: fullPath,
-                itemType: 'Directory',
+                name: item,
+                itemType: 'File',
                 relativePath: itemRelativePath,
               });
               limitRef.count += 1;
+              continue;
+            }
 
-              const shouldRecurse =
-                depth === 0 &&
-                (priorityDirs.includes(item) ||
-                  (queryForRecursion.length >= 2 &&
-                    fuzzyMatch(queryForRecursion, itemRelativePath).score >=
-                      Math.max(8, queryForRecursion.length * 4)));
+            results.push({
+              name: item,
+              extra: fullPath,
+              itemType: 'Directory',
+              relativePath: itemRelativePath,
+            });
+            limitRef.count += 1;
 
-              if (shouldRecurse) {
-                const subFiles = await scanDirectoryFromRoot(
-                  fullPath,
-                  itemRelativePath,
-                  depth + 1,
-                  limitRef
-                );
-                results.push(...subFiles);
-              }
-            } catch {
-              // If we can't list it and it doesn't have a known extension, skip it
-              // This could be a file with an unknown extension or a permission issue
+            const shouldRecurse =
+              depth === 0 &&
+              (priorityDirs.includes(item) ||
+                (queryForRecursion.length >= 2 &&
+                  fuzzyMatch(queryForRecursion, itemRelativePath).score >=
+                    Math.max(8, queryForRecursion.length * 4)));
+
+            if (shouldRecurse) {
+              const subFiles = await scanDirectoryFromRoot(
+                fullPath,
+                itemRelativePath,
+                depth + 1,
+                limitRef
+              );
+              results.push(...subFiles);
             }
           }
 
@@ -560,8 +618,7 @@ const MentionPopover = forwardRef<
       [query]
     );
 
-    const scanFilesFromRoot = useCallback(async () => {
-      setIsLoading(true);
+    const scanFilesFromRoot = useCallback(async (): Promise<DisplayItem[]> => {
       try {
         let startPath = currentWorkingDir;
 
@@ -575,13 +632,10 @@ const MentionPopover = forwardRef<
           }
         }
 
-        const scannedFiles = await scanDirectoryFromRoot(startPath);
-        setItems(scannedFiles);
+        return await scanDirectoryFromRoot(startPath);
       } catch (error) {
         console.error('Error scanning items from root:', error);
-        setItems([]);
-      } finally {
-        setIsLoading(false);
+        return [];
       }
     }, [scanDirectoryFromRoot, currentWorkingDir]);
 
@@ -689,23 +743,24 @@ const MentionPopover = forwardRef<
       const shown = (list: DisplayItemWithMatch[]) =>
         isSlashCommand ? withoutCrewExtensionBesideCommand(list) : list;
       if (!query.trim()) {
-        return shown(
-          items
-            .map((file) => ({
-              ...file,
-              matchScore: 0,
-              matches: [],
-              matchedText: file.name,
-              depth: currentWorkingDir
-                ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
-                : 0,
-            }))
-            .sort((a, b) => {
-              if (a.depth !== b.depth) return a.depth - b.depth;
-              const typeComparison = compareByType(a, b);
-              return typeComparison || a.name.localeCompare(b.name);
-            })
-        );
+        // Nothing typed yet: every command, or the chat folder's entries (its own
+        // first, then the ones a level down), so an `@` alone already offers files.
+        const unfiltered = items
+          .map((file) => ({
+            ...file,
+            matchScore: 0,
+            matches: [],
+            matchedText: file.name,
+            depth: currentWorkingDir
+              ? file.extra.replace(currentWorkingDir, '').split('/').length - 1
+              : 0,
+          }))
+          .sort((a, b) => {
+            if (a.depth !== b.depth) return a.depth - b.depth;
+            const typeComparison = compareByType(a, b);
+            return typeComparison || a.name.localeCompare(b.name);
+          });
+        return isSlashCommand ? shown(unfiltered) : unfiltered.slice(0, MAX_FILE_DISPLAY_RESULTS);
       }
 
       const matchedItems = items
@@ -770,36 +825,33 @@ const MentionPopover = forwardRef<
     );
 
     useEffect(() => {
+      if (!isOpen) return;
       let cancelled = false;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-      const loadData = async () => {
-        if (isSlashCommand) {
-          setIsLoading(true);
-          try {
-            const commandItems = await loadReferenceItems(true);
-            if (!cancelled) setItems(commandItems);
-          } catch (error) {
-            console.error('Error loading slash commands:', error);
-            if (!cancelled) setItems([]);
-          } finally {
-            if (!cancelled) setIsLoading(false);
-          }
-          return;
-        }
-
-        if (query.trim().length < 2) {
-          setItems([]);
-          return;
-        }
-
-        timeoutId = setTimeout(() => {
-          if (!cancelled) void scanFilesFromRoot();
-        }, 120);
+      // Only the newest load may answer: an older scan that finishes late must not
+      // put its rows back, or turn "Searching…" off under a newer one.
+      const answer = (next: DisplayItem[]) => {
+        if (cancelled) return;
+        setItems(next);
+        setIsLoading(false);
+        setHasAnswered(true);
       };
 
-      if (isOpen) {
-        loadData();
+      setIsLoading(true);
+      if (isSlashCommand) {
+        loadReferenceItems(true).then(answer, (error) => {
+          console.error('Error loading slash commands:', error);
+          answer([]);
+        });
+      } else {
+        // An `@` alone scans too (V2-R3-4): picking "Mention" from the `+` menu, or
+        // typing `@`, lists the chat folder at once instead of waiting for two
+        // characters. Below two characters the scan does not depend on the query
+        // (only a longer one recurses into the folders it matches).
+        timeoutId = setTimeout(() => {
+          void scanFilesFromRoot().then(answer);
+        }, 120);
       }
 
       return () => {
@@ -850,79 +902,81 @@ const MentionPopover = forwardRef<
 
     if (!isOpen) return null;
 
-    const menuWidth = Math.max(320, Math.min(448, window.innerWidth - 16));
-    const menuLeft = Math.min(
-      Math.max(8, position.x),
-      Math.max(8, window.innerWidth - menuWidth - 8)
-    );
+    // "Searching…" only while there is nothing to show: a rescan behind a typed
+    // query keeps the rows it has on screen until the new ones arrive.
+    const searching = displayItems.length === 0 && (isLoading || !hasAnswered);
 
+    // Above the composer card, 8px clear of its edge (V2-R5-2), and never up
+    // into the window-drag band at the top of a chat.
+    const placement = mentionMenuPlacement(position, window.innerWidth);
+
+    // The shared menu surface and row recipe (spec 2.6): 12px radius, 4px
+    // padding, 32px rows at 13px, the highlight a neutral fill. The list is
+    // driven from the textarea (arrows, Enter, Tab), so a row is highlighted by
+    // `data-selected`, not by focus.
     const menu = (
       <div
         ref={popoverRef}
-        className="biorouter-popover-surface fixed z-[1210] bg-background-default rounded-xl max-h-72 overflow-hidden"
-        style={{
-          left: menuLeft,
-          top: position.y - 8,
-          width: menuWidth,
-          transform: 'translateY(-100%)', // Move it fully above
-        }}
+        role="listbox"
+        aria-label={
+          isSlashCommand ? COMPOSER_COPY.mention.commandsLabel : COMPOSER_COPY.mention.mentionsLabel
+        }
+        data-testid="mention-popover"
+        className="biorouter-popover-surface br-mention-menu fixed flex flex-col overflow-hidden rounded-container bg-background-default p-1"
+        style={placement}
       >
-        <div className="p-1.5 flex flex-col max-h-72">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-3">
-              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-text-muted"></div>
-              <span className="ml-2 text-sm text-text-muted">Scanning files...</span>
-            </div>
-          ) : (
-            <>
-              {displayItems.length > 0 && (
-                <div className="text-[11px] leading-3 text-text-muted mb-1 px-1">
-                  {displayItems.length} item{displayItems.length !== 1 ? 's' : ''} found
+        {searching ? (
+          <div className="flex min-h-control-md items-center gap-2 px-3 text-secondary text-text-muted">
+            <Spinner size={14} />
+            <span>{COMPOSER_COPY.mention.searching}</span>
+          </div>
+        ) : (
+          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
+            {displayItems.map((item, index) => {
+              const detail = mentionRowDetail(item);
+              return (
+                <div
+                  key={`${item.itemType}-${item.relativePath}-${item.name}`}
+                  role="option"
+                  aria-selected={index === selectedIndex}
+                  data-selected={index === selectedIndex ? '' : undefined}
+                  title={isFileSystemItem(item) ? item.extra : undefined}
+                  onClick={() => handleItemClick(index)}
+                  onMouseEnter={() => onSelectedIndexChange(index)}
+                  className={cn(MENU_ROW_CLASS_NAME, 'cursor-pointer')}
+                >
+                  <span className="flex-shrink-0 text-text-muted">
+                    <ItemIcon item={item} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-secondary text-text-default">{item.name}</span>
+                      {item.builtIn && <BuiltInBadge />}
+                    </span>
+                    {detail && (
+                      <span className="block truncate text-supporting text-text-muted">
+                        {detail}
+                      </span>
+                    )}
+                  </span>
                 </div>
-              )}
-              <div
-                ref={listRef}
-                className="overflow-y-auto flex-1 scrollbar-thin scrollbar-thumb-borderStandard scrollbar-track-transparent"
-                style={{ maxHeight: '244px' }}
-              >
-                {displayItems.map((item, index) => (
-                  <div
-                    key={`${item.itemType}-${item.relativePath}-${item.name}`}
-                    onClick={() => handleItemClick(index)}
-                    className={`flex items-center gap-1.5 px-1.5 py-1 rounded ring-1 ring-inset cursor-pointer transition-colors ${
-                      index === selectedIndex
-                        ? 'ring-border-subtle bg-background-strong/70'
-                        : 'ring-transparent hover:ring-border-subtle hover:bg-background-medium'
-                    }`}
-                  >
-                    <div className="flex-shrink-0 text-text-muted">
-                      <ItemIcon item={item} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <div className="text-xs leading-4 truncate text-text-default">
-                          {item.name}
-                        </div>
-                        {item.builtIn && <BuiltInBadge title="Built in. Ships with Biorouter." />}
-                      </div>
-                      <div className="text-[11px] leading-3 truncate text-text-muted">
-                        {item.extra}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              );
+            })}
 
-                {!isLoading && displayItems.length === 0 && query && (
-                  <div className="p-4 text-center text-text-muted text-sm">
-                    No items found matching "{query}"
-                  </div>
-                )}
+            {displayItems.length === 0 && (query || !isSlashCommand) && (
+              <div className="flex min-h-control-md items-center px-3 text-secondary text-text-muted">
+                {query ? COMPOSER_COPY.mention.noMatch(query) : COMPOSER_COPY.mention.emptyFolder}
               </div>
-            </>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     );
+
+    // An empty command list with nothing typed yet draws nothing rather than an
+    // empty box. An `@` alone always answers: its entries, "Searching…", or a
+    // line saying the folder has nothing to list.
+    if (!searching && displayItems.length === 0 && !query && isSlashCommand) return null;
 
     return createPortal(menu, document.body);
   }

@@ -300,6 +300,6 @@ review cite as `hooks.md #N`; the numbering below is that scheme and is stable.
 
 - [Hooks reference](../../../agent-loop/hooks/hooks-reference.md) — the current, living user-facing guide to configuring hooks.
 - [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector chain the `HookInspector` is the fourth member of; the two reviews overlap on `PreToolUse`.
-- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how this hook model measures against Claude Code and eight others.
+- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how this hook model measures against Claude Code and seven others.
 - [Verify-and-checkpoint stop hook](../../../agent-loop/hooks/verify-and-checkpoint-stop-hook.md) — a worked example of the `Stop` event described here.
 - [Wave 2 hooks and permissions report](../../agent-loop-campaign/wave-reports/wave-2-hooks-and-permissions.md) — what was actually built in response to these gaps.

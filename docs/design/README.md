@@ -51,6 +51,11 @@ pages. Three documents sit directly in this folder:
   [the nested `KnowledgeProvider` blocker](chat-groups/knowledge-provider-nesting-blocker.md),
   a spike report proving that two nested providers clobber each other's active knowledge
   base; its prerequisite fix is still **not** made, so provider nesting remains blocked.
+- **[`codex-simplicity-redesign/`](codex-simplicity-redesign/README.md)**: the October 2026
+  redesign of the desktop app and the website toward Codex like simplicity, with Crew as the in
+  house reference. Holds the [requirements and plan](codex-simplicity-redesign/requirements-and-plan.md)
+  (items R-01 to R-24, owner decisions, workstreams) and the
+  [progress tracker](codex-simplicity-redesign/progress.md). **Current**: in progress.
 - **[`composer-thinking-indicator/`](composer-thinking-indicator/README.md)** — the affordance
   that says Biorouter is working on your turn. Holds the
   [redesign of record](composer-thinking-indicator/thinking-indicator-redesign.md) — seven
@@ -92,9 +97,10 @@ source text. Each sits beside the Markdown companion that explains it.
 
 - `design-system-gallery.html` — the design system rendered as a gallery of every token,
   element and state; the companion artifact to the root [design system](../../design.md).
-- `boot-splash-studio.html` — the studio for the boot splash, the centred `BR` mark that
-  assembles itself before the app paints. Replays the animation, switches theme families, and
-  puts every timing value on a drag handle. Its written companion is the
+- `boot-splash-studio.html` — the studio for the original boot splash, the centred `BR` mark that
+  assembled itself before the app painted. Historical: since 2026-10-11 the splash draws the
+  wordmark at rest instead (see [The boot splash](../../design.md#the-boot-splash)), so the studio's
+  cascade, blur and timing handles describe a design that no longer ships. Its written companion is the
   [boot splash design](../history/dashboard-mode/2026-07-18-boot-splash-design.md).
 - `branding/logo-wordmark-studio.html` and `branding/logo-icon-studio.html` — interactive
   studios for the wordmark and for centring the `BR` icon, with dials for position, mark

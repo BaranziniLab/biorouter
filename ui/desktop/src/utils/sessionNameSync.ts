@@ -21,13 +21,17 @@
 //      data continues to read correctly.
 //   3. `renameSession` — optimistic API call + cache update + cross-window
 //      broadcast. Callers do not need to coordinate cache invalidation or
-//      sibling-window updates themselves.
+//      sibling-window updates themselves. Once the daemon has saved the name
+//      the broadcast carries `activityAt`, and the lists sorted by activity
+//      move the chat to the top at once (R-30: a rename is activity).
 //   4. `subscribeSessionNameChanges` — fan-out for sibling windows
 //      (history list, other open windows, the chat tab) to receive
 //      updates without re-fetching.
 
 import type { Message, Session } from '../api';
 import { updateSessionName } from '../api';
+import { toastError } from '../toasts';
+import { errorMessage } from './conversionUtils';
 import { userActionHeaders } from './userAction';
 
 export const DEFAULT_SESSION_NAME = 'New chat';
@@ -112,6 +116,29 @@ export interface SessionNameChange {
   /** Where the rename originated. Used so the originating window can ignore
    *  its own broadcast and avoid a no-op re-render. */
   origin: 'user' | 'llm' | 'sync';
+  /**
+   * Set only once the daemon has SAVED the rename, to the moment it did (an ISO
+   * string). A saved rename is activity in the chat (R-30): the daemon raises
+   * its `updated_at`, so under "Last activity" the chat belongs at the top. The
+   * lists that sort by activity (the sidebar, History, Home recents) move the
+   * row when they see this, in this window and in every sibling window, instead
+   * of waiting for an unrelated refresh. The optimistic announcement and a
+   * rollback carry none: neither is a rename the daemon saved.
+   */
+  activityAt?: string;
+}
+
+/**
+ * The later of a row's `updated_at` and a saved rename's `activityAt`, as the
+ * string that carries it. A row a re-read already brought with the daemon's
+ * own, newer time keeps it; anything unreadable leaves the row as it was.
+ */
+export function laterActivity(updatedAt: string, activityAt: string | undefined): string {
+  if (!activityAt) return updatedAt;
+  const current = Date.parse(updatedAt);
+  const renamed = Date.parse(activityAt);
+  if (Number.isNaN(renamed)) return updatedAt;
+  return Number.isNaN(current) || renamed > current ? activityAt : updatedAt;
 }
 
 type Listener = (change: SessionNameChange) => void;
@@ -171,11 +198,16 @@ export async function renameSession(
   // A user rename always sets user_set_name=true on the backend; an LLM
   // rename leaves it false. `origin` tells the broadcast which is which so
   // listeners can decide whether to allow future LLM auto-renames.
+  //
+  // `activityAt`: the daemon has saved the name, and a saved rename moved the
+  // chat's `updated_at` (R-30). The response carries no timestamp, so this is
+  // the renderer's clock; a list's next re-read carries the daemon's own.
   broadcast({
     sessionId,
     name: trimmed,
     userSetName: origin === 'user',
     origin,
+    activityAt: new Date().toISOString(),
   });
 
   return trimmed;
@@ -187,4 +219,87 @@ export async function renameSession(
  *  another PUT. */
 export function announceSessionName(change: SessionNameChange): void {
   broadcast(change);
+}
+
+// ── Rename from a person (the one optimistic path) ────────────────────────
+
+/** The server caps a chat name at 200 characters (`routes/session.rs`). */
+export const SESSION_NAME_MAX_LENGTH = 200;
+
+/** The title of the toast a failed rename shows; its message is the daemon's own text. */
+export const RENAME_FAILED_TOAST_TITLE = "Couldn't rename chat";
+
+/** What the chat was called before the rename, so a failure can put it back. */
+export interface PreviousSessionName {
+  name: string;
+  userSetName: boolean;
+}
+
+/** `renamed`: the name was saved. `unchanged`: nothing to do, no call made. `failed`: rolled back. */
+export type RenameOutcome = 'renamed' | 'unchanged' | 'failed';
+
+/**
+ * Normalise a typed or pasted name: newlines become spaces, the ends are
+ * trimmed, and the server's length cap is applied so a long paste is saved
+ * rather than refused.
+ */
+export function normalizeSessionName(raw: string): string {
+  return raw
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, SESSION_NAME_MAX_LENGTH)
+    .trim();
+}
+
+/**
+ * Rename a chat the way a person expects: the new name shows everywhere at
+ * once, and a refusal puts the old one back.
+ *
+ * Every rename surface (the chat title, a sidebar row, History) calls this one
+ * function, so they cannot drift:
+ * 1. Normalise the name. An empty or unchanged name returns `'unchanged'` and
+ *    makes no request.
+ * 2. Announce it optimistically with origin `'user'`, so the row, the tab and
+ *    every other window update before the round trip.
+ * 3. Save it through {@link renameSession}, which carries the user's proof
+ *    (`userActionHeaders()`): renaming a private chat without it is refused.
+ * 4. On failure, announce the previous name with origin `'sync'` and show a
+ *    toast whose message is the daemon's own sentence, so a privacy refusal
+ *    stays readable. There is no success toast: the row is the confirmation.
+ */
+export async function renameSessionOptimistically(
+  sessionId: string,
+  newName: string,
+  previous: PreviousSessionName | null | undefined
+): Promise<RenameOutcome> {
+  const name = normalizeSessionName(newName);
+  if (!sessionId || !name || name === previous?.name) return 'unchanged';
+
+  announceSessionName({ sessionId, name, userSetName: true, origin: 'user' });
+  try {
+    await renameSession(sessionId, name, 'user');
+    return 'renamed';
+  } catch (err) {
+    if (previous?.name) {
+      announceSessionName({
+        sessionId,
+        name: previous.name,
+        userSetName: previous.userSetName,
+        origin: 'sync',
+      });
+    }
+    toastError({ title: RENAME_FAILED_TOAST_TITLE, msg: renameFailureMessage(err) });
+    return 'failed';
+  }
+}
+
+/**
+ * The daemon's refusal arrives as its parsed body, a plain string, under
+ * `throwOnError`; an `Error` carries its own message. Anything else gets a
+ * sentence rather than `[object Object]`.
+ */
+function renameFailureMessage(err: unknown): string {
+  const fallback = 'The chat kept its old name.';
+  if (typeof err === 'string') return err.trim() || fallback;
+  return errorMessage(err, fallback).trim() || fallback;
 }

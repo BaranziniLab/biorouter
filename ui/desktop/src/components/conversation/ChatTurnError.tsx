@@ -1,10 +1,14 @@
-import { NotificationSurface } from '../alerts/NotificationSurface';
+import { AlertTriangle } from '../icons/app-icons';
+import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
+import { transcriptCopy } from '../transcript/copy';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
 import { crewTurnRefusalOf } from '../crew/access/crewTurnRefusal';
+import { cn } from '../../utils';
 
-interface ChatTurnErrorPresentation {
+export interface ChatTurnErrorPresentation {
   title: string;
   message: string;
   details?: string;
@@ -143,6 +147,63 @@ export function presentChatTurnError(error: ChatTurnErrorData): ChatTurnErrorPre
   };
 }
 
+// The daemon's stored turn-ending notice (`stop_notice` in
+// `crates/biorouter/src/agents/mistakes.rs`, and the compaction failure in
+// `agents/agent.rs`): "Ran into this error: <ProviderError>\n\n<advice>". It is
+// an ordinary assistant message, so the model reads it next turn and a reload
+// shows it; drawn as prose it was a second look for the same failure the live
+// error row draws (vision V2-07).
+const STORED_NOTICE = /^Ran into this error( trying to compact)?: */;
+
+// `ProviderError`'s Display prefixes (`crates/biorouter/src/providers/errors.rs`).
+const STORED_TITLES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^Authentication error:\s*/, PROVIDER_TITLES.auth],
+  [/^Context length exceeded:\s*/, PROVIDER_TITLES.context_length],
+  [/^Rate limit exceeded:\s*/, PROVIDER_TITLES.rate_limit],
+  [/^Server error:\s*/, PROVIDER_TITLES.server],
+  [/^(?:Request failed|Execution error|Usage data error|Unsupported operation):\s*/, ''],
+];
+
+/** One stop at the end, never two (the daemon's `end_sentence`). */
+function withStop(text: string): string {
+  return /[.!?]["')\]}]*$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * A stored "Ran into this error" notice as the error row presents it, or null
+ * for any other text. The title names the kind of failure, the message is the
+ * reason in words followed by the daemon's advice, and a raw provider response
+ * (`… Response: {"error": …}`) moves under Details with the full error.
+ */
+export function presentStoredTurnError(text: string): ChatTurnErrorPresentation | null {
+  const notice = STORED_NOTICE.exec(text);
+  if (!notice) return null;
+  const compact = notice[1] !== undefined;
+  const rest = text.slice(notice[0].length);
+  const split = rest.lastIndexOf('\n\n');
+  const errorText = (split === -1 ? rest : rest.slice(0, split)).trim();
+  const advice = (split === -1 ? '' : rest.slice(split + 2)).trim();
+  if (!errorText) return null;
+
+  let title = compact ? 'Could not compact this chat' : 'Model request failed';
+  let reason = errorText;
+  for (const [prefix, kindTitle] of STORED_TITLES) {
+    if (!prefix.test(errorText)) continue;
+    if (!compact && kindTitle) title = kindTitle;
+    const stripped = errorText.replace(prefix, '');
+    // "Server error: 502." keeps its prefix: a bare status is not a reason.
+    if (/[A-Za-z]{3,}/.test(stripped)) reason = stripped;
+    break;
+  }
+  if (!compact && errorText.includes('insufficient_quota')) title = 'Model quota exceeded';
+
+  const body = /\s*\bResponse:\s*/.exec(reason);
+  if (body && body.index > 0) reason = reason.slice(0, body.index).trim();
+  reason = reason.charAt(0).toUpperCase() + reason.slice(1);
+  const message = [withStop(reason), advice ? withStop(advice) : ''].filter(Boolean).join(' ');
+  return { title, message, details: body ? errorText : undefined };
+}
+
 export function hasVisibleTurnErrorMessage(error: ChatTurnErrorData, messages: Message[]): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -168,37 +229,74 @@ export function ChatTurnError({
   // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
   const canRetry = error.retryable && !!onRetry && !crewTurnRefusalOf(error);
 
+  // It sits a turn's width (24px) under the chat, as the agent's answer would
+  // have.
   return (
-    <div data-testid="chat-turn-error" className="mt-4">
-      <NotificationSurface
-        status="error"
-        role="alert"
-        title={presentation.title}
-        message={presentation.message}
-        actions={
-          canRetry ? (
-            <button
-              type="button"
-              data-testid="chat-turn-error-retry"
-              onClick={onRetry}
-              className="inline-flex items-center rounded-md border border-border-subtle bg-background-default px-2.5 py-1 text-[13px] font-medium text-text-default transition-colors hover:bg-background-medium"
-            >
-              Retry
-            </button>
-          ) : undefined
-        }
-      >
+    <TurnErrorRow
+      presentation={presentation}
+      alert
+      className="mt-6"
+      testId="chat-turn-error"
+      onRetry={canRetry ? onRetry : undefined}
+    />
+  );
+}
+
+/**
+ * The one error row (spec 3.6 "Errors"), for the live turn error and for the
+ * daemon's stored notice alike: a transcript row, not a toast pasted into the
+ * chat. A 16px warning glyph in danger ink, the title in `text-label`, the
+ * message in muted `text-secondary`, Retry as the one secondary button, and the
+ * raw provider payload behind the shared Disclosure.
+ *
+ * `alert` announces it: only for a failure that happens while the person
+ * watches, never for one read back from history.
+ */
+export function TurnErrorRow({
+  presentation,
+  alert = false,
+  className,
+  testId,
+  onRetry,
+}: {
+  presentation: ChatTurnErrorPresentation;
+  alert?: boolean;
+  className?: string;
+  testId?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      role={alert ? 'alert' : undefined}
+      className={cn('flex w-full items-start gap-2', className)}
+    >
+      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-danger" />
+      <div className="min-w-0 flex-1">
+        <div className="text-label text-text-default">{presentation.title}</div>
+        <div className="text-secondary text-text-muted break-words">{presentation.message}</div>
         {presentation.details && (
-          <details className="mt-2.5 text-xs text-text-muted">
-            <summary className="w-fit cursor-pointer select-none font-medium text-text-default">
-              Technical details
-            </summary>
-            <div className="mt-2 whitespace-pre-wrap break-words font-mono leading-relaxed [overflow-wrap:anywhere]">
+          <Disclosure label={transcriptCopy.turn.details} className="mt-1">
+            {/* One well, as a tool call's expanded body is: the raw payload is
+                machine text, and the fill keeps it apart from the rows below. */}
+            <div className="whitespace-pre-wrap break-words rounded-element bg-background-well p-3 font-mono text-code text-text-muted [overflow-wrap:anywhere]">
               {presentation.details}
             </div>
-          </details>
+          </Disclosure>
         )}
-      </NotificationSurface>
+      </div>
+      {onRetry && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          data-testid="chat-turn-error-retry"
+          onClick={onRetry}
+          className="shrink-0"
+        >
+          {transcriptCopy.turn.retry}
+        </Button>
+      )}
     </div>
   );
 }

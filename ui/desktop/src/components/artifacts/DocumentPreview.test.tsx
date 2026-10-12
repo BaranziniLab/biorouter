@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
+import userEvent from '@testing-library/user-event';
 import DocumentPreview from './DocumentPreview';
 import type { ArtifactDocumentFormat, ArtifactFilePreview } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
+import { PreviewBar, PreviewBarScope } from './PreviewBar';
 
 const renderDocx = vi.fn(async (_data: ArrayBuffer, container: HTMLElement) => {
   const wrapper = document.createElement('div');
@@ -69,6 +72,8 @@ vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: { workerPort: null },
 }));
 vi.mock('xlsx-preview', () => ({ xlsx2Html: renderWorkbook }));
+const readSheetNames = vi.fn(async (): Promise<string[] | null> => null);
+vi.mock('./xlsxSheetNames', () => ({ xlsxSheetNames: () => readSheetNames() }));
 vi.mock('@aiden0z/pptx-renderer', () => ({
   PptxViewer: { open: renderPresentation },
   RECOMMENDED_ZIP_LIMITS: {},
@@ -222,12 +227,44 @@ describe('DocumentPreview', () => {
   it('renders workbook sheets in a script-free frame', async () => {
     render(<DocumentPreview file={documentFile('xlsx')} resolvedTheme="dark" isResizing={false} />);
 
-    const frame = await screen.findByLabelText('preview.xlsx, sheet 1');
+    const frame = await screen.findByLabelText('preview.xlsx, Sheet 1');
     await waitFor(() => expect(frame.getAttribute('srcdoc')).toContain('Gene'));
     expect(frame.getAttribute('srcdoc')).not.toContain('<script');
     expect(frame.getAttribute('srcdoc')).toContain('color: rgb(255, 255, 255)');
     expect(frame.getAttribute('srcdoc')).toContain('background-color: rgb(23, 59, 87)');
     expect(frame).toHaveAttribute('sandbox', '');
+  });
+
+  /**
+   * The workbook's sheets are picked in the panel's bar, by the names the
+   * workbook gives them (spec 3.8), not from a "Sheet 1 / Sheet 2" strip under
+   * the sheet. The fidelity sentence is the format's InfoTip there too.
+   */
+  it('picks a sheet by its name from the bar, with the fidelity note as help', async () => {
+    renderWorkbook.mockResolvedValueOnce([
+      '<html><head></head><body><table><tr><td>Counts sheet</td></tr></table></body></html>',
+      '<html><head></head><body><table><tr><td>Notes sheet</td></tr></table></body></html>',
+    ]);
+    readSheetNames.mockResolvedValueOnce(['Counts', 'Q&A notes']);
+    render(
+      <PreviewBarScope>
+        <PreviewBar name="preview.xlsx" />
+        <DocumentPreview file={documentFile('xlsx')} resolvedTheme="light" isResizing={false} />
+      </PreviewBarScope>
+    );
+
+    const bar = screen.getByTestId('artifact-status-strip');
+    const picker = await within(bar).findByTestId('artifact-sheet-picker');
+    await waitFor(() => expect(picker).toHaveTextContent('Counts'));
+    expect(within(bar).getByTestId('document-fidelity-note')).toHaveAccessibleDescription(
+      /formulas show their last computed value/
+    );
+    expect(within(bar).getByText(PREVIEW_COPY.documentFormat.xlsx)).toBeInTheDocument();
+
+    await userEvent.click(picker);
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: 'Q&A notes' }));
+    const frame = await screen.findByLabelText('preview.xlsx, Q&A notes');
+    await waitFor(() => expect(frame.getAttribute('srcdoc')).toContain('Notes sheet'));
   });
 
   it('revokes workbook blob URLs discovered after the preview unmounts', async () => {
@@ -386,7 +423,7 @@ describe('workbook sheet theming', () => {
         />
       </ThemeProvider>
     );
-    const frame = await screen.findByLabelText('preview.xlsx, sheet 1');
+    const frame = await screen.findByLabelText('preview.xlsx, Sheet 1');
     await waitFor(() => expect(frame.getAttribute('srcdoc')).toContain('Gene'));
     const srcdoc = frame.getAttribute('srcdoc') ?? '';
     view.unmount();
@@ -405,6 +442,22 @@ describe('workbook sheet theming', () => {
       expect(srcdoc).toContain(`table { background: ${card}; }`);
     }
   });
+
+  // The renderer's own stylesheet paints the row and column labels light blue and
+  // the grid #f0f0f0 in every theme; the sheet puts them on the family's scales.
+  it.each(THEME_FAMILY_IDS)(
+    'puts the %s labels and grid on the family hairline',
+    async (family) => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { border, muted } = GENERATED_THEMES[family][mode].surface;
+        const srcdoc = await srcdocFor(family, mode);
+        expect(srcdoc).toContain(`td { border-color: ${border}; }`);
+        expect(srcdoc).toMatch(
+          new RegExp(`td\\.order \\{[^}]*color: ${muted};[^}]*font-size: 12px;`)
+        );
+      }
+    }
+  );
 
   // Without this, re-hardcoding a colour would leave every per-family
   // assertion above still passing for whichever family the hardcode matched.

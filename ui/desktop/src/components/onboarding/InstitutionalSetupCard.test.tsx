@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import InstitutionalSetupCard from './InstitutionalSetupCard';
+import { institutionalCopy } from './copy';
 
 const mockUpsert = vi.fn();
 const mockCheckProvider = vi.fn();
@@ -23,7 +24,7 @@ const PUBLIC_AZURE_KEYS = [
 /** Types a key, optionally edits Advanced, and waits for the connect to finish. */
 async function connectVersaAzure(advanced: { endpoint?: string; apiVersion?: string } = {}) {
   const onSuccess = vi.fn();
-  render(<InstitutionalSetupCard onSuccess={onSuccess} />);
+  render(<InstitutionalSetupCard flavor="azure" onSuccess={onSuccess} />);
   fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
   if (advanced.endpoint !== undefined || advanced.apiVersion !== undefined) {
     fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
@@ -38,18 +39,17 @@ async function connectVersaAzure(advanced: { endpoint?: string; apiVersion?: str
       target: { value: advanced.apiVersion },
     });
   }
-  fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Azure OpenAI/i }));
+  fireEvent.click(screen.getByRole('button', { name: institutionalCopy.connect }));
   // Past `checkProvider`, so every write the connect makes has been recorded.
   await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('versa_azure'));
 }
 
 async function connectVersaBedrock() {
   const onSuccess = vi.fn();
-  render(<InstitutionalSetupCard onSuccess={onSuccess} />);
-  fireEvent.click(screen.getByRole('tab', { name: /Bedrock/i }));
+  render(<InstitutionalSetupCard flavor="bedrock" onSuccess={onSuccess} />);
   fireEvent.change(screen.getByLabelText(/Access Key ID/i), { target: { value: 'an-id' } });
   fireEvent.change(screen.getByLabelText(/Secret Access Key/i), { target: { value: 'a-secret' } });
-  fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Bedrock/i }));
+  fireEvent.click(screen.getByRole('button', { name: institutionalCopy.connect }));
   // Past `checkProvider`, so every write the connect makes has been recorded.
   await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('versa_bedrock'));
 }
@@ -112,10 +112,16 @@ describe('InstitutionalSetupCard', () => {
   });
 
   it('offers the endpoint and API version in Advanced, and no deployment', () => {
-    render(<InstitutionalSetupCard onSuccess={vi.fn()} />);
+    render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
-    expect(screen.getByText('VERSA_AZURE_ENDPOINT')).toBeInTheDocument();
-    expect(screen.getByText('VERSA_AZURE_API_VERSION')).toBeInTheDocument();
+    // Fields named in words; the config key each one writes is the label's InfoTip, so a screen
+    // reader still hears it when it reaches the field.
+    expect(screen.getByLabelText('Endpoint')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_ENDPOINT.'
+    );
+    expect(screen.getByLabelText('API version')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_API_VERSION.'
+    );
     // Neither a field nor a mention in the collapsed label.
     expect(screen.queryAllByText(/deployment/i)).toHaveLength(0);
   });
@@ -163,9 +169,9 @@ describe('InstitutionalSetupCard', () => {
       'Versa API Azure rejected these credentials: Invalid client id or secret'
     );
     const onSuccess = vi.fn();
-    render(<InstitutionalSetupCard onSuccess={onSuccess} />);
+    render(<InstitutionalSetupCard flavor="azure" onSuccess={onSuccess} />);
     fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
-    fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Azure OpenAI/i }));
+    fireEvent.click(screen.getByRole('button', { name: institutionalCopy.connect }));
     expect(
       await screen.findByText(
         'Could not connect: Versa API Azure rejected these credentials: Invalid client id or secret'
@@ -173,5 +179,85 @@ describe('InstitutionalSetupCard', () => {
     ).toBeInTheDocument();
     expect(mockUpsert).not.toHaveBeenCalled();
     expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  // FR-R1-6 / FR-S-6: the row that opens this form is the gateway, so the form has no switch of
+  // its own; and the button kept only a spinner while it worked, losing its name and its width.
+  it('sets up the gateway its row names, with no gateway switch of its own', () => {
+    render(<InstitutionalSetupCard flavor="bedrock" onSuccess={vi.fn()} />);
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+    expect(screen.getByLabelText(institutionalCopy.accessKeyId)).toBeInTheDocument();
+    expect(screen.queryByLabelText(institutionalCopy.apiKey)).toBeNull();
+  });
+
+  // FR-R2-5: an empty form's Connect was the coral primary at half opacity (pale coral in light,
+  // a muddy brown in dark) beside Public's grey "Detect provider". The same rule now: secondary
+  // until it can act, coral once the keys it needs are in.
+  it('keeps Connect secondary until both Bedrock keys are in', () => {
+    render(<InstitutionalSetupCard flavor="bedrock" onSuccess={vi.fn()} />);
+    const connect = screen.getByRole('button', { name: institutionalCopy.connect });
+    expect(connect).toBeDisabled();
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(institutionalCopy.accessKeyId), {
+      target: { value: 'an-id' },
+    });
+    // One of two keys is not enough to act on.
+    expect(connect).toBeDisabled();
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(/Secret Access Key/i), {
+      target: { value: 'a-secret' },
+    });
+    expect(connect).toBeEnabled();
+    expect(connect.className).toContain('bg-background-accent');
+  });
+
+  it('keeps Connect secondary until the Azure key is in', () => {
+    render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
+    const connect = screen.getByRole('button', { name: institutionalCopy.connect });
+    expect(connect.className).not.toContain('bg-background-accent');
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
+    expect(connect.className).toContain('bg-background-accent');
+  });
+
+  it('keeps its words while it connects', async () => {
+    let settle!: () => void;
+    mockCheckProvider.mockReturnValueOnce(new Promise<void>((resolve) => (settle = resolve)));
+    render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
+    fireEvent.click(screen.getByRole('button', { name: institutionalCopy.connect }));
+    const busy = await screen.findByRole('button', { name: institutionalCopy.connecting });
+    expect(busy).toBeDisabled();
+    settle();
+    await waitFor(() => expect(mockUpsert).toHaveBeenCalled());
+  });
+});
+
+// Vision V4-R7-5: the Advanced fields hold an endpoint URL, an API version and a region, which are
+// machine strings. On the first-run path Chromium drew a red dotted misspelling line under a
+// correct `https://unified-api.ucsf.edu/general`, and the platform could "correct" or capitalise
+// what a person typed. The key fields are passwords and are not spellchecked anyway.
+describe('InstitutionalSetupCard: machine strings are not spellchecked (V4-R7-5)', () => {
+  const MACHINE_ATTRIBUTES = { spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' };
+
+  function expectEveryAdvancedFieldIsMachine(container: HTMLElement, expected: number) {
+    const fields = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="text"]'));
+    expect(fields).toHaveLength(expected);
+    for (const field of fields) {
+      for (const [attribute, value] of Object.entries(MACHINE_ATTRIBUTES)) {
+        expect(field, `${field.id} ${attribute}`).toHaveAttribute(attribute, value);
+      }
+    }
+  }
+
+  it('leaves the Azure endpoint and API version alone', () => {
+    const { container } = render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expectEveryAdvancedFieldIsMachine(container, 2);
+  });
+
+  it('leaves the Bedrock endpoint and region alone', () => {
+    const { container } = render(<InstitutionalSetupCard flavor="bedrock" onSuccess={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expectEveryAdvancedFieldIsMachine(container, 2);
   });
 });

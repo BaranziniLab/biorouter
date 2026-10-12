@@ -18,10 +18,12 @@ import { Button } from './button';
  * 1. **Tone is a wash, never a coloured border.** `--wash-*` is the hue at 22%
  *    behind that same hue as ink (§2.5), and it is per-family per-mode, so the
  *    note reads correctly in Parchment, Alma Mater and Roche Limit, light and
- *    dark, with no `.dark` fork and no hardcoded rgba. `neutral` is the
- *    exception on purpose — it has no hue to wash, so it takes a real surface
- *    step plus a hairline, exactly as `badge.tsx` documents for its own
- *    neutral.
+ *    dark, with no `.dark` fork and no hardcoded rgba. `neutral` has no hue to
+ *    wash, so it takes the subtle solid fill instead (`--background-fill`,
+ *    owner message 13, R-27): no outline, the 1px border kept transparent so
+ *    forced colours still draw it. Every tone is a `.br-fill-surface`, so the
+ *    action it holds (a secondary Retry, a field) steps back to the page ground
+ *    and never sits fill on fill.
  *
  * 2. **The glyph is 16px** (`--icon-row`). A note in a settings list is a
  *    row-scale object; the 20px `--icon-banner` is for a full-bleed app-level
@@ -44,7 +46,7 @@ import { Button } from './button';
 export type NoteTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
 const toneClass: Record<NoteTone, string> = {
-  neutral: 'border border-border-subtle bg-background-muted text-text-muted',
+  neutral: 'border border-transparent bg-background-fill text-text-muted',
   info: 'bg-wash-info text-text-info',
   success: 'bg-wash-success text-text-success',
   warning: 'bg-wash-warning text-text-warning',
@@ -66,7 +68,7 @@ const toneClass: Record<NoteTone, string> = {
  * class the authored rule exists to avoid depending on.
  */
 const toneFadeGround: Record<NoteTone, string> = {
-  neutral: 'var(--background-muted)',
+  neutral: 'var(--background-fill)',
   info: 'var(--wash-solid-info)',
   success: 'var(--wash-solid-success)',
   warning: 'var(--wash-solid-warning)',
@@ -140,7 +142,7 @@ export function Note({
       data-testid={testId}
       style={{ ['--note-fade-ground' as string]: toneFadeGround[tone] }}
       className={cn(
-        'flex items-start gap-2 rounded-element px-3 py-2.5 text-supporting',
+        'br-fill-surface flex items-start gap-2 rounded-element px-3 py-2.5 text-supporting',
         toneClass[tone],
         className
       )}
@@ -163,7 +165,8 @@ export function Note({
           </Button>
         )}
       </div>
-      {action ? <div className="flex shrink-0 items-center">{action}</div> : null}
+      {/* Centred on the FIRST line, not hung from the top of the box (`.br-note-action`). */}
+      {action ? <div className="br-note-action">{action}</div> : null}
     </div>
   );
 }

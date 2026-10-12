@@ -98,7 +98,7 @@ describe('the pre-session submit', () => {
   it('binds the held model after the chat exists and before the message is sent', () => {
     const create = submit.indexOf('await createSession(');
     const bind = submit.indexOf('await bindHeldChatModel(newSession.id, chosenModel, changeModel)');
-    const send = submit.indexOf('navigateWithViewTransition(');
+    const send = submit.indexOf('navigateToRoute(');
     expect(create).toBeGreaterThan(-1);
     expect(bind).toBeGreaterThan(create);
     expect(send).toBeGreaterThan(bind);
@@ -109,7 +109,7 @@ describe('the pre-session submit', () => {
       'if (!(await heldModelMayBeSent(chosenModel, getProviders))) return false;'
     );
     const create = submit.indexOf('await createSession(');
-    const send = submit.indexOf('navigateWithViewTransition(');
+    const send = submit.indexOf('navigateToRoute(');
     expect(disclosed).toBeGreaterThan(-1);
     expect(disclosed).toBeLessThan(create);
     expect(disclosed).toBeLessThan(send);

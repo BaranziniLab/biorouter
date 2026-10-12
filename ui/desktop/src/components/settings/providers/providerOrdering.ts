@@ -34,6 +34,11 @@ export const AI_AGENT_PROVIDER_IDS: readonly string[] = CODING_AGENT_ORDER;
 
 export type ProviderGroupKey = 'institutional' | 'local' | 'commercial';
 
+const UNAFFILIATED_NOTE =
+  'Private because Biorouter recognizes the endpoint, but no institution is named for it.';
+const AI_AGENTS_NOTE =
+  'Biorouter drives a vendor CLI already installed and signed in on this machine; turns bill to that plan, not to an API key.';
+
 /**
  * One ordered block inside a group's panel.
  *
@@ -59,8 +64,17 @@ export interface OrderedProviderSection {
    * an institution the registry renamed, and print nothing for the second one.
    */
   label: string | null;
-  /** One line under the heading, when the section needs its own reason. */
+  /**
+   * What the section is made of, in words (an institution's gateways). Data for tests and other
+   * readers; the catalog draws {@link help} instead.
+   */
   note?: string;
+  /**
+   * The section's reason, for an InfoTip beside its heading. Set only where there is a reason to
+   * give (the agents' subscription billing, a gateway with no named institution): an
+   * institution's note is just its rows' names, and the rows are right under the heading.
+   */
+  help?: string;
   providers: ProviderDetails[];
 }
 
@@ -73,10 +87,11 @@ export interface OrderedProviderGroup {
    * "Institutional"; under this design that account is **Public**, and the old
    * three headings never said so.
    *
-   * ⚠ Consumed by THREE surfaces and hardcoded by none. `ProviderCatalog` prints
-   * it as the tab's panel heading, the tab trigger takes its short form from
-   * {@link tabLabel}, and `IngestModelPicker` has always read it. Do not inline
-   * any of them back.
+   * ⚠ Consumed by `IngestModelPicker` (an `<optgroup>` label) and hardcoded by none. The
+   * catalog no longer prints it as a panel heading: the tab already names the group, and the
+   * one-line {@link note} under the tabs starts with the same two words ("Private because…",
+   * "Public. …"), so the heading only repeated the tab. The tab trigger takes its short form
+   * from {@link tabLabel}. Do not inline any of them back.
    */
   label: string;
   /**
@@ -88,9 +103,9 @@ export interface OrderedProviderGroup {
   tabLabel: string;
   /**
    * The one line of card copy §14.5 asks for — *why* this group has the tier it
-   * has. Rendered under the heading, once per section, rather than per card:
-   * the reason is a property of the group's classification rule, not of any one
-   * vendor.
+   * has. Rendered as a muted line under the tabs, once per panel, rather than per card: the
+   * reason is a property of the group's classification rule, not of any one vendor. It is
+   * privacy information, so it is never an InfoTip.
    */
   note: string;
   accentClassName: string;
@@ -268,7 +283,8 @@ function institutionalSections(providers: ProviderDetails[]): OrderedProviderSec
     sections.push({
       key: 'unaffiliated',
       label: 'Unaffiliated private gateways',
-      note: 'Private because Biorouter recognizes the endpoint, but no institution is named for it.',
+      note: UNAFFILIATED_NOTE,
+      help: UNAFFILIATED_NOTE,
       providers: [...unaffiliated].sort(byDisplayName),
     });
   }
@@ -282,7 +298,7 @@ function institutionalSections(providers: ProviderDetails[]): OrderedProviderSec
  * AI agents first because they are the commonest path on a machine that already
  * pays for a coding-agent plan: they need no key at all, so offering them before
  * the section that asks for a secret is the cheaper question asked first. The
- * same reasoning already put `CodingAgentInlineCard` above `CommercialSetupCard`
+ * same reasoning that put the old coding-agent card above `CommercialSetupCard`
  * in the old onboarding stack.
  */
 function commercialSections(providers: ProviderDetails[]): OrderedProviderSection[] {
@@ -296,7 +312,8 @@ function commercialSections(providers: ProviderDetails[]): OrderedProviderSectio
     sections.push({
       key: 'agents',
       label: 'AI agents · your subscription',
-      note: 'Biorouter drives a vendor CLI already installed and signed in on this machine; turns bill to that plan, not to an API key.',
+      note: AI_AGENTS_NOTE,
+      help: AI_AGENTS_NOTE,
       providers: agents,
     });
   }

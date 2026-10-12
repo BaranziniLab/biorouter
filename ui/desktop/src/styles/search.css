@@ -24,35 +24,138 @@
   box-shadow: inset 0 0 0 1px var(--color-yellow-100);
 }
 
-.search-bar-enter,
-.search-bar-exit {
-  --search-bar-height: 72px;
-  overflow: hidden;
-  transition: max-height 150ms ease-out;
+/* ── Find in chat: an overlay, not a row (spec 3.16) ─────────────────────────
+   The bar used to be a sticky row inside the transcript's scroll content that
+   revealed with a `max-height` transition under `overflow: hidden`, so opening
+   it pushed the whole conversation down by up to 88px while it animated, and
+   the ceiling clipped the two-row "type at least…" state. It now floats.
+
+   `position: absolute` against the transcript cell (`BaseChat`'s `ScrollArea`
+   root, `relative`, and the same in `SessionHistoryView`), which sits OUTSIDE
+   the scrolling viewport, so the bar neither scrolls with the conversation nor
+   is clipped by it. ⚠ `SearchView` PORTALS the bar into that cell; rendered in
+   place it would not stay there, because `SearchHighlighter` makes the
+   viewport `position: relative` as soon as a search starts, and from then on
+   the viewport is the containing block and the bar scrolls off with the text
+   (vision V2-02). It sits 8px under the header band and 16px in from the right
+   edge, where a toast also lands. A toast there steps 8px below the bar for as
+   long as it is open, instead of covering its count and buttons
+   (`components/alerts/toastClearance.ts`, vision V2-R7-4).
+
+   Width: compact, like an editor's find widget, and never wider than the
+   transcript's measure or the cell less its gutters. Nothing geometric
+   animates: the bar opens with opacity and an 8px drop over `--dur-fast-max`
+   and closes with opacity and a 4px rise over `--dur-fast` (exits travel half
+   as far, a tier faster). `SearchBar` closes on the close keyframe's
+   `animationend`, so the exit can never be cut short by a timer. */
+.br-find-overlay {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 60;
+  width: min(440px, calc(100% - 32px));
 }
 
-/* ⚠ **The ceiling has to clear what the bar actually renders.** The reveal is
-   a `max-height` transition, and `overflow: hidden` is what makes it one — so a
-   bar that is TALLER than the ceiling is silently cut off rather than scrolled.
-   When the bar is saying it has not searched yet it is two rows, and at the
-   one-row 72px the sentence was clipped through its middle (measured in the app
-   on Settings → Extensions, 2026-09-12). Raised only while that row is there,
-   so the ordinary open/close keeps the travel it was tuned for. */
-.search-bar-enter.search-bar-has-note,
-.search-bar-exit.search-bar-has-note {
-  --search-bar-height: 132px;
+.br-find-overlay[data-state='open'] {
+  animation: br-find-in var(--dur-fast-max) var(--ease-out);
 }
 
-.search-bar-enter {
-  max-height: var(--search-bar-height);
+.br-find-overlay[data-state='closed'] {
+  pointer-events: none;
+  animation: br-find-out var(--dur-fast) var(--ease-out) forwards;
 }
 
-.search-bar-exit {
-  max-height: 0;
-}
-
-@starting-style {
-  .search-bar-enter {
-    max-height: 0;
+@keyframes br-find-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
   }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes br-find-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Reduced motion: no travel. `SearchBar` closes at once, so only the opening
+   fade is left, and the global reset shortens it. */
+@media (prefers-reduced-motion: reduce) {
+  .br-find-overlay[data-state='open'] {
+    animation-name: br-fade-in;
+  }
+
+  .br-find-overlay[data-state='closed'] {
+    animation-name: br-fade-out;
+  }
+}
+
+/* One row: glyph, field, count, help, then the four 28px icon buttons. */
+.br-find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 12px;
+}
+
+.br-find-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--text-muted);
+}
+
+.br-find-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-default);
+  font-family: var(--font-sans);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-find-input::placeholder {
+  color: var(--text-muted);
+}
+
+.br-find-count {
+  flex: none;
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.br-find-count:empty {
+  display: none;
+}
+
+/* "Aa" while match-case is on: the pressed fill, never the accent. The fill
+   step (R-27), as the band's pressed toggles take it; inside the bar's dark
+   floating ground it is re-pointed one step deeper, where `--background-medium`
+   equalled that ground and the "on" state vanished. */
+.br-find-case[aria-pressed='true'] {
+  background-color: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+.br-find-note {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-subtle);
 }

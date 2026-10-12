@@ -2016,7 +2016,7 @@ fn run_ps1(id: &str, export_digest: &str) -> String {
         .iter()
         .map(|name| format!("\"{name}\""))
         .collect();
-    RUN_PS1_TEMPLATE
+    with_app_folder_names(RUN_PS1_TEMPLATE)
         .replace("__APP_ID__", id)
         .replace("__EXPORT_DIGEST__", export_digest)
         .replace("__SHIPPED_SKILLS__", &shipped.join(", "))
@@ -2026,21 +2026,68 @@ fn run_ps1(id: &str, export_digest: &str) -> String {
         )
 }
 
+/// Fill in the names of Biorouter's Windows folder, from the constants the
+/// daemon builds it from (`app_folder`), so a launcher can never name a folder
+/// the daemon does not read. The older author folder is spelled only by
+/// [`LEGACY_APP_AUTHOR`](crate::app_folder::LEGACY_APP_AUTHOR), here and nowhere
+/// else in the Rust tree.
+fn with_app_folder_names(template: &str) -> String {
+    template
+        .replace(
+            "__LEGACY_APP_AUTHOR__",
+            crate::app_folder::LEGACY_APP_AUTHOR,
+        )
+        .replace("__APP_AUTHOR__", crate::app_folder::APP_AUTHOR)
+        .replace("__APP_NAME__", crate::app_folder::APP_NAME)
+}
+
 const RUN_PS1_TEMPLATE: &str = r##"#Requires -Version 5.0
 # Windows launcher for the exported Biorouter app "__APP_ID__".
 $ErrorActionPreference = "Stop"
 $AppId = "__APP_ID__"
 $Dir   = Split-Path -Parent $MyInvocation.MyCommand.Definition
+# Whether a folder is there, as the daemon asks it (biorouter-mcp `app_folder`):
+# "present", "absent" (not there, or a segment above it is a file) or "unknown"
+# when the check itself fails.
+function Get-Presence([string]$Path) {
+  try { [void][System.IO.File]::GetAttributes($Path); return "present" }
+  catch [System.IO.FileNotFoundException] { return "absent" }
+  catch [System.IO.DirectoryNotFoundException] { return "absent" }
+  catch { return "unknown" }
+}
+
+# Rule 1 of the daemon's choice of folder: the older Biorouter folder while it is,
+# or may be, there and the current one is known not to be; otherwise the current
+# one. The daemon moves the older folder on its own start, so installing into a
+# new, empty current folder first would hide the person's settings behind it.
+# The older folder is read first: a move that lands between the two checks can
+# only make the pair read as both folders existing, which is the current one,
+# the folder that move made.
+function Test-OlderFolderInUse([string]$Roaming) {
+  $current = Join-Path $Roaming "__APP_AUTHOR__\__APP_NAME__"
+  $older = Join-Path $Roaming "__LEGACY_APP_AUTHOR__\__APP_NAME__"
+  $olderNow = Get-Presence $older
+  $currentNow = Get-Presence $current
+  return (($currentNow -eq "absent") -and ($olderNow -ne "absent"))
+}
+
 # Exactly the folder the daemon reads (biorouter-mcp `paths::config_dir`):
-# BIOROUTER_PATH_ROOT\config when that is set, else %APPDATA%\Block\biorouter\config.
-# This used to be a .config folder in your profile, which no Windows daemon
-# reads, so every launch failed with "does not serve".
+# BIOROUTER_PATH_ROOT\config when that is set, else the config folder inside
+# Biorouter's folder under %APPDATA%. This used to be a .config folder in your
+# profile, which no Windows daemon reads, so every launch failed with "does not
+# serve".
+$Roaming = $null
 if ($env:BIOROUTER_PATH_ROOT -and $env:BIOROUTER_PATH_ROOT.Trim()) {
   $Cfg = Join-Path $env:BIOROUTER_PATH_ROOT "config"
 } elseif ($env:APPDATA) {
-  $Cfg = Join-Path $env:APPDATA "Block\biorouter\config"
+  $Roaming = $env:APPDATA
+  $Cfg = Join-Path $env:APPDATA "__APP_AUTHOR__\__APP_NAME__\config"
 } else {
-  $Cfg = Join-Path $HOME "AppData\Roaming\Block\biorouter\config"
+  $Roaming = Join-Path $HOME "AppData\Roaming"
+  $Cfg = Join-Path $Roaming "__APP_AUTHOR__\__APP_NAME__\config"
+}
+if ($Roaming -and (Test-OlderFolderInUse $Roaming)) {
+  $Cfg = Join-Path $Roaming "__LEGACY_APP_AUTHOR__\__APP_NAME__\config"
 }
 $Store = Join-Path $Cfg "agent_drafter\$AppId"
 $LauncherHome = Join-Path $Cfg "app-launcher"
@@ -2599,7 +2646,7 @@ fn run_bat() -> String {
 /// authorization and headers. Only this server's loopback `Host` is allowed, which
 /// closes DNS rebinding.
 fn serve_mjs(id: &str, default_port: u16, export_digest: &str) -> String {
-    SERVE_MJS_TEMPLATE
+    with_app_folder_names(SERVE_MJS_TEMPLATE)
         .replace("__EXPORT_DIGEST__", export_digest)
         .replace("__RUNTIME_EXCLUDED__", &runtime_exclusions_json())
         .replace(
@@ -2645,17 +2692,44 @@ const SHIPPED_SKILLS = new Set(__SHIPPED_SKILLS_JSON__);
 
 // biorouter:config-dir:start
 /**
- * Exactly the folder the daemon reads (biorouter-mcp `paths::config_dir`):
- * BIOROUTER_PATH_ROOT/config when that is set; on Windows %APPDATA%\Block\biorouter\config;
- * elsewhere $XDG_CONFIG_HOME/biorouter when that is absolute, else ~/.config/biorouter.
+ * Whether a folder is there, as the daemon asks it (biorouter-mcp `app_folder`):
+ * "present", "absent" (not there, or a segment above it is a file) or "unknown"
+ * when the check itself fails.
  */
-function configDir(env = process.env, platform = process.platform, home = homedir()) {
+function folderPresence(path) {
+  try {
+    statSync(path);
+    return "present";
+  } catch (error) {
+    return error && (error.code === "ENOENT" || error.code === "ENOTDIR") ? "absent" : "unknown";
+  }
+}
+
+/**
+ * Exactly the folder the daemon reads (biorouter-mcp `paths::config_dir`):
+ * BIOROUTER_PATH_ROOT/config when that is set; on Windows the config folder
+ * inside Biorouter's folder under %APPDATA%, which is the older Biorouter folder
+ * while that is, or may be, there and the current one is known not to be (rule 1
+ * of `app_folder`; the daemon moves the older folder on its own start, and
+ * installing into a new, empty current folder first would hide the person's
+ * settings behind it); elsewhere $XDG_CONFIG_HOME/biorouter when that is
+ * absolute, else ~/.config/biorouter.
+ */
+function configDir(env = process.env, platform = process.platform, home = homedir(), presence = folderPresence) {
   const paths = platform === "win32" ? win32 : posix;
   const root = env.BIOROUTER_PATH_ROOT;
   if (root && root.trim()) return paths.join(root, "config");
   if (platform === "win32") {
     const roaming = env.APPDATA || paths.join(home, "AppData", "Roaming");
-    return paths.join(roaming, "Block", "biorouter", "config");
+    const current = paths.join(roaming, "__APP_AUTHOR__", "__APP_NAME__");
+    const older = paths.join(roaming, "__LEGACY_APP_AUTHOR__", "__APP_NAME__");
+    // The older folder is read first: a move that lands between the two checks
+    // can only make the pair read as both folders existing, which is the current
+    // one, the folder that move made.
+    const olderNow = presence(older);
+    const currentNow = presence(current);
+    const folder = currentNow === "absent" && olderNow !== "absent" ? older : current;
+    return paths.join(folder, "config");
   }
   const xdg = env.XDG_CONFIG_HOME;
   const base = xdg && paths.isAbsolute(xdg) ? xdg : paths.join(home, ".config");
@@ -3407,8 +3481,9 @@ same computer cannot open your app. That is why the launcher starts a daemon of
 its own rather than using one that happens to be running: it keeps that
 daemon's port and secret, readable by you alone, in `app-launcher/daemon` in
 your Biorouter folder (`~/.config/biorouter` on macOS and Linux,
-`%APPDATA%\Block\biorouter\config` on Windows, or `$BIOROUTER_PATH_ROOT/config`
-when you set that). To use a daemon you run yourself, set `BIOROUTERD_PORT` and
+`%APPDATA%\{windows_author}\{windows_app}\config` on Windows (or the older
+Biorouter folder in `%APPDATA%`, until Biorouter has moved it), or
+`$BIOROUTER_PATH_ROOT/config` when you set that). To use a daemon you run yourself, set `BIOROUTERD_PORT` and
 `BIOROUTER_SERVER__SECRET_KEY` to its port and secret. The link works once and
 for a few minutes; after that the browser keeps the app open until the daemon
 restarts. Run the launcher again for a new link.
@@ -3473,6 +3548,8 @@ edited `index.html` shows up when you refresh.
         title = manifest.title,
         desc = manifest.description,
         id = manifest.id,
+        windows_author = crate::app_folder::APP_AUTHOR,
+        windows_app = crate::app_folder::APP_NAME,
     )
 }
 
@@ -4650,10 +4727,13 @@ if (late.listeners.click) throw new Error("bound twice");
 
     /// The launchers install where the daemon looks. They used to guess
     /// `~/.config/biorouter` on every platform and ignore `BIOROUTER_PATH_ROOT`,
-    /// while a Windows daemon reads `%APPDATA%\Block\biorouter\config`: every
+    /// while a Windows daemon reads `%APPDATA%\<author>\<app>\config`: every
     /// Windows launch failed with "does not serve". This runs the bash and Node
     /// expressions for each case and holds them to the Rust resolver; the
-    /// PowerShell spelling is held to the same app-strategy names.
+    /// PowerShell spelling is held to the same app-strategy names. On Windows
+    /// the folder is also the older one while that is the only one (rule 1 of
+    /// `app_folder`): a launcher that installed into a new current folder first
+    /// would make the daemon see both and leave the older, full one behind.
     #[cfg(unix)]
     #[test]
     fn the_launchers_find_the_store_where_the_daemon_does() {
@@ -4723,6 +4803,39 @@ if (late.listeners.click) throw new Error("bound twice");
         )));
         assert!(!ps1.contains(".config\\biorouter"));
         assert!(!ps1.contains("XDG_CONFIG_HOME"));
+        // The older folder is named from the one constant that spells it, is
+        // chosen by the daemon's rule (the current folder known absent, the older
+        // one not known absent) and is only ever a replacement for the current one.
+        let older = crate::app_folder::LEGACY_APP_AUTHOR;
+        assert!(ps1.contains(&format!(
+            r#"$older = Join-Path $Roaming "{older}\{}""#,
+            strategy.app_name
+        )));
+        assert!(ps1.contains(&format!(
+            r#"$current = Join-Path $Roaming "{}\{}""#,
+            strategy.author, strategy.app_name
+        )));
+        assert!(
+            ps1.contains(r#"return (($currentNow -eq "absent") -and ($olderNow -ne "absent"))"#)
+        );
+        assert!(ps1.contains("if ($Roaming -and (Test-OlderFolderInUse $Roaming)) {"));
+        assert!(ps1.contains(&format!(
+            r#"  $Cfg = Join-Path $Roaming "{older}\{}\config""#,
+            strategy.app_name
+        )));
+        // With %APPDATA% unset it is the same folder under the profile's roaming
+        // folder, not another one.
+        assert!(ps1.contains(&format!(
+            r#"  $Cfg = Join-Path $Roaming "{}\{}\config""#,
+            strategy.author, strategy.app_name
+        )));
+        for placeholder in ["__APP_AUTHOR__", "__APP_NAME__", "__LEGACY_APP_AUTHOR__"] {
+            assert!(!ps1.contains(placeholder), "{placeholder} left in run.ps1");
+            assert!(
+                !file(&files, "serve.mjs").contains(placeholder),
+                "{placeholder} left in serve.mjs"
+            );
+        }
 
         // serve.mjs: its configDir, run by Node for every platform it ships to.
         let Some(node) = find_command("node", dir.path()) else {
@@ -4731,10 +4844,25 @@ if (late.listeners.click) throw new Error("bound twice");
         let serve = file(&files, "serve.mjs");
         let (_, rest) = serve.split_once("// biorouter:config-dir:start\n").unwrap();
         let (function, _) = rest.split_once("// biorouter:config-dir:end").unwrap();
+        // The Windows folder is chosen by rule 1 of `app_folder`, so the cases that
+        // need a folder to be there, absent or unreadable hand `configDir` the
+        // answers a table gives (a Windows path means nothing to this host's file
+        // system); the file system check itself is run for real below.
+        let js = |text: &str| serde_json::to_string(text).unwrap();
+        let (author_js, older_js, app_js) = (
+            js(strategy.author.as_str()),
+            js(older),
+            js(strategy.app_name.as_str()),
+        );
         let probe = format!(
             r#"import {{ win32, posix }} from "node:path";
 import {{ homedir }} from "node:os";
+import {{ statSync }} from "node:fs";
 {function}
+const ROAMING = "C:\\Users\\u\\AppData\\Roaming";
+const CURRENT = win32.join(ROAMING, {author_js}, {app_js});
+const OLDER = win32.join(ROAMING, {older_js}, {app_js});
+const seen = (table) => (path) => table[path] ?? "absent";
 const cases = [
   [{{ BIOROUTER_PATH_ROOT: "/tmp/sandbox" }}, "linux", "/home/u"],
   [{{ BIOROUTER_PATH_ROOT: "   " }}, "darwin", "/Users/u"],
@@ -4744,14 +4872,41 @@ const cases = [
   [{{ APPDATA: "C:\\Users\\u\\AppData\\Roaming", XDG_CONFIG_HOME: "/xdg" }}, "win32", "C:\\Users\\u"],
   [{{}}, "win32", "C:\\Users\\u"],
   [{{ BIOROUTER_PATH_ROOT: "D:\\sandbox" }}, "win32", "C:\\Users\\u"],
+  // A fresh install, and the current folder alone: the current folder.
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{}})],
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [CURRENT]: "present" }})],
+  // The older folder alone is the one in use until the daemon moves it.
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "present" }})],
+  // And so is one that cannot be checked, since it may hold data.
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "unknown" }})],
+  // Both exist: the current folder wins. One that cannot be checked is not
+  // known absent, so it is not replaced either.
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "present", [CURRENT]: "present" }})],
+  [{{ APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "present", [CURRENT]: "unknown" }})],
+  // Without %APPDATA% it is the same choice in the profile's roaming folder.
+  [{{}}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "present" }})],
+  // A sandbox root beats both folders.
+  [{{ BIOROUTER_PATH_ROOT: "D:\\sandbox", APPDATA: ROAMING }}, "win32", "C:\\Users\\u", seen({{ [OLDER]: "present" }})],
+  // The folder is a Windows rule: no other platform looks for the older one.
+  [{{ APPDATA: ROAMING }}, "darwin", "/Users/u", seen({{ [OLDER]: "present" }})],
 ];
-console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(env, platform, home)), configDir()]));
+// The real check, on this host: a folder, a file, something missing, and a path
+// below a file (the segment above it is a file, so it is not there).
+const [scratch] = process.argv.slice(2);
+const checks = [scratch, scratch + "/file", scratch + "/missing", scratch + "/file/below"].map(folderPresence);
+console.log(JSON.stringify([
+  ...cases.map(([env, platform, home, presence]) => configDir(env, platform, home, presence)),
+  configDir(),
+  ...checks,
+]));
 "#
         );
+        std::fs::write(dir.path().join("file"), "x").unwrap();
         let probe_path = dir.path().join("probe.mjs");
         std::fs::write(&probe_path, probe).unwrap();
         let out = std::process::Command::new(node)
             .arg(&probe_path)
+            .arg(dir.path())
             .current_dir(dir.path())
             .output()
             .unwrap();
@@ -4765,6 +4920,10 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
             "C:\\Users\\u\\AppData\\Roaming\\{}\\{}\\config",
             strategy.author, strategy.app_name
         );
+        let windows_older = format!(
+            "C:\\Users\\u\\AppData\\Roaming\\{older}\\{}\\config",
+            strategy.app_name
+        );
         assert_eq!(
             got,
             vec![
@@ -4774,9 +4933,28 @@ console.log(JSON.stringify([...cases.map(([env, platform, home]) => configDir(en
                 "/home/u/.config/biorouter".to_string(),
                 "/Users/u/.config/biorouter".to_string(),
                 windows.clone(),
-                windows,
+                windows.clone(),
                 "D:\\sandbox\\config".to_string(),
+                // fresh, current alone
+                windows.clone(),
+                windows.clone(),
+                // older alone, older that cannot be checked
+                windows_older.clone(),
+                windows_older.clone(),
+                // both exist, current that cannot be checked
+                windows.clone(),
+                windows.clone(),
+                // %APPDATA% unset
+                windows_older,
+                // a sandbox root, and a platform with no older folder
+                "D:\\sandbox\\config".to_string(),
+                "/Users/u/.config/biorouter".to_string(),
                 crate::paths::config_dir().display().to_string(),
+                // folder, file, missing, below a file
+                "present".to_string(),
+                "present".to_string(),
+                "absent".to_string(),
+                "absent".to_string(),
             ]
         );
     }

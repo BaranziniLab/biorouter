@@ -13,6 +13,7 @@ const controlTokens = new Set([
   '--control-compact',
   '--row-height',
   '--row-height-rail',
+  '--row-height-nav',
   '--md-code-pad',
 ]);
 const spacingProperty =

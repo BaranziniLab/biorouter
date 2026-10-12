@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
-import { TOOLTIP_SURFACE_CLASS_NAME } from './Tooltip';
+import { TOOLTIP_SURFACE_CLASS_NAME, isFocusFromTabKey } from './Tooltip';
 
 const TOOLTIP_ATTRIBUTE = 'data-biorouter-tooltip';
 const GENERATED_ARIA_LABEL_ATTRIBUTE = 'data-biorouter-tooltip-aria-label';
@@ -88,6 +88,10 @@ export function AppTooltipLayer() {
     });
 
     const showTooltip = (event: Event) => {
+      // Focus opens a title tooltip only when the Tab key moved it, the gate the Radix `Tooltip`
+      // already has (Q2-56): a dialog or menu that hands focus back to its opener, or a click
+      // that focuses a button, must not pop the opener's tooltip (spec 2.5).
+      if (event.type === 'focusin' && !isFocusFromTabKey()) return;
       const target = tooltipTargetFromEvent(event);
       const text = target?.getAttribute(TOOLTIP_ATTRIBUTE)?.trim();
       if (!target || !text) return;
@@ -233,7 +237,7 @@ export function AppTooltipLayer() {
       data-side={tooltip.side}
       className={cn(
         TOOLTIP_SURFACE_CLASS_NAME,
-        'pointer-events-none fixed max-h-[calc(100vh-16px)] overflow-hidden whitespace-pre-line animate-in fade-in-0 duration-[120ms]'
+        'pointer-events-none fixed max-h-[calc(100vh-16px)] overflow-hidden whitespace-pre-line br-tooltip-motion animate-in fade-in-0'
       )}
       style={{
         left: tooltip.x + horizontalShift,

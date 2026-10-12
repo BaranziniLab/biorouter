@@ -26,6 +26,40 @@ export function withoutSubagents<T extends SessionRow>(rows: T[]): T[] {
   return kept.length === rows.length ? rows : kept;
 }
 
+/** What the activity order reads: the two timestamps and the id that breaks a tie. */
+export type ActivityRow = {
+  id: string;
+  updated_at?: string | null;
+  created_at?: string | null;
+};
+
+function activityStamp(row: ActivityRow): number {
+  const updated = row.updated_at ? Date.parse(row.updated_at) : Number.NaN;
+  if (!Number.isNaN(updated) && updated) return updated;
+  const created = row.created_at ? Date.parse(row.created_at) : Number.NaN;
+  return Number.isNaN(created) ? 0 : created;
+}
+
+/**
+ * Chat history's order: last activity, newest first, and `id` ascending among chats that
+ * share the second (vision V1-R2-8).
+ *
+ * The sidebar's list is ordered `updated_at DESC, id ASC` (the daemon's keyset, mirrored
+ * client-side by `sortSidebarChats(…, 'activity')`). `GET /sessions`, which History reads,
+ * orders by `updated_at` alone, so chats with the SAME timestamp came back in whatever order
+ * SQLite scanned them. A machine with 242 chats sharing one second (a bulk import, a test
+ * run) drew the sidebar and History in two different orders, so a chat sat at different places
+ * in two lists that are the same data. One tie-break, spelled the way the sidebar spells it;
+ * `sessionGrouping.test.ts` pins the two together.
+ *
+ * Each row's stamp is read once rather than on every comparison.
+ */
+export function sortByActivity<T extends ActivityRow>(rows: readonly T[]): T[] {
+  const keyed = rows.map((row) => ({ row, at: activityStamp(row) }));
+  keyed.sort((left, right) => right.at - left.at || left.row.id.localeCompare(right.row.id));
+  return keyed.map((entry) => entry.row);
+}
+
 export function groupSessionsByParent<T extends SessionRow>(
   rows: T[]
 ): { session: T; children: T[] }[] {

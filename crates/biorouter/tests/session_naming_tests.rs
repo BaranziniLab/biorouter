@@ -168,3 +168,155 @@ async fn good_llm_name_is_used() {
 
     assert_eq!(name_of(&manager, &id).await, "DNA vs RNA");
 }
+
+/// Name the session once, then let a second exchange happen, so the session is
+/// a young chat (inside the first few user messages) that already wears a
+/// generated name.
+async fn named_session_with_a_second_exchange(
+    first: &str,
+    generated: &'static str,
+    second: &str,
+) -> (Arc<SessionManager>, String) {
+    let (manager, id) = session_with_first_user_message(first).await;
+    manager
+        .maybe_update_name(
+            &id,
+            Arc::new(NamerProvider {
+                behavior: NamerBehavior::Returns(generated),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(name_of(&manager, &id).await, generated);
+    manager
+        .add_message(&id, &Message::user().with_text(second))
+        .await
+        .unwrap();
+    manager
+        .add_message(&id, &Message::assistant().with_text("ok"))
+        .await
+        .unwrap();
+    (manager, id)
+}
+
+#[tokio::test]
+async fn a_failing_namer_keeps_the_name_a_young_chat_already_has() {
+    // The 2026-10-11 vision run: an expired key made the namer fail on the
+    // chat's third message, and the first-message snippet overwrote the
+    // generated title.
+    let (manager, id) = named_session_with_a_second_exchange(
+        "Explain in two sentences why mitochondria are called the powerhouse",
+        "Mitochondria powerhouse explanation",
+        "Reply with the single word ok.",
+    )
+    .await;
+    let before = manager.get_session(&id, false).await.unwrap();
+
+    manager
+        .maybe_update_name(
+            &id,
+            Arc::new(NamerProvider {
+                behavior: NamerBehavior::Fail,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let after = manager.get_session(&id, false).await.unwrap();
+    assert_eq!(after.name, "Mitochondria powerhouse explanation");
+    assert!(!after.user_set_name);
+    assert_eq!(
+        after.updated_at, before.updated_at,
+        "a naming attempt that changes nothing must not move the chat"
+    );
+}
+
+#[tokio::test]
+async fn an_empty_namer_answer_keeps_the_name_a_young_chat_already_has() {
+    let (manager, id) =
+        named_session_with_a_second_exchange("hello", "Initial greeting", "how are you").await;
+
+    manager
+        .maybe_update_name(
+            &id,
+            Arc::new(NamerProvider {
+                behavior: NamerBehavior::Empty,
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(name_of(&manager, &id).await, "Initial greeting");
+}
+
+#[tokio::test]
+async fn a_succeeding_namer_still_refines_a_young_chats_name() {
+    // The converse: the guard is on the fallback, not on regeneration. Inside
+    // the first few messages a good generated name may still improve.
+    let (manager, id) =
+        named_session_with_a_second_exchange("hello", "Initial greeting", "how are you").await;
+
+    manager
+        .maybe_update_name(
+            &id,
+            Arc::new(NamerProvider {
+                behavior: NamerBehavior::Returns("Greeting and check-in"),
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(name_of(&manager, &id).await, "Greeting and check-in");
+}
+
+#[tokio::test]
+async fn a_person_chosen_name_survives_every_namer_outcome() {
+    let (manager, id) = session_with_first_user_message("hello there").await;
+    manager
+        .update(&id)
+        .user_provided_name("My own title")
+        .apply()
+        .await
+        .unwrap();
+
+    for behavior in [
+        NamerBehavior::Fail,
+        NamerBehavior::Empty,
+        NamerBehavior::Returns("Something else"),
+    ] {
+        manager
+            .maybe_update_name(&id, Arc::new(NamerProvider { behavior }))
+            .await
+            .unwrap();
+        assert_eq!(name_of(&manager, &id).await, "My own title");
+    }
+}
+
+#[tokio::test]
+async fn a_chat_still_on_the_placeholder_is_named_even_after_it_grows() {
+    // The reason the fallback exists at all: a chat whose early naming missed
+    // must not stay "New chat" once it crosses the message-count threshold.
+    let (manager, id) = session_with_first_user_message("Summarize this paper for me").await;
+    for text in ["one", "two", "three"] {
+        manager
+            .add_message(&id, &Message::user().with_text(text))
+            .await
+            .unwrap();
+        manager
+            .add_message(&id, &Message::assistant().with_text("ok"))
+            .await
+            .unwrap();
+    }
+
+    manager
+        .maybe_update_name(
+            &id,
+            Arc::new(NamerProvider {
+                behavior: NamerBehavior::Fail,
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(name_of(&manager, &id).await, "Summarize this paper for me");
+}

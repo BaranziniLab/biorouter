@@ -1,10 +1,12 @@
 // ui/desktop/src/components/knowledge/graph/EdgePreview.tsx
 import { useEffect, useRef } from 'react';
-import { ArrowDown, X } from '../../icons/app-icons';
+import { ArrowDown } from '../../icons/app-icons';
 import type { GraphEdge, GraphNode, QuantitativeValue } from '../../../api/types.gen';
 import type { GraphMode } from '../../../styles/graphPalette';
 import { Badge } from '../../ui/badge';
-import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
+import { knowledgeCopy } from '../copy';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { fillFor, isHollow } from './nodeMark';
 import { NodeSwatch } from './NodeSwatch';
 import { xrefHref } from './frontmatter';
@@ -89,7 +91,7 @@ export function mergeQuantitative(
   }
 
   if (lower != null && upper != null) {
-    merged.push(['95% CI', `${lower} – ${upper}`]);
+    merged.push(['95% CI', knowledgeCopy.graph.ciRange(lower, upper)]);
   } else if (lower != null) {
     merged.push(['95% CI lower', String(lower)]);
   } else if (upper != null) {
@@ -143,10 +145,12 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
           />
         ) : (
           // An endpoint outside this bundle has no node and therefore no mark.
-          // Drawing a default one would assert a type it does not have.
+          // Drawing a default one would assert a type it does not have. The dot is a step
+          // darker than the card (the strong ground, not the medium one, which is 1.1:1 off
+          // it and reads as no dot at all).
           <span
             aria-hidden="true"
-            className="h-2 w-2 flex-none rounded-full bg-background-medium"
+            className="h-2 w-2 flex-none rounded-full bg-background-strong"
           />
         )}
         <span className="min-w-0 truncate text-body">{label(id)}</span>
@@ -160,7 +164,7 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
       <button
         type="button"
         onClick={() => onSelectNode(node)}
-        className="flex min-w-0 items-center gap-2 rounded-inner py-1 text-left"
+        className="tint-interactive -mx-1 flex min-w-0 items-center gap-2 rounded-inner px-1 py-1 text-left transition-colors"
       >
         {body}
       </button>
@@ -175,48 +179,43 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
       data-testid="knowledge-edge-preview"
       className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
-      {/* 1. Head. */}
-      <div className="flex items-start justify-between gap-2 border-b border-border-subtle bg-background-muted px-4 py-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          {negated ? (
-            <Badge tone="danger" uppercase className="self-start">
-              Negative edge
-            </Badge>
-          ) : (
-            <Badge tone="neutral" uppercase className="self-start">
-              Edge
-            </Badge>
-          )}
-          <span className="text-supporting text-text-muted">
-            {edge.synthesized
-              ? `Synthesized from ${edge.primary_source ?? 'an uncited source'}`
-              : 'Directed'}
-          </span>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="flex-shrink-0"
-          aria-label="Close link details"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
+      {/* 1. Head: Crew's pane header (spec 3.12), one 44px line. A negative
+          edge says so in the title's ink; how the edge came about leads the
+          body. */}
+      <KnowledgePaneHeader
+        title={
+          <h2
+            className={`min-w-0 truncate text-label ${negated ? 'text-text-danger' : 'text-text-default'}`}
+          >
+            {negated ? knowledgeCopy.graph.negativeEdge : knowledgeCopy.graph.edge}
+          </h2>
+        }
+        onClose={onClose}
+        closeLabel={knowledgeCopy.graph.closeEdge}
+      />
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
         <div className="flex flex-col gap-4">
           {/* 2. Headline — the edge as a sentence, STACKED. At 340px a single
               line truncates both endpoints, and the two endpoints are the part
               of an edge a reader cannot infer from anything else on screen. */}
+          <span className="text-supporting text-text-muted">
+            {edge.synthesized
+              ? knowledgeCopy.graph.synthesizedFrom(edge.primary_source)
+              : knowledgeCopy.graph.directed}
+          </span>
+
           <section aria-label="Claim" className="flex flex-col">
             <Endpoint id={edge.from} />
             <div className="flex items-center gap-2 py-1">
-              <ArrowDown aria-hidden="true" className="h-3 w-3 flex-none text-text-muted" />
+              <ArrowDown
+                aria-hidden="true"
+                className="h-icon-chip w-icon-chip flex-none text-text-muted"
+              />
               <Badge
                 variant="chip"
                 tone={negated ? 'danger' : 'neutral'}
-                className={`font-mono ${negated ? 'line-through' : ''}`}
+                className={negated ? 'line-through' : undefined}
               >
                 {predicate}
               </Badge>
@@ -231,10 +230,12 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
               // §4.8 replaces the triplet outright for a derived edge: it has no
               // author, so reporting three "not stated" rows would invite the
               // reader to go looking for an authority that cannot exist.
-              <p className="rounded-inner bg-wash-info px-3 py-2 text-body text-text-default">
-                Implicit link derived from the cited primary source so the provenance is visible.
-                Author an explicit <span className="font-mono">reported_in</span> edge to make it
-                first-class.
+              <p className="flex items-center gap-1 py-2 text-body text-text-default">
+                {knowledgeCopy.graph.derivedNote}
+                <InfoTip
+                  label={knowledgeCopy.graph.derivedNoteLabel}
+                  help={knowledgeCopy.graph.derivedNoteInfo}
+                />
               </p>
             ) : (
               PROVENANCE.map(({ key, label: rowLabel }) => (
@@ -286,7 +287,9 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
               <h3 className="text-caps text-text-muted">Quantitative</h3>
               {quantitative.map(([key, value]) => (
                 <Row key={key} label={key}>
-                  <span className="font-mono text-code tabular-nums">{value}</span>
+                  {/* Figures in the sans face with tabular figures (principle 3):
+                      mono is for machine strings, and a p-value is not one. */}
+                  <span className="tabular-nums">{value}</span>
                 </Row>
               ))}
             </section>
@@ -297,7 +300,7 @@ export function EdgePreview({ edge, model, nodeById, mode, onSelectNode, onClose
               <h3 className="text-caps text-text-muted">Context</h3>
               {qualifiers.map(([key, value]) => (
                 <Row key={key} label={key.replace(/_/g, ' ')}>
-                  <span className="font-mono text-code">{value}</span>
+                  <span>{value}</span>
                 </Row>
               ))}
             </section>

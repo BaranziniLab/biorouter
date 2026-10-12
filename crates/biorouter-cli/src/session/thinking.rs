@@ -1,47 +1,47 @@
 use rand::seq::SliceRandom;
 
-/// Extended list of playful thinking messages including both biorouter and general AI actions
+/// Playful thinking messages: research-bench phrases and general AI actions
 const THINKING_MESSAGES: &[&str] = &[
-    "Spreading wings",
-    "Honking thoughtfully",
-    "Waddling to conclusions",
-    "Flapping wings excitedly",
-    "Preening code feathers",
-    "Gathering digital breadcrumbs",
-    "Paddling through data",
-    "Migrating thoughts",
-    "Nesting ideas",
-    "Squawking calculations",
-    "Ruffling algorithmic feathers",
-    "Pecking at problems",
-    "Stretching webbed feet",
-    "Foraging for solutions",
-    "Grooming syntax",
-    "Building digital nest",
-    "Patrolling the codebase",
-    "Gosling about",
-    "Strutting with purpose",
-    "Diving for answers",
-    "Herding bytes",
-    "Molting old code",
-    "Swimming through streams",
-    "Synchronizing flock algorithms",
-    "Navigating code marshes",
-    "Incubating brilliant ideas",
-    "Arranging feathers recursively",
-    "Gliding through branches",
-    "Migrating to better solutions",
-    "Nesting functions carefully",
-    "Hatching clever solutions",
-    "Preening parse trees",
-    "Flying through functions",
-    "Gathering syntax seeds",
-    "Webbing connections",
-    "Flocking to optimizations",
-    "Paddling through protocols",
-    "Honking success signals",
-    "Waddling through workflows",
-    "Nesting in neural networks",
+    "Reviewing the literature",
+    "Designing the experiment",
+    "Pipetting possibilities",
+    "Running the controls",
+    "Calibrating the instruments",
+    "Sequencing thoughts",
+    "Aligning reads",
+    "Assembling contigs",
+    "Annotating variants",
+    "Normalizing the counts",
+    "Filtering low-quality reads",
+    "Clustering cell types",
+    "Mapping signaling pathways",
+    "Splicing ideas together",
+    "Transcribing hypotheses",
+    "Translating findings",
+    "Amplifying the signal",
+    "Denoising the data",
+    "Fitting the model",
+    "Bootstrapping confidence intervals",
+    "Checking effect sizes",
+    "Consulting the lab notebook",
+    "Replicating results",
+    "Spinning down samples",
+    "Titrating the answer",
+    "Staining for signal",
+    "Counting colonies",
+    "Plating hypotheses",
+    "Resolving the structure",
+    "Folding protein models",
+    "Cross-referencing citations",
+    "Drafting the methods section",
+    "Peer reviewing the plan",
+    "Labeling the axes",
+    "Tracing gene networks",
+    "Screening candidate answers",
+    "Measuring twice",
+    "Checking the assumptions",
+    "Preparing the figures",
+    "Writing up the results",
     "Consulting the digital oracle",
     "Summoning binary spirits",
     "Reticulating splines",
@@ -217,4 +217,57 @@ pub fn get_random_thinking_message() -> &'static str {
     THINKING_MESSAGES
         .choose(&mut rand::thread_rng())
         .unwrap_or(&THINKING_MESSAGES[0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::THINKING_MESSAGES;
+
+    /// The list once opened with forty bird puns. None of them describe what
+    /// Biorouter does, so a stem match on any word fails the build. The names
+    /// of the retired upstream are not repeated in this list: the repo-wide
+    /// guard, scripts/check-no-goose-block.sh, already fails the tree on them.
+    #[test]
+    fn no_message_is_a_bird_pun() {
+        const STEMS: &[&str] = &[
+            "waddl",
+            "feather",
+            "flock",
+            "flap",
+            "nest",
+            "wing",
+            "migrat",
+            "beak",
+            "quack",
+            "hatch",
+            "preen",
+            "peck",
+            "squawk",
+            "molt",
+            "incubat",
+            "webb",
+            "paddl",
+            "bird",
+            "marsh",
+            "strut",
+            "forag",
+            "breadcrumb",
+            "plumag",
+        ];
+        for message in THINKING_MESSAGES {
+            for word in message.split_whitespace() {
+                let word = word.to_lowercase();
+                assert!(
+                    !STEMS.iter().any(|stem| word.starts_with(stem)),
+                    "thinking message {message:?} is a bird pun"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn random_message_comes_from_the_list() {
+        let message = super::get_random_thinking_message();
+        assert!(THINKING_MESSAGES.contains(&message));
+    }
 }

@@ -2,20 +2,21 @@ import { withSteerRecoveries, type SteerRecovery } from '../utils/steerRecovery'
 /**
  * ProgressiveMessageList Component
  *
- * A performance-optimized message list that renders messages progressively
- * to prevent UI blocking when loading long chat sessions. This component
- * renders messages in batches with a loading indicator, maintaining full
- * compatibility with the search functionality.
+ * Renders a long chat in batches so opening it does not block the window, with
+ * one quiet "Loading messages…" line while batches remain. ⌘F renders the rest
+ * at once for find.
  *
- * Key Features:
- * - Progressive rendering in configurable batches
- * - Loading indicator during batch processing
- * - Maintains search functionality compatibility
- * - Smooth user experience with responsive UI
- * - Configurable batch size and delay
+ * WHICH END FIRST (vision V2-R7-2). A live chat reads bottom up and opens at its
+ * newest message, so it draws its NEWEST batch first and adds older batches
+ * above it while the bottom of the transcript stays where it is (`opensAt`
+ * 'end'). It used to draw the OLDEST batch first and append below, so opening a
+ * 52-message chat painted its first question, then its middle, then its end
+ * (and an 82-figure chat sat away from its end for 1.6 s). A saved transcript
+ * (SessionHistoryView) reads top down from its first message and keeps that
+ * order ('start').
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Message } from '../api';
 import BioRouterMessage from './BioRouterMessage';
 import UserMessage from './UserMessage';
@@ -23,11 +24,43 @@ import { SystemNotificationInline } from './context_management/SystemNotificatio
 import { NotificationEvent } from '../types/message';
 import LoadingBioRouter from './LoadingBioRouter';
 import { ChatType } from '../types/chat';
-import { identifyConsecutiveToolCalls, isInChain } from '../utils/toolCallChaining';
 import TurnActivityIndicator from './TurnActivityIndicator';
 import { deriveTrailingActivity, type PendingSteer } from '../utils/trailingActivity';
 import { ChatState } from '../types/chatState';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import { cn } from '../utils';
+import {
+  isToolResponseOnly,
+  messageGaps,
+  ROW_GAP_CLASS,
+  rowsUnderAnswerActions,
+  trailingGap,
+} from './transcript/transcriptRhythm';
+import { useLiveRows } from './transcript/useLiveRows';
+import { transcriptCopy } from './transcript/copy';
+
+/** A row's key: its id, or its place and time for a row the daemon has not named yet. */
+const rowKey = (message: Message, index: number) => message.id ?? `msg-${index}-${message.created}`;
+
+/**
+ * The transcript's viewport: the scroll area's own, else the nearest scroll
+ * container. ⚠ Radix's viewport is `overflow-y: hidden` in the first commit (its
+ * scrollbar turns `scroll` on in an effect), and a hidden box still scrolls, so
+ * `hidden` counts: skipping it found no scroller on the open that matters most.
+ */
+function scrollingAncestor(element: HTMLElement): HTMLElement | null {
+  const viewport = element.closest<HTMLElement>('[data-radix-scroll-area-viewport]');
+  if (viewport) return viewport;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY !== 'visible' && overflowY !== 'clip') return node;
+  }
+  return null;
+}
+
+/** From the content's end to the viewport's bottom edge: 0 is the end in view. */
+const bottomGap = (scroller: HTMLElement) =>
+  scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
 
 interface ProgressiveMessageListProps {
   messages: Message[];
@@ -37,6 +70,13 @@ interface ProgressiveMessageListProps {
   batchSize?: number;
   batchDelay?: number;
   showLoadingThreshold?: number; // Only show loading if more than X messages
+  /**
+   * Which end of a long chat is drawn first. 'end' (the default when live
+   * `chatState` is supplied): the newest batch, opened at its end, with older
+   * batches added above while the bottom stays put. 'start' (the default for a
+   * read-only replay): the first batch, with newer batches added below.
+   */
+  opensAt?: 'start' | 'end';
   // Custom render function for messages
   renderMessage?: (message: Message, index: number) => React.ReactNode | null;
   isStreamingMessage?: boolean; // Whether messages are currently being streamed
@@ -88,6 +128,7 @@ export default function ProgressiveMessageList({
   batchSize = 20,
   batchDelay = 20,
   showLoadingThreshold = 50,
+  opensAt,
   renderMessage, // Custom render function
   isStreamingMessage = false, // Whether messages are currently being streamed
   onMessageUpdate,
@@ -117,34 +158,63 @@ export default function ProgressiveMessageList({
       ),
     [storedMessages, steerRecoveries]
   );
-  const [renderedCount, setRenderedCount] = useState(() => {
-    // Initialize with either all messages (if small) or first batch (if large)
-    return messages.length <= showLoadingThreshold
-      ? messages.length
-      : Math.min(batchSize, messages.length);
-  });
-  const [isLoading, setIsLoading] = useState(() => messages.length > showLoadingThreshold);
+  // A live chat reads bottom up; a saved transcript top down.
+  const holdsEnd = (opensAt ?? (chatState !== undefined ? 'end' : 'start')) === 'end';
+
+  // How many messages are not drawn yet: the OLDEST ones when the chat opens at
+  // its end, the NEWEST ones when it opens at its start. A message appended
+  // while batches remain is drawn at once either way, and a drawn row is never
+  // taken back out (a row that left and came back would lose what the reader
+  // had opened in it).
+  const firstHidden = (count: number) =>
+    count > showLoadingThreshold ? Math.max(0, count - batchSize) : 0;
+  const [hiddenState, setHidden] = useState(() => firstHidden(messages.length));
+  // Messages that arrive after the list mounted (BaseChat while the chat loads)
+  // start their batches then, from the end the chat opens at, instead of all
+  // being drawn in the commit they arrive in.
+  const [wasEmpty, setWasEmpty] = useState(messages.length === 0);
+  if (wasEmpty !== (messages.length === 0)) {
+    setWasEmpty(messages.length === 0);
+    if (messages.length > 0) setHidden(firstHidden(messages.length));
+  }
+  const hidden =
+    messages.length <= showLoadingThreshold
+      ? 0
+      : Math.min(hiddenState, Math.max(0, messages.length - batchSize));
+  const isLoading = hidden > 0;
+  // The drawn range, in the chat's own indices.
+  const shownFrom = holdsEnd ? hidden : 0;
+  const shownTo = holdsEnd ? messages.length : messages.length - hidden;
+
   const timeoutRef = useRef<number | null>(null);
   // The 50ms "the DOM has settled" timer that fires `onRenderingComplete`.
   // A SECOND ref, not `timeoutRef`: that one holds the NEXT batch's timer, and
-  // the completion timer is armed from inside the batch loop at the moment the
-  // last batch lands — so a single ref would have each one clobbering the
-  // other's handle and neither would be cancellable. Uncleared, this timer
-  // outlived the component: unmounting a long transcript inside its 50ms window
+  // the two must stay separately cancellable. Uncleared, this timer outlived
+  // the component: unmounting a long transcript inside its 50ms window
   // (switching tab, closing a pane, a test file ending) left it holding a
   // callback into a tree that no longer exists.
   const completionTimeoutRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
-  // Held in a ref so the batching effect below can CALL the latest callback
-  // without taking its identity as a dependency. BaseChat memoises
+  // Held in a ref so the effects below can CALL the latest callback without
+  // taking its identity as a dependency. BaseChat memoises
   // `handleRenderingComplete` on `messages.length`, so during a stream its
-  // identity changes on every event; as a dependency it re-armed the effect,
+  // identity changes on every event; as a dependency it re-armed the batching,
   // which sets state, which re-rendered the parent — the nested-update chain
   // that tripped React's depth limit.
   const onRenderingCompleteRef = useRef(onRenderingComplete);
   onRenderingCompleteRef.current = onRenderingComplete;
-  const hasOnlyToolResponses = (message: Message) =>
-    message.content.every((c) => c.type === 'toolResponse');
+
+  // HOLDING THE END (opensAt 'end'). The transcript's viewport, found from the
+  // loading line the first time it is drawn; the distance from the content's
+  // end to the viewport's bottom edge before the next batch lands; and the
+  // first drawn index at the last commit.
+  const loadingLineRef = useRef<HTMLDivElement | null>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const endGapRef = useRef<number | null>(null);
+  const shownFromRef = useRef<number | null>(null);
+  const rememberEnd = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (scroller) endGapRef.current = bottomGap(scroller);
+  }, []);
 
   const hasInlineSystemNotification = (message: Message): boolean => {
     return message.content.some(
@@ -153,79 +223,46 @@ export default function ProgressiveMessageList({
     );
   };
 
-  // Simple progressive loading - start immediately when component mounts if needed
+  // One batch per `batchDelay` while messages remain hidden. Keyed on `hidden`
+  // only: a message streamed in during the load neither postpones nor repeats a
+  // batch.
   useEffect(() => {
-    if (messages.length <= showLoadingThreshold) {
-      setRenderedCount(messages.length);
-      setIsLoading(false);
-      // For small lists, call completion callback immediately
-      window.clearTimeout(completionTimeoutRef.current ?? undefined);
-      completionTimeoutRef.current = window.setTimeout(() => {
-        completionTimeoutRef.current = null;
-        onRenderingCompleteRef.current?.();
-      }, 50);
-      return () => {
-        window.clearTimeout(completionTimeoutRef.current ?? undefined);
-        completionTimeoutRef.current = null;
-      };
-    }
-
-    // Large list - start progressive loading
-    const loadNextBatch = () => {
-      setRenderedCount((current) => {
-        const nextCount = Math.min(current + batchSize, messages.length);
-
-        if (nextCount >= messages.length) {
-          setIsLoading(false);
-          // Call the completion callback after a brief delay to ensure DOM is
-          // updated. Recorded so the cleanup below can cancel it — see
-          // `completionTimeoutRef`. Cleared first because React may invoke this
-          // updater more than once for a single dispatch (StrictMode does), and
-          // an unrecorded handle is an uncancellable timer.
-          window.clearTimeout(completionTimeoutRef.current ?? undefined);
-          completionTimeoutRef.current = window.setTimeout(() => {
-            completionTimeoutRef.current = null;
-            onRenderingCompleteRef.current?.();
-          }, 50);
-        } else {
-          // Schedule next batch
-          timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
-        }
-
-        return nextCount;
-      });
+    if (!isLoading) return;
+    const timer = window.setTimeout(() => {
+      timeoutRef.current = null;
+      rememberEnd();
+      setHidden(Math.max(0, hidden - batchSize));
+    }, batchDelay);
+    timeoutRef.current = timer;
+    return () => {
+      window.clearTimeout(timer);
+      if (timeoutRef.current === timer) timeoutRef.current = null;
     };
+  }, [isLoading, hidden, batchSize, batchDelay, rememberEnd]);
 
-    // Start loading after a short delay
-    timeoutRef.current = window.setTimeout(loadNextBatch, batchDelay);
+  // "The transcript has settled": 50ms after the last batch lands, and after
+  // every change in the number of messages once none is hidden. Re-armed, not
+  // cancelled, by a change inside the window, so a stream settles once it
+  // pauses. Cancelled by two things only: unmounting, and batches starting. A
+  // chat whose messages arrive inside the 50ms of the empty first render would
+  // otherwise be reported settled with a batch or two drawn and the rest still
+  // to come (WS-SUMMARY-2-FYI); "settled" means the last batch landed.
+  useEffect(() => {
+    window.clearTimeout(completionTimeoutRef.current ?? undefined);
+    completionTimeoutRef.current = null;
+    if (isLoading) return;
+    completionTimeoutRef.current = window.setTimeout(() => {
+      completionTimeoutRef.current = null;
+      onRenderingCompleteRef.current?.();
+    }, 50);
+  }, [isLoading, messages.length]);
 
-    // ⚠ The COMPLETION timer is deliberately not cancelled here, only on
-    // unmount. This effect re-arms on every `messages.length` change, so during
-    // a stream it re-runs constantly; cancelling the completion callback on
-    // each re-run would swallow the "the transcript has settled" signal for the
-    // batch that had just finished. The batch timer below is a different
-    // object — it schedules FUTURE work this effect is about to redo, so
-    // cancelling it on a re-run is exactly right.
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
       if (timeoutRef.current) {
         window.clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
-      }
-    };
-    // `renderedCount` is deliberately NOT a dependency: this effect only ever
-    // WRITES it, via `setRenderedCount(current => …)`. Listing it made the
-    // effect re-arm itself on its own write, and `onRenderingComplete` (see the
-    // ref above) re-armed it again on every stream event. Together they formed
-    // the nested-update chain behind "Maximum update depth exceeded".
-  }, [messages.length, batchSize, batchDelay, showLoadingThreshold]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (timeoutRef.current) {
-        window.clearTimeout(timeoutRef.current);
       }
       if (completionTimeoutRef.current) {
         window.clearTimeout(completionTimeoutRef.current);
@@ -233,6 +270,41 @@ export default function ProgressiveMessageList({
       }
     };
   }, []);
+
+  // Before a batch is drawn above the end, where the end was: a reader who
+  // scrolls while batches remain keeps the place they scrolled to.
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!holdsEnd || !isLoading || !scroller) return;
+    scroller.addEventListener('scroll', rememberEnd, { passive: true });
+    return () => scroller.removeEventListener('scroll', rememberEnd);
+  }, [holdsEnd, isLoading, rememberEnd]);
+
+  // In the commit, before anything is painted: a long chat opens at its end,
+  // and each older batch drawn above it leaves the end where it was. The write
+  // is absolute (the content height minus the remembered gap), so it lands in
+  // the same place whether or not the browser's own scroll anchoring already
+  // moved the viewport, and it does not depend on the scroll area's follow
+  // state, which only reacts to its own children and to resizes.
+  useLayoutEffect(() => {
+    if (!holdsEnd) return;
+    if (!scrollerRef.current && loadingLineRef.current) {
+      scrollerRef.current = scrollingAncestor(loadingLineRef.current);
+    }
+    const scroller = scrollerRef.current;
+    const previous = shownFromRef.current;
+    shownFromRef.current = shownFrom;
+    if (!scroller || previous === shownFrom) return;
+    if (isLoading && (previous === null || shownFrom > previous)) {
+      scroller.scrollTop = scroller.scrollHeight;
+      endGapRef.current = bottomGap(scroller);
+      return;
+    }
+    if (previous !== null && shownFrom < previous && endGapRef.current !== null) {
+      const top = Math.max(0, scroller.scrollHeight - scroller.clientHeight - endGapRef.current);
+      if (Math.abs(scroller.scrollTop - top) >= 1) scroller.scrollTop = top;
+    }
+  });
 
   // Force complete rendering when search is active
   useEffect(() => {
@@ -246,22 +318,33 @@ export default function ProgressiveMessageList({
       const isSearchShortcut = (isMac ? e.metaKey : e.ctrlKey) && e.key === 'f';
 
       if (isSearchShortcut) {
-        // Immediately render all messages when search is triggered
-        setRenderedCount(messages.length);
-        setIsLoading(false);
-        if (timeoutRef.current) {
-          window.clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
+        // Immediately render all messages when search is triggered (the batch
+        // timer is cleared by the effect above when `hidden` changes).
+        rememberEnd();
+        setHidden(0);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isLoading, messages.length]);
+  }, [isLoading, rememberEnd]);
 
-  // Detect tool call chains
-  const toolCallChains = useMemo(() => identifyConsecutiveToolCalls(messages), [messages]);
+  // One gap per row (24px between turns, 8px between blocks, 4px between tool
+  // rows), and the `.br-enter` entrance only for rows appended live: a history
+  // load, a tab switch and a reload draw at rest (spec 3.6).
+  const gaps = useMemo(() => messageGaps(messages, isUserMessage), [messages, isUserMessage]);
+  // The rows an answer's floating actions rise into: their last tool row ends
+  // the cluster's width short, so a hover covers no label (`message-meta.css`).
+  const underActions = useMemo(
+    () => rowsUnderAnswerActions(messages, isUserMessage, gaps),
+    [messages, isUserMessage, gaps]
+  );
+  const rowKeys = useMemo(() => messages.map(rowKey), [messages]);
+  const liveRows = useLiveRows(
+    rowKeys,
+    chatState !== undefined,
+    chatState === ChatState.LoadingConversation
+  );
 
   // Pure, memoised on the same identities the list already re-renders for, so
   // it adds no scan the list was not already paying for.
@@ -278,11 +361,13 @@ export default function ProgressiveMessageList({
     [messages, isStreamingMessage, chatState, turnStartedAt, lastMessageAt, pendingSteer]
   );
 
-  // Render messages up to the current rendered count
+  // The drawn range. Every index below is the message's place in the whole
+  // chat (keys, gaps, `messageIndex`), whichever end the batches started from.
   const renderMessages = useCallback(() => {
-    const messagesToRender = messages.slice(0, renderedCount);
-    return messagesToRender
-      .map((message, index) => {
+    return messages
+      .slice(shownFrom, shownTo)
+      .map((message, offset) => {
+        const index = shownFrom + offset;
         if (!message.metadata.userVisible) {
           return null;
         }
@@ -298,12 +383,25 @@ export default function ProgressiveMessageList({
           return null;
         }
 
+        const key = rowKey(message, index);
+        const live = liveRows.has(key);
+        const gap = gaps[index] ?? 'block';
+        const rowClassName = cn('relative', ROW_GAP_CLASS[gap], live && 'br-enter');
+        // A row that is not live also holds its tool rows still: a tool row
+        // rises 4px when it is appended to a live answer, and mounts at rest
+        // from history, a tab switch or a reload (principle 9; WS-TOOLS reads
+        // `[data-motion-still] .biorouter-message-tool`).
+        const motionStill = live ? undefined : '';
+
         // System notifications are never user messages, handle them first
         if (hasInlineSystemNotification(message)) {
           return (
             <div
-              key={message.id ?? `msg-${index}-${message.created}`}
-              className={`relative ${index === 0 ? 'mt-0' : 'mt-4'} assistant`}
+              key={key}
+              className={rowClassName}
+              data-role="assistant"
+              data-gap={gap}
+              data-motion-still={motionStill}
               data-testid="message-container"
             >
               <SystemNotificationInline message={message} />
@@ -312,16 +410,22 @@ export default function ProgressiveMessageList({
         }
 
         const isUser = isUserMessage(message);
-        const messageIsInChain = isInChain(index, toolCallChains);
 
         return (
           <div
-            key={message.id ?? `msg-${index}-${message.created}`}
-            className={`relative ${index === 0 ? 'mt-0' : 'mt-4'} ${isUser ? 'user' : 'assistant'} ${messageIsInChain ? 'in-chain' : ''}`}
+            key={key}
+            className={rowClassName}
+            data-role={isUser ? 'user' : 'assistant'}
+            // The gap above the row, for the floating actions' rise
+            // (`message-meta.css`): a bubble 8px under another rises less.
+            data-gap={gap}
+            // The answer under this row floats its actions into it.
+            data-actions-below={underActions[index] ? '' : undefined}
+            data-motion-still={motionStill}
             data-testid="message-container"
           >
             {isUser ? (
-              !hasOnlyToolResponses(message) && (
+              !isToolResponseOnly(message) && (
                 <UserMessage
                   message={message}
                   onMessageUpdate={recoveryIds.has(message.id) ? undefined : onMessageUpdate}
@@ -335,19 +439,19 @@ export default function ProgressiveMessageList({
                 message={message}
                 messages={messages}
                 messageIndex={index}
-                toolCallChains={toolCallChains}
                 toolCallNotifications={toolCallNotifications}
                 turnActive={isStreamingMessage}
                 isStreaming={
                   isStreamingMessage &&
                   !isUser &&
-                  index === messagesToRender.length - 1 &&
+                  index === messages.length - 1 &&
                   message.role === 'assistant'
                 }
                 submitElicitationResponse={submitElicitationResponse}
                 onOpenArtifact={onOpenArtifact}
                 onRunInTerminal={onRunInTerminal}
                 workingDir={workingDir}
+                live={live}
               />
             )}
           </div>
@@ -356,24 +460,42 @@ export default function ProgressiveMessageList({
       .filter(Boolean);
   }, [
     messages,
-    renderedCount,
+    shownFrom,
+    shownTo,
     renderMessage,
     isUserMessage,
     chat,
     toolCallNotifications,
     isStreamingMessage,
     onMessageUpdate,
-    toolCallChains,
     submitElicitationResponse,
     onOpenArtifact,
     onRunInTerminal,
     workingDir,
     onSendAgain,
     recoveryIds,
+    gaps,
+    underActions,
+    liveRows,
   ]);
+
+  // While a long chat renders in batches: one quiet line, where the batches
+  // are being added (above the rows when the chat opens at its end). ⌘F still
+  // renders everything at once (the handler above); the tip that said so
+  // belongs to the find bar's own help.
+  const loadingLine = isLoading && (
+    <div
+      ref={loadingLineRef}
+      className={holdsEnd ? 'flex justify-center pt-7 mb-6' : 'mt-6 flex justify-center'}
+      data-testid="transcript-loading-line"
+    >
+      <LoadingBioRouter message={transcriptCopy.activity.loadingMessages} />
+    </div>
+  );
 
   return (
     <>
+      {holdsEnd && loadingLine}
       {renderMessages()}
 
       {/* Trails the last tool card, INSIDE the scroll area, so the transcript
@@ -381,20 +503,16 @@ export default function ProgressiveMessageList({
           The wrapper classes mirror the message wrapper above so the vertical
           rhythm matches exactly. */}
       {trailingActivity && (
-        <div className="relative mt-4 assistant" data-testid="trailing-activity-container">
+        <div
+          className={cn('relative', ROW_GAP_CLASS[trailingGap(messages, isUserMessage)])}
+          data-role="assistant"
+          data-testid="trailing-activity-container"
+        >
           <TurnActivityIndicator activity={trailingActivity} canStopHere={canStopTurn} />
         </div>
       )}
 
-      {/* Loading indicator when progressively rendering */}
-      {isLoading && (
-        <div className="flex flex-col items-center justify-center py-8">
-          <LoadingBioRouter message={`Loading messages... (${renderedCount}/${messages.length})`} />
-          <div className="text-xs text-text-muted mt-2">
-            Press Cmd/Ctrl+F to load all messages immediately for search
-          </div>
-        </div>
-      )}
+      {!holdsEnd && loadingLine}
     </>
   );
 }

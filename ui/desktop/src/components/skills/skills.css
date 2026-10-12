@@ -1,0 +1,120 @@
+/* @ws WS-SKILLS begin: skill dialogs */
+/*
+ * The skill dialogs' own surface rules (`AddSkillModal.tsx`). Authored rather than Tailwind
+ * utilities: under BIOROUTER_NO_HMR a newly written class can fail to generate (CLAUDE.md,
+ * "Desktop shell geometry"), and the drop zone's drag state is load-bearing feedback.
+ */
+
+/* The drop zone: one filled field with a 32px plate over one label line, the recipe Workflows'
+   Import (`workflows.css`) and the .brxt dialog (`brxt-install.css`) draw, on the subtle fill and
+   with no resting outline (owner message 13, R-27). The 1px border is kept and transparent, so
+   forced colours draw the edge and no geometry moves between states. Hover steps to the strong
+   fill, like every filled control, except while a lookup is running (the zone does nothing then).
+   A file held over it firms the edge and the ground (the "this will act" state), an error takes
+   the danger edge. Keyed on `data-state`, not on utilities. */
+.br-skill-dropzone {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-skill-dropzone:hover {
+  background-color: var(--background-fill-strong);
+}
+
+.br-skill-dropzone[data-state='dragging'] {
+  background-color: var(--background-fill-strong);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.br-skill-dropzone[data-state='error'] {
+  box-shadow: inset 0 0 0 1px var(--border-danger);
+}
+
+.br-skill-dropzone:disabled {
+  cursor: progress;
+}
+
+.br-skill-dropzone:disabled:hover {
+  background-color: var(--background-fill);
+}
+
+/* Keyboard focus is the app's one treatment (D-15): the focus ground and a 2px inset ring. It is
+   restated here because this rule's own background would otherwise outrank the layered one. */
+.br-skill-dropzone:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The 32px glyph plate. It sits on the field's fill, one step back (the page ground), so it is a
+   plate without being an outlined box. */
+.br-skill-drop-plate {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  color: var(--text-muted);
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-skill-dropzone[data-state='dragging'] .br-skill-drop-plate {
+  color: var(--text-default);
+}
+
+/* Forced colours drop every box-shadow and repaint every fill as Canvas, so the held-over state
+   (a firmer ground and an inset ring) would show nothing. The edge is the one thing they keep: it
+   goes dashed, in the system highlight, which also says "drop here" without colour. Keyboard focus
+   is the global OS-requested ring (main.css, the last block). */
+@media (forced-colors: active) {
+  .br-skill-dropzone[data-state='dragging'] {
+    border-style: dashed;
+    border-color: Highlight;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-skill-dropzone,
+  .br-skill-drop-plate {
+    transition: none;
+  }
+}
+/* What a lookup found: a name and its facts, then the skills the package carries. Space, not a
+   rule, between it and the drop zone above (the body's own 16px gap). */
+.br-skill-preview {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The member list is one filled well, so a scroller (a bundle can carry dozens) has an edge to
+   scroll inside. The 1px border is kept and transparent, like every filled box. */
+.br-skill-components {
+  display: flex;
+  max-height: 140px;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
+}
+/* @ws WS-SKILLS end: skill dialogs */

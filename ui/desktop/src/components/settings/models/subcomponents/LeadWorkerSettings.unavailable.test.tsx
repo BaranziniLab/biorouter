@@ -169,6 +169,11 @@ describe('LeadWorkerSettings — a provider that cannot run', () => {
     // dialog that shouts the reason at both fields.
     expect(screen.queryByTestId('lead-worker-worker-unavailable')).toBeNull();
 
+    // Make a change first: Save also waits for one, and on an untouched dialog that alone would
+    // disable it, so this would pass with the barred verdict deleted.
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Initial lead turns' }), {
+      target: { value: '4' },
+    });
     const save = screen.getByRole('button', { name: 'Save settings' });
     expect(save).toBeDisabled();
     fireEvent.click(save);

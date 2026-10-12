@@ -6,6 +6,8 @@ if (typeof (globalThis as Record<string, unknown>).process === 'undefined') {
 import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from './components/ConfigContext';
+import { startFirstRunNoticeCount } from './components/privacy/firstRunNoticeDecision';
+import { holdFirstRunNoticeForFirstPage } from './components/privacy/firstRunNoticeHandoff';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { client } from './api/client.gen';
 import { daemonClientConfig } from './utils/daemonClient';
@@ -36,7 +38,7 @@ declare global {
   interface Window {
     __BIOROUTER_HEADLESS_CONFIG__?: Partial<HeadlessConfig>;
     /** Boot splash controller, defined by the inline script in index.html. */
-    __brBootSplash?: { dismiss: () => void; isShown: () => boolean };
+    __brBootSplash?: { dismiss: () => void; isShown: () => boolean; isGone: () => boolean };
   }
 }
 
@@ -582,6 +584,15 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     }
     console.log('connecting at', biorouterApiHost);
     client.setConfig(daemonClientConfig(biorouterApiHost, await window.electron.getSecretKey()));
+    // The day-one privacy notice's count starts here, in parallel with the app chunk loading and
+    // the first-run page's provider fetch, and the first-run page waits for its answer so the
+    // notice and the page arrive together (FR-R4-4). A leaf module: it pulls in no dialog.
+    startFirstRunNoticeCount();
+    // And the notice then waits for the splash to leave and the first page to draw before it
+    // opens, so a count that wins the race does not put the dialog over the fading wordmark and
+    // an empty ground (FR-R5-1). Declared here, before React renders, because the page that
+    // clears it mounts in the same commit as the gate and could not declare it in time.
+    holdFirstRunNoticeForFirstPage();
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(

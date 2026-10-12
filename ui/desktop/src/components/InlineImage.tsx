@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react';
+import { transcriptCopy } from './transcript/copy';
+
+const copy = transcriptCopy.image;
 
 type TempPathProps = { kind: 'temp-path'; path: string; alt?: string; className?: string };
 type DataProps = { kind: 'data'; data: string; mimeType: string; alt?: string; className?: string };
@@ -74,34 +77,29 @@ export function InlineImage(props: InlineImageProps) {
 
   // For temp-path, validate it is a safe file path
   if (props.kind === 'temp-path' && !props.path.includes('biorouter-pasted-images')) {
-    return (
-      <div className="text-text-danger text-xs italic mt-1 mb-1">
-        Invalid image path: {props.path}
-      </div>
-    );
+    return <div className="text-supporting text-text-danger">{copy.invalidPath(props.path)}</div>;
   }
 
   if (error) {
     const label = props.kind === 'temp-path' ? props.path : `${props.mimeType} image`;
-    return (
-      <div className="text-text-danger text-xs italic mt-1 mb-1">Unable to load image: {label}</div>
-    );
+    return <div className="text-supporting text-text-danger">{copy.unavailable(label)}</div>;
   }
 
   return (
-    <div className={`image-preview mt-2 mb-2 ${className}`}>
+    <div className={`image-preview ${className}`}>
       {isLoading && (
-        <div className="animate-pulse bg-background-medium rounded w-40 h-40 flex items-center justify-center">
-          <span className="text-text-muted text-xs">Loading...</span>
+        // A still placeholder the image's size: a load is not work in
+        // progress the eye needs to watch, so nothing pulses.
+        <div className="flex h-40 w-40 items-center justify-center rounded-element bg-background-fill">
+          <span className="text-supporting text-text-muted">{copy.loading}</span>
         </div>
       )}
       {imageData && (
         <button
           type="button"
           onClick={toggleExpand}
-          className={`block rounded transition-opacity hover:opacity-90 ${isExpanded ? 'max-w-full' : 'max-w-40 max-h-40'} ${isLoading ? 'hidden' : ''}`}
-          title={isExpanded ? 'Collapse image' : 'Expand image'}
-          aria-label={isExpanded ? 'Collapse image' : 'Expand image'}
+          className={`block overflow-hidden rounded-element transition-opacity duration-[var(--dur-fast-min)] hover:opacity-90 ${isExpanded ? 'max-w-full' : 'max-w-40 max-h-40'} ${isLoading ? 'hidden' : ''}`}
+          aria-label={isExpanded ? copy.collapse : copy.expand}
         >
           <img
             src={imageData}

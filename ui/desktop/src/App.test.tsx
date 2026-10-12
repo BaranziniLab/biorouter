@@ -145,6 +145,7 @@ vi.mock('./components/ui/ConfirmationModal', () => ({
 
 vi.mock('react-toastify', () => ({
   ToastContainer: () => null,
+  cssTransition: () => () => null,
 }));
 
 vi.mock('./components/settings/chat/BioRouterHintsModal', () => ({

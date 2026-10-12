@@ -1,11 +1,6 @@
-import {
-  AlertCircle,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  LoaderCircle,
-} from '../icons/app-icons';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight } from '../icons/app-icons';
 import { useMemo, useState } from 'react';
+import { Spinner } from '../ui/spinner';
 import type { StreamState, SubAgentEvent } from './hooks/useIngestStream';
 
 function prettyToolName(name: string): string {
@@ -110,13 +105,15 @@ export function DispatchProgress({ state }: Props) {
   if (state.status === 'idle') return null;
 
   return (
-    <div className="overflow-hidden rounded-container border border-border-subtle">
-      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+    // A header line over the log, not a card around it: the log's well is the
+    // one box, so nothing is a box inside a box (spec 3.12, principle 4).
+    <div className="flex flex-col">
+      <div className="flex items-center justify-between gap-3">
         <button
           type="button"
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-label"
+          className="biorouter-focus-surface flex min-w-0 flex-1 items-center gap-2 rounded-element py-1 pr-1 text-left text-label"
         >
           {open ? (
             <ChevronDown
@@ -131,20 +128,17 @@ export function DispatchProgress({ state }: Props) {
           )}
           <span className="min-w-0 break-words">{statusLabel}</span>
         </button>
-        <span className="shrink-0 text-supporting font-mono tabular-nums text-text-muted">
+        <span className="shrink-0 text-supporting tabular-nums text-text-muted">
           {state.events.length} events
         </span>
       </div>
 
       {open && (
-        <div className="px-3 pb-3">
-          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-element bg-background-muted px-3 py-3 text-supporting">
+        <div className="pt-2">
+          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-element bg-background-well px-3 py-3 text-supporting">
             {lines.length === 0 && (
               <div className="flex items-start gap-2 text-text-muted">
-                <LoaderCircle
-                  className="mt-0.5 h-icon-row w-icon-row shrink-0 animate-spin"
-                  aria-hidden="true"
-                />
+                <Spinner className="mt-0.5 shrink-0" />
                 <p className="min-w-0 break-words whitespace-pre-wrap">
                   {state.status === 'starting'
                     ? 'Checking the staged source and opening the digest pipeline.'

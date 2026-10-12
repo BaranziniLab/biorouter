@@ -172,10 +172,15 @@ describe('the OS-requested focus ring (P0-5)', () => {
   });
 
   it('comes after every unlayered rule that suppresses a focus outline', () => {
+    // The one deliberate exception sits INSIDE the OS block: a Radix tab trigger keeps its
+    // label-sized `::before` ring in the OS colour instead of the outline (vision V4-16), and
+    // that rule is pinned by the tab ring test below.
+    const tabException = "[role='tab'][data-orientation]:not(.br-tab):focus-visible";
     const suppressors = RULES.filter(
       (r) =>
         !isLayered(r) &&
         r !== ringRules[0] &&
+        !(r.context.join(' ') === OS_MEDIA && r.selector === tabException) &&
         /:focus/.test(r.selector) &&
         /(^|;|\s)outline:\s*(none|0)\b/.test(r.body)
     );
@@ -351,23 +356,68 @@ describe('the default focus indicator is an edge, not only a fill (T-16)', () =>
     expect(body).toContain('border-radius: var(--radius-element)');
     expect(body).toContain('position: absolute');
     expect(body).toMatch(/inset-block: calc\(50% - 14px\)/);
+    // The ring keeps clear of the glyphs: a Radix trigger has no side padding, so the ring's inner
+    // edge is the inset minus its 2px border from the label. At 4px past the trigger that was 2px,
+    // and antialiasing made "Chat" touch it (vision V4-16); 4px clear is the floor. Two
+    // neighbours' rings still cannot meet inside the tablist's gap-5 (20px).
+    const inset = Number(body.match(/inset-inline: -(\d+)px/)?.[1]);
+    expect(inset, 'the ring is inset by a negative pixel value').toBeGreaterThan(0);
+    expect(
+      inset - 2,
+      'the ring’s inner edge is at least 4px clear of the label'
+    ).toBeGreaterThanOrEqual(4);
+    expect(inset * 2, 'two neighbours’ rings do not meet in gap-5').toBeLessThan(20);
     // The trigger this relies on is positioned, and `::after` is its selection bar.
     const tabs = readFileSync(join(HERE, '..', 'components', 'ui', 'tabs.tsx'), 'utf8');
     expect(tabs).toMatch(/"relative inline-flex/);
     expect(tabs).not.toMatch(/before:/);
   });
 
-  it('insets a document tab’s ring inside its pill', () => {
+  // The pill's own ring (tab family, WS-MOTION) wins for every strip in the app; this inset
+  // outline is the fallback for a `.br-tab` whose focusable is not a direct child.
+  it('insets the fallback ring of a document tab whose focusable is nested', () => {
     expect(onlyRule(":where(.br-tab [role='tab']):focus-visible").body).toMatch(
       /outline-offset:\s*-2px/
     );
   });
 
-  /** One ring when the OS asked for one: the outline, not the pseudo ring as well. */
-  it('stands the pseudo ring down under the OS-requested ring', () => {
-    const off = onlyRule("[role='tab'][data-orientation]:focus-visible::before");
-    expect(off.context.join(' ')).toBe(OS_MEDIA);
-    expect(off.body).toMatch(/content:\s*none/);
+  /**
+   * One ring when the OS asked for one, and it is the label-sized pseudo ring, not the outline.
+   * An outline is drawn round the 36px box with no side padding: at a 2px offset it hugged the
+   * label ("Chat" touched it) and the settings band cut its top off (vision V4-16, forced
+   * colours). The pseudo ring keeps the normal-colour geometry and takes the OS colour.
+   */
+  it('keeps the label-sized ring under the OS-requested ring, in the OS colour', () => {
+    const trigger = "[role='tab'][data-orientation]:not(.br-tab):focus-visible";
+    const inContext = (selector: string, context: string) => {
+      const found = RULES.filter((r) => r.selector === selector && r.context.join(' ') === context);
+      expect(found, `expected exactly one ${context} rule for ${selector}`).toHaveLength(1);
+      return found[0];
+    };
+
+    // The outline stands down, after (and above the specificity of) the ring rule it overrides.
+    const outline = inContext(trigger, OS_MEDIA);
+    expect(isLayered(outline)).toBe(false);
+    expect(outline.body).toMatch(/outline:\s*none\s*!important/);
+    const ring = RULES.filter(
+      (r) => r.context.join(' ') === OS_MEDIA && /outline:\s*2px solid var\(--ring\)/.test(r.body)
+    );
+    expect(ring).toHaveLength(1);
+    expect(outline.index).toBeGreaterThan(ring[0].index);
+
+    // The pseudo ring is not switched off anywhere: it keeps the base geometry.
+    const offs = RULES.filter(
+      (r) => /\[role='tab'\][^,{]*::before/.test(r.selector) && /content:\s*none/.test(r.body)
+    );
+    expect(offs.map((r) => r.selector)).toEqual([]);
+
+    // Its colour: the OS ring's under more contrast, the user's own Highlight under forced
+    // colours, kept as written.
+    expect(inContext(`${trigger}::before`, OS_MEDIA).body).toMatch(/border-color:\s*var\(--ring\)/);
+    const forced = inContext(`${trigger}::before`, '@media (forced-colors: active)');
+    expect(forced.body).toMatch(/border-color:\s*Highlight/);
+    expect(forced.body).toContain('forced-color-adjust: none');
+    expect(forced.index).toBeGreaterThan(outline.index);
   });
 
   it('paints the focused sidebar resize handle, not a hover-grade hairline', () => {
@@ -517,9 +567,9 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     return found[0];
   };
 
-  it('paints the resting ring in --text-muted and the checked one in the accent edge', () => {
+  it('paints the resting ring in --border-control and the checked one in the accent edge', () => {
     const rest = top('[data-radio-ring]');
-    expect(rest.body.replace(/\s+/g, ' ')).toContain('border-color: var(--text-muted)');
+    expect(rest.body.replace(/\s+/g, ' ')).toContain('border-color: var(--border-control)');
     expect(isLayered(rest)).toBe(false);
     const checked = top("input[type='radio']:checked ~ [data-radio-ring]");
     expect(checked.body.replace(/\s+/g, ' ')).toContain('border-color: var(--border-accent)');
@@ -557,8 +607,9 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     expect(Object.keys(SCOPES)).toHaveLength(6);
     const shortfalls: string[] = [];
     for (const [name, scope] of Object.entries(SCOPES)) {
-      const ring = tokens.resolveHex('--text-muted', scope);
-      expect(ring, `${name}: --text-muted resolves`).toBeTruthy();
+      // The checkbox's own edge (spec 2.6). 3:1 is what WCAG 1.4.11 asks of a control boundary.
+      const ring = tokens.resolveHex('--border-control', scope);
+      expect(ring, `${name}: --border-control resolves`).toBeTruthy();
       for (const ground of grounds) {
         const hex = tokens.resolveHex(ground, scope);
         expect(hex, `${name}: ${ground} resolves`).toBeTruthy();

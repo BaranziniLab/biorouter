@@ -1,0 +1,79 @@
+/*
+ * The Lead/worker dialog's form geometry (codex simplicity redesign, spec 3.13).
+ *
+ * Authored next to the component rather than as new Tailwind strings: a newly written utility
+ * can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell geometry").
+ */
+
+/* A label on the left with its InfoTip, and one control on the right. */
+.br-model-form-row {
+  display: flex;
+  min-block-size: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.br-model-form-head {
+  display: flex;
+  min-block-size: 28px;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  align-items: center;
+}
+
+.br-model-form-row > .br-model-form-head {
+  flex: 0 1 auto;
+}
+
+/* The two model fields and the numbers share one gap.
+ *
+ * While the mode is off they go quiet by each CONTROL dimming itself, once, to the half step every
+ * disabled control takes (the Select trigger's `opacity-50`, the Input's `disabled:opacity-50`).
+ * This group used to dim as well, so a field was painted at 0.5 x 0.5 = 0.25: "Select lead
+ * model..." was barely legible and, in dark, a number field's fill (#232320 over the dialog's
+ * #1b1b19) faded out of sight (V4-R3-3). The labels and their InfoTips stay at full ink, so what
+ * each field is for, and what its tip says, can still be read while the field is off. Do not put an
+ * `opacity` back on this selector: the dim belongs to the control. */
+.br-model-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.br-model-field {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.br-model-numbers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.br-model-number-input {
+  inline-size: 72px;
+  flex: none;
+}
+
+/* The "Also use for new chats" box: the Checkbox draws a 16px square inside a 24px hit target,
+   so its edge sits 4px inside the fields above it; pull the row back so the square lines up
+   with them. */
+.br-model-check-row {
+  display: flex;
+  align-items: center;
+  margin-inline-start: -4px;
+}
+
+/* The pinned-models radio group: scrolls past eight rows, and shifts back 4px so each 16px ring
+   lines up with the fields and the checkbox below (the radio sits in a 24px hit target). */
+.br-model-radio-list {
+  display: flex;
+  max-block-size: 288px;
+  flex-direction: column;
+  margin-inline-start: -4px;
+  overflow-y: auto;
+}

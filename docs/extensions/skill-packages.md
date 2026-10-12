@@ -39,7 +39,7 @@ slashes, and read no manifest at all. A normal GitHub source archive is
 
 Everything that installs a skill calls it:
 
-- **Add Skill** (`AddSkillModal.tsx`) — a URL field and a drop zone;
+- **Add skill** (`AddSkillModal.tsx`, opened from Skills → Add → From a repository or .zip…) — a URL field and a one-line drop zone;
 - **the marketplace** (`baam/installSkill.ts`);
 - **the agent**, through the `importSkillPackage` MCP tool;
 - **the CLI**, `biorouter skill install <path-or-url>`;
@@ -122,7 +122,7 @@ Answering it:
 
 | Surface | How |
 |---|---|
-| Add Skill | "Install as one bundle" / "Install separately" |
+| Add skill | "Install as one bundle" / "Install separately" |
 | HTTP | a `200` with `status: "needsChoice"` and a `planId`; POST again with `choice` |
 | The agent | `status: "needsChoice"` plus instructions to ask the user — it must not choose for them |
 | CLI | the question is printed and the command stops; `--as bundle` or `--as individual` answers it |
@@ -158,7 +158,8 @@ The record carries the package id and display name, its version, the source URL
 / ref / resolved commit, the installer, the timestamp, the entry point, the
 groups and the component list. `skill_catalog` reads it into
 `CatalogBundle.package`, which is what lets the picker show one expandable row
-saying "HyperFrames — 5 skills — entry point: hyperframes".
+named "HyperFrames" over one line, "5 skills · 0.8.12", which opens to show the
+entry point and each component with its group.
 
 ## Atomicity
 

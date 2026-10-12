@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { WorkflowResourcePicker } from '../WorkflowResourcePicker';
+import { workflowFormCopy } from '../../copy';
 
 function renderPicker({
   selectedIds,
@@ -28,15 +29,14 @@ function renderPicker({
       onDefaultIdChange={onDefaultIdChange}
       noDefaultText={noDefaultText}
       emptyText="No knowledge bases found"
-      searchPlaceholder="Search knowledge bases..."
+      searchPlaceholder="Search knowledge bases…"
       noun="KB"
     />
   );
   return { onSelectedIdsChange, onDefaultIdChange };
 }
 
-const NO_DEFAULT =
-  'No default — this workflow will not focus one. Chats it starts search every base above.';
+const NO_DEFAULT = 'Chats it starts search every base above.';
 
 /**
  * The knowledge-base picker's default becomes the workflow's `default`, which
@@ -46,6 +46,7 @@ const NO_DEFAULT =
  * the workflow can search, and only the Default control changes the default.
  */
 describe('WorkflowResourcePicker default', () => {
+  // Set membership is a checkbox named by its item (spec 2.6), never a switch.
   beforeAll(() => {
     // The picker is a Radix popover, and floating-ui measures it.
     vi.stubGlobal(
@@ -70,7 +71,7 @@ describe('WorkflowResourcePicker default', () => {
     });
 
     await user.click(screen.getByText('No KBs selected'));
-    await user.click(screen.getByRole('switch', { name: 'Toggle soul' }));
+    await user.click(screen.getByRole('checkbox', { name: 'soul' }));
 
     expect(onSelectedIdsChange).toHaveBeenCalledWith(['soul']);
     expect(onDefaultIdChange).not.toHaveBeenCalled();
@@ -84,7 +85,7 @@ describe('WorkflowResourcePicker default', () => {
     });
 
     await user.click(screen.getByText('2 KBs selected'));
-    await user.click(screen.getByRole('switch', { name: 'Toggle lab-notes' }));
+    await user.click(screen.getByRole('checkbox', { name: 'lab-notes' }));
 
     expect(onSelectedIdsChange).toHaveBeenCalledWith(['soul']);
     expect(onDefaultIdChange).toHaveBeenCalledTimes(1);
@@ -99,7 +100,7 @@ describe('WorkflowResourcePicker default', () => {
     });
 
     await user.click(screen.getByText('2 KBs selected'));
-    await user.click(screen.getByRole('switch', { name: 'Toggle soul' }));
+    await user.click(screen.getByRole('checkbox', { name: 'soul' }));
 
     expect(onSelectedIdsChange).toHaveBeenCalledWith(['lab-notes']);
     expect(onDefaultIdChange).not.toHaveBeenCalled();
@@ -135,6 +136,26 @@ describe('WorkflowResourcePicker default', () => {
  * whose default had gone missing. The card has to say it.
  */
 describe('WorkflowResourcePicker default summary', () => {
+  it('puts what the picker is for behind an InfoTip, not under the label', () => {
+    render(
+      <WorkflowResourcePicker
+        label="Skills"
+        description="Skills this workflow prefers."
+        items={[]}
+        selectedIds={[]}
+        onSelectedIdsChange={vi.fn()}
+        emptyText="No skills found"
+        searchPlaceholder="Search skills…"
+        noun="skill"
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'About Skills' })).toHaveAccessibleDescription(
+      'Skills this workflow prefers.'
+    );
+    expect(screen.getByRole('group', { name: 'Skills' })).toBeInTheDocument();
+  });
+
   it('says there is no default, on the card, without opening the popover', () => {
     renderPicker({
       selectedIds: ['lab-notes', 'soul'],
@@ -142,7 +163,13 @@ describe('WorkflowResourcePicker default summary', () => {
       noDefaultText: NO_DEFAULT,
     });
 
-    expect(screen.getByTestId('resource-picker-default-summary')).toHaveTextContent(NO_DEFAULT);
+    // The card says "No default" in words; what that costs is its InfoTip, one hover or
+    // Tab away, and reachable by a screen reader through the glyph's description.
+    const summary = screen.getByTestId('resource-picker-default-summary');
+    expect(summary).toHaveTextContent(workflowFormCopy.picker.noDefault);
+    expect(
+      screen.getByRole('button', { name: `About ${workflowFormCopy.picker.noDefault}` })
+    ).toHaveAccessibleDescription(NO_DEFAULT);
     // Still closed: the rows, and the Default control that marks one, are not
     // rendered at all.
     expect(screen.queryByRole('button', { name: 'Default KB: lab-notes' })).toBeNull();
@@ -178,7 +205,7 @@ describe('WorkflowResourcePicker default summary', () => {
         selectedIds={['single-cell']}
         onSelectedIdsChange={vi.fn()}
         emptyText="No skills found"
-        searchPlaceholder="Search skills..."
+        searchPlaceholder="Search skills…"
         noun="skill"
       />
     );

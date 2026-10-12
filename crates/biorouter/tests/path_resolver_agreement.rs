@@ -18,6 +18,14 @@
 //! the other side, including the `XDG_CONFIG_HOME` and Windows layouts this
 //! file's `Paths::config_dir()` calls resolve through `etcetera`. The two
 //! change together or not at all.
+//!
+//! On Windows both sides also resolve the folder earlier releases used until
+//! the daemon has moved it (R-31, `biorouter_mcp::app_folder`). Which folder
+//! each resolves for each state on disk is pinned by one table both suites
+//! run, `crates/biorouter-mcp/src/app_folder/resolution-cases.json`; the tests
+//! at the end of this file pin that `Paths` reaches that rule, that the layout
+//! it builds is etcetera's own, and that the rewrite after a move covers the
+//! files the stores really use.
 
 use biorouter::config::paths::Paths;
 use serial_test::serial;
@@ -34,8 +42,26 @@ use std::path::PathBuf;
 /// `#[serial]` does not — `#[serial]` only orders tests that are themselves
 /// annotated, and this variable is read by `Paths::*` on every call from
 /// anywhere.
+///
+/// It also points both Windows bases at throwaway directories. With no root
+/// (or a blank one, which every resolver reads as none) a resolver reaches the
+/// real platform directories, and on Windows those are the developer's own
+/// profile: a legacy folder there would be held by this test binary for the
+/// rest of its run. Elsewhere the two variables are not read.
 fn with_path_root<T>(root: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", root)]);
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let _guard = env_lock::lock_env([
+        ("BIOROUTER_PATH_ROOT", root.map(str::to_owned)),
+        (
+            "APPDATA",
+            Some(roaming.path().to_string_lossy().into_owned()),
+        ),
+        (
+            "LOCALAPPDATA",
+            Some(local.path().to_string_lossy().into_owned()),
+        ),
+    ]);
     f()
 }
 
@@ -182,7 +208,7 @@ fn with_path_root_restores_the_previous_value_on_panic() {
 }
 
 /// The three resolvers must sit under one config root — not, as before, under
-/// two different app-strategy tuples (`Block/Block/biorouter` vs `io/biorouter/biorouter`).
+/// two different app-strategy tuples (the crate's own and a hand-rolled second one).
 #[test]
 #[serial]
 fn all_mcp_stores_share_one_config_root() {
@@ -193,4 +219,199 @@ fn all_mcp_stores_share_one_config_root() {
             .expect("knowledge root")
             .starts_with(&cfg));
     });
+}
+
+/// `Paths` and every `biorouter-mcp` resolver read one function, so they cannot
+/// disagree about the platform directories, and there is no second
+/// `AppStrategyArgs` tuple anywhere in either crate.
+#[test]
+#[serial]
+fn paths_resolves_through_the_one_platform_function() {
+    with_path_root(None, || {
+        let dirs = biorouter_mcp::paths::platform_dirs().expect("a home dir");
+        assert_eq!(Paths::config_dir(), dirs.config);
+        assert_eq!(Paths::data_dir(), dirs.data);
+        assert_eq!(
+            Paths::state_dir(),
+            dirs.state.clone().unwrap_or(dirs.data.clone())
+        );
+        assert_eq!(biorouter_mcp::paths::config_dir(), dirs.config);
+    });
+
+    let paths_source = include_str!("../src/config/paths.rs");
+    assert!(
+        !paths_source.contains("AppStrategyArgs") && !paths_source.contains("choose_app_strategy"),
+        "Paths must not build an app strategy of its own; it reads biorouter_mcp::paths::platform_dirs"
+    );
+    let mcp_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../biorouter-mcp/src");
+    let mut stack = vec![mcp_src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .expect("readable source dir")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && path != mcp_src.join("paths.rs")
+            {
+                let code = std::fs::read_to_string(&path).unwrap();
+                let calls = code
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .filter(|line| line.contains("choose_app_strategy("))
+                    .count();
+                assert_eq!(
+                    calls,
+                    0,
+                    "{} resolves the app folder itself; use biorouter_mcp::paths::platform_dirs, \
+                     which also applies the Windows folder rule",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// The Windows layout `platform_dirs` builds by hand (so it can resolve the
+/// moved folder) is exactly etcetera's Windows strategy for the one tuple, on a
+/// machine where neither folder exists yet. Runs on every OS: etcetera's
+/// Windows strategy reads `APPDATA` and `LOCALAPPDATA` wherever it runs.
+#[test]
+#[serial]
+fn the_windows_layout_is_etceteras_windows_strategy() {
+    use etcetera::AppStrategy;
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let _env = env_lock::lock_env([
+        (
+            "APPDATA",
+            Some(roaming.path().to_string_lossy().into_owned()),
+        ),
+        (
+            "LOCALAPPDATA",
+            Some(local.path().to_string_lossy().into_owned()),
+        ),
+    ]);
+    let etcetera = etcetera::app_strategy::Windows::new(biorouter_mcp::APP_STRATEGY.clone())
+        .expect("a home dir");
+    let ours = biorouter_mcp::paths::windows_dirs(roaming.path(), local.path());
+    assert_eq!(ours.config, etcetera.config_dir());
+    assert_eq!(ours.data, etcetera.data_dir());
+    assert_eq!(ours.cache, etcetera.cache_dir());
+    assert_eq!(ours.state, etcetera.state_dir());
+    assert_eq!(
+        ours.config,
+        roaming
+            .path()
+            .join(biorouter_mcp::app_folder::APP_AUTHOR)
+            .join("biorouter")
+            .join("config")
+    );
+}
+
+/// The rewrite after a move names each store by a path of its own, because
+/// `biorouter-mcp` cannot see the modules that own them. This pins every name
+/// to its owner, so a store that moves inside the folder cannot silently drop
+/// out of the rewrite.
+#[test]
+#[serial]
+fn the_rewrite_covers_the_files_the_stores_really_use() {
+    let root = tempfile::tempdir().unwrap();
+    let root_str = root.path().to_string_lossy().into_owned();
+    let covered: Vec<PathBuf> = biorouter_mcp::app_folder::rewrite::store_files(root.path())
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    with_path_root(Some(&root_str), || {
+        // The permission store keeps its file name to itself, so saving an
+        // empty one is how to learn where it lives.
+        biorouter::permission::permission_store::ToolPermissionStore::new()
+            .save()
+            .unwrap();
+        let permissions = Paths::config_dir()
+            .join("permissions")
+            .join("tool_permissions.json");
+        assert!(
+            permissions.is_file(),
+            "the permission store no longer saves to {}",
+            permissions.display()
+        );
+        for owned in [
+            permissions,
+            Paths::config_dir().join(biorouter::config::base::CONFIG_YAML_NAME),
+            biorouter::privacy::provenance::provenance_path(),
+            biorouter::scheduler::get_default_scheduler_storage_path().unwrap(),
+            biorouter_mcp::knowledge::registry::registry_path(
+                &biorouter_mcp::knowledge::paths::knowledge_root().unwrap(),
+            ),
+            Paths::config_dir().join("daemon-profile.json"),
+            Paths::config_dir().join("crew").join("connections.json"),
+            Paths::config_dir().join("headless").join("settings.json"),
+            Paths::in_data_dir("projects.json"),
+        ] {
+            assert!(
+                covered.contains(&owned),
+                "{} is a store that holds paths, and the rewrite does not cover it",
+                owned.display()
+            );
+        }
+        assert_eq!(
+            biorouter_mcp::app_folder::rewrite::sessions_db(root.path()),
+            Paths::data_dir()
+                .join(biorouter::session::session_manager::SESSIONS_FOLDER)
+                .join(biorouter::session::session_manager::DB_NAME)
+        );
+        // Directories whose every file is covered.
+        for (directory, sample) in [
+            (biorouter::extension_install::claim::claims_dir(), "00ff"),
+            (
+                biorouter::scheduler::get_default_scheduled_workflows_dir().unwrap(),
+                "job.yaml",
+            ),
+            (
+                biorouter::workflow::local_workflows::get_workflow_library_dir(true),
+                "flow.yaml",
+            ),
+        ] {
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(sample), "{}").unwrap();
+            let covered: Vec<PathBuf> =
+                biorouter_mcp::app_folder::rewrite::store_files(root.path())
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect();
+            assert!(
+                covered.contains(&directory.join(sample)),
+                "{} is not covered by the rewrite",
+                directory.join(sample).display()
+            );
+        }
+    });
+
+    // The owners that this crate cannot call spell the same names.
+    for (source, spelling) in [
+        (
+            include_str!("../src/daemon_runtime.rs"),
+            "config.join(\"daemon-profile.json\")",
+        ),
+        (
+            include_str!("../src/crew/mod.rs"),
+            "root.join(\"connections.json\")",
+        ),
+        (
+            include_str!("../../biorouter-server/src/routes/shell.rs"),
+            "Paths::config_dir().join(\"headless\").join(\"settings.json\")",
+        ),
+        (
+            include_str!("../../biorouter-cli/src/project_tracker.rs"),
+            "Paths::in_data_dir(\"projects.json\")",
+        ),
+    ] {
+        assert!(
+            source.contains(spelling),
+            "the store's owner no longer spells `{spelling}`; update the rewrite's list"
+        );
+    }
 }

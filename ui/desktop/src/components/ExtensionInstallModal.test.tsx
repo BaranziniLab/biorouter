@@ -19,11 +19,21 @@ const mockElectron = {
 
 (window as any).electron = mockElectron;
 
+const mocks = vi.hoisted(() => ({
+  installed: [] as Array<{ name: string }>,
+  success: vi.fn(),
+}));
+
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: [],
-    getExtensions: vi.fn().mockResolvedValue([]),
+    getExtensions: vi.fn(async () => mocks.installed),
   }),
+}));
+
+vi.mock('../toasts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../toasts')>()),
+  toastService: { success: mocks.success, error: vi.fn() },
 }));
 
 describe('ExtensionInstallModal', () => {
@@ -38,6 +48,7 @@ describe('ExtensionInstallModal', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.installed = [];
     mockElectron.getConfig.mockReturnValue({
       BIOROUTER_ALLOWLIST_WARNING: false,
     });
@@ -142,6 +153,25 @@ describe('ExtensionInstallModal', () => {
     });
   });
 
+  describe('An extension that is already installed', () => {
+    it('is said once, in a toast titled with its name, and opens no dialog', async () => {
+      mocks.installed = [{ name: 'TestExt' }];
+      mockElectron.getAllowedExtensions.mockResolvedValue([]);
+
+      render(<ExtensionInstallModal addExtension={mockAddExtension} setView={mockSetView} />);
+      const eventHandler = getAddExtensionEventHandler();
+      await act(async () => {
+        await eventHandler({}, 'biorouter://extension?cmd=npx&arg=test-extension&name=TestExt');
+      });
+
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(mocks.success).toHaveBeenCalledWith({
+        title: 'TestExt',
+        msg: 'Already installed. Start a new chat to use it.',
+      });
+    });
+  });
+
   describe('Modal Actions', () => {
     it('should dismiss modal correctly', async () => {
       mockElectron.getAllowedExtensions.mockResolvedValue([]);
@@ -186,6 +216,37 @@ describe('ExtensionInstallModal', () => {
       );
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('Chrome (spec 3.11)', () => {
+    const open = async (link: string) => {
+      render(<ExtensionInstallModal addExtension={mockAddExtension} setView={mockSetView} />);
+      await act(async () => {
+        await getAddExtensionEventHandler()({}, link);
+      });
+    };
+
+    it('is a confirmation: width S, Cancel quiet, the verb on the primary button', async () => {
+      mockElectron.getAllowedExtensions.mockResolvedValue([]);
+      await open('biorouter://extension?cmd=npx&arg=test&name=Test');
+
+      expect(screen.getByRole('dialog')).toHaveAttribute('data-size', 'sm');
+      // `secondary`, not the `outline` the rest of the app has retired for a dismissal.
+      expect(screen.getByRole('button', { name: 'Cancel' }).className).toMatch(/\bbr-fill-rest\b/);
+      expect(screen.getByRole('button', { name: 'Cancel' }).className).not.toMatch(
+        /border-border-emphasized/
+      );
+      expect(screen.getByRole('button', { name: 'Install' })).toBeInTheDocument();
+    });
+
+    it('answers a blocked install with one quiet acknowledgement', async () => {
+      mockElectron.getAllowedExtensions.mockResolvedValue(['uvx allowed-package']);
+      await open('biorouter://extension?cmd=npx&arg=blocked&name=Blocked');
+
+      const gotIt = screen.getByRole('button', { name: 'Got it' });
+      expect(gotIt.className).toMatch(/\bbr-fill-rest\b/);
+      expect(gotIt.className).not.toMatch(/border-border-emphasized/);
     });
   });
 });

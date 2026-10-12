@@ -41,7 +41,11 @@ describe('DaemonRestartNotice (R-1)', () => {
     const { bridge } = installBridge('lost');
     render(<DaemonRestartNotice />);
     expect(await screen.findByText(daemonNoticeCopy.failed)).toBeInTheDocument();
-    expect(screen.getByText(daemonNoticeCopy.consequence)).toBeInTheDocument();
+    // The failure stays visible; its consequence is the InfoTip's description
+    // (F-15), so it is still read out without a hover.
+    expect(screen.getByTestId('daemon-restart-notice-help')).toHaveAccessibleDescription(
+      daemonNoticeCopy.consequence
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     expect(bridge.reconnectDaemon).toHaveBeenCalledTimes(1);

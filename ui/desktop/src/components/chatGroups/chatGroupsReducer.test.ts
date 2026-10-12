@@ -200,6 +200,75 @@ describe('chatGroupsReducer — close with successor', () => {
   });
 });
 
+/**
+ * "Close other tabs" on a tab's menu (V2-R6-3). One action, so the pane renders
+ * once instead of walking through each successor on the way.
+ */
+describe('chatGroupsReducer — close other tabs', () => {
+  it('leaves the tab itself, and makes it the one in front', () => {
+    const a = run(createInitialChatGroupsState(), open('a'), open('b'), open('c'));
+    const tabB = a.groups['grp-1'].tabs[1];
+    expect(activeSessionIdOf(a)).toBe('c');
+
+    const b = chatGroupsReducer(a, { type: 'closeOtherTabs', tabId: tabB.tabId });
+
+    expect(b.groups['grp-1'].tabs).toEqual([tabB]);
+    expect(b.groups['grp-1'].activeTabId).toBe(tabB.tabId);
+    expect(activeSessionIdOf(b)).toBe('b');
+  });
+
+  it('works from the first tab and the last, and from the one already in front', () => {
+    const a = run(createInitialChatGroupsState(), open('a'), open('b'), open('c'));
+    const [tabA, , tabC] = a.groups['grp-1'].tabs;
+    expect(
+      chatGroupsReducer(a, { type: 'closeOtherTabs', tabId: tabA.tabId }).groups['grp-1'].tabs.map(
+        (t) => t.sessionId
+      )
+    ).toEqual(['a']);
+    const fromActive = chatGroupsReducer(a, { type: 'closeOtherTabs', tabId: tabC.tabId });
+    expect(fromActive.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['c']);
+    expect(activeSessionIdOf(fromActive)).toBe('c');
+  });
+
+  it('closes only the tab’s own group: the other half of a split keeps its tabs', () => {
+    const a = run(createInitialChatGroupsState(), open('s1'), open('s2'), open('s3'));
+    const s3Tab = a.groups['grp-1'].tabs[2];
+    const split = chatGroupsReducer(a, {
+      type: 'moveTabToGroup',
+      tabId: s3Tab.tabId,
+      targetGroupId: 'grp-1',
+      zone: 'right',
+    });
+    const otherGroupId = leafGroupIds(split.layout).find((id) => id !== 'grp-1')!;
+    const second = split.groups['grp-1'].tabs[1];
+
+    const b = chatGroupsReducer(split, { type: 'closeOtherTabs', tabId: second.tabId });
+
+    expect(b.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['s2']);
+    expect(b.groups[otherGroupId].tabs.map((t) => t.sessionId)).toEqual(['s3']);
+    // The pane the person acted in is the one that has focus afterwards.
+    expect(b.activeGroupId).toBe('grp-1');
+    expect(leafGroupIds(b.layout)).toHaveLength(2);
+  });
+
+  it('is a no-op for a lone tab already in front, and for a tab that is not there', () => {
+    const a = run(createInitialChatGroupsState(), open('a'));
+    const tabA = a.groups['grp-1'].tabs[0];
+    expect(chatGroupsReducer(a, { type: 'closeOtherTabs', tabId: tabA.tabId })).toBe(a);
+    expect(chatGroupsReducer(a, { type: 'closeOtherTabs', tabId: 'no-such-tab' })).toBe(a);
+  });
+
+  it('changes nothing but the group’s tabs and focus: no new group, no new id', () => {
+    const a = run(createInitialChatGroupsState(), open('a'), open('b'));
+    const b = chatGroupsReducer(a, {
+      type: 'closeOtherTabs',
+      tabId: a.groups['grp-1'].tabs[0].tabId,
+    });
+    expect(b.seq).toBe(a.seq);
+    expect(Object.keys(b.groups)).toEqual(['grp-1']);
+  });
+});
+
 describe('chatGroupsReducer — reorder', () => {
   it('splices, it does not swap', () => {
     const a = run(createInitialChatGroupsState(), open('a'), open('b'), open('c'));

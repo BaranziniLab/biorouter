@@ -2,7 +2,8 @@
 
 import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { CheckIcon, ChevronRightIcon, CircleIcon } from '../icons/app-icons';
+import { CheckIcon, ChevronRightIcon } from '../icons/app-icons';
+import { lastInputWasKey } from './inputTrail';
 
 import { cn } from '../../utils';
 
@@ -253,23 +254,178 @@ function useTabLeavesMenu(
  * what every menu shipped with; `ease-[var(--ease-out)]` sets `--tw-ease`. It is the class the
  * sidebar already carries, so it is known to be generated.
  */
-const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
+export const MENU_EASE_CLASS_NAME = 'ease-[var(--ease-out)]';
+
+/**
+ * THE floating menu surface (spec 2.6, "Menus"), shared by DropdownMenu, its submenus,
+ * ContextMenu and the Popover: `--background-default` on the popover hairline and shadow, radius
+ * 12, 4px padding and NO gap between rows, z 500 (the reason is under DropdownMenuContent).
+ *
+ * Motion (`.br-menu-motion`, authored in `main.css`): it opens with opacity, `scale(.97)` and a
+ * 4px move toward its trigger, from Radix's transform origin, over `--dur-fast-max`; it closes
+ * with opacity alone over `--dur-fast`; always `--ease-out`. The `animate-*`/`zoom-*`/`slide-*`
+ * utilities below are the generated carriers; the authored rule sets their values, so a newly
+ * written utility never has to generate. Min width 180px and max width 320px are defaults in
+ * `@layer components` (`.br-menu-surface`), so a caller's own width utility still wins.
+ */
+/**
+ * The gap every menu keeps from the window's edge (vision V4-R6-1). Radix's default is 0, so a
+ * row menu right-clicked near the bottom of the sidebar ended on the window's last pixel, its
+ * bottom hairline and corners on the edge and its shadow cut off. 8px is the InfoTip's gap
+ * (`info-tip.tsx`): near an edge the menu shifts or flips to stay that far inside, and the
+ * available-height variable its `max-h` reads shrinks by the same amount. A caller that passes
+ * its own `collisionPadding` (a dialog's boundary) still wins. Pinned in Chromium by
+ * `menuCollisionPadding.browser.test.tsx`.
+ */
+export const MENU_COLLISION_PADDING = 8;
+
+export const MENU_SURFACE_CLASS_NAME =
+  'br-menu-surface br-menu-motion biorouter-popover-surface bg-background-default text-text-default z-[var(--z-modal-dropdown)] rounded-container p-1 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2';
+
+/**
+ * Spec 2.5, the focus ring after a mouse click (WS-PICKERS-3, measured in Chromium with real
+ * pointer input): when a POINTER pick closes a menu, the picked item unmounts, nothing holds
+ * focus, and Radix's focus return to the trigger then reads as keyboard focus, so the trigger
+ * wore the D-15 focus surface as if it had been Tabbed to. After such a pick focus stays where the
+ * click left it. A key pick (Enter, Space), Escape, a Tab out, and an item that keeps the menu
+ * open (a Copy that says "Copied", then closes by itself) keep Radix's focus return.
+ *
+ * Electron 39 (Chromium 142) ignores `focus({ focusVisible: false })` (probed 2026-10-10), so
+ * returning focus without the ring is not available; skipping the return is the fix.
+ *
+ * Returns the props to spread on the Radix content, composed with the caller's own. Not used by
+ * `ContextMenuContent`: a right-click focuses the row by pointer first, so Radix's return there
+ * lands without the ring (probed), and skipping it would only lose the row's focus.
+ */
+export function usePointerPickFocusRule<T extends HTMLElement>({
+  ref,
+  onCloseAutoFocus,
+  onKeyDownCapture,
+  onPointerDownCapture,
+}: {
+  ref?: React.Ref<T>;
+  onCloseAutoFocus?: (event: Event) => void;
+  onKeyDownCapture?: React.KeyboardEventHandler<T>;
+  onPointerDownCapture?: React.PointerEventHandler<T>;
+}) {
+  const pointerInput = React.useRef(false);
+  const pointerPickClosed = React.useRef(false);
+  const contentRef = React.useCallback(
+    (node: T | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<T | null>).current = node;
+      if (!node) return;
+      // Radix dispatches this bubbling event on the item; by the time it reaches the content
+      // the item's own `onSelect` has run, so `defaultPrevented` says whether the menu closes.
+      const onItemSelect = (event: Event) => {
+        pointerPickClosed.current = pointerInput.current && !event.defaultPrevented;
+      };
+      node.addEventListener('menu.itemSelect', onItemSelect);
+      return () => node.removeEventListener('menu.itemSelect', onItemSelect);
+    },
+    [ref]
+  );
+  return {
+    ref: contentRef,
+    onKeyDownCapture: (event: React.KeyboardEvent<T>) => {
+      pointerInput.current = false;
+      onKeyDownCapture?.(event);
+    },
+    onPointerDownCapture: (event: React.PointerEvent<T>) => {
+      pointerInput.current = true;
+      onPointerDownCapture?.(event);
+    },
+    onCloseAutoFocus: (event: Event) => {
+      onCloseAutoFocus?.(event);
+      if (pointerPickClosed.current && !event.defaultPrevented) event.preventDefault();
+      pointerPickClosed.current = false;
+    },
+  };
+}
+
+/**
+ * The attribute a dropdown menu's surface carries to say how the person is driving it: `pointer`
+ * or `key`. `main.css` (the menu rows, `@ws WS-PRIMITIVES begin: primitives`) takes the D-15 ring
+ * off a row in a `pointer` menu.
+ */
+export const MENU_INPUT_ATTRIBUTE = 'data-menu-input';
+
+/**
+ * A menu opened with the pointer rings no row (WS-SIDEBAR-2, measured in Chromium on the real
+ * sidebar). `DropdownMenuTrigger` opens on `pointerdown` and cancels it, so the trigger never takes
+ * mouse focus, and Radix then moves focus into the menu and onto each row the pointer crosses by
+ * script. Chromium counts a script focus that no mouse press preceded as keyboard focus, so every
+ * hovered row matched `:focus-visible` and wore D-15's 2px inset ring, a row the person had only
+ * pointed at. A right-click ContextMenu does not (its press is not cancelled), so it is left alone.
+ *
+ * The surface records the modality instead of trusting the browser's guess: the app's one input
+ * tracker (`inputTrail.ts`) answers when the menu mounts (a click on the trigger reads `pointer`;
+ * Enter, Space or an arrow on it reads `key`), a key pressed inside turns it to `key` (the ring is
+ * then exactly where the keyboard is) and a press inside turns it back. The row keeps its quiet
+ * `--overlay-hover` highlight either way; under `prefers-contrast: more` and forced colours the
+ * highlighted row's outline is untouched.
+ */
+function useMenuInputModality<T extends HTMLElement>({
+  ref,
+  onKeyDownCapture,
+  onPointerDownCapture,
+}: {
+  ref?: React.Ref<T>;
+  onKeyDownCapture?: React.KeyboardEventHandler<T>;
+  onPointerDownCapture?: React.PointerEventHandler<T>;
+}) {
+  const markRef = React.useCallback(
+    (node: T | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<T | null>).current = node;
+      node?.setAttribute(MENU_INPUT_ATTRIBUTE, lastInputWasKey() ? 'key' : 'pointer');
+    },
+    [ref]
+  );
+  return {
+    ref: markRef,
+    onKeyDownCapture: (event: React.KeyboardEvent<T>) => {
+      event.currentTarget.setAttribute(MENU_INPUT_ATTRIBUTE, 'key');
+      onKeyDownCapture?.(event);
+    },
+    onPointerDownCapture: (event: React.PointerEvent<T>) => {
+      event.currentTarget.setAttribute(MENU_INPUT_ATTRIBUTE, 'pointer');
+      onPointerDownCapture?.(event);
+    },
+  };
+}
 
 function DropdownMenuContent({
   className,
   sideOffset = 6,
+  collisionPadding = MENU_COLLISION_PADDING,
   onKeyDown,
   onCloseAutoFocus,
+  onKeyDownCapture,
+  onPointerDownCapture,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   const { handleKeyDown, handleCloseAutoFocus } = useTabLeavesMenu(onKeyDown, onCloseAutoFocus);
+  const modality = useMenuInputModality<HTMLDivElement>({
+    ref,
+    onKeyDownCapture,
+    onPointerDownCapture,
+  });
+  const focusRule = usePointerPickFocusRule<HTMLDivElement>({
+    ref: modality.ref,
+    onCloseAutoFocus: handleCloseAutoFocus,
+    onKeyDownCapture: modality.onKeyDownCapture,
+    onPointerDownCapture: modality.onPointerDownCapture,
+  });
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         onKeyDown={handleKeyDown}
-        onCloseAutoFocus={handleCloseAutoFocus}
+        {...focusRule}
         // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
         //
         // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
@@ -278,7 +434,8 @@ function DropdownMenuContent({
         // PermissionModal.tsx renders a DropdownMenuContent inside a DialogContent;
         // at 200 that menu would paint under the dialog that owns it.
         className={cn(
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
+          MENU_SURFACE_CLASS_NAME,
+          'max-h-(--radix-dropdown-menu-content-available-height) overflow-x-hidden overflow-y-auto',
           MENU_EASE_CLASS_NAME,
           className
         )}
@@ -306,8 +463,23 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
  * sites should add only what is theirs (a toggle's `justify-between`, a cursor); a
  * call site that re-states padding or type size is reintroducing the drift.
  */
-export const DROPDOWN_ROW_CLASS_NAME =
-  "relative flex min-h-control-md cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+export const MENU_ROW_CLASS_NAME =
+  "br-menu-row relative flex min-h-control-md cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+
+/** The same string under its older name; new code imports `MENU_ROW_CLASS_NAME`. */
+export const DROPDOWN_ROW_CLASS_NAME = MENU_ROW_CLASS_NAME;
+
+/**
+ * A row's trailing slot (spec 2.6): a muted value ("Group by  Date ›"), then the 16px check of a
+ * selected checkbox or radio item, or a submenu's chevron. The check sits on the RIGHT; there is
+ * no 32px left gutter.
+ */
+export const MENU_ROW_TRAILING_CLASS_NAME =
+  'br-menu-row-trailing ml-auto flex shrink-0 items-center gap-2 text-text-muted';
+
+/** A menu's group label: 12/16 at 500, muted, sentence case, padding 6px 12px 2px. */
+export const MENU_GROUP_LABEL_CLASS_NAME =
+  'px-3 pt-1.5 pb-0.5 text-supporting font-medium text-text-muted';
 
 function DropdownMenuItem({
   className,
@@ -324,7 +496,7 @@ function DropdownMenuItem({
       data-inset={inset}
       data-variant={variant}
       className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
+        MENU_ROW_CLASS_NAME,
         "data-[variant=destructive]:text-text-danger data-[variant=destructive]:focus:bg-background-danger/10 dark:data-[variant=destructive]:focus:bg-background-danger/20 data-[variant=destructive]:focus:text-text-danger data-[variant=destructive]:*:[svg]:!text-text-danger [&_svg:not([class*='text-'])]:text-text-muted data-[inset]:pl-8",
         className
       )}
@@ -333,36 +505,46 @@ function DropdownMenuItem({
   );
 }
 
+/**
+ * A checkbox row: the label, then an optional muted `value`, then a 16px check at the trailing
+ * edge while it is on (spec 2.6). `showIndicator={false}` is for a row that draws its own state
+ * (a decorative Switch).
+ */
 function DropdownMenuCheckboxItem({
   className,
   children,
   checked,
   showIndicator = true,
+  value,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem> & {
   showIndicator?: boolean;
+  /** A muted value before the check. */
+  value?: React.ReactNode;
 }) {
   return (
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
-      className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
-        // The left gutter exists only to hold the check; without an indicator the
-        // row keeps the plain §4.5 padding instead of a phantom 32px indent.
-        showIndicator && 'pl-8',
-        className
-      )}
+      className={cn(MENU_ROW_CLASS_NAME, className)}
       checked={checked}
       {...props}
     >
-      {showIndicator && (
-        <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-          <DropdownMenuPrimitive.ItemIndicator>
-            <CheckIcon className="size-4" />
-          </DropdownMenuPrimitive.ItemIndicator>
-        </span>
-      )}
       {children}
+      {showIndicator || value !== undefined ? (
+        <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+          {value !== undefined ? <span className="truncate">{value}</span> : null}
+          {showIndicator ? (
+            <span
+              className="pointer-events-none flex size-4 items-center justify-center text-text-default"
+              data-slot="menu-item-indicator"
+            >
+              <DropdownMenuPrimitive.ItemIndicator>
+                <CheckIcon className="size-4" />
+              </DropdownMenuPrimitive.ItemIndicator>
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </DropdownMenuPrimitive.CheckboxItem>
   );
 }
@@ -373,23 +555,39 @@ function DropdownMenuRadioGroup({
   return <DropdownMenuPrimitive.RadioGroup data-slot="dropdown-menu-radio-group" {...props} />;
 }
 
+/**
+ * A radio row: the label, then a 16px check at the trailing edge on the chosen one (spec 2.6:
+ * one indicator for checkbox and radio items, on the right, like Codex's "Sort by" menu).
+ */
 function DropdownMenuRadioItem({
   className,
   children,
+  value,
+  hint,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem> & {
+  /** A muted value before the check. */
+  hint?: React.ReactNode;
+}) {
   return (
     <DropdownMenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
-      className={cn(DROPDOWN_ROW_CLASS_NAME, 'pl-8', className)}
+      className={cn(MENU_ROW_CLASS_NAME, className)}
+      value={value}
       {...props}
     >
-      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-        <DropdownMenuPrimitive.ItemIndicator>
-          <CircleIcon className="size-2 fill-current" />
-        </DropdownMenuPrimitive.ItemIndicator>
-      </span>
       {children}
+      <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+        {hint !== undefined ? <span className="truncate">{hint}</span> : null}
+        <span
+          className="pointer-events-none flex size-4 items-center justify-center text-text-default"
+          data-slot="menu-item-indicator"
+        >
+          <DropdownMenuPrimitive.ItemIndicator>
+            <CheckIcon className="size-4" />
+          </DropdownMenuPrimitive.ItemIndicator>
+        </span>
+      </span>
     </DropdownMenuPrimitive.RadioItem>
   );
 }
@@ -405,10 +603,10 @@ function DropdownMenuLabel({
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
       data-inset={inset}
-      // design.md §4.5 section label: `text-caps` (11px, 500, +0.08em), --text-muted, 8px×12px.
-      // It names a group; it is not a row, so it never takes the row height or hover.
-      // No `uppercase` beside `text-caps` — the role carries the transform itself.
-      className={cn('px-3 py-1.5 text-caps text-text-muted data-[inset]:pl-8', className)}
+      // Spec 2.6 group label: `text-supporting` at 500, muted, SENTENCE case, 6px 12px 2px.
+      // It names a group; it is not a row, so it never takes the row height or hover. (Caps
+      // survive only as page section labels, section 0.)
+      className={cn(MENU_GROUP_LABEL_CLASS_NAME, 'data-[inset]:pl-8', className)}
       {...props}
     />
   );
@@ -432,7 +630,7 @@ function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'spa
   return (
     <span
       data-slot="dropdown-menu-shortcut"
-      className={cn('text-text-muted ml-auto text-supporting tracking-widest', className)}
+      className={cn('text-text-muted ml-auto text-supporting', className)}
       {...props}
     />
   );
@@ -455,30 +653,38 @@ function DropdownMenuSubTrigger({
       data-slot="dropdown-menu-sub-trigger"
       data-inset={inset}
       className={cn(
-        DROPDOWN_ROW_CLASS_NAME,
+        MENU_ROW_CLASS_NAME,
         'data-[state=open]:bg-overlay-hover data-[state=open]:text-text-default data-[inset]:pl-8',
         className
       )}
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ml-auto size-4" />
+      <ChevronRightIcon className="ml-auto size-4 text-text-muted" />
     </DropdownMenuPrimitive.SubTrigger>
   );
 }
 
 function DropdownMenuSubContent({
   className,
+  collisionPadding = MENU_COLLISION_PADDING,
+  onKeyDownCapture,
+  onPointerDownCapture,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  // A submenu reached by hovering its row reads `pointer`, one opened with ArrowRight reads `key`.
+  const modality = useMenuInputModality<HTMLDivElement>({
+    ref,
+    onKeyDownCapture,
+    onPointerDownCapture,
+  });
   return (
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
-      className={cn(
-        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-container p-1 space-y-0.5',
-        MENU_EASE_CLASS_NAME,
-        className
-      )}
+      collisionPadding={collisionPadding}
+      {...modality}
+      className={cn(MENU_SURFACE_CLASS_NAME, 'overflow-hidden', MENU_EASE_CLASS_NAME, className)}
       {...props}
     />
   );

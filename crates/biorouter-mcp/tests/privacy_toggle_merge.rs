@@ -20,6 +20,9 @@
 //! apart: with the feature off, the preview would announce `private` and the
 //! merge would leave the base public.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::knowledge::{
     affiliation::CallerAffiliation,
     merge::{MergeAuthority, UserKbMerge},

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { Button } from '../ui/button';
+import { FOOTER_COPY } from './copy';
+import './pickers.css';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
 import type { ModelCostRow, SessionCostRow, SessionCosts } from '../../hooks/useCostTracking';
@@ -50,12 +51,6 @@ function aggregateSessionCosts(rows: SessionCostRow[]): CostEstimate {
   return { amount: hasKnownCost ? amount : null, partial };
 }
 
-// `text-supporting`, not the `text-secondary` main.css prescribes for a dense
-// control — the override is explained once in ChatInput.tsx, search
-// "THE RAILS' TYPE".
-const COST_TRIGGER_CLASS =
-  'h-7 min-w-0 px-0.5 font-mono text-supporting text-text-default/70 hover:bg-background-medium hover:text-text-default';
-
 export function sessionTokensSummary(inputTokens: number, outputTokens: number): string {
   return `Input: ${inputTokens.toLocaleString()} tokens\nOutput: ${outputTokens.toLocaleString()} tokens`;
 }
@@ -73,23 +68,32 @@ export function formatCostEstimate(estimate: CostEstimate, currency = '$'): stri
   return formatTooltipMoney(estimate.amount, currency);
 }
 
+/**
+ * Whether the footer shows a figure at all (spec 3.7): only a cost above $0.
+ * "$0.00" and "Unavailable" are not worth a place on the line; the breakdown
+ * is still one hover away once there is something to break down.
+ */
+export function costIsWorthShowing(estimate: CostEstimate): boolean {
+  return estimate.amount !== null && Number.isFinite(estimate.amount) && estimate.amount > 0;
+}
+
+/** The footer's figure: sans with tabular numbers (`.br-footline__item`). */
 function CostTrigger({ estimate, currency = '$' }: { estimate: CostEstimate; currency?: string }) {
   const label = formatCostEstimate(estimate, currency);
   return (
     <TooltipTrigger asChild>
-      <Button
+      <button
         type="button"
-        variant="ghost"
-        size="xs"
-        className={COST_TRIGGER_CLASS}
+        data-testid="chat-cost"
+        className="br-footline__item"
         aria-label={
           estimate.amount === null
-            ? 'Chat cost unavailable'
-            : `${estimate.partial ? 'Estimated chat total' : 'Chat cost'} ${label}`
+            ? FOOTER_COPY.costUnavailable
+            : FOOTER_COPY.cost(label, estimate.partial)
         }
       >
         {label}
-      </Button>
+      </button>
     </TooltipTrigger>
   );
 }
@@ -149,6 +153,7 @@ export function CostTracker({
 
   if (modelCostRows && modelCostRows.length > 0) {
     const estimate = aggregateModelRowsCost(modelCostRows);
+    if (!costIsWorthShowing(estimate)) return null;
     const inputTotal = modelCostRows.reduce((sum, row) => sum + row.inputTokens, 0);
     const outputTotal = modelCostRows.reduce((sum, row) => sum + row.outputTokens, 0);
     return (
@@ -164,6 +169,7 @@ export function CostTracker({
   const legacyRows = sessionCosts ? Object.values(sessionCosts) : [];
   if (legacyRows.length > 0) {
     const estimate = aggregateSessionCosts(legacyRows);
+    if (!costIsWorthShowing(estimate)) return null;
     const totals = legacyRows.reduce(
       (sum, row) => ({
         input: sum.input + row.inputTokens,
@@ -183,30 +189,14 @@ export function CostTracker({
 
   if (!currentModel || !currentProvider) return null;
 
-  if (isLoading) {
-    return (
-      <div className="flex h-7 items-center justify-center rounded-md px-1 text-text-muted">
-        <span className="text-xs font-mono">...</span>
-      </div>
-    );
-  }
-
-  if (!costInfo) {
-    const estimate = { amount: null, partial: true };
-    return (
-      <Tooltip>
-        <CostTrigger estimate={estimate} />
-        <TooltipContent className="whitespace-pre-line">
-          {`${sessionTokensSummary(inputTokens, outputTokens)}\n${costEstimateSummary(estimate)}`}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
+  // Loading, or no price for this model: nothing to show on the line.
+  if (isLoading || !costInfo) return null;
 
   const freshSubtotal =
     inputTokens * (costInfo.input_token_cost ?? 0) +
     outputTokens * (costInfo.output_token_cost ?? 0);
   const estimate = { amount: freshSubtotal, partial: true };
+  if (!costIsWorthShowing(estimate)) return null;
   return (
     <Tooltip>
       <CostTrigger estimate={estimate} currency={costInfo.currency} />

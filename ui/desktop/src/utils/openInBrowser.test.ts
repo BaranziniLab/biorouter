@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../toasts', () => ({ toastError: vi.fn() }));
 
 import { toastError } from '../toasts';
-import { openInBrowser, previewOpenTarget } from './openInBrowser';
+import { OPEN_IN_BROWSER_COPY, openInBrowser, previewOpenTarget } from './openInBrowser';
 
 const openExternal = vi.fn();
 
@@ -20,7 +20,7 @@ describe('openInBrowser', () => {
     await openInBrowser('http://127.0.0.1:51851/apps/cohort-explorer/');
     expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:51851/apps/cohort-explorer/');
     expect(toastError).toHaveBeenCalledWith({
-      title: 'Could not open the app',
+      title: OPEN_IN_BROWSER_COPY.failedTitle,
       msg: 'This app no longer exists.',
     });
   });
@@ -37,8 +37,8 @@ describe('openInBrowser', () => {
     openExternal.mockRejectedValueOnce(new Error('ipc gone'));
     await openInBrowser('http://127.0.0.1:1/apps/a/');
     expect(vi.mocked(toastError).mock.calls.map(([toast]) => toast.msg)).toEqual([
-      'Could not open the app in your browser.',
-      'Biorouter could not open that link.',
+      OPEN_IN_BROWSER_COPY.failed,
+      OPEN_IN_BROWSER_COPY.bridgeFailed,
     ]);
   });
 });

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PermissionRulesModal from './PermissionRulesModal';
+import { permissionDialogCopy } from '../chat/copy';
 
 const { getExtensions } = vi.hoisted(() => ({ getExtensions: vi.fn() }));
 
@@ -51,13 +52,51 @@ describe('PermissionRulesModal', () => {
 
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
-    const developer = await screen.findByRole('button', { name: /Developer/ });
-    expect(developer).toHaveClass('whitespace-normal');
+    const developer = await screen.findByRole('button', { name: 'Developer' });
+    // The row is a name and a chevron. The daemon's description is raw data (em dashes, the old
+    // spelling of the product, sentences cut off mid-word) and twelve of them made a two-line
+    // column (vision V4-09), so it is not drawn at all.
+    expect(
+      screen.queryByText('A very long description that must remain inside the permission row.')
+    ).not.toBeInTheDocument();
+    expect(developer).toHaveTextContent(/^Developer$/);
+    expect(developer.querySelectorAll('span.text-supporting')).toHaveLength(0);
+    // It is the settings row's box, which is what makes it 40px (10 + a 20px line + 9 + 1).
+    expect(developer).toHaveClass('br-setting-row');
     expect(screen.queryByText('Synthetic internal grouping')).not.toBeInTheDocument();
     expect(screen.queryByText('Disabled extension')).not.toBeInTheDocument();
 
     fireEvent.click(developer);
     expect(screen.getByTestId('permission-modal')).toHaveTextContent('developer');
+  });
+
+  /**
+   * The daemon sends the workspace capability as `Workspace`, and the Capabilities list, the
+   * daemon's display name and the CLI all call it Workspace Control (vision V4-R2-3). The row
+   * and the dialog it opens carry the same name, and the list sorts by it.
+   */
+  it('names a bundled capability the way the Capabilities list does', async () => {
+    getExtensions.mockResolvedValue([
+      { type: 'platform', name: 'Workspace', description: 'Workspace', enabled: true },
+      { type: 'builtin', name: 'developer', display_name: 'Developer', enabled: true },
+      {
+        type: 'builtin',
+        name: 'extensionmanager',
+        display_name: 'Extension Manager',
+        enabled: true,
+      },
+    ]);
+
+    render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
+
+    const row = await screen.findByRole('button', { name: 'Workspace Control' });
+    expect(row).toHaveTextContent(/^Workspace Control$/);
+    expect(screen.queryByRole('button', { name: 'Workspace' })).toBeNull();
+    const names = screen
+      .getAllByRole('button')
+      .map((button) => button.textContent)
+      .filter((text) => text && /^(Developer|Extension Manager|Workspace Control)$/.test(text));
+    expect(names).toEqual(['Developer', 'Extension Manager', 'Workspace Control']);
   });
 
   it('shows a retryable error instead of leaving the extension list loading forever', async () => {
@@ -66,11 +105,19 @@ describe('PermissionRulesModal', () => {
 
     render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
 
-    expect(await screen.findByText('Enabled extensions could not be loaded.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    expect(await screen.findByText(permissionDialogCopy.extensionsFailed)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: permissionDialogCopy.tryAgain })).toBeInTheDocument();
     expect(error).toHaveBeenCalledWith(
       'Failed to load extensions for permission settings:',
       expect.objectContaining({ message: 'unavailable' })
     );
+  });
+
+  it('is one dialog titled Tool permissions, with no icon tile', async () => {
+    getExtensions.mockResolvedValue([]);
+    render(<PermissionRulesModal isOpen onClose={vi.fn()} />);
+    const dialog = await screen.findByRole('dialog', { name: permissionDialogCopy.rulesTitle });
+    expect(await screen.findByText(permissionDialogCopy.noExtensions)).toBeInTheDocument();
+    expect(dialog.querySelector('svg.h-5')).toBeNull();
   });
 });

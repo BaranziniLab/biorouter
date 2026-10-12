@@ -52,7 +52,7 @@ function renderPane() {
 
 /** The content layer, whose opacity class is driven by `showContent`. */
 function contentLayer(container: HTMLElement): HTMLElement {
-  const el = container.querySelector<HTMLElement>('div.relative.transition-opacity');
+  const el = container.querySelector<HTMLElement>('[data-history-layer="content"]');
   if (!el) throw new Error('content layer not found');
   return el;
 }

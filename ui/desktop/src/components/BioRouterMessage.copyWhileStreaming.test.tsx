@@ -92,7 +92,8 @@ describe('BioRouterMessage — a finished message while the next reply streams',
     const button = screen.getByRole('button', { name: 'Copy' });
 
     fireEvent.click(button);
-    await waitFor(() => expect(button).toHaveTextContent('Copied'));
+    // Icon only: the press is answered in the name (and the tooltip).
+    await waitFor(() => expect(button).toHaveAccessibleName('Copied'));
 
     rerender(view([earlier, finished, assistant('m2', 'Wor')]));
     rerender(view([earlier, finished, assistant('m2', 'Working on it')]));

@@ -1,10 +1,14 @@
+import './skills.css';
 import { useState, useRef, DragEvent } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
-import { MODAL_SIZE } from '../ModalShell';
+import { InfoTip, useInfoTipId } from '../ui/info-tip';
+import { Upload } from '../icons/app-icons';
+import { ModalShell } from '../ModalShell';
+import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { toastSuccess, toastError } from '../../toasts';
-import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { ADD_SKILL_COPY } from './copy';
 import { installSkillPackage, previewSkillPackage } from '../../api';
 import type { ImportPreview, ImportRequest, ImportResult } from '../../api';
 
@@ -36,9 +40,15 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const urlFieldRef = useRef<HTMLInputElement>(null);
+  const repositoryHelpId = useInfoTipId();
 
   const errorText = (err: unknown) =>
-    err instanceof Error ? err.message : typeof err === 'string' ? err : 'the request failed.';
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : ADD_SKILL_COPY.requestFailed;
 
   const runPreview = async (request: ImportRequest, label: string) => {
     setBusy(true);
@@ -64,18 +74,14 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
     // one. Sending the bare name would have the daemon read whatever matching
     // archive sat in its own working directory.
     if (!filePath) {
-      setError(
-        'Biorouter is running on another machine, so it cannot read a file you ' +
-          'drop here. Copy the skill onto that machine and add it with ' +
-          '`biorouter skill install <path>`, or paste a repository URL above.'
-      );
+      setError(ADD_SKILL_COPY.remoteDaemon);
       setPreview(null);
       return;
     }
     await runPreview({ filePath }, file.name);
   };
 
-  const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (e: DragEvent<HTMLButtonElement>) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
@@ -115,15 +121,16 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       const count = result.installed.reduce((total, one) => total + one.skills.length, 0);
       toastSuccess({
         title: result.installed[0]?.displayName ?? preview.displayName,
-        msg:
+        msg: ADD_SKILL_COPY.installed(
           result.installed.length === 1 && result.installed[0].kind === 'bundle'
-            ? `Installed ${count} skill${count === 1 ? '' : 's'}`
-            : `Installed ${result.installed.length} skill${result.installed.length === 1 ? '' : 's'}`,
+            ? count
+            : result.installed.length
+        ),
       });
       onSaved();
       onClose();
     } catch (err) {
-      toastError({ title: 'Install failed', msg: errorText(err) });
+      toastError({ title: ADD_SKILL_COPY.installFailed, msg: errorText(err) });
       setBusy(false);
     }
   };
@@ -131,176 +138,183 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const ambiguity = preview?.ambiguity ?? null;
 
   return (
-    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent
-        aria-describedby={undefined}
-        dismissible={!busy}
-        // `MODAL_SIZE.lg`, not the 520px literal this carried: L is the rung for
-        // "anything with a list", and the preview below is one. The `w-[520px]`
-        // that came with it is gone too — `DialogContent`'s own `w-full` plus
-        // the rung's cap is what every other dialog in the app is sized by.
-        className={`flex max-h-[80vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
-      >
-        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <DialogTitle>Add skill</DialogTitle>
-        </div>
-
-        <div className="p-6 flex flex-col gap-4 overflow-y-auto">
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="skill-source-url" className="text-label text-text-default">
-              From a repository
-            </label>
-            <div className="flex gap-2">
-              <Input
-                id="skill-source-url"
-                type="text"
-                placeholder="https://github.com/owner/repo"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void previewUrl();
-                }}
-                // No height here: `Input` is already the 32px md rung, the same
-                // box the "Look up" Button beside it takes. The `h-9` this
-                // carried made the field 36px next to a 32px button.
-                className="flex-1"
-                disabled={busy}
-              />
-              <Button
-                variant="outline"
-                onClick={() => void previewUrl()}
-                disabled={busy || !url.trim()}
-              >
-                Look up
-              </Button>
-            </div>
-            <p className="text-supporting text-text-muted">
-              A repository holding several skills stays one package, with its own name and entry
-              point.
-            </p>
-          </div>
-
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            // ⚠ **Not `biorouter-modal-panel`, and that is the whole point.**
-            // That class is UNLAYERED in main.css, so its `background` and
-            // `border` beat any Tailwind utility in `@layer utilities` whatever
-            // the specificity — which meant every background and border class
-            // this element used to carry beside it was a no-op, and the dropzone
-            // never changed appearance on drag, on error, or on hover. The
-            // panel's own two values are spelled out here instead, as utilities,
-            // so the state can actually move them.
-            //
-            // Hover/press is `tint-interactive`, never `hover:bg-overlay-hover`:
-            // that sets a background-COLOUR, which REPLACES an opaque ground
-            // rather than compositing over it, so the zone got LIGHTER under the
-            // pointer (main.css, "the interaction tints").
-            className={[
-              'rounded-container border bg-background-muted p-8 text-center cursor-pointer select-none tint-interactive transition-colors',
-              isDragging
-                ? 'border-border-accent'
-                : error
-                  ? 'border-border-danger'
-                  : 'border-border-subtle',
-            ].join(' ')}
-          >
-            <p className="text-label text-text-default mb-1">Or drop a skill file here</p>
-            <p className="text-supporting text-text-muted">
-              Accepts <code>.zip</code>
-            </p>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={handleBrowse}
-          />
-
-          {/* One note (V4). Both of these were hand-rolled prose boxes — the
-              error on a hand-mixed `bg-background-danger/10`, the question on a
-              flat surface step. Tone is a `--wash-*` now, derived per family and
-              per mode, so each reads correctly under all three themes in both
-              modes with no `.dark` fork. */}
-          {error && (
-            <Note tone="danger" role="alert">
-              {error}
-            </Note>
-          )}
-
-          {preview && <PreviewCard preview={preview} sourceLabel={sourceLabel} />}
-
-          {ambiguity && <Note tone="info">{ambiguity.reason}</Note>}
-        </div>
-
-        <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            Cancel
+    <ModalShell
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+      size="lg"
+      // First focus lands on the field, not on the help glyph beside its label. Not `autoFocus`:
+      // with focus already inside, Radix never announces the open, the dialog never records
+      // which control opened it, and Escape leaves focus on the page (see `focusFieldOnOpen`).
+      onOpenAutoFocus={focusFieldOnOpen(urlFieldRef)}
+      // A typed URL survives a stray backdrop click; nothing is dismissible
+      // while a preview or an install is in flight.
+      purpose={busy ? 'required' : 'form'}
+      title={ADD_SKILL_COPY.title}
+      // A preview, a choice or an error appears under the drop zone; anchored at the top the
+      // dialog grows downward, so the field and the Look up button stay under the pointer.
+      anchor="top"
+      scrollBody
+      bodyClassName="flex flex-col gap-4 py-4"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            {ADD_SKILL_COPY.cancel}
           </Button>
           {ambiguity ? (
             <>
-              <Button variant="outline" onClick={() => void install('individual')} disabled={busy}>
-                Install separately
+              <Button
+                variant="secondary"
+                onClick={() => void install('individual')}
+                disabled={busy}
+              >
+                {ADD_SKILL_COPY.installSeparately}
               </Button>
               <Button variant="default" onClick={() => void install('bundle')} disabled={busy}>
-                Install as one bundle
+                {ADD_SKILL_COPY.installBundle}
               </Button>
             </>
           ) : (
             <Button variant="default" onClick={() => void install()} disabled={!preview || busy}>
-              {busy ? 'Installing…' : installLabel(preview)}
+              {busy ? ADD_SKILL_COPY.installing : installLabel(preview)}
             </Button>
           )}
+        </>
+      }
+    >
+      <div className="flex flex-col gap-1.5">
+        {/* The label row `Field` draws (`flex items-center`, no gap): the InfoTip carries its own
+            air, so a gap here put this glyph 4px further from its label than "Write a skill"'s. */}
+        <div className="flex min-w-0 items-center">
+          <label htmlFor="skill-source-url" className="text-label text-text-default">
+            {ADD_SKILL_COPY.repositoryLabel}
+          </label>
+          <InfoTip
+            id={repositoryHelpId}
+            label={ADD_SKILL_COPY.repositoryLabel.toLowerCase()}
+            help={ADD_SKILL_COPY.repositoryHelp}
+          />
         </div>
-      </DialogContent>
-    </Dialog>
+        <div className="flex gap-2">
+          {/* A repository URL is a machine string: no spellcheck underline, no auto-capital
+              (V4-R7-5; `<Input machine />`). */}
+          <Input
+            id="skill-source-url"
+            ref={urlFieldRef}
+            type="text"
+            machine
+            placeholder={ADD_SKILL_COPY.repositoryPlaceholder}
+            aria-describedby={repositoryHelpId}
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void previewUrl();
+            }}
+            // No height here: `Input` is already the 32px md rung, the same
+            // box the "Look up" Button beside it takes.
+            className="flex-1"
+            disabled={busy}
+          />
+          <Button
+            variant="secondary"
+            onClick={() => void previewUrl()}
+            disabled={busy || !url.trim()}
+          >
+            {ADD_SKILL_COPY.lookUp}
+          </Button>
+        </div>
+      </div>
+
+      {/* The one drop zone recipe (Workflows' Import, the .brxt dialog; `skills.css`): a 32px
+          glyph plate over one label line, on the subtle fill with no resting outline. A real
+          button, so the keyboard reaches the file chooser it opens. Its drag and error states are
+          authored in `skills.css` and keyed on `data-state`, not utilities: the unlayered
+          `biorouter-modal-panel` it once borrowed beat every utility, so the zone never changed on
+          drag, on error or on hover. */}
+      <button
+        type="button"
+        aria-label={ADD_SKILL_COPY.dropZoneName}
+        disabled={busy}
+        data-state={isDragging ? 'dragging' : error ? 'error' : undefined}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleDrop}
+        onClick={() => fileInputRef.current?.click()}
+        className="br-skill-dropzone"
+      >
+        <span aria-hidden="true" className="br-skill-drop-plate">
+          <Upload className="h-4 w-4" />
+        </span>
+        <span className="text-label text-text-default">{ADD_SKILL_COPY.dropZone}</span>
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={handleBrowse}
+      />
+
+      {/* One note (V4). Tone is a `--wash-*`, derived per family and per mode. */}
+      {error && (
+        <Note tone="danger" role="alert">
+          {error}
+        </Note>
+      )}
+
+      {preview && <PreviewSummary preview={preview} sourceLabel={sourceLabel} />}
+
+      {ambiguity && <Note tone="info">{ambiguity.reason}</Note>}
+    </ModalShell>
   );
 }
 
 function installLabel(preview: ImportPreview | null): string {
-  if (!preview) return 'Install';
-  if (preview.kind === 'single') return 'Install skill';
-  return `Install ${preview.components.length} skills`;
+  if (!preview) return ADD_SKILL_COPY.install;
+  if (preview.kind === 'single') return ADD_SKILL_COPY.installSkill;
+  return ADD_SKILL_COPY.installSkills(preview.components.length);
 }
 
-function PreviewCard({ preview, sourceLabel }: { preview: ImportPreview; sourceLabel: string }) {
+/**
+ * What the daemon says will be installed. Told apart from the drop zone by space, not a rule
+ * (R-27: a divider between two blocks inside a dialog is space; the dialog is already the box),
+ * the same as the .brxt dialog's summary. The member list is the one filled well in it: it
+ * scrolls when a bundle carries many skills, and a scroller with no edge shows nothing of that.
+ */
+function PreviewSummary({ preview, sourceLabel }: { preview: ImportPreview; sourceLabel: string }) {
   const entryPoint = preview.entryPoint;
+  const facts = [
+    preview.kind === 'bundle'
+      ? `${preview.components.length} skill${preview.components.length === 1 ? '' : 's'}`
+      : null,
+    preview.version,
+    ADD_SKILL_COPY.fileCount(preview.fileCount),
+    sourceLabel,
+  ].filter(Boolean);
   return (
-    <div className="biorouter-modal-panel rounded-element px-4 py-3">
-      <p className="text-label">
-        {preview.displayName}
-        {preview.version && (
-          <span className="ml-2 text-supporting text-text-subtle">{preview.version}</span>
+    <section className="br-skill-preview">
+      <div className="min-w-0">
+        <p className="truncate text-label text-text-default">{preview.displayName}</p>
+        <p className="truncate text-supporting text-text-muted">{facts.join(' · ')}</p>
+        {entryPoint && (
+          <p className="text-supporting text-text-muted">{ADD_SKILL_COPY.entryPoint(entryPoint)}</p>
         )}
-        {preview.kind === 'bundle' && (
-          <span className="ml-2 text-supporting text-text-subtle">
-            {preview.components.length} skill{preview.components.length === 1 ? '' : 's'}
-          </span>
-        )}
-      </p>
-      {entryPoint && (
-        <p className="text-supporting text-text-muted mt-0.5">entry point: {entryPoint}</p>
-      )}
-      <div className="mt-1.5 max-h-[140px] overflow-y-auto">
-        {preview.components.map((component) => (
-          <p key={component.name} className="text-supporting text-text-muted">
-            {component.entryPoint ? '→' : '·'} {component.name}
-            {component.group && <span className="text-text-subtle"> [{component.group}]</span>}
-            {component.description && (
-              <span className="text-text-subtle">: {component.description}</span>
-            )}
-          </p>
-        ))}
       </div>
-      <p className="text-supporting text-text-subtle mt-1.5 font-mono">
-        {preview.fileCount} file{preview.fileCount !== 1 ? 's' : ''} · from {sourceLabel}
-      </p>
-    </div>
+      <ul className="br-skill-components">
+        {preview.components.map((component) => (
+          <li key={component.name} className="truncate text-supporting">
+            <span className="text-text-default">{component.name}</span>
+            {component.group && <span className="text-text-muted"> · {component.group}</span>}
+            {component.description && (
+              <span className="text-text-muted"> · {component.description}</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

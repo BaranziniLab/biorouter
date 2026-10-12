@@ -123,14 +123,17 @@ const CHAT_MEASURE_VIEWS = [
  * which any render test noticed, because each view rendered exactly what it
  * meant to. What no view can now do is mean something different.
  *
- * `ScheduleDetailView` and the two transcripts are deliberately ABSENT: they
- * are drill-in surfaces with a Back-button header, which is a different object
- * from a page header and keeps its own shape.
+ * The drill-in surfaces joined on 2026-10-09 (spec 3.10, 3.4): the schedule
+ * detail and the two transcripts used to keep a Back-button header of their
+ * own shape, and now take the same band with `onBack`.
  */
 const PAGE_HEADER_VIEWS = [
   'settings/SettingsView.tsx',
   'sessions/SessionListView.tsx',
+  'sessions/SessionHistoryView.tsx',
+  'sessions/SharedSessionView.tsx',
   'schedule/SchedulesView.tsx',
+  'schedule/ScheduleDetailView.tsx',
   'workflows/WorkflowsView.tsx',
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
@@ -426,14 +429,15 @@ describe('the comment stripper the measure rule depends on', () => {
   /**
    * Deliberately NOT `size="chat"`, which the rule above already asserts: a
    * self-check that fails for the same reason as the rule it underwrites tells
-   * you nothing about the instrument. These two classes are applied, are not
-   * the subject of any other assertion here, and one of them (`px-6`) sits on
-   * the very line a too-eager stripper would eat.
+   * you nothing about the instrument. These are applied classes on the
+   * transcript's reading column, not the subject of any other assertion here.
+   * (They were `biorouter-page-header` and `px-6` until the transcript moved
+   * onto the page band, spec 3.10, and stopped hand-writing its header.)
    */
   it('keeps the classes that are actually applied', () => {
     const code = codeWithoutComments(HISTORY);
-    expect(code).toContain('biorouter-page-header');
-    expect(code).toContain('px-6');
+    expect(HISTORY).toMatch(/className="[^"]*\bflex-col\b[^"]*\bpx-6\b[^"]*"/);
+    expect(code).toMatch(/className="[^"]*\bflex-col\b[^"]*\bpx-6\b[^"]*"/);
   });
 });
 
@@ -463,7 +467,7 @@ describe('the schedule detail sizes itself from its parent', () => {
     if (!detail) throw new Error('ScheduleDetailView.tsx is not in CHAT_MEASURE_VIEWS');
     const code = codeWithoutComments(detail.source);
     expect(code).not.toContain('h-screen');
-    expect(code).toContain('<MainPanelLayout>');
+    expect(code).toMatch(/<MainPanelLayout\b[^>]*>/);
   });
 });
 
@@ -807,9 +811,10 @@ describe('rung 2 — the panel stays mounted across a crossing', () => {
   });
 
   it('keeps the scroll anchor scoped to the live chat', () => {
-    expect(codeWithoutComments(BASE_CHAT)).toContain(
-      'anchorBottomOnResize={artifactPanel.isStacked}'
-    );
+    // Under a stacked preview, and while the reader follows the newest line (V2-R6-1).
+    const live = codeWithoutComments(BASE_CHAT);
+    expect(live).toContain('anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}');
+    expect(live).toMatch(/useTranscriptFollow\(\{[^}]*isPreviewStacked: artifactPanel\.isStacked,/);
     for (const { rel, source } of PREVIEW_HOSTS.slice(1)) {
       expect(source, rel).not.toContain('anchorBottomOnResize');
     }

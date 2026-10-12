@@ -1,0 +1,43 @@
+/*
+ * The Scheduler's own surface rules (spec 3.10, global rules: CSS that serves one surface lives
+ * next to its component). Authored rather than written as Tailwind strings, because a newly
+ * written utility can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md).
+ */
+
+/* The detail view's facts (Runs, Workflow, Last run, ...): ONE FILLED CARD holding a STATIC list
+   (owner message 13, R-27: the summary card is the model, a standalone object drawn as the subtle
+   fill with no outline). The card is `--background-fill` with a transparent 1px edge (no reflow;
+   forced colours draw it) and the 12px container radius, and the view adds `.br-fill-surface`, so
+   the secondary "Open chat" button in a running schedule's last row rests on the page ground (a
+   fill never sits on a fill). The facts are not controls, so they take none of a row's
+   affordances (no hover wash, no focus edge): a wash on something that does not respond is a lie
+   (vision round 1, V3-14). Spacing separates them, no hairline between rows. 40px
+   (`--row-height`) with the `(40 - 20) / 2 = 10px` that centres a 20px line. */
+.br-schedule-facts {
+  display: flex;
+  flex-direction: column;
+  padding-block: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+}
+
+.br-schedule-fact {
+  display: flex;
+  min-width: 0;
+  min-height: var(--row-height);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  /* 11px, not 12: the card's own transparent 1px edge makes the content start 12px in, the
+     inset a row's content has inside its wash, so the facts, the section label under them and
+     the run rows share one left edge. */
+  padding: 10px 11px;
+}
+
+/* A section label over a list of rows sits on the rows' own content edge: rows carry 12px of
+   inset inside their hover wash, and the label has no wash to carry it. */
+.br-schedule-section-label {
+  padding-inline: 12px;
+}

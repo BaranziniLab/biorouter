@@ -9,8 +9,12 @@
  * again (user may have installed things in the meantime).
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactElement } from 'react';
 import { Button } from './ui/button';
+import { Spinner } from './ui/spinner';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { ArrowRight, Check, X } from './icons/app-icons';
+import { InlineCodeText } from './settings/providers/subcomponents/InlineCodeText';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
 import { ModalShell } from './ModalShell';
 import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
@@ -18,21 +22,46 @@ import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
 /**
- * Whether a dependency can be installed by the "Install all" button.
+ * A real command: not empty, not a shell COMMENT. One definition for the row's Install button, the
+ * batch and the coral count, so the number on "Install all", the one-coral decision and the
+ * buttons on screen can never disagree.
  *
- * Excludes rows whose "install command" is really a note to the user. On macOS
- * and unknown Linux distros the fallback is `# Install <dep> via your system
- * package manager` — a shell COMMENT, so running it exits 0 and the tool is then
- * reported as "the installer finished successfully but is still not detectable",
- * which reads as a broken installer rather than as no installer.
+ * Two shapes carry no installer. On an unknown Linux distro the desktop's own fallback is
+ * `# Install <dep> via your system package manager`, a shell comment: running it exits 0 and the
+ * tool is then reported as "the installer finished successfully but is still not detectable",
+ * which reads as a broken installer rather than as no installer. And the bundled CLI reports no
+ * command at all for a tool it has no installer for (an unknown distro, `llama-server` on Linux),
+ * which arrives here as an empty string.
  */
+export function hasInstaller(info: Pick<DependencyInfo, 'installCmd'>): boolean {
+  const cmd = info.installCmd.trim();
+  return cmd.length > 0 && !cmd.startsWith('#');
+}
+
+/** Whether a dependency can be installed by the "Install all" button. */
 export function isBatchInstallable(dep: {
   info: DependencyInfo;
   installState: InstallState;
 }): boolean {
   if (dep.info.installed || dep.installState === 'done') return false;
-  const cmd = dep.info.installCmd.trim();
-  return cmd.length > 0 && !cmd.startsWith('#');
+  return hasInstaller(dep.info);
+}
+
+/**
+ * The line under a row's name while nothing has run: the command it will run, in mono, or, for a
+ * row with no installer, what to do instead, in prose. A shell comment is printed as its text
+ * (no `#`). An empty command with a download page needs no line, because Download is the action;
+ * with no page either, the row says the sentence `buildInstallInfo` writes for that case, so it is
+ * never a name with no text and no action.
+ */
+function installLine(
+  info: Pick<DependencyInfo, 'installCmd' | 'displayName' | 'downloadUrl'>
+): { text: string; command: boolean } | null {
+  if (hasInstaller(info)) return { text: info.installCmd, command: true };
+  const note = info.installCmd.trim().replace(/^#+\s*/, '');
+  if (note) return { text: note, command: false };
+  if (info.downloadUrl) return null;
+  return { text: `Install ${info.displayName} via your system package manager`, command: false };
 }
 
 interface DepState {
@@ -40,6 +69,33 @@ interface DepState {
   installState: InstallState;
   output: string;
   errorMsg: string;
+}
+
+const DEBUG_HELP = 'Open a new chat with this error and let Biorouter work it out';
+
+/**
+ * A row's finished state, drawn from the icon registry (it was a Unicode ✓ / ✗). The glyph is the
+ * state's only mark beside the name, so it carries a name of its own.
+ */
+function StatusGlyph({ state }: { state: 'done' | 'error' }) {
+  return state === 'done' ? (
+    <Check role="img" aria-label="Installed" className="size-4 shrink-0 text-text-success" />
+  ) : (
+    <X role="img" aria-label="Failed" className="size-4 shrink-0 text-text-danger" />
+  );
+}
+
+/**
+ * Help for a button, in a Tooltip and never in `title=`: `AppTooltipLayer` copies a title into
+ * `aria-label`, which renamed "Download" to "Open download page" (spec 2.6, WCAG 2.5.3).
+ */
+function HelpTooltip({ help, children }: { help: string; children: ReactElement }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{help}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 export default function DependencySetupModal() {
@@ -387,6 +443,20 @@ export default function DependencySetupModal() {
 
   const allDone =
     deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
+  // One coral button per view (spec principle 7). "Install all" is the primary whenever it is
+  // shown; otherwise the one install action on screen is, and with two or more single actions
+  // and no batch none of them is: every row action is `secondary`. The conditions are the ones
+  // each button below renders on.
+  const showInstallAll = installableCount > 1 && !allDone;
+  const cliButtonShown = showCli && cliState !== 'running';
+  const rowInstallsShown = deps.filter(
+    (d) =>
+      !(d.installState === 'done' || d.info.installed) &&
+      d.installState !== 'running' &&
+      hasInstaller(d.info)
+  ).length;
+  const singlePrimary = !showInstallAll && rowInstallsShown + (cliButtonShown ? 1 : 0) === 1;
+  const installVariant = singlePrimary ? 'default' : 'secondary';
   // `required: false` marks a tool only some features use (the Rust toolchain,
   // today). The header used to call every listed tool required and say "Install
   // them to continue" when only optional ones were missing, while `biorouter
@@ -417,34 +487,37 @@ export default function DependencySetupModal() {
           : 'Install missing dependencies'
       }
       subtitle={
-        deps.length === 0 && cliIsUpdate
-          ? cli?.brokenOnPath
-            ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
-            : 'Your terminal `biorouter` is older than this app. Update it to match.'
-          : anyRequired
-            ? 'The following tools are required for Biorouter features. Install them to continue.'
-            : 'These optional tools add Biorouter features. Install them now, or dismiss this and install them later.'
+        // The one sentence that says why (FR-S-7): the footer used to repeat it ("Biorouter
+        // features may be limited…", "Updating keeps the terminal CLI in sync…"). A command in it
+        // is drawn as code, not as Markdown backticks.
+        <InlineCodeText
+          text={
+            deps.length === 0 && cliIsUpdate
+              ? cli?.brokenOnPath
+                ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
+                : 'Your terminal `biorouter` is older than this app. Update it to match.'
+              : anyRequired
+                ? 'The following tools are required for Biorouter features. Install them to continue.'
+                : 'These optional tools add Biorouter features. Install them now, or dismiss this and install them later.'
+          }
+        />
       }
       footer={
         <div className="flex w-full min-w-0 items-center justify-between gap-3">
-          <p className="min-w-0 text-supporting text-text-muted">
-            {allDone
-              ? 'All dependencies installed.'
-              : deps.length === 0 && cliIsUpdate
-                ? 'Updating keeps the terminal CLI in sync with the desktop app.'
-                : deps.length === 0
-                  ? 'Install the CLI to use `biorouter` from any terminal.'
-                  : 'Biorouter features may be limited until these are installed.'}
-          </p>
-          <div className="flex shrink-0 items-center gap-2">
-            {installableCount > 1 && !allDone && (
-              <Button variant="default" size="sm" onClick={handleInstallAll} disabled={isBusy}>
+          {allDone && (
+            <p className="min-w-0 text-supporting text-text-muted">All dependencies installed.</p>
+          )}
+          {/* The footer every dialog on this path draws (FR-R2-2): the way out first, the primary
+              at the trailing edge, both on the dialog footer's 32px rung (FR-R1-11). */}
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Button variant="secondary" onClick={handleDismiss} disabled={isBusy}>
+              {allDone ? 'Done' : 'Dismiss'}
+            </Button>
+            {showInstallAll && (
+              <Button variant="default" onClick={handleInstallAll} disabled={isBusy}>
                 Install all ({installableCount})
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
-              {allDone ? 'Done' : 'Dismiss'}
-            </Button>
           </div>
         </div>
       }
@@ -454,39 +527,45 @@ export default function DependencySetupModal() {
         {/* Biorouter CLI install card */}
         {(showCli || cliState === 'done') && (
           <div
-            className={`rounded-xl border px-4 py-3 ${
+            // A fill, never an outline (R-27): the status tints carry the state, the 1px border
+            // stays transparent so forced colours still draw each box.
+            className={`br-fill-surface rounded-container border border-transparent px-4 py-3 ${
               cliState === 'done'
-                ? 'border-border-success/40 bg-background-success/10'
+                ? 'bg-background-success/10'
                 : cliState === 'error'
-                  ? 'border-border-danger/30 bg-background-danger/5'
-                  : 'biorouter-modal-panel bg-background-medium/20'
+                  ? 'bg-background-danger/10'
+                  : 'biorouter-modal-panel'
             }`}
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold flex items-center gap-1.5">
-                  {cliState === 'done' && <span className="text-text-success">✓</span>}
-                  {cliState === 'error' && <span className="text-text-danger">✗</span>}
-                  {cliState === 'running' && (
-                    <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
-                  )}
+                <p className="text-label flex items-center gap-1.5">
+                  {cliState === 'done' && <StatusGlyph state="done" />}
+                  {cliState === 'error' && <StatusGlyph state="error" />}
+                  {cliState === 'running' && <Spinner size={14} className="text-text-muted" />}
                   Biorouter CLI
                 </p>
-                <p className="text-[11px] text-text-muted mt-0.5">
-                  {cliState === 'done'
-                    ? 'Installed. Open a new terminal and run `biorouter`.'
-                    : cli?.brokenOnPath
-                      ? 'The `biorouter` on your PATH won’t run. Reinstall it.'
-                      : cliIsUpdate
-                        ? `Update ${cli?.pathVersion ?? 'older'} → ${cli?.bundledVersion ?? 'latest'} to match this app.`
-                        : 'Call `biorouter` from any terminal.'}
+                <p className="text-supporting text-text-muted mt-0.5">
+                  {cliState === 'done' ? (
+                    <InlineCodeText text="Installed. Open a new terminal and run `biorouter`." />
+                  ) : cli?.brokenOnPath ? (
+                    <InlineCodeText text="The `biorouter` on your PATH won’t run. Reinstall it." />
+                  ) : cliIsUpdate ? (
+                    <span className="inline-flex flex-wrap items-center gap-x-1">
+                      Update {cli?.pathVersion ?? 'older'}
+                      {/* The arrow reads as "to": it stands between the two versions. */}
+                      <ArrowRight role="img" aria-label="to" className="size-3.5 shrink-0" />
+                      {cli?.bundledVersion ?? 'latest'} to match this app.
+                    </span>
+                  ) : (
+                    <InlineCodeText text="Call `biorouter` from any terminal." />
+                  )}
                 </p>
               </div>
               {cliState !== 'running' && cliState !== 'done' && (
                 <Button
-                  variant="default"
+                  variant={installVariant}
                   size="sm"
-                  className="h-7 text-xs"
                   disabled={isBusy}
                   onClick={handleInstallCli}
                 >
@@ -494,26 +573,29 @@ export default function DependencySetupModal() {
                 </Button>
               )}
               {cliState === 'running' && (
-                <span className="text-xs text-text-muted">{cliProgressLabel}</span>
+                <span className="text-supporting text-text-muted">{cliProgressLabel}</span>
               )}
             </div>
             {cliOutput && (
-              <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+              <div className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                 {cliOutput}
               </div>
             )}
             {cliState === 'error' && cliError && (
               <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
-                <p className="min-w-0 text-xs text-text-danger">{cliError}</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 text-xs"
-                  onClick={handleDebugCli}
-                  title="Open a new chat with this error and let Biorouter work it out"
-                >
-                  Debug with Biorouter
-                </Button>
+                <p className="min-w-0 text-supporting text-text-danger">
+                  <InlineCodeText text={cliError} />
+                </p>
+                <HelpTooltip help={DEBUG_HELP}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={handleDebugCli}
+                  >
+                    Debug with Biorouter
+                  </Button>
+                </HelpTooltip>
               </div>
             )}
           </div>
@@ -521,56 +603,67 @@ export default function DependencySetupModal() {
 
         {deps.map(({ info, installState, output, errorMsg }) => {
           const installed = installState === 'done' || info.installed;
+          const line = !installed && installState === 'idle' ? installLine(info) : null;
           return (
             <div
               key={info.name}
-              className={`rounded-lg border px-4 py-3 ${
+              className={`br-fill-surface rounded-container border border-transparent px-4 py-3 ${
                 installed
-                  ? 'border-border-success/40 bg-background-success/10'
+                  ? 'bg-background-success/10'
                   : installState === 'error'
-                    ? 'border-border-danger/30 bg-background-danger/5'
-                    : 'border-border-subtle bg-background-medium/20'
+                    ? 'bg-background-danger/10'
+                    : 'biorouter-modal-panel'
               }`}
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold flex items-center gap-1.5">
-                    {installed && <span className="text-text-success">✓</span>}
-                    {installState === 'error' && <span className="text-text-danger">✗</span>}
+                  <p className="text-label flex items-center gap-1.5">
+                    {installed && <StatusGlyph state="done" />}
+                    {installState === 'error' && <StatusGlyph state="error" />}
                     {installState === 'running' && (
-                      <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                      <Spinner size={14} className="text-text-muted" />
                     )}
                     {info.displayName}
                     {info.required === false && (
-                      <span className="text-[11px] font-normal text-text-muted">(optional)</span>
+                      <span className="text-supporting font-normal text-text-muted">
+                        (optional)
+                      </span>
                     )}
                   </p>
                   {installed && info.version && (
-                    <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>
+                    <p className="text-supporting text-text-muted mt-0.5">{info.version}</p>
                   )}
-                  {!installed && installState === 'idle' && (
-                    <p className="text-[11px] text-text-muted font-mono mt-0.5 break-all">
-                      {info.installCmd}
+                  {line && (
+                    <p
+                      className={
+                        line.command
+                          ? 'text-supporting text-text-muted font-mono mt-0.5 break-all'
+                          : 'text-supporting text-text-muted mt-0.5'
+                      }
+                    >
+                      {line.text}
                     </p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0 ml-3">
                   {!installed && info.downloadUrl && installState !== 'running' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs text-text-muted"
-                      onClick={() => handleOpenUrl(info.downloadUrl)}
-                      title="Open download page"
-                    >
-                      Download
-                    </Button>
+                    <HelpTooltip help="Open download page">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-text-muted"
+                        onClick={() => handleOpenUrl(info.downloadUrl)}
+                      >
+                        Download
+                      </Button>
+                    </HelpTooltip>
                   )}
-                  {!installed && installState !== 'running' && (
+                  {/* Only a row with a real command offers Install (`hasInstaller`). A row
+                      in `error` keeps it as the retry: only a command that ran can fail. */}
+                  {!installed && installState !== 'running' && hasInstaller(info) && (
                     <Button
-                      variant="default"
+                      variant={installVariant}
                       size="sm"
-                      className="h-7 text-xs"
                       // Disabled while ANY install is running. A live row button
                       // during a batch let the user start a second installer for a
                       // dependency the batch had not reached yet, so two package
@@ -582,7 +675,7 @@ export default function DependencySetupModal() {
                     </Button>
                   )}
                   {installState === 'running' && (
-                    <span className="text-xs text-text-muted">Installing…</span>
+                    <span className="text-supporting text-text-muted">Installing…</span>
                   )}
                 </div>
               </div>
@@ -593,7 +686,7 @@ export default function DependencySetupModal() {
                   ref={(el) => {
                     outputRefs.current[info.name] = el;
                   }}
-                  className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
+                  className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
                 >
                   {output}
                 </div>
@@ -604,22 +697,25 @@ export default function DependencySetupModal() {
                   probe the machine and fix it. */}
               {installState === 'error' && errorMsg && (
                 <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
-                  <p className="min-w-0 text-xs text-text-danger">{errorMsg}</p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 text-xs"
-                    onClick={() => handleDebugDependency({ info, installState, output, errorMsg })}
-                    title="Open a new chat with this error and let Biorouter work it out"
-                  >
-                    Debug with Biorouter
-                  </Button>
+                  <p className="min-w-0 text-supporting text-text-danger">{errorMsg}</p>
+                  <HelpTooltip help={DEBUG_HELP}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() =>
+                        handleDebugDependency({ info, installState, output, errorMsg })
+                      }
+                    >
+                      Debug with Biorouter
+                    </Button>
+                  </HelpTooltip>
                 </div>
               )}
 
               {/* Linux sudo note */}
               {info.requiresSudo && !installed && installState !== 'running' && (
-                <p className="mt-1 text-[11px] text-text-warning">
+                <p className="mt-1 text-supporting text-text-warning">
                   Requires sudo. You may be prompted for your password in a terminal.
                 </p>
               )}

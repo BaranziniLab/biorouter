@@ -65,15 +65,12 @@ When you [create a workflow](creating-and-sharing-workflows.md#create-a-workflow
 
 Workflow import is only available in Biorouter Desktop.
 
-Import a workflow using its deeplink or workflow file:
+Import a workflow from a workflow file:
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Workflows` in the sidebar.
-3. Click `Import Workflow`.
-4. Choose your import method:
-   - To import via a link: Under `Workflow Deeplink`, paste in the [workflow link](creating-and-sharing-workflows.md#share-via-workflow-link).
-   - To import via a file: Under `Workflow File`, click `Choose File`, select a workflow file, and click `Open`.
-5. Click `Import Workflow` to save a copy of the workflow to your Workflow Library.
+3. Click `Import workflow`.
+4. Drop a `.yaml` or `.json` file on the dialog ("Drop a .yaml or .json file here"), or click the dialog to choose a file. Biorouter saves a copy of the workflow to your Workflow Library at once.
 
 > **Warning.** Biorouter Desktop accepts `.yaml`, `.yml`, and `.json` files, but **the CLI only supports `.yaml` and `.json`**. For full compatibility across both interfaces, avoid `.yml` extensions.
 

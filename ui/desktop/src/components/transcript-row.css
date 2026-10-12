@@ -1,0 +1,307 @@
+/* @ws WS-TOOLS begin: transcript row */
+/*
+ * TranscriptRow (`components/TranscriptRow.tsx`): the one transcript line.
+ *
+ * A tool call, the thinking disclosure, a resolved card and a parked tool call
+ * are all this row: a 16px glyph, the verb and summary in `text-secondary`
+ * muted ink, and a trailing chevron that opens one indented well. D-17: a tool
+ * call is a line, not a card.
+ *
+ * Geometry:
+ * - 28px tall. The trigger bleeds 8px to the left so its hover wash has room
+ *   while the glyph stays on the column's left edge.
+ * - The body starts 24px in: the glyph (16) plus the gap (8), so the well's
+ *   left edge is the label's left edge.
+ *
+ * Another file leans on three names here. `message-meta.css` (WS-TRANSCRIPT)
+ * ends the last tool row of a message short, so the answer's hover actions
+ * never cover a full-width label or its chevron:
+ * `[data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line`.
+ * It needs `.biorouter-message-tool` (the wrapper `ToolCallRows` draws),
+ * `.br-transcript-row-line` (the flex line that holds the head), and the head's
+ * max-width resolving against that line's CONTENT box, which is why the line
+ * is the element that takes the padding. Rename or restructure any of the three
+ * and `transcript/messageActionsGeometry.browser.test.tsx` goes red.
+ *
+ * Authored CSS, not Tailwind strings: a newly written utility can silently fail
+ * to generate under BIOROUTER_NO_HMR, and these rules are load-bearing.
+ */
+.br-transcript-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.br-transcript-row-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 4px;
+}
+
+.br-transcript-row-head {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: calc(100% + 8px);
+  height: 28px;
+  margin-inline-start: -8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  text-align: left;
+}
+
+button.br-transcript-row-head {
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+button.br-transcript-row-head:hover {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+button.br-transcript-row-head:focus-visible {
+  outline: none;
+  background: var(--background-focus);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+  color: var(--text-default);
+}
+
+/* State selectors reach the row's OWN line through child combinators. A row can
+   hold rows (the Explored row opens onto its calls), and a descendant selector
+   would paint an open row's turned chevron, a running row's pulse or a failed
+   row's ink onto every row nested in its body. */
+.br-transcript-row[data-tone='danger'] > .br-transcript-row-line .br-transcript-row-head {
+  color: var(--text-danger);
+}
+
+.br-transcript-row-glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.br-transcript-row-glyph > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.br-transcript-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Every meta opens with "· " ("Explored · 2 files", "Thinking · 8s"), so it
+   sits one word space after the label: the head's 8px gap less 4px leaves 4px,
+   about the width of the space after the dot, and the phrase reads evenly. */
+.br-transcript-row-meta {
+  flex-shrink: 0;
+  margin-inline-start: -4px;
+  white-space: nowrap;
+}
+
+/* A meta that renders nothing yet (the thinking clock says nothing for its
+   first 2s) must not add a gap before the chevron. */
+.br-transcript-row-meta:empty {
+  display: none;
+}
+
+.br-transcript-row-chevron {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  opacity: 0.6;
+  transition:
+    opacity var(--dur-fast-min) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button.br-transcript-row-head:hover .br-transcript-row-chevron,
+button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
+.br-transcript-row[data-state='open'] > .br-transcript-row-line .br-transcript-row-chevron {
+  opacity: 1;
+}
+
+.br-transcript-row[data-state='open'] > .br-transcript-row-line .br-transcript-row-chevron {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-min), var(--dur-fast-max);
+}
+
+/* Work in progress: the label breathes. One period for every "working" loop in
+   the transcript (the activity line uses the same keyframes). Hovering or
+   focusing the row stills it so the text can be read. */
+.br-transcript-row[data-running] > .br-transcript-row-line .br-transcript-row-label {
+  animation: br-tool-text-pulse calc(var(--dur-slow) * 4) var(--ease-out) infinite;
+}
+
+.br-transcript-row[data-running]
+  > .br-transcript-row-line
+  button.br-transcript-row-head:hover
+  .br-transcript-row-label,
+.br-transcript-row[data-running]
+  > .br-transcript-row-line
+  button.br-transcript-row-head:focus-visible
+  .br-transcript-row-label {
+  animation: none;
+}
+
+/* The body. Padding, not margin, so the disclosure's measured height includes
+   the gap above the well. */
+.br-transcript-row-body {
+  padding: 4px 0 0 24px;
+  min-width: 0;
+}
+
+/* The well is the subtle fill every in-page box takes (fills before lines,
+   R-27, design.md 9.11): no visible outline, the element radius. Its 1px
+   border is transparent and the padding one less, so the content still starts
+   12px in: forced colours repaint the fill as Canvas and draw the border in
+   the system ink, so the well keeps its box there (with no border it had
+   none). */
+.br-transcript-row-well {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: var(--background-fill);
+}
+
+/* A tool's output is machine text. It reads in the code role (13/20, mono), the
+   same as the input above it and the clipped preview it grows from; without
+   this the full text turned into 14/21 prose the moment "Show more" opened it.
+   Markdown still renders (file paths stay links), only its voice is the well's. */
+.br-transcript-row-well .biorouter-markdown.prose {
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+}
+
+/* Output keeps its runs of spaces and tabs (aligned columns), so a paragraph is
+   `pre-wrap`. Chat markdown also turns every newline into a <br> followed by
+   the newline itself, and `pre-wrap` honours both, so each line break doubled;
+   the <br> stands down and the newline carries the break. Only paragraphs:
+   on the markdown root, the newlines between blocks drew a blank line between
+   a paragraph and the table under it. */
+.br-transcript-row-well .biorouter-markdown p {
+  white-space: pre-wrap;
+}
+
+.br-transcript-row-well .biorouter-markdown p br {
+  display: none;
+}
+
+/* A list's markers hang in a gutter counted in the well's own mono advance.
+   An outside marker is as wide as its characters, and in mono "1. " is three
+   whole advances (23.4px at 13px), wider than the prose list's 1.5em gutter
+   (19.5px, plus the item's 2px). The marker hung past the markdown root, whose
+   `overflow-x` cut its first digit: "1." read "l." and "10." read ").", in any
+   tool output with a numbered list (merge-verify #391, screen 20).
+   So the gutter is `ch`: three for a one-digit marker, four once a list's
+   numbers reach 10, five at 100. A list that starts past 1 (CommonMark ends a
+   list at an unindented code block and numbers the rest from where it was)
+   keeps three while its numbers stay one digit, so its text lines up with the
+   half above it. A bullet takes the same three, so bulleted and numbered
+   items share one text edge. The one case left is a list that STARTS at 100 or
+   more: selectors cannot compare numbers, and it gets four.
+   Measured, with the instrument, in `toolOutputListMarkers.browser.test.tsx`. */
+.br-transcript-row-well .biorouter-markdown.prose :where(ul, ol) {
+  padding-inline-start: 3ch;
+}
+
+.br-transcript-row-well
+  .biorouter-markdown.prose
+  ol:where(
+    :has(> li:nth-child(10)),
+    [start]:not(
+      [start='0'],
+      [start='2'],
+      [start='3'],
+      [start='4'],
+      [start='5'],
+      [start='6'],
+      [start='7'],
+      [start='8'],
+      [start='9']
+    ),
+    [start='0']:has(> li:nth-child(11)),
+    [start='2']:has(> li:nth-child(9)),
+    [start='3']:has(> li:nth-child(8)),
+    [start='4']:has(> li:nth-child(7)),
+    [start='5']:has(> li:nth-child(6)),
+    [start='6']:has(> li:nth-child(5)),
+    [start='7']:has(> li:nth-child(4)),
+    [start='8']:has(> li:nth-child(3)),
+    [start='9']:has(> li:nth-child(2))
+  ) {
+  padding-inline-start: 4ch;
+}
+
+.br-transcript-row-well .biorouter-markdown.prose ol:where(:has(> li:nth-child(100))) {
+  padding-inline-start: 5ch;
+}
+
+/* A code block or a table in the output steps back to the page ground: the
+   well is already the fill, and a fill never sits on a fill. */
+.br-transcript-row-well :is(.br-md-code, .br-md-table) {
+  background-color: var(--background-default);
+}
+
+/* So does a tool's progress track. The shared Progress paints its track in
+   `--background-muted`, which IS the fill in both modes, so on the well only
+   the coral part showed and "3 of 10" read as a short bar with no length. On
+   the page ground the whole track reads, as the usage card's bars do. */
+.br-transcript-row-well .br-progress {
+  background-color: var(--background-default);
+}
+
+.br-transcript-row-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-transcript-row-section-label {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+@keyframes br-tool-text-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-transcript-row[data-running] > .br-transcript-row-line .br-transcript-row-label {
+    animation: none;
+  }
+
+  button.br-transcript-row-head,
+  .br-transcript-row-chevron {
+    transition: none;
+  }
+}
+/* @ws WS-TOOLS end: transcript row */

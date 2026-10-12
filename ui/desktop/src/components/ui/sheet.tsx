@@ -5,6 +5,7 @@ import * as SheetPrimitive from '@radix-ui/react-dialog';
 import { XIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
+import { useReturnFocusToOpener } from './dialog';
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -30,7 +31,7 @@ const SheetOverlay = React.forwardRef<
     ref={ref}
     data-slot="sheet-overlay"
     className={cn(
-      'biorouter-modal-overlay data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-[var(--z-overlay)]',
+      'biorouter-modal-overlay data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-[var(--z-modal)]',
       className
     )}
     {...props}
@@ -65,17 +66,41 @@ function SheetContent({
   className,
   children,
   side = 'right',
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  ref,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: 'top' | 'right' | 'bottom' | 'left';
 }) {
+  // A sheet opened from state has no Trigger for Radix to return to (see `dialog.tsx`).
+  const returnFocus = useReturnFocusToOpener({ onOpenAutoFocus, onCloseAutoFocus });
+  const { recordFocusAlreadyInside } = returnFocus;
+  // A field with `autoFocus` has focus inside before Radix reads the opener (see `dialog.tsx`).
+  const attach = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      if (typeof ref === 'function') ref(node);
+      else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = node;
+      recordFocusAlreadyInside(node);
+      return () => {
+        if (typeof ref === 'function') ref(null);
+        else if (ref) (ref as React.RefObject<HTMLDivElement | null>).current = null;
+      };
+    },
+    [ref, recordFocusAlreadyInside]
+  );
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
+        ref={attach}
+        onOpenAutoFocus={returnFocus.onOpenAutoFocus}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         data-slot="sheet-content"
         className={cn(
-          'biorouter-modal-surface bg-background-default shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-[var(--z-modal)] flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-[var(--motion-fast)] data-[state=open]:duration-[var(--motion-slow)]',
+          // Motion (spec 2.6): `.br-sheet-motion` in main.css, in over `--dur-med`, out over
+          // `--dur-fast`, `--ease-out`; the slide utilities below only set the direction.
+          'biorouter-modal-surface br-sheet-motion bg-background-default shadow-modal data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-[var(--z-modal)] flex flex-col gap-4',
           side === 'right' &&
             'data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm',
           side === 'left' &&
@@ -89,7 +114,10 @@ function SheetContent({
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="data-[state=open]:bg-overlay-hover absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-element text-text-muted opacity-70 transition-[opacity,background-color] hover:bg-overlay-hover hover:opacity-100 disabled:pointer-events-none">
+        <SheetPrimitive.Close
+          data-slot="sheet-close"
+          className="data-[state=open]:bg-overlay-hover absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-element text-text-muted opacity-70 transition-[opacity,background-color] hover:bg-overlay-hover hover:opacity-100 disabled:pointer-events-none"
+        >
           <XIcon className="size-4" />
           <span className="sr-only">Close</span>
         </SheetPrimitive.Close>

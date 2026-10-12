@@ -24,6 +24,7 @@ const EnvironmentBadge: React.FC = () => {
         <div
           className={`${bgColor} w-3 h-3 rounded-full cursor-default`}
           data-testid="environment-badge"
+          role="img"
           aria-label={tooltipText}
         />
       </TooltipTrigger>

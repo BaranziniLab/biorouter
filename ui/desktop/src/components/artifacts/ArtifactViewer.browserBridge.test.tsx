@@ -9,6 +9,13 @@ import {
 } from '../../utils/annotationChannel';
 import ArtifactViewer from './ArtifactViewer';
 import { ANNOTATE_NEEDS_DESKTOP_REASON } from './captureOnBrowser';
+import { PREVIEW_COPY } from './copy';
+
+/** "Send a region to the chat" lives in the header's ⋯ menu (spec 3.8). */
+async function annotateItem() {
+  await userEvent.click(screen.getByRole('button', { name: PREVIEW_COPY.moreActions }));
+  return screen.findByTestId('artifact-annotate');
+}
 
 /**
  * "Send a region to the chat" against a bridge with no `captureRegion`.
@@ -117,15 +124,20 @@ describe('a selection against a bridge without captureRegion', () => {
     try {
       mount();
       expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-      await userEvent.click(screen.getByTestId('artifact-annotate'));
+      await userEvent.click(await annotateItem());
       expect(screen.getByTestId('annotation-overlay')).toBeInTheDocument();
+      // While a region is being picked, the pressed tool shows in the header.
+      expect(screen.getByTestId('artifact-annotate-cancel')).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
 
       await dragARegion();
 
       await waitFor(() =>
         expect(screen.queryByTestId('annotation-overlay')).not.toBeInTheDocument()
       );
-      expect(screen.getByTestId('artifact-annotate')).toHaveAttribute('aria-pressed', 'false');
+      expect(screen.queryByTestId('artifact-annotate-cancel')).not.toBeInTheDocument();
       // Nothing was captured, so nothing may be sent as though it had been.
       expect(received).not.toHaveBeenCalled();
       // Let a rejection that escaped the handler reach the process before asking.
@@ -145,14 +157,15 @@ describe('the camera control on a browser surface (SD-8)', () => {
     mount();
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
 
-    const camera = screen.getByTestId('artifact-annotate');
-    expect(camera).toBeDisabled();
-    expect(camera).toHaveAttribute('title', ANNOTATE_NEEDS_DESKTOP_REASON);
-    // The reason is the tooltip, not the control's name: a screen reader still
-    // announces what the control is.
-    expect(camera).toHaveAccessibleName('Send a region to the chat');
+    const item = await annotateItem();
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    // The reason is visible and is the item's description, not its name: a
+    // screen reader still announces what the control is.
+    expect(item).toHaveTextContent(ANNOTATE_NEEDS_DESKTOP_REASON);
+    expect(item).toHaveAccessibleDescription(ANNOTATE_NEEDS_DESKTOP_REASON);
+    expect(item).toHaveAccessibleName(PREVIEW_COPY.annotate);
 
-    await userEvent.click(camera);
+    await userEvent.click(item);
     expect(screen.queryByTestId('annotation-overlay')).not.toBeInTheDocument();
   });
 
@@ -164,10 +177,10 @@ describe('the camera control on a browser surface (SD-8)', () => {
     mount();
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
 
-    const camera = screen.getByTestId('artifact-annotate');
-    expect(camera).toBeEnabled();
-    expect(camera).toHaveAttribute('title', 'Send a region to the chat');
-    await userEvent.click(camera);
+    const item = await annotateItem();
+    expect(item).not.toHaveAttribute('aria-disabled');
+    expect(item).toHaveAccessibleName(PREVIEW_COPY.annotate);
+    await userEvent.click(item);
     expect(screen.getByTestId('annotation-overlay')).toBeInTheDocument();
   });
 });

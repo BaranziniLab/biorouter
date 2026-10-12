@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Message } from '../api';
 import { ChatState } from '../types/chatState';
 import { deriveTrailingActivity } from './trailingActivity';
+import { transcriptCopy } from '../components/transcript/copy';
 
 const LAST_MESSAGE_AT = 1_700_000_000_000;
 const TURN_STARTED_AT = 1_699_999_990_000;
@@ -53,7 +54,7 @@ describe('deriveTrailingActivity', () => {
 
     expect(activity).not.toBeNull();
     expect(activity?.phase).toBe('thinking');
-    expect(activity?.label).toBe('Working on the result');
+    expect(activity?.label).toBe(transcriptCopy.activity.thinking);
     expect(activity?.since).toBe(LAST_MESSAGE_AT);
   });
 
@@ -291,7 +292,7 @@ describe('pending steer', () => {
     expect(activity?.phase).not.toBe('steering');
     expect(activity?.phase).toBe('steerQueued');
     expect(activity?.since).toBeUndefined();
-    expect(activity?.label).toBe('Your message will be added after you answer the card');
+    expect(activity?.label).toBe(transcriptCopy.activity.waitingForAnswer);
   });
 
   it('yields to an approval card on screen, with no clock', () => {

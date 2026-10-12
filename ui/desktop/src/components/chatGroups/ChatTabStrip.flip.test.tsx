@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { fireEvent } from '@testing-library/dom';
 import { ChatTabStrip, ChatTabStripProps } from './ChatTabStrip';
+import { createTabStripMemory, type TabStripMemory } from './tabStripMemory';
 import { ChatTab } from './chatGroupsTypes';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * #37 — the FLIP pass: on reorder/close, tabs get an INVERTED inline translate
@@ -124,8 +127,8 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
     flushFrames();
     expect(a.style.translate).toBe('');
     expect(b.style.translate).toBe('');
-    expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
-    expect(b.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+    expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
+    expect(b.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
 
     // Once the transition settles, the inline transition is handed back to the
     // stylesheet — no residue.
@@ -166,16 +169,19 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
     flushFrames();
     expect(c.style.translate).toBe('');
     expect(c.style.transform).toBe('');
-    expect(c.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+    expect(c.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
   });
 
-  it('a newly opened tab appears in place — it does not slide in from nowhere', () => {
+  it('a newly opened tab grows in where it lands; it does not slide in from nowhere', () => {
     const { container, rerender, props } = renderStrip([tab('a')]);
 
     rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} />);
 
     expect(tabNode(container, 'a').style.translate).toBe('');
     expect(tabNode(container, 'b').style.translate).toBe('');
+    // Its entrance is the CSS keyframe the attribute selects (spec 3.16).
+    expect(tabNode(container, 'b').dataset.tabEntering).toBe('true');
+    expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
   });
 
   it('respects prefers-reduced-motion: no translate is ever applied', () => {
@@ -241,7 +247,7 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       flushFrames();
 
       const a = tabNode(container, 'a');
-      expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)');
+      expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)');
 
       fireEvent(a, new Event('transitioncancel', { bubbles: true }));
       expect(a.style.transition).toBe('');
@@ -256,7 +262,7 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       const a = tabNode(container, 'a');
       const child = a.querySelector('button') as HTMLElement; // e.g. the close control's opacity fade
       fireEvent.transitionEnd(child);
-      expect(a.style.transition).toBe('translate var(--motion-base) var(--ease-spring)'); // still sliding
+      expect(a.style.transition).toBe('translate var(--dur-fast-max) var(--ease-spring)'); // still sliding
 
       fireEvent.transitionEnd(a);
       expect(a.style.transition).toBe(''); // its own end still cleans up
@@ -289,5 +295,190 @@ describe('ChatTabStrip — FLIP slide on reorder (#37)', () => {
       expect(b.style.transition).toBe('');
       expect(b.style.translate).toBe('');
     });
+  });
+});
+
+/**
+ * Spec 3.16, "Opening tabs": a tab that OPENS grows in from its left edge
+ * (`data-tab-entering` selects the `br-tab-enter` keyframe in main.css), and a
+ * tab the strip MOUNTS with does not: a reload restoring its tabs, a window
+ * opening with them and a tear-off all appear at rest. jsdom runs no CSS, so
+ * these pin the attribute's life; the keyframe itself is pinned at the source
+ * below and seen in the vision pass.
+ */
+describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
+  it('a strip mounts with its tabs at rest: no entrance on a restore or a new window', () => {
+    const { container } = renderStrip([tab('a'), tab('b'), tab('c')]);
+    for (const id of ['a', 'b', 'c']) {
+      expect(tabNode(container, id).dataset.tabEntering).toBeUndefined();
+    }
+  });
+
+  it('an ACTIVE new tab swaps entering for entered when its entrance ends, until it stops being active', () => {
+    const { container, rerender, props } = renderStrip([tab('a')], { activeTabId: 'a' });
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="b" />);
+
+    const b = tabNode(container, 'b');
+    expect(b.dataset.tabEntering).toBe('true');
+    expect(b.dataset.tabEntered).toBeUndefined();
+
+    // The entrance ends. Dropping `entering` alone would swap the computed
+    // animation to `br-tab-select` and settle the tab a second time, so the
+    // active tab takes `entered` (computes `animation: none`) in the same tick.
+    fireEvent.animationEnd(b);
+    expect(b.dataset.tabEntering).toBeUndefined();
+    expect(b.dataset.tabEntered).toBe('true');
+
+    // Another tab becomes active: now it lets go, and selecting it later settles.
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="a" />);
+    expect(b.dataset.tabEntering).toBeUndefined();
+    expect(b.dataset.tabEntered).toBeUndefined();
+  });
+
+  it('an INACTIVE new tab lets go of the attribute when its entrance ends', () => {
+    const { container, rerender, props } = renderStrip([tab('a')], { activeTabId: 'a' });
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="a" />);
+
+    const b = tabNode(container, 'b');
+    expect(b.dataset.tabEntering).toBe('true');
+    // A bubbling animationend from a child (the running dot) is not its own.
+    fireEvent.animationEnd(b.querySelector('button') as HTMLElement);
+    expect(b.dataset.tabEntering).toBe('true');
+    fireEvent.animationEnd(b);
+    expect(b.dataset.tabEntering).toBeUndefined();
+    // An inactive tab has no settle to suppress, so it takes no `entered` mark.
+    expect(b.dataset.tabEntered).toBeUndefined();
+  });
+
+  it('marks the entrance under reduced motion too (the CSS rests it to a fade)', () => {
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }) as unknown as MediaQueryList) as typeof window.matchMedia;
+
+    const { container, rerender, props } = renderStrip([tab('a')]);
+    rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} />);
+
+    expect(tabNode(container, 'b').dataset.tabEntering).toBe('true');
+    expect(frames.size).toBe(0);
+  });
+
+  it('while the window is being resized nothing enters and nothing slides', () => {
+    document.body.classList.add('biorouter-window-resizing');
+    try {
+      const { container, rerender, props } = renderStrip([tab('a'), tab('b')]);
+      rerender(<ChatTabStrip {...props} tabs={[tab('b'), tab('a'), tab('c')]} />);
+
+      expect(tabNode(container, 'c').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(container, 'a').style.translate).toBe('');
+      expect(tabNode(container, 'b').style.translate).toBe('');
+      expect(frames.size).toBe(0);
+    } finally {
+      document.body.classList.remove('biorouter-window-resizing');
+    }
+  });
+
+  /**
+   * Vision V1-H1: the shell keys each chat on its active tab, and the strip
+   * renders inside that chat's header, so "+" and "Open in new tab" build a NEW
+   * strip. These mount a second strip on the same memory, as the shell does.
+   */
+  describe('across a remount (a tab switch rebuilds the strip with its chat)', () => {
+    function mountOn(memory: TabStripMemory, tabs: ChatTab[], activeTabId: string) {
+      return render(
+        <ChatTabStrip
+          tabs={tabs}
+          activeTabId={activeTabId}
+          runningSessionIds={[]}
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onReorder={vi.fn()}
+          reserveTitlebar={false}
+          isCompactSidebarOverlayOpen={false}
+          memory={memory}
+        />
+      );
+    }
+
+    it('a tab opened with "+" grows in although the strip that shows it is a new one', () => {
+      const memory = createTabStripMemory();
+      const first = mountOn(memory, [tab('a'), tab('b')], 'a');
+      expect(tabNode(first.container, 'a').dataset.tabEntering).toBeUndefined();
+      first.unmount();
+
+      const second = mountOn(memory, [tab('a'), tab('b'), tab('c')], 'c');
+      expect(tabNode(second.container, 'c').dataset.tabEntering).toBe('true');
+      expect(tabNode(second.container, 'a').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(second.container, 'b').dataset.tabEntering).toBeUndefined();
+    });
+
+    it('a plain tab switch (same tabs, same order) enters nothing and slides nothing', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [tab('a'), tab('b'), tab('c')], 'a').unmount();
+
+      const { container } = mountOn(memory, [tab('a'), tab('b'), tab('c')], 'b');
+      for (const id of ['a', 'b', 'c']) {
+        expect(tabNode(container, id).dataset.tabEntering).toBeUndefined();
+        expect(tabNode(container, id).style.translate).toBe('');
+      }
+      expect(frames.size).toBe(0);
+    });
+
+    it('closing the ACTIVE tab slides the survivors from where the old strip showed them', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [tab('a'), tab('b'), tab('c')], 'a').unmount();
+
+      // 'a' closes and 'b' takes over: b and c each move one 100px slot left.
+      const { container } = mountOn(memory, [tab('b'), tab('c')], 'b');
+      expect(tabNode(container, 'b').style.translate).toBe(`${TAB_SLOT_PX}px`);
+      expect(tabNode(container, 'c').style.translate).toBe(`${TAB_SLOT_PX}px`);
+      flushFrames();
+      expect(tabNode(container, 'c').style.translate).toBe('');
+    });
+
+    it('a new window: the first tab that replaces the empty placeholder appears at rest', () => {
+      const memory = createTabStripMemory();
+      mountOn(memory, [], 'none').unmount();
+
+      const { container } = mountOn(memory, [tab('a')], 'a');
+      expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
+    });
+
+    it('a fresh memory (a reload, a new window, a return to the chats route) restores at rest', () => {
+      const { container } = mountOn(createTabStripMemory(), [tab('a'), tab('b')], 'b');
+      expect(tabNode(container, 'a').dataset.tabEntering).toBeUndefined();
+      expect(tabNode(container, 'b').dataset.tabEntering).toBeUndefined();
+    });
+  });
+
+  it('the keyframe grows the tab from its left edge on the individual scale, and enter wins over select', () => {
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    const rule = css.match(/\.br-tab\[data-tab-entering='true'\]\s*\{([^}]*)\}/);
+    expect(rule, 'no .br-tab[data-tab-entering] rule').not.toBeNull();
+    expect(rule![1]).toMatch(/transform-origin:\s*left center/);
+    expect(rule![1]).toMatch(
+      /animation:\s*br-tab-enter var\(--dur-fast-max\) var\(--ease-out\) backwards/
+    );
+
+    const keyframes = css.match(/@keyframes br-tab-enter\s*\{([\s\S]*?)\n\}/);
+    expect(keyframes, 'no br-tab-enter keyframes').not.toBeNull();
+    expect(keyframes![1]).toMatch(/opacity:\s*0;\s*scale:\s*0\.96;/);
+    expect(keyframes![1]).not.toMatch(/transform:/);
+
+    // Same specificity as the active rule, so source order decides: enter is later.
+    expect(css.indexOf(".br-tab[data-tab-entering='true'] {")).toBeGreaterThan(
+      css.indexOf(".br-tab[data-active='true'] {")
+    );
+
+    // An active tab whose entrance has played holds NO animation: not the settle,
+    // and not a finished entrance a DOM move (React's keyed reorder) would replay.
+    const entered = css.match(
+      /\.br-tab\[data-active='true'\]\[data-tab-entered='true'\]\s*\{([^}]*)\}/
+    );
+    expect(entered, 'no .br-tab[data-tab-entered] rule').not.toBeNull();
+    expect(entered![1]).toMatch(/animation:\s*none/);
   });
 });

@@ -1,6 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { Checkbox } from './Checkbox';
+
+const CSS = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+/** The body of the first top-level rule whose selector is exactly `selector`. */
+function rule(selector: string): string {
+  const at = CSS.indexOf(`\n${selector} {`);
+  expect(at, `no rule for ${selector}`).toBeGreaterThanOrEqual(0);
+  const open = CSS.indexOf('{', at);
+  return CSS.slice(open + 1, CSS.indexOf('}', open));
+}
 
 // jsdom has no layout engine and never runs Tailwind, so it cannot see the
 // thing this component exists to fix — a bare `<input type="checkbox">` painting
@@ -67,7 +78,46 @@ describe('Checkbox', () => {
   it('puts the focus ring on the square the user can see', () => {
     render(<Checkbox aria-label="Include the vault" />);
     const box = screen.getByLabelText('Include the vault').nextElementSibling;
-    expect(box).toHaveClass('peer-focus-visible:ring-2', 'peer-focus-visible:ring-border-focus');
+    expect(box).toHaveClass('br-checkbox-box');
+    // Authored, not a utility at the call site (a new Tailwind string can fail to generate).
+    expect(rule('.br-checkbox-input:focus-visible ~ .br-checkbox-box')).toMatch(
+      /outline:\s*2px solid var\(--ring\)/
+    );
+  });
+
+  /**
+   * Spec 2.6: a 16px box with a 1.5px `--border-control` edge and radius 4 inside the 24px
+   * target; checked, the accent fill with a 10px check; indeterminate, an 8×2 bar; the fill
+   * over `--dur-fast-min`. jsdom runs no CSS, so the recipe is pinned at the source and measured
+   * in `controlsGeometry.browser.test.tsx`.
+   */
+  it('draws a 16px box with the control edge, an accent fill and a trailing 10px check', () => {
+    expect(rule('.br-checkbox')).toMatch(/inline-size:\s*24px/);
+    const box = rule('.br-checkbox-box');
+    expect(box).toMatch(/inset:\s*4px/);
+    expect(box).toMatch(/border:\s*1\.5px solid var\(--border-control\)/);
+    expect(box).toMatch(/border-radius:\s*var\(--radius-inner\)/);
+    expect(box).toMatch(/background-color var\(--dur-fast-min\) var\(--ease-out\)/);
+    expect(box).not.toMatch(/border-emphasized/);
+    expect(
+      rule(
+        '.br-checkbox-input:checked ~ .br-checkbox-box,\n.br-checkbox-input:indeterminate ~ .br-checkbox-box'
+      )
+    ).toMatch(/background-color:\s*var\(--background-accent\)/);
+    expect(rule('.br-checkbox-check')).toMatch(/inline-size:\s*10px/);
+    expect(rule('.br-checkbox-bar')).toMatch(/inline-size:\s*8px;\s*block-size:\s*2px/);
+  });
+
+  it('shows the check when checked and the bar when indeterminate', () => {
+    const { container, rerender } = render(<Checkbox aria-label="Pick" defaultChecked />);
+    const svg = container.querySelector('svg.br-checkbox-check');
+    expect(svg).toHaveAttribute('stroke-width', '2');
+    expect(svg).toHaveAttribute('viewBox', '0 0 10 10');
+    expect(container.querySelector('.br-checkbox-input:checked ~ .br-checkbox-check')).toBe(svg);
+    rerender(<Checkbox aria-label="Pick" indeterminate />);
+    expect(
+      container.querySelector('.br-checkbox-input:indeterminate ~ .br-checkbox-bar')
+    ).not.toBeNull();
   });
 
   it('writes the indeterminate state, which has no HTML attribute', () => {

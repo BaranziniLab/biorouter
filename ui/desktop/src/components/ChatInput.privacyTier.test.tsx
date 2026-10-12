@@ -48,26 +48,15 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({
-  default: ({ privacyTier }: { privacyTier?: string }) => (
+// The pickers and the footer are WS-PICKERS' modules, mocked by path. The
+// model chip reports the tier it was handed, which is what this suite reads.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({
+  ModelEffortChip: ({ privacyTier }: { privacyTier?: string }) => (
     <div data-testid="tier-probe">{privacyTier ?? 'unresolved'}</div>
   ),
 }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({
-  CostTracker: () => null,
-}));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({
   default: () => null,
 }));
@@ -107,12 +96,14 @@ function chatInput(
   sessionId: string | null,
   chatState: ChatState = ChatState.Idle,
   messagesLength = 0,
-  sessionRowPrivacyTier?: 'public' | 'private'
+  sessionRowPrivacyTier?: 'public' | 'private',
+  followUp?: boolean
 ) {
   return (
     <ChatInput
       sessionId={sessionId}
       sessionRowPrivacyTier={sessionRowPrivacyTier}
+      followUp={followUp}
       handleSubmit={vi.fn()}
       chatState={chatState}
       onStop={vi.fn()}
@@ -124,7 +115,6 @@ function chatInput(
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={messagesLength}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
@@ -135,9 +125,10 @@ function renderChatInput(
   sessionId: string | null,
   chatState: ChatState = ChatState.Idle,
   messagesLength = 0,
-  sessionRowPrivacyTier?: 'public' | 'private'
+  sessionRowPrivacyTier?: 'public' | 'private',
+  followUp?: boolean
 ) {
-  return render(chatInput(sessionId, chatState, messagesLength, sessionRowPrivacyTier));
+  return render(chatInput(sessionId, chatState, messagesLength, sessionRowPrivacyTier, followUp));
 }
 
 // A promise whose resolution this test controls, so the order responses LAND
@@ -267,6 +258,30 @@ describe('ChatInput session privacy tier (#56)', () => {
     });
 
     expect(getSessionMock.mock.calls.length).toBe(afterBind + 1);
+  });
+
+  it('is not armed or fired by followUp, which only words the placeholder', async () => {
+    // A new chat's first send draws its message before the store holds it, and
+    // BaseChat says so with `followUp` (the placeholder). Folding that row into
+    // `messagesLength` instead would move this probe's timing for a message the
+    // daemon has not streamed: the re-read must wait for the transcript to grow.
+    getSessionMock
+      .mockResolvedValueOnce({ data: { working_dir: '/w' } } as never)
+      .mockResolvedValue({ data: { privacy_tier: 'public' } } as never);
+
+    const { rerender } = renderChatInput('chat-a', ChatState.Streaming, 0, undefined, false);
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('public'));
+    const afterBind = getSessionMock.mock.calls.length;
+
+    rerender(chatInput('chat-a', ChatState.Streaming, 0, undefined, true));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getSessionMock.mock.calls.length).toBe(afterBind);
+
+    // The transcript growing is what fires it, as before.
+    rerender(chatInput('chat-a', ChatState.Streaming, 1, undefined, true));
+    await waitFor(() => expect(getSessionMock.mock.calls.length).toBe(afterBind + 1));
   });
 
   it('stops re-reading once the answer is private', async () => {

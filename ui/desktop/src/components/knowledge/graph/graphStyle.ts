@@ -42,12 +42,17 @@ export function resolveComputed(
  * computed style already holds the resolved stack. Hardcoding `'Figtree', …`
  * here would work today and silently rot the first time the token moves.
  *
- * `fallback` covers jsdom, where `getComputedStyle` reports no family at all.
+ * `fallback` covers jsdom, where `getComputedStyle` reports no family at all, and
+ * it is the app's body stack verbatim (`--font-body`, the website's Arial-first
+ * `--font`; spec 2.1), so even the fallback draws the one UI face rather than a
+ * third stack. `graphStyle.test.ts` pins both fallbacks to `main.css`.
  */
-export const CANVAS_FONT_FALLBACK = 'ui-sans-serif, system-ui, -apple-system, sans-serif';
+export const CANVAS_FONT_FALLBACK =
+  "Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
 
 /** The mono stack, resolved off a `font-mono` probe. Edge labels are machine tokens. */
-export const CANVAS_MONO_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+export const CANVAS_MONO_FALLBACK =
+  "ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace";
 
 /**
  * The ink every canvas glyph, outline, edge and grid dot is drawn in.

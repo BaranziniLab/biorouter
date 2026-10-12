@@ -41,7 +41,6 @@
 //! That is why tool *output* is scanned for credential material as well
 //! (`biorouter::guardrails::secret_output`).
 
-use etcetera::AppStrategy;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -706,8 +705,8 @@ fn has_separator(s: &str) -> bool {
 fn ignore_sources(cwd: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::with_capacity(2);
 
-    if let Ok(strategy) = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone()) {
-        let global = strategy.config_dir().join(".biorouterignore");
+    if let Ok(dirs) = crate::paths::platform_dirs() {
+        let global = dirs.config.join(".biorouterignore");
         if global.is_file() {
             sources.push(global);
         }
@@ -1352,8 +1351,8 @@ mod tests {
         // missed by the other.
         let dir = tempdir().unwrap();
         let sources = ignore_sources(dir.path());
-        let global = etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|s| s.config_dir().join(".biorouterignore"))
+        let global = crate::paths::platform_dirs()
+            .map(|dirs| dirs.config.join(".biorouterignore"))
             .expect("app strategy");
         if global.is_file() {
             assert!(

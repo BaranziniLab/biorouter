@@ -41,6 +41,10 @@ async fn async_main() -> ExitCode {
     // `--version` and a usage mistake are answered here, and touch nothing on disk (SF-F8).
     let command_line = read_command_line();
     tune_allocator();
+    // R-31: the command line tool never moves the Windows app folder out of
+    // the one earlier releases used; the daemon does, as it starts. While this
+    // process uses that folder it holds its lock (`platform_dirs`), so no
+    // move happens under the paths it freezes here and below.
     if let Err(e) = biorouter_cli::logging::setup_logging(None, None) {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }

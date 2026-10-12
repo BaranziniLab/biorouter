@@ -2,8 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
-import { Check, Copy, Terminal } from '../icons/app-icons';
+import { errorMessage } from '../../utils/conversionUtils';
+import { Terminal } from '../icons/app-icons';
+import { CopyField } from '../ui/copy-field';
 import InAppTerminalDock from '../InAppTerminalDock';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { InfoTip } from '../ui/info-tip';
+import { agentCopy } from './copy';
 import {
   AGENT_COMMAND_CONFIG,
   METERED_SIBLING,
@@ -13,6 +18,9 @@ import {
   type CodingAgentKind,
   type CodingAgentStatusResponse,
 } from './codingAgentStatus';
+import './onboarding.css';
+import { StatusPill, type PillTone } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 /**
  * The last coding-agent status this renderer probed, shared by every surface.
@@ -64,14 +72,15 @@ export async function saveCodingAgentCommand(
 
 /**
  * The coding-agent status probe, the per-state guidance, and the "use this
- * agent" write — extracted from `CodingAgentInlineCard` so the **provider
- * catalog** hosts the identical UI rather than a second copy of it.
+ * agent" write, hosted by the **provider catalog**'s accordion rows (Public's
+ * "AI agents" section, on first run and in Settings) and by the configure
+ * dialog's recovery panel.
  *
- * ⚠ The extraction is the point. The two surfaces differ only in their *shell*
- * (the onboarding card's `<section>` and heading vs. the catalog's accordion
- * row); every state machine, every sentence and every `data-testid` below has
- * exactly one definition, so a fix to the `signed_in_with_api_key` copy cannot
- * land on one screen and not the other.
+ * ⚠ One definition is the point. Every state machine, every sentence and every
+ * `data-testid` below exists once, so a fix to the `signed_in_with_api_key` copy
+ * cannot land on one screen and not the other. (A standalone onboarding card used
+ * to wrap these too; nothing rendered it, and it was deleted with its chrome,
+ * FR-S-12. Its tests moved to `codingAgentControls.test.tsx`.)
  */
 
 /**
@@ -88,22 +97,12 @@ export async function saveCodingAgentCommand(
 export const CODING_AGENT_TERMINAL_HEIGHT_PX = 240;
 export const CODING_AGENT_TERMINAL_RESERVE_PX = 200;
 
-type PillTone = 'success' | 'warning' | 'info';
+/** What "Could not check" says when the failure carried no message of its own. */
+export const CODING_AGENT_CHECK_FAILED = 'The check for installed coding agents returned an error.';
 
-const PILL_DOT: Record<PillTone, string> = {
-  success: 'bg-background-success',
-  warning: 'bg-background-warning',
-  info: 'bg-background-info',
-};
-
-export function StatusPill({ tone, children }: { tone: PillTone; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PILL_DOT[tone]}`} />
-      {children}
-    </span>
-  );
-}
+// The status pill has its own module so the local cards can use it without this one's imports.
+export { StatusPill };
+export type { PillTone };
 
 /**
  * The pill for each auth state.
@@ -129,51 +128,43 @@ export function pillFor(auth: CodingAgentAuth): { tone: PillTone; label: string 
 
 /** "Check again" for every state except the one where the user just acted. */
 export function recheckLabel(auth: CodingAgentAuth): string {
-  return auth.state === 'signed_out' ? "I've signed in" : 'Check again';
+  return auth.state === 'signed_out' ? agentCopy.signedIn : agentCopy.checkAgain;
 }
 
-/** A command the user runs, never one Biorouter runs. Copyable, monospaced. */
-export function CommandBlock({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    []
-  );
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error('Failed to copy command to clipboard:', error);
-    }
-  };
-
+/**
+ * A state's one instruction, with its reason one hover or Tab away (principle 2, vision FR-S-3).
+ * Each state used to be a stack of explanatory paragraphs around the command.
+ */
+function Instruction({
+  children,
+  tipLabel,
+  tip,
+}: {
+  children: React.ReactNode;
+  tipLabel: string;
+  tip: string;
+}) {
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-background-muted p-2">
-      <code className="min-w-0 flex-1 break-all font-mono text-[11px] leading-relaxed text-text-default">
-        {command}
-      </code>
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        shape="pill"
-        onClick={copy}
-        className="flex-shrink-0"
-        aria-label={copied ? `Copied ${command}` : `Copy ${command}`}
-      >
-        {copied ? <Check /> : <Copy />}
-        {copied ? 'Copied' : 'Copy'}
-      </Button>
-    </div>
+    <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
+      <span className="min-w-0">{children}</span>
+      <InfoTip label={tipLabel} help={tip} />
+    </p>
   );
+}
+
+/** The actions under a state: one row on the 32px rung, never stretched to the panel's width. */
+function Actions({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-2 pt-1">{children}</div>;
+}
+
+/**
+ * A command the user runs, never one Biorouter runs. Copyable, monospaced: the shared copy field
+ * (a well with the Copy button inside it), so the command looks and copies like every other thing
+ * Biorouter hands a person to paste. The label is the command itself, which is what the button's
+ * name ("Copy npm install -g ...") has always said.
+ */
+export function CommandBlock({ command }: { command: string }) {
+  return <CopyField value={command} label={command} />;
 }
 
 /** Everything both surfaces need, from one probe. */
@@ -259,7 +250,10 @@ export function useCodingAgents(
     } catch (error) {
       console.error('Failed to check coding-agent CLIs:', error);
       if (!mountedRef.current) return;
-      setLoadError(error instanceof Error ? error.message : String(error));
+      // The generated client throws the parsed response body for a failed status, which is an
+      // object (`{ message }`), not an Error: `String()` of it printed "[object Object]" under
+      // "Could not check". `errorMessage` reads the message of both shapes.
+      setLoadError(errorMessage(error, CODING_AGENT_CHECK_FAILED));
     } finally {
       if (mountedRef.current) {
         setIsChecking(false);
@@ -304,7 +298,7 @@ export function useCodingAgents(
       } catch (error) {
         toastService.error({
           title: 'Could not select this provider',
-          msg: `Failed to save ${key}: ${error instanceof Error ? error.message : String(error)}`,
+          msg: `Failed to save ${key}: ${errorMessage(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });
       } finally {
@@ -357,13 +351,11 @@ function TerminalOption({
     <Button
       type="button"
       variant="ghost"
-      size="sm"
-      shape="pill"
       onClick={() => controls.setTerminalFor(open ? null : agent.kind)}
       data-testid={`coding-agent-terminal-toggle-${agent.providerId}`}
     >
       <Terminal />
-      {open ? 'Hide terminal' : 'Open a terminal here'}
+      {open ? agentCopy.hideTerminal : agentCopy.openTerminal}
     </Button>
   );
 }
@@ -378,7 +370,7 @@ function EmbeddedTerminal({
   if (controls.terminalFor !== agent.kind) return null;
   return (
     <div
-      className="overflow-hidden rounded-md border border-border-subtle bg-background-muted"
+      className="br-first-run-box overflow-hidden"
       style={{ height: CODING_AGENT_TERMINAL_HEIGHT_PX }}
       data-testid={`coding-agent-terminal-${agent.providerId}`}
     >
@@ -406,15 +398,12 @@ function RecheckButton({
   return (
     <Button
       type="button"
-      variant="outline"
-      size="lg"
-      shape="pill"
+      variant="secondary"
       onClick={() => void controls.refresh(false)}
       disabled={controls.isRechecking}
-      className="w-full px-4 sm:w-auto"
       data-testid={`coding-agent-recheck-${agent.providerId}`}
     >
-      {controls.isRechecking ? 'Checking…' : recheckLabel(agent.auth)}
+      {controls.isRechecking ? agentCopy.checking : recheckLabel(agent.auth)}
     </Button>
   );
 }
@@ -437,6 +426,8 @@ export function CodingAgentBody({
   onRetryConfiguration?: () => void;
   isRetrying?: boolean;
 }) {
+  // "Use <agent>" is coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   switch (agent.auth.state) {
     // 1. Nothing installed. The install command is SHOWN, never run: installing
     //    another vendor's toolchain is the user's decision, and Anthropic's
@@ -445,22 +436,19 @@ export function CodingAgentBody({
     case 'not_installed':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
-            Install {agent.displayName} on the computer running Biorouter, then choose Check again.
-            Copy this command into a terminal to install it.
-          </p>
+          <Instruction
+            tipLabel={agentCopy.notInstalledTipLabel}
+            tip={agentCopy.notInstalledTip(AGENT_COMMAND_CONFIG[agent.kind].key)}
+          >
+            {agentCopy.notInstalled}
+          </Instruction>
           <CommandBlock command={agent.installHint} />
-          <p className="text-[11px] text-text-muted">
-            Already installed somewhere unusual (nvm, volta, bun, asdf)? Set{' '}
-            <code className="font-mono">{AGENT_COMMAND_CONFIG[agent.kind].key}</code> to its full
-            path in Settings instead.
-          </p>
-          <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
+          <Actions>
             <RecheckButton agent={agent} controls={controls} />
             {/* A shell the user types the install line into is still the user
                 installing it. What is prohibited is Biorouter running it. */}
             <TerminalOption agent={agent} controls={controls} />
-          </div>
+          </Actions>
           <EmbeddedTerminal agent={agent} controls={controls} />
         </div>
       );
@@ -470,19 +458,14 @@ export function CodingAgentBody({
     case 'signed_out':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
-            {agent.displayName} is installed. Sign in with your subscription in a terminal, then
-            return here and choose I&apos;ve signed in.
-          </p>
+          <Instruction tipLabel={agentCopy.signedOutTipLabel} tip={agentCopy.signedOutTip}>
+            {agentCopy.signedOut}
+          </Instruction>
           <CommandBlock command={agent.loginCommand} />
-          <p className="text-[11px] text-text-muted leading-relaxed">
-            Biorouter deliberately does not perform the sign-in: the credential stays between you
-            and the vendor, and never passes through Biorouter.
-          </p>
-          <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
+          <Actions>
             <RecheckButton agent={agent} controls={controls} />
             <TerminalOption agent={agent} controls={controls} />
-          </div>
+          </Actions>
           <EmbeddedTerminal agent={agent} controls={controls} />
         </div>
       );
@@ -490,106 +473,142 @@ export function CodingAgentBody({
     // 3. Signed in — but with an API key. NOT a failure, and it must not look like
     //    one: the CLI runs fine, it would just bill per token, and this provider
     //    strips API credentials from the environment it starts, so it cannot run.
+    //    One instruction names both ways out; the reason is its tip.
     case 'signed_in_with_api_key':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
-            The CLI works — it is just signed in with an API key, so a run would bill per token.
-            This provider exists specifically to use your own plan, and it removes API credentials
-            from the environment it starts, so it cannot run this way.
-          </p>
-          <p className="text-xs text-text-muted leading-relaxed">
-            Either sign in with your subscription:
-          </p>
+          <Instruction tipLabel={agentCopy.apiKeyTipLabel} tip={agentCopy.apiKeyTip}>
+            {agentCopy.apiKeyLead}{' '}
+            <span className="text-text-default">{METERED_SIBLING[agent.kind]}</span>{' '}
+            {agentCopy.apiKeyTail}
+          </Instruction>
           <CommandBlock command={agent.loginCommand} />
-          <p className="text-[11px] text-text-muted leading-relaxed">
-            …or keep the API key and use the metered{' '}
-            <span className="text-text-default">{METERED_SIBLING[agent.kind]}</span> provider
-            instead, under API providers.
-          </p>
-          <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
+          <Actions>
             <RecheckButton agent={agent} controls={controls} />
             <TerminalOption agent={agent} controls={controls} />
-          </div>
+          </Actions>
           <EmbeddedTerminal agent={agent} controls={controls} />
         </div>
       );
 
     // 4. Ready. Selecting persists the defaulted command key (which is what makes
-    //    the provider report as configured) and hands off to model selection.
-    case 'signed_in_subscription': {
-      const { plan, account } = agent.auth;
+    //    the provider report as configured) and hands off to model selection. The
+    //    plan and account are on the version line above; there is nothing to explain.
+    case 'signed_in_subscription':
       return (
-        <div className="space-y-2">
-          {(plan || account) && (
-            <p className="text-[11px] text-text-muted break-words">
-              {[plan ? `Plan: ${plan}` : null, account ? `Account: ${account}` : null]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
-          )}
-          <p className="text-xs text-text-muted leading-relaxed">
-            Turns run through your own subscription, so there is nothing metered to configure here.
-          </p>
-          <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
-            <Button
-              type="button"
-              size="lg"
-              shape="pill"
-              onClick={() =>
-                onRetryConfiguration ? onRetryConfiguration() : void controls.connect(agent)
-              }
-              disabled={
-                isRetrying || controls.connectingProviderId !== null || controls.isRechecking
-              }
-              className="w-full px-4 sm:w-auto"
-              data-testid={`coding-agent-connect-${agent.providerId}`}
-            >
-              {isRetrying
-                ? 'Checking configuration…'
-                : onRetryConfiguration
-                  ? 'Retry configuration'
-                  : controls.connectingProviderId === agent.providerId
-                    ? 'Connecting…'
-                    : `Use ${agent.displayName}`}
-            </Button>
-            <RecheckButton agent={agent} controls={controls} />
-          </div>
-        </div>
+        <Actions>
+          <Button
+            type="button"
+            variant={primaryVariant}
+            onClick={() =>
+              onRetryConfiguration ? onRetryConfiguration() : void controls.connect(agent)
+            }
+            disabled={isRetrying || controls.connectingProviderId !== null || controls.isRechecking}
+            data-testid={`coding-agent-connect-${agent.providerId}`}
+          >
+            {isRetrying
+              ? agentCopy.checkingConfiguration
+              : onRetryConfiguration
+                ? agentCopy.retryConfiguration
+                : controls.connectingProviderId === agent.providerId
+                  ? agentCopy.connecting
+                  : agentCopy.use(agent.displayName)}
+          </Button>
+          <RecheckButton agent={agent} controls={controls} />
+        </Actions>
       );
-    }
 
     // 5. The probe ran but could not be read. Telling a user who IS signed in to
     //    sign in is worse than admitting we do not know, so this arm offers no
-    //    login command — only the reason and a re-check.
+    //    login command — only the reason and a re-check. The sentence and the
+    //    daemon's detail are one style: they used to be two inks and two sizes.
     case 'indeterminate':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
-            Biorouter could not tell whether this CLI is usable, so it is not guessing at the fix.
-          </p>
+          <p className="text-supporting text-text-muted">{agentCopy.indeterminate}</p>
           <p
-            className="break-words text-sm leading-relaxed text-text-default"
+            className="break-words text-supporting text-text-muted"
             data-testid={`coding-agent-detail-${agent.providerId}`}
           >
             {agent.auth.detail}
           </p>
-          <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
+          <Actions>
             <RecheckButton agent={agent} controls={controls} />
             <TerminalOption agent={agent} controls={controls} />
-          </div>
+          </Actions>
           <EmbeddedTerminal agent={agent} controls={controls} />
         </div>
       );
   }
 }
 
-/** The version/path line, when the probe resolved either. */
+/**
+ * The version number in a CLI's raw `--version` line: `2.1.283` out of "2.1.283 (Claude Code)",
+ * `0.157.1` out of "codex-cli 0.157.1". The two vendors print two shapes, and the row's own name
+ * already says which CLI it is, so the panel shows the number alone (vision FR-R3-6, principle
+ * 10). A line with no number is shown as it came.
+ */
+export function agentVersionNumber(raw: string): string {
+  return raw.match(/\d+(?:\.\d+)+(?:-[0-9A-Za-z.]+)?/)?.[0] ?? raw.trim();
+}
+
+/** "max" -> "Max plan", "team_premium" -> "Team premium plan". */
+export function agentPlanName(plan: string): string {
+  const words = plan.replace(/[_-]+/g, ' ').trim();
+  return agentCopy.plan(`${words.charAt(0).toUpperCase()}${words.slice(1)}`);
+}
+
+/**
+ * The version line, when the probe resolved a version or a path. The version is what a person
+ * reads; where the CLI lives is a path, so it sits behind the line's tooltip (principle 10, V4-26)
+ * instead of on the row in mono. The line takes focus, like a provider's description, so the
+ * tooltip is reachable by keyboard. With a path and no version the line says only that the CLI was
+ * found.
+ *
+ * Both agents' lines have one shape (vision FR-R3-6): "Version 2.1.283 · Max plan · ada@…" and
+ * "Version 0.157.1", the number in mono at the line's 12px (a version is a machine string,
+ * principle 3) and everything else in the line's sans face.
+ */
 export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailability }) {
-  if (!agent.version && !agent.path) return null;
+  // The plan and the account join the version on one line (FR-R1-8): a ready agent's panel was a
+  // version line, a plan line and a paragraph before its button.
+  const plan =
+    agent.auth.state === 'signed_in_subscription'
+      ? [agent.auth.plan ? agentPlanName(agent.auth.plan) : null, agent.auth.account ?? null]
+          .filter(Boolean)
+          .join(' · ')
+      : '';
+  const hasVersion = Boolean(agent.version || agent.path);
+  if (!hasVersion && !plan) return null;
+  const version = hasVersion ? (
+    <span
+      tabIndex={agent.path ? 0 : undefined}
+      data-testid={`coding-agent-version-${agent.providerId}`}
+      className="cursor-default rounded-element biorouter-focus-surface"
+    >
+      {agent.version ? (
+        <>
+          {agentCopy.version} <span className="font-mono">{agentVersionNumber(agent.version)}</span>
+        </>
+      ) : (
+        agentCopy.installed
+      )}
+    </span>
+  ) : null;
   return (
-    <p className="min-w-0 break-all font-mono text-[11px] text-text-muted">
-      {[agent.version, agent.path].filter(Boolean).join(' · ')}
+    <p className="min-w-0 break-words text-supporting text-text-muted">
+      {version && agent.path ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{version}</TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-96 break-all text-wrap font-mono">
+            {agent.path}
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        version
+      )}
+      {version && plan ? ' · ' : null}
+      {plan ? <span>{plan}</span> : null}
     </p>
   );
 }
@@ -603,26 +622,25 @@ export function CodingAgentLoadError({
   controls: CodingAgentControls;
 }) {
   return (
-    <div className="space-y-3">
-      <StatusPill tone="warning">Could not check</StatusPill>
+    <div className="space-y-2">
+      <StatusPill tone="warning">{agentCopy.couldNotCheck}</StatusPill>
       <p
-        className="break-words text-xs text-text-muted leading-relaxed"
+        className="break-words text-supporting text-text-muted"
         data-testid="coding-agent-load-error"
       >
         {message}
       </p>
-      <Button
-        type="button"
-        variant="outline"
-        size="lg"
-        shape="pill"
-        onClick={() => void controls.refresh(false)}
-        disabled={controls.isRechecking}
-        className="w-full px-4 sm:w-auto"
-        data-testid="coding-agent-retry"
-      >
-        {controls.isRechecking ? 'Checking…' : 'Try again'}
-      </Button>
+      <Actions>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => void controls.refresh(false)}
+          disabled={controls.isRechecking}
+          data-testid="coding-agent-retry"
+        >
+          {controls.isRechecking ? agentCopy.checking : agentCopy.tryAgain}
+        </Button>
+      </Actions>
     </div>
   );
 }

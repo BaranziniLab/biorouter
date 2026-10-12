@@ -1,4 +1,5 @@
-import { SlidersHorizontal, Brain } from '../../../icons/app-icons';
+import '../../../bottom_menu/pickers.css';
+import { ChevronDown } from '../../../icons/app-icons';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoProvider';
@@ -10,8 +11,18 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../../../ui/dropdown-menu';
+import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
+import { MODEL_COPY } from '../../../bottom_menu/copy';
+import { friendlyModelName } from '../../../bottom_menu/modelLabel';
+import { useReasoningEffortValue } from '../../../bottom_menu/BottomMenuReasoningEffort';
+import { EffortSection, moveFocusAcrossEffort } from '../../../bottom_menu/EffortSection';
+import {
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORT_LABELS,
+} from '../../../../store/reasoningEffort';
 import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
@@ -27,11 +38,15 @@ import {
 import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
-import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
-import type { ProviderTier, SessionClassification } from '../../../../api/types.gen';
+import type {
+  ProviderDetails,
+  ProviderTier,
+  SessionClassification,
+} from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
 import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
+import { readComposerHandOff, useComposerHandOff } from '../../../composer/composerHandOff';
 import {
   DEFAULT_LEAD_TURNS,
   leadWorkerChip,
@@ -66,11 +81,94 @@ export const NEW_CHATS_MODEL_HEADING = 'Model for new chats';
 export const NEW_CHATS_MODEL_NOTE =
   'New chats in every window start on this model. Existing chats keep their own.';
 
+/**
+ * V2-R8-1. Everything this chip states about a provider, as one catalog row
+ * said it. One row of one read, so the tier, the affiliation, the disclosure
+ * and the display name can never come from two different providers.
+ */
+interface ProviderSample {
+  displayName: string | null;
+  needsDisclosure: boolean;
+  affiliation: ProviderAffiliation | null;
+  tier: ProviderTier | undefined;
+}
+
+const NO_CATALOG_SAMPLES: ReadonlyMap<string, ProviderSample> = new Map();
+
+/**
+ * V2-R8-5. The chip's accessible name is several sentences: the model, the
+ * chat's tier, the effort. Joined with ". ", a part that already ends its own
+ * sentence ("…only lets a private model open it.") was read out with a double
+ * period. Each part is ended with exactly one period, never a second, and the
+ * parts themselves (the chat's tier sentence among them) are left as written.
+ */
+export function joinSentences(parts: ReadonlyArray<string | null | undefined | false>): string {
+  return parts
+    .filter((part): part is string => typeof part === 'string' && part.length > 0)
+    .map((part, index, kept) =>
+      index < kept.length - 1 && !/[.!?]$/.test(part) ? `${part}.` : part
+    )
+    .join(' ');
+}
+
+/**
+ * A provider the catalog does not list, or a read that failed. Fail-safe on the
+ * disclosure means saying more; on the affiliation and the tier it means saying
+ * nothing, because each of those is a claim (whose agreements cover a
+ * transcript; whether the model is private), and a catalog we cannot read is
+ * evidence of neither.
+ */
+const UNVOUCHED_PROVIDER: ProviderSample = {
+  displayName: null,
+  needsDisclosure: true,
+  affiliation: null,
+  tier: undefined,
+};
+
+function sampleProviderRow(row: ProviderDetails): ProviderSample {
+  return {
+    displayName: row.metadata.display_name ?? null,
+    needsDisclosure: disclosureRequiredForTier(row.metadata.tier),
+    // Read off the ROW, never `row.metadata`: the metadata's tier is the
+    // type-level claim, and affiliation is served beside it precisely because
+    // DR-26 requires an instance-resolved value.
+    affiliation: readProviderAffiliation(row),
+    tier: readResolvedProviderTier(row),
+  };
+}
+
+/** Every row of one catalog read, each under the provider it was read for. */
+function sampleCatalog(
+  rows: ReadonlyArray<ProviderDetails> | undefined
+): ReadonlyMap<string, ProviderSample> {
+  if (!rows || rows.length === 0) return NO_CATALOG_SAMPLES;
+  return new Map(rows.map((row) => [row.name, sampleProviderRow(row)]));
+}
+
+/** The lead/worker selection as one read of its four keys. */
+interface LeadWorkerRead {
+  leadModel: string;
+  leadProvider: string;
+  activeModel: string;
+  turns: number;
+}
+
+const NO_PAIR_READ: LeadWorkerRead = {
+  leadModel: '',
+  leadProvider: '',
+  activeModel: '',
+  turns: DEFAULT_LEAD_TURNS,
+};
+
+const LEAD_WORKER_HAND_OFF = 'lead-worker';
+
 interface ModelsBottomBarProps {
   sessionId: string | null;
-  dropdownRef: React.RefObject<HTMLDivElement>;
+  /** Legacy: nothing reads it. Kept optional so older callers still compile. */
+  dropdownRef?: React.RefObject<HTMLDivElement>;
   setView: (view: View, options?: ViewOptions) => void;
-  alerts: Alert[];
+  /** Only read when the inline alert popover is shown (`hideAlertPopover` false). */
+  alerts?: Alert[];
   /** Hide the inline alert green-dot when the context window indicator is
    * surfaced separately (e.g. in the picker popover's dedicated row). */
   hideAlertPopover?: boolean;
@@ -110,19 +208,35 @@ interface ModelsBottomBarProps {
    * `privacy/PinnedModelNote`, which decides for itself whether there is one.
    */
   effectiveModel?: PinnedModelView;
+  /**
+   * Where this chat's reasoning effort is kept (`store/reasoningEffort.ts`).
+   * Given, the menu carries the Quick, Normal and Deep choice and the chip names
+   * a non-default level; omitted, the chip is a model picker only.
+   */
+  reasoningScope?: string;
+  /**
+   * The composer's lasting identity (`ChatInput`'s hand-off key), under which
+   * the lead/worker read is handed to the chip that replaces this one: a new
+   * chat's first send remounts the composer (`composer/composerHandOff.ts`).
+   */
+  handOffKey?: string;
 }
-
-const MAX_INLINE_MODEL_LABEL_CHARS = 24;
 
 export default function ModelsBottomBar({
   sessionId,
   dropdownRef,
   setView,
-  alerts,
+  alerts = [],
   hideAlertPopover = false,
   privacyTier,
   effectiveModel,
+  reasoningScope,
+  handOffKey,
 }: ModelsBottomBarProps) {
+  const effort = useReasoningEffortValue(reasoningScope);
+  const notesId = useInfoTipId();
+  // The Effort slider's thumb, which the menu's Up and Down keys move focus to.
+  const effortThumbRef = useRef<HTMLSpanElement>(null);
   const {
     currentModel,
     currentProvider,
@@ -131,7 +245,7 @@ export default function ModelsBottomBar({
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
   } = useModelAndProvider();
-  const { read, getProviders } = useConfig();
+  const { read, getProviders, providersList } = useConfig();
   /**
    * W2-PRV-6. A chat that has not been sent yet is still a chat: its switch
    * holds a model for it (see `pendingChatModel.ts`) instead of rewriting the
@@ -146,53 +260,32 @@ export default function ModelsBottomBar({
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
-   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
-   * chat need the one-line disclosure?
+   * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
+   * IT WAS READ FOR. The four facts this chip states about its model (the
+   * disclosure, the provider's display name, the affiliation and the tier
+   * padlock) are derived from it below, and only from the entry for the
+   * provider the chip names in THIS render.
    *
-   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
-   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
-   * is classified `public` while its model is emphatically not a public model —
-   * so a line keyed on it would tell the user something false about the one
-   * provider this whole feature exists to make safe to use.
+   * ⚠ They used to be four state hooks the effect below overwrote once its read
+   * landed. Between a binding changing and that read, the chip paired the new
+   * model's name with the PREVIOUS provider's padlock: measured after a reload,
+   * Home on a private model, then a public chat (`aws_bedrock`) opened from the
+   * sidebar read "claude-sonnet-4-6" with a Private padlock for about 70 ms,
+   * then dropped it and the name moved 24px. A privacy mark that is false and
+   * then withdrawn is the one thing this chip must never draw. Keyed, a binding
+   * this mount has not read yet has no entry and the chip says nothing.
    *
-   * `null` while unresolved: say nothing rather than guess, in a chip that is
-   * re-rendered on every keystroke in the composer.
+   * ⚠ V2-R8-3: a mount starts from the catalog the app already holds. The
+   * effect's own read is `getProviders(false)`, which answers from that very
+   * list whenever it holds one (`ConfigContext`), so this is the same rows one
+   * commit sooner, not an older answer. It matters because a new chat's first
+   * send REMOUNTS the composer (`composer/composerHandOff.ts`): started empty,
+   * the new chip drew the model without its padlock until its read landed, and
+   * the padlock went and came back within 50 ms of Enter.
    */
-  const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
-  /**
-   * The display name of the provider this chat is PINNED to, read off the same
-   * catalog row as the tier and affiliation below. `null` until it resolves, and
-   * for a provider the catalog cannot name — in both cases the chip falls back
-   * to the provider's id, which is true rather than invented.
-   */
-  const [pinnedProviderName, setPinnedProviderName] = useState<string | null>(null);
-  /**
-   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
-   * chat. `null` renders nothing, which is both the "not resolved yet" answer
-   * and the correct answer for a public model.
-   */
-  const [affiliation, setAffiliation] = useState<ProviderAffiliation | null>(null);
-  /**
-   * Issue #56, DR-26 — the bound model's OWN tier, instance-resolved.
-   *
-   * ⚠ This chip is a MODEL chip (a brain glyph and a model name), and until
-   * this field existed the only tier it could state was {@link privacyTier} —
-   * the chat's. So a UCSF Versa model rendered with the chat's public dot
-   * beside its name, above a tooltip reading `gpt-5.5-… · Public chat`, and the
-   * operator read the only available subject: the model. The reasoning was
-   * already written out one state hook above, for the disclosure line, and
-   * simply never applied to the badge or the word.
-   *
-   * Sampled in the SAME row of the SAME fetch as {@link affiliation}, not via
-   * `useBoundProviderTier` — a second fetch here could pair one provider's tier
-   * with another's institution across a model switch, which is the pairing this
-   * chip exists to state.
-   *
-   * `undefined` is *unresolved* and renders nothing. It is the answer for an
-   * unconfigured provider, a construction failure, and a daemon older than the
-   * field — never "public".
-   */
-  const [boundTier, setBoundTier] = useState<ProviderTier | undefined>(undefined);
+  const [catalogSamples, setCatalogSamples] = useState<ReadonlyMap<string, ProviderSample>>(() =>
+    sampleCatalog(providersList)
+  );
 
   /**
    * SD-1 — is this chip's model chosen here, or on the machine running
@@ -209,10 +302,22 @@ export default function ModelsBottomBar({
   // `BIOROUTER_MODEL` IS the worker while a pair is on, so there is no
   // "which half is live" key to read — see `leadWorkerLabel.ts` for what that
   // leaves knowable, and for the false `(worker)` it used to produce.
-  const [leadModelName, setLeadModelName] = useState<string>('');
-  const [leadProviderName, setLeadProviderName] = useState<string>('');
-  const [currentActiveModel, setCurrentActiveModel] = useState<string>('');
-  const [leadTurns, setLeadTurns] = useState<number>(DEFAULT_LEAD_TURNS);
+  //
+  // ⚠ V2-R8-3: one state, handed to the chip that replaces this one when a new
+  // chat's first send remounts the composer (`composer/composerHandOff.ts`).
+  // Started from nothing, the new chip named the worker until its own read
+  // landed and then the lead again. `null` is "not read yet", which states no
+  // pair, as the four empty answers it replaces did; only a read is handed on.
+  const [pairRead, setPairRead] = useState<LeadWorkerRead | null>(() =>
+    readComposerHandOff<LeadWorkerRead>(handOffKey, LEAD_WORKER_HAND_OFF)
+  );
+  useComposerHandOff(handOffKey, LEAD_WORKER_HAND_OFF, pairRead);
+  const {
+    leadModel: leadModelName,
+    leadProvider: leadProviderName,
+    activeModel: currentActiveModel,
+    turns: leadTurns,
+  } = pairRead ?? NO_PAIR_READ;
 
   /**
    * One read for the whole lead/worker question: is a pair configured, what are
@@ -234,16 +339,21 @@ export default function ModelsBottomBar({
         read('BIOROUTER_MODEL', false),
         read('BIOROUTER_LEAD_TURNS', false),
       ]);
-      setLeadModelName((leadModel as string) || '');
-      setLeadProviderName((leadProvider as string) || '');
-      setCurrentActiveModel((activeModel as string) || '');
-      setLeadTurns(readLeadTurns(turns));
+      setPairRead({
+        leadModel: (leadModel as string) || '',
+        leadProvider: (leadProvider as string) || '',
+        activeModel: (activeModel as string) || '',
+        turns: readLeadTurns(turns),
+      });
     } catch (error) {
       console.error('Error reading the lead/worker selection:', error);
       // A selection we could not read is not a pair, and must not leave a stale
       // `(lead)` on a name from the last successful read.
-      setLeadModelName('');
-      setLeadProviderName('');
+      setPairRead((previous) => ({
+        ...(previous ?? NO_PAIR_READ),
+        leadModel: '',
+        leadProvider: '',
+      }));
     }
   }, [read]);
 
@@ -340,10 +450,6 @@ export default function ModelsBottomBar({
     chipPair.model ??
     (currentModel || providerDefaultModel || displayModelName);
   const fullModelLabel = chipPair.role ? `${displayModel} (${chipPair.role})` : displayModel;
-  const inlineModelLabel =
-    fullModelLabel.length > MAX_INLINE_MODEL_LABEL_CHARS
-      ? `${fullModelLabel.slice(0, MAX_INLINE_MODEL_LABEL_CHARS - 3)}...`
-      : fullModelLabel;
 
   // Update display provider when current provider changes
   useEffect(() => {
@@ -394,45 +500,30 @@ export default function ModelsBottomBar({
   // by one endpoint resolution in the daemon (`ProviderAffiliation::of` takes
   // both off a single `&dyn Provider`), and two fetches here could pair one
   // provider's tier with another's institution across a model switch.
+  //
+  // ⚠ V2-R8-1: every row of the read is kept, each under its own provider, so a
+  // later switch to a provider this mount has already read is stated in the
+  // very render that switches, from that provider's own row. Nothing read for
+  // one provider is ever shown under another's name. The sibling effect that
+  // fills `displayProvider` asks the global model context, which by definition
+  // cannot name a provider this chat was pinned to, so the display name comes
+  // off the same row too.
   useEffect(() => {
-    if (!effectiveProvider) {
-      setNeedsDisclosure(null);
-      setAffiliation(null);
-      setBoundTier(undefined);
-      setPinnedProviderName(null);
-      return;
-    }
+    if (!effectiveProvider) return;
     let cancelled = false;
     (async () => {
       try {
         const rows = await getProviders(false);
-        const row = rows.find((candidate) => candidate.name === effectiveProvider);
-        if (!row) throw new Error(`No match for provider: ${effectiveProvider}`);
         if (cancelled) return;
-        // Off the SAME row as the tier and affiliation below. The sibling
-        // effect that fills `displayProvider` asks the global model context,
-        // which by definition cannot name a provider this chat was pinned to.
-        setPinnedProviderName(row.metadata.display_name ?? null);
-        setNeedsDisclosure(disclosureRequiredForTier(row.metadata.tier));
-        // Read off the ROW, never `row.metadata`: the metadata's tier is the
-        // type-level claim, and affiliation is served beside it precisely
-        // because DR-26 requires an instance-resolved value.
-        setAffiliation(readProviderAffiliation(row));
-        setBoundTier(readResolvedProviderTier(row));
-      } catch {
+        const next = new Map(sampleCatalog(rows));
         // A provider Biorouter cannot classify is one it cannot vouch for.
-        // Fail-safe here means fail towards telling the user.
+        if (!next.has(effectiveProvider)) next.set(effectiveProvider, UNVOUCHED_PROVIDER);
+        setCatalogSamples(next);
+      } catch {
         if (!cancelled) {
-          setPinnedProviderName(null);
-          setNeedsDisclosure(true);
-          // ...but NOT towards claiming an affiliation. Failing safe on the
-          // disclosure means saying more; failing safe on the third axis means
-          // saying nothing, because every value here is a claim about whose
-          // agreements cover a transcript.
-          setAffiliation(null);
-          // Same direction, same reason. A catalog we cannot read is not
-          // evidence that the model is public.
-          setBoundTier(undefined);
+          setCatalogSamples((previous) =>
+            new Map(previous).set(effectiveProvider, UNVOUCHED_PROVIDER)
+          );
         }
       }
     })();
@@ -440,6 +531,58 @@ export default function ModelsBottomBar({
       cancelled = true;
     };
   }, [effectiveProvider, getProviders]);
+
+  // The entry for the provider this render names, or none. No entry is
+  // *unresolved*, and every fact below then says nothing.
+  const boundSample = effectiveProvider ? catalogSamples.get(effectiveProvider) : undefined;
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
+   * chat need the one-line disclosure?
+   *
+   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
+   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
+   * is classified `public` while its model is emphatically not a public model —
+   * so a line keyed on it would tell the user something false about the one
+   * provider this whole feature exists to make safe to use.
+   *
+   * `null` while unresolved: say nothing rather than guess, in a chip that is
+   * re-rendered on every keystroke in the composer.
+   */
+  const needsDisclosure: boolean | null = boundSample ? boundSample.needsDisclosure : null;
+  /**
+   * The display name of the provider this chat is PINNED to, read off the same
+   * catalog row as the tier and affiliation below. `null` until it resolves, and
+   * for a provider the catalog cannot name — in both cases the chip falls back
+   * to the provider's id, which is true rather than invented.
+   */
+  const pinnedProviderName: string | null = boundSample?.displayName ?? null;
+  /**
+   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
+   * chat. `null` renders nothing, which is both the "not resolved yet" answer
+   * and the correct answer for a public model.
+   */
+  const affiliation: ProviderAffiliation | null = boundSample?.affiliation ?? null;
+  /**
+   * Issue #56, DR-26 — the bound model's OWN tier, instance-resolved.
+   *
+   * ⚠ This chip is a MODEL chip (a brain glyph and a model name), and until
+   * this field existed the only tier it could state was {@link privacyTier} —
+   * the chat's. So a UCSF Versa model rendered with the chat's public dot
+   * beside its name, above a tooltip reading `gpt-5.5-… · Public chat`, and the
+   * operator read the only available subject: the model. The reasoning was
+   * already written out above, for the disclosure line, and simply never
+   * applied to the badge or the word.
+   *
+   * Sampled in the SAME row of the SAME fetch as {@link affiliation}, not via
+   * `useBoundProviderTier` — a second fetch here could pair one provider's tier
+   * with another's institution across a model switch, which is the pairing this
+   * chip exists to state.
+   *
+   * `undefined` is *unresolved* and renders nothing. It is the answer for an
+   * unconfigured provider, a construction failure, a daemon older than the
+   * field, and a provider this mount has not read yet — never "public".
+   */
+  const boundTier: ProviderTier | undefined = boundSample?.tier;
 
   // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
   // not the truth. See `privacy/disclosureCopy.ts`.
@@ -499,9 +642,8 @@ export default function ModelsBottomBar({
    * about. The chip becomes the way IN to the catalog instead — reachable since
    * a user can now enter the app before configuring anything.
    *
-   * ⚠ A plain button rather than a disabled dropdown: the menu's items are
-   * "Change model" and "Lead/worker settings", both of which read as adjustments
-   * to a model that does not exist. One control, one meaning.
+   * ⚠ A plain button rather than a disabled dropdown: the menu's items adjust a
+   * model, and there is no model to adjust. One control, one meaning.
    */
   if (hasNoModelConfigured(modelConfigStatus, effectiveModel?.provider ?? currentProvider)) {
     return (
@@ -514,21 +656,38 @@ export default function ModelsBottomBar({
               onClick={() => setView?.('ConfigureProviders')}
               data-testid="model-chip-choose-model"
               aria-label={NO_MODEL_CHIP_LABEL}
-              className="flex h-7 min-w-0 max-w-[220px] items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
+              className="br-picker-chip"
+              data-kind="model"
             >
-              <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
-                <Brain className="size-[18px] flex-shrink-0" />
-                <span className="truncate text-supporting">{NO_MODEL_CHIP_LABEL}</span>
-              </div>
+              <span className="br-picker-chip__name">{NO_MODEL_CHIP_LABEL}</span>
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top">
-            No model is configured yet. Opens the provider catalog.
-          </TooltipContent>
+          <TooltipContent side="top">{MODEL_COPY.noModelTooltip}</TooltipContent>
         </Tooltip>
       </div>
     );
   }
+
+  // Spec 3.7: the chip names the model the way a person says it, so the date
+  // stamp comes off (`gpt-5.6-sol-2026-07-09` reads `gpt-5.6-sol`). The full id
+  // stays in the tooltip, the menu and the accessible name.
+  const chipModelLabel = chipPair.role
+    ? `${friendlyModelName(displayModel)} (${chipPair.role})`
+    : friendlyModelName(displayModel);
+  const showEffort = effort !== null && effort !== DEFAULT_REASONING_EFFORT;
+  // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
+  // At most one of the first two applies (Home vs a chat with its own binding).
+  const notes = [
+    !sessionId && !unsentChat ? NEW_CHATS_MODEL_NOTE : null,
+    effectiveModel ? CHAT_KEEPS_ITS_MODEL_NOTE : null,
+    handoverNote,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const providerLine = [shownProviderName, modelTierWords].filter(Boolean).join(' · ');
+  // DR-17 and §14.2, kept VISIBLE as one line (principle 2): the chat's tier,
+  // then the standing disclosure the daemon serves for a non-private model.
+  const showPrivacyBlock = Boolean(privacyLine || disclosureLine);
 
   return (
     <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
@@ -539,61 +698,39 @@ export default function ModelsBottomBar({
             <DropdownMenuTrigger
               // The parenthetical belongs to the MODEL; the sentence after the
               // period belongs to the CHAT. The old label put the chat's tier
-              // between the model's name and the model's affiliation —
-              // `gpt-5.5-… (Public chat) (Affiliation: UCSF)` — where the only
-              // subject in reach was the model.
-              aria-label={`Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}${
-                privacyLine ? `. ${privacyLine}` : ''
-              }`}
-              // A CAP, and one the label can actually reach. At 120px the
-              // name got an 80px span after the glyph and the badges, so
-              // `gpt-5.5-2026-04-24` rendered as `gpt-5.5-202…` — a truncation
-              // that keeps only the part every model shares — while ~250px of
-              // the composer's footer row sat empty immediately to its right.
-              // 220px fits the 24-character ceiling `MAX_INLINE_MODEL_LABEL_CHARS`
-              // already imposes, so the two limits now agree instead of the CSS
-              // one silently biting first.
-              //
-              // Shrinkable, deliberately: the chip was `flex-shrink-0`, which is
-              // safe at 120px and would push the row at 220px. Letting it give
-              // way means the cap costs nothing when the composer is narrow.
-              className="flex h-7 min-w-0 max-w-[220px] items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
+              // between the model's name and the model's affiliation, where the
+              // only subject in reach was the model.
+              aria-label={joinSentences([
+                `Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
+                privacyLine,
+                effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
+              ])}
+              data-testid="model-chip"
+              data-kind="model"
+              className="br-picker-chip"
             >
-              <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
-                <Brain className="size-[18px] flex-shrink-0" />
-                {/* `text-supporting`, the composer rails' role — see the note in
-                    ChatInput.tsx, "THE RAILS' TYPE". It was `text-xs`: the same
-                    12px by coincidence, not by role, so it would not have
-                    followed the rails when they moved. */}
-                <span className="truncate text-supporting">{inlineModelLabel}</span>
-                {/* The MODEL's tier, not the chat's.
-                    The chat's ratcheted classification has its own surface —
-                    `SessionNamePill`, at the top of the chat, in the full pill —
-                    so this mark repeating it was both duplicative and, next to a
-                    model name under a brain glyph, misattributed. On a private
-                    chat holding a public model the two now disagree visibly,
-                    which is exactly the pairing Gate C refuses.
-
-                    ⚠ It is a PADLOCK, the same one a private conversation and a
-                    private extension carry — see `PrivacyBadge`. It was a bare
-                    dot, which is the one form of the mark that connected to
-                    nothing else in the app. */}
-                {boundTier && <PrivacyBadge tier={boundTier} dense className="ml-1" />}
-                {/* Beside the tier padlock, in its dense form — the chip is
-                    `max-w-[120px]` with an already-truncated label, so the WORDS
-                    go where there is room for them (the tooltip and the dropdown
-                    header below), exactly as the tier's do. */}
-                <AffiliationBadge affiliation={affiliation} dense className="ml-0.5" />
-              </div>
+              <span className="br-picker-chip__name">
+                {chipModelLabel}
+                {showEffort && ` · ${REASONING_EFFORT_LABELS[effort!]}`}
+              </span>
+              {/* The MODEL's tier, as the padlock every private thing in the app
+                  carries (`PrivacyBadge`). The chat's own tier has its own
+                  surface at the top of the chat. The affiliation is in the
+                  tooltip and the menu: this chip has room for one mark. */}
+              {boundTier && (
+                <span className="br-picker-chip__badge">
+                  <PrivacyBadge tier={boundTier} dense />
+                </span>
+              )}
+              <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" />
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="top">
-            Model: {fullModelLabel}
+            {MODEL_COPY.fullIdTooltip(fullModelLabel)}
             {modelTierWords && ` · ${modelTierWords}`}
             {affiliationWords && ` · ${affiliationWords.label}`}
-            {/* On its own line, below — a `·` separator put the chat's tier in
-                the same run of dot-joined facts as the model's, which is how
-                `gpt-5.5-… · Public chat` came to describe a private model. */}
+            {/* On its own line: the chat's tier is a different subject from the
+                model's, and a `·` would make it read as one. */}
             {privacyLine && <span className="mt-1 block">{privacyLine}</span>}
             {disclosureLine && (
               <span className="mt-1 block max-w-[280px] [overflow-wrap:anywhere]">
@@ -602,136 +739,86 @@ export default function ModelsBottomBar({
             )}
           </TooltipContent>
         </Tooltip>
-        <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
-          <div className="border-b border-border-subtle px-3 py-2.5">
-            <div className="text-sm font-medium text-text-default">
-              {sessionId || unsentChat ? 'Current model' : NEW_CHATS_MODEL_HEADING}
+        <DropdownMenuContent
+          side="top"
+          align="end"
+          className="w-72"
+          aria-describedby={notes ? notesId : undefined}
+          // The menu's arrow keys visit rows only; this makes the Effort slider one more stop.
+          onKeyDownCapture={(event) => moveFocusAcrossEffort(event, effortThumbRef.current)}
+        >
+          <div className="px-3 pt-2 pb-1.5">
+            <div className="flex items-center text-supporting text-text-muted">
+              <span>
+                {sessionId || unsentChat ? MODEL_COPY.currentModel : NEW_CHATS_MODEL_HEADING}
+              </span>
+              {notes && (
+                <InfoTip
+                  id={notesId}
+                  label={MODEL_COPY.aboutModel}
+                  help={notes}
+                  data-testid="model-notes-info"
+                />
+              )}
             </div>
-            <div className="mt-0.5 text-supporting leading-4 text-text-muted">
-              {shownModelName}
-              {shownProviderName && ` · ${shownProviderName}`}
-            </div>
-            {!sessionId && !unsentChat && (
+            <div className="mt-0.5 truncate text-label text-text-default">{shownModelName}</div>
+            {providerLine && (
               <div
-                data-testid="new-chats-model-note"
-                className="mt-1 text-[11px] leading-4 text-text-muted"
+                data-testid="model-provider-line"
+                className="flex min-w-0 items-center gap-1.5 text-supporting text-text-muted"
               >
-                {NEW_CHATS_MODEL_NOTE}
+                <span className="min-w-0 truncate">{providerLine}</span>
+                {affiliationWords && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <AffiliationBadge affiliation={affiliation} dense />
+                    <span className="min-w-0 truncate">{affiliationWords.label}</span>
+                  </>
+                )}
               </div>
             )}
-            {/*
-              D7 — the pair's whole truth, in the one surface with room for a
-              sentence. The chip above can name one half and (off Home) cannot
-              even say which half is live, because the turn count that decides it
-              is daemon state the renderer is never served. This line states the
-              HANDOVER instead of claiming a side of it, so it is true of every
-              chat and every surface — the same split this block already uses for
-              the tier word, the affiliation word and `CHAT_KEEPS_ITS_MODEL_NOTE`.
-            */}
-            {handoverNote && (
-              <div
-                data-testid="lead-worker-handover-note"
-                className="mt-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
-              >
-                {handoverNote}
-              </div>
-            )}
-            {/* Under the heading "Current model", so it must be about the
-                model. It used to be `privacyLine`. */}
-            {modelTierWords && (
-              <div className="mt-1 text-[11px] leading-4 text-text-muted">{modelTierWords}</div>
-            )}
-            {/*
-              DR-26's third axis, with room for the full pill — the one place on
-              this chip where the affiliation gets its word rather than its
-              glyph. It sits directly under the tier line so the two axes read as
-              one statement about the bound model.
-            */}
-            {affiliationWords && (
-              <div className="mt-1.5 flex items-center gap-1.5">
-                <AffiliationBadge affiliation={affiliation} className="max-w-full" />
-              </div>
-            )}
-            {/*
-              Round 3 / N1 — why the two names above may not be the model the
-              user last chose in Settings.
-
-              ⚠ **Here and nowhere else.** The chip and gauge now state the
-              chat's own binding for EVERY chat that has one, which means they
-              disagree with the app-wide selection in every chat older than the
-              user's last model switch — the ordinary case, not an edge one. A
-              standing note above the composer would then be near-permanent
-              chrome restating what the control beside it already says. This is
-              the surface a reader reaches by asking the chip what model this
-              chat is on, so it is where the answer to "did my switch fail?"
-              belongs.
-
-              It names no cause and gives no instruction: the two ways to move
-              this chat are directly below it, and nothing here is broken.
-            */}
-            {effectiveModel && (
-              <div
-                data-testid="chat-binding-note"
-                className="mt-1.5 text-[11px] leading-4 text-text-muted"
-              >
-                {CHAT_KEEPS_ITS_MODEL_NOTE}
-              </div>
-            )}
-            {/*
-              The CHAT's tier, last and set apart by a rule, because everything
-              above it is about the model and this is not. Its copy names its
-              own subject ("Public chat" / "Private chat — …"), which is what
-              makes it safe to sit in the same block at all.
-            */}
-            {privacyLine && (
-              <div className="mt-2 border-t border-border-subtle pt-2 text-[11px] leading-4 text-text-muted">
-                {privacyLine}
-              </div>
-            )}
-            {/*
-              Issue #56, DR-17 requirement 3 — the standing one-line disclosure,
-              in the one place on this chip with room for a sentence. The words
-              come from the daemon; a literal here would be a second definition
-              and would be the one that shipped stale.
-            */}
-            {disclosureLine && (
-              <div
-                data-testid="non-private-model-chip-note"
-                className="mt-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
-              >
-                {disclosureLine}
+            {showPrivacyBlock && (
+              // Two subjects, two lines (V2-05). They used to be two spans in one
+              // `<p>` joined by a space, which read as the single run-on "Public
+              // chat Not HIPAA-compliant, …": the chat's tier is a label with no
+              // full stop, and the disclosure is a sentence about the MODEL. The
+              // texts are unchanged (§14.2 and DR-17 are locked); only the break
+              // between them is new. Still one `text-supporting` block (spec 3.7).
+              <div className="mt-1.5 flex flex-col gap-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
+                {privacyLine && <p data-testid="chat-privacy-line">{privacyLine}</p>}
+                {disclosureLine && (
+                  <p data-testid="non-private-model-chip-note">{disclosureLine}</p>
+                )}
               </div>
             )}
           </div>
           {/*
-            SD-1. Both items below write `BIOROUTER_PROVIDER` — the first through
-            `/config/set_provider`, the second through `/config/upsert` on that
-            key and on `BIOROUTER_LEAD_*` — and a browser-served daemon refuses
-            all three with a 409 addressed to an AI agent. The note is inside the
-            same block as the items, so the reason is visible in the act of
-            reading why they are grey.
+            SD-1. Both items below write `BIOROUTER_PROVIDER`, and a browser-served
+            daemon refuses them with a 409. The note says so inside the same block
+            as the items, so the reason is visible where they are grey.
           */}
           <HostManagedModelNote variant="inset" />
-          <div className="p-1.5">
-            <DropdownMenuItem
-              className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
-              disabled={hostManaged}
-              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
-              onClick={hostManaged ? undefined : () => setIsAddModelModalOpen(true)}
-            >
-              <span>Change model</span>
-              <SlidersHorizontal className="ml-auto size-3.5" />
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
-              disabled={hostManaged}
-              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
-              onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
-            >
-              <span>Lead/worker settings</span>
-              <SlidersHorizontal className="ml-auto size-3.5" />
-            </DropdownMenuItem>
-          </div>
+          {effort !== null && reasoningScope && (
+            <>
+              <DropdownMenuSeparator />
+              {/* R-26: one slider (Quick, Normal, Deep) where three radio rows were. Same
+                  store, same scope, applied at once; the menu stays open. */}
+              <EffortSection scope={reasoningScope} effort={effort} thumbRef={effortThumbRef} />
+            </>
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={hostManaged}
+            onClick={hostManaged ? undefined : () => setIsAddModelModalOpen(true)}
+          >
+            {MODEL_COPY.changeModel}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={hostManaged}
+            onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
+          >
+            {MODEL_COPY.leadWorker}
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 

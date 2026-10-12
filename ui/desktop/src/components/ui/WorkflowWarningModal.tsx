@@ -1,16 +1,8 @@
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogPortal,
-  DialogOverlay,
-} from './dialog';
-import * as DialogPrimitive from '@radix-ui/react-dialog';
+import * as React from 'react';
+import { ModalShell } from '../ModalShell';
 import { Button } from './button';
+import { Note } from './note';
 import MarkdownContent from '../MarkdownContent';
-import { cn } from '../../utils';
 
 interface WorkflowWarningModalProps {
   isOpen: boolean;
@@ -24,6 +16,16 @@ interface WorkflowWarningModalProps {
   hasSecurityWarnings?: boolean;
 }
 
+/**
+ * Asked before a workflow the person has not run before (or one carrying hidden characters) runs.
+ *
+ * A `ModalShell` at size `lg` with a scrolling body (spec 2.6; vision round 7, V3-R7-1 named it
+ * among the raw `DialogContent` call sites): pinned at the top edge, the title in the header above
+ * its rule, 16px insets, and the preview scrolling between the header and the footer rules. It
+ * was a raw `DialogContent` 80% of the window wide, centred, with 24px insets. It must be answered
+ * (`purpose="required"`): Escape and an outside press do nothing and there is no ×, as before.
+ * The warning sentence is the dialog's description (`describedBy`), in body text.
+ */
 export function WorkflowWarningModal({
   isOpen,
   onConfirm,
@@ -31,81 +33,61 @@ export function WorkflowWarningModal({
   workflowDetails,
   hasSecurityWarnings = false,
 }: WorkflowWarningModalProps) {
+  const descriptionId = React.useId();
   return (
-    <Dialog open={isOpen}>
-      <DialogPortal>
-        <DialogOverlay />
-        <DialogPrimitive.Content
-          className={cn(
-            // z-[var(--z-modal)] must stay ABOVE the sibling <DialogOverlay/>
-            // (--z-overlay). A stale z-50 here put the full-screen, click-eating
-            // scrim on top of this modal's own buttons and the rest of the app,
-            // soft-locking it. See the .biorouter-modal-surface floor in main.css.
-            'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 duration-200 sm:max-w-[80vw] max-h-[80vh] flex flex-col p-0 overflow-hidden'
-          )}
-          onPointerDownOutside={(e) => e.preventDefault()}
-          onEscapeKeyDown={(e) => e.preventDefault()}
-        >
-          <DialogHeader className="flex-shrink-0 p-6 pb-0">
-            <DialogTitle>
-              {hasSecurityWarnings ? '⚠️ Security Warning' : '⚠️ New Workflow Warning'}
-            </DialogTitle>
-            <DialogDescription>
-              {!hasSecurityWarnings &&
-                "You are about to execute a workflow that you haven't run before. "}
-              Only proceed if you trust the source of this workflow.
-            </DialogDescription>
-          </DialogHeader>
+    <ModalShell
+      open={isOpen}
+      // Required: nothing dismisses it. If anything ever did, cancelling is the safe answer.
+      onOpenChange={(open) => !open && onCancel()}
+      size="lg"
+      purpose="required"
+      scrollBody
+      title={hasSecurityWarnings ? 'Security warning' : 'New workflow warning'}
+      describedBy={descriptionId}
+      bodyClassName="flex flex-col gap-3 py-3"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm}>Trust and execute</Button>
+        </>
+      }
+    >
+      <p id={descriptionId} className="text-body text-text-muted">
+        {!hasSecurityWarnings &&
+          "You are about to execute a workflow that you haven't run before. "}
+        Only proceed if you trust the source of this workflow.
+      </p>
 
-          {hasSecurityWarnings && (
-            <div className="px-6">
-              <div className="rounded-container border border-border-warning/40 bg-background-warning/10 p-4">
-                <div className="flex items-start">
-                  <div className="ml-3">
-                    <div className="mt-2 text-body text-text-warning">
-                      <p>
-                        This workflow contains hidden characters that will be ignored for your
-                        safety, as they could be used for malicious purposes.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
+      {hasSecurityWarnings && (
+        <Note tone="warning">
+          This workflow contains hidden characters that will be ignored for your safety, as they
+          could be used for malicious purposes.
+        </Note>
+      )}
+
+      <div className="biorouter-modal-panel p-4 rounded-container">
+        <h3 className="mb-3 text-label text-text-default">Workflow preview</h3>
+        <div className="space-y-4">
+          {workflowDetails.title && (
+            <p className="text-body text-text-default">
+              <strong className="font-semibold">Title</strong> {workflowDetails.title}
+            </p>
+          )}
+          {workflowDetails.description && (
+            <p className="text-body text-text-default">
+              <strong className="font-semibold">Description</strong> {workflowDetails.description}
+            </p>
+          )}
+          {workflowDetails.instructions && (
+            <div>
+              <h4 className="mb-1 text-label text-text-default">Instructions</h4>
+              <MarkdownContent content={workflowDetails.instructions} className="text-body" />
             </div>
           )}
-
-          <div className="flex-1 overflow-y-auto p-6 pt-4">
-            <div className="biorouter-modal-panel p-4 rounded-container">
-              <h3 className="font-medium mb-3 text-text-default">Workflow Preview:</h3>
-              <div className="space-y-4">
-                {workflowDetails.title && (
-                  <p className="text-text-default">
-                    <strong>Title:</strong> {workflowDetails.title}
-                  </p>
-                )}
-                {workflowDetails.description && (
-                  <p className="text-text-default">
-                    <strong>Description:</strong> {workflowDetails.description}
-                  </p>
-                )}
-                {workflowDetails.instructions && (
-                  <div>
-                    <h4 className="font-medium text-text-default mb-1">Instructions:</h4>
-                    <MarkdownContent content={workflowDetails.instructions} className="text-body" />
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <DialogFooter className="flex-shrink-0 p-6 pt-0">
-            <Button variant="outline" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button onClick={onConfirm}>Trust and execute</Button>
-          </DialogFooter>
-        </DialogPrimitive.Content>
-      </DialogPortal>
-    </Dialog>
+        </div>
+      </div>
+    </ModalShell>
   );
 }

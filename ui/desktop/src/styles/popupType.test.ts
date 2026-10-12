@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -21,6 +21,67 @@ import { join } from 'node:path';
 const DIR = join(__dirname, '..', 'components', 'bottom_menu');
 
 const popups = readdirSync(DIR).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx'));
+
+/**
+ * The transcript is the other place a hand-rolled size and a re-pinned face
+ * crept in (spec 3.1 item 5, WS-TOKENS-1), so the same two rules read it too:
+ * the message, markdown, activity and tool-call files, plus every component in
+ * `subagent/` and `transcript/`.
+ */
+const COMPONENTS = join(__dirname, '..', 'components');
+const TRANSCRIPT = [
+  'BioRouterMessage',
+  'UserMessage',
+  'MessageMeta',
+  'MessageCopyLink',
+  'MessageDivergeLink',
+  'ProgressiveMessageList',
+  'ProvenanceChip',
+  'SessionNamePill',
+  'InlineImage',
+  'ImagePreview',
+  'WorkflowHeader',
+  'MarkdownContent',
+  'TurnActivityIndicator',
+  'LoadingBioRouter',
+  'ToolCallWithResponse',
+  'PendingToolCallCard',
+  'ToolCallStatusIndicator',
+  'ToolContentPreview',
+  'ToolCallArguments',
+  'ToolCallPreview',
+  'ToolCallConfirmation',
+  'ElicitationRequest',
+  'SecretRequestCard',
+  'MCPUIResourceRenderer',
+].map((name) => `${name}.tsx`);
+const folderComponents = (folder: string) =>
+  existsSync(join(COMPONENTS, folder))
+    ? readdirSync(join(COMPONENTS, folder))
+        .filter((f) => f.endsWith('.tsx') && !/\.(test|browser)\./.test(f))
+        .map((f) => `${folder}/${f}`)
+    : [];
+
+/** The rest of the composer: the card, its queue and mention menu, Home, the readouts. */
+const COMPOSER = [
+  'ChatInput.tsx',
+  'MessageQueue.tsx',
+  'MentionPopover.tsx',
+  'Hub.tsx',
+  'ContextWindowIndicator.tsx',
+  'copilot/CopilotControl.tsx',
+  'settings/models/bottom_bar/ModelsBottomBar.tsx',
+];
+
+const sources: { label: string; path: string }[] = [
+  ...popups.map((f) => ({ label: `bottom_menu/${f}`, path: join(DIR, f) })),
+  ...[
+    ...COMPOSER,
+    ...TRANSCRIPT,
+    ...folderComponents('subagent'),
+    ...folderComponents('transcript'),
+  ].map((f) => ({ label: f, path: join(COMPONENTS, f) })),
+];
 
 /**
  * The source with every comment form removed.
@@ -51,18 +112,57 @@ describe('composer popup typography', () => {
     expect(popups.length).toBeGreaterThan(3);
   });
 
-  it.each(popups)('%s uses the type scale, not raw pixel sizes', (file) => {
-    // Strip comments so a note explaining the rule cannot trip it — this repo
-    // has now three times shipped a guard that matched prose.
-    const code = codeOnly(readFileSync(join(DIR, file), 'utf8'));
-
-    const raw = code.match(/text-\[\d+px\]/g);
-    expect(raw, `${file} pins a raw font size; use a token from main.css:103-170`).toBeNull();
+  it('reads every transcript file it names, so a rename cannot empty the list', () => {
+    expect([...COMPOSER, ...TRANSCRIPT].filter((f) => !existsSync(join(COMPONENTS, f)))).toEqual(
+      []
+    );
+    expect(folderComponents('subagent').length).toBeGreaterThan(0);
   });
 
-  it.each(popups)('%s does not re-pin font-sans, which the body already sets', (file) => {
-    const code = codeOnly(readFileSync(join(DIR, file), 'utf8'));
-    expect(code.includes('font-sans')).toBe(false);
+  it.each(sources)('$label uses the type scale, not raw pixel sizes', ({ label, path }) => {
+    // Strip comments so a note explaining the rule cannot trip it — this repo
+    // has now three times shipped a guard that matched prose.
+    const code = codeOnly(readFileSync(path, 'utf8'));
+
+    const raw = code.match(/text-\[\d+px\]/g);
+    expect(raw, `${label} pins a raw font size; use a token from main.css:103-170`).toBeNull();
+  });
+
+  it.each(sources)(
+    '$label does not re-pin font-sans, which the body already sets',
+    ({ label, path }) => {
+      const code = codeOnly(readFileSync(path, 'utf8'));
+      const uses = code.match(/font-sans/g)?.length ?? 0;
+      expect(uses, `${label} re-pins font-sans`).toBe(0);
+    }
+  );
+
+  /**
+   * Spec 3.7 acceptance: "No mono anywhere in the composer." Mono is for
+   * machine strings (principle 3); a count, a cost or a folder name is not one.
+   * The one sanctioned use is the working folder's full path, which lives in the
+   * folder chip's tooltip, not on the line.
+   */
+  const MONO_ALLOWED: Record<string, number> = { 'DirSwitcher.tsx': 1 };
+  const composerSurfaces = [
+    ...popups.map((file) => join(DIR, file)),
+    ...COMPOSER.map((file) => join(COMPONENTS, file)),
+  ];
+
+  it.each(composerSurfaces)('%s draws no visible text in mono', (path) => {
+    const code = codeOnly(readFileSync(path, 'utf8'));
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const uses = code.match(/font-mono/g)?.length ?? 0;
+    expect(uses, `${name}: mono is for machine strings in tooltips only`).toBeLessThanOrEqual(
+      MONO_ALLOWED[name] ?? 0
+    );
+  });
+
+  it('keeps the pickers stylesheet on the type tokens', () => {
+    const css = codeOnly(readFileSync(join(DIR, 'pickers.css'), 'utf8'));
+    expect(css, 'a raw px font size').not.toMatch(/font-size:\s*\d/);
+    expect(css, 'a font stack').not.toMatch(/font-family/);
+    expect(css).toMatch(/font-size: var\(--text-secondary\)/);
   });
 
   // Guard the guard. Without this, a stripper that quietly stopped working

@@ -26,7 +26,7 @@ function walk(dir: string): string[] {
 
 /** A navigation whose destination is Crew: the route, the chat-access route, or the view. */
 const TO_CREW =
-  /navigate\(\s*['"`]\/crew|navigate\(\s*chatAccessRoute\(|setView\(\s*['"]crew['"]|navigateWithViewTransition\([^)]*['"`]\/crew/;
+  /navigate\(\s*['"`]\/crew|navigate\(\s*chatAccessRoute\(|setView\(\s*['"]crew['"]|(?:navigateWithViewTransition|navigateToRoute)\([^)]*['"`]\/crew/;
 
 const rel = (path: string) => relative(SRC, path).split(sep).join('/');
 

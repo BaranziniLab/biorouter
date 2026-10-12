@@ -40,15 +40,21 @@ Additional in-process capabilities:
 | **Code Execution** | Execute JavaScript in a sandboxed environment for tool discovery and calling | Enabled |
 | **Workspace Control** | Work across conversations and delegate to visible subagents | Enabled |
 
+### The Extensions page
+
+Open **Extensions** in the sidebar to see every installed extension in two groups, **Enabled** and **Available**. Each row shows the extension's name, a **Public** or **Private** badge, and one line of description. For an extension you installed, that line also says where it came from: the Biorouter marketplace or a file. The switch on the right turns the extension on or off for new chats. Hover a row to reveal its **⋯** menu, or right-click the row, to **Configure…** it or **Remove…** it. Built-in extensions can be turned off and configured, but not removed.
+
+Type in the filter at the top right (**Ctrl+F**, or **⌘F** on a Mac) to narrow the list. The **Add** button next to it opens a menu with three ways to add an extension: **Browse marketplace**, **Install from file (.brxt)** and **Custom extension…**.
+
 ### Adding an external extension
 
-Any MCP server can be added as a Biorouter extension. Pick whichever of the three routes below fits how you work — they write to the same configuration.
+Any MCP server can be added as a Biorouter extension. Pick whichever of the three routes below fits how you work, since they write to the same configuration.
 
 #### From the desktop app
 
-1. Open the sidebar, then **Extensions** → **Add custom extension**.
-2. Enter the extension type, ID, name, command, arguments, and any required environment variables.
-3. Click **Add**.
+1. Open the sidebar, then **Extensions** → **Add** → **Custom extension…**.
+2. Enter a name, choose **Command** or **HTTP**, and give the command (or the endpoint URL). Add any environment variables or request headers the server needs.
+3. Click **Add extension**.
 
 #### From the CLI
 
@@ -96,7 +102,9 @@ extensions:
 |---|---|
 | Toggle (desktop) | Sidebar → **Extensions** → toggle switch next to each extension |
 | Toggle (CLI) | `biorouter configure` → **Toggle Extensions** |
-| Remove (desktop) | Sidebar → **Extensions** → gear icon → **Remove Extension** |
+| Remove (desktop) | Sidebar → **Extensions** → the row's **⋯** menu → **Remove…** |
+
+The page groups extensions as **Enabled** and **Available**. When you switch one with the pointer, its switch changes at once and the row moves to the other group once the pointer leaves the list, so the rows never shift under your cursor. With the keyboard the row moves straight away and the focus follows it.
 
 Extensions enabled dynamically during a session (via the Extension Manager) are only active for that session. To persist an extension across sessions, enable it through Settings or the config file.
 
@@ -104,11 +112,11 @@ Extensions enabled dynamically during a session (via the Extension Manager) are 
 
 BAAM is the Biorouter agent, extension, and skill marketplace. Its catalog is the machine-readable [`landing/registry.json`](../../landing/registry.json), published at <https://biorouter.ucsf.edu/registry.json> and browsable at <https://biorouter.ucsf.edu/baam.html>. Biorouter reads that registry to list and one-click-install extensions (`.brxt` bundles) and skills (`.zip`), so the marketplace is the shortest path to a curated extension — reach for the manual steps above when you are adding something that is not in the catalog.
 
-Marketplace installs never ask you for a file. **Extensions** → **Browse Extensions** → **Add** downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
+Marketplace installs never ask you for a file. **Extensions** → **Add** → **Browse marketplace**, then **Add** on an entry, downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
 
-The **Add Extension** button beside it is the local route, and that one does take a file: drag a `.brxt` onto it, or browse for one.
+**Extensions** → **Add** → **Install from file (.brxt)** is the local route, and that one does take a file: drop a `.brxt` on the drop zone, or click it to choose one.
 
-Both marketplace browsers — **Browse Extensions**, and **Browse Skills** on the **Skills** page — search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
+Both marketplace browsers, **Browse marketplace** on the **Extensions** page and on the **Skills** page, search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
 
 If an extension needs an API key, passcode or token, Biorouter asks for it in its own dialog and stores it in your operating system's credential store. **Never type a credential into the chat** — it cannot configure anything from there, and it would be visible to every model that reads the conversation. The same is true of the command line: `biorouter extension install` prompts with echo off rather than taking a value as an argument. See [Installing an extension, and where its credentials go](installing-an-extension.md).
 

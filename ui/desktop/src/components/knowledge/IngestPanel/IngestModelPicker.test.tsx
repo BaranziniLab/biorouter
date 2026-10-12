@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../api';
 import { IngestModelPicker } from './IngestModelPicker';
+import { knowledgeCopy } from '../copy';
 
 const mocks = vi.hoisted(() => ({
   config: { getProviders: vi.fn(), getProviderModels: vi.fn() },
@@ -110,5 +112,78 @@ describe('IngestModelPicker offers every configured provider (#109)', () => {
     expect(await screen.findByText('No models available')).toBeInTheDocument();
     expect(screen.getByText('Configure a provider in Settings.')).toBeInTheDocument();
     expect(screen.queryByTestId('knowledge-model-picker-excluded')).toBeNull();
+  });
+});
+
+/**
+ * Spec 3.12: the footer says what the pick is for in one line, with the rest in
+ * an InfoTip. The "Set as default" chip it replaces looked like a button and did
+ * nothing, because picking a row already sets the base's default.
+ */
+describe('IngestModelPicker footer', () => {
+  it('says what the model is for in one line, with the rest as help', async () => {
+    mocks.config.getProviders.mockResolvedValue([OPENAI]);
+    renderPicker();
+    const list = await openPicker();
+    await waitFor(() => expect(list).toHaveTextContent('gpt-5.5'));
+
+    expect(screen.getByText(knowledgeCopy.ingest.modelUse)).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: `About ${knowledgeCopy.ingest.modelUseLabel}` })
+    ).toHaveAccessibleDescription(knowledgeCopy.ingest.modelUseInfo);
+    expect(screen.queryByText('Set as default')).toBeNull();
+  });
+});
+
+/**
+ * V3-03: the trigger shows the model's name and nothing else. The uppercase "MODEL" label took 45px
+ * of a 268px field (the name truncated to "Versa API Azure / g…"), it was the only caps text on the
+ * page that was not a section label, and the Brain glyph said the same thing again. The provider
+ * and the release stamp ride in the Tooltip and the accessible name.
+ */
+describe('IngestModelPicker trigger', () => {
+  const VERSA = provider('versa_azure', 'Versa API Azure', ['gpt-5.5-2026-04-24']);
+
+  function renderWith(value: { provider: string; model: string } | null) {
+    mocks.config.getProviders.mockResolvedValue([VERSA]);
+    return render(
+      <MemoryRouter>
+        <IngestModelPicker value={value} onChange={vi.fn()} />
+      </MemoryRouter>
+    );
+  }
+
+  it("names the model as the composer's chip does, without a caps label or a glyph of its own", async () => {
+    renderWith({ provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' });
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'Versa API Azure')
+      )
+    );
+
+    expect(trigger).toHaveTextContent(/^gpt-5\.5$/);
+    expect(trigger.querySelector('.text-caps')).toBeNull();
+    // The chevron is the only glyph in it.
+    expect(trigger.querySelectorAll('svg')).toHaveLength(1);
+  });
+
+  it('carries the provider and the full id in its Tooltip', async () => {
+    const user = userEvent.setup();
+    renderWith({ provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' });
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    await waitFor(() => expect(trigger).toHaveAccessibleName(/Versa API Azure/));
+
+    await user.hover(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      knowledgeCopy.ingest.modelTriggerTip('gpt-5.5-2026-04-24', 'Versa API Azure')
+    );
+  });
+
+  it('keeps the plain name, and no Tooltip, when there is no model to name', async () => {
+    renderWith(null);
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveAccessibleName(knowledgeCopy.ingest.modelName);
+    expect(trigger).toHaveTextContent('No model configured');
   });
 });

@@ -165,15 +165,15 @@ export const joinCopy = {
   /** Plain words for an absolute path (Q3-49): what it looks like, then what it allows. */
   remoteFolderHelper: (server: string) =>
     `Optional. A folder on ${server}, starting with /. Your agent can read and write files there.`,
-  remoteFolderInvalid: 'Start with / — the full path of a folder on the server.',
+  remoteFolderInvalid: 'Start with /: the full path of a folder on the server.',
   remoteExecution: 'Let my agent run commands in this folder',
   /** Why the agent-commands switch is off limits: it needs the folder first. */
-  remoteExecutionNeedsFolder: 'Add a remote work folder first.',
+  remoteExecutionNeedsFolder: 'Set a remote work folder first.',
   manual: 'Enter workspace details manually',
   manualServerLogin: 'Your server login',
   manualServerLoginPlaceholder: 'e.g. bob@hpc.example.edu',
   socketPath: 'Socket path',
-  socketPathInvalid: 'Start with / — the full path Crew printed.',
+  socketPathInvalid: 'Start with /: the full path Crew printed.',
   workspaceId: 'Workspace ID',
   hostUserId: 'Host user ID',
   hostUserIdInvalid: 'A number, like 1000.',

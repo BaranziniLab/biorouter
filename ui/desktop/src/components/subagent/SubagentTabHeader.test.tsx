@@ -1,9 +1,35 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import type { Session } from '../../api';
+
+const mocks = vi.hoisted(() => ({
+  getSession: vi.fn(),
+  getCachedSessionList: vi.fn((): Session[] | null => null),
+}));
+
+vi.mock('../../api', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, getSession: mocks.getSession };
+});
+vi.mock('../../utils/sessionListCache', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, getCachedSessionList: mocks.getCachedSessionList };
+});
+vi.mock('../../utils/userAction', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }) };
+});
+
 import { SubagentTabHeader } from './SubagentTabHeader';
+import { announceSessionName } from '../../utils/sessionNameSync';
 import { GUARDRAIL_FRAME_CLOSE, GUARDRAIL_FRAME_OPEN } from '../../utils/guardrailFrame';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
-import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_TAB_READ_ONLY_REASON } from './subagentReadOnly';
+import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_STOP_NEEDS_DESKTOP_HELP } from './subagentReadOnly';
+import { transcriptCopy } from '../transcript/copy';
+
+const copy = transcriptCopy.subagent;
+const contextButton = () => screen.getByRole('button', { name: copy.context });
 
 const props = {
   sessionId: 'child-1',
@@ -24,25 +50,49 @@ describe('SubagentTabHeader', () => {
 
   it('shows lineage, grants, and an expandable spawn context', () => {
     render(<SubagentTabHeader {...props} />);
-    expect(screen.getByText(/spawned by/i)).toBeTruthy();
+    expect(screen.getByText(copy.of)).toBeTruthy();
     expect(screen.getByText(/Planning chat/)).toBeTruthy();
-    // ⚠ Counts on the band, names in the `title`. The header used to print one
-    // chip per grant in an uncapped flex-wrap, so a subagent tab grew taller
-    // than an ordinary one with every extension — and, before the backend fix,
-    // the names it printed were the user's whole globally-enabled set rather
-    // than the child's grants. The names must stay REACHABLE, which is what the
-    // title asserts; they must not set the band's height.
-    // `getByTitle`, not `getByText`: the count is interpolated
-    // (`{n} extension{s}`) so React splits it across text nodes, and the title
-    // is the thing that actually has to carry the names.
-    const exts = screen.getByTitle('developer, todo');
-    expect(exts.textContent).toBe('2 extensions');
-    const kbs = screen.getByTitle('kb-papers, kb-methods');
-    expect(kbs.textContent).toBe('2 knowledge bases');
+    // ⚠ Counts on the line, names in each count's InfoTip. The header used to
+    // print one chip per grant in an uncapped flex-wrap, so a subagent tab grew
+    // taller than an ordinary one with every extension, and, before the backend
+    // fix, the names it printed were the user's whole globally-enabled set
+    // rather than the child's grants. The names must stay REACHABLE (by
+    // keyboard and screen reader too, which a `title` never was), which is what
+    // the description asserts; they must not set the line's height.
+    const exts = screen.getByText('2 extensions');
+    expect(exts).toHaveAccessibleDescription('developer, todo');
+    expect(exts).toHaveAttribute('tabindex', '0');
+    expect(exts).not.toHaveAttribute('title');
+    const kbs = screen.getByText('2 knowledge bases');
+    expect(kbs).toHaveAccessibleDescription('kb-papers, kb-methods');
     // Collapsed by default; expanding reveals the spawn context.
     expect(screen.queryByText(/count the files/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));
+    fireEvent.click(contextButton());
     expect(screen.getByText(/count the files/)).toBeTruthy();
+  });
+
+  it('is one 32px line in the reading column, not a second band', () => {
+    render(<SubagentTabHeader {...props} />);
+    const line = screen.getByTestId('subagent-header-child-1');
+    expect(line).toHaveClass('h-8', 'max-w-measure-chat');
+    expect(line.className).not.toMatch(/\bh-chrome\b|\bbg-sidebar\b|\bborder-b\b/);
+    // One size along the line: the controls in it are dense 32px-strip
+    // controls (spec 2.1), 13px like the parent link, not the buttons' 14px.
+    expect(line).toHaveClass('text-secondary');
+    expect(contextButton()).toHaveClass('text-secondary');
+    expect(screen.getByRole('button', { name: props.parentSessionName })).toHaveClass(
+      'text-secondary'
+    );
+    expect(screen.getByRole('button', { name: copy.stopLabel })).toHaveClass('text-secondary');
+  });
+
+  it('takes the scroll area’s 24px, the half BaseChat’s px-1 wrapper completes (V2-R2-3)', () => {
+    const { container } = render(<SubagentTabHeader {...props} />);
+    // The root carries the 24px; BaseChat's wrapper adds the scroll root's 4px
+    // (pinned in BaseChat.summaryRail.test.ts). Together: the transcript's
+    // 28px a side, so the line starts on the column's left edge. If this
+    // changes, change the wrapper with it.
+    expect(container.firstElementChild).toHaveClass('px-6');
   });
 
   it('Stop is offered while running and confirms through onStop', () => {
@@ -70,8 +120,12 @@ describe('SubagentTabHeader', () => {
       expect(screen.queryByRole('button', { name: /stop subagent/i })).toBeNull();
       const reason = screen.getByTestId('subagent-stop-unavailable');
       expect(reason).toHaveTextContent(SUBAGENT_STOP_NEEDS_DESKTOP);
-      // The whole sentence is still reachable from the line itself.
-      expect(reason).toHaveAttribute('title', SUBAGENT_TAB_READ_ONLY_REASON);
+      expect(reason).not.toHaveAttribute('title');
+      // The reason is still reachable from the line itself, by hover, Tab and
+      // screen reader alike: an InfoTip beside the words.
+      expect(
+        screen.getByRole('button', { name: `About ${SUBAGENT_STOP_NEEDS_DESKTOP}` })
+      ).toHaveAccessibleDescription(SUBAGENT_STOP_NEEDS_DESKTOP_HELP);
       fireEvent.click(reason);
       expect(props.onStop).not.toHaveBeenCalled();
     });
@@ -87,8 +141,8 @@ describe('SubagentTabHeader', () => {
       render(<SubagentTabHeader {...props} />);
       fireEvent.click(screen.getByRole('button', { name: 'Planning chat' }));
       expect(props.onOpenParent).toHaveBeenCalledOnce();
-      expect(screen.getByTitle('developer, todo')).toHaveTextContent('2 extensions');
-      fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));
+      expect(screen.getByText('2 extensions')).toHaveAccessibleDescription('developer, todo');
+      fireEvent.click(contextButton());
       expect(screen.getByText(/count the files/)).toBeTruthy();
     });
 
@@ -100,8 +154,8 @@ describe('SubagentTabHeader', () => {
     });
   });
 
-  it('the spawned-by name is the control that opens the parent', () => {
-    // The lineage link is the whole point of the "spawned by" line, and it is
+  it('the parent name is the control that opens the parent', () => {
+    // The lineage link is the whole point of the "Subagent of" line, and it is
     // what BaseChat wires to the reducer's open-or-focus dispatch. Nothing else
     // in the suite ever clicks it.
     render(<SubagentTabHeader {...props} />);
@@ -109,10 +163,107 @@ describe('SubagentTabHeader', () => {
     expect(props.onOpenParent).toHaveBeenCalledOnce();
   });
 
-  it('falls back to the parent session id when the parent has no name yet', () => {
-    render(<SubagentTabHeader {...props} parentSessionName={undefined} />);
-    fireEvent.click(screen.getByRole('button', { name: 'parent-1' }));
-    expect(props.onOpenParent).toHaveBeenCalledOnce();
+  it('reads nothing when the caller already names the parent', () => {
+    render(<SubagentTabHeader {...props} />);
+    expect(mocks.getSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Vision V2-R2-2: the line read "Subagent of 20260828_5" while the parent was
+   * "Creating exposome_studies knowledge base". BaseChat passes no name, and the
+   * link fell back to the id. Principle 10: a name on the line, the id only in
+   * its tooltip.
+   */
+  describe('names the parent itself when no name is passed (V2-R2-2)', () => {
+    const PARENT_NAME = 'Creating exposome_studies knowledge base';
+    const unnamed = { ...props, parentSessionName: undefined };
+    const line = () => screen.getByTestId('subagent-header-child-1');
+
+    beforeEach(() => {
+      mocks.getSession.mockReset();
+      mocks.getCachedSessionList.mockReset();
+      mocks.getCachedSessionList.mockReturnValue(null);
+    });
+
+    it("reads the parent's row (metadata only, with the proof) and links its name", async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: PARENT_NAME });
+      expect(line()).toHaveTextContent(`${copy.of}${PARENT_NAME}`);
+      expect(line()).not.toHaveTextContent('parent-1');
+      expect(mocks.getSession).toHaveBeenCalledOnce();
+      expect(mocks.getSession).toHaveBeenCalledWith({
+        path: { session_id: 'parent-1' },
+        query: { metadata_only: true },
+        headers: { 'X-User-Action': 'test-key' },
+      });
+      fireEvent.click(link);
+      expect(props.onOpenParent).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the id in the link tooltip', async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: PARENT_NAME });
+      await userEvent.setup().tab();
+      expect(link).toHaveFocus();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('parent-1');
+    });
+
+    it('takes the name from the chat list when it holds the parent, with no read', () => {
+      mocks.getCachedSessionList.mockReturnValue([
+        { id: 'parent-1', name: PARENT_NAME } as Session,
+      ]);
+      render(<SubagentTabHeader {...unnamed} />);
+      expect(screen.getByRole('button', { name: PARENT_NAME })).toBeInTheDocument();
+      expect(mocks.getSession).not.toHaveBeenCalled();
+    });
+
+    it('shows no stand-in while the read is out, and never the id', () => {
+      mocks.getSession.mockReturnValue(new Promise(() => {}));
+      render(<SubagentTabHeader {...unnamed} />);
+      expect(screen.queryByText(copy.of)).toBeNull();
+      expect(line()).not.toHaveTextContent('parent-1');
+      // The rest of the line is already there.
+      expect(screen.getByText('2 extensions')).toBeInTheDocument();
+    });
+
+    it('says "another chat" when the row cannot be read, still linking the parent', async () => {
+      mocks.getSession.mockRejectedValue(new Error('403'));
+      render(<SubagentTabHeader {...unnamed} />);
+      const link = await screen.findByRole('button', { name: copy.parentFallback });
+      expect(line()).not.toHaveTextContent('parent-1');
+      fireEvent.click(link);
+      expect(props.onOpenParent).toHaveBeenCalledOnce();
+    });
+
+    it('follows a rename of the parent', async () => {
+      mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
+      render(<SubagentTabHeader {...unnamed} />);
+      await screen.findByRole('button', { name: PARENT_NAME });
+      act(() =>
+        announceSessionName({
+          sessionId: 'parent-1',
+          name: 'Exposome studies',
+          userSetName: true,
+          origin: 'user',
+        })
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Exposome studies' })).toBeInTheDocument()
+      );
+    });
+
+    it("never shows a previous parent's name on a rebound line", async () => {
+      mocks.getSession.mockImplementation(async ({ path }: { path: { session_id: string } }) => ({
+        data: { id: path.session_id, name: `Name of ${path.session_id}` },
+      }));
+      const { rerender } = render(<SubagentTabHeader {...unnamed} />);
+      await screen.findByRole('button', { name: 'Name of parent-1' });
+      mocks.getSession.mockReturnValue(new Promise(() => {}));
+      rerender(<SubagentTabHeader {...unnamed} parentSessionId="parent-2" />);
+      expect(screen.queryByRole('button', { name: 'Name of parent-1' })).toBeNull();
+    });
   });
 
   it('offers no spawn-context disclosure when there is no record to disclose', () => {
@@ -121,8 +272,8 @@ describe('SubagentTabHeader', () => {
     // record either. The header still renders — lineage and Stop are the point —
     // but a toggle that can only ever open onto nothing is a dead control.
     render(<SubagentTabHeader {...props} spawnContext={undefined} />);
-    expect(screen.getByText(/spawned by/i)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /spawn context/i })).toBeNull();
+    expect(screen.getByText(copy.of)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: copy.context })).toBeNull();
   });
 
   /**
@@ -185,7 +336,7 @@ describe('SubagentTabHeader', () => {
 
   function expandedSpawnContext(spawnContext: string): string {
     render(<SubagentTabHeader {...props} spawnContext={spawnContext} />);
-    const toggle = screen.getByRole('button', { name: /spawn context/i });
+    const toggle = contextButton();
     fireEvent.click(toggle);
     const region = document.getElementById(toggle.getAttribute('aria-controls')!);
     return region?.textContent ?? '';
@@ -237,7 +388,7 @@ describe('SubagentTabHeader', () => {
 
   it('names the region the disclosure controls', () => {
     render(<SubagentTabHeader {...props} />);
-    const toggle = screen.getByRole('button', { name: /spawn context/i });
+    const toggle = contextButton();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     const controls = toggle.getAttribute('aria-controls');
     expect(controls).toBeTruthy();

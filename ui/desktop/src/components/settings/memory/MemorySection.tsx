@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useState } from 'react';
 import { memoryDeleteCategory, memoryDeleteEntry, memoryInventory } from '../../../api';
 import type {
   MemoryCategoryInventory,
@@ -8,12 +8,18 @@ import type {
 } from '../../../api';
 import { toastError, toastSuccess } from '../../../toasts';
 import { getInitialWorkingDir } from '../../../utils/workingDir';
-import { Button } from '../../ui/button';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
-import { ChevronDown, ChevronRight, Globe, Folder, RefreshCw, Trash2 } from '../../icons/app-icons';
+import { ChevronDown, ChevronRight, RefreshCw, Trash2 } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
+import { IconAction, RowActions } from '../../ui/row-actions';
+import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { memoryCopy } from './copy';
+import './memory.css';
 
 /**
  * Managing what Biorouter has remembered.
@@ -32,9 +38,15 @@ import { Skeleton } from '../../ui/skeleton';
  * flat per-category text file, so the store records the category, the scope,
  * whatever tags the model attached, and the file's size and modification time.
  * It does **not** record when an individual memory was written, which
- * conversation wrote it, or which model — so this section says "category file
- * last modified" rather than dating each row, and says so out loud rather than
- * showing a timestamp that would be read as the row's own.
+ * conversation wrote it, or which model — so the only date is the category
+ * file's, worded "Updated" in the tooltip on the category's name, and no row
+ * carries a timestamp that would be read as its own.
+ *
+ * Layout (spec 3.14): one `SettingSection` of one-line rows. A store is a
+ * heading (Global, This project) with its count on the right and an InfoTip
+ * holding who can read it and where it lives; a category is a row whose meta
+ * is its count and whose delete glyph waits for the pointer; an open
+ * category's entries are sibling rows under it, never inside it.
  */
 
 const scopeNoun = (scope: MemoryScope) => (scope === 'global' ? 'global' : 'local');
@@ -207,51 +219,41 @@ export default function MemorySection() {
   })();
 
   return (
-    <div className="biorouter-settings-section" data-testid="memory-section">
-      <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
-        {/* The `min-w-0` wrapper is what keeps Refresh clear of the text. The
-            two sentences that were here are gone rather than restyled: the two
-            store headings below say which chats can read which store, and the
-            delete dialog says the delete is permanent — so the header was
-            repeating its own page back at itself, which is the shape the audit
-            called "a banner that is just a long block of text". */}
-        <div className="min-w-0">
-          <h2 className="mb-1 text-caps text-text-muted">Memory</h2>
-          <p className="text-supporting text-text-muted">
-            What Biorouter has been asked to remember, and everything it can disclose when a chat
-            asks to read it.
-          </p>
-        </div>
-        <Button type="button" variant="ghost" className="mr-3" onClick={() => void load()}>
-          <RefreshCw />
-          Refresh
-        </Button>
-      </div>
-
+    <SettingSection
+      id={SETTINGS_SECTION_IDS.memory}
+      title={memoryCopy.section}
+      help={memoryCopy.help}
+      data-testid="memory-section"
+      action={
+        <IconAction
+          icon={RefreshCw}
+          label={memoryCopy.refresh}
+          size="sm"
+          className="br-memory-refresh"
+          onSelect={() => void load()}
+        />
+      }
+    >
       {error && (
-        <Note tone="danger" role="status" className="mb-2">
+        <Note tone="danger" role="status" className="mx-3 mb-2">
           {error}
         </Note>
       )}
 
-      {loading && !global && (
-        <div className="flex flex-col gap-2">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-16 w-full" />
-        </div>
-      )}
+      {loading && !global && <Skeleton className="mx-3 h-10" />}
 
       {/* Gated on `global`, not on `!loading`, so a failed load renders neither
-          store block. Falling through would show the "no project open" card and
+          store block. Falling through would show the "no project open" row and
           tell the user their memories are not there — the one wrong answer for
           a store they are being asked to approve reads of. The error above
           already says what happened, and Refresh retries it. */}
       {global && (
-        <div className="flex flex-col gap-4">
+        <>
           <StoreBlock
             store={global}
-            icon={<Globe className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-            heading="Global: shared by every chat on this computer"
+            heading={memoryCopy.global.heading}
+            tipLabel={memoryCopy.global.tipLabel}
+            audience={memoryCopy.global.help}
             expanded={expanded}
             onToggle={toggle}
             onDeleteCategory={(category) =>
@@ -265,8 +267,9 @@ export default function MemorySection() {
           {local ? (
             <StoreBlock
               store={local}
-              icon={<Folder className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-              heading="This project: only chats opened here"
+              heading={memoryCopy.local.heading}
+              tipLabel={memoryCopy.local.tipLabel}
+              audience={memoryCopy.local.help}
               expanded={expanded}
               onToggle={toggle}
               onDeleteCategory={(category) =>
@@ -277,13 +280,15 @@ export default function MemorySection() {
               }
             />
           ) : (
-            <Note tone="neutral">
-              This window has no project open, so there is no local memory store to show. Local
-              memories live in a project&rsquo;s <code>.biorouter/memory</code> and are managed from
-              a window opened there.
-            </Note>
+            <StoreFrame heading={memoryCopy.local.heading}>
+              <MutedRow
+                text={memoryCopy.noProject}
+                tipLabel={memoryCopy.noProjectTipLabel}
+                help={memoryCopy.noProjectHelp}
+              />
+            </StoreFrame>
           )}
-        </div>
+        </>
       )}
 
       <ConfirmationModal
@@ -297,22 +302,76 @@ export default function MemorySection() {
         onConfirm={confirmDelete}
         onCancel={() => setPending(null)}
       />
+    </SettingSection>
+  );
+}
+
+/**
+ * A store: its heading over its own rows. The heading names the store (Global, This project) and
+ * carries the count of what it holds on the right; who can read it, and where it lives, are its
+ * InfoTip, and the delete confirmation says the audience again at the moment it matters.
+ */
+function StoreFrame({
+  heading,
+  tipLabel,
+  help,
+  count,
+  children,
+}: {
+  heading: string;
+  /** What the InfoTip is about ("global memory"), so its name reads "About global memory". */
+  tipLabel?: string;
+  /** The InfoTip's body: the audience sentence and the store's folder. */
+  help?: React.ReactNode;
+  count?: string;
+  children: React.ReactNode;
+}) {
+  const headingId = useId();
+  return (
+    <div className="br-memory-store" role="group" aria-labelledby={headingId}>
+      <div className="br-memory-store-head">
+        <h3
+          id={headingId}
+          className="br-memory-store-title text-secondary font-semibold text-text-default"
+        >
+          {heading}
+        </h3>
+        {help ? <InfoTip label={tipLabel ?? heading}>{help}</InfoTip> : null}
+        {count ? (
+          <span className="br-memory-store-count text-supporting tabular-nums text-text-subtle">
+            {count}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** One muted line, for a store with nothing to list. The rest of the explanation is its InfoTip. */
+function MutedRow({ text, tipLabel, help }: { text: string; tipLabel: string; help: string }) {
+  return (
+    <div className="br-memory-empty">
+      <span className="text-secondary text-text-muted">{text}</span>
+      <InfoTip label={tipLabel} help={help} />
     </div>
   );
 }
 
 function StoreBlock({
   store,
-  icon,
   heading,
+  tipLabel,
+  audience,
   expanded,
   onToggle,
   onDeleteCategory,
   onDeleteEntry,
 }: {
   store: MemoryStoreInventory | null;
-  icon: React.ReactNode;
   heading: string;
+  tipLabel: string;
+  audience: string;
   expanded: Set<string>;
   onToggle: (key: string) => void;
   onDeleteCategory: (category: MemoryCategoryInventory) => void;
@@ -326,56 +385,51 @@ function StoreBlock({
   const total = store.categories.reduce((sum, category) => sum + category.entries.length, 0);
 
   return (
-    <div>
-      <div className="mb-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="flex items-center gap-1.5 text-label text-text-default">
-          {icon}
-          {heading}
-        </span>
-        <span className="text-supporting tabular-nums text-text-subtle">
-          {total === 0
-            ? 'empty'
-            : `${plural(store.categories.length, 'category').replace(
-                'categorys',
-                'categories'
-              )} · ${total === 1 ? '1 memory' : `${total} memories`}`}
-        </span>
-      </div>
-      <p className="mb-2 min-w-0 break-words font-mono text-supporting leading-4 text-text-subtle [overflow-wrap:anywhere]">
-        {store.path}
-      </p>
-
+    <StoreFrame
+      heading={heading}
+      tipLabel={tipLabel}
+      // The folder is a machine string, so it is mono and on its own line, and it stays in the DOM
+      // (the tip's hidden description) for anything that reads it.
+      help={
+        <>
+          {audience} <span className="br-memory-path">{store.path}</span>
+        </>
+      }
+      count={total === 0 ? undefined : countLabelFor(total)}
+    >
       {store.categories.length === 0 ? (
-        <Note tone="neutral">
-          Nothing has been remembered here yet. Biorouter adds a memory only when it asks you and
-          you agree.
-        </Note>
+        <MutedRow
+          text={memoryCopy.empty}
+          tipLabel={memoryCopy.emptyTipLabel}
+          help={memoryCopy.emptyHelp}
+        />
       ) : (
-        // A flat `.biorouter-settings-list`, not a bordered `biorouter-list-shell`.
-        // The shell and its rows move TOGETHER: `list-row` and `settings-row`
-        // differ only in a 42%-vs-38% hover wash for the identical gesture, and
-        // swapping one without the other would make a pairing that exists
-        // nowhere else in the app.
-        <div className="biorouter-settings-list">
-          {store.categories.map((category) => (
-            <CategoryRow
-              key={`${store.scope}:${category.name}`}
-              scope={store.scope}
-              category={category}
-              isExpanded={expanded.has(`${store.scope}:${category.name}`)}
-              onToggle={() => onToggle(`${store.scope}:${category.name}`)}
-              onDeleteCategory={() => onDeleteCategory(category)}
-              onDeleteEntry={(entry) =>
-                onDeleteEntry(category, entry, category.entries.length === 1)
-              }
-            />
-          ))}
-        </div>
+        // The rows are the shared settings row and abut. Settings draws no rule under a row
+        // (R-27): the rhythm and the hover fill tell them apart.
+        store.categories.map((category) => (
+          <CategoryRow
+            key={`${store.scope}:${category.name}`}
+            scope={store.scope}
+            category={category}
+            isExpanded={expanded.has(`${store.scope}:${category.name}`)}
+            onToggle={() => onToggle(`${store.scope}:${category.name}`)}
+            onDeleteCategory={() => onDeleteCategory(category)}
+            onDeleteEntry={(entry) => onDeleteEntry(category, entry, category.entries.length === 1)}
+          />
+        ))
       )}
-    </div>
+    </StoreFrame>
   );
 }
 
+const countLabelFor = (count: number) => (count === 1 ? '1 memory' : `${count} memories`);
+
+/**
+ * A category and, when open, its entries as SIBLING rows. They used to render inside the category
+ * row, so its hover wash covered the whole list and its hairline moved to the bottom of the list.
+ * The count is the row's meta: it shows at rest and gives way to the delete glyph on hover or
+ * focus. Updated date and size are the name's tooltip, not standing text.
+ */
 function CategoryRow({
   scope,
   category,
@@ -391,94 +445,91 @@ function CategoryRow({
   onDeleteCategory: () => void;
   onDeleteEntry: (entry: MemoryEntry) => void;
 }) {
-  const count = category.entries.length;
-  const countLabel = count === 1 ? '1 memory' : `${count} memories`;
+  const countLabel = countLabelFor(category.entries.length);
   const when = formatWhen(category.modified);
+  const Chevron = isExpanded ? ChevronDown : ChevronRight;
 
   return (
-    <div className="biorouter-settings-row px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={isExpanded}
-          aria-label={`${isExpanded ? 'Hide' : 'Show'} the ${countLabel} in ${category.name}`}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
-        >
-          {isExpanded ? (
-            <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />
-          ) : (
-            <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />
-          )}
-          <span className="min-w-0 flex-1">
-            <span className="block min-w-0 break-words text-label text-text-default [overflow-wrap:anywhere]">
-              {category.name}
-            </span>
-            <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-supporting text-text-subtle">
-              <span className="tabular-nums">{countLabel}</span>
-              <span className="tabular-nums">{formatBytes(category.size_bytes)}</span>
-              {when && (
-                <span title="When this category file was last written to">Updated {when}</span>
-              )}
-            </span>
-          </span>
-        </button>
-        {/* The one row-trailing glyph action: `ghost` + `shape="round"` is the
-            32×32 rung, and the cva base supplies the 16px glyph. The `h-7 w-7
-            p-0` box was an off-ladder 28px and `hover:bg-background-danger/10`
-            was a second hover behaviour beside the one `tint-interactive`
-            already owns. */}
-        <Button
-          onClick={onDeleteCategory}
-          variant="ghost"
-          shape="round"
-          className="shrink-0 text-text-danger"
-          title={`Delete the whole ${scopeNoun(scope)} category`}
-          aria-label={`Delete the ${scopeNoun(scope)} category ${category.name}`}
-        >
-          <Trash2 />
-        </Button>
+    <Fragment>
+      <div className="biorouter-settings-row br-setting-row">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-expanded={isExpanded}
+              aria-label={`${isExpanded ? 'Hide' : 'Show'} the ${countLabel} in ${category.name}`}
+              className="br-memory-toggle"
+            >
+              <Chevron aria-hidden="true" />
+              <span className="min-w-0 break-words text-label text-text-default [overflow-wrap:anywhere]">
+                {category.name}
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {when ? `Updated ${when} · ` : ''}
+            {formatBytes(category.size_bytes)}
+          </TooltipContent>
+        </Tooltip>
+        <div className="br-setting-row-control">
+          <RowActions
+            meta={countLabel}
+            primary={
+              <IconAction
+                icon={Trash2}
+                label={`Delete the ${scopeNoun(scope)} category ${category.name}`}
+                tooltip="Delete category"
+                className="br-memory-delete"
+                onSelect={onDeleteCategory}
+              />
+            }
+          />
+        </div>
       </div>
 
-      {isExpanded && (
-        <ul className="mt-2 flex flex-col gap-1.5 border-t border-border-subtle pt-2">
-          {category.entries.map((entry) => (
-            <li key={entry.index} className="flex items-start gap-2">
-              <div className="min-w-0 flex-1">
-                {entry.tags.length > 0 && (
-                  <div className="mb-1 flex flex-wrap gap-1">
-                    {entry.tags.map((tag) => (
-                      // `h-auto`/`py-0.5` because this badge WRAPS: a model
-                      // may attach a tag longer than the column, and the
-                      // primitive's fixed 20px box would spill it.
-                      <Badge
-                        key={tag}
-                        tone="neutral"
-                        className="h-auto min-h-5 min-w-0 shrink break-words py-0.5 [overflow-wrap:anywhere]"
-                      >
-                        {tag}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-                <p className="min-w-0 whitespace-pre-wrap break-words text-supporting text-text-default [overflow-wrap:anywhere]">
-                  {entry.content}
-                </p>
-              </div>
-              <Button
-                onClick={() => onDeleteEntry(entry)}
-                variant="ghost"
-                shape="round"
-                className="shrink-0 text-text-danger"
-                title="Delete this memory"
-                aria-label={`Delete this memory from ${category.name}`}
-              >
-                <Trash2 />
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+      {isExpanded &&
+        category.entries.map((entry) => (
+          <div
+            key={entry.index}
+            className="biorouter-settings-row br-setting-row br-memory-entry br-enter"
+          >
+            <div className="min-w-0 flex-1">
+              {entry.tags.length > 0 && (
+                <div className="mb-1 flex flex-wrap gap-1">
+                  {entry.tags.map((tag) => (
+                    // `h-auto`/`py-0.5` because this badge WRAPS: a model
+                    // may attach a tag longer than the column, and the
+                    // primitive's fixed 20px box would spill it.
+                    <Badge
+                      key={tag}
+                      tone="neutral"
+                      className="h-auto min-h-5 min-w-0 shrink break-words py-0.5 [overflow-wrap:anywhere]"
+                    >
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <p className="min-w-0 whitespace-pre-wrap break-words text-secondary text-text-default [overflow-wrap:anywhere]">
+                {entry.content}
+              </p>
+            </div>
+            <div className="br-setting-row-control">
+              <RowActions
+                primary={
+                  <IconAction
+                    icon={Trash2}
+                    label={`Delete this memory from ${category.name}`}
+                    tooltip="Delete memory"
+                    className="br-memory-delete"
+                    onSelect={() => onDeleteEntry(entry)}
+                  />
+                }
+              />
+            </div>
+          </div>
+        ))}
+    </Fragment>
   );
 }

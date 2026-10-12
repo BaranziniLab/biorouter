@@ -144,16 +144,35 @@ fn resume_session_read_error(session_id: &str, error: anyhow::Error) -> ErrorRes
     }
 }
 
+/// The session `POST /agent/resume` answers with, read only after the metadata
+/// row has passed the subagent proof.
+///
+/// `include_transcript` is `!load_model_and_extensions`. The desktop opens a
+/// chat with two resumes that are meant to differ: the first paints the
+/// transcript and loads nothing, the second loads the agent and needs only the
+/// row (ruling 28, V2-R9-3). Every reader of the second answer reads metadata
+/// alone: `restore_persisted_provider_if_missing`, `restore_subagent_runtime_profile`
+/// and `load_extensions_from_session` read the provider, model, type,
+/// extension data and working directory, and `ensureAgentLoaded` reads
+/// `session.id`. So the agent load answers with the metadata row it already
+/// read, and a large chat no longer sends its whole transcript twice. Its
+/// `conversation` is `null`, and its `message_count` is the store's row count.
+/// The transcript read, and so the body the paint resume answers with, is
+/// unchanged.
 async fn read_resume_session(
     reader: &impl AgentSessionReader,
     session_id: &str,
     headers: &HeaderMap,
+    include_transcript: bool,
 ) -> Result<Session, ErrorResponse> {
     let metadata = reader
         .read_session(session_id, false)
         .await
         .map_err(|error| resume_session_read_error(session_id, error))?;
     refuse_subagent_unless_user(&metadata, headers)?;
+    if !include_transcript {
+        return Ok(metadata);
+    }
     reader
         .read_session(session_id, true)
         .await
@@ -1401,8 +1420,15 @@ async fn resume_agent(
     )
     .await?;
 
-    let session =
-        read_resume_session(state.session_manager(), &payload.session_id, &headers).await?;
+    // The paint resume carries the transcript; the agent load answers with the
+    // metadata row (ruling 28, see `read_resume_session`).
+    let session = read_resume_session(
+        state.session_manager(),
+        &payload.session_id,
+        &headers,
+        !payload.load_model_and_extensions,
+    )
+    .await?;
 
     // A queued background child has a durable session row but not yet its
     // delegated runtime profile. Constructing a generic cached Agent here would
@@ -1411,8 +1437,13 @@ async fn resume_agent(
     // exact live Agent once its permit and atomic profile are ready.
     let child_initializing = session.session_type == SessionType::SubAgent
         && biorouter::agents::subagent_handle::is_child_initializing(&payload.session_id);
-    let (extension_results, initialization_error) =
-        load_resumed_agent_extensions(&state, &payload, &session, child_initializing).await;
+    // R-30: everything a resume does is OPENING the chat (the provider restore
+    // on a cold agent, a subagent's legacy profile migration), never activity in
+    // it, so none of it moves the chat in any list sorted by activity.
+    let (extension_results, initialization_error) = biorouter::session::activity::opening(
+        load_resumed_agent_extensions(&state, &payload, &session, child_initializing),
+    )
+    .await;
 
     let active_turn = state
         .active_turn_id(&payload.session_id)
@@ -4634,6 +4665,37 @@ mod resume_update_security_tests {
         (status, serde_json::from_slice(&body).unwrap())
     }
 
+    /// `POST /agent/resume` with either body and no proof: status and body, so
+    /// the two bodies' refusals can be compared word for word.
+    async fn unproven_resume_response(
+        state: Arc<AppState>,
+        session_id: &str,
+        load_model_and_extensions: bool,
+    ) -> (StatusCode, String) {
+        let response = routes(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/resume")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "session_id": session_id,
+                            "load_model_and_extensions": load_model_and_extensions,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
     #[test]
     fn both_handlers_run_reach_before_they_read_an_authorized_session_or_agent() {
         let source = include_str!("agent.rs");
@@ -4704,18 +4766,30 @@ mod resume_update_security_tests {
         let transcript = body
             .find("read_session(session_id, true)")
             .expect("resume no longer loads the authorized transcript");
-        assert!(metadata < proof && proof < transcript);
+        // Ruling 28: the agent load answers with the metadata row, and only
+        // once that row has passed the proof.
+        let metadata_answer = body
+            .find("return Ok(metadata);")
+            .expect("the agent-loading resume no longer answers with the metadata row");
+        assert!(metadata < proof && proof < metadata_answer && metadata_answer < transcript);
     }
 
     #[tokio::test]
     #[serial]
     async fn forbidden_subagent_store_reads_stop_at_metadata() {
-        for route in ["resume", "update"] {
+        for route in ["resume with the transcript", "resume, agent load", "update"] {
             let reader = RecordingSessionReader::subagent();
             let result = match route {
-                "resume" => read_resume_session(&reader, "child", &HeaderMap::new())
-                    .await
-                    .map(|_| ()),
+                "resume with the transcript" => {
+                    read_resume_session(&reader, "child", &HeaderMap::new(), true)
+                        .await
+                        .map(|_| ())
+                }
+                "resume, agent load" => {
+                    read_resume_session(&reader, "child", &HeaderMap::new(), false)
+                        .await
+                        .map(|_| ())
+                }
                 "update" => read_update_session(&reader, "child", &HeaderMap::new())
                     .await
                     .map(|_| ()),
@@ -4744,10 +4818,32 @@ mod resume_update_security_tests {
                 .expect("valid test header value"),
         );
 
-        read_resume_session(&reader, "child", &headers)
+        read_resume_session(&reader, "child", &headers, true)
             .await
             .expect("proven subagent resume was refused");
         assert_eq!(reader.reads(), vec![false, true]);
+    }
+
+    /// Ruling 28 (V2-R9-3): the agent-loading resume reads the store once, the
+    /// metadata row, and answers with it. A second, full read is the 9.8 MB a
+    /// large chat used to pay on every open.
+    #[tokio::test]
+    #[serial]
+    async fn proven_agent_loading_resume_reads_the_metadata_row_only() {
+        install_test_user_action_key();
+        let reader = RecordingSessionReader::subagent();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY
+                .parse()
+                .expect("valid test header value"),
+        );
+
+        read_resume_session(&reader, "child", &headers, false)
+            .await
+            .expect("proven subagent resume was refused");
+        assert_eq!(reader.reads(), vec![false]);
     }
 
     #[test]
@@ -5124,6 +5220,117 @@ mod resume_update_security_tests {
         let (status, resumed) = resume_response(Arc::clone(&state), ordinary.id(), false).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(resumed["initializing"], false);
+    }
+
+    /// Ruling 28 (V2-R9-3) at the route. The desktop opens a chat with two
+    /// resumes: the paint resume (`load_model_and_extensions: false`) answers
+    /// with the transcript, the store's full read exactly as before; the agent
+    /// load (`true`) answers with the same row and no transcript, because none
+    /// of its readers reads one and a large chat paid megabytes for it twice.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_agent_loading_resume_answers_with_the_row_and_the_paint_resume_with_the_transcript(
+    ) {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let chat = seed(&state, SessionType::User, false).await;
+        for text in ["first message", "second message"] {
+            state
+                .session_manager()
+                .add_message(chat.id(), &Message::user().with_text(text))
+                .await
+                .unwrap();
+        }
+
+        let (status, painted) = resume_response(Arc::clone(&state), chat.id(), false).await;
+        assert_eq!(status, StatusCode::OK, "{painted}");
+        let transcript = painted["session"]["conversation"]
+            .as_array()
+            .expect("the paint resume no longer carries the transcript");
+        assert_eq!(transcript.len(), 2);
+        let full_read = state
+            .session_manager()
+            .get_session(chat.id(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            painted["session"],
+            serde_json::to_value(&full_read).unwrap(),
+            "the paint resume no longer answers with the store's full read"
+        );
+
+        let (status, loaded) = resume_response(Arc::clone(&state), chat.id(), true).await;
+        assert_eq!(status, StatusCode::OK, "{loaded}");
+        assert!(
+            loaded["initialization_error"].is_null(),
+            "the agent load must succeed, or this test measures a failure path: {loaded}"
+        );
+        assert_eq!(
+            loaded["session"]["id"],
+            chat.id(),
+            "the agent load no longer names its chat; ensureAgentLoaded reads this id"
+        );
+        assert!(
+            loaded["session"]["conversation"].is_null(),
+            "the agent-loading resume sent the transcript again: {}",
+            loaded["session"]["conversation"]
+        );
+        assert_eq!(loaded["session"]["message_count"], 2);
+        let mut row = painted["session"].clone();
+        row["conversation"] = serde_json::Value::Null;
+        assert_eq!(
+            loaded["session"], row,
+            "the agent load dropped or changed more of the row than its transcript"
+        );
+    }
+
+    /// Ruling 28: the agent load is refused exactly as the paint resume is, by
+    /// the same two gates, in the same words, before either mints an agent. A
+    /// private chat is refused by `session_reach`; a public subagent's chat by
+    /// `refuse_subagent_unless_user`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn both_resume_bodies_are_refused_by_the_same_gates_in_the_same_words() {
+        install_test_user_action_key();
+        assert!(
+            biorouter::privacy::privacy_tiers_enabled(),
+            "this test requires the normal privacy-tier gate"
+        );
+        let state = AppState::new().await.unwrap();
+        let private_chat = seed(&state, SessionType::User, true).await;
+        let public_child = seed(&state, SessionType::SubAgent, false).await;
+
+        for (target, gate, sentence) in [
+            (
+                private_chat.id(),
+                "session_reach",
+                crate::routes::session_reach::SESSION_OUT_OF_REACH,
+            ),
+            (
+                public_child.id(),
+                "refuse_subagent_unless_user",
+                SUBAGENT_USER_ACTION_REQUIRED,
+            ),
+        ] {
+            let (paint_status, paint_body) =
+                unproven_resume_response(Arc::clone(&state), target, false).await;
+            let (load_status, load_body) =
+                unproven_resume_response(Arc::clone(&state), target, true).await;
+            assert_eq!(paint_status, StatusCode::FORBIDDEN, "{gate}: {paint_body}");
+            assert_eq!(load_status, StatusCode::FORBIDDEN, "{gate}: {load_body}");
+            assert!(
+                paint_body.contains(sentence),
+                "{gate} no longer refuses the paint resume: {paint_body}"
+            );
+            assert_eq!(
+                load_body, paint_body,
+                "{gate} refuses the agent load in other words than the paint resume"
+            );
+            assert!(
+                state.peek_agent(target).await.is_none(),
+                "{gate}: a refused resume minted an agent"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6918,5 +7125,486 @@ mod knowledge_selection_tests {
                 );
             }
         }
+    }
+}
+
+/// R-30 at the HTTP surface: opening a chat the way the desktop does it moves it
+/// nowhere; renaming it moves it to the top.
+///
+/// The calls are the desktop's own, in its order (`chatStreamStore`'s
+/// `loadSession` + `ensureAgentLoaded`, measured against a live daemon on
+/// 2026-10-11): `POST /agent/resume` without the model, `POST /agent/resume`
+/// with it, `POST /agent/update_from_session`, then `GET /sessions/{id}`, all
+/// carrying the user-action proof the desktop sends. The agent is made cold
+/// first, because that is the case that wrote: the first open after a daemon
+/// start, or after the 100-agent cache evicted the chat, rebinds the model the
+/// row records, and that bind stamped `updated_at`.
+///
+/// The shared test store holds other tests' chats too, so every comparison is
+/// between the chats this test seeded only.
+#[cfg(test)]
+mod opening_is_not_activity_route_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::config::with_config_overrides;
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    use serial_test::serial;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    /// Placeholder credentials for the two providers the fixtures record.
+    /// Constructing a provider opens no connection, and nothing here runs a
+    /// turn.
+    fn placeholder_credentials() -> HashMap<String, String> {
+        use biorouter::providers::versa_azure as versa;
+        HashMap::from([
+            ("ANTHROPIC_API_KEY".into(), "placeholder-never-sent".into()),
+            (
+                "VERSA_AZURE_API_KEY".into(),
+                "placeholder-never-sent".into(),
+            ),
+            (
+                "VERSA_AZURE_ENDPOINT".into(),
+                versa::VERSA_AZURE_ENDPOINT.into(),
+            ),
+            (
+                "VERSA_AZURE_DEPLOYMENT_NAME".into(),
+                versa::deployment_for_model(versa::VERSA_AZURE_DEFAULT_MODEL)
+                    .expect("the default model has a deployment")
+                    .into(),
+            ),
+            (
+                "VERSA_AZURE_API_VERSION".into(),
+                versa::VERSA_AZURE_API_VERSION.into(),
+            ),
+        ])
+    }
+
+    /// Deletes the seeded rows however the test ends.
+    struct Seeded {
+        state: Arc<AppState>,
+        ids: Vec<String>,
+    }
+
+    impl Drop for Seeded {
+        fn drop(&mut self) {
+            let state = Arc::clone(&self.state);
+            let ids = std::mem::take(&mut self.ids);
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    for id in ids {
+                        let _ = state.agent_manager.remove_session(&id).await;
+                        let _ = state.session_manager().delete_session(&id).await;
+                    }
+                })
+            });
+        }
+    }
+
+    /// A chat with one message that records `provider`, optionally private,
+    /// with no live agent.
+    ///
+    /// Each one is written in a second of its own (the sleep): `updated_at` is
+    /// `datetime('now')`, one-second resolution, so two chats seeded in the
+    /// same second tie and a stamp in that second reads as no change. The
+    /// store's pool is not reachable from this crate, so the rows cannot be
+    /// back-dated the way the store's own tests do it.
+    async fn seed_chat(
+        state: &Arc<AppState>,
+        seeded: &mut Seeded,
+        provider: &str,
+        model: &str,
+        private: bool,
+    ) -> String {
+        let sm = state.session_manager();
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/biorouter-r30-route"),
+                format!("R-30 opening fixture ({provider})"),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        seeded.ids.push(session.id.clone());
+        sm.add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let mut update = sm
+            .update(&session.id)
+            .provider_name(provider)
+            .model_config(ModelConfig::new(model).unwrap());
+        if private {
+            update = update.raise_privacy(SessionClassification::Private, "turn:versa_azure");
+        }
+        update.apply().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        // Session ids are reissued: never inherit an agent an earlier test left,
+        // and start cold, which is the case that used to write.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        session.id
+    }
+
+    async fn updated_at(state: &Arc<AppState>, id: &str) -> chrono::DateTime<chrono::Utc> {
+        state
+            .session_manager()
+            .get_session(id, false)
+            .await
+            .unwrap()
+            .updated_at
+    }
+
+    /// One request through the agent and session routers together, carrying
+    /// the desktop's proof.
+    async fn call(
+        state: &Arc<AppState>,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("X-User-Action", TEST_USER_ACTION_KEY);
+        let body = match body {
+            Some(json) => {
+                request = request.header("content-type", "application/json");
+                Body::from(json.to_string())
+            }
+            None => Body::empty(),
+        };
+        let app =
+            routes(Arc::clone(state)).merge(crate::routes::session::routes(Arc::clone(state)));
+        let response = with_config_overrides(
+            placeholder_credentials(),
+            app.oneshot(request.body(body).unwrap()),
+        )
+        .await
+        .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// Open `id` exactly as the desktop does.
+    async fn open_like_the_desktop(state: &Arc<AppState>, id: &str) {
+        let (status, _) = call(
+            state,
+            "POST",
+            "/agent/resume",
+            Some(serde_json::json!({ "session_id": id, "load_model_and_extensions": false })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "resume without the model");
+
+        let (status, body) = call(
+            state,
+            "POST",
+            "/agent/resume",
+            Some(serde_json::json!({ "session_id": id, "load_model_and_extensions": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "resume with the model: {body}");
+        assert!(
+            body.get("initialization_error").is_none_or(|e| e.is_null()),
+            "the restore must succeed, or this test measures nothing: {body}"
+        );
+        let agent = state
+            .peek_agent(id)
+            .await
+            .expect("resume caches the chat's agent");
+        assert!(
+            agent.provider().await.is_ok(),
+            "the cold agent must have had its model restored"
+        );
+
+        let (status, body) = call(
+            state,
+            "POST",
+            "/agent/update_from_session",
+            Some(serde_json::json!({ "session_id": id })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "update_from_session: {body}");
+
+        let (status, _) = call(state, "GET", &format!("/sessions/{id}"), None).await;
+        assert_eq!(status, StatusCode::OK, "the transcript read");
+
+        // The reads the desktop makes around an open (measured live on
+        // 2026-10-11 against the same daemon build). They write nothing today;
+        // pinned here so one that starts writing fails as an R-30 regression
+        // rather than as a chat that quietly jumps in the sidebar.
+        for uri in [
+            format!("/sessions/{id}?metadata_only=true"),
+            format!("/sessions/{id}/extensions"),
+            format!("/sessions/{id}/usage"),
+            format!("/agent/callable_tool_count?session_id={id}"),
+        ] {
+            let (status, body) = call(state, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        }
+    }
+
+    /// The seeded ids in the order `GET /sessions` (History, the CLI's list)
+    /// returns them.
+    async fn history_order(state: &Arc<AppState>, ids: &[String]) -> Vec<String> {
+        let (status, body) = call(state, "GET", "/sessions", None).await;
+        assert_eq!(status, StatusCode::OK);
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["id"].as_str())
+            .filter(|id| ids.iter().any(|seeded| seeded == id))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The seeded ids in the order `GET /sessions/sidebar` returns them, walked
+    /// page by page with the route's own continuation value.
+    async fn sidebar_order(state: &Arc<AppState>, ids: &[String]) -> Vec<String> {
+        let mut order = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = match &cursor {
+                // URL-safe base64 (`encode_sidebar_cursor`), so it goes in as is.
+                Some(c) => format!("/sessions/sidebar?limit=500&cursor={c}"),
+                None => "/sessions/sidebar?limit=500".to_string(),
+            };
+            let (status, body) = call(state, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            order.extend(
+                body["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|s| s["id"].as_str())
+                    .filter(|id| ids.iter().any(|seeded| seeded == id))
+                    .map(str::to_string),
+            );
+            match body["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_string()),
+                None => break,
+            }
+        }
+        order
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn opening_a_public_or_private_chat_keeps_its_place_and_renaming_moves_it() {
+        install_test_user_action_key();
+        assert!(biorouter::privacy::privacy_tiers_enabled());
+        let state = AppState::new().await.unwrap();
+        let mut seeded = Seeded {
+            state: Arc::clone(&state),
+            ids: Vec::new(),
+        };
+        use biorouter::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
+        let public = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let private = seed_chat(
+            &state,
+            &mut seeded,
+            "versa_azure",
+            VERSA_AZURE_DEFAULT_MODEL,
+            true,
+        )
+        .await;
+        let newest = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let ids = seeded.ids.clone();
+        let expected = vec![newest.clone(), private.clone(), public.clone()];
+        let public_before = updated_at(&state, &public).await;
+        let private_before = updated_at(&state, &private).await;
+        assert_eq!(history_order(&state, &ids).await, expected, "premise");
+        assert_eq!(sidebar_order(&state, &ids).await, expected, "premise");
+
+        // ── Open both older chats, cold, the way the desktop does. ───────────
+        open_like_the_desktop(&state, &public).await;
+        open_like_the_desktop(&state, &private).await;
+
+        assert_eq!(
+            updated_at(&state, &public).await,
+            public_before,
+            "opening a public chat is not activity in it (R-30)"
+        );
+        assert_eq!(
+            updated_at(&state, &private).await,
+            private_before,
+            "opening a private chat is not activity in it (R-30)"
+        );
+        assert_eq!(
+            history_order(&state, &ids).await,
+            expected,
+            "History moved a chat that was only opened"
+        );
+        assert_eq!(
+            sidebar_order(&state, &ids).await,
+            expected,
+            "the sidebar moved a chat that was only opened"
+        );
+
+        // A second open, now warm, writes nothing either.
+        open_like_the_desktop(&state, &public).await;
+        assert_eq!(updated_at(&state, &public).await, public_before);
+
+        // ── Renaming IS activity: the oldest chat goes to the top. ───────────
+        let (status, body) = call(
+            &state,
+            "PUT",
+            &format!("/sessions/{public}/name"),
+            Some(serde_json::json!({ "name": "R-30 renamed (test fixture)" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename: {body}");
+        let renamed_first = vec![public.clone(), newest.clone(), private.clone()];
+        assert_eq!(history_order(&state, &ids).await, renamed_first);
+        assert_eq!(sidebar_order(&state, &ids).await, renamed_first);
+
+        // ...and so is renaming the private chat, with the proof. A second of
+        // its own, or the two renames tie and `GET /sessions` has no tiebreak.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "PUT",
+            &format!("/sessions/{private}/name"),
+            Some(serde_json::json!({ "name": "R-30 renamed private (test fixture)" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "rename: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![private.clone(), public.clone(), newest.clone()]
+        );
+    }
+
+    /// Coordinator ruling 16 at the routes. Re-binding the model a chat
+    /// records is not activity; a deliberate change made to the chat is.
+    ///
+    /// * `POST /agent/update_provider` naming the chat's own provider and
+    ///   model, which is the call `biorouter session --shared-daemon --resume`
+    ///   makes when the person repeats `--provider`/`--model`: no move.
+    /// * The same route naming another model (the model picker's switch):
+    ///   the chat moves to the top.
+    /// * `POST /agent/add_extension` and `POST /agent/remove_extension` (the
+    ///   composer's extension toggle): each moves its chat to the top.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_same_model_rebind_keeps_a_chats_place_and_a_switch_or_a_toggle_moves_it() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let mut seeded = Seeded {
+            state: Arc::clone(&state),
+            ids: Vec::new(),
+        };
+        let switched =
+            seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let toggled = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let newest = seed_chat(&state, &mut seeded, "anthropic", "claude-sonnet-4-5", false).await;
+        let ids = seeded.ids.clone();
+        let expected = vec![newest.clone(), toggled.clone(), switched.clone()];
+        assert_eq!(history_order(&state, &ids).await, expected, "premise");
+        open_like_the_desktop(&state, &switched).await;
+        open_like_the_desktop(&state, &toggled).await;
+        let before = updated_at(&state, &switched).await;
+
+        // ── The model the chat records, named again: not a change. ─────────
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/update_provider",
+            Some(serde_json::json!({
+                "session_id": switched,
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "same-model bind: {body}");
+        assert_eq!(
+            updated_at(&state, &switched).await,
+            before,
+            "re-binding the model a chat records is not activity in it (ruling 16)"
+        );
+        assert_eq!(history_order(&state, &ids).await, expected);
+        assert_eq!(sidebar_order(&state, &ids).await, expected);
+
+        // ── An explicit switch to another model is activity. ───────────────
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/update_provider",
+            Some(serde_json::json!({
+                "session_id": switched,
+                "provider": "anthropic",
+                "model": "claude-opus-4-1",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "model switch: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![switched.clone(), newest.clone(), toggled.clone()],
+            "a model switch moves its chat to the top"
+        );
+
+        // ── The composer's extension toggle is activity, on and off. ───────
+        let todo = serde_json::json!({
+            "type": "platform",
+            "name": "todo",
+            "description": "",
+            "bundled": null,
+            "available_tools": [],
+        });
+        // A second of its own each time, or two moves tie (`datetime('now')`).
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/add_extension",
+            Some(serde_json::json!({ "session_id": toggled, "config": todo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add_extension: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![toggled.clone(), switched.clone(), newest.clone()],
+            "turning an extension on moves its chat to the top"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/add_extension",
+            Some(serde_json::json!({ "session_id": switched, "config": todo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add_extension: {body}");
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let (status, body) = call(
+            &state,
+            "POST",
+            "/agent/remove_extension",
+            Some(serde_json::json!({ "session_id": toggled, "name": "todo" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "remove_extension: {body}");
+        assert_eq!(
+            history_order(&state, &ids).await,
+            vec![toggled.clone(), switched.clone(), newest.clone()],
+            "turning an extension off moves its chat to the top"
+        );
+        assert_eq!(
+            sidebar_order(&state, &ids).await,
+            vec![toggled, switched, newest]
+        );
     }
 }

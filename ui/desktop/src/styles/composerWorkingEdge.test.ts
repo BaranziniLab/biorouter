@@ -26,6 +26,10 @@ import { describe, expect, it } from 'vitest';
  */
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const CHAT_INPUT = readFileSync(join(__dirname, '../components/ChatInput.tsx'), 'utf8');
+const COMPOSER_CARD = readFileSync(
+  join(__dirname, '../components/composer/composerCard.ts'),
+  'utf8'
+);
 const BASE_CHAT = readFileSync(join(__dirname, '../components/BaseChat.tsx'), 'utf8');
 
 /** The `::after` rule body, which carries the sweep itself. */
@@ -141,6 +145,18 @@ describe('the composer working edge', () => {
       expect(workingAt).toBeGreaterThan(-1);
       expect(workingAt).toBeGreaterThan(focusAt);
     });
+
+    /**
+     * Working but not focused is the resting hairline with the segment riding
+     * on it (owner message 17, R-32: the card rests on the page ground with its
+     * hairline again). No rule may recolour the base border for the working
+     * state alone, or the unfocused working card loses the edge the segment
+     * travels along.
+     */
+    it('keeps the resting hairline under the segment when the field is not focused', () => {
+      expect(CSS).not.toMatch(/\.biorouter-composer-card\[data-working='true'\]\s*\{/);
+      expect(COMPOSER_CARD).toContain("'bg-background-default border border-border-subtle/60'");
+    });
   });
 
   describe('reduced motion', () => {
@@ -180,7 +196,8 @@ describe('the composer working edge', () => {
      * drift apart silently.
      */
     it('is set on the composer card in ChatInput', () => {
-      expect(CHAT_INPUT).toContain('biorouter-composer-card');
+      expect(COMPOSER_CARD).toContain("'biorouter-composer-card'");
+      expect(CHAT_INPUT).toMatch(/className=\{composerCardClassName\(/);
       expect(CHAT_INPUT).toMatch(/data-working=\{isWorking \? 'true' : undefined\}/);
     });
 

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
+import { knowledgeCopy } from '../copy';
 import { EdgePreview, mergeQuantitative } from './EdgePreview';
 import { buildGraphModel } from './graphModel';
 import { fillFor } from './nodeMark';
@@ -100,7 +101,13 @@ describe('EdgePreview', () => {
   it('replaces the triplet for a derived edge instead of reporting three blanks', () => {
     renderEdge({ from: 'metformin', to: 't2d', predicate: 'reported_in', synthesized: true });
     const provenance = screen.getByRole('region', { name: 'Provenance' });
-    expect(within(provenance).getByText(/Implicit link derived/)).toBeInTheDocument();
+    // Spec 3.12: one visible line, the rest in an InfoTip the reader can open.
+    expect(within(provenance).getByText(knowledgeCopy.graph.derivedNote)).toBeVisible();
+    expect(
+      within(provenance).getByRole('button', {
+        name: `About ${knowledgeCopy.graph.derivedNoteLabel}`,
+      })
+    ).toHaveAccessibleDescription(knowledgeCopy.graph.derivedNoteInfo);
     expect(within(provenance).queryByText('Not stated')).toBeNull();
   });
 
@@ -128,6 +135,14 @@ describe('EdgePreview', () => {
     expect(onSelectNode).toHaveBeenCalledWith(byId.get('t2d'));
   });
 
+  // Crew's pane header: one 44px line with a `text-label` title and a ghost
+  // round close (spec 3.12).
+  it('heads the panel with a level-2 title and a named close', () => {
+    renderEdge(edge);
+    expect(screen.getByRole('heading', { level: 2, name: knowledgeCopy.graph.edge })).toBeVisible();
+    expect(screen.getByRole('button', { name: knowledgeCopy.graph.closeEdge })).toBeVisible();
+  });
+
   it('dismisses with Escape', () => {
     const onClose = vi.fn();
     renderEdge(edge, { onClose });
@@ -138,7 +153,8 @@ describe('EdgePreview', () => {
 
 describe('mergeQuantitative', () => {
   it('merges the two CI bounds into one interval — nobody reports half of one', () => {
-    expect(mergeQuantitative({ ci_lower: 1.2, ci_upper: 3.4 })).toEqual([['95% CI', '1.2 – 3.4']]);
+    // "to", not an en dash: the copy rules allow no dashes (spec 3.12).
+    expect(mergeQuantitative({ ci_lower: 1.2, ci_upper: 3.4 })).toEqual([['95% CI', '1.2 to 3.4']]);
   });
 
   it('keeps every other key uniform, so a vocabulary addition needs no code', () => {

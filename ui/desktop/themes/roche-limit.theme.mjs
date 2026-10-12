@@ -84,7 +84,11 @@ export default {
       'heat-4': '#c4560e',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#1f1e1c',
-      'sidebar-icon': '#d95b08',
+      // Nav icons wear the row's resting ink, the muted label ink, as in
+      // Parchment and Alma Mater: one ink with the labels and the chat glyphs
+      // below (V1-R2-5). The accent is held for the active rail and the lock
+      // badge (redesign principle 7); orange icons were accent outside it (V1-M3).
+      'sidebar-icon': '#5c5a55',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -241,14 +245,14 @@ export default {
       ring: '#a5a39d',
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',
-      'heat-0': '#1e1d1b',
-      'heat-1': '#4a2a0e',
+      'heat-0': '#32312e', // one step up from #1e1d1b: zero days read on the dark card (redesign 2.3)
+      'heat-1': '#5c3410', // was #4a2a0e: 1.01:1 against the lifted heat-0; a step above it again
       'heat-2': '#7a4413',
       'heat-3': '#b45f18',
       'heat-4': '#ee6c1a',
       sidebar: '#171716',
       'sidebar-foreground': '#ededea',
-      'sidebar-icon': '#ee6c1a',
+      'sidebar-icon': '#a5a39d', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',

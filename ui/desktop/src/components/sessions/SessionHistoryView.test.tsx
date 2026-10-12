@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistoryView from './SessionHistoryView';
+import { MAKE_CHAT_PUBLIC } from './copy';
 import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({ declassifySession: vi.fn(), getSession: vi.fn() }));
@@ -96,11 +97,11 @@ describe('SessionHistoryView — the privacy marker', () => {
 describe('SessionHistoryView — declassification', () => {
   it('offers Make public only on a private session', () => {
     const view = renderView({ privacy_tier: 'public' }, true);
-    expect(screen.queryByRole('button', { name: 'Make public' })).toBeNull();
+    expect(screen.queryByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeNull();
     view.unmount();
 
     renderView({ privacy_tier: 'private' }, true);
-    expect(screen.getByRole('button', { name: 'Make public' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeInTheDocument();
   });
 
   it('clears the header badge once the chat is public, without waiting for a refetch', async () => {
@@ -114,10 +115,9 @@ describe('SessionHistoryView — declassification', () => {
     );
     expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Make public' }));
+    fireEvent.click(screen.getByRole('button', { name: MAKE_CHAT_PUBLIC }));
 
-    // Scoped to the dialog: the page's own trigger carries the same label, and
-    // an unscoped query would be ambiguous the moment the dialog opens.
+    // Scoped to the dialog, whose confirm button is the one named "Make public".
     const dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '120000' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make public' }));
@@ -206,5 +206,61 @@ describe('SessionHistoryView sits on one chat measure', () => {
     for (const element of container.querySelectorAll<HTMLElement>('*')) {
       expect(element.className.toString()).not.toMatch(/\bmax-w-(?:3xl|4xl|5xl|6xl|7xl)\b/);
     }
+  });
+});
+
+/**
+ * The saved transcript takes the 44px band (spec 3.4): Back, the chat's title,
+ * the privacy marker beside it from the first frame, and the actions as round
+ * icons. It used to be a 24px `<h1>` with a two-line mono metadata block.
+ */
+describe('SessionHistoryView band', () => {
+  it('puts Back, the title, the marker and the actions on one band', () => {
+    renderView({ privacy_tier: 'private', message_count: 3 }, true);
+
+    const heading = screen.getByRole('heading', { level: 1, name: 'Cohort query' });
+    expect(heading).toHaveClass('text-label');
+    const band = heading.closest('[data-band]') as HTMLElement;
+    expect(band).not.toBeNull();
+    expect(within(band).getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(within(band).getByTestId('privacy-badge')).toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: 'Share' })).toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+    expect(within(band).getByText(/3 messages/)).toBeInTheDocument();
+  });
+
+  it('shows the marker while the chat is still loading', () => {
+    render(
+      <MemoryRouter>
+        <SessionHistoryView
+          session={session({ privacy_tier: 'private' })}
+          isLoading={true}
+          error={null}
+          onBack={vi.fn()}
+          onRetry={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+  });
+
+  it('keeps Share reachable while it is unavailable, so its reason can be read', () => {
+    localStorage.removeItem('session_sharing_config');
+    renderView({}, true);
+    const share = screen.getByRole('button', { name: 'Share' });
+    expect(share).toHaveAttribute('aria-disabled', 'true');
+    expect(share).not.toBeDisabled();
+  });
+
+  it('sits in the preview split as its header area, beside the panel', () => {
+    const { container } = renderView({}, true);
+    const header = container.querySelector('[data-preview-area="header"]');
+    expect(header?.querySelector('[data-band]')).not.toBeNull();
+    // The band is the grid's header area; the column under it is the transcript's.
+    const transcript = container.querySelector('[data-preview-area="transcript"]');
+    expect(transcript?.querySelector('.biorouter-readable-content')).not.toBeNull();
+    expect(header?.compareDocumentPosition(transcript as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
   });
 });

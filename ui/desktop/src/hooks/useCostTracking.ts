@@ -138,6 +138,9 @@ export async function buildModelCostRows(
   );
 }
 
+/** A chat's rows before its ledger answers: one array, so the prop stays stable. */
+const NO_ROWS: ModelCostRow[] = [];
+
 /**
  * Per-model cost tracking backed by the real `token_events` ledger.
  *
@@ -147,9 +150,18 @@ export async function buildModelCostRows(
  * from before the app opened and mis-attributed everything after a mid-thread
  * switch (Issue #1). This fetches the authoritative `(model, provider)` rollup
  * from `GET /sessions/{id}/usage` instead and only prices it client-side.
+ *
+ * `ledgerSettled` says whether THIS chat's ledger has answered (with rows, or
+ * by failing). Until it has, `modelRows` is empty, and a reader that falls back
+ * to the accumulated counters shows a figure the ledger then replaces: the
+ * summary's Tokens value and the footer cost read "2.2M" and "$11.75", then
+ * "N/A" and nothing, on every open (vision V2-R5-5). So a reader waits for it.
+ * The answer is kept with the chat it was read for, so one chat's ledger never
+ * stands in for another's, and a refresh of the same chat (a turn moved its
+ * counters) keeps the answer it has until the new one lands.
  */
 export const useCostTracking = ({ session }: UseCostTrackingProps) => {
-  const [modelRows, setModelRows] = useState<ModelCostRow[]>([]);
+  const [ledger, setLedger] = useState<{ sessionId: string; rows: ModelCostRow[] } | null>(null);
 
   const sessionId = session?.id;
   // Some providers report only the split and others only the total. Observe all
@@ -159,13 +171,10 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
   const accumulatedTotal = session?.accumulated_total_tokens;
 
   useEffect(() => {
+    if (!sessionId) return;
     let cancelled = false;
 
     const load = async () => {
-      if (!sessionId) {
-        setModelRows([]);
-        return;
-      }
       try {
         // With the user's proof: a private chat's usage is refused to a caller
         // without it (issue #56, QA 2026-09-10).
@@ -177,11 +186,11 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
         const rows = response.data?.models ?? [];
         const priced = await buildModelCostRows(rows, fetchModelPricing);
         if (!cancelled) {
-          setModelRows(priced);
+          setLedger({ sessionId, rows: priced });
         }
       } catch {
         if (!cancelled) {
-          setModelRows([]);
+          setLedger({ sessionId, rows: [] });
         }
       }
     };
@@ -192,6 +201,9 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
     };
   }, [sessionId, accumulatedInput, accumulatedOutput, accumulatedTotal]);
 
+  const ledgerIsThisChats = !!sessionId && ledger?.sessionId === sessionId;
+  const modelRows = ledgerIsThisChats ? ledger.rows : NO_ROWS;
+
   // Back-compat shape for older CostTracker callers. Unknown and partial rows
   // stay in modelRows instead of being forged into exact legacy costs here.
   const sessionCosts = buildLegacySessionCosts(modelRows);
@@ -199,5 +211,7 @@ export const useCostTracking = ({ session }: UseCostTrackingProps) => {
   return {
     sessionCosts,
     modelRows,
+    /** No chat, or this chat's ledger has answered. */
+    ledgerSettled: !sessionId || ledgerIsThisChats,
   };
 };

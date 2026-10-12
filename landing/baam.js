@@ -780,8 +780,8 @@
     if (d && d.needs) rows.push(row('Requirements', `<p>${escapeHtml(d.needs)}</p>`));
     if (d && d.sources && d.sources.length) rows.push(row('Data sources', list(d.sources, 'src')));
     rows.push(row('Install', `<ul class="how">
-      <li><span class="k">In the app</span><span>Open Extensions, choose Browse extensions, then Add beside ${name}.</span></li>
-      <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Extensions, choose Add extension and drop the file in.</span></li>
+      <li><span class="k">In the app</span><span>Open Extensions, choose Add, then Browse marketplace, then Add beside ${name}.</span></li>
+      <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Extensions, choose Add, then Install from file (.brxt), and drop the file in.</span></li>
       <li><span class="k">At a terminal</span><span><code>biorouter extension install ./${file}</code></span></li>
     </ul>${needsSecret(d) ? SECRET_NOTE : ''}`));
     const links = [];
@@ -813,8 +813,8 @@
     const file = escapeHtml(fileOf(href));
     const type = skillTypeHtml(card);
     return `<dl class="detail-list">${type ? row('How it runs', type) : ''}${row('Install', `<ul class="how">
-      <li><span class="k">In the app</span><span>Open Skills, choose Browse skills, select ${name} and choose Install.</span></li>
-      <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Skills, choose Add skill and drop the file in.</span></li>
+      <li><span class="k">In the app</span><span>Open Skills, choose Add, then Browse marketplace, select ${name} and choose Install.</span></li>
+      <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Skills, choose Add, then From a repository or .zip…, and drop the file in.</span></li>
     </ul>`)}</dl>`;
   }
 

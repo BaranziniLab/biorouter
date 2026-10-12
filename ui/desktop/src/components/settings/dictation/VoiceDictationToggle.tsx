@@ -72,12 +72,12 @@ export const VoiceDictationToggle = () => {
           </p>
         </div>
         <div className="flex items-center">
-          <Switch checked={settings.enabled} onCheckedChange={handleToggle} variant="mono" />
+          <Switch checked={settings.enabled} onCheckedChange={handleToggle} />
         </div>
       </div>
 
       <div
-        className={`overflow-hidden transition-[max-height,opacity] duration-[var(--motion-slow)] ease-[var(--ease-out)] ${
+        className={`overflow-hidden transition-[max-height,opacity] duration-[var(--dur-med)] ease-[var(--ease-out)] ${
           settings.enabled ? 'max-h-96 opacity-100 mt-2' : 'max-h-0 opacity-0 mt-0'
         }`}
       >

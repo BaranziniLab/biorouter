@@ -1,0 +1,295 @@
+/* The usage surfaces (spec 3.9): the shared StatGrid, and Home's usage card.
+   Authored here, next to the components, rather than as utilities at the call
+   site: a newly written Tailwind class can silently fail to generate under
+   `BIOROUTER_NO_HMR`, and the grid needs a container query anyway. Tokens
+   only. The heatmap's own rules live in `main.css` (`.biorouter-heatmap-*`). */
+
+/* ── StatGrid ──────────────────────────────────────────────────────────────
+   Flat tiles: a 12px muted label over a 24px regular figure. Three columns,
+   two under a 480px container, so the grid answers to its own width. */
+.br-stat-grid-frame {
+  container-type: inline-size;
+  min-inline-size: 0;
+}
+
+.br-stat-grid {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+
+@container (max-width: 479px) {
+  .br-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.br-stat {
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+}
+
+.br-stat-label {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+}
+
+.br-stat-label-text {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-stat-value {
+  display: flex;
+  min-inline-size: 0;
+  margin: 0;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.br-stat-figure {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-stat-suffix {
+  flex: none;
+  white-space: nowrap;
+}
+
+.br-stat-note {
+  margin: 0;
+}
+
+/* A range switch: the figure remounts and fades in. No count-up. */
+.br-stat-value[data-animate] {
+  animation: br-fade-in var(--dur-fast) var(--ease-out);
+}
+
+/* ── Home usage card ───────────────────────────────────────────────────────
+   One card on the chat measure, flat (no shadow): a 36px head with the
+   Overview and Models tabs and the range control, then the figures, the
+   heatmap and one footnote line.
+
+   Fills before lines (R-27, design.md 9.11): the card is the subtle fill with
+   NO resting outline. The 1px edge stays, transparent, so nothing moves
+   between the old and the new look and forced colours still draw the card's
+   box in the system ink.
+
+   A fill never sits on a fill, and that is said once, not here: both sections
+   carry `.br-fill-surface` (the primitives block of `main.css`), which gives the
+   range control's segmented track `--br-track-ground`, one step deeper than this
+   card's ground, and would do the same for a field, a secondary button or a
+   neutral progress track if the card ever held one. The thumb stays the raised
+   surface above the track. */
+.br-usage-card {
+  min-inline-size: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-container);
+  background-color: var(--background-fill);
+}
+
+/* The zero day on the fill. `--heat-0` is a step off WHITE (1.14:1), which on this
+   fill is 1.06:1 in light, so the empty days all but vanish. The fix goes LIGHTER,
+   not darker, because the ramp's first step is a pale tint (Roche Limit's #fadcc0
+   is 1.19:1 off the fill): a grey darker than the fill lands on top of it (1.02:1).
+   So in light an empty day is the page's own white, a punched-out cell (1.10:1 off
+   the fill, 1.3:1 and more under the first step in every family). In dark `--heat-0`
+   already is a step lighter than this fill (1.21:1) and keeps its token, so only
+   light re-points it. It also paints the legend's first swatch, the streak glyph,
+   the Models bars' track and the loading skeleton, which sit on the same fill. */
+:root:not(.dark) .br-usage-card {
+  --heat-0: var(--background-default);
+}
+
+/* The tab underline (`-bottom-px` on the trigger) lands on this hairline. */
+.br-usage-card-head {
+  display: flex;
+  min-block-size: var(--dock-height);
+  min-inline-size: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding-inline: 16px;
+  border-block-end: 1px solid var(--border-subtle);
+}
+
+.br-usage-card-tabs {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 4px;
+  align-self: stretch;
+}
+
+.br-usage-card-tabs [role='tablist'] {
+  align-self: flex-end;
+}
+
+.br-usage-card-range {
+  align-self: center;
+  flex: none;
+}
+
+.br-usage-card-body {
+  padding: 16px;
+}
+
+/* Both tabs keep one height (two tile rows), so the heatmap never jumps. */
+.br-usage-panels {
+  display: grid;
+  min-block-size: 112px;
+}
+
+/* A tab switch CROSSFADES (spec 3.9): the panels share one grid cell, so the
+   outgoing one never takes a row of its own and the card does not move. The
+   incoming panel fades in over `--dur-fast-max`; the outgoing one only fades,
+   over `--dur-fast` (an exit takes the faster tier), and Radix keeps it mounted
+   until that animation ends (`Presence` reads `animation-name`), so it is a
+   real two-layer crossfade and not a cut. The first panel mounts at rest. */
+.br-usage-panel {
+  grid-area: 1 / 1;
+  min-inline-size: 0;
+}
+
+.br-usage-panel[data-state='active'][data-animate] {
+  animation: br-fade-in var(--dur-fast-max) var(--ease-out);
+}
+
+/* `br-fade-out` ends `visibility: hidden`, so the leaving panel drops out of
+   the tab order and the accessibility tree at the end of its fade. */
+.br-usage-panel[data-state='inactive'] {
+  pointer-events: none;
+  animation: br-fade-out var(--dur-fast) var(--ease-out) both;
+}
+
+.br-usage-card-heatmap {
+  margin-block-start: 24px;
+}
+
+/* The month row: every label sits on row 1 (so one that spans the whole row never
+   pushes the others down a row), and a label flagged `data-end` ends flush with
+   the grid's right edge instead of hanging past it (`UsageHeatmap` flags the ones
+   that start in the last two columns). */
+.biorouter-heatmap-months > span {
+  grid-row: 1;
+}
+
+.biorouter-heatmap-months > span[data-end] {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+.br-usage-card-foot {
+  display: flex;
+  min-inline-size: 0;
+  /* One 12px text line (16px); the loading card's footer holds this too, so the
+     card keeps its height when the real one replaces it. */
+  min-block-size: 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-block-start: 12px;
+}
+
+.br-usage-streak {
+  display: inline-flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Settings report tables ────────────────────────────────────────────────
+   The two tables ("By day", "By model") take the same filled panel the chat's
+   tables take (R-27): `--background-fill`, no frame, the table's own radius.
+   The rules BETWEEN rows are structural and stay (each cell draws its top
+   edge); only the box around them is a fill now. The wrapper clips the rounded
+   corners, and scrolls sideways before it ever squeezes a column. */
+.br-usage-table-frame {
+  border-radius: var(--radius-element);
+  background-color: var(--background-fill);
+}
+
+/* ── Models tab: up to four 28px rows ──────────────────────────────────── */
+.br-usage-models {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-usage-model {
+  display: grid;
+  min-block-size: 28px;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(64px, 160px) 64px 40px;
+  gap: 12px;
+}
+
+.br-usage-model-label {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-usage-model-name {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-usage-model-bar {
+  position: relative;
+  block-size: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-full, 9999px);
+  background-color: var(--heat-0);
+}
+
+.br-usage-model-bar > span {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-radius: inherit;
+  background-color: var(--heat-3);
+}
+
+.br-usage-model-tokens,
+.br-usage-model-share {
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  white-space: nowrap;
+}
+
+.br-usage-empty {
+  display: flex;
+  min-block-size: 112px;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Loading: label and figure skeletons in place of the six tiles. */
+.br-usage-skeleton {
+  display: block;
+  border-radius: var(--radius-inner);
+  background-color: var(--heat-0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-stat-value[data-animate],
+  .br-usage-panel[data-state='active'][data-animate],
+  .br-usage-panel[data-state='inactive'] {
+    animation: none;
+  }
+}

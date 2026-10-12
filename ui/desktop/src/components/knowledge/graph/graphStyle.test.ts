@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CANVAS_FONT_FALLBACK,
@@ -187,5 +189,28 @@ describe('withAlpha', () => {
     // An invalid `strokeStyle` is a silent no-op that leaves the PREVIOUS
     // stroke in place — the node ring would then inherit a neighbour's colour.
     expect(withAlpha('canvastext', 0.5)).toBe('canvastext');
+  });
+});
+
+/**
+ * Spec 2.1: one UI face (the website's Arial-first stack) and one mono stack. The
+ * canvas resolves both off the cascade; its fallbacks are what it draws when it
+ * cannot (jsdom, a detached node), and a third stack there is how the graph used
+ * to label nodes in a face nothing else in the app used.
+ */
+describe('the canvas font fallbacks', () => {
+  const css = readFileSync(join(__dirname, '../../../styles/main.css'), 'utf8');
+  const stack = (token: string) =>
+    css
+      .match(new RegExp(`${token}:\\s*([^;]+);`))?.[1]
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  it('is the body stack, verbatim', () => {
+    expect(CANVAS_FONT_FALLBACK).toBe(stack('--font-body'));
+  });
+
+  it('is the mono stack, verbatim', () => {
+    expect(CANVAS_MONO_FALLBACK).toBe(stack('--font-mono'));
   });
 });

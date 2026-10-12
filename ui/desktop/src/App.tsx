@@ -13,8 +13,9 @@ import { openSharedSessionFromDeepLink } from './sessionLinks';
 import { type SharedSessionDetails } from './sharedSessions';
 import { ErrorUI } from './components/ErrorBoundary';
 import { TOAST_SURFACE_CLASS_NAME } from './components/alerts/NotificationSurface';
+import { watchToastClearance } from './components/alerts/toastClearance';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
-import { ToastContainer } from 'react-toastify';
+import { ToastContainer, cssTransition } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ProviderGuard from './components/ProviderGuard';
@@ -28,6 +29,7 @@ import { ChatGroupsProvider, useChatGroups } from './contexts/ChatGroupsContext'
 import { requestNewTab } from './components/chatGroups/newTabRegistry';
 import { useEmptyPairRedirect } from './components/chatGroups/useEmptyPairRedirect';
 import { useNewChatTabRequests } from './components/chatGroups/useNewChatTabRequests';
+import { useSavedTabTitleSync } from './components/chatGroups/useSavedTabTitleSync';
 import { runCloseActiveTabCommand } from './utils/closeActiveTabCommand';
 import { isTerminalFocused, requestNewTerminalPane } from './utils/terminalFocus';
 import { TerminalDockProvider } from './contexts/TerminalDockContext';
@@ -56,7 +58,8 @@ import KnowledgeView from './components/knowledge/KnowledgeView';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
 import NotFoundView from './components/NotFoundView';
-import { View, ViewOptions } from './utils/navigationUtils';
+import { useRouteFade, View, ViewOptions } from './utils/navigationUtils';
+import { DUR } from './styles/motion';
 import ConfigureProvidersRoute from './components/settings/providers/ConfigureProvidersRoute';
 
 import { useNavigation } from './hooks/useNavigation';
@@ -367,6 +370,21 @@ const ExtensionsRoute = () => {
   );
 };
 
+/**
+ * The toast's motion (spec 3.16), replacing react-toastify's default Bounce
+ * (500ms, flying in from 3000px with overshoots, then a 300ms collapse). The
+ * two classes are authored in main.css beside the Toastify block: in is
+ * opacity and an 8px drop over `--dur-fast-max`, out is opacity and an 8px
+ * slide toward the corner over `--dur-fast`, and the slot collapses over the
+ * same `--dur-fast`. `styles/toastLayer.test.ts` holds the travel inside the
+ * drag-band floor.
+ */
+const TOAST_TRANSITION = cssTransition({
+  enter: 'br-toast-in',
+  exit: 'br-toast-out',
+  collapseDuration: DUR.fast,
+});
+
 export function AppInner() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [isLoadingSharedSession, setIsLoadingSharedSession] = useState(false);
@@ -381,6 +399,12 @@ export function AppInner() {
   // instead of following them over another screen's controls. App-level
   // toasts, errors included, are untouched: see `ToastScope` in toasts.tsx.
   const { pathname, search } = useLocation();
+  // Spec 3.16: the main column fades in once when the route changes.
+  useRouteFade(pathname);
+  // A rename made on any route reaches this window's saved tabs, so /pair
+  // comes back with the name the sidebar shows (V2-R3-1). Here, and not in
+  // ChatGroupsProvider, because that provider mounts with /pair only.
+  useSavedTabTitleSync();
   const screen = `${pathname}${search}`;
   const shownScreen = useRef(screen);
   useEffect(() => {
@@ -388,6 +412,9 @@ export function AppInner() {
     shownScreen.current = screen;
     dismissScreenToasts();
   }, [screen]);
+  // V2-R7-4. A toast steps below find in chat and left of the Chat summary
+  // instead of covering them; the corner stays theirs while they are open.
+  useEffect(() => watchToastClearance(), []);
 
   const [chat, setChat] = useState<ChatType>({
     sessionId: '',
@@ -652,6 +679,9 @@ export function AppInner() {
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() => TOAST_SURFACE_CLASS_NAME}
+        // No Bounce: an 8px drop in, an 8px slide toward the corner out, and a
+        // 125ms collapse (see TOAST_TRANSITION).
+        transition={TOAST_TRANSITION}
         style={
           {
             '--toastify-z-index': 'var(--z-toast)',

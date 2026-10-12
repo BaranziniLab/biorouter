@@ -228,6 +228,7 @@ surface keeps its icon (WCAG 1.4.1 requires it regardless).
 
 `--sidebar: #F7F7F5` · `--sidebar-hover: #EFEFEC` · `--sidebar-active: #EAEAE6` · `--sidebar-border: #E7E7E3`
 **`--sidebar-icon: #D95B08`** — this is where "bright orange for the icons" lands (3.59:1 on the sidebar; dark mode uses the pure anchor `#EE6C1A` at 5.81:1).
+**Revised 2026-10-10:** nav icons now wear the label ink, as in the other two families. **Revised 2026-10-11:** the resting label ink, `--text-muted` (`#5C5A55` light, `#A5A39D` dark), so icons match the muted labels beside them (V1-R2-5); `--sidebar-foreground` read heavier than the labels. The 2026-10 redesign holds the accent for the active rail, the lock badge, buttons, links and the heat ramp (principle 7, vision finding V1-M3), so the orange in ask 3 lives there now.
 Aliases (`--sidebar-foreground`, `-primary`, `-primary-foreground`, `-accent`, `-accent-foreground`, `-ring`) are `var()` refs, copied verbatim from the sibling families.
 
 ### 4.8 Heatmap
@@ -375,7 +376,13 @@ olive-yellow in light (white ink) and bright yellow in dark (dark ink).
 
 `--sidebar: #171716` (darker than the card, like Alma dark) · `--sidebar-hover: #232320` · `--sidebar-active: #2E2E2A` · `--sidebar-border: #2A2A27`
 
-Heat: `--heat-0: #1E1D1B` · `--heat-1: #4A2A0E` · `--heat-2: #7A4413` · `--heat-3: #B45F18` · `--heat-4: #EE6C1A`
+Heat: `--heat-0: #32312E` · `--heat-1: #5C3410` · `--heat-2: #7A4413` · `--heat-3: #B45F18` · `--heat-4: #EE6C1A`
+
+> **Changed 2026-10-10 (Codex simplicity redesign).** Dark `--heat-0` was `#1E1D1B` and `--heat-1`
+> was `#4A2A0E`. An idle day at `#1E1D1B` measured 1.02:1 on the dark card `#1B1B19` (1.10:1 on the canvas
+> `#131312`), so a quiet week disappeared; `#32312E` measures 1.33:1 (`check-contrast.mjs` holds it at 1.3 in dark).
+> `--heat-1` moved one step so the first active step stays above the lifted zero (1.21:1).
+> Level 0 is shared by all three families, so the same `#32312E` sits in Parchment and Alma Mater.
 
 ```css
 --shadow-default:  0px 1px 3px 0px rgba(0,0,0,0.25), 0px 0px 1px 0px rgba(0,0,0,0.35);

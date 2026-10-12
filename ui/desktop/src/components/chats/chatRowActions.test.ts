@@ -47,7 +47,20 @@ describe('chatRowActions', () => {
     expect(chatRowActions(target()).map((action) => [action.key, action.label])).toEqual([
       ['open-tab', 'Open in new tab'],
       ['open-window', 'Open in new window'],
-      ['copy-id', 'Copy conversation ID'],
+      ['copy-id', 'Copy chat ID'],
+    ]);
+  });
+
+  /**
+   * V2-R6-3. A tab is the open tab: its surface says `null` and the list starts at
+   * the window, rather than carrying an opener that only selects what is open.
+   */
+  it('leaves out "Open in new tab" for a surface that is the tab itself', () => {
+    expect(
+      chatRowActions(target({ openInNewTab: null })).map((action) => [action.key, action.label])
+    ).toEqual([
+      ['open-window', 'Open in new window'],
+      ['copy-id', 'Copy chat ID'],
     ]);
   });
 
@@ -108,7 +121,7 @@ describe('copyConversationId', () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2');
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Conversation ID copied', msg: '20260823_2' })
+      expect.objectContaining({ title: 'Chat ID copied', msg: '20260823_2' })
     );
     expect(mocks.toastError).not.toHaveBeenCalled();
   });

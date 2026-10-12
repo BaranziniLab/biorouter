@@ -3,18 +3,22 @@ import { useConfig } from '../ConfigContext';
 import { checkProvider } from '../../api';
 import { checkCandidateCredentials } from '../settings/providers/modal/subcomponents/handlers/DefaultSubmitHandler';
 import { Button } from '../ui/button';
-import { ArrowRight } from '../icons/ArrowRight';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { Disclosure } from '../ui/disclosure';
+import { Field } from '../ui/field';
+import { Input } from '../ui/input';
+import { Note } from '../ui/note';
+import { Spinner } from '../ui/spinner';
+import { institutionalCopy } from './copy';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface InstitutionalSetupCardProps {
+  /** Which gateway the row that opened this form is. */
+  flavor: VersaFlavor;
   onSuccess: (provider: string) => void;
   onStartTesting?: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
-type VersaFlavor = 'azure' | 'bedrock';
+export type VersaFlavor = 'azure' | 'bedrock';
 
 // Versa Bedrock's own keys, the only ones `versa_bedrock.rs` reads. This card
 // used to write `AWS_ENDPOINT_URL_BEDROCK` and `AWS_REGION`, which belong to the
@@ -38,37 +42,35 @@ const VERSA_AZURE_DEFAULTS = {
   VERSA_AZURE_API_VERSION: '2025-01-01-preview',
 };
 
-const TABS: { id: VersaFlavor; label: string }[] = [
-  { id: 'azure', label: 'Azure OpenAI (GPT)' },
-  { id: 'bedrock', label: 'Bedrock (Claude)' },
-];
-
 /**
- * The providers this card configures — one per flavour of its own toggle, and
- * the `BIOROUTER_PROVIDER` value each branch of `handleSubmit` writes.
+ * The rows this form sets up, and which gateway each one is: the `BIOROUTER_PROVIDER` value each
+ * branch of `handleSubmit` writes.
  *
- * ⚠ Exported so the provider catalog can ask *this card* which rows it covers,
- * rather than keeping a second table mapping an institution to a setup form.
- * The catalog groups by institution from the daemon's affiliation payload; an
- * institution whose gateways are not in this list simply gets no bespoke form,
- * which is the correct outcome — a form written for UCSF's Versa endpoints must
- * not be offered under another institution's heading.
+ * ⚠ Exported so the provider catalog can ask *this form* which rows open it, rather than keeping
+ * a second table mapping an institution to a setup form. The catalog groups by institution from
+ * the daemon's affiliation payload; a gateway not in this table simply opens no bespoke form, which
+ * is the correct outcome: a form written for UCSF's Versa endpoints must not be offered for another
+ * institution's gateway.
+ *
+ * The ROW is the selector (vision FR-R1-6 / FR-S-6). The Institutional tab used to list "Versa
+ * API Azure" and "Versa API Bedrock" as rows that opened the Configure dialog, and under them a
+ * second, unheaded form whose segmented control chose between the same two: two paths, on two
+ * surfaces, for one setup. Each row now opens this form in place, for its own gateway.
  */
-export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = ['versa_azure', 'versa_bedrock'];
-
-const inputClass =
-  'w-full h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
-
-const advancedInputClass =
-  'w-full h-8 px-3 text-xs border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-strong';
+export const INSTITUTIONAL_SETUP_FLAVOR: Readonly<Record<string, VersaFlavor>> = {
+  versa_azure: 'azure',
+  versa_bedrock: 'bedrock',
+};
+export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = Object.keys(
+  INSTITUTIONAL_SETUP_FLAVOR
+);
 
 export default function InstitutionalSetupCard({
+  flavor,
   onSuccess,
   onStartTesting,
-  chrome = 'card',
 }: InstitutionalSetupCardProps) {
   const { upsert } = useConfig();
-  const [flavor, setFlavor] = useState<VersaFlavor>('azure');
   const [bedrockAccessKey, setBedrockAccessKey] = useState('');
   const [bedrockSecretKey, setBedrockSecretKey] = useState('');
   const [azureApiKey, setAzureApiKey] = useState('');
@@ -84,11 +86,12 @@ export default function InstitutionalSetupCard({
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  const canSubmit =
-    !isLoading &&
-    (flavor === 'bedrock'
+  const hasKeys =
+    flavor === 'bedrock'
       ? bedrockAccessKey.trim().length > 0 && bedrockSecretKey.trim().length > 0
-      : azureApiKey.trim().length > 0);
+      : azureApiKey.trim().length > 0;
+  const canSubmit = !isLoading && hasKeys;
+  const saveVariant = useViewPrimaryVariant(hasKeys);
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -131,191 +134,153 @@ export default function InstitutionalSetupCard({
       // is the sentence that says what is wrong.
       const said =
         e instanceof Error ? e.message : typeof e === 'string' && e.trim() ? e.trim() : null;
-      setError(said ? `Could not connect: ${said}` : 'Could not connect with these credentials.');
+      setError(said ? institutionalCopy.refused(said) : institutionalCopy.refusedPlain);
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="institutional-setup-title"
-      category="institutional"
-      label="Institutional · UCSF Versa API"
-      title="UCSF-hosted models"
-      description="Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates."
-    >
-      {/* Tab toggle */}
-      <div
-        role="tablist"
-        aria-label="UCSF-hosted provider"
-        className="mb-4 grid w-full grid-cols-2 rounded-md bg-background-medium p-0.5 sm:inline-grid sm:w-auto"
-      >
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => {
-              setFlavor(tab.id);
-              setError(null);
-            }}
-            role="tab"
-            aria-selected={flavor === tab.id}
-            className={`h-7 min-w-0 truncate rounded px-2 text-xs transition-colors duration-150 sm:px-3 ${flavor === tab.id ? 'bg-background-default text-text-default' : 'text-text-muted hover:text-text-default'}`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
+    <div className="min-w-0">
       {flavor === 'azure' ? (
-        <div>
-          <label
-            htmlFor="versa-azure-api-key"
-            className="mb-1.5 block text-xs font-medium text-text-default"
-          >
-            API Key
-          </label>
-          <input
-            id="versa-azure-api-key"
+        <Field id="versa-azure-api-key" label={institutionalCopy.apiKey}>
+          <Input
             type="password"
             value={azureApiKey}
             onChange={(e) => setAzureApiKey(e.target.value)}
-            placeholder="VERSA_AZURE_API_KEY"
-            className={inputClass}
             disabled={isLoading}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && canSubmit) handleSubmit();
             }}
           />
-        </div>
+        </Field>
       ) : (
-        <div className="space-y-3">
-          <div>
-            <label
-              htmlFor="versa-bedrock-access-key"
-              className="mb-1.5 block text-xs font-medium text-text-default"
-            >
-              Access Key ID
-            </label>
-            <input
-              id="versa-bedrock-access-key"
+        <div className="flex flex-col gap-3">
+          <Field id="versa-bedrock-access-key" label={institutionalCopy.accessKeyId}>
+            <Input
               type="password"
               value={bedrockAccessKey}
               onChange={(e) => setBedrockAccessKey(e.target.value)}
-              placeholder="VERSA_BEDROCK_ACCESS_KEY_ID"
-              className={inputClass}
               disabled={isLoading}
             />
-          </div>
-          <div>
-            <label
-              htmlFor="versa-bedrock-secret-key"
-              className="mb-1.5 block text-xs font-medium text-text-default"
-            >
-              Secret Access Key
-            </label>
-            <input
-              id="versa-bedrock-secret-key"
+          </Field>
+          <Field id="versa-bedrock-secret-key" label={institutionalCopy.secretAccessKey}>
+            <Input
               type="password"
               value={bedrockSecretKey}
               onChange={(e) => setBedrockSecretKey(e.target.value)}
-              placeholder="VERSA_BEDROCK_SECRET_ACCESS_KEY"
-              className={inputClass}
               disabled={isLoading}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canSubmit) handleSubmit();
               }}
             />
-          </div>
+          </Field>
         </div>
       )}
 
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-3">
-        <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-default transition-colors duration-150">
-          <span>{advancedOpen ? '▾' : '▸'}</span>
-          <span>
-            Advanced ({flavor === 'azure' ? 'endpoint, API version' : 'endpoint, region'})
-          </span>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-2.5 pl-3.5 space-y-2.5 border-l border-border-default">
+      {/* The two overrides most people never touch. The config key each one writes is machine
+          text, so it sits behind the label's InfoTip rather than being the label. */}
+      <Disclosure
+        label={institutionalCopy.advanced}
+        summary={
+          flavor === 'azure' ? institutionalCopy.azureSummary : institutionalCopy.bedrockSummary
+        }
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        className="mt-3"
+      >
+        <div className="flex flex-col gap-3 pt-2">
           {flavor === 'azure' ? (
             <>
-              <div>
-                <label className="block text-[11px] text-text-muted mb-1">
-                  VERSA_AZURE_ENDPOINT
-                </label>
-                <input
+              <Field
+                id="versa-azure-endpoint"
+                label={institutionalCopy.endpoint}
+                info={institutionalCopy.savedAs('VERSA_AZURE_ENDPOINT')}
+              >
+                <Input
+                  machine
                   type="text"
                   value={azureEndpoint}
                   onChange={(e) => setAzureEndpoint(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
-              <div>
-                <label className="block text-[11px] text-text-muted mb-1">
-                  VERSA_AZURE_API_VERSION
-                </label>
-                <input
+              </Field>
+              <Field
+                id="versa-azure-api-version"
+                label={institutionalCopy.apiVersion}
+                info={institutionalCopy.savedAs('VERSA_AZURE_API_VERSION')}
+              >
+                <Input
+                  machine
                   type="text"
                   value={azureApiVersion}
                   onChange={(e) => setAzureApiVersion(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
+              </Field>
             </>
           ) : (
             <>
-              <div>
-                <label className="block text-[11px] text-text-muted mb-1">
-                  VERSA_BEDROCK_ENDPOINT
-                </label>
-                <input
+              <Field
+                id="versa-bedrock-endpoint"
+                label={institutionalCopy.endpoint}
+                info={institutionalCopy.savedAs('VERSA_BEDROCK_ENDPOINT')}
+              >
+                <Input
+                  machine
                   type="text"
                   value={bedrockEndpoint}
                   onChange={(e) => setBedrockEndpoint(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
-              <div>
-                <label className="block text-[11px] text-text-muted mb-1">
-                  VERSA_BEDROCK_REGION
-                </label>
-                <input
+              </Field>
+              <Field
+                id="versa-bedrock-region"
+                label={institutionalCopy.region}
+                info={institutionalCopy.savedAs('VERSA_BEDROCK_REGION')}
+              >
+                <Input
+                  machine
                   type="text"
                   value={bedrockRegion}
                   onChange={(e) => setBedrockRegion(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
+              </Field>
             </>
           )}
-        </CollapsibleContent>
-      </Collapsible>
+        </div>
+      </Disclosure>
 
-      <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
-        <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 w-full px-4 sm:w-auto">
+      {/* One verb, on the 32px rung, and it keeps its words while it works: a bare spinner left
+          the button with no name and half its width (FR-S-6, FR-R1-11). Secondary until the keys
+          it needs are in, coral once it can act: Public's "Detect provider" rule, so the catalog
+          has one look for a primary that is not ready yet (FR-R2-5). Disabled coral was a pale
+          coral in light and a muddy brown in dark. Secondary too while another open panel in the
+          tab holds the view's one coral button (FR-R5-2). */}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Button
+          variant={saveVariant}
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          data-testid="institutional-connect"
+        >
           {isLoading ? (
-            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-          ) : (
             <>
-              Connect to {flavor === 'azure' ? 'Versa Azure OpenAI' : 'Versa Bedrock'}
-              <ArrowRight className="w-4 h-4" />
+              <Spinner size={14} />
+              {institutionalCopy.connecting}
             </>
+          ) : (
+            institutionalCopy.connect
           )}
         </Button>
       </div>
 
       {error && (
-        <div className="mt-3 text-xs p-2.5 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40">
+        <Note tone="danger" role="alert" className="mt-3">
           {error}
-        </div>
+        </Note>
       )}
-    </OnboardingCardShell>
+    </div>
   );
 }

@@ -1,0 +1,70 @@
+/* @ws WS-SKILLS begin: marketplace dialog */
+/*
+ * The BAAM browse dialogs (`MarketplaceDialog.tsx`). Authored rather than
+ * Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail to
+ * generate (CLAUDE.md, "Desktop shell geometry"), and these rules carry the
+ * dialog's geometry.
+ */
+
+/* The list scrolls; the title, the search and the footer stay. A floor height
+   keeps the dialog from shrinking while a search narrows the list, so with the
+   shell's top anchor nothing moves under the pointer as the person types. */
+.br-marketplace-list {
+  flex: 1 1 auto;
+  min-height: min(45vh, 420px);
+  overflow-y: auto;
+  /* Full bleed: the body carries 16px of inline padding, the hairline does not. */
+  margin-inline: -16px;
+  padding: 4px 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* No footer below: the list runs to the dialog's edge, with a little air. */
+.br-marketplace-list--to-edge {
+  padding-bottom: 8px;
+  border-bottom: 0;
+}
+
+/* Loading, error and empty: one line, centred in the list. */
+.br-marketplace-state {
+  padding: 32px 12px;
+  text-align: center;
+}
+
+.br-marketplace-section + .br-marketplace-section {
+  margin-top: 8px;
+}
+
+.br-marketplace-section-label {
+  padding: 8px 12px 4px;
+}
+
+/* THE ACTION BESIDE A ROW (Add, Configure) needs no rule here. It is a filled secondary button, and
+   while its row is washed (pointer, or keyboard focus inside it) the shared list-row recipe rests
+   it on the page ground and hovers it on the strong fill (`.biorouter-list-row` in `main.css`,
+   design.md 9.11 rule 3), as it does on the Extensions page and in Settings. A rule of this file's
+   own used to step it one deeper instead; it drew a box about 1.1:1 off the wash, as the shared one
+   does, and made this one list answer the pointer differently from every other. The button's box
+   against the wash is measured in `skills/skillsFill.browser.test.tsx`. */
+
+/* A LEADING CHECKBOX is a 16px box in a 24px hit target, so its visible edge sits 4px inside the
+   row's content edge, and with it 4px off the search field, the chips and the group label above
+   it, all of which start on that edge (measured: 421 against 417). The margin pulls the target out
+   by the inset, so the box shares the column's left edge and the name moves with it; the gap
+   between them is unchanged. */
+.br-marketplace-leading {
+  display: flex;
+  flex-shrink: 0;
+  margin-inline-start: -4px;
+}
+
+/* A row's muted fact gives way before its name does. */
+.br-marketplace-row [data-marketplace-title] {
+  flex-shrink: 1;
+}
+
+.br-marketplace-row [data-marketplace-meta] {
+  flex-shrink: 4;
+}
+/* @ws WS-SKILLS end: marketplace dialog */

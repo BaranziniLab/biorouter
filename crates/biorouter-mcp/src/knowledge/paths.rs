@@ -33,13 +33,10 @@ pub enum KbIdError {
 
 /// `<config>/knowledge`, honouring `BIOROUTER_PATH_ROOT` via [`crate::paths`].
 ///
-/// This used to hand-roll `choose_app_strategy` with an `io/biorouter/biorouter`
-/// tuple — a *third* app-strategy in the codebase, and one that ignored the
-/// sandbox override, so an isolated run read and wrote the user's global KBs.
-/// It now shares the crate resolver (`Block/Block/biorouter`, matching
-/// `biorouter::config::Paths`). The two tuples resolve identically on XDG and on
-/// macOS; they differ only on Windows, where the old path was never the one the
-/// rest of Biorouter used anyway.
+/// This used to hand-roll `choose_app_strategy` with a tuple of its own — a
+/// *third* app strategy in the codebase, and one that ignored the sandbox
+/// override, so an isolated run read and wrote the user's global KBs. It now
+/// shares the crate resolver, the one `biorouter::config::Paths` reads too.
 pub fn knowledge_root() -> anyhow::Result<PathBuf> {
     Ok(knowledge_root_in(&crate::paths::config_dir()))
 }

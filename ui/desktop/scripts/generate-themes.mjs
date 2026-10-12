@@ -27,7 +27,9 @@
  *   terminal.cursorAccent = the same ground
  *   code ground (CODE_BG) = `--background-code`
  *   paper well (wellGround) = `--background-well`
- *   splash.bg             = `--background-muted`
+ *   splash.bg             = `--background-canvas` (the page's own ground)
+ *   splash inks           = the BASE family's `mark` inks, in every family: the
+ *                           splash draws the wordmark, which is fixed to the brand
  *   surface.*             = the five semantic tokens in SURFACE_TOKENS
  *   GRAPH_PALETTE.ground  = `--background-muted`, and with it all 35 solved
  *                           knowledge-graph hexes, which are contrast ratios
@@ -327,10 +329,10 @@ export type TerminalPalette = {
 
 export type ThemeModeData = {
   /**
-   * The brand mark's two inks for this family and mode. The boot splash paints
-   * these before React exists, and BioRouterMark paints them after — reading
-   * both from here is what stops the two disagreeing. Roche Limit used to flash
-   * an orange mark that React then re-rendered in Parchment's coral.
+   * The BR monogram's two inks for this family and mode, read by BioRouterMark.
+   * The boot splash no longer paints the monogram: it draws the wordmark, which
+   * is fixed to the brand colours, so every family's splash takes the BASE
+   * family's inks and this family's own mark never reaches it.
    */
   mark: { navy: string; coral: string };
   syntax: SyntaxPalette;
@@ -468,19 +470,30 @@ const splashRules = themes
       // re-emitting them here would duplicate a ground — which the splash test
       // reads as one family inheriting another's.
       if (t.isBase && mode === 'light') continue;
-      const bg = resolveRaw('--background-muted', scopeFor(t, mode));
+      // The ground is the PAGE's: `--background-canvas`, resolved per family and
+      // mode. It was `--background-muted`, one step off the ground the first-run
+      // page paints, so a launch that crossed the threshold flashed grey before
+      // it faded onto white (vision FR-R1-7).
+      const bg = resolveRaw('--background-canvas', scopeFor(t, mode));
       const sel = t.isBase
         ? 'html.dark #br-boot'
         : mode === 'light'
           ? `html[data-theme='${t.id}'] #br-boot`
           : `html.dark[data-theme='${t.id}'] #br-boot`;
-      const s = t[mode].mark;
+      // The inks are the WORDMARK's, and the wordmark does not follow the family
+      // (icons/BioRouterWordmark.tsx: fixed brand colours, navy lifting to teal
+      // on a dark ground). So every family's splash takes the BASE family's mark
+      // inks for its mode: the base family IS the brand colourway. A family's own
+      // `mark` still drives the in-app BR monogram; it no longer reaches the
+      // splash, which would otherwise hand a teal (Alma Mater) or orange (Roche
+      // Limit) logo off to the brand-coloured wordmark one frame later.
+      const ink = base[mode].mark;
       out.push(
         `      ${sel} {\n` +
           `        --br-bg: ${bg};\n` +
-          `        --br-navy: ${s.navy};\n` +
-          `        --br-coral: ${s.coral};\n` +
-          `        --br-track: ${s.track};\n` +
+          `        --br-navy: ${ink.navy};\n` +
+          `        --br-coral: ${ink.coral};\n` +
+          `        --br-track: ${t[mode].mark.track};\n` +
           `      }`
       );
     }
@@ -597,23 +610,26 @@ const failures = [];
         }
       }
 
-      // The boot splash paints the BR mark before React exists. Its two inks
-      // must be legible on the splash ground — which is NOT automatic: a
+      // The boot splash paints the wordmark before React exists. Its primary ink
+      // must be legible on the splash ground, which is NOT automatic: a
       // regression once left every dark splash carrying the LIGHT navy, making
-      // the mark's navy half invisible (1.02:1) on all three families. The mark
-      // is a logotype, so it takes the 3:1 graphical floor rather than 4.5.
+      // the mark's navy half invisible (1.02:1) on all three families. The
+      // wordmark is a logotype, so it takes the 3:1 graphical floor rather
+      // than 4.5. The ink asserted is the one the splash is GIVEN (the base
+      // family's, see the splash rules above), on this family's own canvas.
       // Only the PRIMARY ink is checked. WCAG exempts logotypes from contrast
-      // (SC 1.4.11), and the coral half is exactly that — a brand accent that
+      // (SC 1.4.11), and the coral half is exactly that: a brand accent that
       // is 2.84:1 (Alma) and 2.81:1 (Roche) on their light grounds by design.
-      // The navy half is different: it carries the mark's readable structure,
-      // and a regression once left every dark splash using the LIGHT navy,
-      // rendering it invisible at 1.02:1 on all three families with nothing
-      // failing. That is the case this assertion exists to catch.
-      const splashBg = resolveRaw('--background-muted', scope);
-      const c = contrast(t[mode].mark.navy, splashBg);
+      // The navy half is different: it carries the lockup's readable
+      // structure, and a regression once left every dark splash using the
+      // LIGHT navy, rendering it invisible at 1.02:1 on all three families with
+      // nothing failing. That is the case this assertion exists to catch.
+      const splashBg = resolveRaw('--background-canvas', scope);
+      const splashInk = base[mode].mark.navy;
+      const c = contrast(splashInk, splashBg);
       if (c < 3) {
         failures.push(
-          `${t.id}.${mode}: splash navy ${t[mode].mark.navy} on ${splashBg} = ${c.toFixed(2)}:1 (need 3)`
+          `${t.id}.${mode}: splash navy ${splashInk} on ${splashBg} = ${c.toFixed(2)}:1 (need 3)`
         );
       }
     }

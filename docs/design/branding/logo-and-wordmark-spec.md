@@ -221,9 +221,12 @@ hard-asserts the glyph path `M 125 220` across 8 locations and will fail CI on d
 
 **Components**
 
-- `ui/desktop/src/components/BioRouterLogo.tsx` — currently composes `BioRouter` + `Rain`
-  with a hover reveal. The `Rain` overlay is glyph-era; decide whether it survives.
-- `ui/desktop/src/components/WelcomeBioRouterLogo.tsx`
+- `ui/desktop/src/components/BioRouterLogo.tsx` and `WelcomeBioRouterLogo.tsx` were removed
+  as unused (R-29 of the Codex simplicity redesign). They composed the glyph with a `Rain`
+  overlay, nothing rendered them, and the open question about the overlay went with them.
+  Wherever the app shows a Biorouter logo it is the text logo,
+  `ui/desktop/src/components/icons/BioRouterWordmark.tsx`, or the square mark in
+  `icons/BioRouterMark.tsx` where the wordmark is too wide.
 
 > **Note.** The three `docs/*.html` paths asserted by `check-brand-consistency.sh` have since
 > moved: `docs/agentic-system.html` is now [`docs/architecture/agentic-system-explorer.html`](../../architecture/agentic-system-explorer.html),

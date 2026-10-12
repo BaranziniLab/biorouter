@@ -768,6 +768,16 @@ pub struct SidebarRow {
     pub cursor: SidebarCursor,
 }
 
+/// One row of a page of the FULL listing (`GET /sessions?limit=`, which History
+/// reads): the whole [`Session`] the caller is shown, and the [`SidebarCursor`] a
+/// later page resumes after it. The same key as [`SidebarRow`], so one cursor
+/// codec serves both listings.
+#[derive(Debug, Clone)]
+pub struct SessionPageRow {
+    pub session: Session,
+    pub cursor: SidebarCursor,
+}
+
 /// One turn's token usage, applied additively and atomically in SQL.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenDelta {
@@ -2368,6 +2378,25 @@ impl SessionManager {
         self.storage.list_sessions_by_types(types).await
     }
 
+    /// One keyset page of the FULL listing, for `GET /sessions?limit=`: the same
+    /// rows, order and counts as [`Self::list_sessions_by_types`], resumed from a
+    /// [`SidebarCursor`] and filtered in SQL exactly as
+    /// [`Self::list_session_summaries_page_excluding`] filters its page.
+    /// See [`SessionStorage::list_sessions_page`] for why the filter has to be
+    /// SQL and not a retain over the rows.
+    pub async fn list_sessions_page_excluding(
+        &self,
+        types: &[SessionType],
+        limit: u32,
+        after: Option<&SidebarCursor>,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SessionPageRow>> {
+        self.storage
+            .list_sessions_page(types, limit, after, public_only, excluded_ids)
+            .await
+    }
+
     /// [`Self::list_sessions_by_types`], including sessions that have recorded
     /// no message yet.
     ///
@@ -3116,25 +3145,32 @@ impl SessionManager {
 
         // Prefer the LLM-generated, content-derived name. The naming call is
         // best-effort: if the provider errors (rate limit, auth, model issue)
-        // or hands back an empty/whitespace string, fall back to a
-        // deterministic title derived from the first user message so a session
-        // is NEVER left as "New chat" after a real exchange.
-        let name = match provider.generate_session_name(&conversation).await {
-            Ok(name) if !name.trim().is_empty() => name,
+        // or hands back an empty/whitespace string, a session still on the
+        // placeholder falls back to a deterministic title derived from the
+        // first user message, so it is NEVER left as "New chat" after a real
+        // exchange.
+        //
+        // A session that already wears a real name keeps it. The fallback is a
+        // worse title than the one it would overwrite (the first eight words of
+        // the first message), and the failure that triggers it, an expired key
+        // or a rate limit, is exactly when the next turn would otherwise
+        // quietly replace a good generated title with that snippet. A name
+        // changes only by a person's rename or a successful generation.
+        let generated = match provider.generate_session_name(&conversation).await {
+            Ok(name) if !name.trim().is_empty() => Some(name),
             Ok(_) => {
-                warn!(
-                    "Session name generation for {} returned an empty name; using fallback",
-                    id
-                );
-                Self::fallback_session_name(&conversation)
+                warn!("Session name generation for {} returned an empty name", id);
+                None
             }
             Err(e) => {
-                warn!(
-                    "Session name generation for {} failed ({}); using fallback",
-                    id, e
-                );
-                Self::fallback_session_name(&conversation)
+                warn!("Session name generation for {} failed ({})", id, e);
+                None
             }
+        };
+        let name = match generated {
+            Some(name) => name,
+            None if !still_default => return Ok(()),
+            None => Self::fallback_session_name(&conversation),
         };
 
         // Both the LLM and the fallback produced nothing usable (e.g. the first
@@ -3622,6 +3658,23 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SidebarRow {
     }
 }
 
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionPageRow {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let session = Session::from_row(row)?;
+        Ok(SessionPageRow {
+            // As for [`SidebarRow`]: `CAST(s.updated_at AS TEXT)`, the bytes the
+            // ordering compares, not a value chrono has been through.
+            cursor: SidebarCursor {
+                updated_at: row.try_get("cursor_updated_at")?,
+                id: session.id.clone(),
+            },
+            session,
+        })
+    }
+}
+
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
@@ -3801,6 +3854,22 @@ impl SessionStorage {
     /// fixture id — the one way that test can lie. The two are distinguished
     /// with a single follow-up read in the zero case, on a path that is already
     /// an error.
+    ///
+    /// R-30: inside [`crate::session::activity::opening`] the bind leaves
+    /// `updated_at` alone. Restoring the model a chat records is part of
+    /// opening it, not activity in it. The choice is a bound parameter for the
+    /// same reason as the privacy toggle above: it must not change which
+    /// statement runs.
+    ///
+    /// Outside a scope the bind stamps only when it changes what the row
+    /// records: another `provider_name`, or another `model_name` inside
+    /// `model_config_json` (coordinator ruling 16). Re-binding the model a chat
+    /// already records is not a change to it, whoever asks: a person picking the
+    /// same model again, or a `--shared-daemon` resume that names it. The
+    /// comparison is in the `CASE`, against the row as it was before this
+    /// statement (SQLite evaluates every `SET` expression on the old row), so it
+    /// adds no read and no second statement. A stored config that is not JSON
+    /// reads as recording no model, so the bind still lands and stamps.
     pub(crate) async fn bind_provider_if_allowed(
         &self,
         session_id: &str,
@@ -3821,16 +3890,37 @@ impl SessionStorage {
         // A direct read, not a `CallCapability`: a provider bind is not a tool
         // call and has no admitted capability to inherit.
         let admits_anything = incoming_is_private || !crate::privacy::privacy_tiers_enabled();
+        let is_activity = crate::session::activity::setup_write_is_activity();
+        let incoming_model = serde_json::from_str::<serde_json::Value>(model_config_json)
+            .ok()
+            .and_then(|config| {
+                config
+                    .get("model_name")
+                    .and_then(|name| name.as_str())
+                    .map(str::to_owned)
+            });
         let write = sqlx::query(
             r#"
             UPDATE sessions
-               SET provider_name = ?, model_config_json = ?, updated_at = datetime('now')
+               SET provider_name = ?, model_config_json = ?,
+                   updated_at = CASE
+                       WHEN ? = 1
+                        AND (provider_name IS NOT ?
+                             OR (CASE WHEN json_valid(model_config_json)
+                                      THEN json_extract(model_config_json, '$.model_name')
+                                 END) IS NOT ?)
+                       THEN datetime('now')
+                       ELSE updated_at
+                   END
              WHERE id = ?
                AND (privacy_tier = 'public' OR ? = 1)
             "#,
         )
         .bind(provider_name)
         .bind(model_config_json)
+        .bind(i64::from(is_activity))
+        .bind(provider_name)
+        .bind(incoming_model)
         .bind(session_id)
         .bind(i64::from(admits_anything));
         // ⚠ The last statement before the write, and test-only. Read the ⚠ in
@@ -6176,11 +6266,16 @@ impl SessionStorage {
         working_dir: &Path,
     ) -> Result<WorkingDirUpdate> {
         let pool = self.pool().await?;
+        // R-30: inside `session::activity::opening` (ACP applies the client's
+        // directory while it loads a chat) this is setup, not activity.
+        let is_activity = crate::session::activity::setup_write_is_activity();
         let result = sqlx::query(
-            "UPDATE sessions SET working_dir = ?, updated_at = datetime('now') \
+            "UPDATE sessions SET working_dir = ?, \
+               updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END \
              WHERE id = ? AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id = ?)",
         )
         .bind(working_dir.to_string_lossy().as_ref())
+        .bind(i64::from(is_activity))
         .bind(id)
         .bind(id)
         .execute(pool)
@@ -6302,11 +6397,25 @@ impl SessionStorage {
         // latest-committed state, which is what makes the merge sound.
         //
         // It also keeps `updated_at` moving, exactly as the
-        // `update(id).extension_data(..)` path this replaces did.
-        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        // `update(id).extension_data(..)` path this replaces did, EXCEPT inside
+        // `session::activity::opening` (R-30): saving the roster a chat was
+        // opened with is setup, not activity. The same holds inside
+        // `session::activity::housekeeping`, where an extension uninstall prunes
+        // every saved roster (ruling 16). The statement stays a write either
+        // way. SQLite counts a matched row as changed even when the value it
+        // assigns is the one already there, so `SET updated_at = updated_at`
+        // still takes the write lock and still reports the one row the
+        // not-found check below reads.
+        let is_activity = crate::session::activity::setup_write_is_activity();
+        let touched = sqlx::query(
+            "UPDATE sessions \
+                SET updated_at = CASE WHEN ? = 1 THEN datetime('now') ELSE updated_at END \
+              WHERE id = ?",
+        )
+        .bind(i64::from(is_activity))
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
         if touched.rows_affected() == 0 {
             tx.rollback().await?;
             return Ok(None);
@@ -6492,8 +6601,17 @@ impl SessionStorage {
             return Ok(());
         }
 
-        query.push_str(", ");
-        query.push_str("updated_at = datetime('now') WHERE id = ?");
+        // R-30: an update that writes ONLY `extension_data` while a chat is
+        // being opened (`session::activity::opening`) is setup, not activity:
+        // an app's connect re-installs its goal guardrail this way on every
+        // connect. Anything else (a rename above all) stamps, inside the scope
+        // or not.
+        let setup_only = updates.iter().all(|field| *field == "extension_data");
+        if setup_only && !crate::session::activity::setup_write_is_activity() {
+            query.push_str(" WHERE id = ?");
+        } else {
+            query.push_str(", updated_at = datetime('now') WHERE id = ?");
+        }
 
         let mut q = sqlx::query(&query);
 
@@ -7423,22 +7541,21 @@ impl SessionStorage {
         self.list_sessions_by_types_maybe_empty(types, false).await
     }
 
-    /// `list_sessions_by_types`, with the `messages` join selectable.
+    /// `list_sessions_by_types`, with message-less chats selectable.
     ///
     /// ⚠ **`include_empty` exists because a subagent that produced nothing was
-    /// invisible.** The historical query INNER JOINs `messages`, so a row with no
-    /// message is not returned at all — and that is right for History (an
+    /// invisible.** The historical query INNER JOINed `messages`, so a row with
+    /// no message was not returned at all — and that is right for History (an
     /// "Untitled chat" placeholder must not appear in the sidebar) but wrong for
     /// `biorouter session list --subagents`, which is the **only** surface that
     /// can show a subagent run at all. A child that was spawned and died before
     /// its first message simply vanished there, so the one place a user could
     /// have gone looking for it reported that it never existed.
     ///
-    /// `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields `message_count
-    /// = 0` rather than 1 — the same reasoning `list_session_summaries`'
-    /// `include_empty` already records.
+    /// The join is gone (see [`Self::full_listing_sql`]): `false` keeps the
+    /// `EXISTS` probe and `true` drops it, and an empty chat counts 0.
     ///
-    /// The historical entry point above delegates with `false`, byte for byte,
+    /// The historical entry point above delegates with `false`,
     /// so the sidebar route (`biorouter-server`'s `/sessions`) and
     /// `commands/term.rs` are unchanged and no caller outside this file had to
     /// move.
@@ -7451,29 +7568,7 @@ impl SessionStorage {
             return Ok(Vec::new());
         }
 
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
-        } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
-        };
-        let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let query = format!(
-            r#"
-            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
-                   s.total_tokens, s.input_tokens, s.output_tokens,
-                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
-                   s.schedule_id, s.workflow_json, s.user_workflow_values_json,
-                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
-                   s.privacy_tier, s.privacy_reason,
-                   COUNT(m.id) as message_count
-            FROM sessions s
-            {join}
-            WHERE s.session_type IN ({placeholders})
-            GROUP BY s.id
-            ORDER BY s.updated_at DESC
-            "#
-        );
-
+        let query = Self::full_listing_sql(types.len(), include_empty);
         let mut q = sqlx::query_as::<_, Session>(&query);
         for t in types {
             q = q.bind(t.to_string());
@@ -7488,29 +7583,199 @@ impl SessionStorage {
             .await
     }
 
-    async fn list_session_summaries(
+    /// The SQL behind the full listing (`GET /sessions`, which History reads,
+    /// and `biorouter session list`): every column of every listed chat, with
+    /// `types_len` placeholders for the session types.
+    ///
+    /// ⚠ **Shaped like [`Self::summary_listing_sql`], and for the same measured
+    /// reason (R-28, vision V1-R3-2, 2026-10-11).** It used to `JOIN messages …
+    /// GROUP BY s.id` and count with `COUNT(m.id)`. That visits every message of
+    /// every listed chat and builds two temporary B-trees, one for the
+    /// grouping and one for the order, each carrying the whole fat row
+    /// (`extension_data` alone is about 1.8 MB over 5,542 chats). On a copy of a
+    /// real store (11,780 chats) it took 290 to 420 ms; History waited for it on
+    /// every visit, and the release daemon answered `GET /sessions` in 0.4 to
+    /// 0.56 s with most of that here. Now "has a message" is an `EXISTS` probe
+    /// and the count a correlated `COUNT(*)`, both answered from the
+    /// `idx_messages_session` covering index, and the type term is written
+    /// `+s.session_type` so the rows come off `idx_sessions_updated` already in
+    /// order: 16 to 26 ms for the same rows in the same order with the same
+    /// counts, in all four shapes (with and without sub-agents, with and without
+    /// empty chats). `COUNT(m.id)` ignored the NULL a LEFT JOIN produced, and
+    /// the correlated count is 0 for a chat with no message, so the empty-chat
+    /// listing counts the same too. `the_full_listing_walks_the_updated_index`
+    /// pins the plan.
+    ///
+    /// `s.id ASC` breaks a tied `updated_at` the way the sidebar's keyset
+    /// listing does. `updated_at` has one-second granularity and a bulk write
+    /// stamps hundreds of chats with the same second; without the tie-break the
+    /// tied group came back in id DESC order, so History and the sidebar drew
+    /// the same chats in two orders under "Last activity" (vision V3-R2-3).
+    fn full_listing_sql(types_len: usize, include_empty: bool) -> String {
+        Self::full_listing_page_sql(types_len, include_empty, "", "")
+    }
+
+    /// [`Self::full_listing_sql`] with the keyset form's filters and `LIMIT`
+    /// (`filters` from [`Self::page_filters`], `page` the `LIMIT ?` tail), and the
+    /// cursor's own column. The projection is the same either way, so a page's
+    /// rows are exactly the rows the whole listing would hold at that place.
+    fn full_listing_page_sql(
+        types_len: usize,
+        include_empty: bool,
+        filters: &str,
+        page: &str,
+    ) -> String {
+        let placeholders = vec!["?"; types_len].join(", ");
+        // History hides message-less chats so "Untitled chat" placeholders never
+        // appear; `biorouter session list --subagents` asks for them, because a
+        // subagent that died before its first message exists nowhere else.
+        let non_empty = if include_empty {
+            ""
+        } else {
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+        };
+        format!(
+            r#"
+            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
+                   s.total_tokens, s.input_tokens, s.output_tokens,
+                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+                   s.schedule_id, s.workflow_json, s.user_workflow_values_json,
+                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
+                   s.privacy_tier, s.privacy_reason,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+            FROM sessions s
+            WHERE +s.session_type IN ({placeholders})
+            {non_empty}
+            {filters}
+            ORDER BY s.updated_at DESC, s.id ASC
+            {page}
+            "#
+        )
+    }
+
+    /// The predicates every keyset listing shares, so there is ONE spelling of
+    /// who may be shown a row and of where a page resumes.
+    ///
+    /// * `public_only` is `= 'public'`, which fails **closed**: a row whose
+    ///   column is absent, `NULL` or unrecognised is withheld rather than shown.
+    /// * the crew exclusion is a bound JSON array, `NOT IN (SELECT value FROM
+    ///   json_each(?))`, so any number of ids is one bind.
+    /// * the keyset mirrors `ORDER BY s.updated_at DESC, s.id ASC` exactly:
+    ///   strictly older, or the same instant with a larger id, both sides
+    ///   `CAST(... AS TEXT)` so the boundary is evaluated on the bytes the cursor
+    ///   carries.
+    ///
+    /// Binds, in text order: the exclusion array, then (with `keyset`) the cursor's
+    /// `updated_at` twice and its id.
+    fn page_filters(public_only: bool, keyset: bool) -> String {
+        let tier_filter = if public_only {
+            "AND s.privacy_tier = 'public'"
+        } else {
+            ""
+        };
+        let keyset = if keyset {
+            "AND (CAST(s.updated_at AS TEXT) < ? \
+              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
+        } else {
+            ""
+        };
+        format!(
+            "{tier_filter}\n            AND s.id NOT IN (SELECT value FROM json_each(?))\n            {keyset}"
+        )
+    }
+
+    /// One keyset page of the full listing, for `GET /sessions?limit=` (History's
+    /// first paint). Same rows, order and message counts as
+    /// [`Self::list_sessions_by_types_maybe_empty`] with `include_empty = false`.
+    ///
+    /// ⚠ **The tier and Crew filters are SQL, for the reason
+    /// [`Self::list_session_summaries_page`] gives (adversarial security review
+    /// 2026-09-12, HIGH).** A page that fetched `LIMIT n` unfiltered rows and
+    /// dropped the ones its caller may not see in Rust would hand back a short
+    /// page and a continuation that counts the rows it hid. Here the rows a
+    /// caller may not see never leave the database, and a page resumes from a
+    /// fact the caller was just handed.
+    async fn list_sessions_page(
         &self,
+        types: &[SessionType],
         limit: u32,
-        offset: u32,
+        after: Option<&SidebarCursor>,
+        public_only: bool,
+        excluded_ids: &[String],
+    ) -> Result<Vec<SessionPageRow>> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let filters = Self::page_filters(public_only, after.is_some());
+        let query = Self::full_listing_page_sql(types.len(), false, &filters, "LIMIT ?");
+        let mut q = sqlx::query_as::<_, SessionPageRow>(&query);
+        for t in types {
+            q = q.bind(t.to_string());
+        }
+        q = q.bind(serde_json::to_string(excluded_ids)?);
+        if let Some(cursor) = after {
+            q = q
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.updated_at.clone())
+                .bind(cursor.id.clone());
+        }
+        let pool = self.pool().await?;
+        q.bind(i64::from(limit))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// The SQL behind both summary listings: one projection, one set of filters,
+    /// and only the paging differs (`page` is the `LIMIT`/`OFFSET` tail, or the
+    /// keyset predicate plus `LIMIT`).
+    ///
+    /// ⚠ **Shaped for the planner, and measured (R-28, 2026-10-10).** This used to
+    /// `JOIN messages … GROUP BY s.id` and count with `COUNT(m.id)`. That shape
+    /// has to visit every message of every listed chat and sort the whole grouped
+    /// set before `LIMIT` can apply, so a ten-row page cost what the whole list
+    /// cost: 74 ms on a copy of a real store (10,656 chats, 48,252 messages), and
+    /// a non-default sidebar view, which reads every chat, paid it once per page.
+    /// Now:
+    ///
+    /// * "has a message" is an `EXISTS` probe and the count a correlated
+    ///   `COUNT(*)`, both answered from the `idx_messages_session` covering index
+    ///   and only for the rows that survive the other filters, so the page stops
+    ///   reading as soon as it has `LIMIT` rows;
+    /// * the type filter is written `+s.session_type`. The unary plus is SQLite's
+    ///   documented way to keep a term from choosing an index: without it the
+    ///   planner reads every row of the type through `idx_sessions_type` and
+    ///   sorts them all, where it should walk `idx_sessions_updated` in the
+    ///   order the page is sorted in and stop at the limit.
+    ///   `the_summary_listing_walks_the_updated_index` pins that plan.
+    ///
+    /// Same rows, same order, same counts as the join: `COUNT(m.id)` ignored the
+    /// NULL a LEFT JOIN produced, and the correlated count is 0 for a chat with
+    /// no message. Measured on that copy: a ten-row page 74 ms → 3 ms, the whole
+    /// 2,000-row list 34 ms → 10 ms, byte-identical results.
+    fn summary_listing_sql(
         include_subagents: bool,
         include_empty: bool,
-    ) -> Result<Vec<SessionSummary>> {
+        filters: &str,
+        page: &str,
+    ) -> String {
         let type_filter = if include_subagents {
             "('user', 'scheduled', 'sub_agent')"
         } else {
             "('user', 'scheduled')"
         };
-        // The sidebar deliberately hides message-less sessions (an INNER JOIN on
-        // `messages`) so "Untitled chat" placeholders never appear in History.
-        // `workspace_list` needs the opposite: a session `workspace_open` just
-        // created has no message yet and must still be listable. `COUNT(m.id)`
-        // ignores NULLs, so the LEFT JOIN still yields 0.
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
+        // The sidebar deliberately hides message-less sessions so "Untitled
+        // chat" placeholders never appear in History. `workspace_list` needs the
+        // opposite: a session `workspace_open` just created has no message yet
+        // and must still be listable.
+        let non_empty = if include_empty {
+            ""
         } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
         };
-        let query = format!(
+        format!(
             r#"
             SELECT s.id,
                    s.working_dir,
@@ -7518,19 +7783,31 @@ impl SessionStorage {
                    s.user_set_name,
                    s.created_at,
                    s.updated_at,
+                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
                    s.parent_session_id,
                    s.session_type,
                    s.diverged_from,
                    s.privacy_tier,
-                   COUNT(m.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
             FROM sessions s
-            {join}
-            WHERE s.session_type IN {type_filter}
-            GROUP BY s.id
+            WHERE +s.session_type IN {type_filter}
+            {non_empty}
+            {filters}
             ORDER BY s.updated_at DESC, s.id ASC
-            LIMIT ? OFFSET ?
+            {page}
             "#
-        );
+        )
+    }
+
+    async fn list_session_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
+    ) -> Result<Vec<SessionSummary>> {
+        let query =
+            Self::summary_listing_sql(include_subagents, include_empty, "", "LIMIT ? OFFSET ?");
 
         let pool = self.pool().await?;
         sqlx::query_as::<_, SessionSummary>(&query)
@@ -7571,54 +7848,9 @@ impl SessionStorage {
         public_only: bool,
         excluded_ids: &[String],
     ) -> Result<Vec<SidebarRow>> {
-        let type_filter = if include_subagents {
-            "('user', 'scheduled', 'sub_agent')"
-        } else {
-            "('user', 'scheduled')"
-        };
-        // See [`Self::list_session_summaries`] for why the sidebar and
-        // `workspace_list` want opposite joins here.
-        let join = if include_empty {
-            "LEFT JOIN messages m ON s.id = m.session_id"
-        } else {
-            "INNER JOIN messages m ON s.id = m.session_id"
-        };
-        let tier_filter = if public_only {
-            "AND s.privacy_tier = 'public'"
-        } else {
-            ""
-        };
-        let keyset = if after.is_some() {
-            "AND (CAST(s.updated_at AS TEXT) < ? \
-              OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))"
-        } else {
-            ""
-        };
-        let query = format!(
-            r#"
-            SELECT s.id,
-                   s.working_dir,
-                   COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
-                   s.user_set_name,
-                   s.created_at,
-                   s.updated_at,
-                   CAST(s.updated_at AS TEXT) AS cursor_updated_at,
-                   s.parent_session_id,
-                   s.session_type,
-                   s.diverged_from,
-                   s.privacy_tier,
-                   COUNT(m.id) AS message_count
-            FROM sessions s
-            {join}
-            WHERE s.session_type IN {type_filter}
-            {tier_filter}
-            AND s.id NOT IN (SELECT value FROM json_each(?))
-            {keyset}
-            GROUP BY s.id
-            ORDER BY s.updated_at DESC, s.id ASC
-            LIMIT ?
-            "#
-        );
+        let filters = Self::page_filters(public_only, after.is_some());
+        let query =
+            Self::summary_listing_sql(include_subagents, include_empty, &filters, "LIMIT ?");
 
         let mut q =
             sqlx::query_as::<_, SidebarRow>(&query).bind(serde_json::to_string(excluded_ids)?);
@@ -9911,8 +10143,8 @@ mod tests {
             "the childless subagent is still invisible: {ids:?}"
         );
         assert!(ids.contains(&spoke.id));
-        // `COUNT(m.id)` ignores NULLs, so the LEFT JOIN must report 0 rather
-        // than the 1 a naive count of joined rows would give.
+        // A chat with no message counts 0, not the 1 a naive count of joined
+        // rows would give (the listing's correlated `COUNT(*)` since R-28).
         let silent_row = widened.iter().find(|s| s.id == silent.id).unwrap();
         assert_eq!(silent_row.message_count, 0);
         let spoke_row = widened.iter().find(|s| s.id == spoke.id).unwrap();
@@ -13586,6 +13818,433 @@ mod tests {
                     !public_only,
                     "public_only={public_only} handled the private chat {id} wrongly"
                 );
+            }
+        }
+    }
+
+    /// History (`GET /sessions`, `biorouter session list`) and the sidebar
+    /// (`GET /sessions/sidebar`) put chats that share an `updated_at` in ONE
+    /// order: newest first, then `id ASC` (vision V3-R2-3). A bulk write stamps
+    /// many chats with the same second; the full listing ordered by
+    /// `updated_at` alone, SQLite handed the tied group back in id DESC order,
+    /// and one chat sat at row 11 of the sidebar and row 113 of History.
+    #[tokio::test]
+    async fn the_full_listing_breaks_a_tied_updated_at_by_id_like_the_sidebar() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut ids = Vec::new();
+        for index in 0..6 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("chat {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &umsg(10, "hello"))
+                .await
+                .unwrap();
+            ids.push(session.id);
+        }
+        // One chat is newer than the rest; the other five share one second.
+        let newest = ids.remove(3);
+        let pool = sm.storage().pool().await.unwrap();
+        for (id, at) in ids
+            .iter()
+            .map(|id| (id, "2026-09-05 17:49:17"))
+            .chain([(&newest, "2026-09-06 08:00:00")])
+        {
+            sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+                .bind(at)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let mut tied = ids.clone();
+        tied.sort();
+        let expected: Vec<String> = std::iter::once(newest).chain(tied).collect();
+
+        let history: Vec<String> = sm
+            .list_sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(history, expected, "History's order");
+
+        let including_empty: Vec<String> = sm
+            .list_sessions_by_types_including_empty(&[SessionType::User])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        assert_eq!(
+            including_empty, expected,
+            "History's order when it lists empty chats"
+        );
+
+        let mut sidebar = Vec::new();
+        let mut cursor: Option<SidebarCursor> = None;
+        loop {
+            let page = sm
+                .list_session_summaries_page(2, cursor.as_ref(), false, false, false)
+                .await
+                .unwrap();
+            let Some(last) = page.last() else {
+                break;
+            };
+            cursor = Some(last.cursor.clone());
+            sidebar.extend(page.into_iter().map(|row| row.summary.id));
+        }
+        assert_eq!(sidebar, expected, "the sidebar's order");
+    }
+
+    /// R-28: every shape of the summary listing walks `idx_sessions_updated` in
+    /// the page's own order and stops at its limit. The planner's other choice,
+    /// reading every listed chat through `idx_sessions_type` and sorting them
+    /// all, made a ten-row page cost as much as the whole list (74 ms on a copy
+    /// of a real store), and a non-default sidebar view paid that once per page.
+    /// See [`SessionStorage::summary_listing_sql`].
+    #[tokio::test]
+    async fn the_summary_listing_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        seed_session_with_messages(&sm, 1).await;
+        let pool = sm.storage.pool().await.unwrap();
+
+        for include_subagents in [false, true] {
+            for include_empty in [false, true] {
+                for (filters, binds) in [
+                    ("", 0),
+                    (
+                        "AND s.privacy_tier = 'public' \
+                         AND s.id NOT IN (SELECT value FROM json_each(?)) \
+                         AND (CAST(s.updated_at AS TEXT) < ? \
+                           OR (CAST(s.updated_at AS TEXT) = ? AND s.id > ?))",
+                        4,
+                    ),
+                ] {
+                    let sql = SessionStorage::summary_listing_sql(
+                        include_subagents,
+                        include_empty,
+                        filters,
+                        "LIMIT ?",
+                    );
+                    let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                    let mut query = sqlx::query(&explain);
+                    if binds == 4 {
+                        query = query
+                            .bind("[]")
+                            .bind("2026-01-01 00:00:00")
+                            .bind("2026-01-01 00:00:00")
+                            .bind("x");
+                    }
+                    let plan: Vec<String> = query
+                        .bind(10_i64)
+                        .fetch_all(pool)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                        .collect();
+                    let shape = format!(
+                        "include_subagents={include_subagents} include_empty={include_empty} \
+                         filters={binds}: {plan:?}"
+                    );
+                    assert!(
+                        plan.iter()
+                            .any(|step| step.contains("idx_sessions_updated")),
+                        "the listing no longer walks idx_sessions_updated ({shape})"
+                    );
+                    assert!(
+                        !plan
+                            .iter()
+                            .any(|step| step == "USE TEMP B-TREE FOR ORDER BY"),
+                        "the listing sorts every row before its LIMIT ({shape})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// R-28, vision V1-R3-2: the full listing (`GET /sessions`, History) reads
+    /// its rows off `idx_sessions_updated` in order, with no grouping and no
+    /// sort of the whole fat row set, and still counts each chat's messages.
+    /// The `JOIN messages … GROUP BY` it replaced took 290 to 420 ms on a copy
+    /// of a real store where this shape takes 16 to 26 ms; see
+    /// [`SessionStorage::full_listing_sql`].
+    #[tokio::test]
+    async fn the_full_listing_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Each seeded turn is a question and an answer: six messages and two.
+        let six = seed_session_with_messages(&sm, 3).await;
+        let two = seed_session_with_messages(&sm, 1).await;
+        let empty = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "nothing yet".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let pool = sm.storage.pool().await.unwrap();
+
+        for types_len in [1, 2, 3] {
+            for include_empty in [false, true] {
+                let sql = SessionStorage::full_listing_sql(types_len, include_empty);
+                let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                let mut query = sqlx::query(&explain);
+                for t in ["user", "scheduled", "sub_agent"].iter().take(types_len) {
+                    query = query.bind(*t);
+                }
+                let plan: Vec<String> = query
+                    .fetch_all(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                    .collect();
+                let shape = format!("types={types_len} include_empty={include_empty}: {plan:?}");
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("idx_sessions_updated")),
+                    "the full listing no longer walks idx_sessions_updated ({shape})"
+                );
+                assert!(
+                    !plan
+                        .iter()
+                        .any(|step| step.contains("GROUP BY")
+                            || step == "USE TEMP B-TREE FOR ORDER BY"),
+                    "the full listing groups or sorts every row again ({shape})"
+                );
+            }
+        }
+
+        let counts = |sessions: Vec<Session>| -> Vec<(String, usize)> {
+            sessions
+                .into_iter()
+                .map(|s| (s.id, s.message_count))
+                .collect()
+        };
+        let mut listed = counts(sm.list_sessions().await.unwrap());
+        listed.sort();
+        let mut expected = vec![(six.id.clone(), 6), (two.id.clone(), 2)];
+        expected.sort();
+        assert_eq!(
+            listed, expected,
+            "History lists chats with a message, counted"
+        );
+
+        let mut with_empty = counts(
+            sm.list_sessions_by_types_including_empty(&[SessionType::User])
+                .await
+                .unwrap(),
+        );
+        with_empty.sort();
+        let mut expected = vec![(six.id, 6), (two.id, 2), (empty.id, 0)];
+        expected.sort();
+        assert_eq!(
+            with_empty, expected,
+            "the empty chat is listed and counts 0"
+        );
+    }
+
+    /// V1-R3-2, History's first paint: the keyset form of the full listing keeps
+    /// the full listing's plan, filters and all. A page that sorted every listed
+    /// chat before its `LIMIT` would cost what the whole list costs, which is the
+    /// 0.7 s the page exists to avoid. See [`SessionStorage::list_sessions_page`].
+    #[tokio::test]
+    async fn a_full_listing_page_walks_the_updated_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        seed_session_with_messages(&sm, 1).await;
+        let pool = sm.storage.pool().await.unwrap();
+
+        for types_len in [1, 2, 3] {
+            for (public_only, keyset) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let filters = SessionStorage::page_filters(public_only, keyset);
+                let sql =
+                    SessionStorage::full_listing_page_sql(types_len, false, &filters, "LIMIT ?");
+                let explain = format!("EXPLAIN QUERY PLAN {sql}");
+                let mut query = sqlx::query(&explain);
+                for t in ["user", "scheduled", "sub_agent"].iter().take(types_len) {
+                    query = query.bind(*t);
+                }
+                query = query.bind("[]");
+                if keyset {
+                    query = query
+                        .bind("2026-01-01 00:00:00")
+                        .bind("2026-01-01 00:00:00")
+                        .bind("x");
+                }
+                let plan: Vec<String> = query
+                    .bind(10_i64)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+                    .collect();
+                let shape = format!(
+                    "types={types_len} public_only={public_only} keyset={keyset}: {plan:?}"
+                );
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains("idx_sessions_updated")),
+                    "the page no longer walks idx_sessions_updated ({shape})"
+                );
+                assert!(
+                    !plan
+                        .iter()
+                        .any(|step| step.contains("GROUP BY")
+                            || step == "USE TEMP B-TREE FOR ORDER BY"),
+                    "the page groups or sorts every row before its LIMIT ({shape})"
+                );
+            }
+        }
+    }
+
+    /// V1-R3-2: walking the full listing a page at a time yields EXACTLY the rows
+    /// the whole listing holds, once each, in its order, with the same counts,
+    /// whatever the page size, across a tied `updated_at` group, and for a caller
+    /// who is shown public chats only and one whose Crew chats are excluded.
+    ///
+    /// Two properties are the security half. A hidden row never shortens a page:
+    /// if it did, `has_more` and the page length would count what was hidden
+    /// (the 2026-09-12 review). And the walk agrees, id for id, with the sidebar's
+    /// own keyset walk for the same caller, so the two listings can never admit
+    /// different chats.
+    #[tokio::test]
+    async fn a_full_listing_page_walk_is_the_whole_listing_once_for_every_caller() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let mut ids = Vec::new();
+        for index in 0..9_i64 {
+            let session = sm
+                .create_session(
+                    temp_dir.path().to_path_buf(),
+                    format!("chat {index}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            for turn in 0..=(index % 3) {
+                sm.add_message(&session.id, &umsg(10 + turn, "hello"))
+                    .await
+                    .unwrap();
+            }
+            ids.push(session.id);
+        }
+        // Chats 1, 4 and 7 are private; 0 to 5 share one second, the rest are
+        // newer, so a page boundary falls inside a tied group.
+        let pool = sm.storage().pool().await.unwrap();
+        for (index, id) in ids.iter().enumerate() {
+            if index % 3 == 1 {
+                sm.update(id)
+                    .raise_privacy(SessionClassification::Private, "turn:test")
+                    .apply()
+                    .await
+                    .unwrap();
+            }
+            let at = if index < 6 {
+                "2026-09-05 17:49:17"
+            } else {
+                "2026-09-06 08:00:00"
+            };
+            sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+                .bind(at)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        let crew_id = ids[2].clone();
+        let types = [SessionType::User, SessionType::Scheduled];
+
+        let callers: [(&str, bool, Vec<String>); 4] = [
+            ("proven", false, vec![]),
+            ("public only", true, vec![]),
+            ("crew excluded", false, vec![crew_id.clone()]),
+            ("public only, crew excluded", true, vec![crew_id.clone()]),
+        ];
+        for (label, public_only, excluded) in callers {
+            let whole: Vec<(String, usize)> = sm
+                .list_sessions_by_types(&types)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|s| {
+                    !excluded.contains(&s.id)
+                        && (!public_only || s.privacy_tier == SessionClassification::Public)
+                })
+                .map(|s| (s.id, s.message_count))
+                .collect();
+            assert!(!whole.is_empty(), "{label}: the fixture lists nothing");
+
+            // Bounded, so a cursor that repeats its own row fails the walk below
+            // instead of hanging it.
+            let mut sidebar = Vec::new();
+            let mut cursor: Option<SidebarCursor> = None;
+            for _ in 0..40 {
+                let page = sm
+                    .list_session_summaries_page_excluding(
+                        2,
+                        cursor.as_ref(),
+                        false,
+                        false,
+                        public_only,
+                        &excluded,
+                    )
+                    .await
+                    .unwrap();
+                let Some(last) = page.last() else { break };
+                cursor = Some(last.cursor.clone());
+                sidebar.extend(page.into_iter().map(|row| row.summary.id));
+            }
+            assert_eq!(
+                sidebar,
+                whole.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+                "{label}: the sidebar's walk is not the listing"
+            );
+
+            for limit in [1_u32, 2, 3, 4, 100] {
+                let mut walked: Vec<(String, usize)> = Vec::new();
+                let mut cursor: Option<SidebarCursor> = None;
+                for _ in 0..40 {
+                    let page = sm
+                        .list_sessions_page_excluding(
+                            &types,
+                            limit,
+                            cursor.as_ref(),
+                            public_only,
+                            &excluded,
+                        )
+                        .await
+                        .unwrap();
+                    let Some(last) = page.last() else { break };
+                    let remaining = whole.len() - walked.len();
+                    assert_eq!(
+                        page.len(),
+                        (limit as usize).min(remaining),
+                        "{label} limit={limit}: a page's length is not the number of \
+                         rows due, so it counts rows that were hidden or skipped"
+                    );
+                    cursor = Some(last.cursor.clone());
+                    walked.extend(
+                        page.into_iter()
+                            .map(|row| (row.session.id, row.session.message_count)),
+                    );
+                }
+                assert_eq!(walked, whole, "{label} limit={limit}");
             }
         }
     }
@@ -19928,5 +20587,772 @@ mod session_id_uniqueness_tests {
             vec![1, 2, 3, 4, 5],
             "one store must still number 1..n with no gaps; got {ids:?}"
         );
+    }
+}
+
+/// R-30: opening a chat is not activity in it; renaming it and running a turn
+/// in it are.
+///
+/// `updated_at` is the activity time every list sorts by (the sidebar's "Last
+/// activity", History, `GET /sessions`, `biorouter session list`). These pin,
+/// write by write, which ones move it: the three setup writes an opening path
+/// makes stay put inside [`crate::session::activity::opening`], and nothing
+/// else is affected by that scope. Coordinator ruling 16's additions follow at
+/// the end: a bind of the model a chat already records stamps nowhere, the
+/// housekeeping scope behaves like the opening one, and the writes behind the
+/// deliberate changes (a model switch, the composer toggles,
+/// `workspace_set_tools`, a Crew grant) stamp.
+///
+/// Every row is back-dated to a fixed past second first, because
+/// `datetime('now')` has one-second resolution: without that, a write that
+/// stamps in the same second as the row's creation reads as "unchanged" and a
+/// test that should fail on the old code passes.
+#[cfg(test)]
+mod opening_is_not_activity_tests {
+    use super::*;
+    use crate::conversation::message::Message;
+    use crate::privacy::SessionClassification;
+    use crate::session::activity::opening;
+    use tempfile::TempDir;
+
+    const OLDEST: &str = "2001-01-01 00:00:00";
+    const MIDDLE: &str = "2002-02-02 00:00:00";
+    const NEWEST: &str = "2003-03-03 00:00:00";
+
+    async fn store() -> (TempDir, SessionManager) {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        (dir, sm)
+    }
+
+    /// A chat with one message (so every listing shows it), back-dated to `at`.
+    async fn chat(sm: &SessionManager, name: &str, at: &str) -> String {
+        let s = sm
+            .create_session(PathBuf::from("/tmp/r30"), name.into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        backdate(sm, &s.id, at).await;
+        s.id
+    }
+
+    /// A chat with no message (a working-directory write applies only there).
+    async fn empty_chat(sm: &SessionManager, at: &str) -> String {
+        let s = sm
+            .create_session(PathBuf::from("/tmp/r30"), "empty".into(), SessionType::User)
+            .await
+            .unwrap();
+        backdate(sm, &s.id, at).await;
+        s.id
+    }
+
+    async fn backdate(sm: &SessionManager, id: &str, at: &str) {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// The column exactly as stored, so a test compares the stored text rather
+    /// than a parse of it.
+    async fn stored_updated_at(sm: &SessionManager, id: &str) -> String {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT CAST(updated_at AS TEXT) FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// `GET /sessions` and `biorouter session list` order.
+    async fn history_order(sm: &SessionManager) -> Vec<String> {
+        sm.list_sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// `GET /sessions/sidebar` order: the keyset page, walked to the end two
+    /// rows at a time so the continuation predicate is exercised as well.
+    async fn sidebar_order(sm: &SessionManager) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut after: Option<SidebarCursor> = None;
+        loop {
+            let page = sm
+                .list_session_summaries_page(2, after.as_ref(), false, false, false)
+                .await
+                .unwrap();
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().map(|row| row.cursor.clone());
+            ids.extend(page.into_iter().map(|row| row.summary.id));
+        }
+        ids
+    }
+
+    async fn bind(sm: &SessionManager, id: &str, provider: &str) -> BindOutcome {
+        sm.storage()
+            .bind_provider_if_allowed(id, provider, r#"{"model_name":"m"}"#, false)
+            .await
+            .unwrap()
+    }
+
+    async fn save_roster(sm: &SessionManager, id: &str) -> Option<serde_json::Value> {
+        sm.update_extension_state(id, "enabled_extensions", "v0", |_| {
+            Ok(serde_json::json!({ "extensions": [] }))
+        })
+        .await
+        .unwrap()
+    }
+
+    // ── the provider bind ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_provider_bind_while_opening_lands_but_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        let outcome = opening(bind(&sm, &id, "anthropic")).await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.provider_name.as_deref(),
+            Some("anthropic"),
+            "the scope changes the timestamp only: the bind itself must land"
+        );
+        assert_eq!(
+            stored_updated_at(&sm, &id).await,
+            OLDEST,
+            "restoring a chat's model while opening it is not activity in it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_bind_outside_any_opening_still_stamps() {
+        // The default, and the premise the test above needs: the same bind with
+        // no scope does move the row, so "unchanged" there is the scope's doing.
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        assert!(matches!(
+            bind(&sm, &id, "anthropic").await,
+            BindOutcome::Bound
+        ));
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    #[tokio::test]
+    async fn opening_does_not_loosen_gate_a_or_hide_a_missing_row() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "private", OLDEST).await;
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        // A public model on a private chat is still refused inside the scope,
+        // and the refusal writes nothing.
+        let refused = opening(bind(&sm, &id, "anthropic")).await;
+        assert!(matches!(refused, BindOutcome::RefusedByPrivacy));
+        assert_eq!(
+            sm.get_session(&id, false).await.unwrap().provider_name,
+            None
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+
+        // ...and an id that names no row is still told apart from a refusal.
+        let missing = opening(bind(&sm, "no-such-session", "anthropic")).await;
+        assert!(matches!(missing, BindOutcome::NoSuchSession));
+    }
+
+    // ── the extension-data write ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn an_extension_save_while_opening_writes_the_value_but_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        let stored = opening(save_roster(&sm, &id)).await;
+
+        assert_eq!(stored, Some(serde_json::json!({ "extensions": [] })));
+        assert_eq!(
+            sm.get_extension_state(&id, "enabled_extensions", "v0")
+                .await
+                .unwrap(),
+            Some(serde_json::json!({ "extensions": [] })),
+            "the scope changes the timestamp only: the roster must be saved"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+
+        // The lock-taking first statement still reports the row, so a missing
+        // session is still `None` rather than a silent success.
+        assert_eq!(opening(save_roster(&sm, "no-such-session")).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_extension_save_outside_any_opening_still_stamps() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        save_roster(&sm, &id).await;
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    // ── the empty-chat working-directory write ─────────────────────────────
+
+    #[tokio::test]
+    async fn a_working_dir_write_while_opening_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let empty = empty_chat(&sm, OLDEST).await;
+        let full = chat(&sm, "full", OLDEST).await;
+
+        let outcome = opening(sm.try_update_working_dir_if_empty(&empty, "/tmp/r30-next".into()))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, WorkingDirUpdate::Updated));
+        assert_eq!(
+            sm.get_session(&empty, false).await.unwrap().working_dir,
+            PathBuf::from("/tmp/r30-next")
+        );
+        assert_eq!(stored_updated_at(&sm, &empty).await, OLDEST);
+
+        // The emptiness guard is untouched by the scope.
+        let refused = opening(sm.try_update_working_dir_if_empty(&full, "/tmp/elsewhere".into()))
+            .await
+            .unwrap();
+        assert!(matches!(refused, WorkingDirUpdate::RefusedNotEmpty));
+    }
+
+    #[tokio::test]
+    async fn a_working_dir_write_outside_any_opening_still_stamps() {
+        let (_dir, sm) = store().await;
+        let empty = empty_chat(&sm, OLDEST).await;
+
+        sm.try_update_working_dir_if_empty(&empty, "/tmp/r30-next".into())
+            .await
+            .unwrap();
+
+        assert_ne!(stored_updated_at(&sm, &empty).await, OLDEST);
+    }
+
+    // ── what the scope must NOT reach ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_rename_is_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        opening(sm.update(&id).user_provided_name("Renamed").apply())
+            .await
+            .unwrap();
+
+        assert_ne!(
+            stored_updated_at(&sm, &id).await,
+            OLDEST,
+            "a rename is activity (R-30), whatever scope it runs in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_is_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+
+        opening(sm.add_message(&id, &Message::user().with_text("again")))
+            .await
+            .unwrap();
+
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    // ── an extension_data-only update (an app's goal guardrail on connect) ──
+
+    #[tokio::test]
+    async fn an_extension_data_only_update_while_opening_leaves_updated_at_alone() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+        let mut data = sm.get_session(&id, false).await.unwrap().extension_data;
+        data.set_extension_state("goal", "v0", serde_json::json!({ "condition": "done" }));
+
+        opening(sm.update(&id).extension_data(data).apply())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.get_extension_state(&id, "goal", "v0").await.unwrap(),
+            Some(serde_json::json!({ "condition": "done" })),
+            "the scope changes the timestamp only: the data must land"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    #[tokio::test]
+    async fn an_extension_data_update_outside_opening_or_with_a_name_still_stamps() {
+        let (_dir, sm) = store().await;
+        let plain = chat(&sm, "plain", OLDEST).await;
+        let named = chat(&sm, "named", OLDEST).await;
+
+        // No scope: the pre-R-30 behaviour.
+        let data = sm.get_session(&plain, false).await.unwrap().extension_data;
+        sm.update(&plain)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        assert_ne!(stored_updated_at(&sm, &plain).await, OLDEST);
+
+        // Inside a scope, but the update also renames: a rename is activity.
+        let data = sm.get_session(&named, false).await.unwrap().extension_data;
+        opening(
+            sm.update(&named)
+                .extension_data(data)
+                .user_provided_name("Renamed")
+                .apply(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(stored_updated_at(&sm, &named).await, OLDEST);
+    }
+
+    // ── the order every list shows ─────────────────────────────────────────
+
+    /// The owner's case end to end at the store: three chats, the oldest is
+    /// opened (its model restored and its roster saved, as the CLI and a cold
+    /// desktop agent do) and keeps its place in History and in the sidebar's
+    /// keyset pages; then it is renamed and heads both.
+    #[tokio::test]
+    async fn opening_keeps_a_chat_in_place_and_renaming_moves_it_to_the_top() {
+        let (_dir, sm) = store().await;
+        let oldest = chat(&sm, "oldest", OLDEST).await;
+        let middle = chat(&sm, "middle", MIDDLE).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+        let expected = vec![newest.clone(), middle.clone(), oldest.clone()];
+        assert_eq!(history_order(&sm).await, expected, "premise");
+        assert_eq!(sidebar_order(&sm).await, expected, "premise");
+
+        opening(async {
+            assert!(matches!(
+                bind(&sm, &oldest, "anthropic").await,
+                BindOutcome::Bound
+            ));
+            save_roster(&sm, &oldest).await;
+        })
+        .await;
+
+        assert_eq!(history_order(&sm).await, expected, "History after an open");
+        assert_eq!(sidebar_order(&sm).await, expected, "sidebar after an open");
+        assert_eq!(stored_updated_at(&sm, &oldest).await, OLDEST);
+
+        sm.update(&oldest)
+            .user_provided_name("Renamed")
+            .apply()
+            .await
+            .unwrap();
+
+        let renamed_first = vec![oldest.clone(), newest.clone(), middle.clone()];
+        assert_eq!(
+            history_order(&sm).await,
+            renamed_first,
+            "History after a rename"
+        );
+        assert_eq!(
+            sidebar_order(&sm).await,
+            renamed_first,
+            "sidebar after a rename"
+        );
+    }
+
+    /// The sidebar pages with a keyset cursor: the last row's `updated_at`
+    /// and id. An open between two page reads used to stamp the opened chat
+    /// above the cursor, so the next page silently skipped it. Here the chat
+    /// the cursor names and the chat the next page starts with are both opened
+    /// between the two reads, and the walk must still be exactly the list.
+    #[tokio::test]
+    async fn a_keyset_walk_interrupted_by_an_open_neither_skips_nor_repeats_a_chat() {
+        let (_dir, sm) = store().await;
+        let oldest = chat(&sm, "oldest", OLDEST).await;
+        let middle = chat(&sm, "middle", MIDDLE).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        let first = sm
+            .list_session_summaries_page(2, None, false, false, false)
+            .await
+            .unwrap();
+        let first_ids: Vec<String> = first.iter().map(|row| row.summary.id.clone()).collect();
+        assert_eq!(first_ids, [newest.clone(), middle.clone()], "premise");
+        let cursor = first.last().unwrap().cursor.clone();
+
+        // Open the cursor's own row and the next page's first row, the way a
+        // cold desktop agent and a CLI resume do: rebind the model, save the
+        // roster.
+        for id in [&middle, &oldest] {
+            opening(async {
+                assert!(matches!(
+                    bind(&sm, id, "anthropic").await,
+                    BindOutcome::Bound
+                ));
+                save_roster(&sm, id).await;
+            })
+            .await;
+        }
+
+        let rest: Vec<String> = sm
+            .list_session_summaries_page(2, Some(&cursor), false, false, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.summary.id)
+            .collect();
+        assert_eq!(
+            rest,
+            std::slice::from_ref(&oldest),
+            "the page after the cursor must still hold the chat opened in between"
+        );
+        assert_eq!(
+            sidebar_order(&sm).await,
+            [newest, middle, oldest],
+            "a fresh walk after both opens"
+        );
+    }
+
+    /// Gate A admits a private model on a private chat. Inside an opening that
+    /// bind lands and, like the public one, leaves the chat where it was.
+    #[tokio::test]
+    async fn a_private_chats_own_private_model_binds_while_opening_without_moving_it() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "private", OLDEST).await;
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        let outcome = opening(sm.storage().bind_provider_if_allowed(
+            &id,
+            "versa_azure",
+            r#"{"model_name":"gpt-5.5"}"#,
+            true,
+        ))
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+        assert_eq!(
+            row.privacy_tier,
+            SessionClassification::Private,
+            "premise: the chat is private"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    /// A turn's own writes are activity even inside an opening scope: a
+    /// conversation rewrite (compaction), a truncation (edit or retry), the
+    /// token ledger a turn settles and a token-count update. One chat per
+    /// write, so a CASE added to any of them fails here by name.
+    #[tokio::test]
+    async fn a_turns_writes_are_activity_even_inside_an_opening_scope() {
+        let (_dir, sm) = store().await;
+
+        let rewritten = chat(&sm, "rewritten", OLDEST).await;
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("hello"),
+            Message::assistant().with_text("hi"),
+        ]);
+        opening(sm.replace_conversation(&rewritten, &conversation))
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &rewritten).await,
+            OLDEST,
+            "a conversation rewrite"
+        );
+
+        let truncated = chat(&sm, "truncated", OLDEST).await;
+        opening(sm.truncate_conversation(&truncated, 0))
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &truncated).await,
+            OLDEST,
+            "a truncation"
+        );
+
+        let billed = chat(&sm, "billed", OLDEST).await;
+        let recorded = opening(sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "r30-turn-1".to_string(),
+            session_id: billed.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(12),
+            current_input_tokens: Some(10),
+            current_output_tokens: Some(2),
+            billed_total_tokens: Some(12),
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            model_id: Some("m".to_string()),
+            provider: Some("p".to_string()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        }))
+        .await
+        .unwrap();
+        assert!(recorded, "premise: the usage event was recorded");
+        assert_ne!(
+            stored_updated_at(&sm, &billed).await,
+            OLDEST,
+            "the token ledger"
+        );
+
+        let counted = chat(&sm, "counted", OLDEST).await;
+        opening(sm.update(&counted).total_tokens(Some(42)).apply())
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &counted).await,
+            OLDEST,
+            "a token-count update"
+        );
+    }
+
+    // ── what ruling 16 adds: no-op rebinds, housekeeping, deliberate changes ─
+
+    async fn bind_model(
+        sm: &SessionManager,
+        id: &str,
+        provider: &str,
+        config: &str,
+    ) -> BindOutcome {
+        sm.storage()
+            .bind_provider_if_allowed(id, provider, config, false)
+            .await
+            .unwrap()
+    }
+
+    /// A chat that records `anthropic` / `claude-sonnet-4-5`, back-dated.
+    async fn chat_on_a_model(sm: &SessionManager, name: &str, at: &str) -> String {
+        let id = chat(sm, name, at).await;
+        assert!(matches!(
+            bind_model(
+                sm,
+                &id,
+                "anthropic",
+                r#"{"model_name":"claude-sonnet-4-5"}"#
+            )
+            .await,
+            BindOutcome::Bound
+        ));
+        backdate(sm, &id, at).await;
+        id
+    }
+
+    /// Ruling 16: re-binding the model a chat already records is not activity,
+    /// with or without a scope. This is the bind a `--shared-daemon` resume
+    /// makes when it names the chat's own `--provider`/`--model`
+    /// (`POST /agent/update_provider`), and the one a person makes by picking
+    /// the model the chat is already on. The rest of the config may differ (a
+    /// context window read back from the server); the bind still lands.
+    #[tokio::test]
+    async fn rebinding_the_model_a_chat_records_is_not_activity_outside_any_scope() {
+        let (_dir, sm) = store().await;
+        let id = chat_on_a_model(&sm, "a", OLDEST).await;
+        let newer = chat(&sm, "newer", MIDDLE).await;
+
+        let outcome = bind_model(
+            &sm,
+            &id,
+            "anthropic",
+            r#"{"model_name":"claude-sonnet-4-5","context_limit":200000}"#,
+        )
+        .await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        let pool = sm.storage().pool().await.unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT model_config_json FROM sessions WHERE id = ?")
+                .bind(&id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(
+            stored.contains("200000"),
+            "the rule changes the timestamp only: the bind itself must land ({stored})"
+        );
+        assert_eq!(stored_updated_at(&sm, &id).await, OLDEST);
+        assert_eq!(history_order(&sm).await, [newer.clone(), id.clone()]);
+        assert_eq!(sidebar_order(&sm).await, [newer, id]);
+    }
+
+    /// The other half of ruling 16: an explicit switch to another model, or to
+    /// another provider, is a deliberate change to the chat and moves it.
+    #[tokio::test]
+    async fn switching_a_chat_to_another_model_or_provider_is_activity() {
+        let (_dir, sm) = store().await;
+        let model = chat_on_a_model(&sm, "model", OLDEST).await;
+        let provider = chat_on_a_model(&sm, "provider", OLDEST).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        bind_model(
+            &sm,
+            &model,
+            "anthropic",
+            r#"{"model_name":"claude-opus-4-1"}"#,
+        )
+        .await;
+        assert_ne!(
+            stored_updated_at(&sm, &model).await,
+            OLDEST,
+            "another model on the same provider"
+        );
+        assert_eq!(history_order(&sm).await[0], model);
+
+        bind_model(
+            &sm,
+            &provider,
+            "openai",
+            r#"{"model_name":"claude-sonnet-4-5"}"#,
+        )
+        .await;
+        assert_ne!(
+            stored_updated_at(&sm, &provider).await,
+            OLDEST,
+            "another provider with the same model name"
+        );
+        assert!(history_order(&sm).await.ends_with(&[newest]));
+    }
+
+    /// A stored config that is not JSON (an import from an older build, a hand
+    /// edit) reads as recording no model: the bind still lands, and stamps.
+    #[tokio::test]
+    async fn a_bind_over_a_model_config_that_is_not_json_lands_and_stamps() {
+        let (_dir, sm) = store().await;
+        let id = chat(&sm, "a", OLDEST).await;
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET provider_name = 'anthropic', model_config_json = 'not json' \
+             WHERE id = ?",
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .unwrap();
+        backdate(&sm, &id, OLDEST).await;
+
+        let outcome = bind_model(
+            &sm,
+            &id,
+            "anthropic",
+            r#"{"model_name":"claude-sonnet-4-5"}"#,
+        )
+        .await;
+
+        assert!(matches!(outcome, BindOutcome::Bound));
+        assert_ne!(stored_updated_at(&sm, &id).await, OLDEST);
+    }
+
+    /// Uninstalling an extension prunes it from every saved roster that names
+    /// it, inside [`crate::session::activity::housekeeping`]: the value is
+    /// written and no chat moves (ruling 16).
+    #[tokio::test]
+    async fn a_housekeeping_roster_save_writes_the_value_but_leaves_updated_at_alone() {
+        use crate::session::activity::housekeeping;
+        let (_dir, sm) = store().await;
+        let first = chat(&sm, "first", OLDEST).await;
+        let second = chat(&sm, "second", MIDDLE).await;
+        let expected = vec![second.clone(), first.clone()];
+
+        for id in [&first, &second] {
+            assert!(housekeeping(save_roster(&sm, id)).await.is_some());
+        }
+
+        for id in [&first, &second] {
+            assert_eq!(
+                sm.get_extension_state(id, "enabled_extensions", "v0")
+                    .await
+                    .unwrap(),
+                Some(serde_json::json!({ "extensions": [] })),
+                "the scope changes the timestamp only: the roster must be saved"
+            );
+        }
+        assert_eq!(stored_updated_at(&sm, &first).await, OLDEST);
+        assert_eq!(stored_updated_at(&sm, &second).await, MIDDLE);
+        assert_eq!(history_order(&sm).await, expected);
+        assert_eq!(sidebar_order(&sm).await, expected);
+    }
+
+    /// Ruling 16's deliberate changes, through the writes their doors make,
+    /// none of which runs inside a scope (the door census in
+    /// `session::activity` pins that):
+    /// * a skill toggled from the composer (`POST /skills/session`) or by
+    ///   `workspace_set_tools`: `session_skills::apply`;
+    /// * an extension `workspace_set_tools` adds to a chat that is not open:
+    ///   `session_extensions::apply_saved_roster_delta`;
+    /// * a composer extension toggle and a Crew grant save the live roster
+    ///   (`Agent::persist_extension_state`), which stamps even when the roster
+    ///   it saves is the one the chat already holds.
+    #[tokio::test]
+    async fn composer_toggles_workspace_set_tools_and_a_crew_grant_write_as_activity() {
+        let (_dir, sm) = store().await;
+        let skills = chat(&sm, "skills", OLDEST).await;
+        let tools = chat(&sm, "tools", OLDEST).await;
+        let roster = chat(&sm, "roster", OLDEST).await;
+        let newest = chat(&sm, "newest", NEWEST).await;
+
+        crate::agents::session_skills::apply(&sm, &skills, &["r30-skill".to_owned()], &[])
+            .await
+            .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &skills).await,
+            OLDEST,
+            "a skill toggle"
+        );
+
+        let todo = crate::agents::ExtensionConfig::Platform {
+            name: "todo".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        crate::agents::session_extensions::apply_saved_roster_delta(
+            &sm,
+            &tools,
+            std::slice::from_ref(&todo),
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            stored_updated_at(&sm, &tools).await,
+            OLDEST,
+            "workspace_set_tools adding an extension"
+        );
+
+        save_roster(&sm, &roster).await;
+        backdate(&sm, &roster, OLDEST).await;
+        save_roster(&sm, &roster).await;
+        assert_ne!(
+            stored_updated_at(&sm, &roster).await,
+            OLDEST,
+            "saving the roster the chat already holds"
+        );
+
+        let order = history_order(&sm).await;
+        assert_eq!(order.last(), Some(&newest), "all three moved above it");
     }
 }

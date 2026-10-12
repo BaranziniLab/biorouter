@@ -16,6 +16,9 @@
 //!
 //! These tests assert the contract now holds with **zero tool calls**.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::control::{AppControlServer, UiBridge};
 use biorouter_mcp::agent_drafter::manifest::{SignalDecl, SurfaceDecl, UiCapability};
 use serde_json::json;

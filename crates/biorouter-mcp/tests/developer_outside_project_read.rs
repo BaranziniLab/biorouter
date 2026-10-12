@@ -1,6 +1,9 @@
 //! End-to-end confinement: a pooled developer server never inherits another
 //! session's permission mode, so `text_editor` remains inside its bound project.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;
 use biorouter_mcp::DeveloperServer;
 use rmcp::handler::server::wrapper::Parameters;

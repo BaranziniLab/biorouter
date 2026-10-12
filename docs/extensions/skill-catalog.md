@@ -138,6 +138,14 @@ from that list rather than refetching would drift the first time two events
 raced. A monotonic revision that has advanced means "you are stale"; the answer
 to being stale is to refetch.
 
+⚠ **Only the newest read answers.** `useSkillCatalog` numbers every read it issues
+(the first one, a chat switch, a rescan) and commits an answer, a failure or the end
+of `loading` only if it is still the newest. Without that, the read for the chat the
+hook served before could land after the next chat's and replace its view, and the
+composer's Tools chip would show the old chat's skills, then correct itself. A
+write made through `setEnabled` is not a read: it serialises through its own queue
+and commits the daemon's answer to the write it made.
+
 ## The HTTP surface
 
 All three require `X-Secret-Key`, like every other route.
@@ -260,6 +268,16 @@ marketplace search had too, through different code. It now returns the ggplot
 skill (three of the four words), the R-scripting skill (two), then any skill
 matching one. Add a catalog search by calling `rank` with that catalog's fields,
 never by writing another matcher.
+
+The Skills page filter reads the same rules with one addition that the model's
+search does not have. A filter is typed into, so the last word, while nothing
+follows it, also matches the start of a word in a skill's name (or in a package's
+member names), ranked below the whole word. `gg` finds `ggplot`, `r` lists
+`r-scripting` first and `ralph` after it, and `gg ` with a space holds the word
+to whole words again. Descriptions are never read by prefix. The composer's skill
+picker keeps the whole-word floor, because its Enable all button writes every row
+the filter leaves on screen. The rule lives in `typeahead` of `baam/search.ts`
+and is asked for by `skills/SkillsView.tsx` alone.
 
 ## Debugging a skill that is installed but not usable
 

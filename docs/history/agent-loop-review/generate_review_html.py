@@ -24,7 +24,6 @@ DOCS = [
     ("Internal reviews", "internal-server-flow",           "subsystem-reviews/server-reply-flow-and-session-lifecycle.md",           "Server reply flow & session lifecycle"),
     ("Internal reviews", "internal-verification",          "subsystem-reviews/self-verification-and-doneness.md",          "Self-verification & quality checkpoints"),
 
-    ("External studies", "external-goose",       "../../research/coding-agent-landscape/goose.md",       "Goose (Block)"),
     ("External studies", "external-cline",       "../../research/coding-agent-landscape/cline.md",       "Cline"),
     ("External studies", "external-opencode",    "../../research/coding-agent-landscape/opencode.md",    "OpenCode (sst)"),
     ("External studies", "external-pi",          "../../research/coding-agent-landscape/pi.md",          "Pi (badlogic)"),
@@ -371,15 +370,15 @@ page = f"""<!DOCTYPE html>
 <header class="masthead">
   <div class="kicker">Internal review · v1.87.2 · {len(DOCS)} documents</div>
   <h1>How the agent thinks, and every way to make it think better.</h1>
-  <p class="lede">A multi-agent audit of BioRouter's agentic feedback loop — <em>context, tools, compaction, hooks, guardrails, loops, processes and verification</em> — benchmarked against nine open-source coding agents and distilled into a prioritized program of 67 improvements.</p>
-  <div class="byline"><b>Scope:</b> 10 internal subsystem reviews · 9 external tool studies · 4 comparison chapters · 3 proposal lenses &nbsp;→&nbsp; <b>1</b> executive report + <b>67</b> proposals</div>
+  <p class="lede">A multi-agent audit of BioRouter's agentic feedback loop — <em>context, tools, compaction, hooks, guardrails, loops, processes and verification</em> — benchmarked against eight open-source coding agents and distilled into a prioritized program of 67 improvements.</p>
+  <div class="byline"><b>Scope:</b> 10 internal subsystem reviews · 8 external tool studies · 4 comparison chapters · 3 proposal lenses &nbsp;→&nbsp; <b>1</b> executive report + <b>67</b> proposals</div>
   <div class="statline">
     <div><div class="v accent">67</div><div class="k">Proposals</div></div>
     <div><div class="v">10</div><div class="k">Internal reviews</div></div>
-    <div><div class="v">9</div><div class="k">Agents compared</div></div>
+    <div><div class="v">8</div><div class="k">Agents compared</div></div>
     <div><div class="v">4</div><div class="k">Comparison chapters</div></div>
     <div><div class="v">3</div><div class="k">Proposal lenses</div></div>
-    <div><div class="v">28</div><div class="k">Documents</div></div>
+    <div><div class="v">27</div><div class="k">Documents</div></div>
   </div>
 </header>
 {sec_html}

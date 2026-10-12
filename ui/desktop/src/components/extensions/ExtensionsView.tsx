@@ -1,9 +1,7 @@
 import { View, ViewOptions } from '../../utils/navigationUtils';
-import ExtensionsSection from '../settings/extensions/ExtensionsSection';
+import ExtensionsSection, { listedExtensions } from '../settings/extensions/ExtensionsSection';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
-import { Button } from '../ui/button';
-import { Plus, Search } from '../icons/app-icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import kebabCase from 'lodash/kebabCase';
 import ExtensionModal from '../settings/extensions/modal/ExtensionModal';
@@ -15,13 +13,17 @@ import {
 } from '../settings/extensions/utils';
 import { activateExtensionDefault } from '../settings/extensions';
 import { useConfig } from '../ConfigContext';
-import { SearchView } from '../conversation/SearchView';
-import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { BrxtInstallModal } from '../BrxtInstallModal';
 import BrowseExtensionsModal from '../baam/BrowseExtensionsModal';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader } from '../Layout/PageHeader';
+import { FilterInput } from '../ui/filter-input';
+import { ScrollArea } from '../ui/scroll-area';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
+import { AddExtensionMenu } from './AddExtensionMenu';
+import { highlightRow } from './highlightRow';
+import { prefersReducedMotion } from '../../styles/motion';
+import { EXTENSIONS_COPY } from './copy';
 import { startNewSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import { toastError } from '../../toasts';
@@ -34,7 +36,7 @@ export type ExtensionsViewOptions = {
 };
 
 export function getExtensionScrollBehavior(): 'auto' | 'smooth' {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  return prefersReducedMotion() ? 'auto' : 'smooth';
 }
 
 export default function ExtensionsView({
@@ -57,9 +59,13 @@ export default function ExtensionsView({
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const scrollTimerRef = useRef<number | null>(null);
-  const highlightTimerRef = useRef<number | null>(null);
-  const highlightedElementRef = useRef<HTMLElement | null>(null);
-  const { addExtension, getExtensions } = useConfig();
+  const cancelHighlightRef = useRef<(() => void) | null>(null);
+  const { addExtension, getExtensions, extensionsList } = useConfig();
+
+  // The band counts what the list lists, not what is configured: a shipped capability has no row
+  // here (it lives under Settings, Chat, Capabilities), so counting it would say 13 over a list
+  // of 7.
+  const count = listedExtensions(extensionsList).length;
 
   // Track configured extension names so Browse can flag what's already installed.
   useEffect(() => {
@@ -85,8 +91,8 @@ export default function ExtensionsView({
 
   const scrollToExtension = useCallback((extensionName: string) => {
     if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
-    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
-    if (highlightedElementRef.current) highlightedElementRef.current.style.boxShadow = '';
+    cancelHighlightRef.current?.();
+    cancelHighlightRef.current = null;
 
     scrollTimerRef.current = window.setTimeout(() => {
       scrollTimerRef.current = null;
@@ -96,14 +102,8 @@ export default function ExtensionsView({
           behavior: getExtensionScrollBehavior(),
           block: 'center',
         });
-        highlightedElementRef.current = element;
-        element.style.boxShadow =
-          '0 0 0 2px color-mix(in srgb, var(--color-block-teal) 45%, transparent)';
-        highlightTimerRef.current = window.setTimeout(() => {
-          highlightTimerRef.current = null;
-          element.style.boxShadow = '';
-          if (highlightedElementRef.current === element) highlightedElementRef.current = null;
-        }, 2000);
+        // The wash `main.css` owns (`.br-highlight`), not an inline ring.
+        cancelHighlightRef.current = highlightRow(element);
       }
     }, 200);
   }, []);
@@ -111,8 +111,7 @@ export default function ExtensionsView({
   useEffect(() => {
     return () => {
       if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
-      if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
-      if (highlightedElementRef.current) highlightedElementRef.current.style.boxShadow = '';
+      cancelHighlightRef.current?.();
     };
   }, []);
 
@@ -155,95 +154,78 @@ export default function ExtensionsView({
   };
 
   return (
-    <MainPanelLayout>
-      <div
-        className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
-        data-search-scroll-area
-      >
-        {/* This view is one of the four `PageHeader`'s docblock names as the
-            shape the rest of the app was matched to — title, description, then
-            a button strip on its own line — so it now mounts that header rather
-            than restating it. What the shared component supplies and this call
-            site must NOT restate: the full-bleed hairline, the `pt-12 pb-6`
-            column, `text-title`/`text-secondary`, and `.biorouter-settings-control-strip`
-            for the actions.
+    <MainPanelLayout removeTopPadding>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/* The band (spec 3.11): the title, a count, the page's help, the filter and one Add
+            menu. It sits OUTSIDE the reading column, so its hairline runs edge to edge, and
+            OUTSIDE the scroller: the band IS the window's drag region on this route
+            (`routeOwnsTopBand`), so one that scrolled away with the list would take the filter
+            and the Add menu with it. Skills pins its band the same way.
 
-            The three Buttons carry variant and nothing else. `className="flex
-            items-center gap-2"` used to sit on all three, and it is not
-            harmless duplication of the cva base: a bare `flex` FLIPS the base's
-            own `inline-flex` through tailwind-merge (vocabulary V7), and the
-            `gap-2` and the icons' `h-4 w-4` are already what `buttonVariants`
-            emits.
-
-            The reading column is the chat measure, matching the body below it:
-            the hairline is full-bleed, so a header and a body on two different
-            measures show the step along the edge they share. */}
+            What it replaces: a 24px title, a two-line description with "Ctrl+F to search" in
+            it, and a strip of three labelled buttons (about 228px above the first row). The
+            description is the InfoTip; the shortcut is the filter's tooltip. */}
         <PageHeader
-          title="Extensions"
-          description={
-            <>
-              MCP extensions expand Biorouter's capabilities with Prompts, Resources, and Tools.
-              Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
-            </>
-          }
+          title={EXTENSIONS_COPY.title}
+          info={EXTENSIONS_COPY.info}
+          adornment={count > 0 ? count : undefined}
           actions={
             <>
-              <Button variant="default" onClick={() => setIsBrxtModalOpen(true)}>
-                <Plus />
-                Add extension
-              </Button>
-              <Button variant="outline" onClick={() => setIsBrowseModalOpen(true)}>
-                <Search />
-                Browse extensions
-              </Button>
-              <Button variant="outline" onClick={() => setIsAddModalOpen(true)}>
-                <Plus />
-                Add custom extension
-              </Button>
+              <FilterInput
+                value={searchTerm}
+                onValueChange={setSearchTerm}
+                label={EXTENSIONS_COPY.filterLabel}
+              />
+              <AddExtensionMenu
+                onBrowse={() => setIsBrowseModalOpen(true)}
+                onFromFile={() => setIsBrxtModalOpen(true)}
+                onCustom={() => setIsAddModalOpen(true)}
+              />
             </>
           }
         />
 
-        <ReadableContent size="chat" className="px-6 pt-6 pb-8">
-          {/* Above the list, because it is about an extension the list may not
-              contain. The toast that used to carry this news pointed here and
-              the page answered "No extensions yet" — the destination denied the
-              failure existed. */}
-          <ExtensionLoadFailureNotice
-            onAskBiorouter={(hints) =>
-              // The eighth surface that starts a chat, and it reports a failed
-              // start in the same words as the other seven — the census in
-              // `utils/startChatFailure.test.ts` is what says so. Without this
-              // the rejection was unhandled: the notice stayed on screen and
-              // nothing said the chat had not opened.
-              void startNewSession(getInitialWorkingDir(), hints, setView).catch((error) =>
-                toastError(startChatFailureNotice(error, { kept: false }))
-              )
-            }
-          />
-          <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
-            <ExtensionsSection
-              key={refreshKey}
-              deepLinkConfig={viewOptions.deepLinkConfig}
-              showEnvVars={viewOptions.showEnvVars}
-              hideButtons={true}
-              searchTerm={searchTerm}
-              onModalClose={(extensionName: string) => {
-                scrollToExtension(extensionName);
-              }}
-            />
-          </SearchView>
+        <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6">
+          <ScrollArea className="h-full">
+            <div className="relative py-4">
+              {/* Above the list, because it is about an extension the list may not
+                  contain. The toast that used to carry this news pointed here and
+                  the page answered "No extensions yet" — the destination denied
+                  the failure existed. */}
+              <ExtensionLoadFailureNotice
+                onAskBiorouter={(hints) =>
+                  // The eighth surface that starts a chat, and it reports a failed
+                  // start in the same words as the other seven — the census in
+                  // `utils/startChatFailure.test.ts` is what says so. Without this
+                  // the rejection was unhandled: the notice stayed on screen and
+                  // nothing said the chat had not opened.
+                  void startNewSession(getInitialWorkingDir(), hints, setView).catch((error) =>
+                    toastError(startChatFailureNotice(error, { kept: false }))
+                  )
+                }
+              />
+              <ExtensionsSection
+                key={refreshKey}
+                deepLinkConfig={viewOptions.deepLinkConfig}
+                showEnvVars={viewOptions.showEnvVars}
+                searchTerm={searchTerm}
+                onModalClose={(extensionName: string) => {
+                  scrollToExtension(extensionName);
+                }}
+              />
+            </div>
+          </ScrollArea>
         </ReadableContent>
       </div>
 
       {/* Modal for adding a new extension */}
       {isAddModalOpen && (
         <ExtensionModal
-          title="Add custom extension"
+          title={EXTENSIONS_COPY.customTitle}
           initialData={getDefaultFormData()}
           onClose={handleModalClose}
           onSubmit={handleAddExtension}
-          submitLabel="Add extension"
+          submitLabel={EXTENSIONS_COPY.customSubmit}
           modalType={'add'}
         />
       )}
@@ -265,14 +247,11 @@ export default function ExtensionsView({
           onInstalled={() => setRefreshKey((prev) => prev + 1)}
           installedNames={installedExtNames}
           /**
-           * Issue #116. This page owns the Browse modal but not the Settings
-           * card's configuration modal — that lives inside `ExtensionsSection`
-           * below — so the strongest thing it can honestly do is what the
-           * acceptance criterion allows as the alternative: close the
-           * marketplace and take the user to the extension's Settings entry,
-           * scrolled to and highlighted, where the gear opens its credentials.
-           * (`ExtensionsSection`'s own Browse modal, on the Settings route,
-           * opens that configuration directly.)
+           * Issue #116. The page owns the Browse modal but not the configure dialog (that
+           * lives inside `ExtensionsSection`), so the strongest thing it can honestly do is
+           * what the acceptance criterion allows as the alternative: close the marketplace
+           * and take the person to the extension's row, scrolled to and highlighted, where
+           * its ⋯ menu opens the configuration.
            */
           onConfigureInstalled={(ext) => {
             const key = nameToKey(ext.extension_name ?? ext.name);

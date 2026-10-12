@@ -27,7 +27,7 @@
   --crew-file: 28px;
   --crew-ctl: 28px;
   --crew-card-h: 36px;
-  --crew-fs-body: 12.5px;
+  --crew-fs-body: 13px;
   --crew-lh-body: 18px;
   --crew-lh-source: 15px;
   --crew-pane-x: 12px;
@@ -47,7 +47,7 @@
 }
 [data-art="crew"] .crew-chan {
   display: inline-flex; align-items: center;
-  font-size: 13.5px; line-height: 18px; color: var(--ink); white-space: nowrap;
+  font-size: 14px; line-height: 18px; color: var(--ink); white-space: nowrap;
 }
 [data-art="crew"] .crew-hash { color: var(--faint); margin-right: 3px; }
 [data-art="crew"] .crew-chan svg { width: 13px; height: 13px; margin-left: 4px; color: var(--faint); }
@@ -60,7 +60,7 @@
   height: 18px; padding: 0 6px;
   border-radius: var(--r-inner);
   background: var(--medium);
-  font-size: 11px; line-height: 1; color: var(--muted); white-space: nowrap;
+  font-size: 12px; line-height: 1; color: var(--muted); white-space: nowrap;
 }
 
 /* ── The log ──────────────────────────────────────────────────────── */
@@ -80,7 +80,7 @@
 [data-art="crew"] .crew-av {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--crew-av); height: var(--crew-av);
-  font-size: 11px; line-height: 1; font-weight: 700; letter-spacing: 0.01em;
+  font-size: 12px; line-height: 1; font-weight: 700;
 }
 [data-art="crew"] .crew-av-person { border-radius: 50%; background: var(--crew-person-bg); color: var(--crew-person-fg); }
 [data-art="crew"] .crew-av-agent { border-radius: var(--r-inner); background: var(--medium); color: var(--muted); }
@@ -91,13 +91,13 @@
   height: 16px; min-width: 0; white-space: nowrap;
 }
 [data-art="crew"] .crew-name { font-size: 12px; line-height: 16px; font-weight: 700; color: var(--ink); }
-[data-art="crew"] .crew-time { font-size: 11px; line-height: 16px; color: var(--muted); font-variant-numeric: tabular-nums; }
+[data-art="crew"] .crew-time { font-size: 12px; line-height: 16px; color: var(--muted); font-variant-numeric: tabular-nums; }
 [data-art="crew"] .crew-badge {
   display: inline-flex; align-items: center;
   height: 16px; padding: 0 5px;
   border-radius: var(--r-inner);
   background: var(--medium);
-  font-size: 11px; line-height: 1; color: var(--muted);
+  font-size: 12px; line-height: 1; color: var(--muted);
 }
 [data-art="crew"] .crew-body {
   margin: 2px 0 0;
@@ -107,7 +107,7 @@
 /* Crew's own last line on a result: the file the run read, and who shared it. */
 [data-art="crew"] .crew-source {
   margin: 1px 0 0;
-  font-size: 11px; line-height: var(--crew-lh-source); color: var(--muted);
+  font-size: 12px; line-height: var(--crew-lh-source); color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -122,7 +122,7 @@
 }
 [data-art="crew"] .crew-file svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 [data-art="crew"] .crew-file-name { font-size: 12px; line-height: 16px; color: var(--ink); }
-[data-art="crew"] .crew-file-size { font-size: 11px; line-height: 16px; color: var(--muted); }
+[data-art="crew"] .crew-file-size { font-size: 12px; line-height: 16px; color: var(--muted); }
 
 /* Rows that arrive: the height opens first, then the content fades in. */
 [data-art="crew"] .crew-slot {
@@ -321,7 +321,7 @@
   display: flex; flex-direction: column; gap: 7px;
   padding: 8px var(--crew-pane-x) 9px;
 }
-[data-art="crew"] .crew-scope { margin: 0; font-size: 11px; line-height: 15px; color: var(--muted); text-wrap: balance; }
+[data-art="crew"] .crew-scope { margin: 0; font-size: 12px; line-height: 15px; color: var(--muted); text-wrap: balance; }
 [data-art="crew"] .crew-start-row { display: flex; justify-content: flex-end; min-width: 0; }
 /* The pane's default button: the coral fill, a white label, 8px corners. */
 [data-art="crew"] .crew-start {
@@ -338,8 +338,15 @@
 /* ── Fitting ───────────────────────────────────────────────────────── */
 [data-art="crew"] .crew-narrow .crew-ask-label { display: none; }
 [data-art="crew"] .crew-narrow .crew-ask { padding: 0 6px; }
-[data-art="crew"] .crew-tight .crew-start { padding: 0 8px; font-size: 11.5px; }
+[data-art="crew"] .crew-tight .crew-start { padding: 0 8px; font-size: 12px; }
 [data-art="crew"] .crew-noscope .crew-scope { display: none; }
+
+/* The narrowest tiles have room for the short spelling of the Source line only. */
+[data-art="crew"] .crew-src-s { display: none; }
+@container (max-width: 299px) {
+  [data-art="crew"] .crew-src-l { display: none; }
+  [data-art="crew"] .crew-src-s { display: inline; }
+}
 
 /* Shorter tiles tighten the rhythm. */
 @container (max-height: 280px) {

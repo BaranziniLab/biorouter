@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
-import { MODAL_SIZE } from '../ModalShell';
+import { Field } from '../ui/field';
+import { Textarea } from '../ui/textarea';
+import { ModalShell } from '../ModalShell';
+import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
+import { CUSTOM_SKILL_COPY } from './copy';
 
 const TEMPLATE = `---
 name: example-skill
@@ -36,12 +39,13 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
   const [content, setContent] = useState(TEMPLATE);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSave = async () => {
     if (isSaving) return;
     const parsed = parseSkillFrontmatter(content);
     if (!parsed) {
-      setError('File must have valid YAML frontmatter with "name" and "description" fields.');
+      setError(CUSTOM_SKILL_COPY.invalid);
       return;
     }
     setError(null);
@@ -53,16 +57,22 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
       await window.electron.ensureDirectory(destFolder);
       const ok = await window.electron.writeFile(`${destFolder}/SKILL.md`, content);
       if (ok) {
-        toastSuccess({ title: parsed.name, msg: 'Skill saved to Biorouter Skills' });
+        toastSuccess({ title: parsed.name, msg: CUSTOM_SKILL_COPY.saved });
         onSaved();
         onClose();
       } else {
-        toastError({ title: 'Save failed', msg: `Could not write to ${destFolder}/SKILL.md` });
+        toastError({
+          title: CUSTOM_SKILL_COPY.saveFailed,
+          msg: CUSTOM_SKILL_COPY.couldNotWrite(`${destFolder}/SKILL.md`),
+        });
       }
     } catch (error) {
       toastError({
-        title: 'Save failed',
-        msg: error instanceof Error ? error.message : `Could not write to ${destFolder}/SKILL.md`,
+        title: CUSTOM_SKILL_COPY.saveFailed,
+        msg:
+          error instanceof Error
+            ? error.message
+            : CUSTOM_SKILL_COPY.couldNotWrite(`${destFolder}/SKILL.md`),
       });
     } finally {
       setIsSaving(false);
@@ -70,47 +80,59 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
   };
 
   return (
-    <Dialog open onOpenChange={(open) => !open && !isSaving && onClose()}>
-      <DialogContent
-        dismissible={!isSaving}
-        // `MODAL_SIZE.lg` IS 640px — the three-rung ladder, not the two
-        // breakpoint-forked literals plus a `w-[640px]` this was built from.
-        // `DialogContent` already carries `w-full max-w-[calc(100%-2rem)]`, so
-        // the narrow-window behaviour those spelled out is the default.
-        className={`flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 ${MODAL_SIZE.lg}`}
-      >
-        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <DialogTitle>Add custom skill</DialogTitle>
-        </div>
-
-        <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
-          <DialogDescription className="text-supporting text-text-muted">
-            Edit the YAML frontmatter (<code>name</code> and <code>description</code> required),
-            then write your skill instructions below. A folder named after the skill will be created
-            in Biorouter Skills with a <code>SKILL.md</code> inside.
-          </DialogDescription>
-          <textarea
-            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-code rounded-element p-3 resize-none"
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            spellCheck={false}
-          />
-          {error && (
-            <Note tone="danger" role="alert">
-              {error}
-            </Note>
-          )}
-        </div>
-
-        <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose} disabled={isSaving}>
-            Cancel
+    <ModalShell
+      open
+      onOpenChange={(open) => {
+        if (!open && !isSaving) onClose();
+      }}
+      size="lg"
+      // First focus lands in the editor, not on the help glyph beside its label. Not `autoFocus`:
+      // with focus already inside, Radix never announces the open, the dialog never records
+      // which control opened it, and Escape leaves focus on the page (see `focusFieldOnOpen`).
+      onOpenAutoFocus={focusFieldOnOpen(editorRef)}
+      // Typed instructions survive a stray backdrop click; nothing dismisses a
+      // write in flight.
+      purpose={isSaving ? 'required' : 'form'}
+      title={CUSTOM_SKILL_COPY.title}
+      // The dialog grows by one note when a save is refused; anchored at the top
+      // it grows downward, so the editor and the buttons do not move under the pointer.
+      anchor="top"
+      scrollBody
+      bodyClassName="flex flex-col gap-3 py-4"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={isSaving}>
+            {CUSTOM_SKILL_COPY.cancel}
           </Button>
           <Button variant="default" onClick={handleSave} disabled={isSaving}>
-            {isSaving ? 'Saving…' : 'Save skill'}
+            {isSaving ? CUSTOM_SKILL_COPY.saving : CUSTOM_SKILL_COPY.save}
           </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {/* The SKILL.md source is code, so the mono face earns its place here, on
+          the one text-field skin. The label is the only visible text: what the
+          file needs and where it is saved are the InfoTip beside it, and the
+          error below says it again when a save is refused. */}
+      <Field
+        id="custom-skill-md"
+        label={CUSTOM_SKILL_COPY.editorLabel}
+        info={CUSTOM_SKILL_COPY.help}
+      >
+        <Textarea
+          ref={editorRef}
+          rows={14}
+          className="p-3 font-mono text-code"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          spellCheck={false}
+        />
+      </Field>
+      {error && (
+        <Note tone="danger" role="alert">
+          {error}
+        </Note>
+      )}
+    </ModalShell>
   );
 }

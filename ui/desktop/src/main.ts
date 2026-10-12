@@ -34,6 +34,7 @@ import { isIP } from 'node:net';
 import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
+import { createRequire } from 'node:module';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
@@ -48,6 +49,7 @@ import {
   type BiorouterdResult,
   type SharedDaemonLink,
 } from './biorouterd';
+import { loadNodePtyFrom, type NodePtyModule } from './nodePtyLoader';
 import {
   TerminalSessionRegistry,
   maxTerminalSessionsPerOwner,
@@ -218,6 +220,7 @@ import {
   biorouterExtensionsDir,
   unsandboxedConfigDirCandidates,
 } from './utils/biorouterPaths';
+import { describeLegacyFolderNotice, legacyFolderNotice } from './utils/appFolder';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { stagedAssetPath } from './utils/registryDownload';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
@@ -1319,6 +1322,10 @@ let appConfig = {
   BIOROUTER_PREDEFINED_MODELS: predefinedModels,
   BIOROUTER_API_HOST: 'http://127.0.0.1',
   BIOROUTER_WORKING_DIR: '',
+  // The person's home folder, so the renderer can write a path as `~/…` (the sidebar's hover card
+  // and folder groups, the terminal dock's working directory). Display only: nothing reads it
+  // to decide what a chat may touch.
+  BIOROUTER_HOME_DIR: os.homedir(),
   BIOROUTER_DEV_PROFILE_NAME: process.env.BIOROUTER_DEV_PROFILE_NAME || '',
   BIOROUTER_DEV_PROFILE_ROOT: process.env.BIOROUTER_DEV_PROFILE_ROOT || '',
   // If BIOROUTER_ALLOWLIST_WARNING env var is not set, defaults to false (strict blocking mode)
@@ -1479,6 +1486,51 @@ function promptParentWindow(): BrowserWindow | undefined {
 function showWindowPrompt(options: Electron.MessageBoxOptions) {
   const parent = promptParentWindow();
   return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+}
+
+/**
+ * R-31: on Windows, when both Biorouter's folder and the one earlier releases
+ * used exist, the current one is used and anything saved in the other since
+ * the update is hidden. The daemon only logs that; this says it to the person,
+ * naming the folder, once per launch until they ask not to hear it again for
+ * that folder. Runs after the first window (so it is a sheet on it), and only
+ * in the instance that holds the single-instance lock. Never throws.
+ */
+async function noticeHiddenLegacyFolder(): Promise<void> {
+  try {
+    const notice = legacyFolderNotice({
+      platform: process.platform,
+      env: process.env,
+      homedir: os.homedir(),
+    });
+    if (!notice) return;
+    log.warn(
+      `[Main] both ${notice.current} and ${notice.legacy} (the folder earlier releases used) exist; using ${notice.current}`
+    );
+    if (loadSettings().dismissedFolderNotices?.includes(notice.legacy)) return;
+    const words = describeLegacyFolderNotice(notice);
+    const { response, checkboxChecked } = await showWindowPrompt({
+      type: 'warning',
+      title: words.title,
+      message: words.message,
+      detail: words.detail,
+      buttons: words.buttons,
+      defaultId: 1,
+      cancelId: 1,
+      checkboxLabel: words.checkboxLabel,
+      noLink: true,
+    });
+    if (response === 0) void shell.openPath(notice.legacy);
+    if (checkboxChecked) {
+      const settings = loadSettings();
+      settings.dismissedFolderNotices = [
+        ...new Set([...(settings.dismissedFolderNotices ?? []), notice.legacy]),
+      ];
+      saveSettings(settings);
+    }
+  } catch (error) {
+    log.error('[Main] could not check for a hidden older Biorouter folder:', error);
+  }
 }
 
 const daemonReattach = createDaemonReattachController({
@@ -2113,7 +2165,8 @@ const createChat = async (
 
   // Set up local keyboard shortcuts that only work when the window is focused
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'r' && input.meta) {
+    // ⌘R reloads; ⌘⌥R is "Rename chat" in the renderer (spec 3.4), so it must pass through.
+    if (input.key === 'r' && input.meta && !input.alt) {
       mainWindow.reload();
       event.preventDefault();
     }
@@ -2927,6 +2980,22 @@ ipcMain.handle('copy-selected-text', (event, id: unknown) => {
   );
 });
 
+/**
+ * Whether an app-initiated window grow may animate (spec 3.16, Windows). The OS
+ * animates it, except when the person turned on Reduce Motion: then the grow is
+ * instant and the preview's own entrance (which already honours the setting in
+ * the renderer) is the only motion. The main process has no CSS media query to
+ * lean on, so it asks the system directly. A failure to ask answers "animate",
+ * the behaviour this replaced.
+ */
+function windowResizeMayAnimate(): boolean {
+  try {
+    return !systemPreferences.getAnimationSettings().prefersReducedMotion;
+  } catch {
+    return true;
+  }
+}
+
 ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || !Number.isFinite(minWidth)) {
@@ -2947,7 +3016,10 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
   const maxContentWidth = Math.max(720, display.workArea.width);
   const targetContentWidth = Math.min(Math.ceil(minWidth), maxContentWidth);
 
-  win.setContentSize(targetContentWidth, currentContentBounds.height, true);
+  // Grow only, never shrink: the early return above leaves a wide enough
+  // window alone.
+  const animate = windowResizeMayAnimate();
+  win.setContentSize(targetContentWidth, currentContentBounds.height, animate);
 
   const nextWindowBounds = win.getBounds();
   const maxX = display.workArea.x + display.workArea.width - nextWindowBounds.width;
@@ -2962,7 +3034,7 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
       : Math.min(Math.max(nextWindowBounds.y, display.workArea.y), maxY);
 
   if (adjustedX !== nextWindowBounds.x || adjustedY !== nextWindowBounds.y) {
-    win.setBounds({ ...nextWindowBounds, x: adjustedX, y: adjustedY }, true);
+    win.setBounds({ ...nextWindowBounds, x: adjustedX, y: adjustedY }, animate);
   }
 
   const nextContentBounds = win.getContentBounds();
@@ -4934,12 +5006,11 @@ type TerminalSession = RegisteredTerminalSession & {
   resize: (cols: number, rows: number) => void;
 };
 
-type NodePtyModule = typeof import('node-pty');
-
 const terminalSessions = new TerminalSessionRegistry<TerminalSession>((error) =>
   log.warn('[terminal] failed to dispose session:', error)
 );
 let nodePtyModule: NodePtyModule | null | undefined;
+let nodePtyLoading: Promise<NodePtyModule | null> | undefined;
 const crewAuthenticationSessions = new Map<string, { sessionId: string }>();
 const crewAuthenticationPending = new Set<string>();
 
@@ -5081,12 +5152,31 @@ function ensureSpawnHelperExecutable(): void {
   }
 }
 
+// V1-R3-1: the CommonJS loader goes first. `await import('node-pty')` alone can
+// resolve to a module namespace that lists `spawn` and holds `undefined` for it,
+// which surfaced as "pty.spawn is not a function" on every dock tab while the
+// pipe fallback (which only runs on a thrown import) never got a turn. See
+// `nodePtyLoader.ts`. The import stays as a second chance, and a candidate only
+// counts once it has a `spawn` function.
 async function loadNodePty(): Promise<NodePtyModule | null> {
   if (nodePtyModule !== undefined) return nodePtyModule;
-  try {
-    nodePtyModule = await import('node-pty');
-    ensureSpawnHelperExecutable();
-  } catch (error) {
+  // One load for concurrent callers (several dock tabs restore at once), so the
+  // verdict is logged once.
+  nodePtyLoading ??= (async () => {
+    const { module, via, problems } = await loadNodePtyFrom([
+      { via: 'require', load: () => createRequire(__filename)('node-pty') },
+      { via: 'import', load: () => import('node-pty') },
+    ]);
+    if (module) {
+      for (const problem of problems) log.warn(`[terminal] node-pty ${problem}`);
+      if (problems.length > 0) log.warn(`[terminal] node-pty loaded through ${via} instead`);
+      try {
+        ensureSpawnHelperExecutable();
+      } catch (error) {
+        log.warn('[terminal] could not check the node-pty spawn helper:', error);
+      }
+      return module;
+    }
     // In a packaged app this is a packaging regression, not a missing optional
     // feature: node-pty is a declared dependency that forge.config.ts keeps out
     // of `packagerConfig.ignore` precisely so it ships. The pipe fallback below
@@ -5094,9 +5184,12 @@ async function loadNodePty(): Promise<NodePtyModule | null> {
     // — so it looks like a broken terminal rather than a broken build. Log it
     // loudly enough that the next person greps for it.
     const level = app.isPackaged ? 'error' : 'warn';
-    log[level]('[terminal] node-pty unavailable; falling back to process pipes:', error);
-    nodePtyModule = null;
-  }
+    log[level](
+      `[terminal] node-pty unavailable; falling back to process pipes: ${problems.join('; ')}`
+    );
+    return null;
+  })();
+  nodePtyModule = await nodePtyLoading;
   return nodePtyModule;
 }
 
@@ -6418,6 +6511,8 @@ async function appMain() {
   } else {
     log.info('[Main] Skipping window creation in appMain - open-url already handled launch');
   }
+
+  void noticeHiddenLegacyFolder();
 
   // Watch for the class of bug this whole area was fixed for (#88): anything
   // that blocks the main thread now says so in the log instead of being visible

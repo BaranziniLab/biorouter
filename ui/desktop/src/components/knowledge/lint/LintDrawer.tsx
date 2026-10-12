@@ -1,18 +1,16 @@
 // ui/desktop/src/components/knowledge/lint/LintDrawer.tsx
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import {
-  AlertCircle,
-  AlertTriangle,
-  CheckCircle2,
-  Info,
-  LoaderCircle,
-} from '../../icons/app-icons';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info } from '../../icons/app-icons';
 import type { Diagnostic, LintResult, Severity } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import type { BadgeTone } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
+import { InfoTip } from '../../ui/info-tip';
+import { Sheet, SheetContent, SheetTitle } from '../../ui/sheet';
+import { Spinner } from '../../ui/spinner';
+import { knowledgeCopy } from '../copy';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
@@ -200,27 +198,42 @@ export function LintDrawer({ open, onOpenChange }: Props) {
         // tree alone. Matches `ChangeLogDrawer`; see `ui/sheet.tsx` for why the
         // primitive cannot default it.
         aria-describedby={undefined}
-        className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
+        className="br-knowledge-drawer flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
         data-testid="knowledge-lint-drawer"
       >
         {/* The run control sits in the HEADER, beside the title, not in the
             count row: the counts are a variable-width run of badges, and a
             button sharing that row is pushed off a 340px drawer by the third
             severity — which is exactly the base that most needs re-checking. */}
-        <SheetHeader className="h-row flex-none flex-row items-center justify-between gap-2 border-b border-border-subtle px-4 py-0">
-          <SheetTitle className="min-w-0 truncate">Check for problems</SheetTitle>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="mr-6 flex-none"
-            data-testid="knowledge-lint-run"
-            disabled={running || !dispatchKbId || !model}
-            onClick={run}
-          >
-            {running ? 'Checking…' : report ? 'Check again' : 'Check'}
-          </Button>
-        </SheetHeader>
+        <KnowledgePaneHeader
+          sheet
+          closeLabel={knowledgeCopy.drawers.closeLint}
+          title={
+            <SheetTitle className="min-w-0 truncate text-label">
+              {knowledgeCopy.drawers.lint}
+            </SheetTitle>
+          }
+          actions={
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className={running ? 'shrink-0 br-action-busy' : 'shrink-0'}
+              data-testid="knowledge-lint-run"
+              // A run in flight is `aria-busy`, not `disabled`: a button that turns `disabled`
+              // under a keyboard user hands focus to <body>, and this one starts running as the
+              // drawer opens, while focus is arriving on it (V3-R2-1, WS-VIEWS-A-3). The press is
+              // ignored here instead, and `.br-action-busy` dims it. No base or no model is a
+              // control that genuinely cannot act, and stays `disabled`.
+              disabled={!dispatchKbId || !model}
+              aria-disabled={running || undefined}
+              aria-busy={running || undefined}
+              onClick={running ? undefined : run}
+            >
+              {running ? 'Checking…' : report ? 'Check again' : 'Check'}
+            </Button>
+          }
+        />
 
         {/* The counts. Pinned above the scroll box, because a count the reader
             has to scroll to find is the defect this drawer's sibling — the
@@ -231,7 +244,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
             <>
               <span
                 data-testid="knowledge-lint-count"
-                className="font-mono text-supporting tabular-nums text-text-muted"
+                className="text-supporting tabular-nums text-text-muted"
               >
                 {total} {total === 1 ? 'finding' : 'findings'}
               </span>
@@ -251,7 +264,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto">
           {/* Two different reasons for one null, and only the second is a gap
               in the user's setup. Sending a coding-agent user to the Sources
               rail is the dead end described above: that picker lists nothing
@@ -280,7 +293,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               compact
               icon={AlertCircle}
               title="No model is configured"
-              description="A check reads the base with a model. Choose one in the Sources rail and try again."
+              description={knowledgeCopy.drawers.lintNoModel}
             />
           ) : null}
 
@@ -289,7 +302,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               role="status"
               className="flex items-center gap-2 px-4 py-4 text-secondary text-text-muted"
             >
-              <LoaderCircle aria-hidden="true" className="h-icon-row w-icon-row animate-spin" />
+              <Spinner />
               <span>
                 Checking this knowledge base
                 {stream.events.length > 0 ? ` · ${stream.events.length} events` : ''}
@@ -325,53 +338,62 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               const Icon = SEVERITY_ICON[severity];
               return (
                 <section key={severity} aria-label={SEVERITY_LABEL[severity]}>
-                  <h3 className="flex items-center gap-2 border-b border-border-subtle bg-background-muted px-4 py-1.5 text-caps text-text-muted">
+                  <h3 className="flex items-center gap-2 bg-background-fill px-4 py-1.5 text-caps text-text-muted">
                     <Icon aria-hidden="true" className="h-icon-row w-icon-row" />
                     {SEVERITY_LABEL[severity]}
-                    <span className="font-mono tabular-nums">{rows.length}</span>
+                    <span className="tabular-nums">{rows.length}</span>
                   </h3>
-                  {rows.map((d, i) => (
-                    <div
-                      key={`${d.rule}-${d.subject}-${i}`}
-                      data-testid="knowledge-lint-diagnostic"
-                      className="biorouter-list-row flex flex-col gap-1 px-4 py-3"
-                    >
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                        {/* The RULE ID, not the message. It is stable across
-                            releases and the message is prose that will be
-                            reworded — so it is the half a user can search for,
-                            quote in an issue, or match a fix against. */}
-                        <span className="shrink-0 font-mono text-supporting text-text-muted">
-                          {d.rule}
-                        </span>
-                        {/* WRAPPED, not truncated. The subject is a page's
-                            identifier or a whole edge rendered as
-                            `<subject> -<predicate>-> <object>`; clipped to one
-                            line, the half that names what the finding is about
-                            is the half that disappears. */}
-                        <span className="min-w-0 break-words text-label text-text-default">
-                          {d.subject}
-                        </span>
+                  {/* The rows sit 8px in from the drawer's edges, so the hover wash is a rounded row
+                      and not a full-bleed slab; their text stays on the header's 16px edge. */}
+                  <div className="px-2">
+                    {rows.map((d, i) => (
+                      <div
+                        key={`${d.rule}-${d.subject}-${i}`}
+                        data-testid="knowledge-lint-diagnostic"
+                        className="biorouter-list-row flex flex-col gap-1 px-2 py-3"
+                      >
+                        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          {/* The RULE ID, not the message. It is stable across
+                              releases and the message is prose that will be
+                              reworded — so it is the half a user can search for,
+                              quote in an issue, or match a fix against. */}
+                          <span className="shrink-0 font-mono text-supporting text-text-muted">
+                            {d.rule}
+                          </span>
+                          {/* WRAPPED, not truncated. The subject is a page's
+                              identifier or a whole edge rendered as
+                              `<subject> -<predicate>-> <object>`; clipped to one
+                              line, the half that names what the finding is about
+                              is the half that disappears. */}
+                          <span className="min-w-0 break-words text-label text-text-default">
+                            {d.subject}
+                          </span>
+                        </div>
+                        <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
+                        {d.path && (
+                          <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
+                            {d.path}
+                          </p>
+                        )}
                       </div>
-                      <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
-                      {d.path && (
-                        <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
-                          {d.path}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </section>
               );
             })}
 
           {lists.map((l) => (
             <section key={l.key} aria-label={l.label}>
-              <h3 className="flex items-center gap-2 border-b border-border-subtle bg-background-muted px-4 py-1.5 text-caps text-text-muted">
-                {l.label}
-                <span className="font-mono tabular-nums">{l.entries.length}</span>
-              </h3>
-              <p className="px-4 pt-2 text-supporting text-text-muted">{l.hint}</p>
+              {/* The count joins the caps run, and the one-line hint is the
+                  heading's InfoTip (spec 3.12): a sibling of the `<h3>`, so the
+                  heading's name stays the list's name. */}
+              <div className="flex items-center gap-1 bg-background-fill px-4 py-1.5">
+                <h3 className="flex items-center gap-2 text-caps text-text-muted">
+                  {l.label}
+                  <span className="tabular-nums">{l.entries.length}</span>
+                </h3>
+                <InfoTip label={l.label} help={l.hint} side="left" />
+              </div>
               <ul className="flex flex-col gap-1 px-4 py-2">
                 {l.entries.map((entry) => (
                   <li key={entry} className="min-w-0 break-all font-mono text-supporting">

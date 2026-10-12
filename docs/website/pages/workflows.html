@@ -66,21 +66,21 @@ prompt: Summarize enrollments in {{ study }} as {{ format }}.</code></pre>
 <h2 id="workflows-save-run-share">Save, run and share</h2>
 <h3>Save a chat as a workflow</h3>
 <ol class="steps">
-  <li><strong>Open the chat summary</strong> In the chat you want to keep, choose the chat summary button in the chat header, then <strong>Make workflow</strong>.</li>
+  <li><strong>Open the chat summary</strong> In the chat you want to keep, find the chat summary. In a wide window it sits at the right of the chat. In a narrower one, choose the summary button at the top right of the chat to open it. Then choose <strong>Make workflow</strong>.</li>
   <li><strong>Read the draft</strong> Biorouter drafts the title, instructions and prompt from the conversation and fills in the chat's extensions, skills, knowledge bases and model. Edit what you need.</li>
-  <li><strong>Save</strong> Choose <strong>Create workflow</strong>. The workflow appears under <strong>Workflows</strong> in the sidebar.</li>
+  <li><strong>Save</strong> Choose <strong>Create</strong>, or <strong>Create and run</strong>. The workflow appears under <strong>Workflows</strong> in the sidebar.</li>
 </ol>
 <p>You can also ask in the chat, for example “Turn this chat into a workflow.” The agent shows you the workflow and asks you to approve it before anything is saved. Saved workflows live in <code>~/.config/biorouter/workflows/</code>, where the app and the command line both find them.</p>
 
 <h3>Run a workflow</h3>
-<p>In <strong>Workflows</strong>, choose <strong>Use workflow</strong>, or <strong>Launch workflow</strong>, then <strong>Open in new window</strong>. The first time you run a workflow, Biorouter shows its title, description and instructions; choose <strong>Trust and execute</strong> to go on. If it has parameters, fill them in and choose <strong>Start workflow</strong>. <strong>Add slash command</strong> gives a workflow a shortcut you can type in any chat.</p>
+<p>In <strong>Workflows</strong>, choose <strong>Run</strong> on a workflow, or <strong>Run in new window</strong> from its <strong>⋯</strong> menu. The first time you run a workflow, Biorouter shows its title, description and instructions; choose <strong>Trust and execute</strong> to go on. If it has parameters, fill them in and choose <strong>Start workflow</strong>. <strong>Slash command…</strong> in the same menu gives a workflow a shortcut you can type in any chat.</p>
 <pre><code>biorouter run --workflow review.yaml --params study=MS-2107
 biorouter workflow validate review.yaml    # check that it loads
 biorouter workflow install review.yaml     # add it to the library
 biorouter workflow list</code></pre>
 
 <h3>Share a workflow</h3>
-<p>Send the file, or send a link. In <strong>Workflows</strong>, the <strong>Share workflow</strong> menu has <strong>Copy deeplink</strong>, <strong>Copy YAML</strong> and <strong>Export to file</strong>. The person who receives a file adds it with <strong>Import workflow</strong>, or runs it with the <code>biorouter run</code> command above. From a terminal, make a link that fills in parameters for them:</p>
+<p>Send the file, or send a link. In <strong>Workflows</strong>, a workflow's <strong>⋯</strong> menu has <strong>Copy link</strong>, <strong>Copy YAML</strong> and <strong>Export to file…</strong>. The person who receives a file adds it with <strong>Import workflow</strong>, or runs it with the <code>biorouter run</code> command above. From a terminal, make a link that fills in parameters for them:</p>
 <pre><code>biorouter workflow deeplink review.yaml --param study=MS-2107</code></pre>
 <p>Opening the link opens Biorouter with the workflow loaded. A link encodes the workflow into a <code>biorouter://workflow</code> address, plus any parameter values you gave it. It does not carry files that sit next to the workflow, so send those with the file.</p>
 
@@ -107,7 +107,7 @@ biorouter workflow list</code></pre>
 
 <h3>The Scheduler page</h3>
 <ol class="steps">
-  <li><strong>Open Scheduler</strong> Choose <strong>Scheduler</strong> in the sidebar, then <strong>New schedule</strong>. From <strong>Workflows</strong>, the clock button (<strong>Add schedule</strong>) does the same for one workflow.</li>
+  <li><strong>Open Scheduler</strong> Choose <strong>Scheduler</strong> in the sidebar, then <strong>New schedule</strong>. From <strong>Workflows</strong>, <strong>Schedule…</strong> in a workflow's <strong>⋯</strong> menu does the same for that workflow.</li>
   <li><strong>Fill in the schedule</strong> Give it a name, choose the workflow file, and set when it runs.</li>
   <li><strong>Create it</strong> Choose <strong>Create schedule</strong>.</li>
 </ol>

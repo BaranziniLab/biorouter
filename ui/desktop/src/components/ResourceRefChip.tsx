@@ -22,10 +22,12 @@ import {
 import { splitComposerText } from '../utils/composerRefs';
 import type { QuoteReference } from '../utils/quotedText';
 import { QuotedTextChip } from './QuotedTextChip';
+import { COMPOSER_COPY } from './composer/copy';
 import { Bug, X } from './icons/app-icons';
 import { ENTITY_ICONS, type EntityKind } from './icons/entity-icons';
 import { Badge } from './ui/badge';
 import { type RefKind, type RefSpan } from '../utils/resourceRefs';
+import './composer/composer.css';
 
 /** How each kind is named to the user. */
 export const REF_KIND_LABEL: Record<RefKind, string> = {
@@ -105,7 +107,7 @@ export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChi
       // it past the bubble it sits in.
       className={`max-w-full min-w-0 align-middle ${className ?? ''}`}
     >
-      <Icon className="h-3 w-3 shrink-0" />
+      <Icon className="size-3.5 shrink-0" aria-hidden />
       {/* The glyph carries the kind visually; a screen reader gets it in words,
           because "rna-qc" alone does not say what was attached. */}
       <span className="sr-only">{kindLabel}: </span>
@@ -113,13 +115,14 @@ export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChi
         {name}
       </span>
       {onRemove && (
+        // The composer's 16px chip action: muted ink, a neutral hover.
         <button
           type="button"
           onClick={onRemove}
           aria-label={`Remove ${kindLabel.toLowerCase()} ${name}`}
-          className="-mr-0.5 ml-0.5 shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-accent/15 hover:text-text-default"
+          className="br-composer-chip-action"
         >
-          <X className="h-2.5 w-2.5" />
+          <X className="size-3.5" aria-hidden />
         </button>
       )}
     </Badge>
@@ -145,10 +148,11 @@ interface CommandChipProps {
  *
  * Presentation only: the message still starts with `/bug ` on the wire, which
  * is where the daemon reads a command (`utils/composerCommand.ts`). It is the
- * same accent {@link Badge} as a reference chip, with the same name ink and the
- * same remove control, so a command and a reference read as one kind of
- * attached object. The command is said in words for a screen reader and on
- * hover, since the label alone does not say a command will run.
+ * same accent {@link Badge} as a reference chip, with the same 14px glyph, name
+ * ink and 16px remove control (`.br-composer-chip-action`), so a command and a
+ * reference read as one kind of attached object; `composer/commandChip.browser.test.tsx`
+ * compares the two in Chromium. The command is said in words for a screen
+ * reader and on hover, since the label alone does not say a command will run.
  */
 export function CommandChip({ command, onRemove, className }: CommandChipProps) {
   const Icon = COMMAND_ICONS[command];
@@ -163,19 +167,20 @@ export function CommandChip({ command, onRemove, className }: CommandChipProps) 
       title={title}
       className={`max-w-full min-w-0 align-middle ${className ?? ''}`}
     >
-      <Icon className="h-3 w-3 shrink-0" />
-      <span className="sr-only">Command {token}: </span>
+      <Icon className="size-3.5 shrink-0" aria-hidden />
+      <span className="sr-only">{COMPOSER_COPY.chipCommandSpoken(token)}</span>
       <span data-testid="command-chip-name" className="min-w-0 truncate text-text-default">
         {label}
       </span>
       {onRemove && (
+        // The composer's 16px chip action, as a reference chip's.
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Remove command ${token}`}
-          className="-mr-0.5 ml-0.5 shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-accent/15 hover:text-text-default"
+          aria-label={COMPOSER_COPY.removeChipCommand(token)}
+          className="br-composer-chip-action"
         >
-          <X className="h-2.5 w-2.5" />
+          <X className="size-3.5" aria-hidden />
         </button>
       )}
     </Badge>

@@ -7366,6 +7366,28 @@
               "type": "boolean",
               "nullable": true
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page, clamped to 1..=2000. Omit for the whole listing in one answer; send it to read one keyset page, newest chats first",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "nullable": true,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "The previous page's `next_cursor`, passed back unchanged. Needs `limit`; an unrecognised value is answered 400",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
           }
         ],
         "responses": {
@@ -7378,6 +7400,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The `cursor` was not one this route issued, or came without a `limit`"
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
@@ -7605,7 +7630,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Session summaries per page (default 10, clamped to 1..=50)",
+            "description": "Session summaries per page (default 10, clamped to 1..=2000)",
             "required": false,
             "schema": {
               "type": "integer",
@@ -18572,6 +18597,16 @@
           "sessions"
         ],
         "properties": {
+          "has_more": {
+            "type": "boolean",
+            "description": "Paged form only (`limit` was sent): whether the listing holds more rows\nafter this page. Absent from a whole-list answer.",
+            "nullable": true
+          },
+          "next_cursor": {
+            "type": "string",
+            "description": "Paged form only: where the next page resumes. Pass it back as `cursor`,\nunchanged, and do not parse it; it is the same token `GET\n/sessions/sidebar` issues. Absent on the last page.",
+            "nullable": true
+          },
           "sessions": {
             "type": "array",
             "items": {

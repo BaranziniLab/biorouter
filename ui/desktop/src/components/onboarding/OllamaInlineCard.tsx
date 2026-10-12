@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
+import { CopyField } from '../ui/copy-field';
+import { Field } from '../ui/field';
+import { InfoTip } from '../ui/info-tip';
 import { Progress } from '../ui/progress';
+import { Select } from '../ui/Select';
+import { Spinner } from '../ui/spinner';
 import type { OllamaRecommendedModel } from '../../api';
 import {
   DEFAULT_OLLAMA_HOST,
@@ -16,35 +22,80 @@ import {
   type OllamaSetup,
   type PullProgress,
 } from '../../utils/ollamaDetection';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { localModelsCopy } from '../settings/models/copy';
+import { ollamaFit } from '../settings/models/localModelMemory';
+import './onboarding.css';
+import { ollamaCopy } from './copy';
+import { StatusPill } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+type ModelOption = { value: string; label: string };
 
 /**
- * "Qwen3.8 27B (recommended) · ~18 GB · installed". `installed` is `null` for
- * a server the card cannot ask, which then says nothing rather than guess.
+ * "Qwen3.8 27B (recommended) · ~18 GB · Installed". `installed` is `null` for a server the card
+ * cannot ask, which then says nothing rather than guess.
  */
 const optionLabel = (model: OllamaRecommendedModel, installed: boolean | null) =>
   [
-    model.is_default ? `${model.display_name} (recommended)` : model.display_name,
-    `~${model.approx_download_gb} GB`,
-    installed === null ? null : installed ? 'installed' : 'not installed',
+    model.is_default ? ollamaCopy.recommended(model.display_name) : model.display_name,
+    ollamaCopy.approxSize(model.approx_download_gb),
+    installed === null ? null : installed ? ollamaCopy.installed : ollamaCopy.needsDownload,
   ]
     .filter(Boolean)
     .join(' · ');
 
-const Spinner = () => (
-  <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
-);
+const modelOptionsFor = (
+  models: OllamaRecommendedModel[],
+  pulled: string[] | null
+): ModelOption[] =>
+  models.map((model) => ({
+    value: model.tag,
+    label: optionLabel(model, pulled === null ? null : pulled.includes(model.tag)),
+  }));
 
-export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaInlineCardProps) {
+/**
+ * The configured server as the user wrote it (`base_url`, `OLLAMA_HOST` resolved by the daemon),
+ * without its trailing slash: the address every word on the panel names. `OllamaSetup.host` is
+ * where the renderer PROBES that server, which turns `0.0.0.0` and `localhost` into 127.0.0.1 for
+ * the CSP. Naming the probe address made the public note say Biorouter "treats the Ollama server
+ * at http://127.0.0.1:11434 as public ... it counts only localhost, 127.0.0.1 and ::1 as this
+ * computer" for `OLLAMA_HOST=0.0.0.0`, which contradicts itself.
+ */
+function configuredHost(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return baseUrl.replace(/\/+$/, '');
+  }
+}
+
+/**
+ * A warning in the panel: the shared Note's warning recipe (a wash, never a coloured border), kept
+ * as a plain `role="note"` block because the public-server note is frozen privacy copy whose role
+ * and test id stay as they are (class-only changes, ruling 15). Its words are unchanged; the host
+ * it names is the configured one (`configuredHost`).
+ */
+function WarningNote({ testId, children }: { testId: string; children: React.ReactNode }) {
+  return (
+    <div
+      className="br-fill-surface rounded-element bg-wash-warning px-3 py-2.5 text-supporting text-text-warning [overflow-wrap:anywhere]"
+      role="note"
+      data-testid={testId}
+    >
+      {children}
+    </div>
+  );
+}
+
+export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   const { upsert } = useConfig();
+  // Coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   const [isChecking, setIsChecking] = useState(true);
   const [setup, setSetup] = useState<OllamaSetup | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -91,7 +142,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       current = await getOllamaSetup();
     } catch (error) {
       if (!mountedRef.current) return;
-      setSetupError(errorText(error));
+      setSetupError(errorMessage(error));
       setIsChecking(false);
       return;
     }
@@ -123,7 +174,10 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   }, [load]);
 
   const recommendations = setup?.recommendations ?? null;
+  // Where the renderer probes the server, for fetches only (see `configuredHost`).
   const host = setup?.host ?? DEFAULT_OLLAMA_HOST;
+  // The server the user configured: the one every status line and note names.
+  const shownHost = recommendations ? configuredHost(recommendations.base_url) : host;
   const selectedModel =
     recommendations?.models.find((model) => model.tag === selectedTag) ??
     recommendations?.models[0] ??
@@ -142,8 +196,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
         await refreshInstalled(current);
         if (!mountedRef.current) return;
         toastService.success({
-          title: 'Ollama Detected!',
-          msg: 'Ollama is now running. You can connect to it.',
+          title: ollamaCopy.detectedToast,
+          msg: ollamaCopy.detectedToastDetail,
         });
       },
       3000,
@@ -156,7 +210,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
     const current = setup;
     const model = selectedModel;
     setDownloadingTag(model.tag);
-    setDownloadProgress({ status: 'Starting download...' });
+    setDownloadProgress({ status: ollamaCopy.startingDownload });
     const result = await pullOllamaModel(
       model.tag,
       (progress) => {
@@ -168,13 +222,13 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
     // 19 GB pull outlives most visits to this page, and its outcome is news.
     if (result.ok) {
       toastService.success({
-        title: 'Model downloaded',
-        msg: `${model.display_name} (${model.tag}) is ready in Ollama.`,
+        title: ollamaCopy.downloadedToast,
+        msg: ollamaCopy.downloadedToastDetail(model.display_name, model.tag),
       });
     } else {
       toastService.error({
-        title: 'Download failed',
-        msg: `Ollama could not download ${model.tag}: ${result.error}`,
+        title: ollamaCopy.downloadFailed,
+        msg: ollamaCopy.downloadFailedDetail(model.tag, result.error),
         traceback: '',
       });
     }
@@ -201,8 +255,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
         if (!mountedRef.current) return;
       }
       toastService.success({
-        title: 'Success!',
-        msg: `Connected to Ollama with ${selectedModel.tag}.`,
+        title: ollamaCopy.connectedToast,
+        msg: ollamaCopy.connectedToastDetail(selectedModel.display_name),
       });
       onSuccess();
     } catch (error) {
@@ -210,149 +264,131 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       if (!mountedRef.current) return;
       console.error('Failed to connect to Ollama:', error);
       toastService.error({
-        title: 'Connection failed',
-        msg: `Failed to connect to Ollama: ${errorText(error)}`,
+        title: ollamaCopy.connectFailed,
+        msg: ollamaCopy.connectFailedDetail(errorMessage(error)),
         traceback: error instanceof Error ? error.stack || '' : '',
       });
       setIsConnecting(false);
     }
   };
 
-  // A host the user chose is named, so "not detected" says WHERE it looked.
-  const hostSuffix = host !== DEFAULT_OLLAMA_HOST ? ` at ${host}` : '';
-
   // Privacy is the provider's tier, from the daemon, never inferred here: the
-  // header promised "Free, private, offline" on "your own machine" over a
+  // card promised "Free, private, offline" on "your own machine" over a
   // server on another computer — and over `0.0.0.0`, which reaches this one —
   // while the tier made every chat on either Public, so a private chat could
   // not use the model the user had just been told was private. Until the
   // daemon has answered, neither claim is made.
   const isPublicServer = setup !== null && !setup.private;
-  const description =
-    setup === null
-      ? 'Run open-source models with Ollama.'
-      : setup.private
-        ? 'Run open-source models on your own machine. Free, private, offline.'
-        : `Use open-source models on the Ollama server at ${host}. Biorouter treats it as a public model.`;
 
-  // In the body, not only in the header: the catalog mounts this card with
-  // `chrome="bare"`, which renders no header at all.
-  const publicNote = isPublicServer ? (
-    <div
-      className="rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default"
-      role="note"
-      data-testid="ollama-public-note"
-    >
-      Biorouter treats the Ollama server at {host} as public, not private: it counts only localhost,
-      127.0.0.1 and ::1 as this computer. Chats send their prompts and files to that server, and a
-      private chat cannot use it.
+  // A host the user chose is named, so "not detected" says WHERE it looked. Only the default
+  // server (this computer's, at 11434) goes unnamed. `0.0.0.0` probes at that same address, so a
+  // public server is always named: its status line said "Public · Ollama running" with no host.
+  const namedHost = host !== DEFAULT_OLLAMA_HOST || isPublicServer ? shownHost : undefined;
+
+  // The row this panel opens sits under Local, whose tier line says nothing leaves this machine,
+  // so a public server's status line says "Public" first, and the note under it says what that
+  // means. One status line, not a caption over it.
+  const status = (tone: 'success' | 'warning' | 'info', words: string) => (
+    <div>
+      <StatusPill tone={tone}>
+        <span>
+          {isPublicServer ? (
+            <>
+              <span data-testid="ollama-tier-label">{ollamaCopy.publicTier}</span>
+              {' · '}
+            </>
+          ) : null}
+          <span>{words}</span>
+        </span>
+      </StatusPill>
     </div>
+  );
+
+  const publicNote = isPublicServer ? (
+    <WarningNote testId="ollama-public-note">{ollamaCopy.publicNote(shownHost)}</WarningNote>
   ) : null;
 
-  const detectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
-      Ollama running{hostSuffix}
-      {selectedModel && installed
-        ? ` · ${selectedModel.tag} ${selectedInstalled ? 'ready' : 'not installed'}`
-        : ''}
-    </span>
-  );
-
-  const notDetectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-      Ollama not detected{hostSuffix}
-    </span>
-  );
-
-  // Below 32 GiB, or an Intel Mac: the default is still offered (there is no
+  // Below 32 GB, or an Intel Mac: the default is still offered (there is no
   // smaller supported model), so the warning is what tells the user what to
-  // expect. Unknown memory is said quietly; it is not a known problem.
-  const suitabilityNote =
-    recommendations && recommendations.suitability !== 'suitable' ? (
-      recommendations.suitability === 'unknown_resources' ? (
-        <p className="break-words text-[11px] text-text-muted" data-testid="ollama-suitability">
-          {recommendations.suitability_message}
-        </p>
-      ) : (
-        <div
-          className="rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default"
-          role="note"
-          data-testid="ollama-suitability"
-        >
-          {recommendations.suitability_message}
-        </div>
-      )
-    ) : null;
+  // expect. The word is the Llama Server rows' ("Below the 32 GB minimum", "CPU only, slow"), in
+  // warning ink; why is its InfoTip, in GB. Unknown memory is said quietly: it is not a known
+  // problem. The daemon's GiB paragraph used to be a warning box here (FR-R4-5, principle 2).
+  const fit = recommendations ? ollamaFit(recommendations) : null;
+  const suitabilityNote = fit ? (
+    <p
+      className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted"
+      role="note"
+      data-testid="ollama-suitability"
+    >
+      <span className={fit.warning ? 'text-text-warning' : undefined}>{fit.word}</span>
+      <InfoTip label={localModelsCopy.memoryLabel} help={fit.help} />
+    </p>
+  ) : null;
 
   const isDownloading = downloadingTag !== null;
 
-  const modelSelect = (models: OllamaRecommendedModel[], pulled: string[] | null) => (
-    <div className="min-w-0">
-      <label
-        htmlFor="ollama-model-select"
-        className="mb-1.5 block text-xs font-medium text-text-default"
-      >
-        Model
-      </label>
-      <select
-        id="ollama-model-select"
-        data-testid="ollama-model-select"
-        value={selectedModel?.tag ?? ''}
-        onChange={(e) => {
-          userChoseModelRef.current = true;
-          setSelectedTag(e.target.value);
-        }}
-        disabled={isDownloading || isConnecting}
-        className="block h-9 w-full min-w-0 max-w-full rounded-md border border-border-subtle bg-background-default px-2 text-sm text-text-default transition-colors duration-150 focus:border-border-strong"
-      >
-        {models.map((model) => (
-          <option key={model.tag} value={model.tag}>
-            {optionLabel(model, pulled === null ? null : pulled.includes(model.tag))}
-          </option>
-        ))}
-      </select>
-    </div>
+  // A server this screen cannot ask has no state word on any option; one it can ask lists them
+  // once Ollama has said what it has pulled.
+  const askable = setup?.reachable ?? false;
+  const modelOptions = useMemo(
+    () =>
+      recommendations ? modelOptionsFor(recommendations.models, askable ? installed : null) : [],
+    [askable, installed, recommendations]
+  );
+
+  // The app's one select (`ui/Select`), as Llama Server's panel draws it: react-select names its
+  // own input, so the label points at `inputId`, and the test id sits on a wrapper because the
+  // library forwards no `data-*` attribute. The menu is portalled so a scrolling page never clips it.
+  const modelSelect = (
+    <Field id="ollama-model-select" label={ollamaCopy.model}>
+      <div id="ollama-model-field" data-testid="ollama-model-select">
+        <Select
+          inputId="ollama-model-select"
+          options={modelOptions}
+          value={modelOptions.find((option) => option.value === selectedModel?.tag) ?? null}
+          onChange={(option: unknown) => {
+            const chosen = option as ModelOption | null;
+            if (!chosen) return;
+            userChoseModelRef.current = true;
+            setSelectedTag(chosen.value);
+          }}
+          isDisabled={isDownloading || isConnecting}
+          isSearchable={false}
+          menuPlacement="auto"
+          menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
+        />
+      </div>
+    </Field>
   );
 
   const connectButton = (
     <Button
-      onClick={handleConnectOllama}
+      variant={primaryVariant}
+      onClick={() => void handleConnectOllama()}
       disabled={isConnecting || isDownloading}
-      className="h-9 w-full px-4 sm:w-auto"
       data-testid="ollama-connect"
     >
-      {isConnecting ? 'Connecting…' : 'Connect to Ollama'}
+      {isConnecting ? ollamaCopy.connecting : ollamaCopy.use}
     </Button>
   );
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="ollama-setup-title"
-      category={isPublicServer ? 'commercial' : 'local'}
-      label={isPublicServer ? 'Public · Ollama server' : 'Local · Run on your computer'}
-      title="Ollama"
-      description={description}
-    >
+    <div className="min-w-0 space-y-3">
       {isChecking ? (
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <Spinner />
-          <span>Checking for Ollama…</span>
+        <div className="flex items-center gap-2 text-supporting text-text-muted">
+          <Spinner size={14} />
+          <span>{ollamaCopy.checking}</span>
         </div>
       ) : setupError || !recommendations ? (
         <div className="space-y-3">
-          <p className="break-words text-xs text-text-muted" role="alert">
-            {setupError ?? 'Biorouter could not read its recommended Ollama models.'}
+          <p className="break-words text-supporting text-text-muted" role="alert">
+            {setupError ?? ollamaCopy.noRecommendations}
           </p>
-          <Button
-            onClick={() => void load()}
-            variant="outline"
-            className="h-9 w-full px-4 sm:w-auto"
-          >
-            Try again
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={() => void load()}>
+              {ollamaCopy.tryAgain}
+            </Button>
+          </div>
         </div>
       ) : setup && !setup.reachable ? (
         // A server the renderer cannot ask anything: another machine's
@@ -361,49 +397,52 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
         // download (which would land on 127.0.0.1's Ollama, if there is one).
         // The memory note is shown only for this computer: on another one the
         // figure describes the wrong machine. A chat reaches the server from
-        // the daemon, so connecting is still the whole job.
+        // the daemon, so connecting is still the whole job. The pull command
+        // follows the picker, because it names the model picked there.
         <div className="space-y-3">
-          <div>
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-              <span className="w-1.5 h-1.5 rounded-full bg-background-medium" />
-              {setup.private ? `Ollama at ${host}` : `Ollama on another computer · ${host}`}
-            </span>
-          </div>
+          {status(
+            'info',
+            setup.private ? ollamaCopy.atHost(shownHost) : ollamaCopy.onAnotherComputer(shownHost)
+          )}
           {publicNote}
-          <p className="break-words text-xs text-text-muted" data-testid="ollama-remote-note">
-            Biorouter is set to use the Ollama server at {host}. This screen can only check an
-            Ollama at 127.0.0.1, so it cannot see which models that server has. Pull the model there
-            first (<code>ollama pull {selectedModel?.tag ?? recommendations.default_model}</code>),
-            then connect.
-          </p>
+          {modelSelect}
           {setup.private && suitabilityNote}
-          {modelSelect(recommendations.models, null)}
+          <div className="space-y-2" data-testid="ollama-remote-note">
+            <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
+              <span className="min-w-0">{ollamaCopy.remoteInstruction}</span>
+              <InfoTip label={ollamaCopy.remoteTipLabel} help={ollamaCopy.remoteTip} />
+            </p>
+            <CopyField
+              value={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
+              label={ollamaCopy.pullCommand(selectedModel?.tag ?? recommendations.default_model)}
+            />
+          </div>
           {selectedModel && (
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
-              {connectButton}
-            </div>
+            <div className="flex flex-wrap items-center gap-2">{connectButton}</div>
           )}
         </div>
       ) : ollamaDetected ? (
         <div className="space-y-3">
-          <div>{detectedPill}</div>
+          {status('success', ollamaCopy.running(namedHost))}
           {publicNote}
 
           {installed === null && (
-            <div className="flex items-center gap-2 text-xs text-text-muted">
-              <Spinner />
-              <span>Checking for models…</span>
+            <div className="flex items-center gap-2 text-supporting text-text-muted">
+              <Spinner size={14} />
+              <span>{ollamaCopy.checkingModels}</span>
             </div>
           )}
 
-          {installed !== null && modelSelect(recommendations.models, installed)}
+          {installed !== null && modelSelect}
 
           {suitabilityNote}
 
-          {isDownloading && downloadProgress && (
-            <div className="rounded-md border border-border-subtle bg-background-default p-3">
-              <p className="text-xs text-text-default">Downloading {downloadingTag}…</p>
-              <p className="text-[11px] text-text-muted mt-1">{downloadProgress.status}</p>
+          {downloadingTag !== null && downloadProgress && (
+            <div className="br-first-run-box br-fill-surface p-3">
+              <p className="text-supporting text-text-default">
+                {ollamaCopy.downloading(downloadingTag)}
+              </p>
+              <p className="text-supporting text-text-muted mt-1">{downloadProgress.status}</p>
               {/* Ollama's pull stream reports `total`/`completed` only once the
                   manifest resolves — before that (and during the verify/extract
                   phases) there is no denominator. That is exactly the
@@ -414,18 +453,18 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
                 <>
                   <Progress
                     className="mt-2"
-                    label={`Downloading ${downloadingTag}`}
+                    label={ollamaCopy.downloading(downloadingTag)}
                     tone="success"
                     value={(downloadProgress.completed / downloadProgress.total) * 100}
                   />
-                  <p className="text-[11px] text-text-muted mt-1">
+                  <p className="text-supporting text-text-muted mt-1">
                     {Math.round((downloadProgress.completed / downloadProgress.total) * 100)}%
                   </p>
                 </>
               ) : (
                 <Progress
                   className="mt-2"
-                  label={`Downloading ${downloadingTag}`}
+                  label={ollamaCopy.downloading(downloadingTag)}
                   tone="success"
                   indeterminate
                 />
@@ -433,19 +472,20 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
             </div>
           )}
 
+          {/* One action on the 32px rung, never stretched; the model's name is in the picker
+              above, so the button says what it does and how much it downloads (FR-S-8). */}
           {installed !== null && selectedModel && (
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+            <div className="flex flex-wrap items-center gap-2">
               {selectedInstalled ? (
                 connectButton
               ) : (
                 <Button
+                  variant="secondary"
                   onClick={() => void handleDownloadModel()}
                   disabled={isDownloading}
-                  variant="outline"
-                  className="h-9 w-full px-4 sm:w-auto"
                   data-testid="ollama-download"
                 >
-                  Download {selectedModel.display_name} (~{selectedModel.approx_download_gb} GB)
+                  {ollamaCopy.downloadModel(selectedModel.approx_download_gb)}
                 </Button>
               )}
             </div>
@@ -453,29 +493,30 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
         </div>
       ) : (
         <div className="space-y-3">
-          <div>{notDetectedPill}</div>
+          {status('warning', ollamaCopy.notDetected(namedHost))}
           {publicNote}
           {suitabilityNote}
-          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+          <div className="flex flex-wrap items-center gap-2">
             {isPolling ? (
-              <div className="flex items-center gap-2 text-xs text-text-muted">
-                <Spinner />
-                <span>Waiting for Ollama to start…</span>
+              <div className="flex items-center gap-2 text-supporting text-text-muted">
+                <Spinner size={14} />
+                <span>{ollamaCopy.waiting}</span>
               </div>
             ) : (
-              <a
-                href={getOllamaDownloadUrl()}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={handleInstallClick}
-                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-background-medium px-4 text-sm text-text-default transition-colors hover:bg-background-strong sm:w-auto"
-              >
-                Install Ollama
-              </a>
+              <Button asChild variant="secondary">
+                <a
+                  href={getOllamaDownloadUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={handleInstallClick}
+                >
+                  {ollamaCopy.install}
+                </a>
+              </Button>
             )}
           </div>
         </div>
       )}
-    </OnboardingCardShell>
+    </div>
   );
 }

@@ -97,6 +97,33 @@ describe('GroupedExtensionLoadingToast', () => {
     expect(screen.getByText('All extensions loaded')).toBeInTheDocument();
   });
 
+  // V3-R2-6: the toast and its report name an extension as the catalogue does,
+  // not as its config key title-cased ("Cdwagent", "Computercontroller").
+  it('names extensions as the catalogue spells them, in the toast and the report', async () => {
+    const user = userEvent.setup();
+    const extensions = [
+      { name: 'developer', status: 'success' as const },
+      { name: 'cdwagent', status: 'error' as const, error: 'spawn ENOENT' },
+    ];
+
+    renderWithRouter(
+      <GroupedExtensionLoadingToast
+        extensions={extensions}
+        totalCount={2}
+        isComplete={true}
+        builtinFailures={['computercontroller']}
+      />
+    );
+
+    expect(screen.getByText('Failed: CDWAgent · Built-in: Biorouter Copilot')).toBeInTheDocument();
+    expect(screen.queryByText(/Cdwagent|Computercontroller/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'View details' }));
+
+    expect(screen.getByRole('dialog')).toHaveTextContent('CDWAgent');
+    expect(screen.queryByText('Cdwagent')).not.toBeInTheDocument();
+  });
+
   it('while still loading, already-failed extensions are named', () => {
     const extensions = [
       { name: 'developer', status: 'success' as const },

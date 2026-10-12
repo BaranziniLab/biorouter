@@ -1,7 +1,7 @@
 /* Scheduling tile. One job in the Scheduler, the week it waits through, and the
    chats its runs leave behind. Vocabulary from ui/desktop/src/components/schedule:
-   the Clock row, the status dot plus word, cronstrue's sentence, the "Last run"
-   line with its date in mono, the "Recent chats" section and the CalendarClock
+   the Clock row, the status dot plus word, the cron phrase, the "Last run"
+   line with its date, the "Recent runs" section and the Clock
    glyph of a scheduled run. */
 
 [data-art="schedule"] .sch {
@@ -32,10 +32,9 @@
 [data-art="schedule"] .sch-last {
   grid-column: 2; margin-top: -2px; font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
 }
-/* Mono, as the app sets it. A mono space is a full cell, so "Sep 28" would read
-   as two spaces; word-spacing closes it to an ordinary word space. */
+/* Dates are sans with tabular numbers, as the app sets them (mono is for machine strings). */
 [data-art="schedule"] .sch-last-date {
-  font-family: var(--mono); font-variant-numeric: tabular-nums; word-spacing: -0.3em;
+  font-variant-numeric: tabular-nums;
   display: inline-block; transition: opacity var(--dur-menu) var(--ease);
 }
 [data-art="schedule"] .sch-last.is-swap .sch-last-date { opacity: 0; }
@@ -50,7 +49,7 @@
 [data-art="schedule"] .sch-state.is-running { opacity: 0; }
 [data-art="schedule"] .sch.running .sch-state.is-scheduled { opacity: 0; }
 [data-art="schedule"] .sch.running .sch-state.is-running { opacity: 1; }
-[data-art="schedule"] .sch.running .sch-state.is-running i { animation: schedule-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+[data-art="schedule"] .sch.running .sch-state.is-running i { animation: schedule-pulse calc(var(--dur-slow) * 4) var(--ease) infinite; }
 @keyframes schedule-pulse { 50% { opacity: 0.5; } }
 
 /* ── The week ──────────────────────────────────────────── */
@@ -59,7 +58,7 @@
 [data-art="schedule"] .sch-days { position: relative; height: 14px; }
 [data-art="schedule"] .sch-days span {
   position: absolute; top: 0; left: calc(var(--sch-m) + (100% - 2 * var(--sch-m)) * var(--i) / 6);
-  transform: translateX(-50%); font-size: 11px; line-height: 14px; color: var(--subtle); white-space: nowrap;
+  transform: translateX(-50%); font-size: 12px; line-height: 14px; color: var(--subtle); white-space: nowrap;
 }
 [data-art="schedule"] .sch-days span.is-on { color: var(--ink); }
 [data-art="schedule"] .sch-track { position: relative; height: 10px; }
@@ -87,10 +86,9 @@
 }
 [data-art="schedule"] .sch.fired .sch-dot.is-on { background: var(--coral-bar); border-color: var(--coral-bar); }
 
-/* ── Recent chats: each run starts a new chat ──────────── */
-[data-art="schedule"] .sch-caps {
-  font-size: 11px; line-height: 16px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--muted); margin: 0 0 4px;
+/* ── Recent runs: each run starts a new chat ──────────── */
+[data-art="schedule"] .sch-label {
+  font-size: 12px; line-height: 16px; color: var(--muted); margin: 0 0 4px;
 }
 /* The list reaches 10px into the padding so a row's icon lines up with the job's
    clock and the new row's rail sits in the margin, as in the sidebar. */
@@ -102,10 +100,6 @@
   transform: translateY(calc(var(--slot, 0) * var(--sch-row)));
   transition: transform var(--sch-move) var(--ease), opacity var(--dur-med) var(--ease);
 }
-[data-art="schedule"] .sch-run::after {
-  content: ''; position: absolute; left: 10px; right: 0; bottom: 0; height: 1px; background: var(--line);
-}
-[data-art="schedule"] .sch-run.is-last::after { background: transparent; }
 [data-art="schedule"] .sch-run::before {
   content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
   border-radius: 2px; background: var(--coral-bar); opacity: 0;
@@ -121,15 +115,15 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 [data-art="schedule"] .sch-run-date {
-  flex: none; margin-left: 2px; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted);
-  font-variant-numeric: tabular-nums; word-spacing: -0.3em;
+  flex: none; margin-left: 2px; font-size: 12px; line-height: 16px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 /* Narrow tiles: schedule.js steps the run name down until it fits whole, and the
    date steps with it so the name stays the heavier of the two. */
 [data-art="schedule"] .sch.fit-sm .sch-run-name { font-size: 12px; }
 [data-art="schedule"] .sch.fit-xs .sch-run-name,
 [data-art="schedule"] .sch.fit-sm .sch-run-date,
-[data-art="schedule"] .sch.fit-xs .sch-run-date { font-size: 11px; }
+[data-art="schedule"] .sch.fit-xs .sch-run-date { font-size: 12px; }
 [data-art="schedule"] .sch.fit-xs .sch-run-date { margin-left: 0; }
 [data-art="schedule"] .sch.fit-xs { --sch-row: 26px; padding-left: 13px; padding-right: 13px; }
 /* Content under 270px wide (tiles under about 316px: 1920, 1024 and the 2-column
@@ -137,7 +131,7 @@
 @container (max-width: 270px) {
   [data-art="schedule"] .sch-job { row-gap: 4px; }
   [data-art="schedule"] .sch-week { gap: 6px; }
-  [data-art="schedule"] .sch-caps { margin-bottom: 2px; }
+  [data-art="schedule"] .sch-label { margin-bottom: 2px; }
 }
 /* Short tiles: schedule.js drops the Last run line when the even share of the free
    height would fall under 14px. */

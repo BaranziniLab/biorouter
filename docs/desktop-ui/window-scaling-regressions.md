@@ -102,12 +102,11 @@ govern how the content uses the room.
 
 It is derived rather than chosen — the **288px sidebar default**
 (`SIDEBAR_DEFAULT_WIDTH` in `components/ui/sidebarWidth.ts`) plus the 760px
-reading column (`--measure-chat`) — because Home's usage heatmap is the one
-element whose size is *computed* rather than declared: it fits its cells to the
-box it is given, so a window narrow enough to squeeze the reading column squeezes
-the grid with it. `styles/measures.test.ts` asserts the arithmetic, so changing
-either the sidebar's bounds or the chat measure fails there instead of quietly
-letting the window compress the heatmap again.
+reading column (`--measure-chat`) — because the reading column is the one Home's
+usage card, its heatmap and the composer share: below it, the card's 53-week grid
+(one fluid column per week, `UsageHeatmap.tsx`) shrinks its cells with the column.
+`styles/measures.test.ts` asserts the arithmetic, so changing either the
+sidebar's bounds or the chat measure fails there.
 
 ⚠ **The sidebar's DEFAULT, not its minimum** — the sidebar is user-resizable
 (216–360px, default 288), and this line read *"240px sidebar (`SIDEBAR_WIDTH`,
@@ -127,7 +126,8 @@ ladder, below which the sidebar auto-collapses to an overlay and costs the chat
 nothing. `measures.test.ts` pins that identity too, so raising the max without
 moving the ladder fails loudly.
 
-Measured against the real stylesheet **with the then-240px sidebar**, the cliff
+Measured against the real stylesheet **with the then-240px sidebar** and the
+fitted heatmap that the 2026-10 redesign replaced, the cliff
 was at 989px of content width (23px cells at 989, 22px at 988, stepping down to
 16px by 800px). ⚠ That 989 is a *window* width and therefore carries the sidebar
 of the day inside it: what the heatmap reacts to is its own column, so the cliff
@@ -136,12 +136,9 @@ moves with the sidebar. The measurement is really a **749px column**
 window — which 1048 clears by the same 11px the old 1000 cleared 989 by.
 
 The height axis is deliberately **not** capped to the same standard. A short
-window shrinks the heatmap's cells too, but the `minHeight` that would prevent it
-lands near 700–800px, which is unusable on a 1280×800 display once the menu bar
-and Dock are removed — a worse bug than the one being fixed. The heatmap keeps
-its chrome locked to its own grid instead (`UsageHeatmap`'s `heatStyle` sets the
-block's width from the fitted footprint), so a compressed grid stays a coherent
-block rather than leaving its labels and legend pinned to the old edge.
+window no longer shrinks anything: the hero compacts and then hides (container
+queries on `.biorouter-home-content`), and below that Home scrolls. The
+heatmap's cells follow the card's width only.
 
 ### Not this: Settings and Chat history, on the chat measure by decision (2026-09-07)
 
@@ -631,6 +628,40 @@ later showed the copy byte-identical to the finished binary, and re-signing
 alone fixed it. Two plausible causes for one symptom is how a real fix gets
 attributed to the wrong action and stops being applied.
 
+## Opening a preview while the window grows (2026-10-10)
+
+When a narrow chat opens an artifact, the panel asks the OS window to grow so the
+preview fits beside the conversation (`useArtifactPanel`, `requestFit`; the main
+process half is `window:ensure-content-width` in `main.ts`). The open used to
+**wait** for that grow before presenting the panel. Measured in Electron on macOS
+(a 760px window growing to 1072px, the WS-PREVIEW harness in panel mode with
+`?grow=1`, sampled every animation frame):
+
+| Variant | IPC returns | Panel first painted | Layout during the grow |
+|---|---|---|---|
+| Await the grow, then present | 343ms | 367ms after the click | none; the window grew empty |
+| Present now, grow alongside (shipped) | 347ms | 24ms after the click | side from the first frame |
+
+The IPC takes the whole OS animation because `setContentSize(…, animate)` does
+not return until macOS has finished resizing the window. So awaiting it held the
+panel back for a third of a second while the window widened with nothing in it.
+
+The concurrent open has one trap, and the shipped code closes it: in the narrow
+window the split box is under the 800px seam, so rung 2 would place a stacked
+sheet and then move it to the side a few frames later as the edge passed 800.
+While a grow is in flight, rung 2 decides on the width the box is growing **to**
+(`growingPaneRef`), and measures for real once the grow settles. If the window
+could not grow after all (a full screen, a narrow display), that measurement
+puts the panel where the real width says. In the recording the panel sits at the
+right edge from the first frame and is uncovered as the edge moves out; nothing
+crosses between layouts. The conversation glide skips this open
+(`windowGrowing`), because the window moves under the conversation anyway.
+
+Under Reduce Motion the main process grows the window without animating
+(`windowResizeMayAnimate`), so the IPC returns at once and the two variants
+differ by one frame. If the concurrent open ever reads as busy, the fallback is
+an instant grow, not a return to waiting.
+
 ## Related documentation
 
 - [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — the
@@ -641,3 +672,5 @@ attributed to the wrong action and stops being applied.
   frontend tests that pass while the code they cover is broken.
 - [Theme system architecture](../design/theming/theme-system-architecture.md) — where
   the design tokens, including the measures, are defined and generated.
+- [Artifact display surfaces](artifact-display-surfaces.md) — the preview panel this
+  window grow seats.

@@ -77,6 +77,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Cross recipes have not drifted / glibc floor pin intact
         run: ./scripts/check-no-cross-drift.sh
+      - name: Tracked tree names neither the retired upstream nor its publisher
+        run: ./scripts/check-no-goose-block.sh
       - name: Version consistency (CLI = daemon = GUI)
         run: ./scripts/check-version-consistency.sh
       # The capability is "Biorouter Copilot" wherever a person reads it -- never

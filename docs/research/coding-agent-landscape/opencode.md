@@ -3,7 +3,7 @@
 > **What this is.** An external review of how OpenCode — "the open source AI coding agent,"
 > built by SST as a TypeScript/Bun monorepo — implements its agentic loop, with emphasis on
 > its client/server split, private git-object-DB snapshots with `/undo` and `/redo`, and
-> prune-before-summarize compaction. One of nine tool reports in this folder, each covering
+> prune-before-summarize compaction. One of eight tool reports in this folder, each covering
 > the same ten dimensions.
 > **Status:** Current. External-tool research; it is the cited source for the private
 > git-object-DB checkpoint approach adopted in proposal BR-43. Research date 2026-07-12.

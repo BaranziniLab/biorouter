@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentAddExtension, agentRemoveExtension } from '../../../api';
 import { userActionHeaders } from '../../../utils/userAction';
 import { addToAgent, removeFromAgent } from './agent-api';
+import { toastService } from '../../../toasts';
 
 vi.mock('../../../api', () => ({
   agentAddExtension: vi.fn(),
@@ -79,5 +80,28 @@ describe('agent extension API', () => {
 
     await expect(removeFromAgent('developer', 'child-session', false)).rejects.toBe(refusal);
     expect(agentRemoveExtension).toHaveBeenCalledWith(expect.objectContaining({ headers: {} }));
+  });
+
+  it('says what it is doing in the toast with the typographic ellipsis and no repeated name', async () => {
+    vi.mocked(userActionHeaders).mockResolvedValue({});
+    vi.mocked(agentAddExtension).mockResolvedValue({ data: '' } as never);
+    vi.mocked(agentRemoveExtension).mockResolvedValue({ data: {} } as never);
+
+    await addToAgent(
+      { type: 'stdio', name: 'notes', description: 'Notes', cmd: 'notes', args: [] },
+      'chat-1',
+      true
+    );
+    await removeFromAgent('notes', 'chat-1', true);
+
+    // The toast's own title is the extension's name, so the message does not say it again.
+    expect(toastService.loading).toHaveBeenNthCalledWith(1, {
+      title: 'notes',
+      msg: 'Adding extension…',
+    });
+    expect(toastService.loading).toHaveBeenNthCalledWith(2, {
+      title: 'notes',
+      msg: 'Removing extension…',
+    });
   });
 });

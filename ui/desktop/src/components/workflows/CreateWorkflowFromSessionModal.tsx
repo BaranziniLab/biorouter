@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, WorkflowKnowledgeBases } from '../../workflow';
-import { Save, Play, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
@@ -14,7 +13,10 @@ import { saveWorkflow } from '../../workflow/workflow_management';
 import type { ExtensionConfig, Manifest } from '../../api';
 import { fetchSkillCatalog, pickerBundles, standaloneSkills } from '../skills/useSkillCatalog';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../ui/dialog';
+import { ModalShell } from '../ModalShell';
+import { Spinner } from '../ui/spinner';
+import { workflowFormCopy as copy } from './copy';
+import './workflows.css';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateWorkflowFromSessionModalProps {
@@ -76,7 +78,6 @@ export default function CreateWorkflowFromSessionModal({
 }: CreateWorkflowFromSessionModalProps) {
   const [isCreating, setIsCreating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisStage, setAnalysisStage] = useState<string>('');
   // The daemon's sentence when it refused to make a workflow from this chat
   // (a Crew chat's context stays in its channel). Shown in place of the form.
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -130,24 +131,6 @@ export default function CreateWorkflowFromSessionModal({
       let cancelled = false;
       let completionTimeout: ReturnType<typeof setTimeout> | undefined;
       setIsAnalyzing(true);
-
-      // Create a sequence of analysis stages for better UX
-      const stages = [
-        'Reading your chat...',
-        'Identifying key patterns...',
-        'Extracting main topics...',
-        'Generating workflow structure...',
-        'Finalizing details...',
-      ];
-
-      let currentStageIndex = 0;
-      setAnalysisStage(stages[0]);
-
-      // Update stage every 800ms
-      const stageInterval = setInterval(() => {
-        currentStageIndex = (currentStageIndex + 1) % stages.length;
-        setAnalysisStage(stages[currentStageIndex]);
-      }, 800);
 
       // The user's proof, on every request below that names this chat or its
       // knowledge bases: since issue #56's QA sweep (2026-09-10) a request
@@ -240,8 +223,6 @@ export default function CreateWorkflowFromSessionModal({
         )
         .then((response) => {
           if (cancelled) return;
-          clearInterval(stageInterval);
-          setAnalysisStage('Complete!');
 
           if (response.data?.workflow) {
             const workflow = response.data.workflow;
@@ -311,7 +292,6 @@ export default function CreateWorkflowFromSessionModal({
         .catch((error) => {
           if (cancelled) return;
           console.error('Failed to analyze messages:', error);
-          setAnalysisStage('Analysis failed');
           // A refusal is the daemon's plain sentence, thrown as the parsed
           // body under `throwOnError`; an empty body (a 500, a missing agent)
           // is thrown as `{}` and leaves the form for the person to fill in.
@@ -320,18 +300,15 @@ export default function CreateWorkflowFromSessionModal({
         })
         .finally(() => {
           if (cancelled) return;
-          clearInterval(stageInterval);
           completionTimeout = setTimeout(() => {
             if (cancelled) return;
             setHasAnalyzed(true);
             setIsAnalyzing(false);
-            setAnalysisStage('');
           }, 500);
         });
 
       return () => {
         cancelled = true;
-        clearInterval(stageInterval);
         if (completionTimeout) clearTimeout(completionTimeout);
       };
     }
@@ -343,7 +320,6 @@ export default function CreateWorkflowFromSessionModal({
     if (!isOpen) {
       setHasAnalyzed(false);
       setIsAnalyzing(false);
-      setAnalysisStage('');
       setRefusal(null);
       setWorkflowExtensions([]);
       setKnowledgeBaseItems([]);
@@ -516,8 +492,8 @@ export default function CreateWorkflowFromSessionModal({
     } catch (error) {
       console.error('Failed to create workflow:', error);
       toastError({
-        title: 'Failed to create workflow',
-        msg: error instanceof Error ? error.message : 'Could not create the workflow. Try again.',
+        title: copy.couldNotCreate,
+        msg: error instanceof Error ? error.message : String(error),
       });
     } finally {
       setIsCreating(false);
@@ -526,142 +502,109 @@ export default function CreateWorkflowFromSessionModal({
 
   if (!isOpen) return null;
 
+  // The same editor shape as `CreateEditWorkflowModal` (spec 3.10): `ModalShell size="lg"
+  // scrollBody`, a title and nothing under it. While the chat is read, one honest line,
+  // not a rotation of invented stages.
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isCreating && onClose()}>
-      <DialogContent
-        dismissible={!isCreating}
-        className="flex h-full max-h-[90vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] lg:max-w-4xl"
-        data-testid="create-workflow-modal"
-      >
-        {/* Header */}
-        <div
-          className="flex shrink-0 items-center justify-between px-6 pb-3 pt-5 pr-14"
-          data-testid="modal-header"
-        >
-          <div>
-            <DialogTitle>Create workflow from this chat</DialogTitle>
-            <DialogDescription className="text-supporting text-text-muted mt-0.5">
-              Create a reusable workflow based on your current chat
-            </DialogDescription>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4" data-testid="modal-content">
-          {isAnalyzing ? (
-            <div
-              className="flex flex-col items-center justify-center h-full min-h-[300px] gap-3"
-              data-testid="analyzing-state"
-            >
-              <Loader2
-                className="w-6 h-6 animate-spin text-text-muted"
-                data-testid="analysis-spinner"
-              />
-              <div className="text-center">
-                <p className="text-label text-text-default" data-testid="analyzing-title">
-                  Analyzing your chat
-                </p>
-                <p className="text-supporting text-text-muted mt-1" data-testid="analysis-stage">
-                  {analysisStage}
-                </p>
-              </div>
-            </div>
-          ) : refusal ? (
-            <div
-              role="alert"
-              className="flex flex-col items-center justify-center h-full min-h-[300px] gap-3"
-              data-testid="create-workflow-refused"
-            >
-              <div className="text-center">
-                <p className="text-label text-text-default">
-                  A workflow can&apos;t be made from this chat
-                </p>
-                <p className="text-supporting text-text-muted mt-1">{refusal}</p>
-              </div>
-            </div>
-          ) : (
-            <div data-testid="form-state">
-              <WorkflowFormFields
-                form={form}
-                extensions={workflowExtensions}
-                onExtensionsChange={(extensions) => {
-                  resourceEditsRef.current.extensions = true;
-                  setWorkflowExtensions(extensions);
-                }}
-                knowledgeBaseItems={knowledgeBaseItems}
-                selectedKnowledgeBaseIds={workflowKnowledgeBaseIds}
-                onKnowledgeBaseIdsChange={(ids) => {
-                  resourceEditsRef.current.knowledgeBases = true;
-                  setWorkflowKnowledgeBaseIds(ids);
-                  // Switching bases on or off never names a primary: only the
-                  // picker's Default control does. A primary already named stays
-                  // while its base is selected, and goes when it is not, rather
-                  // than passing to whichever base is left.
-                  setDefaultKnowledgeBaseId((current) => primaryAmong(current, ids));
-                }}
-                defaultKnowledgeBaseId={defaultKnowledgeBaseId}
-                onDefaultKnowledgeBaseIdChange={(id) => {
-                  resourceEditsRef.current.knowledgeBases = true;
-                  setDefaultKnowledgeBaseId(id);
-                }}
-                knowledgeBaseNotice={
-                  knowledgeSelectionUnread ? KNOWLEDGE_SELECTION_UNREAD : undefined
-                }
-                skillItems={skillItems}
-                selectedSkillIds={workflowSkillIds}
-                onSkillIdsChange={(ids) => {
-                  resourceEditsRef.current.skills = true;
-                  setWorkflowSkillIds(ids);
-                }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div
-          className="flex shrink-0 items-center justify-between px-6 pb-5 pt-3"
-          data-testid="modal-footer"
-        >
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isCreating) onClose();
+      }}
+      size="lg"
+      purpose="form"
+      scrollBody
+      title={copy.fromChatTitle}
+      footer={
+        <>
           <Button
             onClick={onClose}
-            variant="ghost"
+            variant="secondary"
             disabled={isCreating}
-            className="rounded-element px-4 py-2 text-text-muted transition-colors hover:bg-overlay-hover"
             data-testid="cancel-button"
           >
-            Cancel
+            {copy.cancel}
           </Button>
-
           {!isAnalyzing && !refusal && (
-            <div className="flex gap-3">
-              {/* V7 — this was `ghost` repainted into `secondary` by hand: a
-                  `bg-background-medium` ground, a `rounded-element`, and a
-                  `hover:bg-overlay-hover` that `tint-interactive` already owns.
-                  The variant meaning "the quieter of two committing actions"
-                  has a name, so it uses the name. */}
+            <>
               <Button
                 onClick={() => form.handleSubmit()}
                 disabled={!isFormValid || isCreating}
                 variant="secondary"
                 data-testid="create-workflow-button"
               >
-                <Save className="w-4 h-4" />
-                {isCreating ? 'Creating…' : 'Create workflow'}
+                {isCreating ? copy.creating : copy.create}
               </Button>
               <Button
                 onClick={() => handleCreateWorkflow(form.state.values, true)}
                 disabled={!isFormValid || isCreating}
-                variant="default"
                 data-testid="create-and-run-workflow-button"
               >
-                <Play className="w-4 h-4" />
-                {isCreating ? 'Creating…' : 'Create & Run'}
+                {isCreating ? copy.creating : copy.createAndRun}
               </Button>
-            </div>
+            </>
           )}
-        </div>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <div className="py-4" data-testid="create-workflow-modal">
+        {isAnalyzing ? (
+          <div
+            className="br-workflow-pending flex items-center justify-center gap-2"
+            data-testid="analyzing-state"
+          >
+            <Spinner size={16} data-testid="analysis-spinner" />
+            <p role="status" className="text-body text-text-muted" data-testid="analysis-stage">
+              {copy.readingChat}
+            </p>
+          </div>
+        ) : refusal ? (
+          <div
+            role="alert"
+            className="br-workflow-pending flex flex-col items-center justify-center gap-1 text-center"
+            data-testid="create-workflow-refused"
+          >
+            <p className="text-label text-text-default">{copy.refusedTitle}</p>
+            <p className="text-supporting text-text-muted">{refusal}</p>
+          </div>
+        ) : (
+          <div data-testid="form-state">
+            <WorkflowFormFields
+              form={form}
+              extensions={workflowExtensions}
+              onExtensionsChange={(extensions) => {
+                resourceEditsRef.current.extensions = true;
+                setWorkflowExtensions(extensions);
+              }}
+              knowledgeBaseItems={knowledgeBaseItems}
+              selectedKnowledgeBaseIds={workflowKnowledgeBaseIds}
+              onKnowledgeBaseIdsChange={(ids) => {
+                resourceEditsRef.current.knowledgeBases = true;
+                setWorkflowKnowledgeBaseIds(ids);
+                // Checking bases on or off never names a primary: only the
+                // picker's Default control does. A primary already named stays
+                // while its base is selected, and goes when it is not, rather
+                // than passing to whichever base is left.
+                setDefaultKnowledgeBaseId((current) => primaryAmong(current, ids));
+              }}
+              defaultKnowledgeBaseId={defaultKnowledgeBaseId}
+              onDefaultKnowledgeBaseIdChange={(id) => {
+                resourceEditsRef.current.knowledgeBases = true;
+                setDefaultKnowledgeBaseId(id);
+              }}
+              knowledgeBaseNotice={
+                knowledgeSelectionUnread ? KNOWLEDGE_SELECTION_UNREAD : undefined
+              }
+              skillItems={skillItems}
+              selectedSkillIds={workflowSkillIds}
+              onSkillIdsChange={(ids) => {
+                resourceEditsRef.current.skills = true;
+                setWorkflowSkillIds(ids);
+              }}
+            />
+          </div>
+        )}
+      </div>
+    </ModalShell>
   );
 }

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
 import { ModalShell } from './ModalShell';
-import { Download, ExternalLink, Loader2, AlertCircle, Rocket } from './icons/app-icons';
+import { Download, ExternalLink, AlertCircle, Rocket } from './icons/app-icons';
+import { Spinner } from './ui/spinner';
 import { UPDATES_ENABLED } from '../updates';
 import {
   initialUpdaterState,
@@ -165,7 +166,7 @@ export default function UpdateAvailableModal() {
       }
       footer={
         <>
-          <Button variant="outline" size="sm" onClick={dismiss}>
+          <Button variant="ghost" size="sm" onClick={dismiss}>
             {downloaded ? 'Later' : 'Not now'}
           </Button>
           <Button
@@ -185,7 +186,7 @@ export default function UpdateAvailableModal() {
               className="flex items-center gap-2"
             >
               <Rocket className="w-4 h-4" />
-              Restart &amp; Update
+              Restart &amp; update
             </Button>
           ) : awaitingDownload ? (
             <Button
@@ -199,7 +200,7 @@ export default function UpdateAvailableModal() {
             </Button>
           ) : !isError ? (
             <Button variant="default" size="sm" disabled className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Spinner />
               Preparing…
             </Button>
           ) : null}
@@ -208,15 +209,15 @@ export default function UpdateAvailableModal() {
     >
       <div className="py-3 space-y-3">
         {(state.latestVersion || currentVersion) && (
-          <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
+          <div className="bg-background-muted rounded-element px-3 py-2 space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-text-muted">Current</span>
-              <span className="text-sm font-mono text-text-default">{currentVersion}</span>
+              <span className="text-supporting text-text-muted">Current</span>
+              <span className="text-code font-mono text-text-default">{currentVersion}</span>
             </div>
             {state.latestVersion && (
               <div className="flex items-center justify-between">
-                <span className="text-xs text-text-muted">New version</span>
-                <span className="text-sm font-mono font-semibold text-text-default">
+                <span className="text-supporting text-text-muted">New version</span>
+                <span className="text-code font-mono font-semibold text-text-default">
                   {state.latestVersion}
                 </span>
               </div>
@@ -225,22 +226,23 @@ export default function UpdateAvailableModal() {
         )}
 
         {downloaded && (
-          <p className="text-sm text-text-default">
-            The update has been downloaded. Click <strong>Restart &amp; Update</strong> and
-            Biorouter will reopen on the new version automatically. Your settings, chats, and
-            extensions are preserved.
+          <p className="text-body text-text-default">
+            The update has been downloaded. Click{' '}
+            <strong className="font-semibold">Restart &amp; update</strong> and Biorouter will
+            reopen on the new version automatically. Your settings, chats, and extensions are
+            preserved.
           </p>
         )}
 
         {awaitingDownload && (
           <div className="space-y-2">
-            <p className="text-sm text-text-default">
+            <p className="text-body text-text-default">
               A new version is ready to download. Biorouter will fetch it and then show you the file
-              to finish installing — it can&apos;t replace itself while it&apos;s running on this
+              to finish installing: it can&apos;t replace itself while it&apos;s running on this
               platform.
             </p>
             {downloadError && (
-              <p className="text-xs font-mono text-text-danger bg-background-muted rounded px-2 py-1">
+              <p className="text-supporting font-mono text-text-danger bg-background-muted rounded-inner px-2 py-1">
                 {downloadError}
               </p>
             )}
@@ -249,7 +251,7 @@ export default function UpdateAvailableModal() {
 
         {state.phase === 'available' && !awaitingDownload && (
           <div className="space-y-2">
-            <p className="text-sm text-text-default">
+            <p className="text-body text-text-default">
               A new version is downloading in the background. You can keep working. We&apos;ll let
               you know the moment it&apos;s ready to install.
             </p>
@@ -260,12 +262,14 @@ export default function UpdateAvailableModal() {
               // seconds read as a dead control.
               minVisiblePercent={4}
             />
-            <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
+            <p className="text-supporting text-text-muted text-right tabular-nums">
+              {state.percent}%
+            </p>
           </div>
         )}
 
         {isError && (
-          <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
+          <p className="text-supporting font-mono text-text-muted bg-background-muted rounded-inner px-2 py-1">
             {state.error || 'Something went wrong while downloading the update.'}
           </p>
         )}

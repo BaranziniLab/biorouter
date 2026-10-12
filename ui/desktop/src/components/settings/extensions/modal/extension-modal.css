@@ -1,0 +1,98 @@
+/*
+ * The configure and add dialog (`ExtensionModal.tsx`) and its field groups.
+ *
+ * Authored rather than Tailwind utilities: under BIOROUTER_NO_HMR a newly written class can fail
+ * to generate (CLAUDE.md, "Desktop shell geometry"), and these rules carry the form's rhythm.
+ * One rhythm for the whole form: 20px between groups, no per-child margins, no hairlines (owner
+ * message 13, R-27: the fields are the fills, and a group is told from the one before by space).
+ */
+
+.br-ext-form {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Name takes the room; Type is as wide as its two segments. */
+.br-ext-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+@media (max-width: 480px) {
+  .br-ext-identity {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A built-in's name and description: label over value (Crew's About tab). */
+.br-ext-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+
+.br-ext-facts dd {
+  margin: 0;
+}
+
+/* The Add form's tier line (issue #56, section 13.5): a badge and ONE sentence, no box. */
+.br-ext-tier {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.br-ext-tier > p {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.br-ext-timeout-input {
+  max-width: 8rem;
+}
+
+/* Environment variables and request headers: a group under its own title, set off from the fields
+   above by 8px more than the form's 20px (28px in all), where a hairline used to be. */
+.br-ext-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.br-ext-section-title {
+  display: flex;
+  align-items: center;
+}
+
+/* key | value | edit | remove, with the new-entry row's Add spanning the last two. Environment
+   variables and request headers share it, so the two groups line up. */
+.br-ext-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--control-md) var(--control-md);
+  align-items: center;
+  gap: 8px;
+}
+
+.br-ext-kv-add {
+  grid-column: span 2;
+}
+
+/* The saved-credentials list inside its dialog. */
+.br-ext-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-ext-credential-key {
+  word-break: break-all;
+}

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { TOAST_SURFACE_CLASS_NAME } from '../components/alerts/NotificationSurface';
+import { SELECT_MENU_SLOT } from '../components/ui/Select';
 
 /**
  * Where notifications appear, and in what order they pile up.
@@ -149,5 +150,179 @@ describe("a screen's toasts go when the person leaves it", () => {
     expect(APP).toMatch(/import \{[^}]*dismissScreenToasts[^}]*\} from '\.\/toasts'/);
     expect(APP).toMatch(/const screen = `\$\{pathname\}\$\{search\}`/);
     expect(APP).toMatch(/dismissScreenToasts\(\);\s*\}, \[screen\]\)/);
+  });
+});
+
+/**
+ * Spec 3.16: the toast's motion. react-toastify's default Bounce flew in from
+ * 3000px with overshoots over 500ms and then collapsed over 300ms; the app
+ * passes its own `cssTransition` instead, with the two keyframes authored beside
+ * the Toastify block.
+ */
+describe('a toast slides 8px with no bounce and collapses over 125ms', () => {
+  /** The body of `@keyframes name`. */
+  function keyframes(name: string): string {
+    const match = CSS.match(new RegExp(`@keyframes ${name}\\s*\\{([\\s\\S]*?)\\n\\}`));
+    if (!match) throw new Error(`no @keyframes ${name} in main.css`);
+    return match[1];
+  }
+
+  it('hands the container the custom transition, never the default Bounce', () => {
+    expect(APP).toMatch(/transition=\{TOAST_TRANSITION\}/);
+    expect(APP).toMatch(
+      /cssTransition\(\{\s*enter: 'br-toast-in',\s*exit: 'br-toast-out',\s*collapseDuration: DUR\.fast,?\s*\}\)/
+    );
+    expect(APP).not.toMatch(/import \{[^}]*\bBounce\b[^}]*\} from 'react-toastify'/);
+    expect(APP).not.toMatch(/transition=\{Bounce\}/);
+  });
+
+  it('enters with an 8px drop and leaves with an 8px slide, on the motion tokens', () => {
+    expect(CSS).toMatch(
+      /\.br-toast-in\s*\{\s*animation:\s*br-toast-in var\(--dur-fast-max\) var\(--ease-out\)/
+    );
+    expect(CSS).toMatch(
+      /\.br-toast-out\s*\{\s*animation:\s*br-toast-out var\(--dur-fast\) var\(--ease-out\)/
+    );
+    expect(keyframes('br-toast-in')).toMatch(/translateY\(-8px\)/);
+    expect(keyframes('br-toast-out')).toMatch(/translateX\(8px\)/);
+  });
+
+  /**
+   * ⚠ The floor, again, for the frames in between. The entrance starts its
+   * travel ABOVE the resting inset, so the inset minus that travel must still
+   * clear the drag band, or the toast's × and "View details" are dead while it
+   * animates (issue #74).
+   */
+  it('never enters the titlebar drag band while it animates', () => {
+    const travel = Number(keyframes('br-toast-in').match(/translateY\(-(\d+)px\)/)?.[1]);
+    expect(travel).toBeGreaterThan(0);
+    expect(resolvePx('toast-inset-top') - travel).toBeGreaterThanOrEqual(
+      resolvePx('titlebar-drag-height')
+    );
+  });
+
+  it('keeps the exit an animation under reduced motion, or no toast would ever leave', () => {
+    const reduced = CSS.match(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.br-toast-in\s*\{[^}]*\}\s*\.br-toast-out\s*\{([^}]*)\}/
+    );
+    expect(reduced, 'no reduced-motion rest for the toast').not.toBeNull();
+    expect(reduced![1]).toMatch(/animation-name:\s*br-toast-fade-out/);
+    expect(reduced![1]).not.toMatch(/animation:\s*none/);
+  });
+});
+
+/**
+ * Vision V1-R7-1. A sticky toast (the extension-load report) sat over the menus that open into
+ * the top-right corner: menus are at `--z-modal-dropdown` and the toast layer at `--z-toast`, so
+ * the tab strip's ▾ filter field and a tab's "Open in new window" could not be pointed at. While
+ * a menu or popover is open the layer drops one step below the menus. Chromium's hit test is
+ * `chatGroups/toastOverMenu.browser.test.tsx`; this holds the two ends at the source: the rule
+ * names the primitives' own `data-slot`s, and each primitive still emits its one.
+ */
+describe('a menu the person opened stands above a toast', () => {
+  const SLOTS: Record<string, string[]> = {
+    '../components/ui/dropdown-menu.tsx': ['dropdown-menu-content', 'dropdown-menu-sub-content'],
+    '../components/ui/context-menu.tsx': ['context-menu-content'],
+    '../components/ui/popover.tsx': ['popover-content'],
+    // react-select's menu, named by the shared wrapper (WS-PRIMITIVES-2). The name is set in an
+    // object (`'data-slot': SELECT_MENU_SLOT`), not as JSX, so its row is matched by the constant.
+    '../components/ui/Select.tsx': ['select-content'],
+  };
+
+  function yieldRule(): { selector: string; body: string } {
+    const match = CSS.match(/\n(body:has\([\s\S]*?\)\s*\.Toastify__toast-container)\s*\{([^}]*)\}/);
+    if (!match) throw new Error('no toast yield rule in main.css');
+    return { selector: match[1], body: match[2] };
+  }
+
+  it('drops the toast layer below the menus while one is open', () => {
+    const { selector, body } = yieldRule();
+    for (const slot of Object.values(SLOTS).flat()) {
+      expect(selector).toContain(`[data-slot='${slot}']`);
+    }
+    expect(selector).toMatch(/\)\[data-state='open'\]\s*\)/);
+    expect(body).toMatch(/z-index:\s*calc\(var\(--z-modal-dropdown\) - 1\)/);
+  });
+
+  it('keeps the yielded toast above every dialog, and the resting toast above the menus', () => {
+    const z = (name: string) => Number(declaration(name));
+    expect(z('z-modal-dropdown') - 1).toBeGreaterThan(z('z-modal'));
+    expect(z('z-toast')).toBeGreaterThan(z('z-modal-dropdown'));
+  });
+
+  it('names data-slots the menu primitives really emit', () => {
+    for (const [file, slots] of Object.entries(SLOTS)) {
+      const source = readFileSync(join(__dirname, file), 'utf8');
+      for (const slot of slots) {
+        if (file.endsWith('Select.tsx')) {
+          expect(SELECT_MENU_SLOT).toBe(slot);
+          expect(source, file).toMatch(/'data-slot': SELECT_MENU_SLOT, 'data-state': 'open'/);
+        } else {
+          expect(source, file).toContain(`data-slot="${slot}"`);
+        }
+      }
+    }
+  });
+
+  /**
+   * WS-PRIMITIVES-2. A Select whose menu stays inside a dialog (no portal) is stacked inside the
+   * dialog box's own context, which competes at `--z-modal` in the page, so the yielded toast
+   * (one under the menus) still covered it. While one is open the toast steps behind the dialog.
+   */
+  it('steps behind a dialog while a Select inside it is open', () => {
+    const match = CSS.match(
+      /\nbody:has\(\.biorouter-modal-surface \[data-slot='select-content'\]\[data-state='open'\]\)\s*\.Toastify__toast-container\s*\{([^}]*)\}/
+    );
+    expect(match, 'no rule for a Select open inside a dialog').not.toBeNull();
+    expect(match![1]).toMatch(/z-index:\s*calc\(var\(--z-modal\) - 1\)/);
+    const z = (name: string) => Number(declaration(name));
+    expect(z('z-modal') - 1).toBeGreaterThan(0);
+    // The dialog box really is the surface the rule names.
+    const dialog = readFileSync(join(__dirname, '../components/ui/dialog.tsx'), 'utf8');
+    expect(dialog).toMatch(/'biorouter-modal-surface [^']*fixed[^']*z-\[var\(--z-modal\)\]/);
+  });
+});
+
+/**
+ * Vision V2-R7-4, checklist 15. A toast covered find in chat's count and buttons, and the
+ * docked Chat summary's first rows, because all three dock in the same corner. The stack now
+ * steps below find and left of the summary (`components/alerts/toastClearance.ts`, whose own
+ * test holds the geometry; Chromium's is `alerts/toastClearance.browser.test.tsx`). This holds
+ * the two ends that live elsewhere: the stylesheet turns the measured move into a `translate`
+ * that leaves `top` alone, and App starts the watcher.
+ */
+describe('a toast steps out of the way of find in chat and the Chat summary', () => {
+  function rule(selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = CSS.match(new RegExp(`\\n${escaped}\\s*\\{([^}]*)\\}`));
+    if (!match) throw new Error(`no rule for ${selector} in main.css`);
+    return match[1];
+  }
+
+  it('moves the container by a translate, only ever left and down, never by its top', () => {
+    expect(rule('.Toastify__toast-container')).toMatch(
+      /translate:\s*calc\(-1 \* var\(--toast-clear-x, 0px\)\) var\(--toast-clear-y, 0px\);/
+    );
+    // The resting corner is still the token, so the drag-band floor above still holds.
+    expect(APP).toContain("top: 'var(--toast-inset-top)'");
+  });
+
+  it('glides only once placed, snaps during a resize, and not at all under reduced motion', () => {
+    expect(rule('.Toastify__toast-container[data-toast-placed]')).toMatch(
+      /transition:\s*translate var\(--dur-fast-max\) var\(--ease-out\);/
+    );
+    expect(CSS).toMatch(
+      /body\.biorouter-window-resizing \.Toastify__toast-container,\s*body\.biorouter-sidebar-resizing \.Toastify__toast-container\s*\{\s*transition-duration:\s*0ms;/
+    );
+    expect(CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.Toastify__toast-container\[data-toast-placed\]\s*\{\s*transition:\s*none;/
+    );
+  });
+
+  it('starts the watcher once, beside the container', () => {
+    expect(APP).toMatch(
+      /import \{ watchToastClearance \} from '\.\/components\/alerts\/toastClearance'/
+    );
+    expect(APP).toMatch(/useEffect\(\(\) => watchToastClearance\(\), \[\]\);/);
   });
 });

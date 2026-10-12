@@ -20,10 +20,27 @@ import { cn } from '../../utils';
  *
  * Tone is one formula, not six hand-picked pairs: the hue at 22% behind that same
  * hue's saturated ink (§2.5). `neutral` is the exception on purpose — it has no
- * hue to wash, so it takes a real surface step instead.
+ * hue to wash, so it takes a solid fill, never an outline (R-27), and the
+ * STRONG step of the two (`--background-fill-strong`), not the rest fill a field
+ * or a secondary button takes. It stays a step off the page and a filled card,
+ * and inside a dark popover it is re-pointed one step deeper than the ground.
+ *
+ * A WASHED ROW is the exception, and the ground says so, not the badge. The hover
+ * wash on a list or settings row is the page ink at 5%, which lands on the rest
+ * fill's value, 1.10:1 off the strong step in light and 1.08:1 in dark, so the
+ * Built-in, format, Primary and change-kind badges read as bare ink under the
+ * pointer (vision round 2, V3-R2-5; WS-KNOWLEDGE-3). The neutral tone therefore
+ * paints through `.br-badge-neutral` (main.css, `@layer components`), which reads
+ * `--br-badge-ground` with the strong step as its fallback, and the shared rows
+ * set that variable to the page ground while a row is washed: the badge becomes
+ * a hole in the wash (1.10:1 light, 1.14:1 dark, as painted in Chromium), as a
+ * filled control in the same row already does (design.md 9.11 rule 3: a fill
+ * never sits on a fill), so one row is one ground.
+ * An authored class, not an arbitrary Tailwind value, because class scanning can
+ * fail under `BIOROUTER_NO_HMR`; layered, so a caller's own `bg-*` still wins.
  */
 const toneClass = {
-  neutral: 'bg-background-medium text-text-muted',
+  neutral: 'br-badge-neutral text-text-muted',
   accent: 'bg-background-accent/22 text-text-accent',
   info: 'bg-background-info/22 text-text-info',
   success: 'bg-background-success/22 text-text-success',
@@ -51,7 +68,7 @@ export interface BadgeProps extends React.ComponentProps<'span'> {
    *
    * ⚠ This is not a convenience. The global focus rule (design system D-15)
    * paints `background-color: var(--background-focus)` on the focused
-   * `<button>`, and `tone="neutral"` is `bg-background-medium` — an OPAQUE fill.
+   * `<button>`, and `tone="neutral"` paints the strong fill (`.br-badge-neutral`), an OPAQUE fill.
    * A `<button><Badge/></button>` therefore covers its own focus surface
    * completely and a keyboard user gets no focus indication at all. With
    * `asChild` the fill and the focus surface are the same box, so the focus
@@ -83,7 +100,7 @@ export function Badge({
         'inline-flex flex-shrink-0 items-center gap-1 rounded-inner text-chip',
         variantClass[variant],
         // `text-caps` IS the caps style — it carries the uppercase transform, the
-        // +0.08em tracking and the 500 weight together, so there is nothing to
+        // +0.04em tracking and the 500 weight together, so there is nothing to
         // add beside it. It shares the `text` merge group with `text-chip` above,
         // which is why the override lands instead of both surviving.
         uppercase && 'text-caps',

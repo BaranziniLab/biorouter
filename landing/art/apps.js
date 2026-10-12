@@ -122,11 +122,13 @@
     page.appendChild(cursor);
     win.appendChild(page);
 
-    // Agent strip: one tool row, with the app's 2px active rail while it runs
+    // Agent strip: one tool row, with the app's 2px active rail while it runs. The glyph
+    // is the application's window (AppWindow), which is what every ui_ tool of a built
+    // app draws (utils/toolGlyph.ts: appcontrol -> app).
     var strip = el('div', 'apps-strip');
     strip.appendChild(el('span', 'apps-rail'));
-    strip.appendChild(svg('0 0 24 24', ['M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z'], {
-      stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+    strip.appendChild(svg('0 0 24 24', ['M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z', 'M10 4v4', 'M2 8h20', 'M6 4v4'], {
+      stroke: 'currentColor', 'stroke-width': '1.5', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'
     }));
     var rowwrap = el('span', 'apps-rowwrap');
     var row = el('span', 'apps-row');

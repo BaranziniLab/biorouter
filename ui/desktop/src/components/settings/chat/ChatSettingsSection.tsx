@@ -1,55 +1,41 @@
 import { ContextsSection } from '../contexts/ContextsSection';
 import { ModeSection } from '../mode/ModeSection';
-import { ResponseStylesSection } from '../response_styles/ResponseStylesSection';
+import { ToolCallDetailsRow } from '../response_styles/ResponseStylesSection';
 import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
 import { BrsdkSection } from '../brsdk/BrsdkSection';
-import { BioRouterHintsSection } from './BioRouterHintsSection';
-import { SpellcheckToggle } from './SpellcheckToggle';
+import { ProjectHintsRow } from './BioRouterHintsSection';
+import { SpellcheckRow } from './SpellcheckToggle';
 import MemorySection from '../memory/MemorySection';
+import { SettingSection } from '../../ui/setting-row';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { chatSectionsCopy, displayCopy, projectCopy } from './copy';
 
+/**
+ * Settings > Chat (spec §3.13): Approvals, Display, Capabilities, Memory, Contexts, App SDK,
+ * Project. One `SettingSection` each; a section's explanation is its header's InfoTip, never a
+ * paragraph under it.
+ *
+ * Capabilities, Contexts and App SDK rows belong to WS-SETTINGS-B's components, which return
+ * fragments of `SettingRow`s; this file owns their section headers (and the deep-link ids).
+ * Memory renders its own section.
+ */
 export default function ChatSettingsSection() {
   return (
     <div className="pb-8">
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Mode</h2>
-          <p className="text-supporting text-text-muted">
-            Configure how Biorouter interacts with tools and extensions
-          </p>
-        </div>
-        {/* No `.biorouter-settings-list` wrapper here: `ModeSection` IS the
-            list, because `role="radiogroup"` has to sit on the element that
-            contains the radios. Every other section below contributes a
-            fragment of rows to the list this file provides — they have no
-            semantics of their own to declare, and rows that are direct children
-            are what make `:last-child` select the real last row. */}
-        <ModeSection />
-      </div>
+      <ModeSection />
 
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Response styles</h2>
-          <p className="text-supporting text-text-muted">
-            Choose how Biorouter should format and style its responses
-          </p>
-        </div>
-        <div className="biorouter-settings-list">
-          <ResponseStylesSection />
-        </div>
-      </div>
+      <SettingSection id={SETTINGS_SECTION_IDS.display} title={displayCopy.section}>
+        <ToolCallDetailsRow />
+        <SpellcheckRow />
+      </SettingSection>
 
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Capabilities</h2>
-          <p className="text-supporting text-text-muted">
-            Choose which built-in abilities new chats start with. Existing chats keep their current
-            capabilities.
-          </p>
-        </div>
-        <div className="biorouter-settings-list">
-          <CapabilitiesSection />
-        </div>
-      </div>
+      <SettingSection
+        id={SETTINGS_SECTION_IDS.capabilities}
+        title={chatSectionsCopy.capabilities}
+        help={chatSectionsCopy.capabilitiesHelp}
+      >
+        <CapabilitiesSection />
+      </SettingSection>
 
       {/* Directly under Capabilities, which owns the switch that turns memory
           on and off: the store and its own toggle belong together. */}
@@ -63,49 +49,25 @@ export default function ChatSettingsSection() {
         switch that turns memory on and off. Splitting that pair to satisfy the
         letter of the request would break the reason it exists.
       */}
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">Contexts</h2>
-          <p className="text-supporting text-text-muted">
-            Skills that ship with Biorouter. Enabled contexts are available to chats; office
-            instructions load only for relevant tasks.
-          </p>
-        </div>
-        <div className="biorouter-settings-list">
-          <ContextsSection />
-        </div>
-      </div>
+      <SettingSection
+        id={SETTINGS_SECTION_IDS.contexts}
+        title={chatSectionsCopy.contexts}
+        help={chatSectionsCopy.contextsHelp}
+      >
+        <ContextsSection />
+      </SettingSection>
 
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted mb-1">App SDK</h2>
-          <p className="text-supporting text-text-muted">
-            Opt-in safety frameworks for Agent-Drafter apps. All are off by default and apply only
-            to Agent-Drafter apps, never to normal chat.
-          </p>
-        </div>
-        <div className="biorouter-settings-list">
-          <BrsdkSection />
-        </div>
-      </div>
+      <SettingSection
+        id={SETTINGS_SECTION_IDS.appSdk}
+        title={chatSectionsCopy.appSdk}
+        help={chatSectionsCopy.appSdkHelp}
+      >
+        <BrsdkSection />
+      </SettingSection>
 
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted">Editor</h2>
-        </div>
-        <div className="biorouter-settings-list">
-          <SpellcheckToggle />
-        </div>
-      </div>
-
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted">Project</h2>
-        </div>
-        <div className="biorouter-settings-list">
-          <BioRouterHintsSection />
-        </div>
-      </div>
+      <SettingSection id={SETTINGS_SECTION_IDS.project} title={projectCopy.section}>
+        <ProjectHintsRow />
+      </SettingSection>
     </div>
   );
 }

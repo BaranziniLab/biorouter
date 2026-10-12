@@ -82,6 +82,21 @@ describe('brand marks and theming', () => {
       expect(imports).not.toContain('useThemeFamily');
     });
 
+    it('takes one ink under forced colours, on every drawn part', () => {
+      // Chromium does not force an SVG `fill` given as a colour, so under
+      // `forced-colors: active` the navy "Bio" kept its ink on the person's
+      // canvas (about 1.3:1 on black). Each drawn part carries the class and
+      // main.css gives it CanvasText inside the media query. The paint itself
+      // is measured in `BioRouterWordmark.browser.test.tsx`; this pins the
+      // pair at the source for a run with no Chromium.
+      expect(src).toMatch(/const INK_CLASS = 'br-wordmark-ink';/);
+      expect(src.match(/className=\{INK_CLASS\}/g)).toHaveLength(4);
+      const css = read('../../styles/main.css');
+      expect(css).toMatch(
+        /@media \(forced-colors: active\) \{\s*\.br-wordmark-ink \{\s*fill: CanvasText;\s*\}\s*\}/
+      );
+    });
+
     it('still flips for light/dark, which is legibility rather than theming', () => {
       // Navy is unreadable on a dark ground, so the primary ink lifts to the
       // brand teal. That axis is kept; the family axis is not.

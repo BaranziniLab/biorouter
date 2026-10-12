@@ -10,6 +10,9 @@
 //! These tests pin the fix: one typed call declares the contract, and the merge
 //! restores every server-owned field regardless of what the caller wrote.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::store::{ArtifactKind, ArtifactStore};
 use tempfile::TempDir;
 

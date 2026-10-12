@@ -40,20 +40,41 @@ describe('ThemeFamilySelector', () => {
     expect(screen.getByTestId('theme-family-roche-limit-button')).toHaveTextContent('Roche Limit');
   });
 
+  // A segment is a radio: clicking the one already selected changes nothing, so each case
+  // first moves away to another family and then selects the one under test.
   it.each(THEME_FAMILIES)('selecting %s writes data-theme and persists it', (family) => {
     renderSelector();
+    const other = THEME_FAMILIES.find((candidate) => candidate !== family)!;
+    fireEvent.click(screen.getByTestId(`theme-family-${other}-button`));
     fireEvent.click(screen.getByTestId(`theme-family-${family}-button`));
     expect(document.documentElement.getAttribute('data-theme')).toBe(family);
     expect(localStorage.getItem('theme_family')).toBe(family);
+    expect(screen.getByTestId(`theme-family-${family}-button`)).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
   });
 
-  // The grid is sized in a hardcoded Tailwind class, so it does not grow with
-  // the registry. If a family is added and the column count is not bumped, the
-  // buttons wrap into a ragged extra row.
-  it('sizes the grid to the number of families', () => {
-    const { container } = renderSelector();
-    const grid = container.querySelector('[class*="grid-cols-"]');
-    expect(grid, 'expected a grid container').not.toBeNull();
-    expect(grid?.className).toContain(`grid-cols-${THEME_FAMILIES.length}`);
+  /**
+   * One segmented control (spec 2.6): a radiogroup with one radio per family, so the choice is
+   * one Tab stop and the arrow keys move it. It used to be a grid of toggle buttons whose column
+   * count was a hardcoded class that did not grow with the registry.
+   */
+  it('is one radiogroup with a radio per family', () => {
+    renderSelector();
+    const group = screen.getByRole('radiogroup');
+    expect(group).toHaveAccessibleName('Color palette');
+    expect(screen.getAllByRole('radio')).toHaveLength(THEME_FAMILIES.length);
+  });
+
+  it('shows every family’s own swatch, the selected one included', () => {
+    renderSelector();
+    for (const family of THEME_FAMILIES) {
+      const swatch = screen
+        .getByTestId(`theme-family-${family}-button`)
+        .querySelector<HTMLElement>('.br-swatch-ring');
+      expect(swatch?.style.background, family).not.toBe('');
+      expect(swatch?.style.background, family).not.toContain('currentcolor');
+    }
   });
 });

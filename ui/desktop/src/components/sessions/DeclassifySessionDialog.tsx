@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { declassifySession, type Session } from '../../api';
 import { toastError, toastService, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
@@ -9,17 +9,9 @@ import {
 } from '../../utils/sessionRowSync';
 import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
-import { MODAL_SIZE } from '../ModalShell';
+import { ModalShell } from '../ModalShell';
 
 /**
  * Issue #56 §12.4's graded confirmation, mirrored from
@@ -317,6 +309,10 @@ export function DeclassifySessionDialog({
   const needsPhrase = gradedStrong || escalated;
   const phrase = confirmationPhrase(session.id);
   const undoSeconds = Math.max(1, Math.round(undoMs / 1000));
+  // The undo window's sentence is the dialog's description. It is a body paragraph (not a
+  // subtitle), so the dialog points at it by id. Declared with the other hooks, above the
+  // early return below.
+  const undoTextId = useId();
 
   // The callbacks are read through a ref so that `send` — and therefore the undo
   // timer's effect — has an identity that does not change when the parent
@@ -431,26 +427,30 @@ export function DeclassifySessionDialog({
   }, [phase, send, undoMs]);
 
   if (phase === 'undo') {
+    // The same dialog anatomy as the typed confirmation of this flow (a `ModalShell`, top anchor,
+    // header rule): the flow used to jump from a top-anchored box to a centred one (vision round
+    // 7, V3-R7-1). Presentation only. The purpose stays the default (`info`), so Escape, the ×
+    // and a backdrop press leave exactly as they did on the raw `DialogContent`, and every one
+    // of them is the Undo: it returns to the confirmation and sends nothing. Pinned by
+    // "the undo window dismisses as Undo" in `DeclassifySessionDialog.test.tsx`.
     return (
-      <Dialog open={open} onOpenChange={(next) => !next && setPhase('confirm')}>
-        {/* V8 — the ladder's form rung by name; the literal it replaces was
-            already 480px, so the width is unchanged and only the spelling
-            moves onto the one ladder `ModalShell.tsx` documents. */}
-        <DialogContent className={MODAL_SIZE.md}>
-          <DialogHeader>
-            <DialogTitle>Marking this chat public…</DialogTitle>
-            <DialogDescription>
-              Nothing has been sent yet. This chat becomes public in {undoSeconds} seconds unless
-              you undo.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="pt-2">
-            <Button type="button" variant="outline" onClick={() => setPhase('confirm')}>
-              Undo
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ModalShell
+        open={open}
+        onOpenChange={(next) => !next && setPhase('confirm')}
+        size="md"
+        title="Marking this chat public…"
+        describedBy={undoTextId}
+        footer={
+          <Button type="button" variant="secondary" onClick={() => setPhase('confirm')}>
+            Undo
+          </Button>
+        }
+      >
+        <p id={undoTextId} className="text-body text-text-muted">
+          Nothing has been sent yet. This chat becomes public in {undoSeconds} seconds unless you
+          undo.
+        </p>
+      </ModalShell>
     );
   }
 

@@ -529,7 +529,7 @@ Headless: `Session {id} ready (gui_attached: false — no tab opened; the sessio
 
 ### With announce-only on
 
-`WORKSPACE_ANNOUNCE_ONLY` (Settings → App → Workspace → "Never open tabs automatically", default **off**) downgrades `open_tab`, `open_window` and `activate_tab` to a `notify` frame. The model-facing text changes with it: it names the right noun (window vs tab), says no such thing was opened, and instructs the model not to claim otherwise. If the *notification* is itself refused by the renderer, the text says the conversation is waiting in History rather than that the user was told.
+`WORKSPACE_ANNOUNCE_ONLY` (Settings → App → General → "Never open tabs automatically", default **off**) downgrades `open_tab`, `open_window` and `activate_tab` to a `notify` frame. The model-facing text changes with it: it names the right noun (window vs tab), says no such thing was opened, and instructs the model not to claim otherwise. If the *notification* is itself refused by the renderer, the text says the conversation is waiting in History rather than that the user was told.
 
 ### When to reach for it
 

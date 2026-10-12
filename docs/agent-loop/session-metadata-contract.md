@@ -65,12 +65,15 @@ operation accepts exactly this string with no decoration: Chat Recall's exact-ID
 
 ## Getting an ID out of the app, and what to do with it
 
-Right-click a conversation and pick **Copy conversation ID**. The menu is on all
-three places a chat row is drawn — sidebar Recents, full History, and the tab strip —
-and carries the same three actions in the same order everywhere: *Open in new tab*,
-*Open in new window*, *Copy conversation ID*. History's `⋯` overflow shows the identical
-list, which is also the keyboard path there; on any row the Menu key or Shift+F10 opens
-the right-click menu, because both dispatch a `contextmenu` event on the focused element.
+Right-click a chat and pick **Copy chat ID**. The menu is on all three places a chat row
+is drawn (the sidebar's Chats list, full History, and the tab strip) and is one menu
+(`components/chats/ChatRowContextMenu.tsx`) in one order everywhere: *Rename*, *Open in
+new tab*, *Open in new window*, *Diverge*, *Export…*, *Copy chat ID*, *Delete chat…*. A
+surface leaves out an item it cannot run (the tab strip shows only the three shared
+actions until its Rename lands; a subagent run offers no *Diverge*). The row's `⋯` button
+in the sidebar and History opens the identical list, and on any row the Menu key or
+Shift+F10 opens the right-click menu, because both dispatch a `contextmenu` event on the
+focused element.
 
 What lands on the clipboard is `Session.id` and nothing else — no prefix, no URL, no
 name. That is the point: the string can be pasted straight into a chat, where it is
@@ -130,7 +133,7 @@ Two consequences worth stating plainly:
 `parent_session_id` and `diverged_from` are siblings, not synonyms: the first records a
 **delegation** (an agent spawned this), the second a **user fork** (a person branched this),
 paired with `branch_point_msg_uid` for the exact message the branch was taken at. A row can
-carry either, and they are rendered differently — a `sub` badge versus "branched from …".
+carry either, and they are rendered differently — a sub-agent glyph versus "branched from …".
 
 ## How each surface reads the contract
 
@@ -138,8 +141,9 @@ carry either, and they are rendered differently — a `sub` badge versus "branch
 |---|---|
 | History nesting | `session_type === 'sub_agent'` **and** a `parent_session_id` resolving to a top-level row (`ui/desktop/src/components/sessions/sessionGrouping.ts`) |
 | History "Show subagent runs" toggle | Whether `sub_agent` rows are fetched at all, then `withoutSubagents` at every read of the shared cache |
-| The `sub` badge | The row's own `session_type`, so an unnested child is still labelled |
-| Sidebar Recents, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` over the title |
+| The sub-agent mark on a History row | The row's kind glyph (`chatKind.ts`), which reads `session_type` and `parent_session_id`, so an unnested child is still marked. There is no separate "Subagent" badge, and `historyRowTitle` drops the stored `Subagent: ` prefix from the title the row shows (the stored name is unchanged and still searchable) |
+| The scheduled mark on a History row | The same glyph (the clock, `session_type === 'scheduled'`). `historyRowTitle` drops the stored `Scheduled job: ` prefix, so a row reads as the job id (`daily-meditation`) and a search for a job does not list the kind ten times over. The prefix is dropped for the scheduled kind only, and the stored name is unchanged: the Meditation job and the rename field still read it |
+| Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` (and, for a Crew task, `origin` then `working_dir`) over the title |
 | `workspace_list` | `parent_session_id` and `only_subagents` as independent filters |
 | CLI | `crates/biorouter-cli/src/commands/session_grouping.rs`, the same two fields |
 
@@ -158,7 +162,7 @@ for a restricted caller is not evidence the conversation does not exist. See
 
 ## What is deliberately not in the contract
 
-- **A second identity mechanism in the UI.** Copy conversation ID copies `Session.id` and
+- **A second identity mechanism in the UI.** Copy chat ID copies `Session.id` and
   nothing else — no prefix, no URL, no display name. Any surface that needs to name a
   conversation to an agent uses that same string.
 - **A `kind` that can mint every `SessionType`.** `workspace_open`'s `new.kind` accepts

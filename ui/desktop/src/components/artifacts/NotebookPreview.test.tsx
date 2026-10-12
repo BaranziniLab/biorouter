@@ -1,9 +1,12 @@
-import { render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import NotebookPreview from './NotebookPreview';
 import type { ArtifactFilePreview } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
+import { PreviewBar, PreviewBarScope } from './PreviewBar';
 
 function notebookFile(text: string) {
   return {
@@ -38,15 +41,22 @@ describe('NotebookPreview', () => {
 
     render(
       <ThemeProvider>
-        <NotebookPreview file={notebookFile(text)} resolvedTheme="light" />
+        {/* The panel's one bar names the file; the notebook adds to it. */}
+        <PreviewBarScope>
+          <PreviewBar name="analysis.ipynb" path="/work/analysis.ipynb" />
+          <NotebookPreview file={notebookFile(text)} resolvedTheme="light" />
+        </PreviewBarScope>
       </ThemeProvider>
     );
 
-    // The status strip: shared label + path + cell count + kernel (design spec H).
-    expect(screen.getByText('Notebook')).toBeInTheDocument();
-    expect(screen.getByText('analysis.ipynb')).toBeInTheDocument();
-    expect(screen.getByText('2 cells')).toBeInTheDocument();
-    expect(screen.getByText('Python 3')).toBeInTheDocument();
+    // The bar: the name, the cell count, and the kernel as the count's help
+    // (spec 3.8) rather than a second label.
+    const bar = screen.getByTestId('artifact-status-strip');
+    expect(within(bar).getByText('analysis.ipynb')).toBeInTheDocument();
+    expect(within(bar).getByText('2 cells')).toBeInTheDocument();
+    expect(
+      within(bar).getByRole('button', { name: `About ${PREVIEW_COPY.kernel}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.kernelHelp('Python 3'));
     expect(screen.getByRole('heading', { name: 'Expression analysis' })).toBeInTheDocument();
     expect(screen.getByText('ready')).toBeInTheDocument();
     expect(screen.getByAltText('Notebook output')).toHaveAttribute(
@@ -200,12 +210,61 @@ describe('NotebookPreview HTML output theming', () => {
     expect(srcdoc).toContain("default-src 'none'");
     expect(srcdoc).toContain("style-src 'unsafe-inline'");
     expect(srcdoc).not.toContain('script-src');
-    // A separate document: the renderer's orange selection and the paper table
-    // treatment are restated inside it, since it cannot load main.css. pandas
-    // writes `<table border="1">`, which only `border:0` on the table undoes.
-    // The dark tint is the renderer's: #e8895f at 24%, never Paper's 30% slab.
+    // A separate document: the renderer's orange selection and the app's one
+    // table (spec section 0, filled under R-27: a subtle fill with a transparent
+    // border, top rules only between rows) are restated inside it, since it
+    // cannot load main.css. pandas writes `<table border="1">`: the table's own
+    // border replaces it, and every cell is cleared before its top rule. The
+    // dark tint is the renderer's: #e8895f at 24%.
     expect(srcdoc).toContain('::selection{background:rgba(232,137,95,0.24)}');
-    expect(srcdoc).toContain('table{border:0;');
-    expect(srcdoc).toContain('td,th{border:0;border-bottom:1px solid');
+    expect(srcdoc).toContain('table{border:1px solid transparent;background:');
+    expect(srcdoc).toContain('td,th{border:0;border-top:1px solid');
+    expect(srcdoc).toContain('font-weight:400');
+  });
+
+  // R-27 (fills before lines): the DataFrame is a filled box, not a framed one,
+  // exactly as `.br-md-table` is in the app. The sandbox cannot read the token,
+  // so the fill is a 4% wash of the ink over the page; this measures that wash
+  // against the real `--background-fill` in main.css for every family and mode,
+  // so the two cannot drift apart.
+  it.each(THEME_FAMILY_IDS)('draws the table on the fill step, not a frame, in %s', (family) => {
+    const css = readFileSync('src/styles/main.css', 'utf-8');
+    const token = (scope: ':root' | '.dark') => {
+      const block = new RegExp(`(?:^|\\n)${scope.replace('.', '\\.')} \\{[\\s\\S]*?\\n\\}`).exec(
+        css
+      );
+      const hex = /--background-fill:\s*(#[0-9a-f]{6})/i.exec(block?.[0] ?? '');
+      expect(hex, `--background-fill under ${scope}`).not.toBeNull();
+      return hex![1];
+    };
+    const channels = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const luminance = (hex: string) => {
+      const [r, g, b] = channels(hex)
+        .map((v) => v / 255)
+        .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    for (const mode of ['light', 'dark'] as const) {
+      const { background, foreground } = GENERATED_THEMES[family][mode].surface;
+      const srcdoc = srcdocFor(family, mode);
+      expect(srcdoc).toContain(
+        `background:color-mix(in srgb, ${foreground} 4%, ${background});background-clip:padding-box`
+      );
+      // Measured: the wash lands within 3% (contrast) of the fill token.
+      const [f, g] = [channels(foreground), channels(background)];
+      const wash = `#${f
+        .map((v, i) => Math.round(v * 0.04 + g[i] * 0.96))
+        .map((v) => v.toString(16).padStart(2, '0'))
+        .join('')}`;
+      const fill = token(mode === 'light' ? ':root' : '.dark');
+      const [a, b] = [luminance(wash), luminance(fill)];
+      expect((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), `${family}.${mode}`).toBeLessThan(
+        1.03
+      );
+      // No second ground on the header, and the edge survives forced colours.
+      expect(srcdoc).toContain('thead th{color:');
+      expect(srcdoc).not.toMatch(/thead th\{background/);
+      expect(srcdoc).toContain('@media (forced-colors:active){table{border-color:CanvasText}}');
+    }
   });
 });

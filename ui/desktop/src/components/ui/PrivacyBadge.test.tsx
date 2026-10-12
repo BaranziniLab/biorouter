@@ -326,8 +326,8 @@ describe('PrivacyBadge', () => {
       'lucide no longer stamps an icon class — this assertion is vacuous'
     ).toBeGreaterThan(0);
     expect(denseIcon).toEqual(pillIcon);
-    // And it is the padlock, which is what `chatKind.ts` builds a private
-    // conversation's `MessageSquareLock` from. Stated once, here, so the
+    // And it is the padlock, the same figure as the lock badge every private
+    // chat glyph wears (`withPrivateBadge`). Stated once, here, so the
     // vocabulary has one written-down anchor.
     expect(denseIcon).toContain('lucide-lock');
   });

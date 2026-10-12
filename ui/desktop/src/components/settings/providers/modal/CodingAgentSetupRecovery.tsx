@@ -1,5 +1,6 @@
 import {
   CodingAgentBody,
+  CodingAgentProvenance,
   StatusPill,
   pillFor,
   useCodingAgents,
@@ -31,8 +32,11 @@ export default function CodingAgentSetupRecovery({
   const name = kind === 'claude_code' ? 'Claude Code' : 'Codex';
 
   return (
-    <div className="space-y-4 text-sm text-text-default" data-testid="coding-agent-setup-recovery">
-      <p className="text-text-muted leading-relaxed">
+    <div
+      className="space-y-4 text-body text-text-default"
+      data-testid="coding-agent-setup-recovery"
+    >
+      <p className="text-text-muted">
         {name} uses its installed command-line app and your subscription sign-in.
         {kind === 'claude_code'
           ? ' To use an Anthropic API key instead, choose Anthropic under API providers.'
@@ -46,7 +50,7 @@ export default function CodingAgentSetupRecovery({
             Biorouter could not check {name}. Check that Biorouter is connected, then try again.
           </p>
           <Button
-            variant="outline"
+            variant="secondary"
             disabled={controls.isRechecking}
             onClick={() => void controls.refresh(false)}
           >
@@ -56,6 +60,7 @@ export default function CodingAgentSetupRecovery({
       ) : (
         <>
           <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+          <CodingAgentProvenance agent={agent} />
           <CodingAgentBody
             agent={agent}
             controls={controls}
@@ -68,7 +73,7 @@ export default function CodingAgentSetupRecovery({
         href={SETUP_DOCS[kind]}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-sm underline underline-offset-2"
+        className="text-body underline underline-offset-2"
       >
         Open official {name} setup instructions
       </a>

@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import type { LintResult } from '../../../api/types.gen';
+import { knowledgeCopy } from '../copy';
 import { LintDrawer } from './LintDrawer';
 
 const mocks = vi.hoisted(() => ({
@@ -92,6 +93,20 @@ beforeEach(() => {
 });
 
 describe('LintDrawer', () => {
+  it('closes through a named close in the pane header, beside the Check button', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(<LintDrawer open onOpenChange={onOpenChange} />);
+
+    const close = screen.getByRole('button', { name: knowledgeCopy.drawers.closeLint });
+    const header = close.closest('.br-knowledge-pane-header');
+    expect(header).not.toBeNull();
+    expect(within(header as HTMLElement).getByTestId('knowledge-lint-run')).toBeInTheDocument();
+
+    await user.click(close);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it('runs the check on open, against the base and the resolved model', () => {
     mocks.knowledge.primaryKbId = 'stale-pointer';
     render(<LintDrawer open onOpenChange={() => undefined} />);
@@ -290,5 +305,46 @@ describe('LintDrawer — a coding-agent model is a model like any other (#109)',
     // the removal above: a user with no provider at all still needs telling.
     expect(screen.getByRole('heading', { name: 'No model is configured' })).toBeInTheDocument();
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it('points at the model picker by name, not by where the Sources column is (V3-R3-6)', () => {
+    mocks.modelAndProvider = { currentProvider: null, currentModel: null };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    // Sources is a tab below the 860px step and a column with no label above it, so "the Sources
+    // rail" is wrong at one width. The picker's own accessible name is the same at both.
+    const hint = screen.getByText(knowledgeCopy.drawers.lintNoModel);
+    expect(hint.textContent).toContain(knowledgeCopy.ingest.modelName.toLowerCase());
+    expect(hint.textContent).not.toMatch(/\b(rail|tab|column|sources)\b/i);
+  });
+});
+
+// V3-R2-1 (from WS-VIEWS-A, WS-VIEWS-A-3): the check starts as the drawer opens, while focus is
+// arriving on the Check button, so a button that turned `disabled` for the run would hand focus to
+// <body> at once. It is `aria-busy` instead: still enabled and focused, the press ignored.
+describe('LintDrawer while the check runs', () => {
+  it('keeps the Check button enabled, focused and busy, and ignores the press', async () => {
+    mocks.stream = { events: [], status: 'streaming', finalResult: null, error: undefined };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeEnabled();
+    expect(run).toHaveAttribute('aria-disabled', 'true');
+    expect(run).toHaveAttribute('aria-busy', 'true');
+    expect(run).toHaveTextContent('Checking…');
+
+    const started = mocks.start.mock.calls.length;
+    run.focus();
+    await userEvent.click(run);
+    expect(mocks.start).toHaveBeenCalledTimes(started);
+    expect(run).toHaveFocus();
+  });
+
+  it('is an ordinary enabled button when nothing is running', () => {
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeEnabled();
+    expect(run).not.toHaveAttribute('aria-busy');
+    expect(run).not.toHaveAttribute('aria-disabled');
   });
 });

@@ -1,26 +1,14 @@
+import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Puzzle } from '../icons/app-icons';
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import { Input } from '../ui/input';
-import { Switch } from '../ui/switch';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import BuiltInBadge from '../ui/BuiltInBadge';
+import { uiCopy } from '../ui/copy';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { isCapabilityExtension } from '../settings/capabilities/capabilities';
 import { toastService } from '../../toasts';
-import {
-  formatExtensionName,
-  isBuiltInExtension,
-} from '../settings/extensions/subcomponents/ExtensionList';
+import { isBuiltInExtension } from '../settings/extensions/subcomponents/ExtensionList';
+import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
 import { isCrewExtensionName, useChatCrewAccessState } from '../crew/access/chatCrewAccess';
@@ -32,30 +20,55 @@ import {
   OPEN_CURRENT_CHAT_EXTENSIONS_EVENT,
   type SessionToolEventDetail,
 } from '../../utils/sessionToolEvents';
+import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
+import { PickerPanel, PickerRow } from './PickerPanel';
 
-/** §14.5's reason, in the composer's own words. Public model → private tool. */
-const PAIRING_REFUSED_REASON =
-  'Unavailable in this chat: a private extension needs a private model';
+const NO_EXTENSIONS: ExtensionConfig[] = [];
 
-interface BottomMenuExtensionSelectionProps {
+/** What the extensions list needs from its picker state (see `useExtensionPicker`). */
+export interface ExtensionPicker {
   sessionId: string | null;
+  /** Home: a change shapes the next chat only. */
+  isHubView: boolean;
+  /** The chip's number: extensions the user added, shipped capabilities excluded. */
+  activeCount: number;
   /**
-   * The focused chat's privacy tier (issue #56, §14.5).
-   *
-   * ⚠ **No longer what the pairing is judged on — see `pairingTier` in the body.**
-   * The chat's classification and the bound model's tier are different axes, and
-   * feeding this one to `extensionPairingRefused` reported a Private UCSF model
-   * as public in every chat that had not yet run a turn. Kept as a prop because
-   * it is still the honest answer to *what tier is this chat*, which is what the
-   * model chip beside this one states.
+   * Whether `activeCount` is this chat's own figure: its extensions have been
+   * read (or the read failed, leaving the fallback as the best there is). Home
+   * counts the configuration, which is always to hand. Until then the Tools
+   * chip shows no number (V2-R7-3).
    */
-  privacyTier?: SessionClassification;
+  answered: boolean;
+  query: string;
+  setQuery: (query: string) => void;
+  rows: ExtensionRow[];
+  toggle: (ext: FixedExtensionEntry, next?: boolean) => void;
+  bulk: { label: string; onClick: () => void; disabled: boolean } | null;
 }
 
-export const BottomMenuExtensionSelection = ({
-  sessionId,
-  privacyTier: _sessionPrivacyTier,
-}: BottomMenuExtensionSelectionProps) => {
+export interface ExtensionRow {
+  ext: FixedExtensionEntry;
+  /** The name a person reads, as the catalogue spells it (see `extensionDisplayName`). */
+  title: string;
+  pairingRefused: boolean;
+  lockedByCrew: boolean;
+  disabled: boolean;
+  pending: boolean;
+}
+
+/**
+ * The composer's extension list: state, fetches and toggles, without any
+ * trigger. `ToolsChip` holds it for the whole time the composer is mounted, so
+ * the count on the chip is right before the list is ever opened.
+ *
+ * @param open whether the list is on screen; opening re-reads the chat's list.
+ * @param onOpenRequest called when the app asks to show this chat's extensions
+ *   (`OPEN_CURRENT_CHAT_EXTENSIONS_EVENT`).
+ */
+export function useExtensionPicker(
+  sessionId: string | null,
+  { open, onOpenRequest }: { open: boolean; onOpenRequest?: () => void }
+): ExtensionPicker {
   /**
    * The tier this surface judges a pairing on: the **bound model's**, resolved
    * from a live instance (issue #56).
@@ -80,9 +93,32 @@ export const BottomMenuExtensionSelection = ({
   // from the chat's own lookup; this menu never fetches it.
   const crewAccessState = useChatCrewAccessState(sessionId);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isOpen, setIsOpen] = useState(false);
-  const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
-  const [sessionExtensionsLoaded, setSessionExtensionsLoaded] = useState(false);
+  const isOpen = open;
+  const onOpenRequestRef = useRef(onOpenRequest);
+  useEffect(() => {
+    onOpenRequestRef.current = onOpenRequest;
+  }, [onOpenRequest]);
+  // This chat's own extensions, KEYED by the chat they were read for, so a list
+  // read for the previous chat is never counted under this one, not even for
+  // the one frame before an effect could clear it (V2-R7-3).
+  const [sessionRead, setSessionRead] = useState<{
+    sessionId: string;
+    extensions: ExtensionConfig[];
+  } | null>(null);
+  // The chat whose first read has settled, answered or failed.
+  const [settledFor, setSettledFor] = useState<string | null>(null);
+  const sessionExtensionsLoaded = sessionRead !== null && sessionRead.sessionId === sessionId;
+  const sessionExtensions = sessionExtensionsLoaded ? sessionRead.extensions : NO_EXTENSIONS;
+  // A read that lands after the chat changed is dropped: written into the one
+  // slot, it would replace the new chat's list with the old chat's.
+  const currentSessionRef = useRef(sessionId);
+  useEffect(() => {
+    currentSessionRef.current = sessionId;
+  }, [sessionId]);
+  const adoptSessionExtensions = useCallback((readFor: string, extensions: ExtensionConfig[]) => {
+    if (currentSessionRef.current !== readFor) return;
+    setSessionRead({ sessionId: readFor, extensions });
+  }, []);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const [pendingExtensionNames, setPendingExtensionNames] = useState<Set<string>>(new Set());
@@ -123,7 +159,7 @@ export const BottomMenuExtensionSelection = ({
   useEffect(() => {
     const openForCurrentChat = (event: Event) => {
       const detail = (event as CustomEvent<SessionToolEventDetail>).detail;
-      if (detail?.sessionId === sessionId) setIsOpen(true);
+      if (detail?.sessionId === sessionId) onOpenRequestRef.current?.();
     };
     window.addEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
     return () => window.removeEventListener(OPEN_CURRENT_CHAT_EXTENSIONS_EVENT, openForCurrentChat);
@@ -131,8 +167,6 @@ export const BottomMenuExtensionSelection = ({
 
   useEffect(() => {
     sessionToggleChainsRef.current.clear();
-    setSessionExtensions([]);
-    setSessionExtensionsLoaded(false);
     setSessionOverrides(new Map());
     setPendingExtensionNames(new Set());
   }, [sessionId]);
@@ -154,12 +188,14 @@ export const BottomMenuExtensionSelection = ({
           headers: await userActionHeaders(),
         });
 
-        if (current && response.data?.extensions) {
-          setSessionExtensions(response.data.extensions);
-          setSessionExtensionsLoaded(true);
+        if (!current) return;
+        if (response.data?.extensions) {
+          adoptSessionExtensions(sessionId, response.data.extensions);
         }
+        setSettledFor(sessionId);
       } catch (error) {
         console.error('Failed to fetch session extensions:', error);
+        if (current) setSettledFor(sessionId);
       }
     };
 
@@ -168,28 +204,25 @@ export const BottomMenuExtensionSelection = ({
     return () => {
       current = false;
     };
-  }, [sessionId, isOpen, refreshTrigger]);
+  }, [sessionId, isOpen, refreshTrigger, adoptSessionExtensions]);
 
   const handleToggle = useCallback(
     (extensionConfig: FixedExtensionEntry, requestedState?: boolean) => {
       const nextEnabled = requestedState ?? !extensionConfig.enabled;
+      // No success toast (decision 6.9): the switch is the confirmation, and
+      // the scope line's InfoTip says how far the change reaches. On Home,
+      // `extensionOverrides` is an in-memory map that `createSession` clears,
+      // so it shapes exactly the next chat.
       if (isHubView) {
         setExtensionOverride(extensionConfig.name, nextEnabled);
         setHubUpdateTrigger((prev) => prev + 1);
-
-        toastService.success({
-          title: 'Extension updated',
-          // "in new chats" over-promised: `extensionOverrides` is an in-memory
-          // map that `createSession` clears, so it shapes exactly one chat.
-          msg: `${formatExtensionName(extensionConfig.name)} will be ${nextEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
-        });
         return;
       }
 
       if (!sessionId) {
         toastService.error({
-          title: 'Extension toggle error',
-          msg: 'Start a chat first.',
+          title: EXTENSIONS_COPY.toggleErrorTitle,
+          msg: EXTENSIONS_COPY.startChatFirst,
           traceback: 'No session ID available',
         });
         return;
@@ -212,8 +245,8 @@ export const BottomMenuExtensionSelection = ({
           return nextEnabled;
         } catch {
           toastService.error({
-            title: 'Extension toggle error',
-            msg: `${formatExtensionName(name)} could not be ${nextEnabled ? 'enabled' : 'disabled'}.`,
+            title: EXTENSIONS_COPY.toggleErrorTitle,
+            msg: EXTENSIONS_COPY.toggleFailed(extensionDisplayName(extensionConfig), nextEnabled),
           });
           return appliedState;
         }
@@ -230,13 +263,12 @@ export const BottomMenuExtensionSelection = ({
           });
           if (sessionToggleChainsRef.current.get(name) !== operation) return;
           if (response.data?.extensions) {
-            setSessionExtensions(response.data.extensions);
-            setSessionExtensionsLoaded(true);
+            adoptSessionExtensions(sessionId, response.data.extensions);
           }
         } catch {
           toastService.error({
-            title: 'Extension refresh error',
-            msg: 'The latest extension state could not be refreshed.',
+            title: EXTENSIONS_COPY.refreshErrorTitle,
+            msg: EXTENSIONS_COPY.refreshFailed,
           });
         } finally {
           if (sessionToggleChainsRef.current.get(name) === operation) {
@@ -255,7 +287,7 @@ export const BottomMenuExtensionSelection = ({
         }
       });
     },
-    [isHubView, sessionId]
+    [isHubView, sessionId, adoptSessionExtensions]
   );
 
   // Merge all available extensions with session-specific or hub override state
@@ -291,19 +323,37 @@ export const BottomMenuExtensionSelection = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);
 
-  const filteredExtensions = useMemo(() => {
-    return extensionsList.filter((ext) => {
-      const query = searchQuery.toLowerCase();
-      return (
-        ext.name.toLowerCase().includes(query) ||
-        (ext.description && ext.description.toLowerCase().includes(query))
-      );
-    });
-  }, [extensionsList, searchQuery]);
+  // The name a person reads for each extension, asked once. It is the one resolver every other
+  // surface asks (the Extensions page, the load notice, History), so `cdwagent` is `CDWAgent`
+  // here as there and not the key title-cased. The lookup walks the marketplace snapshot, so the
+  // search and the sort below read this map instead of asking per comparison.
+  const titles = useMemo(
+    () =>
+      new Map(extensionsList.map((ext): [string, string] => [ext.name, extensionDisplayName(ext)])),
+    [extensionsList]
+  );
+  const titleOf = useCallback(
+    (ext: FixedExtensionEntry) => titles.get(ext.name) ?? ext.name,
+    [titles]
+  );
 
+  // A person searches for what the row says, so the displayed name matches as well as the key.
+  const filteredExtensions = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return extensionsList.filter(
+      (ext) =>
+        ext.name.toLowerCase().includes(query) ||
+        titleOf(ext).toLowerCase().includes(query) ||
+        (ext.description && ext.description.toLowerCase().includes(query))
+    );
+  }, [extensionsList, searchQuery, titleOf]);
+
+  // In the order the names read, as the Extensions page lists them; the key breaks a tie.
   const sortedExtensions = useMemo(() => {
-    return [...filteredExtensions].sort((a, b) => a.name.localeCompare(b.name));
-  }, [filteredExtensions]);
+    return [...filteredExtensions].sort(
+      (a, b) => titleOf(a).localeCompare(titleOf(b)) || a.name.localeCompare(b.name)
+    );
+  }, [filteredExtensions, titleOf]);
 
   /**
    * The rows "Enable all" may actually act on.
@@ -346,9 +396,11 @@ export const BottomMenuExtensionSelection = ({
    *
    * Before the session fetch lands there is nothing session-specific to count,
    * so it falls back to the enabled config — the same fallback `GET
-   * /sessions/{id}/extensions` applies server-side, so the chip does not flash
-   * `0` on the way to the real number. `sessionOverrides` is layered on top so a
-   * toggle moves the chip immediately rather than after the refetch.
+   * /sessions/{id}/extensions` applies server-side. The chip does not SHOW that
+   * fallback while the read is out (`answered`, V2-R7-3: it read "Tools 2" and
+   * then "Tools 5" on every chat switch); it stands only when the read failed.
+   * `sessionOverrides` is layered on top so a toggle moves the chip immediately
+   * rather than after the refetch.
    */
   const activeCount = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
@@ -415,19 +467,14 @@ export const BottomMenuExtensionSelection = ({
       targets.forEach((ext) => setExtensionOverride(ext.name, targetEnabled));
       setHubUpdateTrigger((prev) => prev + 1);
       setBulkInFlight(false);
-
-      toastService.success({
-        title: 'Extensions updated',
-        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
-      });
       return;
     }
 
     if (!sessionId) {
       setBulkInFlight(false);
       toastService.error({
-        title: 'Extension toggle error',
-        msg: 'Start a chat first.',
+        title: EXTENSIONS_COPY.toggleErrorTitle,
+        msg: EXTENSIONS_COPY.startChatFirst,
         traceback: 'No session ID available',
       });
       return;
@@ -451,18 +498,12 @@ export const BottomMenuExtensionSelection = ({
         headers: await userActionHeaders(),
       });
       if (response.data?.extensions) {
-        setSessionExtensions(response.data.extensions);
-        setSessionExtensionsLoaded(true);
+        adoptSessionExtensions(sessionId, response.data.extensions);
       }
-
-      toastService.success({
-        title: 'Extensions updated',
-        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat`,
-      });
     } catch {
       toastService.error({
-        title: 'Extension toggle error',
-        msg: 'The extension selection could not be updated.',
+        title: EXTENSIONS_COPY.toggleErrorTitle,
+        msg: EXTENSIONS_COPY.bulkFailed,
       });
     } finally {
       setSessionOverrides((prev) => {
@@ -479,193 +520,103 @@ export const BottomMenuExtensionSelection = ({
     visibleEnabledCount,
     isHubView,
     sessionId,
+    adoptSessionExtensions,
   ]);
 
-  return (
-    <DropdownMenu
-      open={isOpen}
-      onOpenChange={(open) => {
-        setIsOpen(open);
-        if (!open) {
-          setSearchQuery('');
-        }
-      }}
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              // `text-supporting`, not the `text-secondary` main.css prescribes
-              // for a dense control — the override is explained once in
-              // ChatInput.tsx, search "THE RAILS' TYPE".
-              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-supporting"
-              // ⚠ "added", not "enabled", and the distinction is the whole
-              // point. This label read "Manage extensions (0 enabled)" in chats
-              // where tools demonstrably worked, which a screen-reader user
-              // hears as "you have no tools" — and the count is not wrong, the
-              // verb is. `activeCount` deliberately excludes the shipped
-              // capabilities (see the docblock above it), because it has to
-              // count the same population as the list this button labels; a
-              // chat always has those, so "enabled" describes a state they
-              // share and the number cannot be read against. "Added" names the
-              // act the number actually measures, so zero of them is a true
-              // statement rather than a false one about capability.
-              aria-label={`Manage extensions (${activeCount} added)`}
-            >
-              <Puzzle className="mr-0.5 h-4 w-4" />
-              <span>{activeCount}</span>
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top">Manage extensions</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent
-        side="top"
-        align="center"
-        className="w-64"
-        onCloseAutoFocus={(e) => {
-          e.preventDefault();
-        }}
-      >
-        <div className="p-1">
-          <Input
-            type="text"
-            placeholder="Search extensions..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8"
-            autoFocus
-          />
-        </div>
-        {/* §4.5 section label names the group; the bulk action shares its row as a
-            real ghost affordance (radius + hover fill + hit area) rather than the
-            bare underlined text link it used to be. */}
-        <div className="flex items-center justify-between gap-2">
-          <DropdownMenuLabel>Extensions</DropdownMenuLabel>
-          {toggleableExtensions.length > 0 && (
-            <button
-              type="button"
-              onClick={handleBulkToggle}
-              disabled={bulkInFlight || pendingExtensionNames.size > 0}
-              className="mr-2 shrink-0 cursor-pointer rounded-sm px-1.5 py-0.5 text-chip text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-medium hover:text-text-default disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {visibleEnabledCount === 0
-                ? `Enable all (${toggleableExtensions.length})`
-                : `Disable all (${visibleEnabledCount})`}
-            </button>
-          )}
-        </div>
-        {sortedExtensions.length > 0 && (
-          /*
-           * v1.89.0 P-03. What this menu changes, said where the user is
-           * deciding rather than in a toast that has already gone.
-           *
-           * The control is per-CHAT and always was: a session toggle calls
-           * `/agent/add_extension`, which attaches to the running agent and
-           * persists into that session's own `enabled_extensions.v0` — so the
-           * choice survives a restart *in this chat* — and never touches
-           * `config.yaml`. The hub view's toggles are more transient still:
-           * `extensionOverrides` is an in-memory map that `createSession`
-           * clears, so it shapes exactly the next chat you start.
-           *
-           * Neither said so. The bulk button's toast did ("… for this chat
-           * session"), a single row's said only "Successfully added extension",
-           * and nothing at all said where the durable default lives. A user who
-           * enabled Workspace here, quit, and found it off again read that as
-           * the setting failing to save; it was a per-chat control being read as
-           * a global one. Fixing the persistence instead would be the wrong
-           * repair — it would make disabling an extension in one chat disable it
-           * in every other.
-           */
-          <div className="px-3 pb-1.5 pt-0.5 text-supporting text-text-muted">
-            {isHubView
-              ? 'Applies to the next chat you start. Settings → Extensions sets the default for all new chats.'
-              : 'Applies to this chat. Settings → Extensions sets the default for new chats.'}
-          </div>
-        )}
-        <div className="max-h-[400px] overflow-y-auto">
-          {sortedExtensions.length === 0 ? (
-            <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {searchQuery ? 'No extensions found' : 'No extensions available'}
-            </div>
-          ) : (
-            sortedExtensions.map((ext) => {
-              // §14.5, and the reason it is a *state* rather than an omission:
-              // dropping the row is what produces "the OMOP tool is broken".
-              // Gate C is invisible in the GUI by construction — it returns
-              // `ErrorData` from inside `dispatch_tool_call`, so it never
-              // enters `PermissionCheckResult`, produces no approval card and
-              // records no denial. Nothing else in this app will ever tell the
-              // user why the tool did nothing.
-              //
-              // The row stays in the list and carries `aria-disabled="true"` —
-              // Radix derives that attribute from `disabled` below, which is
-              // why the string appears nowhere else in this file. Filtering the
-              // row out instead would satisfy every other assertion here and
-              // reintroduce the exact silence this state removes.
-              const pairingRefused = extensionPairingRefused(ext.name, pairingTier);
-              const lockedByCrew = crewLocked(ext);
-              const rowDisabled = bulkInFlight || pairingRefused || lockedByCrew;
-              return (
-                <DropdownMenuCheckboxItem
-                  key={ext.name}
-                  checked={ext.enabled}
-                  showIndicator={false}
-                  disabled={rowDisabled}
-                  onCheckedChange={(checked) => handleToggle(ext, checked)}
-                  onSelect={(event) => event.preventDefault()}
-                  // Geometry comes from the shared §4.5 row (32px, 12px padding,
-                  // --radius-md, 13/18, --background-medium hover) — this call site
-                  // adds only the toggle layout and the in-flight cursor.
-                  className={`justify-between hover:bg-background-medium ${
-                    pairingRefused || lockedByCrew
-                      ? 'h-auto cursor-not-allowed items-start py-1.5 opacity-70'
-                      : rowDisabled
-                        ? 'cursor-wait opacity-70'
-                        : 'cursor-pointer'
-                  }`}
-                  title={
-                    pairingRefused
-                      ? PAIRING_REFUSED_REASON
-                      : lockedByCrew
-                        ? accessCopy.extensionLocked
-                        : ext.description || ext.name
-                  }
-                >
-                  <div className="flex min-w-0 flex-col gap-0.5 pr-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <div className="font-medium text-text-default truncate">
-                        {formatExtensionName(ext.name)}
-                      </div>
-                      {isBuiltInExtension(ext) && <BuiltInBadge />}
-                    </div>
-                    {pairingRefused && (
-                      <div className="text-supporting text-text-muted">
-                        Unavailable in this chat (public model)
-                      </div>
-                    )}
-                    {lockedByCrew && (
-                      <div className="text-supporting text-text-muted">
-                        {accessCopy.extensionLocked}
-                      </div>
-                    )}
-                  </div>
-                  <div className="pointer-events-none" aria-hidden="true">
-                    <Switch
-                      checked={ext.enabled}
-                      variant="mono"
-                      disabled={rowDisabled}
-                      tabIndex={-1}
-                      aria-hidden="true"
-                    />
-                  </div>
-                </DropdownMenuCheckboxItem>
-              );
-            })
-          )}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+  const rows = useMemo<ExtensionRow[]>(
+    () =>
+      sortedExtensions.map((ext) => {
+        // §14.5, and the reason it is a *state* rather than an omission:
+        // dropping the row is what produces "the OMOP tool is broken". Gate C
+        // is invisible in the GUI by construction — it returns `ErrorData` from
+        // inside `dispatch_tool_call`, so nothing else in this app will ever
+        // tell the user why the tool did nothing. The row stays, disabled, and
+        // says why on a visible second line.
+        const pairingRefused = extensionPairingRefused(ext.name, pairingTier);
+        const lockedByCrew = crewLocked(ext);
+        return {
+          ext,
+          title: titleOf(ext),
+          pairingRefused,
+          lockedByCrew,
+          disabled: bulkInFlight || pairingRefused || lockedByCrew,
+          pending: pendingExtensionNames.has(ext.name),
+        };
+      }),
+    [sortedExtensions, titleOf, pairingTier, crewLocked, bulkInFlight, pendingExtensionNames]
   );
-};
+
+  const bulk =
+    toggleableExtensions.length > 0
+      ? {
+          label:
+            visibleEnabledCount === 0
+              ? EXTENSIONS_COPY.enableAll(toggleableExtensions.length)
+              : EXTENSIONS_COPY.disableAll(visibleEnabledCount),
+          onClick: () => void handleBulkToggle(),
+          disabled: bulkInFlight || pendingExtensionNames.size > 0,
+        }
+      : null;
+
+  return {
+    sessionId,
+    isHubView,
+    activeCount,
+    answered: isHubView || settledFor === sessionId,
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    rows,
+    toggle: handleToggle,
+    bulk,
+  };
+}
+
+/** The extensions list inside the Tools popover. */
+export function ExtensionsPanel({
+  picker,
+  inputRef,
+}: {
+  picker: ExtensionPicker;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
+  return (
+    <PickerPanel
+      data-testid="tools-extensions-panel"
+      listLabel={EXTENSIONS_COPY.listLabel}
+      searchPlaceholder={EXTENSIONS_COPY.search}
+      query={picker.query}
+      onQueryChange={picker.setQuery}
+      scopeLabel={picker.isHubView ? TOOLS_COPY.scope.nextChat : TOOLS_COPY.scope.thisChat}
+      scopeHelp={picker.isHubView ? EXTENSIONS_COPY.helpNextChat : EXTENSIONS_COPY.helpChat}
+      bulk={picker.bulk}
+      emptyText={picker.query ? EXTENSIONS_COPY.noMatch : EXTENSIONS_COPY.empty}
+      inputRef={inputRef}
+    >
+      {picker.rows.map(({ ext, title, pairingRefused, lockedByCrew, disabled, pending }) => (
+        <PickerRow
+          key={ext.name}
+          name={title}
+          checked={ext.enabled}
+          disabled={disabled}
+          busy={pending}
+          onToggle={() => picker.toggle(ext, !ext.enabled)}
+          badge={isBuiltInExtension(ext) ? <BuiltInBadge /> : undefined}
+          note={
+            pairingRefused
+              ? EXTENSIONS_COPY.pairingRefused
+              : lockedByCrew
+                ? accessCopy.extensionLocked
+                : undefined
+          }
+          description={
+            pairingRefused
+              ? EXTENSIONS_COPY.pairingRefusedReason
+              : lockedByCrew
+                ? undefined
+                : ext.description || (isBuiltInExtension(ext) ? uiCopy.builtInHelp : undefined)
+          }
+        />
+      ))}
+    </PickerPanel>
+  );
+}

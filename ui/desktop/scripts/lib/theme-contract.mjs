@@ -271,11 +271,13 @@ export const TERMINAL_DIM_SLOTS = {
 };
 
 /**
- * The brand mark's inks, plus the splash progress track. Named `mark`, not
- * `splash`: these drive BOTH the pre-React boot splash AND the in-app
- * <BioRouterMark>, and calling them "splash" is what let the two drift apart in
- * the first place. (The <BioRouterWordmark> deliberately does NOT read these —
- * see the note in that component.) `bg` is derived from --background-muted.
+ * The BR monogram's inks, plus the splash progress track. Named `mark`, not
+ * `splash`: `navy` and `coral` drive the in-app <BioRouterMark>, and `track` the
+ * boot splash's progress line. The boot splash draws the WORDMARK now, and the
+ * <BioRouterWordmark> deliberately does NOT follow the family (see the note in
+ * that component), so every family's splash takes the BASE family's `navy` and
+ * `coral`; only `track` is read per family. The splash ground is
+ * --background-canvas, derived by the generator and authored nowhere.
  */
 export const MARK_STOPS = ['navy', 'coral', 'track'];
 
@@ -288,12 +290,27 @@ export const SPLASH_STOPS = MARK_STOPS;
  */
 export const STRUCTURAL_TOKENS = [
   'radius-full',
-  'motion-fast',
-  'motion-base',
-  'motion-slow',
+  'dur-fast-min',
+  'dur-fast',
+  'dur-fast-max',
+  'dur-med-min',
+  'dur-med',
+  'dur-slow',
   'ease-out',
-  'ease-in',
+  'ease-spring',
   'row-height',
+  'row-height-nav',
+  // The control edge and the Switch's off track (redesign spec 2.3) are neutrals,
+  // shared by all three families and declared once per mode in the base blocks.
+  // `check-contrast.mjs` resolves them as hex there, and `themeNeutrals.test.ts`
+  // fails if a family block restates either.
+  'border-control',
+  'control-track-off',
+  // The fills of R-27 (owner message 13, "fills before lines"): the rest fill of
+  // a card, button, chip, tab, track or field and its hover/press step. Shared
+  // neutrals declared once per mode in the base blocks, like the two above.
+  'background-fill',
+  'background-fill-strong',
   'z-base',
   'z-sticky',
   'z-dropdown',
@@ -301,22 +318,17 @@ export const STRUCTURAL_TOKENS = [
   'z-modal',
   'z-modal-dropdown',
   'z-toast',
-  'heat-cell',
   'heat-gap',
-  'heat-labels',
   // The knowledge workspace's geometry (ui-spec §6.2). Structural for the same
   // reason `--row-height` is: it is the same measurement under every family, and
   // nothing else stops a fourth family declaring a rail width of its own.
   'measure-graph',
   'knowledge-rail-sources',
   'knowledge-rail-detail',
-  'knowledge-subject-height',
-  'knowledge-filter-height',
   'knowledge-pane-two-col',
   'knowledge-pane-legend-card',
   'knowledge-pane-full-filters',
   'knowledge-pane-three-col',
-  'knowledge-pane-short',
 ];
 
 /** Validate one mode of a theme definition. Returns an array of problems. */

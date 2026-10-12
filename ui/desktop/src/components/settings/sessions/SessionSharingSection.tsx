@@ -177,7 +177,6 @@ export default function SessionSharingSection() {
                   checked={sessionSharingConfig.enabled}
                   disabled={!!envBaseUrlShare}
                   onCheckedChange={toggleSharing}
-                  variant="mono"
                 />
               )}
             </div>

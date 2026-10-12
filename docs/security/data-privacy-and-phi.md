@@ -53,7 +53,7 @@ Different providers have fundamentally different data handling policies:
 Biorouter shows this to you the first time you bind a model that is not private, or pick one for a
 chat you have not sent yet, before any message reaches it. It keeps it in front of you afterwards
 on the model chip, in Settings → Privacy, and above the API providers on the **Public** tab of
-**Configure providers**. **It is shown whether or not privacy tiers are enabled** — turning the
+the provider configuration page (**Settings** → **Models** → **Providers** → **Manage…**). **It is shown whether or not privacy tiers are enabled** — turning the
 feature off removes the enforcement, not the exposure, so with it off this is larger rather than
 smaller.
 

@@ -3,32 +3,82 @@
   position: relative;
 }
 
+/* A chat tab gets more room for its title than a preview tab (spec 3.16): at
+   the shared 190px cap the title was cut at about 110px in a 1150px band. The
+   cap still yields to the pane, so a narrow split shrinks it.
+
+   Width is the only thing the chat strip says about its tabs. It used to box
+   every tab in a 1px `--border-subtle` over a translucent ground; that outline
+   is gone (R-27, fills before lines), and the chat strip now wears the shared
+   `.br-tab` ladder in main.css: plain text at rest, the ghost hover, and the
+   selected fill with its accent strip, the same tab as the preview panel's and
+   the terminal dock's. */
 .br-tabstrip--inline > .br-tab {
-  min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 190px));
-  max-width: min(190px, var(--chat-tab-available-width, 190px));
-  border: 1px solid var(--border-subtle);
-  background-color: color-mix(in srgb, var(--background-default) 24%, transparent);
+  min-width: min(var(--tab-min-width), var(--chat-tab-available-width, 240px));
+  max-width: min(240px, var(--chat-tab-available-width, 240px));
 }
 
-.br-tabstrip--inline > .br-tab:hover {
-  border-color: var(--border-strong);
-  background-color: color-mix(in srgb, var(--background-default) 72%, transparent);
+/* The strip's edges (the preview panel's recipe, V2-16): a tab scrolled past an
+   edge fades into it over 32px, a tab's leading glyph and its padding, so a
+   cut-off tab reads as "more this way" instead of a word clipped mid-letter
+   beside the ▾. Only while scrolled: a strip that fits has no mask at all.
+   `useTabStripScrolledEdges` sets the two attributes. */
+.br-tabstrip--inline {
+  --tab-edge-fade: 32px;
 }
 
-.br-tabstrip--inline > .br-tab[data-active='true'] {
-  border-color: var(--border-subtle);
-  background-color: var(--background-default);
-  font-weight: 600;
-  box-shadow: none;
+.br-tabstrip--inline[data-scrolled-start] {
+  mask-image: linear-gradient(to right, transparent, #000 var(--tab-edge-fade));
 }
 
-.br-tabstrip--inline[data-group-active='false'] > .br-tab[data-active='true'] {
-  border-color: var(--border-strong);
-  background: color-mix(in srgb, var(--background-default) 55%, transparent);
-  font-weight: 500;
-  box-shadow: none;
+.br-tabstrip--inline[data-scrolled-end] {
+  mask-image: linear-gradient(to left, transparent, #000 var(--tab-edge-fade));
 }
 
-.br-tabstrip--inline > .br-tab::before {
-  display: none;
+.br-tabstrip--inline[data-scrolled-start][data-scrolled-end] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--tab-edge-fade),
+    #000 calc(100% - var(--tab-edge-fade)),
+    transparent
+  );
+}
+
+/* The "+" once the strip overflows (vision V1-M2): a fixed slot between the
+   scroll box and the ▾, so it can never be scrolled under the ▾. 4px from the
+   clipped tabs (2px here plus the button's own 2px) and 4px before the ▾. */
+.br-tabstrip__end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-inline: 2px 4px;
+}
+
+/* Rename in place (P3): the sidebar's editor, sized to the tab's label. It
+   rests on the page ground inside the tab's fill (a fill never sits on a fill,
+   R-27) and draws its focus edge as an inset 1px, so it adds no outline of its
+   own and moves nothing. */
+.br-tab__rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  outline: none;
+  background: var(--background-default);
+  box-shadow: inset 0 0 0 1px var(--border-focus);
+  color: var(--text-default);
+  font: inherit;
+  font-weight: 400;
+}
+
+/* Tab content (spec 3.16): after a tab opens or switches, its transcript fades
+   in once, opacity only, over `--dur-fast`. `ChatGroupPane` sets the attribute
+   in the same commit as the new chat and drops it when this fade ends; the
+   messages themselves draw at rest (a tab switch is not a live arrival). Under
+   reduced motion the global reset shortens it to nothing. */
+[data-tab-content='switched'] [data-preview-transcript] {
+  animation: br-fade-in var(--dur-fast) var(--ease-out) backwards;
 }

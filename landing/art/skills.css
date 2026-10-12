@@ -24,7 +24,7 @@
 /* ── The conversation: one column pinned above the composer ── */
 .art-skills .sk-thread {
   position: absolute; left: var(--pad); right: var(--pad); top: var(--pad);
-  bottom: calc(var(--pad) + 44px + var(--gap)); /* above the 44px composer */
+  bottom: calc(var(--pad) + 66px + var(--gap)); /* above the 66px composer: prose line and controls row */
   display: flex; flex-direction: column; justify-content: flex-end; gap: 10px;
   transition: opacity var(--dur-slow) var(--ease);
 }
@@ -88,9 +88,9 @@
 .art-skills .sk-chev { width: 16px; height: 16px; margin-left: 6px; opacity: 0.6; }
 
 /* The running line breathes 1 → 0.7 → 1, the app's own running indicator
-   (br-tool-text-pulse, copied with its 2.4s ease-in-out). It runs only while
+   (br-tool-text-pulse: four periods of the slow unit, on the app's curve). It runs only while
    the tile is on screen. */
-.art-skills.is-live .sk-call[data-state="active"] .sk-run .sk-t { animation: skills-breathe 2.4s ease-in-out infinite; }
+.art-skills.is-live .sk-call[data-state="active"] .sk-run .sk-t { animation: skills-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 @keyframes skills-breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
@@ -100,12 +100,13 @@
 .art-skills .sk-composer {
   position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
   background: var(--paper);
-  border: 1px solid var(--line); border-radius: var(--r-container);
-  padding: 5px 5px 5px 12px;
+  border: 1px solid var(--line-composer); border-radius: var(--r-container);
+  padding: 6px 6px 6px 12px;
   transition: border-color var(--dur-menu) var(--ease);
 }
-/* The app's focus edge (--border-accent): the card's own hairline turns
-   accent while the command is typed. */
+/* The app's focus edge (--border-accent): the card rests on the page ground
+   with its hairline (R-32), and the edge turns accent while the command is
+   typed. */
 .art-skills.is-edge .sk-composer { border-color: var(--coral); }
 
 /* The reference rail: above the prose, inside the card. The chip is never
@@ -132,10 +133,23 @@
 .art-skills .sk-caret { display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
 .art-skills.is-focus .sk-caret { opacity: 1; }
 
+/* The controls row: [+] [Tools N]  ·  [model] (Send). The + glyph hangs back
+   onto the card's text edge, as in the app. */
+.art-skills .sk-bar { display: flex; align-items: center; gap: 2px; height: 32px; margin-left: -6px; min-width: 0; }
+.art-skills .sk-plus { display: grid; place-items: center; flex: none; width: 28px; height: 28px; color: var(--muted); }
+.art-skills .sk-bar-ic { width: 16px; height: 16px; }
+.art-skills .sk-tools, .art-skills .sk-model {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  height: 28px; padding: 0 7px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; white-space: nowrap; color: var(--muted);
+}
+.art-skills .sk-model { margin-left: auto; min-width: 0; }
+.art-skills .sk-dd { width: 12px; height: 12px; opacity: 0.6; }
+
 .art-skills .sk-send {
   display: grid; place-items: center; flex: none;
   width: 32px; height: 32px; border-radius: var(--r-element);
-  background: var(--medium); color: var(--faint);
+  background: var(--fill); color: var(--faint);
   transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
 }
 .art-skills .sk-send-ic { width: 16px; height: 16px; }
@@ -148,13 +162,14 @@
   position: absolute; left: -1px; right: -1px; bottom: calc(100% + 8px);
   background: var(--paper);
   border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   padding: 6px;
   opacity: 0; transform: translateY(6px);
   transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease);
 }
 .art-skills.show-picker .sk-picker { opacity: 1; transform: none; }
 /* The count shares the rows' left edge. */
-.art-skills .sk-found { font-size: 11px; line-height: 12px; color: var(--muted); margin: 0 0 4px; padding: 0 4px 0 9px; white-space: nowrap; }
+.art-skills .sk-found { font-size: 12px; line-height: 12px; color: var(--muted); margin: 0 0 4px; padding: 0 4px 0 9px; white-space: nowrap; }
 .art-skills .sk-list { position: relative; }
 .art-skills .sk-row {
   position: relative; z-index: 1;
@@ -164,14 +179,13 @@
 .art-skills .sk-row-ic { width: 16px; height: 16px; color: var(--muted); }
 .art-skills .sk-row-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .art-skills .sk-row-name { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; overflow: hidden; }
-.art-skills .sk-row-desc { font-size: 11px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-/* The selected row, as the app marks it: an inset hairline ring on the strong
-   ground at 70%, moving as the arrow keys would. */
+.art-skills .sk-row-desc { font-size: 12px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+/* The selected row, as the app marks it: the solid strong fill, no ring,
+   moving as the arrow keys would. */
 .art-skills .sk-sel {
   position: absolute; left: 0; right: 0; top: 0; height: 37px;
   border-radius: var(--r-inner);
-  background: color-mix(in srgb, var(--strong) 70%, transparent);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--fill-strong);
   transition: transform var(--dur-menu) var(--ease);
 }
 

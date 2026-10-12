@@ -365,6 +365,99 @@ fn test_acp_load_session_replays_history() {
     });
 }
 
+/// R-30: an ACP `session/load` is opening a chat, not activity in it.
+///
+/// Loading binds this server's provider to the chat and, for a chat with no
+/// message yet, applies the client's directory. Both writes used to stamp
+/// `updated_at`, so every load moved the chat to the top of every list sorted
+/// by activity (the desktop's sidebar and History, `biorouter session list`).
+/// Both writes must still LAND, which is asserted too: otherwise "unchanged"
+/// could mean the load never reached them.
+#[test]
+fn test_acp_load_session_is_not_activity() {
+    use biorouter::conversation::message::Message;
+    use biorouter::session::session_manager::SessionType;
+    use biorouter::session::SessionManager;
+
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(Vec::new()).await;
+
+        let sm = SessionManager::new(data_dir.path().to_path_buf());
+        let chat = sm
+            .create_session(
+                data_dir.path().to_path_buf(),
+                "R-30 chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&chat.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let empty = sm
+            .create_session(
+                data_dir.path().to_path_buf(),
+                "R-30 empty chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let chat_before = sm.get_session(&chat.id, false).await.unwrap().updated_at;
+        let empty_before = sm.get_session(&empty.id, false).await.unwrap().updated_at;
+        sm.close().await;
+        // `datetime('now')` has one-second resolution: load in a later second,
+        // so a stamp cannot hide inside the second the rows were written in.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let cwd = work_dir.path().to_path_buf();
+                let ids = [chat.id.clone(), empty.id.clone()];
+                move |cx, _updates| async move {
+                    for id in ids {
+                        cx.send_request(LoadSessionRequest::new(id, cwd.clone()))
+                            .block_task()
+                            .await
+                            .unwrap();
+                    }
+                }
+            },
+        )
+        .await;
+
+        let sm = SessionManager::new(data_dir.path().to_path_buf());
+        let chat_after = sm.get_session(&chat.id, false).await.unwrap();
+        let empty_after = sm.get_session(&empty.id, false).await.unwrap();
+        sm.close().await;
+
+        assert_eq!(
+            chat_after.provider_name.as_deref(),
+            Some("openai"),
+            "premise: the load bound its provider"
+        );
+        assert_eq!(
+            empty_after.working_dir,
+            work_dir.path(),
+            "premise: the load applied the client's directory to the empty chat"
+        );
+        assert_eq!(
+            chat_after.updated_at, chat_before,
+            "loading a chat is not activity in it (R-30)"
+        );
+        assert_eq!(
+            empty_after.updated_at, empty_before,
+            "applying the directory while loading is not activity either"
+        );
+    });
+}
+
 async fn wait_for(updates: &Arc<Mutex<Vec<SessionNotification>>>, expected: &SessionUpdate) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     let mut context = String::new();

@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { toolIdentifierToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
-import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
+import { Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { TranscriptRow } from './TranscriptRow';
+import { APPROVAL_COPY, sentenceStart, toolCallPhrase } from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 import { isBrowserSurface } from '../utils/surface';
 
@@ -17,9 +18,7 @@ import { isBrowserSurface } from '../utils/surface';
  * this request, but for anyone, always. Rendering Allow/Deny there is a lie the
  * user only discovers by clicking.
  */
-const BROWSER_CANNOT_APPROVE =
-  'This page is served to a browser, which has no way to prove a decision came from you ' +
-  'rather than from the model. Answer this request in the Biorouter desktop app.';
+const BROWSER_CANNOT_APPROVE = APPROVAL_COPY.browserCannotApprove;
 
 /** The refusal reason the daemon returns when no approval can ever be granted. */
 function refusalIsPermanent(error: unknown): boolean {
@@ -48,9 +47,12 @@ const toolConfirmationState = new Map<
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 
-/** `developer__text_editor` → `Text Editor`. */
+/**
+ * `developer__text_editor` → "text editor", for the middle of a sentence ("Run
+ * text editor?"). Sentence case: acronyms and product names keep capitals.
+ */
 function friendlyToolName(toolName: string): string {
-  return toolIdentifierToTitleCase(toolName.split('__').pop() ?? toolName);
+  return toolCallPhrase(toolName);
 }
 
 interface ToolConfirmationProps {
@@ -124,13 +126,11 @@ export default function ToolConfirmation({
     let newActionDisplay;
 
     if (newStatus === ALWAYS_ALLOW) {
-      newActionDisplay = 'always allowed';
+      newActionDisplay = APPROVAL_COPY.outcome.alwaysAllow;
     } else if (newStatus === ALLOW_ONCE) {
-      newActionDisplay = 'allowed once';
-    } else if (newStatus === DENY) {
-      newActionDisplay = 'denied';
+      newActionDisplay = APPROVAL_COPY.outcome.allowOnce;
     } else {
-      newActionDisplay = 'denied';
+      newActionDisplay = APPROVAL_COPY.outcome.deny;
     }
 
     try {
@@ -159,12 +159,13 @@ export default function ToolConfirmation({
           acknowledgedStatus !== 'already_resolved' &&
           acknowledgedStatus !== 'unknown')
       ) {
-        setConfirmationError('Could not confirm your decision. Try again.');
+        setConfirmationError(APPROVAL_COPY.confirmFailed);
         return;
       }
       const resolvedStatus = acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
-      if (acknowledgedStatus === 'already_resolved') newActionDisplay = 'already answered';
-      if (acknowledgedStatus === 'unknown') newActionDisplay = 'no longer available';
+      if (acknowledgedStatus === 'already_resolved')
+        newActionDisplay = APPROVAL_COPY.outcome.alreadyResolved;
+      if (acknowledgedStatus === 'unknown') newActionDisplay = APPROVAL_COPY.outcome.unknown;
       setClicked(true);
       setStatus(resolvedStatus);
       setActionDisplay(newActionDisplay);
@@ -174,7 +175,7 @@ export default function ToolConfirmation({
         actionDisplay: newActionDisplay,
       });
     } catch {
-      setConfirmationError('Could not confirm your decision. Try again.');
+      setConfirmationError(APPROVAL_COPY.confirmFailed);
     } finally {
       sendingRef.current = false;
       setIsSending(false);
@@ -194,11 +195,11 @@ export default function ToolConfirmation({
   // for escalating this call — so its presence is what marks a security finding.
   //
   // One derived boolean rather than two independent reads of `prompt`: the
-  // warning banner and the withheld "Always Allow" are two halves of one
+  // warning banner and the withheld "Always allow" are two halves of one
   // decision, and a card that shows the banner while still offering a permanent
   // grant (or the reverse) is worse than either. Whitespace is not a finding —
   // a blank prompt used to paint an empty warning band *and* take the user's
-  // "Always Allow" away.
+  // "Always allow" away.
   //
   // ⚠ The coding-agent bridge used to put its own framing there ("<child> asked
   // to run this through Biorouter"), which put every bridged call behind a
@@ -209,7 +210,7 @@ export default function ToolConfirmation({
   // ⚠ That guard covers `bridge.rs` and ONLY `bridge.rs` — it string-matches that
   // one file. Do NOT read it as "nothing but an inspector writes `prompt`": five
   // other production sites still put framing there, so their cards still draw the
-  // banner and still withhold "Always Allow" —
+  // banner and still withhold "Always allow" —
   // `extension_manager_extension.rs` (install, delete), `platform_approval.rs`,
   // `skills_extension.rs` and `bug_report/mod.rs`. Withholding the grant is
   // arguably wanted for the destructive ones (they carry `requires_user_proof`),
@@ -218,130 +219,134 @@ export default function ToolConfirmation({
   // `prompt`, which is a protocol change, so it is a known gap rather than a fix.
   const securityFinding = typeof prompt === 'string' && prompt.trim().length > 0;
 
-  // One cohesive, bordered "permission request" card. A single border wraps the
-  // whole element (header + actions) so there are no mismatched borders, it uses
-  // the app's standard card tokens + typography, and a gentle slide-in makes it
-  // read as a distinct prompt the user is meant to act on.
-  return isCancelledMessage ? (
-    <div className="biorouter-message-content rounded-2xl border border-border-subtle bg-background-muted px-4 py-3 text-sm text-text-muted">
-      Tool call confirmation was canceled.
+  // The finding is a security fact, so it stays visible on every state of the
+  // card: a warning line, not a tinted band (a band inside a card is a box in
+  // a box).
+  const findingLine = securityFinding ? (
+    <div
+      data-testid="tool-security-finding"
+      className="flex items-start gap-2 text-body text-text-warning"
+    >
+      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <span className="min-w-0">{prompt}</span>
     </div>
-  ) : (
+  ) : null;
+
+  if (isCancelledMessage) {
+    return (
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={X} label={APPROVAL_COPY.canceled} />
+      </div>
+    );
+  }
+
+  // Answered: the card has done its job, so it collapses to a transcript row
+  // with the outcome and a way to change the standing permission.
+  if (clicked) {
+    const declined = status === 'deny' || status === 'unknown' || status === 'already_resolved';
+    return (
+      <>
+        <div className="biorouter-message-content text-body flex min-w-0 flex-col gap-1">
+          <TranscriptRow
+            icon={declined ? X : Check}
+            label={
+              isClicked
+                ? APPROVAL_COPY.unavailable
+                : APPROVAL_COPY.resolved(sentenceStart(friendlyToolName(toolName)), actionDisplay)
+            }
+            trailing={
+              // The row's own voice (13px muted): a 14px control beside a 13px
+              // line read as a second size on one line.
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-secondary text-text-muted"
+                onClick={() => setIsModalOpen(true)}
+              >
+                {APPROVAL_COPY.change}
+              </Button>
+            }
+          />
+          {findingLine && <div className="pl-6">{findingLine}</div>}
+        </div>
+        {isModalOpen && (
+          <PermissionModal onClose={handleModalClose} extensionName={getExtensionName(toolName)} />
+        )}
+      </>
+    );
+  }
+
+  // Asking: the one card recipe for anything that needs the person to act:
+  // radius 12, the subtle fill with no outline, 16px in. Title, what the call
+  // will do, then the decision at the bottom right.
+  return (
     <>
-      <div className="biorouter-message-content text-body overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
-        {/* Security finding banner, only when an inspector flagged one */}
-        {securityFinding && (
-          <div
-            data-testid="tool-security-finding"
-            className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning"
-          >
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{prompt}</span>
+      <div className="biorouter-message-content br-action-card br-fill-surface br-enter text-body">
+        {findingLine}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-label text-text-default">
+            {/* Name the tool. "this tool" told the user nothing.
+                ⚠ NOT `font-mono`. `friendlyToolName` returns a display name
+                ("install extension"), not the raw
+                `extensionmanager__install_extension` id it started life as, and
+                the answered row renders the SAME string in the body font. The
+                <span> keeps the name a distinct node, which is what lets a test
+                assert on the name alone rather than on the whole sentence. */}
+            {APPROVAL_COPY.question} <span>{friendlyToolName(toolName)}</span>?
+          </span>
+          {risk && <ToolRiskBadge risk={risk} />}
+        </div>
+
+        {/* BR-63: the whole point — what the call will actually do. */}
+        {preview && <ToolCallPreview preview={preview} />}
+
+        {cannotApprove ? (
+          // A refusal, so it stays visible (principle 2).
+          <p role="status" className="text-body text-text-muted">
+            {cannotApprove}
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              disabled={isSending}
+              onClick={() => handleButtonClick(ALLOW_ONCE)}
+            >
+              {APPROVAL_COPY.allowOnce}
+            </Button>
+            {/* Only offer "Always allow" when there's no security finding. A
+                permanent grant is not something to decide from a card that
+                exists because an inspector objected. */}
+            {!securityFinding && (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={isSending}
+                onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+              >
+                {APPROVAL_COPY.alwaysAllow}
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={isSending}
+              onClick={() => handleButtonClick(DENY)}
+            >
+              {APPROVAL_COPY.deny}
+            </Button>
           </div>
         )}
-
-        {clicked ? (
-          // Resolved state — one consistent row inside the same card.
-          <div className="flex items-center justify-between px-4 py-3">
-            <div className="flex items-center gap-2 text-sm text-text-default">
-              {status === 'deny' || status === 'unknown' || status === 'already_resolved' ? (
-                <X className="h-4 w-4 shrink-0 text-text-muted" />
-              ) : (
-                <Check className="h-4 w-4 shrink-0 text-text-muted" />
-              )}
-              <span>
-                {isClicked
-                  ? 'Tool confirmation is not available'
-                  : `${friendlyToolName(toolName)} is ${actionDisplay}`}
-              </span>
-            </div>
-            <button
-              type="button"
-              className="flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-text-default"
-              onClick={() => setIsModalOpen(true)}
-            >
-              Change
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          // Pending state — the agent is asking the user for permission.
-          <div className="px-4 py-3">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Lock className="h-4 w-4 shrink-0 text-text-muted" />
-              <span className="text-sm font-medium text-text-default">
-                {/* Name the tool. "this tool" told the user nothing.
-                    ⚠ NOT `font-mono`. `friendlyToolName` returns a Title Case
-                    display name ("Install Extension"), not the raw
-                    `extensionmanager__install_extension` id it started life as —
-                    and the resolved state a few lines above renders the SAME
-                    string in the body font. One string, two typefaces, in one
-                    component. Monospace here is a leftover from when this
-                    printed the identifier.
-                    The <span> stays: it keeps the name a distinct node, which is
-                    what lets a test assert on the name alone rather than on the
-                    whole "Run … ?" sentence. Only the font moved. */}
-                Run <span>{friendlyToolName(toolName)}</span>?
-              </span>
-              {risk && <ToolRiskBadge risk={risk} />}
-            </div>
-
-            {/* BR-63: the whole point — what the call will actually do. */}
-            {preview && (
-              <div className="mb-3">
-                <ToolCallPreview preview={preview} />
-              </div>
-            )}
-
-            {cannotApprove ? (
-              <p
-                role="status"
-                className="rounded-lg bg-background-muted px-3 py-2 text-sm text-text-muted"
-              >
-                {cannotApprove}
-              </p>
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="default"
-                  disabled={isSending}
-                  onClick={() => handleButtonClick(ALLOW_ONCE)}
-                >
-                  Allow Once
-                </Button>
-                {/* Only offer "Always Allow" when there's no security finding. A
-                    permanent grant is not something to decide from a card that
-                    exists because an inspector objected. */}
-                {!securityFinding && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={isSending}
-                    onClick={() => handleButtonClick(ALWAYS_ALLOW)}
-                  >
-                    Always Allow
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={isSending}
-                  onClick={() => handleButtonClick(DENY)}
-                >
-                  Deny
-                </Button>
-              </div>
-            )}
-            {confirmationError && (
-              <p role="alert" className="mt-2 text-sm text-text-warning">
-                {confirmationError}
-              </p>
-            )}
-          </div>
+        {confirmationError && (
+          <p role="alert" className="text-supporting text-text-danger">
+            {confirmationError}
+          </p>
         )}
       </div>
 

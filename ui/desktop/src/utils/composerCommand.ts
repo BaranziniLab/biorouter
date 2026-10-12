@@ -23,6 +23,8 @@
  * that adds a character the user did not type moves the caret.
  */
 
+import { COMPOSER_COPY } from '../components/composer/copy';
+
 export interface ChipCommandDef {
   /** What the chip reads as. */
   label: string;
@@ -32,13 +34,12 @@ export interface ChipCommandDef {
   placeholder: string;
 }
 
-/** The commands drawn as a chip, keyed by name (no leading `/`). */
+/**
+ * The commands drawn as a chip, keyed by name (no leading `/`). The words live
+ * in the composer's copy registry (`COMPOSER_COPY.chipCommands`).
+ */
 export const CHIP_COMMANDS = {
-  bug: {
-    label: 'Report a bug',
-    title: '/bug: Biorouter investigates this chat and drafts an issue for you to approve',
-    placeholder: 'Describe what went wrong (optional)',
-  },
+  bug: COMPOSER_COPY.chipCommands.bug,
 } as const satisfies Record<string, ChipCommandDef>;
 
 export type ChipCommand = keyof typeof CHIP_COMMANDS;

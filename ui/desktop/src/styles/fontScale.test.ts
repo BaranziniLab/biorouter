@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import postcss from 'postcss';
 import { fontScale } from '../../vite-plugins/fontScale.mjs';
@@ -40,6 +42,7 @@ describe('typography scaling in compiled CSS', () => {
   it('scales shared control tokens once without growing app chrome or panel measures', async () => {
     const css = await transform(`:root {
       --control-md: 32px; --row-height: 40px; --row-height-rail: 32px;
+      --row-height-nav: 28px;
       --md-code-pad: 14px 16px;
       --spacing: .25rem; --chrome-height: 44px; --dock-height: 36px;
       --tab-height: 32px; --measure-chat: 760px;
@@ -47,6 +50,9 @@ describe('typography scaling in compiled CSS', () => {
     .control { height: var(--control-md); padding: var(--md-code-pad); }`);
     expect(css).toContain('--control-md: calc(32px * var(--app-font-scale, 1))');
     expect(css).toContain('--row-height: calc(40px * var(--app-font-scale, 1))');
+    expect(css).toContain('--row-height-rail: calc(32px * var(--app-font-scale, 1))');
+    // The app sidebar's 28px row grows with Text size like every other row token.
+    expect(css).toContain('--row-height-nav: calc(28px * var(--app-font-scale, 1))');
     expect(css).toContain(
       '--md-code-pad: calc(14px * var(--app-font-scale, 1)) calc(16px * var(--app-font-scale, 1))'
     );
@@ -127,5 +133,30 @@ describe('typography scaling in compiled CSS', () => {
     expect(css).toContain('--text-default: #333');
     expect(css).toContain('font-size: 1.2em; line-height: 1.5');
     expect(await transform(css)).toBe(css);
+  });
+
+  /*
+   * The document default moved from `calc(1rem * scale)` to `var(--text-body)` in
+   * wave 2. The Text size preference must survive the move: the token is scaled
+   * where it is defined, and the body's read of it is left alone, so the default
+   * grows with Text size exactly once. Read through the plugin from the real
+   * stylesheet, not a fixture, because the property is a fact about main.css.
+   */
+  it('scales the body default once, through --text-body', async () => {
+    const source = readFileSync(join(__dirname, 'main.css'), 'utf8');
+    const compiled = await postcss([fontScale()]).process(source, { from: undefined });
+    const bodySizes: string[] = [];
+    let token = '';
+    compiled.root.walkDecls((decl) => {
+      if (
+        decl.prop === 'font-size' &&
+        decl.parent?.type === 'rule' &&
+        decl.parent.selector === 'body'
+      )
+        bodySizes.push(decl.value);
+      if (decl.prop === '--text-body') token = decl.value;
+    });
+    expect(bodySizes).toEqual(['var(--text-body)']);
+    expect(token).toBe('calc(14px * var(--app-font-scale, 1))');
   });
 });

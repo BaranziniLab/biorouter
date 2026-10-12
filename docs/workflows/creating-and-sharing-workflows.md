@@ -32,8 +32,8 @@ Create a workflow from the current session or from a template.
 1. While in the session you want to save as a workflow, open the **chat summary** (the ☰ button in the chat header, beside the terminal button) and click **Make workflow**.
 2. In the dialog that opens, review and edit the workflow fields as needed. Biorouter fills it in from the conversation, and captures the session's extensions, knowledge bases and model pin for you.
 3. When you're finished, you can:
-   - Click `Create Workflow` to save the workflow to your Workflow Library
-   - Click `Create & Run Workflow` to save and immediately run the workflow in a new session
+   - Click `Create` to save the workflow to your Workflow Library
+   - Click `Create and run` to save and immediately run the workflow in a new session
 
 ### By asking Biorouter
 
@@ -52,12 +52,11 @@ Biorouter drafts the workflow from the conversation and shows it to you before a
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Workflows` in the sidebar.
-3. Click `Create Workflow`.
-4. In the dialog that opens, fill in the workflow fields as needed.
+3. Click `New workflow`.
+4. In the dialog that opens, fill in the title, the description and the instructions. Open `Advanced` for the starter buttons, parameters, response schema, model and the extensions, skills and knowledge bases the workflow uses; its closed line states the defaults.
 5. When you're finished, you can:
-   - Copy the workflow link to share the workflow with others
-   - Click `Save Workflow` to save the workflow to your Workflow Library
-   - Click `Save & Run Workflow` to save and immediately run the workflow in a new session
+   - Click `Create` to save the workflow to your Workflow Library
+   - Click `Create and run` to save and immediately run the workflow in a new session
 
 > **Warning.** You cannot create a workflow from an existing workflow session, but you can view or [edit the workflow](#edit-a-workflow).
 
@@ -193,12 +192,13 @@ Then fill out the workflow form by providing:
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Workflows` in the sidebar.
-3. Find the workflow you want to edit and click the edit button.
+3. Find the workflow you want to edit and click its row, or open its `⋯` menu and choose `Edit`.
 4. In the dialog that appears, edit any of the workflow fields.
 5. When you're finished, you can:
-   - Copy the workflow link to share the workflow with others
-   - Click `Save Workflow` to save your changes
-   - Click `Save & Run Workflow` to save and immediately run the workflow in a new session
+   - Click `Save` to save your changes
+   - Click `Save and run` to save and immediately run the workflow in a new session
+
+To share the workflow, use `Copy link` in the row's `⋯` menu (see [Share a workflow](#share-a-workflow)).
 
 > **Tip.** You can also access the edit dialog while using a workflow in a session: just click the edit button at the bottom of the app. The button shows up after you've sent your first message.
 
@@ -222,18 +222,18 @@ Once the workflow file is created, you can open it with your preferred text edit
    1. Click the sidebar button in the top-left to open the sidebar.
    2. Click `Workflows` in the sidebar.
    3. Find your workflow in the Workflow Library.
-   4. Click `Use` next to the workflow you want to open.
+   4. Hover the workflow and click the play button (`Run`), or open its `⋯` menu and choose `Run in new window`.
 
    **Slash command:** enter a [custom slash command](../agent-loop/context-engineering.md) in any Biorouter chat session.
 
 2. The first time you run a workflow, a warning dialog displays the workflow's title, description, and instructions for you to review. If you trust the workflow content, click `Trust and Execute` to continue. You won't be prompted again for the same workflow unless it changes.
 
-3. If the workflow contains parameters, enter your values in the `Workflow Parameters` dialog and click `Start Workflow`.
+3. If the workflow contains parameters, enter your values in the `Workflow parameters` dialog and click `Start workflow`.
 
    Parameters are dynamic values used in the workflow:
 
-   - **Required parameters** are marked with red asterisks (*)
-   - **Optional parameters** show default values that can be changed
+   - **Required parameters** must be filled in
+   - **Optional parameters** are marked `(optional)` and show default values that can be changed
 
 4. To run the workflow, click an activity bubble or send the prompt.
 
@@ -439,7 +439,7 @@ You can share a workflow with Desktop users via a workflow link.
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Workflows` in the sidebar.
-3. Find the workflow you want to share and click the copy-link button to copy the link.
+3. Find the workflow you want to share, open its `⋯` menu and choose `Copy link`. The same menu has `Copy YAML` and `Export to file…`.
 
 **In the CLI** — generate a deeplink from your workflow file to share with others:
 
@@ -453,13 +453,13 @@ You can also provide parameter values to pre-fill the `Workflow Parameters` dial
 biorouter workflow deeplink <FILE> --param key1=value1 --param key2=value2
 ```
 
-When someone clicks the link, it will open Biorouter Desktop with your workflow configuration. They can also use your workflow link to [import a workflow](workflow-storage-and-discovery.md#importing-workflows) for future use.
+When someone clicks the link, it will open Biorouter Desktop with your workflow configuration.
 
 ### Share via workflow file
 
 You can share a workflow with Desktop or CLI users by sending the workflow file directly.
 
-- Desktop users can [import the workflow](workflow-storage-and-discovery.md#importing-workflows) (YAML only).
+- Desktop users can [import the workflow](workflow-storage-and-discovery.md#importing-workflows) from a `.yaml` or `.json` file.
 - CLI users can run a YAML or JSON workflow using `biorouter run --workflow <FILE>` or open it directly in Biorouter Desktop with `biorouter workflow open <FILE>`. See the [CLI command reference](../cli/command-reference.md#workflow) for details.
 
 ## Schedule a workflow
@@ -472,35 +472,33 @@ When creating a schedule, you'll configure:
 
 - **Name**: A descriptive name for the schedule
 - **Source**: The workflow to run
-- **Execution mode**: Whether the workflow runs in the background (no window, results saved) or foreground (opens window if Biorouter Desktop is running, otherwise runs in background)
 - **Frequency and time**: When to run the workflow (e.g. every 20 minutes, weekly at 10 AM on Friday). Your selection is converted into a [cron expression](https://en.wikipedia.org/wiki/Cron#Cron_expression) used by Biorouter.
 
 **Schedule from the Workflow Library:**
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Workflows` in the sidebar.
-3. Find the workflow you want to schedule and click the schedule button.
-4. Click `Create Schedule`.
-5. In the dialog that appears, configure the schedule. For **Source**, your workflow link is already provided.
-6. Click `Create Schedule`.
+3. Find the workflow you want to schedule, open its `⋯` menu and choose `Schedule…`. A schedule it already has shows as a badge on its row.
+4. In the dialog that appears, which names the workflow, choose how often it runs.
+5. Click `Save`. `Remove schedule` in the same dialog stops it.
 
 **Schedule from the Scheduler view:**
 
 1. Click the sidebar button in the top-left to open the sidebar.
 2. Click `Scheduler`.
-3. Click `Create Schedule`.
-4. In the dialog that appears, configure the schedule. For **Source**, select a `.yaml` or `.yml` file or provide a [workflow link](#share-a-workflow).
-5. Click `Create Schedule`.
+3. Click `New schedule`.
+4. In the dialog that appears, give the schedule a name, choose a `.yaml` or `.yml` workflow file (the folder button browses for one), and choose how often it runs.
+5. Click `Create schedule`.
 
 **Manage scheduled workflows:**
 
-Your scheduled workflows are listed in the `Scheduler` page. Click on a schedule to view details, see when it was last run, and perform actions with the scheduled workflow:
+Your scheduled workflows are listed in the `Scheduler` page, each with a status dot (running, paused, failed or scheduled), when it runs in words, and when it last ran. Hover a row for its actions: `Pause` or `Resume` (`Stop` while a run is in progress) and a `⋯` menu with `Edit`, `Run now`, `Inspect run` and `Delete…`. Click a schedule to open its page, where the same actions sit at the top:
 
-- `Run Schedule Now` to trigger the workflow manually
-- `Edit Schedule` to change the scheduled frequency
-- `Pause Schedule` to stop the workflow from running automatically
+- `Run now` to trigger the workflow manually
+- `Pause` or `Resume` to stop or restart automatic runs
+- the `⋯` menu for `Edit` (change the frequency) and `Delete…`, which asks you to confirm
 
-At the bottom of the `Schedule Details` page you can view the list of sessions created by the scheduled workflow and open or restore each session.
+Below the facts on the schedule's page, `Recent runs` lists the chats its runs created, each led by the date and time it started, and you can open any of them.
 
 ### In the CLI
 

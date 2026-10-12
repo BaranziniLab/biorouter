@@ -4,6 +4,8 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Progress } from './ui/progress';
 import { useConfig } from './ConfigContext';
+import { FOOTER_COPY } from './bottom_menu/copy';
+import './bottom_menu/pickers.css';
 
 interface ContextWindowGaugeProps {
   totalTokens: number | undefined;
@@ -175,7 +177,9 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     };
   }, [handleDragMove, handleDragEnd]);
 
-  if (!isTokenLimitLoaded && !current) return null;
+  // A window that has not loaded is the composer's 128k fallback, not the
+  // model's: a reading against it is wrong (V2-R4-1), so the gauge draws none.
+  if (!isTokenLimitLoaded) return null;
   // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
   // with none there is no number to report and every number this component
   // could print would be about a model that does not exist. It read
@@ -196,17 +200,18 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   // and the fallback both resolved to it), so the 0.75 rung was a no-op.
   const barTone = overThreshold ? 'danger' : ratio <= 0.5 ? 'success' : 'warning';
   return (
-    <div className="flex items-center gap-2 rounded-element px-2 py-1.5">
-      <span className="flex size-icon-row flex-shrink-0 items-center justify-center text-text-muted">
-        <span className="h-3.5 w-3.5 rounded-full border-2 border-current" />
+    // The label and the Compact button sit on the BAR's line, not centred on the
+    // bar and its caption together: centred, "Context" floated between the two
+    // and belonged to neither. The bar's centre is 14px down its column (the
+    // threshold triangle's 10px, then half the 8px track), so the label's 16px
+    // line takes 6px above it and the 28px button none. 16px in from the popover
+    // edge (`p-1` + `px-3`), the text edge every composer menu and list shares.
+    <div className="flex items-start gap-3 px-3 py-1.5">
+      {/* ONE metadata size in this popover: every figure here is a reading off
+          a gauge, so all of it is `supporting` in the muted ink. */}
+      <span className="mt-1.5 flex-shrink-0 text-supporting text-text-muted">
+        {FOOTER_COPY.contextLabel}
       </span>
-      {/* ONE metadata size in this popover. It ran four — 11px here, 13px on the
-          numbers below, 11px in the threshold tooltip, 12px elsewhere — for text
-          that is all the same kind of thing: a reading off a gauge. They are all
-          `supporting` now. And the ink is the semantic muted token rather than
-          `text-text-default/60`, which was a second, slightly different muted
-          that no family could re-point. */}
-      <span className="w-12 flex-shrink-0 text-supporting text-text-muted">Context</span>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
         {/* The bar holds the usage fill *and* a draggable downward triangle
             marking the auto-compact threshold. The bar is the drag target;
@@ -224,7 +229,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         <div className="relative pt-2.5">
           <Progress
             ref={barRef}
-            label="Context window used"
+            label={FOOTER_COPY.contextUsed}
             value={pct}
             tone={barTone}
             // A conversation with one message is still using context.
@@ -239,7 +244,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                   triangle edges. The visible glyph is the inner element. */}
               <div
                 role="slider"
-                aria-label="Auto-compact threshold"
+                aria-label={FOOTER_COPY.thresholdLabel}
                 aria-valuemin={AUTO_COMPACT_MIN_PCT}
                 aria-valuemax={AUTO_COMPACT_MAX_PCT}
                 aria-valuenow={thresholdPct}
@@ -273,16 +278,14 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                 />
               </div>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-supporting">
-              Drag to adjust auto-compact threshold ({thresholdPct}%)
-            </TooltipContent>
+            <TooltipContent side="top">{FOOTER_COPY.thresholdTooltip(thresholdPct)}</TooltipContent>
           </Tooltip>
         </div>
         <div className="flex items-center justify-between text-supporting text-text-muted tabular-nums">
           <span>
             {fmt(current)} / {fmt(total)}
           </span>
-          <span>{pct}%</span>
+          <span>{FOOTER_COPY.gaugeUsed(pct)}</span>
         </div>
       </div>
       <Tooltip>
@@ -296,7 +299,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                 onCompact();
               }}
               disabled={current === 0}
-              aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact chat'}
+              aria-label={current === 0 ? FOOTER_COPY.nothingToCompact : FOOTER_COPY.compact}
               className={`flex size-control-sm items-center justify-center rounded-element transition-colors ${current === 0 ? 'cursor-not-allowed text-text-muted opacity-50' : 'tint-interactive cursor-pointer text-text-muted hover:text-text-default'}`}
             >
               <ChevronsDownUp data-testid="compact-conversation-icon" className="size-4" />
@@ -304,7 +307,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
           </span>
         </TooltipTrigger>
         <TooltipContent side="top">
-          {current === 0 ? 'Nothing to compact yet' : 'Compact chat'}
+          {current === 0 ? FOOTER_COPY.nothingToCompact : FOOTER_COPY.compact}
         </TooltipContent>
       </Tooltip>
     </div>
@@ -324,136 +327,285 @@ function fmt(n: number): string {
 }
 
 interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
-  /** Override the popover trigger tooltip text. */
-  triggerTitle?: string;
   /**
-   * Print the headroom beside the ring instead of leaving the ring to carry it
-   * alone. Opt-in, because a ring on its own is the compact form and the
-   * composer's control bar is the only place with the width to spell it out.
+   * The chat this ring reports on. A change of chat is never a live update: the
+   * ring shows the new chat's value at rest instead of sweeping to it.
+   */
+  sessionId?: string | null;
+  /**
+   * The model the ring must measure for NOW, spelled by
+   * {@link contextWindowModelKey}: the chat's own binding, else the app's
+   * selection. `null` while that is not known yet: the chat is loading, so its
+   * row, and the model the row names, has not landed, and the composer meanwhile
+   * looked up the window of the model for NEW chats (V2-R4-1, round 5).
    *
-   * ⚠ The number is the REMAINING percentage, not the used one, because the arc
-   * the ring draws is the remaining arc (`strokeDashoffset` below). Printing
-   * "used" next to a "remaining" arc would put two readings of the same gauge
-   * side by side, disagreeing, at every value except 50%.
+   * Omitted, a loaded window is taken to be this chat's (a caller with no
+   * binding to wait for).
+   */
+  boundModel?: string | null;
+  /** The model `tokenLimit` was looked up for, spelled like `boundModel`. */
+  tokenLimitModel?: string | null;
+  /**
+   * Print "N% left" beside the ring once less than half the window remains
+   * (spec 3.7). Above half the ring says enough on its own, and a figure that
+   * reads "100%" beside a fresh chat says nothing at all.
+   *
+   * ⚠ The figure is the REMAINING share, because the arc the ring draws is the
+   * remaining arc (`strokeDashoffset` below). Printing "used" beside a
+   * "remaining" arc would put two readings of one gauge side by side.
    */
   showRemainingPercent?: boolean;
 }
 
-/** Compact-row variant: a single remaining-context ring button which, on click,
- * opens a popover that renders the same bar-style gauge used in the
- * picker. For the chat tab the user sees one compact ring and,
- * on click, gets the full real-time gauge with a Compact button — the
- * same UI the picker exposes. Ring color reflects remaining headroom. */
+/** Below this share of the window left, the footer prints the figure. */
+export const CONTEXT_FIGURE_BELOW_PCT = 50;
+
+/** The ring: 14px (the footer's chip size), a 2px stroke on a 16-unit box. */
+const RING_RADIUS = 6;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+/**
+ * Whether the arc lands at rest in this render (spec 2.6: a value that loads
+ * asynchronously does not animate; checklist 12: nothing replays on a tab switch).
+ *
+ * The arc sweeps (`.br-footline__ring-arc`, 250ms) only for a LIVE update: a new
+ * value in the same chat, where the render before it already showed a loaded
+ * reading (a known window and a token count). Everything else snaps: the chat's
+ * first reading after it opens or its tab is switched to (the count and the
+ * window both arrive about a second after the composer mounts, and the arc used
+ * to sweep from the empty ring to them), a change of chat under the same
+ * composer, and the window re-read after a model change.
+ *
+ * Derived DURING the render that moves the arc, never in an effect after it: the
+ * Switch's rule (V4-01), because a transition the browser has started ignores a
+ * later `transition-duration: 0ms`. Released two frames later, so at least one
+ * frame is styled with the flag.
+ */
+function useArcStill(
+  sessionId: string | null | undefined,
+  offset: number | null,
+  loaded: boolean
+): boolean {
+  const [shown, setShown] = useState({ sessionId, offset, loaded });
+  const [still, setStill] = useState(0);
+
+  if (shown.sessionId !== sessionId || shown.offset !== offset || shown.loaded !== loaded) {
+    setShown({ sessionId, offset, loaded });
+    if (shown.offset !== offset) {
+      const live =
+        shown.sessionId === sessionId &&
+        shown.loaded &&
+        loaded &&
+        shown.offset !== null &&
+        offset !== null;
+      // A fresh token per change restarts the release.
+      setStill(live ? 0 : still + 1);
+    }
+  }
+
+  useEffect(() => {
+    if (!still) return;
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => setStill(0));
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+    };
+  }, [still]);
+
+  return still > 0;
+}
+
+/**
+ * How the composer spells "the model the context window belongs to" for
+ * `boundModel` and `tokenLimitModel`: the chat's binding when it has one, else
+ * the app's selection. One spelling in one place, so the two props can only be
+ * compared, never mis-spelled apart.
+ */
+export function contextWindowModelKey(
+  binding: { provider: string; model: string } | undefined,
+  selectedProvider: string | null | undefined,
+  selectedModel: string | null | undefined
+): string {
+  return binding
+    ? `${binding.provider}/${binding.model}`
+    : `${selectedProvider ?? ''}/${selectedModel ?? ''}`;
+}
+
+interface DrawnWindow {
+  /** The window to draw against, or 0 for none. */
+  limit: number;
+  /** A lookup that landed for this chat's model, not a window held across a re-read. */
+  fresh: boolean;
+}
+
+/**
+ * The window the ring may draw against: one the composer LOADED for this chat's
+ * model, or none (V2-R4-1).
+ *
+ * The composer mounts with a 128k fallback in `tokenLimit` and `isTokenLimitLoaded`
+ * false, and the chat's real window lands about a second later. The ring used to
+ * draw at once whenever the chat had tokens, so every open and tab switch showed a
+ * reading against a window nobody had looked up: "20% left" on a 1M chat that was
+ * 10% full, and on a chat past 128k the empty ring and "0% left". So nothing is
+ * drawn until a window has loaded.
+ *
+ * LOADED IS NOT ENOUGH: IT MUST BE THIS CHAT'S MODEL (round 5). A chat opened for
+ * the first time (a tab restored after a reload, a hash or History open) loads
+ * for up to seconds, and until its row lands the composer has no binding and
+ * looks up the window of the model for new chats. That lookup is real and
+ * loaded, for the wrong model: a 200k chat read "0 of 1.1M", then swept to
+ * "64.6k of 1.1M" and snapped to "of 200k" five seconds later. So with
+ * `boundModel` given, a window draws only when it was looked up for exactly that
+ * model, and nothing draws while `boundModel` is `null` (the binding unknown).
+ *
+ * A RE-READ OF THE SAME MODEL (the app's selection moved under a chat pinned to
+ * its own model, which re-runs the lookup with the same answer) holds the last
+ * window that model loaded rather than blinking the ring out for a second. A
+ * window held for one model never stands in for another: after a model change
+ * the ring draws nothing until the new model's window lands. The hold is per
+ * chat and ends with the mount, so a tab switch (BaseChat remounts per tab)
+ * never carries one over, and a re-read that finds no model (`tokenLimit` 0)
+ * draws nothing.
+ *
+ * Derived during render, not in an effect, so the frame that would show a wrong
+ * window is never painted.
+ */
+function useDrawnWindow(
+  sessionId: string | null | undefined,
+  boundModel: string | null | undefined,
+  tokenLimitModel: string | null | undefined,
+  tokenLimit: number,
+  loaded: boolean
+): DrawnWindow {
+  const [held, setHeld] = useState<{
+    sessionId: string | null | undefined;
+    model: string | null | undefined;
+    limit: number;
+  } | null>(null);
+  // Omitted (`undefined`): no binding to wait for, a loaded window is this chat's.
+  const forThisModel = boundModel === undefined || tokenLimitModel === boundModel;
+  const fresh = loaded && tokenLimit > 0 && boundModel !== null && forThisModel;
+  if (
+    fresh &&
+    (!held ||
+      held.sessionId !== sessionId ||
+      held.model !== boundModel ||
+      held.limit !== tokenLimit)
+  ) {
+    setHeld({ sessionId, model: boundModel, limit: tokenLimit });
+  }
+  if (fresh) return { limit: tokenLimit, fresh: true };
+  if (tokenLimit <= 0 || boundModel === null) return { limit: 0, fresh: false };
+  const holds = held !== null && held.sessionId === sessionId && held.model === boundModel;
+  return { limit: holds ? held.limit : 0, fresh: false };
+}
+
+/** The footer's context readout: a ring that opens the gauge (threshold and
+ * Compact) in a popover. One line of tooltip, "72% context left · 92k of 128k". */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
+  sessionId,
+  boundModel,
+  tokenLimitModel,
   totalTokens,
   tokenLimit,
   isTokenLimitLoaded,
   onCompact,
-  triggerTitle = 'Context window usage',
   showRemainingPercent = false,
 }) => {
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
-  if (!isTokenLimitLoaded && !current) return null;
-  const total = tokenLimit || 0;
-  // NO MODEL, NO GAUGE. A context window is a property of a bound model, so
-  // with none there is no number to report and every number this component
-  // could print would be about a model that does not exist. It read
-  // "128k of 128k tokens remaining" during onboarding — beside a chip that
-  // correctly said "No model yet — choose a provider" — because the composer's
-  // 128k fallback was announced as a loaded limit.
-  //
-  // Asserted on the LIMIT rather than only on the loaded flag: the flag says
-  // whether a lookup finished, and a finished lookup that found nothing is
-  // exactly the case being guarded. A caller with usage but no window is a
-  // state nothing can render honestly either, so it is covered by the same
-  // test.
-  if (total <= 0) return null;
-  const ratio = Math.min(1, current / total);
-  const pct = Math.round(ratio * 100);
+  // NO WINDOW LOADED FOR THIS CHAT'S MODEL, NO RING (V2-R4-1). A context window
+  // is a property of a bound model, and the composer's 128k fallback stands in
+  // for it until the lookup lands: drawn against it, a 1M chat read "20% left"
+  // for a second on every tab switch; drawn against the new-chat model's window
+  // while a chat loads, a 200k chat read "of 1.1M". With no model there is no
+  // window at all: the ring once read "128k of 128k tokens remaining" during
+  // onboarding beside a chip that said no model was chosen. Asserted on the
+  // LIMIT as well as the loaded flag, because a lookup that finished and found
+  // nothing is exactly that case.
+  const drawnWindow = useDrawnWindow(
+    sessionId,
+    boundModel,
+    tokenLimitModel,
+    tokenLimit || 0,
+    isTokenLimitLoaded
+  );
+  const total = drawnWindow.limit;
+  const drawn = total > 0;
   const remainingTokens = Math.max(total - current, 0);
-  const remainingRatio = Math.max(0, Math.min(1, remainingTokens / total));
+  const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 1;
   const remainingPct = Math.round(remainingRatio * 100);
-  const radius = 8;
-  const circumference = 2 * Math.PI * radius;
-  const strokeOffset = circumference * (1 - remainingRatio);
-  const remainingSummary = `${fmt(remainingTokens)} of ${fmt(total)} tokens remaining`;
-  const usageSummary = `${remainingPct}% remaining, ${pct}% used`;
-  const tooltip = `${triggerTitle}. ${remainingSummary}. ${usageSummary}`;
+  const strokeOffset = RING_CIRCUMFERENCE * (1 - remainingRatio);
+  // A reading is "loaded" for the sweep only when its window is a fresh lookup
+  // for this chat's model: the first reading after a chat loads has nothing
+  // drawn before it, so it lands at rest rather than sweeping from the empty ring.
+  const arcStill = useArcStill(
+    sessionId,
+    drawn ? strokeOffset : null,
+    drawnWindow.fresh && totalTokens !== undefined
+  );
+  if (!drawn) return null;
+  const summary = FOOTER_COPY.contextTooltip(remainingPct, fmt(current), fmt(total));
+  const showFigure = showRemainingPercent && remainingPct < CONTEXT_FIGURE_BELOW_PCT;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
-            {/* The composer toolbar's two named iconography violations, both
-                here: a glyph at 18px on a row where every other glyph is 16
-                (§3.8b forbids two sizes in one cluster), inside a 24px-wide box
-                that left ~3px of horizontal padding — a ~20px hit zone on a
-                control the user is meant to click. It is now the row's 16px
-                icon in a 28px box with 6px of padding either side, so the
-                pointer target matches what the eye sees. */}
             <button
               type="button"
-              aria-label={tooltip}
-              className="relative flex h-control-sm flex-shrink-0 cursor-pointer items-center justify-center rounded-element px-1.5 text-text-muted tint-interactive transition-colors hover:text-text-default"
+              aria-label={summary}
+              data-testid="context-window-indicator"
+              className="br-footline__item"
             >
-              <svg className="size-icon-row" viewBox="0 0 24 24" aria-hidden="true">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
                 <circle
-                  cx="12"
-                  cy="12"
-                  r={radius}
+                  cx="8"
+                  cy="8"
+                  r={RING_RADIUS}
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.75"
+                  strokeWidth="2"
                   className="text-border-subtle"
                 />
                 <circle
-                  cx="12"
-                  cy="12"
-                  r={radius}
+                  cx="8"
+                  cy="8"
+                  r={RING_RADIUS}
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2.75"
+                  strokeWidth="2"
                   strokeLinecap="round"
-                  strokeDasharray={circumference}
+                  strokeDasharray={RING_CIRCUMFERENCE}
                   strokeDashoffset={strokeOffset}
-                  className="text-text-muted transition-[stroke-dashoffset] duration-[var(--dur-med-min)]"
-                  transform="rotate(-90 12 12)"
+                  className="br-footline__ring-arc"
+                  data-testid="context-ring-arc"
+                  data-motion-still={arcStill ? '' : undefined}
+                  transform="rotate(-90 8 8)"
                 />
               </svg>
-              {/* Numerals in mono, like every other figure in the control bar
-                  (the cost, the token counts). A proportional font re-measures
-                  the label on every token that streams in, and a number that
-                  twitches beside a ring that is also moving reads as a glitch
-                  rather than as progress. Hidden from the accessibility tree —
-                  `aria-label` above already states the same figure in words, and
-                  a bare "72%" would only repeat it without its subject. */}
-              {/* `text-supporting`, the composer rails' role — see the note in
-                  ChatInput.tsx, "THE RAILS' TYPE". This was `text-xs`, which is
-                  the same 12px by coincidence rather than by role: a raw
-                  Tailwind step here would not have followed the rails when they
-                  moved, and its 16px line height is Tailwind's, not the
-                  scale's. */}
-              {showRemainingPercent && (
-                <span aria-hidden="true" className="ml-1.5 font-mono text-supporting tabular-nums">
-                  {remainingPct}%
-                </span>
+              {/* Sans with tabular figures (principle 3: mono is for machine
+                  strings only), so a figure that changes as tokens stream does
+                  not re-measure the line. Hidden from the accessibility tree:
+                  the button's name already says it with its subject. */}
+              {showFigure && (
+                <span aria-hidden="true">{FOOTER_COPY.contextLeft(remainingPct)}</span>
               )}
-              <span className="sr-only">{tooltip}</span>
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="top" className="w-52 text-left text-pretty">
-          <span className="block font-medium">{triggerTitle}</span>
-          <span className="block">{remainingSummary}</span>
-          <span className="block">{usageSummary}</span>
-        </TooltipContent>
+        <TooltipContent side="top">{summary}</TooltipContent>
       </Tooltip>
-      <PopoverContent side="top" align="start" className="w-72 p-1">
+      <PopoverContent side="top" align="end" className="w-72 p-1">
+        {/* The gauge reads the window the ring draws (loaded, or held across a
+            re-read), so the two never disagree. */}
         <ContextWindowGauge
           totalTokens={totalTokens}
-          tokenLimit={tokenLimit}
-          isTokenLimitLoaded={isTokenLimitLoaded}
+          tokenLimit={total}
+          isTokenLimitLoaded
           onCompact={() => {
             onCompact();
             setOpen(false);

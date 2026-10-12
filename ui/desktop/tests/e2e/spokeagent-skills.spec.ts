@@ -69,9 +69,10 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
   }
 
   async function openBrxtModal(): Promise<void> {
-    const addBtn = page.locator('button:has-text("Add extension")');
+    const addBtn = page.getByRole('button', { name: 'Add', exact: true });
     await addBtn.waitFor({ timeout: 10000, state: 'visible' });
     await addBtn.click();
+    await page.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     await page.waitForSelector('[role="dialog"]', { timeout: 5000, state: 'visible' });
     await page.waitForTimeout(300);
   }
@@ -134,8 +135,10 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
     await goToSkills();
     await page.screenshot({ path: 'test-results/spoke-03-skills-settings.png' });
 
-    // "Add skill" button always present
-    await expect(page.locator('button:has-text("Add skill")')).toBeVisible({ timeout: 5000 });
+    // The band's one "Add" menu is always present
+    await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible({
+      timeout: 5000,
+    });
 
     // Count any switch elements — each skill row should have one
     const switches = page.locator('button[role="switch"]');
@@ -190,8 +193,8 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
 
     await page.screenshot({ path: 'test-results/spoke-05-chat-view.png' });
 
-    // Find the skills button in the chat bottom bar
-    const skillsBtn = page.getByRole('button', { name: /^Manage skills \(\d+ enabled\)$/ });
+    // Find the composer's Tools chip (extensions, skills and knowledge in one popover)
+    const skillsBtn = page.getByTestId('composer-tools-chip');
     const skillsBtnVisible = await skillsBtn.isVisible().catch(() => false);
     console.log(`Chat skills button visible: ${skillsBtnVisible}`);
 
@@ -200,8 +203,9 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
       await page.waitForTimeout(500);
       await page.screenshot({ path: 'test-results/spoke-06-skills-dropdown-open.png' });
 
-      // The dropdown should open with a search input
-      const searchInput = page.getByPlaceholder('Search skills...');
+      // Switch the popover to its Skills list, which has a search field
+      await page.getByRole('radio', { name: 'Skills' }).click();
+      const searchInput = page.getByPlaceholder('Search skills…');
       await expect(searchInput).toBeVisible({ timeout: 5000 });
 
       // Search for the ralph project skill
@@ -280,8 +284,8 @@ test.describe('SPOKEAgent .brxt — skills integration & propagation', () => {
 
     await page.screenshot({ path: 'test-results/spoke-11-settings-count.png' });
 
-    // Get count from chat box skills button
-    const skillsBtn = page.getByRole('button', { name: /^Manage skills \(\d+ enabled\)$/ });
+    // Get the count from the composer's Tools chip ("Tools N", N = extensions + skills + knowledge bases)
+    const skillsBtn = page.getByTestId('composer-tools-chip');
     const skillsBtnVisible = await skillsBtn.isVisible().catch(() => false);
 
     if (skillsBtnVisible) {

@@ -38,10 +38,7 @@ const fixtures = [
     'sample.docx',
   ],
   [
-    path.join(
-      repoDir,
-      'crates/biorouter-mcp/src/webdocuments/tests/data/FinancialSample.xlsx'
-    ),
+    path.join(repoDir, 'crates/biorouter-mcp/src/webdocuments/tests/data/FinancialSample.xlsx'),
     'FinancialSample.xlsx',
   ],
   [path.join(repoDir, 'landing/icon.png'), 'volcano.png'],
@@ -152,7 +149,9 @@ try {
   assert.doesNotMatch(await page.getByTestId('artifact-viewer').innerText(), /Could not render/i);
   await screenshot('pptx');
 
-  await page.getByLabel('Send a region to the chat').click();
+  // "Send a region to the chat" lives in the header's More actions menu (spec 3.8).
+  await page.getByLabel('More actions').click();
+  await page.getByRole('menuitem', { name: 'Send a region to the chat' }).click();
   const overlay = page.getByTestId('annotation-overlay');
   const bounds = await overlay.boundingBox();
   assert(bounds, 'annotation overlay must have bounds');

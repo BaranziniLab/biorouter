@@ -27,6 +27,11 @@ import { BRAND_SANS } from '../components/icons/brandFont';
  */
 const CSS = readFileSync(join(__dirname, 'main.css'), 'utf8');
 const TERMINAL_DOCK = readFileSync(join(__dirname, '../components/InAppTerminalDock.tsx'), 'utf8');
+const LANDING_CSS = readFileSync(join(__dirname, '../../../../landing/site.css'), 'utf8');
+const DOCUMENT_PREVIEW = readFileSync(
+  join(__dirname, '../components/artifacts/DocumentPreview.tsx'),
+  'utf8'
+);
 
 /** A font stack as a comparable list: quoting and whitespace are not identity. */
 function families(stack: string): string[] {
@@ -63,5 +68,59 @@ describe('font stacks written out more than once', () => {
       expect(source).not.toMatch(/const SANS =\s*\n?\s*'Inter/);
     }
     expect(families(BRAND_SANS)[0]).toBe('Inter');
+  });
+});
+
+/**
+ * The interface face (redesign 2026-10, spec 2.1, owner decision of 2026-10-09):
+ * the app wears the WEBSITE's Arial-first stack, so a screenshot of the app and
+ * the page that sells it are set in one face. The two stylesheets are in
+ * different packages and nothing else ties them together, so a change to one
+ * stack would otherwise go unnoticed until someone compared screenshots.
+ *
+ * Arial draws 400 and 700 only, which is why the type scale has two visible
+ * weights (`typeScale.test.ts`). Inter is the brand face, used for the wordmark
+ * and the BR mark alone.
+ */
+describe('the interface face is the website face', () => {
+  const body = families(cssToken('font-body'));
+
+  it('sets the body stack family for family as landing/site.css --font', () => {
+    const landing = LANDING_CSS.match(/[\s;{]--font:\s*([^;]+);/);
+    if (!landing) throw new Error('--font is not declared in landing/site.css');
+    expect(body).toEqual(families(landing[1]));
+  });
+
+  it('leads with Arial and never names Inter, which is the mark only', () => {
+    expect(body[0]).toBe('Arial');
+    expect(body).not.toContain('Inter');
+    expect(body[body.length - 1]).toBe('sans-serif');
+  });
+
+  it('keeps --font-heading and --font-sans as aliases of the body role', () => {
+    expect(cssToken('font-heading').trim()).toBe('var(--font-body)');
+    expect(cssToken('font-sans').trim()).toBe('var(--font-body)');
+  });
+
+  /**
+   * A sandboxed document cannot read a custom property, so the preview's iframe
+   * carries the stack as a resolved string. It may drop a family the body names
+   * (a fallback it never needs) but it may not add one, reorder them, or start
+   * with anything but Arial: that is how a third UI face got into the app.
+   */
+  it('sets the document preview iframe in the body stack, in order', () => {
+    const stacks = [...DOCUMENT_PREVIEW.matchAll(/font-family:\s*([^;]+);/g)]
+      .map((m) => families(m[1]))
+      .filter((stack) => !stack.some((family) => /mono/i.test(family)));
+    expect(stacks.length).toBeGreaterThan(0);
+    for (const stack of stacks) {
+      expect(stack[0]).toBe('Arial');
+      let from = 0;
+      for (const family of stack) {
+        const at = body.indexOf(family, from);
+        expect(at, `${family} is not in the body stack, in order`).toBeGreaterThanOrEqual(0);
+        from = at + 1;
+      }
+    }
   });
 });

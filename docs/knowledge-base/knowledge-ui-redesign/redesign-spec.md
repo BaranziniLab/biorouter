@@ -12,6 +12,17 @@
 > 2026-08-21/22 against `7ac2de4b`; re-measure rather than trusting a number that has since moved.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
+> **Superseded in part (2026-10).** The Codex simplicity redesign (section 3.12 of
+> [its implementation spec](../../design/codex-simplicity-redesign/implementation-spec.md)) merged
+> the title and subject bands into one 44px `PageHeader` band, moved the tier control's trigger
+> into that band as a badge-button (its confirmation is unchanged), flattened the Sources rail and
+> graph into flush columns, made the facet strip 44px, and retired the height step. The container
+> ladder (860/940/1140/1400) is unchanged. Owner message 13 (R-27) then took the outlines out:
+> the filters (4.6), the Sources drop target, the paste box and the digest model field are subtle
+> fills with a transparent 1px edge, and an engaged filter is the strong fill under the selected
+> wash, no longer a solid accent fill. The Public tier badge, the drawers' rows and the lint
+> group heads follow the same rule; the lines that remain are structural or on a floating card.
+
 The companion mockup is [`knowledge-redesign-studio.html`](knowledge-redesign-studio.html) — open it
 in a browser, no server needed. It renders **the same page markup at four real pane sizes** (760,
 946, 1040, 1626 px), laid out by the very `@container` queries R-08 specifies; its pop-up section is
@@ -788,6 +799,22 @@ target** now absorbs that slack, which makes it largest exactly when you have no
 about to drop something, shrinking back toward a 114px floor as staged rows claim the space. The
 fixed 330px it replaced was too tall at every pane size; that floor is what stops this returning
 through the same door.
+
+### 11.4 The drop target fills the rail again (2026-10-11)
+
+§11.3's 114px floor did not survive the 2026-10 interface redesign. Its vision round shrank the box to
+its content, about 160px, which left a small box over an empty rail (V3-12). The owner asked for the
+side-panel scale back (R-33), so the box is the one child of the rail that grows again: it takes the
+scroller's free height, and gives that room to the paste box, the staged list and the digest progress as
+they appear, down to a **240px** floor, after which the scroller scrolls. Its size is authored on
+`.br-knowledge-dropzone` in `main.css` (`flex: 1 1 0%`, `min-height: 240px`), not written as a utility at
+the call site. What V3-12 added stays: the whole rail is the drop target (a file let go on a staged row
+or the footer still stages; text fields are left alone), and the model picker and Digest button sit in one
+column capped at 22.5rem. A file held anywhere on the rail also lights the rail's own edge (1px of the
+accent, the composer card's drag-over edge, on `.br-knowledge-rail`), so it gets an answer when a long
+staged list has scrolled the box out of view. `knowledge/sourcesRail.browser.test.tsx` mounts the real
+rail (the panel, the box, the paste box, the staged list, the model picker) and measures the fill at the
+264, 300 and 812px columns, the room handed back, the floor, and the held-file edge.
 
 ---
 

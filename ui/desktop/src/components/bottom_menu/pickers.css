@@ -1,0 +1,372 @@
+/*
+ * WS-PICKERS (spec 3.7): the composer's Tools chip and model chip inside the
+ * card, the Tools popover's lists, and the footer line under the card.
+ *
+ * Authored CSS keyed on classes, because a newly written Tailwind utility can
+ * silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell
+ * geometry"). These rules are unlayered, so they win over the Tailwind
+ * utilities a primitive brings with it (CommandItem's row height, for one).
+ * Hover is neutral everywhere (principle 7); only the lock badge and the
+ * switches carry the accent, and both come from their own primitives.
+ */
+
+/*
+ * A chip in the card's control row: ghost, 28px, 13/18, muted at rest.
+ *
+ * Ghost, not filled, under R-27 (fills before lines, design.md 9.11): the rule
+ * turns OUTLINED chips into fills, and these never had an outline. They sit
+ * inside the composer card, which is itself the fill, and a fill never sits on
+ * a fill; a resting fill here would have to step back to the page ground and
+ * draw two white pills in a grey card. The hover and open grounds are the ink
+ * overlay, which reads on the card's fill in both modes, like a ghost Button.
+ *
+ * ⚠ "Open" is `aria-expanded`, never `data-state`. Each trigger sits inside a
+ * Tooltip's trigger, and Radix merges the tooltip's `data-state` ("closed",
+ * "delayed-open") over the popover's or menu's own, so `[data-state='open']`
+ * never matched: the chevron stayed down and the chip dropped its held ground
+ * the moment the pointer left. Measured with the real primitives in jsdom;
+ * `aria-expanded` is set by the popover and the menu and by nothing else.
+ */
+.br-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--control-sm);
+  padding: 0 8px;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-picker-chip:hover,
+.br-picker-chip[aria-expanded='true'] {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.br-picker-chip:active {
+  background: var(--overlay-pressed);
+}
+
+/* The model chip gives way first when the row is narrow; its name ellipsizes. */
+.br-picker-chip[data-kind='model'] {
+  max-width: 260px;
+}
+
+.br-picker-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-picker-chip__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.br-picker-chip__chevron {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+  transition: transform var(--dur-fast-max) var(--ease-out);
+}
+
+.br-picker-chip[aria-expanded='true'] .br-picker-chip__chevron {
+  transform: rotate(180deg);
+}
+
+.br-picker-chip__badge {
+  flex: none;
+  display: inline-flex;
+}
+
+/*
+ * The Tools popover: one column, the list on top and the segmented control on
+ * the bottom edge, directly above the chip (R-25). Radix pins a `side="top"`
+ * popover by its bottom edge, so the height may change with the list and the
+ * control stays where it is. The cap is the room above the chip (Radix's `size`
+ * middleware, which runs with collisions off and honours `collisionPadding`),
+ * so a short window shortens the list instead of flipping the popover.
+ */
+.br-picker-popover {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: min(480px, var(--radix-popover-content-available-height, 70vh));
+  padding: 0;
+  overflow: hidden;
+}
+
+.br-picker-popover__tabs {
+  flex: none;
+  padding: 4px 8px 8px;
+}
+
+.br-picker-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/*
+ * The scope line under the search: label and InfoTip left, bulk action right.
+ * The label starts 16px in, on the rows' text edge (the list's 4px plus a row's
+ * 12px), which is the menu recipe's edge too; at 12px it sat 4px out of line
+ * with every name under it. The bulk action's text ends 12px in, on the
+ * switches' trailing edge (4px here plus the button's own 8px).
+ */
+.br-picker-panel__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--control-sm);
+  padding: 2px 4px 2px 16px;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-picker-panel__scope {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* The part that gives way: it scrolls, and shrinks first when the room is short. */
+.br-picker-panel__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.br-picker-panel__empty {
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/* A list row: the menu recipe (32px, 13/18), a name, then the switch. */
+.br-picker-row {
+  height: auto;
+  min-height: var(--control-md);
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+}
+
+.br-picker-row__text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.br-picker-row__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-default);
+}
+
+.br-picker-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-picker-row__meta,
+.br-picker-row__note {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-picker-row__meta {
+  flex: none;
+}
+
+.br-picker-row__switch {
+  flex: none;
+  display: inline-flex;
+  pointer-events: none;
+}
+
+/*
+ * A refused or locked row dims what is unavailable (the name, the badge, the
+ * switch) and not the reason it is. The menu recipe dims a disabled row's whole
+ * box to 50%, and the second line is a refusal the person must be able to read
+ * (principle 2: refusals stay visible): at 50% a 12px muted line measures about
+ * 2:1. Unlayered, so it beats the `opacity-50` utility the row brings.
+ */
+.br-picker-row[aria-disabled='true'] {
+  opacity: 1;
+}
+
+.br-picker-row[aria-disabled='true'] .br-picker-row__title,
+.br-picker-row[aria-disabled='true'] .br-picker-row__switch {
+  opacity: 0.5;
+}
+
+/*
+ * The model menu's Effort section (R-26): a head row ("Effort", its InfoTip,
+ * and the current stop on the right) over one slider that fills the menu. The
+ * label keeps the menu's group-label look (12px, 500, muted, 12px in from the
+ * edge); the slider's own 8px rail inset then puts the thumb's outer edge on
+ * that same 12px line at either end. The slider's geometry is the primitive's
+ * (`.br-slider*`, main.css).
+ */
+.br-effort {
+  padding: 6px 12px 8px;
+}
+
+.br-effort__head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-effort__label {
+  font-weight: 500;
+}
+
+.br-effort__value {
+  margin-inline-start: auto;
+  padding-inline-start: 8px;
+  color: var(--text-default);
+  white-space: nowrap;
+}
+
+.br-effort__slider {
+  margin-top: 4px;
+}
+
+/* The footer line under the card: 12px muted, readouts on the right. */
+.br-footline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  min-height: var(--control-compact);
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-footline__side {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-footline__side[data-side='end'] {
+  flex: none;
+}
+
+/* Folder, ring and cost: 24px hit areas that read as text until hovered. */
+.br-footline__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--control-compact);
+  padding: 0 6px;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+button.br-footline__item {
+  cursor: pointer;
+}
+
+button.br-footline__item:hover,
+button.br-footline__item[aria-expanded='true'] {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+button.br-footline__item:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.br-footline__item > svg {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+/* The context ring's arc sweeps for a live update in the same chat only. A reading
+   that arrives with the chat (an open, a tab switch) or after a model change lands
+   at rest: `ContextWindowIndicator` marks that render `data-motion-still`. */
+.br-footline__ring-arc {
+  transition: stroke-dashoffset var(--dur-med-min) var(--ease-out);
+}
+
+.br-footline__ring-arc[data-motion-still] {
+  transition-duration: 0ms;
+}
+
+/* A folder name, never a path: the path is in the tooltip. */
+.br-footline__name {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * D-15's focus surface, for the two controls here that paint their own ground.
+ * The base rule (`:where(button):focus-visible`) sits in a cascade layer, and
+ * the unlayered `background` and `color` above beat it outright, so a Tab-focused
+ * chip kept its resting ink and no fill. Measured in Chromium: only the base
+ * block's inset edge survived. Same fix as `.biorouter-focus-surface`
+ * (main.css), written here so the chips do not depend on a class at each call
+ * site. After the hover rules, so a focused chip under the pointer keeps it.
+ */
+.br-picker-chip:focus-visible,
+button.br-footline__item:focus-visible {
+  outline: none;
+  background: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-picker-chip,
+  .br-picker-chip__chevron,
+  .br-footline__item,
+  .br-footline__ring-arc {
+    transition: none;
+  }
+}

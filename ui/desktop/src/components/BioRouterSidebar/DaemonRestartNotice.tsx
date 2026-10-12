@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
 
 type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
 
 export const daemonNoticeCopy = {
   failed: "Biorouter couldn't reconnect to its background service.",
-  /** What is true until a reconnect works, so the notice explains the failures around it. */
+  /**
+   * What is true until a reconnect works, so the notice explains the failures
+   * around it. It sits behind the InfoTip (F-15): the failure stays visible,
+   * and the help is the glyph's description for a screen reader.
+   */
   consequence: "Chats and Crew can't reach it until Biorouter reconnects.",
+  /** What the InfoTip is about: its name is "About {about}". */
+  about: 'the background service',
   retry: 'Try again',
   reconnecting: 'Reconnecting…',
   restart: 'Quit and reopen',
@@ -57,8 +64,14 @@ export default function DaemonRestartNotice() {
   const reconnecting = state === 'reconnecting';
   return (
     <Note tone="warning" role="status" icon={AlertTriangle} testId="daemon-restart-notice">
-      <p>{daemonNoticeCopy.failed}</p>
-      <p>{daemonNoticeCopy.consequence}</p>
+      <p>
+        {daemonNoticeCopy.failed}{' '}
+        <InfoTip
+          label={daemonNoticeCopy.about}
+          help={daemonNoticeCopy.consequence}
+          data-testid="daemon-restart-notice-help"
+        />
+      </p>
       <div className="mt-2 flex flex-wrap gap-2">
         <Button
           type="button"

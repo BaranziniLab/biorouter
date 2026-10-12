@@ -53,6 +53,14 @@ export const SUBAGENT_TAB_READ_ONLY_REASON =
 export const SUBAGENT_STOP_NEEDS_DESKTOP = 'Stopping needs the desktop app';
 
 /**
+ * The reason beside it, in its InfoTip: two sentences, the InfoTip's limit. The
+ * full reason stays visible in the note that takes the composer's place.
+ */
+export const SUBAGENT_STOP_NEEDS_DESKTOP_HELP =
+  'A browser cannot prove a request came from you rather than from a model. ' +
+  'Stopping a subagent needs that proof, and only the Biorouter desktop app can give it.';
+
+/**
  * Why a subagent's tab is read-only on this surface, or `null` where it is not
  * (the desktop, which holds the key and can prove a person acted).
  *

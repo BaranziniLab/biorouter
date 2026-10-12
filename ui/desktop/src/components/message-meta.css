@@ -1,25 +1,158 @@
-[data-message-meta] {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--motion-fast) var(--ease-out);
+/* @ws WS-TRANSCRIPT begin: message actions */
+/* A message's actions float: Crew's row-action cluster (`.crew-row-actions`,
+   crew/timeline/timeline.css), copied rather than borrowed.
+
+   It sits at the message's top right, on the popover ground with a popover
+   shadow and an inset hairline, and it never covers the words of the message
+   it acts on (vision V2-12, twice). It rises 26px, so its 28px reach ends 2px
+   into the message: inside an answer's first line box above the glyphs (the
+   line's half-leading), inside the user bubble's 10px top padding. Below a
+   turn's 24px gap that leaves 2px for the block above too, the bottom of its
+   last line box or the bubble's bottom padding, so a hover covers no ink on
+   either side. Below a block's 8px gap (an answer under a tool row or a
+   thought) it lands on the right end of that row, and a tool row whose label
+   runs the full width ends short of it (below). Two user bubbles 8px apart are
+   the one exception, below.
+   Crew's cluster rises 12px and sits on its row's first line; the transcript
+   reads prose under it, so it rises clear instead (spec 3.6 deviation).
+
+   Nothing is reserved for it in the flow, so the 28px meta row that used to
+   sit under every message, invisible until hover, is gone with the gap it made
+   (spec 3.6). It shows on hover, on focus inside the message and while its menu
+   is open; only its opacity changes, so its buttons stay in the tab order.
+   Without a hover pointer it sits in the flow under the message, always
+   shown. */
+.br-message-actions-scope {
+  position: relative;
 }
 
-.br-message-meta-scope:hover [data-message-meta],
-.br-message-meta-scope:focus-within [data-message-meta],
-[data-message-meta]:focus-within {
+/* The box the cluster is measured against (the user bubble's column). */
+.br-message-actions-anchor {
+  position: relative;
+}
+
+.br-message-actions {
+  position: absolute;
+  top: -26px;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  padding: 2px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* A user bubble right under another user bubble, 8px apart (the list marks
+   the row's gap, `transcriptRhythm.ts`): 26px would reach 18px into the bubble
+   above, onto its last line. Rising 18px it spans the upper bubble's 10px
+   bottom padding, the gap, and this bubble's 10px top padding: no ink. */
+[data-gap='block'][data-role='user'] .br-message-actions-anchor > .br-message-actions {
+  top: -18px;
+}
+
+/* An answer 8px under a block of its own turn rises 18px into that block, and
+   the block is usually a tool row: a shell command or a query runs the full
+   column, and the cluster hid the label's end and its chevron, so a pointer
+   going for the chevron met the cluster (vision V2-12, round 3). The list marks
+   the row above such an answer (`data-actions-below`, `transcriptRhythm.ts`),
+   and its last tool row ends the cluster's width short: 183px at the most (the
+   widest time, "12/31/2026 12:59 PM", two 24px buttons and the paddings) and
+   8px of air to the row's head, the box its hover wash fills. Only that row;
+   the rows above it keep the full column, and a row with a short label looks
+   the same either way.
+
+   The selector reaches every line inside that last entry, so an OPEN Explored
+   group ends all of its nested rows short, not only the bottom one (WS-TOOLS-3).
+   Kept: the calls then share one right edge, where freeing the upper ones would
+   leave the bottom call's path clipped 192px earlier than its siblings at rest.
+   A child chain cannot pick out the bottom line either (a call's row sits under
+   varying wrappers, and an open well below it would defeat a `:last-child`
+   chain). `messageActionsGeometry.browser.test.tsx` pins it. */
+[data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line {
+  padding-inline-end: 192px;
+}
+
+/* A message that carries a provenance chip ("Spawn context", "Injected by
+   …") has the chip right above its bubble, at the same right edge the cluster
+   takes, so the cluster would cover the chip (and its tooltip) on every hover.
+   It sits on the chip's line instead, 8px to the chip's left, centred on it. */
+.br-message-actions-chip {
+  position: relative;
+}
+
+.br-message-actions-chip > .br-message-actions {
+  top: 50%;
+  right: calc(100% + 8px);
+  translate: 0 -50%;
+}
+
+/* The time label inside the cluster: 12px muted tabular, inset like a button's
+   glyph so the cluster's edges stay even. */
+.br-message-actions-time {
+  padding: 0 6px;
+}
+
+.br-message-actions-scope:hover .br-message-actions,
+.br-message-actions-scope:focus-within .br-message-actions,
+.br-message-actions:has([data-state='open']) {
   opacity: 1;
   pointer-events: auto;
 }
 
 @media (hover: none) {
-  [data-message-meta] {
+  /* It comes BEFORE the message in the DOM (so Tab reaches it first); `order`
+     places it under the message all the same. Both hosts are flex columns. */
+  .br-message-actions {
+    position: static;
+    order: 1;
+    align-self: flex-end;
+    margin-top: 4px;
+    background-color: transparent;
+    box-shadow: none;
     opacity: 1;
     pointer-events: auto;
+  }
+
+  /* Under the message, it rises into nothing: the row above keeps its width. */
+  [data-actions-below] .biorouter-message-tool:last-child .br-transcript-row-line {
+    padding-inline-end: 0;
+  }
+
+  /* On the chip's line it stays on that line, before the chip. */
+  .br-message-actions-chip > .br-message-actions {
+    order: 0;
+    align-self: center;
+    margin-top: 0;
+    translate: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-message-meta] {
+  .br-message-actions {
     transition: none;
   }
 }
+
+/* Forced colours drop box shadows, and the cluster's whole edge is one (the
+   popover shadow and the inset hairline), so it would float edgeless over the
+   words. It gets the system's edge, and its buttons the system button edge, as
+   Crew's row actions do (`.crew-row-action`, Q4-25). */
+@media (forced-colors: active) {
+  .br-message-actions {
+    border: 1px solid CanvasText;
+    background-color: Canvas;
+  }
+
+  .br-message-actions button {
+    border: 1px solid ButtonText;
+  }
+}
+/* @ws WS-TRANSCRIPT end: message actions */

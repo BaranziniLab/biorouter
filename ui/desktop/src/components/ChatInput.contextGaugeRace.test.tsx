@@ -10,31 +10,18 @@
  * old model's window.
  */
 import React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, waitFor } from '@testing-library/react';
-import type * as Alerts from './alerts';
+import { afterAll, beforeAll, describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
 
+// The gauge is the footer's context ring (V2-R4-1). This file drives it through
+// the real ComposerFooter and the real ring, and reads the window from the
+// ring's name ("100% context left · 0 of 131.1k").
 const gauge = vi.hoisted(() => ({
   liveContextWindow: vi.fn(),
-  addAlert: vi.fn(),
-  clearAlerts: vi.fn(),
-  // One array for every render: a new `[]` each time is a new dependency for
-  // the composer's effects that read it, which re-render without end.
-  alerts: [] as unknown[],
 }));
 
 vi.mock('../utils/liveContextWindow', () => ({
   liveContextWindow: (...args: unknown[]) => gauge.liveContextWindow(...args),
-}));
-// The real alert types; only the hook is replaced, so every alert the composer
-// raises is recorded with the window it was given.
-vi.mock('./alerts', async (importOriginal) => ({
-  ...(await importOriginal<typeof Alerts>()),
-  useAlerts: () => ({
-    alerts: gauge.alerts,
-    addAlert: gauge.addAlert,
-    clearAlerts: gauge.clearAlerts,
-  }),
 }));
 
 // The scaffold the sibling ChatInput suites use.
@@ -57,22 +44,9 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({
-  BottomMenuSkillSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({
-  CostTracker: () => null,
-}));
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
 vi.mock('./MessageQueue', () => ({
   default: () => null,
 }));
@@ -88,6 +62,21 @@ vi.mock('../api', () => ({
 
 import ChatInput from './ChatInput';
 import { ChatState } from '../types/chatState';
+
+beforeAll(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  );
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -121,26 +110,22 @@ const composer = (
     droppedFiles={[]}
     onFilesProcessed={vi.fn()}
     messagesLength={0}
-    disableAnimation={false}
     toolCount={0}
     onWorkingDirChange={vi.fn()}
     effectiveModel={effectiveModel}
   />
 );
 
-/** Every window the gauge has been shown, in order. */
-const gaugeWindows = () =>
-  gauge.addAlert.mock.calls
-    .map(([alert]) => alert as { message?: string; progress?: { total: number } })
-    .filter((alert) => alert.message === 'Context window')
-    .map((alert) => alert.progress?.total);
+const ring = () => screen.queryByTestId('context-window-indicator');
+const WINDOW_131K = /of 131\.1k$/;
+const WINDOW_65K = /of 65\.5k$/;
 
 describe('the context gauge across a model switch', () => {
   it('refreshes the local window after a turn lowers Ollama’s automatic context', async () => {
     gauge.liveContextWindow.mockResolvedValue(131_072);
     const model = { provider: 'ollama', model: 'qwen3.8:27b' };
     const view = render(composer(model));
-    await waitFor(() => expect(gaugeWindows()).toContain(131_072));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(WINDOW_131K));
 
     view.rerender(composer(model, ChatState.Thinking));
     view.rerender(composer(model, ChatState.Streaming));
@@ -148,7 +133,7 @@ describe('the context gauge across a model switch', () => {
 
     gauge.liveContextWindow.mockResolvedValue(65_536);
     view.rerender(composer(model, ChatState.Idle));
-    await waitFor(() => expect(gaugeWindows().slice(-1)).toEqual([65_536]));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(WINDOW_65K));
     expect(gauge.liveContextWindow).toHaveBeenCalledTimes(2);
   });
 
@@ -156,7 +141,7 @@ describe('the context gauge across a model switch', () => {
     gauge.liveContextWindow.mockResolvedValue(131_072);
     const model = { provider: 'anthropic', model: 'claude-opus-5' };
     const view = render(composer(model));
-    await waitFor(() => expect(gaugeWindows()).toContain(131_072));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(WINDOW_131K));
 
     view.rerender(composer(model, ChatState.Streaming));
     view.rerender(composer(model, ChatState.Idle));
@@ -178,15 +163,45 @@ describe('the context gauge across a model switch', () => {
 
     // The switch, while the Ollama probe is still out.
     view.rerender(composer({ provider: 'llamacpp', model: 'qwen3.8-27b' }));
-    await waitFor(() => expect(gaugeWindows()).toContain(131_072));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(WINDOW_131K));
 
     // Now the stale Ollama answer lands.
     await act(async () => {
       answerOllama(65_536);
     });
 
-    const windows = gaugeWindows();
-    expect(windows).not.toContain(65_536);
-    expect(windows[windows.length - 1]).toBe(131_072);
+    expect(ring()).toHaveAccessibleName(WINDOW_131K);
+    expect(ring()).not.toHaveAccessibleName(WINDOW_65K);
+  });
+
+  // The same model read twice: the read the chat started when it opened is
+  // still out when a turn ends and the re-read after it answers. Both answers
+  // are for this chat's model, so only the order decides, and the older one
+  // must not put the window the turn moved away from back on the ring.
+  it('keeps the re-read window when an older read of the same model answers last', async () => {
+    const answers: Array<(window: number | null) => void> = [];
+    gauge.liveContextWindow.mockImplementation(
+      () =>
+        new Promise<number | null>((resolve) => {
+          answers.push(resolve);
+        })
+    );
+    const model = { provider: 'ollama', model: 'qwen3.8:27b' };
+
+    const view = render(composer(model, ChatState.Streaming));
+    await waitFor(() => expect(gauge.liveContextWindow).toHaveBeenCalledTimes(1));
+
+    view.rerender(composer(model, ChatState.Idle));
+    await waitFor(() => expect(gauge.liveContextWindow).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      answers[1](65_536);
+    });
+    await waitFor(() => expect(ring()).toHaveAccessibleName(WINDOW_65K));
+
+    await act(async () => {
+      answers[0](131_072);
+    });
+    expect(ring()).toHaveAccessibleName(WINDOW_65K);
   });
 });

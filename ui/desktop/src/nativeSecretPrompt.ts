@@ -113,9 +113,9 @@ export async function promptNativeSecret(
       const env = Object.fromEntries(
         Object.entries(process.env).filter(
           ([key]) =>
-            !/^(BIOROUTER|GOOSE)_.+(SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|KEY|DIGEST)/i.test(
+            !/^BIOROUTER_.+(SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PASSCODE|CREDENTIAL|KEY|DIGEST)/i.test(
               key
-            ) && !/^(BIOROUTER|GOOSE)_SERVER__/i.test(key)
+            ) && !/^BIOROUTER_SERVER__/i.test(key)
         )
       );
       const child = spawn(program, args, {

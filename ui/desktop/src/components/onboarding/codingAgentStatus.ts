@@ -123,3 +123,17 @@ export const METERED_SIBLING: Record<CodingAgentKind, string> = {
   claude_code: 'Anthropic',
   codex: 'OpenAI',
 };
+
+/**
+ * The plan each agent runs on, for the row's short line ("Your Claude subscription · no API key").
+ *
+ * Copy only, and the same deliberate exception as {@link METERED_SIBLING}: the daemon serves a
+ * long description that names the plan inside a sentence ("Uses the Claude subscription you are
+ * already signed in to, through your own installed `claude` command. No API key. Requires …"),
+ * which a row truncated mid-word (vision FR-R1-8). The row shows this; the daemon's sentence stays
+ * the row's tooltip and its accessible description.
+ */
+export const AGENT_SUBSCRIPTION: Record<CodingAgentKind, string> = {
+  claude_code: 'Claude',
+  codex: 'ChatGPT',
+};

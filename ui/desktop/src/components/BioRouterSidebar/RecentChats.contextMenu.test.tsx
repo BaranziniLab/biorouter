@@ -2,8 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionSummary } from '../../api';
+import { chatRowCopy } from '../chats/copy';
 import { SidebarProvider } from '../ui/sidebar';
-import RecentChats from './RecentChats';
+import RecentChats, { canDivergeChat } from './RecentChats';
+import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -62,6 +64,8 @@ function renderRecents(onOpen = vi.fn()) {
         onLoadMore={vi.fn()}
         onOpen={onOpen}
         onViewAll={vi.fn()}
+        view={DEFAULT_SIDEBAR_CHAT_VIEW}
+        onViewChange={vi.fn()}
       />
     </SidebarProvider>
   );
@@ -73,17 +77,50 @@ function renderRecents(onOpen = vi.fn()) {
  * Chat Recall's exact load and every `workspace_*` id argument already take —
  * could not be got out of the sidebar at all.
  */
-describe('sidebar Recents right-click menu', () => {
-  it('offers open, copy and permanent delete actions on a right-click', async () => {
+describe('the sidebar chat row menu', () => {
+  /**
+   * Owner message 4: right-click a chat to rename it, "along with all the other
+   * actions possible there", in the spec's fixed order (3.4), text only.
+   */
+  it('offers rename, the openers, diverge, export, copy and delete on a right-click', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
 
     const items = await screen.findAllByRole('menuitem');
-    expect(items.map((item) => item.textContent)).toEqual([
+    expect(items.map((item) => item.getAttribute('aria-label') ?? item.textContent)).toEqual([
+      'RenameF2',
       'Open in new tab',
       'Open in new window',
-      'Copy conversation ID',
-      'Delete conversation',
+      'Diverge',
+      'Export…',
+      'Copy chat ID',
+      'Delete chat…',
+    ]);
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+  });
+
+  it('opens the same menu from Shift+F10 on the focused row', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    expect(await screen.findByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+  });
+
+  it('opens the same menu from the row’s ⋯ button', async () => {
+    renderRecents();
+    const more = screen.getByTestId('recent-chat-more-20260823_2');
+    expect(more).toHaveAccessibleName('More actions for Excel research');
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.getAttribute('data-chat-row-action'))).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'diverge',
+      'export',
+      'copy-id',
+      'delete',
     ]);
   });
 
@@ -102,10 +139,74 @@ describe('sidebar Recents right-click menu', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith('20260823_2', 'Excel research', true));
   });
 
+  /**
+   * History's menu is the reference for what a chat offers (spec 3.4), and the
+   * two share one menu, so they share its rule: a subagent run is machinery, and
+   * an empty chat has nothing to branch from. A scheduled run, a terminal chat
+   * and a one-message chat still offer it; the daemon answers for the rest.
+   */
+  it('offers Diverge by History’s rule', () => {
+    expect(canDivergeChat(session)).toBe(true);
+    expect(canDivergeChat({ ...session, message_count: 0 })).toBe(false);
+    expect(canDivergeChat({ ...session, message_count: 1 })).toBe(true);
+    expect(canDivergeChat({ ...session, session_type: 'sub_agent' })).toBe(false);
+    expect(canDivergeChat({ ...session, parent_session_id: 'parent' })).toBe(false);
+    expect(canDivergeChat({ ...session, session_type: 'scheduled' })).toBe(true);
+  });
+
+  it('leaves Diverge out of a subagent run’s menu and keeps every other item', async () => {
+    render(
+      <SidebarProvider>
+        <RecentChats
+          sessions={[{ ...session, session_type: 'sub_agent' }]}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={vi.fn()}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.getAttribute('data-chat-row-action'))).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'export',
+      'copy-id',
+      'delete',
+    ]);
+  });
+
+  it('leaves focus off the row after a choice made with the pointer, and returns it after Escape', async () => {
+    // Handing focus back to a row the person clicked with a mouse rings it and
+    // pins its ⋯ open (`:focus-within`); a keyboard user needs it back.
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+
+    row.focus();
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Copy chat ID' }));
+    await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull());
+    expect(row).not.toHaveFocus();
+
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    const menu = await screen.findByRole('menu');
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(row).toHaveFocus());
+  });
+
   it('copies the raw conversation id', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByText('Copy conversation ID'));
+    fireEvent.click(await screen.findByText('Copy chat ID'));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2'));
   });
@@ -140,12 +241,104 @@ describe('sidebar Recents right-click menu', () => {
   });
 });
 
-describe('permanent Recents deletion', () => {
+/**
+ * Vision V1-R5-2. Neither row menu is modal (a modal menu restyles the whole window, R-28), so the
+ * list is modal itself while one is open: it does not scroll, its rows take no pointer
+ * (`data-row-menu-open`, sidebar.css; measured in `sidebarFill.browser.test.tsx`) and its rows
+ * hold their order wherever the pointer is. Without it the list scrolled 599px under an open menu
+ * whose Delete still named the chat that had gone off screen.
+ */
+describe('the list under an open row menu (vision V1-R5-2)', () => {
+  const list = () => screen.getByTestId('recent-chat-scroll');
+  /** Whether the list kept a wheel turn from scrolling it. */
+  const wheelKept = () => {
+    const event = new WheelEvent('wheel', { deltaY: 300, bubbles: true, cancelable: true });
+    list().dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const closeMenu = async () => {
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  };
+
+  it('stops scrolling and marks itself while the right-click menu is open', async () => {
+    renderRecents();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept(), 'at rest the wheel scrolls the list').toBe(false);
+
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    expect(list()).toHaveAttribute('data-row-menu-open', 'true');
+    expect(wheelKept(), 'the wheel scrolls nothing under the menu').toBe(true);
+
+    await closeMenu();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept()).toBe(false);
+  });
+
+  it('does the same for the row’s ⋯ menu', async () => {
+    renderRecents();
+    fireEvent.pointerDown(screen.getByTestId('recent-chat-more-20260823_2'), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    expect(list()).toHaveAttribute('data-row-menu-open', 'true');
+    expect(wheelKept()).toBe(true);
+
+    await closeMenu();
+    expect(list()).not.toHaveAttribute('data-row-menu-open');
+    expect(wheelKept()).toBe(false);
+  });
+
+  it('holds its rows in their order while a row menu is open, wherever the pointer is', async () => {
+    const at = (minutes: number) => new Date(Date.UTC(2026, 7, 23, 12, minutes)).toISOString();
+    const first = { ...session, id: 'a', name: 'Alpha', updated_at: at(10) };
+    const second = { ...session, id: 'b', name: 'Beta', updated_at: at(5) };
+    const draw = (sessions: SessionSummary[]) => (
+      <SidebarProvider>
+        <RecentChats
+          sessions={sessions}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={vi.fn()}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    const order = () =>
+      [...list().querySelectorAll('button[data-row^="chat:"]')].map((row) =>
+        row.getAttribute('data-row')
+      );
+    const { rerender } = render(draw([first, second]));
+    expect(order()).toEqual(['chat:a', 'chat:b']);
+
+    // The menu opens on Beta, and the pointer leaves the list for the menu (or anywhere else).
+    fireEvent.pointerEnter(list());
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-b'));
+    await screen.findByRole('menuitem', { name: 'Rename' });
+    fireEvent.pointerLeave(list());
+
+    // A turn in Beta raises it: with its menu open, nothing moves.
+    rerender(draw([first, { ...second, updated_at: at(20) }]));
+    expect(order()).toEqual(['chat:a', 'chat:b']);
+
+    // The menu closes with the pointer away: the live order applies.
+    await closeMenu();
+    expect(order()).toEqual(['chat:b', 'chat:a']);
+  });
+});
+
+describe('deleting a chat from the sidebar', () => {
   it('requires confirmation and cancel leaves the session intact', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
-    expect(await screen.findByText(/This action cannot be undone/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    expect(await screen.findByText(/This can't be undone/)).toBeInTheDocument();
     expect(mocks.deleteConversation).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(mocks.deleteConversation).not.toHaveBeenCalled();
@@ -154,17 +347,20 @@ describe('permanent Recents deletion', () => {
     mocks.deleteConversation.mockResolvedValue(undefined);
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
     expect(mocks.deleteConversation).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    // History's toast, word for word: the title and no sentence under it.
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith({ title: chatRowCopy.deleteDialog.deleted })
+    );
   });
   it('keeps the dialog open and shows an actionable API error', async () => {
     mocks.deleteConversation.mockRejectedValue(new Error('Server unavailable'));
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete conversation' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() =>
       expect(mocks.toastError).toHaveBeenCalledWith(
@@ -172,5 +368,88 @@ describe('permanent Recents deletion', () => {
       )
     );
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Vision V1-R8-1: a Delete chosen with the pointer and dismissed with Escape left focus on
+ * `<body>`, and the next Tab began at the top of the window. The menu item that held focus is gone
+ * when the dialog closes, and the shared dialog rule gives focus back after a pointer pick only
+ * when the pick was a key; the list knows which control the menu came from.
+ */
+describe('focus when the Delete dialog closes (V1-R8-1)', () => {
+  /** The close-focus handler runs on a timer once the dialog's content has gone. */
+  const dialogGone = async () => {
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+
+  it('gives it back to the row after a pointer pick in the right-click menu and Escape', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(row).toHaveFocus();
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+  });
+
+  it('gives it back to the row’s ⋯ after a pointer pick in the ⋯ menu and Escape', async () => {
+    renderRecents();
+    fireEvent.pointerDown(screen.getByTestId('recent-chat-more-20260823_2'), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await dialogGone();
+    expect(screen.getByTestId('recent-chat-more-20260823_2')).toHaveFocus();
+  });
+
+  it('gives it back after Cancel pressed with a key', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.keyDown(cancel, { key: 'Enter' });
+    fireEvent.click(cancel);
+    await dialogGone();
+    expect(row).toHaveFocus();
+  });
+
+  it('leaves it off the row after Cancel clicked with the pointer, so no ⋯ is pinned', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const cancel = await screen.findByRole('button', { name: 'Cancel' });
+    fireEvent.pointerDown(cancel, { button: 0 });
+    fireEvent.click(cancel);
+    await dialogGone();
+    expect(row).not.toHaveFocus();
+    expect(screen.getByTestId('recent-chat-more-20260823_2')).not.toHaveFocus();
+  });
+
+  it('gives nothing back to a chat the dialog deleted', async () => {
+    mocks.deleteConversation.mockResolvedValue(undefined);
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    const confirm = await screen.findByRole('button', { name: 'Delete' });
+    fireEvent.keyDown(confirm, { key: 'Enter' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
+    await dialogGone();
+    // The list here is a fixed prop, so the row is still drawn: it must not take focus.
+    expect(row).not.toHaveFocus();
   });
 });

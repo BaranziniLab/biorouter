@@ -29,8 +29,8 @@
   --wall-head: 48px;   /* header band height */
   --wall-top: 16px;    /* space under the header */
   --wall-gap: 11px;    /* between messages */
-  --wall-card: 40px;   /* composer card */
-  --wall-pb: 12px;     /* under the chip */
+  --wall-bar: 28px;    /* the controls row inside the composer card */
+  --wall-pb: 12px;     /* under the card */
   --wall-row: 28px;    /* a picker row */
   position: absolute; inset: 0; background: var(--paper);
 }
@@ -48,8 +48,8 @@
 .art-wall .wall-head, .art-wall .wall-body {
   --wall-t-title: 13px; --wall-l-title: 17px;
   --wall-t-msg: 13px; --wall-l-user: 18px; --wall-l-bot: 19px; --wall-bub: 7px 11px; --wall-bub-max: 92%;
-  --wall-t-tool: 12.5px; --wall-l-tool: 20px;
-  --wall-t-opt: 12.5px; --wall-t-why: 11.5px; --wall-l-why: 15px;
+  --wall-t-tool: 13px; --wall-l-tool: 20px;
+  --wall-t-opt: 13px; --wall-t-why: 12px; --wall-l-why: 15px;
   --wall-t-note: 12px; --wall-l-note: 17px;
 }
 
@@ -93,11 +93,17 @@
 }
 .art-wall .wall-tool > .wall-i { margin-top: calc((var(--wall-l-tool) - 14px) / 2); color: var(--subtle); }
 .art-wall .wall-tx { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0; }
-.art-wall .wall-tt { min-width: 0; text-wrap: balance; }
+/* The title is one line and never wraps, as the app's tool row is (ToolCallWithResponse): a
+   title the chat is too narrow for ends in an ellipsis and the row's chevron stays after it,
+   outside the clipped text. Only the affiliation badge may drop to a second line. */
+.art-wall .wall-tt { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.art-wall .wall-ttx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The row's own chevron (ChevronRight at 60%), as the app and the Biomed tile draw it. */
+.art-wall .wall-tchev { flex: none; margin: -2px 0 0 3px; opacity: 0.6; }
 .art-wall .wall-aff {
   display: inline-flex; align-items: center; gap: 4px; flex: none;
   height: 20px; padding: 0 6px; border-radius: var(--r-inner);
-  background: var(--muted-ground); color: var(--ink); font-size: 11.5px; white-space: nowrap;
+  background: var(--muted-ground); color: var(--ink); font-size: 12px; white-space: nowrap;
 }
 .art-wall .wall-aff .wall-i { width: 11px; height: 11px; color: var(--ink); }
 .art-wall .wall-bot { font-size: var(--wall-t-msg); line-height: var(--wall-l-bot); margin-top: -2px; text-wrap: balance; }
@@ -108,34 +114,55 @@
 .art-wall .wall-drop2 .wall-m-bot, .art-wall .wall-drop2 .wall-m-tool,
 .art-wall .wall-drop3 .wall-msgs > * { display: none; }
 
-/* Composer: the card, then the model chip under it. */
+/* Composer: one card holding the prose line and, under it, the controls row
+   the app draws: [+] [Tools N]  ·  [model] (Send). The + glyph hangs back onto
+   the card's text edge. wall.js drops the row's parts, in order, from a chat
+   too narrow to hold them (the wall-bs steps below). The card is the page
+   ground with the app's resting hairline (owner message 17, R-32); the idle
+   Send in it rests on the subtle fill. */
 .art-wall .wall-comp { flex: none; margin-top: auto; }
 .art-wall .wall-card {
-  height: var(--wall-card); display: flex; align-items: center; gap: 8px;
-  padding: 0 5px 0 12px;
-  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-container);
+  padding: 9px 6px 6px 12px;
+  background: var(--paper); border: 1px solid var(--line-composer); border-radius: var(--r-container);
 }
-.art-wall .wall-ph { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
-/* wall.js picks the spelling: the longest that fits. */
-.art-wall .wall-ph > span { display: none; }
-.art-wall .wall-phx-l .wall-phl, .art-wall .wall-phx-m .wall-phm, .art-wall .wall-phx-s .wall-phs { display: inline; }
-.art-wall .wall-phx-0 .wall-ph { visibility: hidden; }
-.art-wall .wall-send {
-  flex: none; margin-left: auto;
-  width: 28px; height: 28px; border-radius: var(--r-element);
-  display: grid; place-items: center;
-  background: var(--medium); color: var(--muted);
+.art-wall .wall-ph {
+  display: block; font-size: 13px; line-height: 20px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.art-wall .wall-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  height: 24px; margin: 6px 0 0 -6px; padding: 0 7px;
-  border-radius: var(--r-element);
-  font-size: 12px; color: var(--ink-2); white-space: nowrap;
-  transition: background var(--dur-fast) ease;
+.art-wall .wall-bar { display: flex; align-items: center; gap: 2px; height: var(--wall-bar); margin: 2px 0 0 -6px; }
+.art-wall .wall-plus { display: grid; place-items: center; flex: none; width: var(--wall-bar); height: var(--wall-bar); color: var(--muted); }
+.art-wall .wall-plus .wall-i { width: 16px; height: 16px; }
+.art-wall .wall-tools, .art-wall .wall-chip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: var(--wall-bar); padding: 0 7px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease);
 }
-.art-wall .wall-chip .wall-brain { width: 14px; height: 14px; color: var(--muted); }
+.art-wall .wall-chip { margin-left: auto; color: var(--ink-2); }
 .art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
-.art-wall .wall-chip.is-open { background: var(--medium); }
+.art-wall .wall-chip.is-open { background: var(--fill-strong); }
+.art-wall .wall-dd { width: 12px; height: 12px; margin-left: -1px; opacity: 0.6; }
+.art-wall .wall-send {
+  flex: none; margin-left: 2px;
+  width: var(--wall-bar); height: var(--wall-bar); border-radius: var(--r-element);
+  display: grid; place-items: center;
+  background: var(--fill); color: var(--muted);
+}
+/* The model's name is the chip's whole point, so it is never hidden while it
+   can show part of itself: the app truncates it inside the chip (max width,
+   ellipsis) rather than leaving a lone padlock. */
+.art-wall .wall-cn { overflow: hidden; text-overflow: ellipsis; }
+/* Steps wall.js takes, in order, until the row fits: the chevrons, the Tools
+   chip, then the + button, after which the chip gives way and its name
+   ellipsizes. Only when not even the first few letters fit does the name go
+   (its padlock stays; a chip with no padlock goes with it). */
+.art-wall .wall-bs1 .wall-dd,
+.art-wall .wall-bs2 .wall-dd, .art-wall .wall-bs2 .wall-tools,
+.art-wall .wall-bs3 .wall-dd, .art-wall .wall-bs3 .wall-tools, .art-wall .wall-bs3 .wall-plus,
+.art-wall .wall-bs4 .wall-dd, .art-wall .wall-bs4 .wall-tools, .art-wall .wall-bs4 .wall-plus, .art-wall .wall-bs4 .wall-cn { display: none; }
+.art-wall .wall-bs3 .wall-chip { flex: 0 1 auto; min-width: 0; }
+.art-wall .wall-bs3 .wall-cn { min-width: 2.5em; }
+.art-wall .wall-bs4 .wall-chip:not(:has(.wall-chiplock)) { display: none; }
 
 /* ── Events: wall.js sets their top, clear of the messages and the composer ── */
 .art-wall .wall-evt {
@@ -144,7 +171,7 @@
 }
 .art-wall .wall-pub .wall-evt { left: var(--wall-pw); right: var(--wall-po); }
 /* The picker hangs from the composer (wall.js sets its bottom). */
-.art-wall .wall-priv .wall-evt { top: auto; bottom: 0; }
+.art-wall .wall-priv .wall-evt { top: auto; bottom: 0; align-items: flex-end; }
 .art-wall .wall-no-evt .wall-evt { visibility: hidden; }
 
 /* The model picker, as the app draws it in a private chat: the current
@@ -155,19 +182,16 @@
 .art-wall .wall-pop {
   position: relative; width: min(100%, 250px);
   padding: 4px; background: var(--paper);
-  border: 1px solid var(--line-2); border-radius: var(--r-container);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
   opacity: 0; transform: translateY(4px);
-  transition: opacity var(--dur-menu) ease, transform var(--dur-menu) var(--ease);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
 }
 .art-wall .wall-pop.is-on { opacity: 1; transform: none; }
 .art-wall .wall-hl {
   position: absolute; left: 4px; right: 4px; top: 4px; height: var(--wall-row);
-  border-radius: var(--r-element); background: var(--sidebar-active);
-  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) ease;
-}
-.art-wall .wall-hl::before {
-  content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
-  border-radius: 2px; background: var(--coral-bar);
+  border-radius: var(--r-element); background: var(--fill-strong);
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-pop.is-try .wall-hl { transform: translateY(var(--wall-row)); }
 .art-wall .wall-compact .wall-keep { display: none; }
@@ -189,7 +213,7 @@
 .art-wall .wall-pop.is-why .wall-barred { grid-template-rows: auto 1fr; }
 .art-wall .wall-why {
   min-height: 0; overflow: hidden;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-why > p {
   font-size: var(--wall-t-why); line-height: var(--wall-l-why); color: var(--muted);
@@ -200,7 +224,7 @@
 /* A public request travels to the wall and stops dead there. */
 .art-wall .wall-req {
   position: relative; padding-bottom: 13px;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-req.is-on { opacity: 1; }
 .art-wall .wall-reqrow {
@@ -208,7 +232,7 @@
   font-size: var(--wall-t-tool); line-height: var(--wall-l-tool); color: var(--muted);
 }
 .art-wall .wall-reqrow .wall-i { color: var(--subtle); margin-top: calc((var(--wall-l-tool) - 14px) / 2); }
-.art-wall .wall-req.is-run .wall-reqrow { animation: wall-breathe 2.4s ease-in-out infinite; }
+.art-wall .wall-req.is-run .wall-reqrow { animation: wall-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
 /* The lane runs from the wall to the end of the request row. */
 .art-wall .wall-lane {
   position: absolute; left: calc(-1 * var(--wall-pw)); right: 0; bottom: 1px; height: 10px;
@@ -231,7 +255,7 @@
 .art-wall .wall-note {
   font-size: var(--wall-t-note); line-height: var(--wall-l-note); color: var(--muted); margin-top: 7px;
   text-wrap: balance;
-  opacity: 0; transition: opacity var(--dur-med) ease;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
 }
 .art-wall .wall-note.is-on { opacity: 1; }
 @keyframes wall-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
@@ -249,7 +273,8 @@
   position: absolute; top: 50%; left: calc(var(--split) - 1px);
   width: 38px; height: 38px; transform: translate(-50%, -50%);
   display: flex; align-items: center; justify-content: center;
-  background: var(--paper); border: 1px solid var(--line-2); border-radius: 50%;
+  background: var(--paper); border: 1px solid transparent; border-radius: 50%;
+  box-shadow: var(--shadow-popover);
   pointer-events: none;
 }
 .art-wall .wall-handle .wall-chev { width: 11px; height: 11px; color: var(--coral); }
@@ -282,19 +307,18 @@
   .art-wall .wall-head, .art-wall .wall-body {
     --wall-t-title: 12px; --wall-l-title: 15px;
     --wall-t-msg: 12px; --wall-l-user: 16px; --wall-l-bot: 16px; --wall-bub: 6px 10px; --wall-bub-max: 100%;
-    --wall-t-tool: 11.5px; --wall-t-opt: 12px; --wall-t-note: 11.5px; --wall-l-note: 16px;
+    --wall-t-tool: 12px; --wall-t-opt: 12px; --wall-t-note: 12px; --wall-l-note: 16px;
   }
   .art-wall .wall-head { gap: 8px; }
-  .art-wall .wall-card { padding-left: 10px; gap: 6px; }
+  .art-wall .wall-card { padding-left: 10px; }
   .art-wall .wall-ph { font-size: 12px; }
   .art-wall .wall-pop { padding: 3px; }
   .art-wall .wall-hl { left: 3px; right: 3px; top: 3px; }
   .art-wall .wall-opt { gap: 5px; padding: 0 7px; }
   .art-wall .wall-opt .wall-i { width: 11px; height: 11px; }
   .art-wall .wall-opt .wall-gap { width: 11px; }
-  .art-wall .wall-quiet { font-size: 11.5px; }
+  .art-wall .wall-quiet { font-size: 12px; }
   .art-wall .wall-why > p { padding: 0 7px 5px 23px; }
-  .art-wall .wall-chip .wall-brain { display: none; }
   .art-wall .wall-handle { width: 32px; height: 32px; }
   .art-wall .wall-handle .wall-chev { width: 10px; height: 10px; }
   .art-wall .wall-handle .wall-hlock { width: 12px; height: 12px; }
@@ -309,26 +333,25 @@
 }
 /* Short frames: a tighter rhythm. */
 @container wallframe (max-height: 420px) {
-  .art-wall .wall-layer { --wall-top: 12px; --wall-gap: 8px; --wall-card: 36px; --wall-pb: 10px; --wall-row: 26px; }
-  .art-wall .wall-chip { margin-top: 4px; height: 22px; }
-  .art-wall .wall-send { width: 26px; height: 26px; }
+  .art-wall .wall-layer { --wall-top: 12px; --wall-gap: 8px; --wall-bar: 26px; --wall-pb: 10px; --wall-row: 26px; }
+  .art-wall .wall-card { padding-top: 7px; }
+  .art-wall .wall-bar { margin-top: 0; }
 }
 /* Large frames (the stacked tablet layout): larger type, the long words. */
 @container wallframe (min-width: 640px) and (min-height: 460px) {
   .art-wall .wall-d { display: none; }
   .art-wall .wall-g { display: inline; }
-  .art-wall .wall-layer { --wall-po: 22px; --wall-pw: 30px; --wall-hw: 16px; --wall-head: 54px; --wall-top: 20px; --wall-gap: 13px; --wall-card: 44px; --wall-pb: 14px; --wall-row: 30px; }
+  .art-wall .wall-layer { --wall-po: 22px; --wall-pw: 30px; --wall-hw: 16px; --wall-head: 54px; --wall-top: 20px; --wall-gap: 13px; --wall-bar: 30px; --wall-pb: 14px; --wall-row: 30px; }
   .art-wall .wall-head, .art-wall .wall-body {
     --wall-t-title: 14px; --wall-l-title: 18px;
     --wall-t-msg: 14px; --wall-l-user: 20px; --wall-l-bot: 20px; --wall-bub: 8px 13px;
     --wall-t-tool: 13px; --wall-l-tool: 22px;
     --wall-t-opt: 13px; --wall-t-why: 12px; --wall-l-why: 17px;
-    --wall-t-note: 12.5px; --wall-l-note: 18px;
+    --wall-t-note: 13px; --wall-l-note: 18px;
   }
   .art-wall .wall-aff { font-size: 12px; height: 22px; }
   .art-wall .wall-ph { font-size: 13px; }
-  .art-wall .wall-send { width: 30px; height: 30px; }
-  .art-wall .wall-chip { font-size: 12.5px; margin-top: 7px; }
+  .art-wall .wall-tools, .art-wall .wall-chip { font-size: 13px; }
   .art-wall .wall-pop { width: min(100%, 300px); }
 }
 
@@ -344,9 +367,9 @@
   .art-wall .wall-head, .art-wall .wall-body {
     --wall-t-title: 12px; --wall-l-title: 15px;
     --wall-t-msg: 12px; --wall-l-user: 16px; --wall-l-bot: 16px; --wall-bub: 6px 10px; --wall-bub-max: 100%;
-    --wall-t-tool: 11.5px; --wall-l-tool: 20px;
-    --wall-t-opt: 12px; --wall-t-why: 11.5px; --wall-l-why: 15px;
-    --wall-t-note: 11.5px; --wall-l-note: 16px;
+    --wall-t-tool: 12px; --wall-l-tool: 20px;
+    --wall-t-opt: 12px; --wall-t-why: 12px; --wall-l-why: 15px;
+    --wall-t-note: 12px; --wall-l-note: 16px;
   }
 }
 /* A narrow chat's header gives the title a little more room (a row header
@@ -358,10 +381,6 @@
   .art-wall .wall-opt .wall-check { display: none; }
 }
 @container wallpane (max-width: 190px) {
-  .art-wall .wall-chip .wall-brain { display: none; }
-}
-@container wallpane (max-width: 132px) {
-  .art-wall .wall-priv .wall-chip .wall-cn { display: none; }
 }
 @container wallpane (max-width: 100px) {
   .art-wall .wall-comp { display: none; }

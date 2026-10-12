@@ -1,0 +1,538 @@
+/* @ws WS-PREVIEW begin: preview panel (spec 3.8) */
+/* ── The artifact preview panel ─────────────────────────────────────────────
+   Rules that serve ONE surface, kept beside its component (spec 3, global
+   rules) and imported by ArtifactViewer. The rung-2 grid, the paper and the
+   per-kind content rules stay in main.css's preview families.
+
+   Authored CSS keyed on classes and data attributes, never newly written
+   Tailwind strings: under BIOROUTER_NO_HMR the class scanner is blind and a
+   new utility silently never generates. Unlayered, so these win over the
+   utilities on the same elements. Tokens only; every animation sits under the
+   global reduced-motion reset in main.css. */
+
+/* TWO GROUNDS, FOR EVERY KIND. The strip keeps the band's ground (it continues
+   the 44px top edge); everything under it is the page. An image, a directory, a
+   document, a loading or an error state used to sit on the muted ground while
+   text sat on paper, so switching kinds changed the ground. */
+.br-preview-panel {
+  /* Above the conversation cell while it glides out from under the panel's
+     edge (WS-SUMMARY's column glide), on an opaque ground (spec 3.8). */
+  z-index: 1;
+  background: var(--background-default);
+  border-left: 1px solid var(--border-subtle);
+  transition: border-left-color var(--dur-med) var(--ease-out);
+}
+
+/* NOTHING POPS. The body slides and fades with `usePreviewMotion`; the strip,
+   the bar and the seam's hairline fade with it on the same beat, so no part of
+   the panel appears or vanishes in a single frame. Opacity only: the strip is a
+   band and must not move. Entrances take the panel tier, exits the fast one.
+
+   The entrance is an ANIMATION keyed on the hook's `data-preview-motion`
+   marker, not a transition: the panel is inserted and opened before its first
+   style pass, so a transition has no "before" and the strip appeared at once
+   (measured in the harness's panel mode). Closed, everything rests at 0 and
+   the exit is a transition from the open state. */
+.br-preview-panel[data-preview-motion='open'] {
+  animation: br-preview-edge-in var(--dur-med) var(--ease-out) both;
+}
+
+.br-preview-panel[data-preview-motion='open'] > .br-tabstrip,
+.br-preview-panel[data-preview-motion='open'] > .br-preview-bar {
+  animation: br-preview-fade-in var(--dur-med) var(--ease-out) both;
+}
+
+.br-preview-panel[data-panel-open='false'] {
+  border-left-color: transparent;
+  transition-duration: var(--dur-fast);
+}
+
+.br-preview-panel[data-panel-open='false'] > .br-tabstrip,
+.br-preview-panel[data-panel-open='false'] > .br-preview-bar {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+/* ── The tab strip's edges ── a tab scrolled past an edge fades into it, so a
+   cut-off tab reads as "more this way" rather than as a clipped glyph beside the
+   ▾. The fade is as long as a tab's leading glyph and its padding (32px): a
+   shorter one left the glyph and the active underline at near full strength in
+   the sliver that showed. Only while scrolled: a strip that fits
+   has no mask at all. Scoped to the panel; the chat strip is WS-MOTION's. */
+[data-br-panel-artifact] .br-tabstrip__scroll {
+  --tab-edge-fade: 32px;
+}
+
+[data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-start] {
+  mask-image: linear-gradient(to right, transparent, #000 var(--tab-edge-fade));
+}
+
+[data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-end] {
+  mask-image: linear-gradient(to left, transparent, #000 var(--tab-edge-fade));
+}
+
+[data-br-panel-artifact] .br-tabstrip__scroll[data-scrolled-start][data-scrolled-end] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--tab-edge-fade),
+    #000 calc(100% - var(--tab-edge-fade)),
+    transparent
+  );
+}
+
+/* ── The header's actions ── two always (Open externally, Close), the rest when
+   wanted. Muted ink at rest like the chat header's; default ink on hover and
+   while a menu is open. */
+.br-preview-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.br-preview-icon-button {
+  position: relative;
+  color: var(--text-muted);
+}
+
+.br-preview-icon-button:hover,
+.br-preview-icon-button[data-state='open'] {
+  color: var(--text-default);
+}
+
+/* A mode that is on (the region tool while a region is being picked): the
+   pressed fill every band toggle uses, not coral. */
+.br-preview-icon-button--pressed {
+  background: var(--background-medium);
+  color: var(--text-default);
+}
+
+/* The waiting update: one accent dot on the refresh glyph (principle 7, "New"
+   or unread marks); the sentence is the tooltip. */
+.br-preview-update-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-bar);
+  box-shadow: 0 0 0 1.5px var(--sidebar);
+}
+
+.br-preview-update-dot--compact {
+  top: 3px;
+  right: 3px;
+  box-shadow: 0 0 0 1.5px var(--background-default);
+}
+
+/* ── The preview bar (PreviewBar.tsx) ── 32px, one hairline, paper. Its inline
+   padding is the paper inset — the gutter (`clamp(16px, 4.5%, 32px)`, the same
+   4.5% of the panel the content's `--paper-gutter` takes in `cqw`) or the
+   column's centring margin, whichever is larger — so the name starts on the
+   left edge the prose, the code text and a table's first column share. It
+   refines `.br-preview-measure-strip` (main.css), which floors at 14px.
+   `--pane` is the same inset for a bar over one pane of the panel (the file
+   beside a directory's rail), whose content measures against that pane. */
+.br-preview-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-width: 0;
+  height: var(--tab-height);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--background-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-preview-bar.br-preview-measure-strip,
+.br-preview-bar.br-preview-bar--pane {
+  padding-inline: max(clamp(16px, 4.5%, 32px), calc((100% - var(--measure-chat)) / 2));
+}
+
+/* Over content that uses the panel's whole width (a figure, an image, a
+   document, a folder) the name keeps to the gutter instead of the column. */
+.br-preview-bar.br-preview-bar--gutter {
+  padding-inline: clamp(16px, 4.5%, 32px);
+}
+
+/* A live page's toolbar (WebPagePreview) is the bar for that kind: the same
+   row, holding the page's navigation and its address. */
+.br-preview-bar--browser {
+  gap: 4px;
+  padding-inline: 6px;
+}
+
+.br-preview-bar__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-default);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The meta yields before the name: the huge shrink factor makes it give way
+   first, and the count inside it leaves whole (`.br-paper-strip-count`). */
+.br-preview-bar__meta {
+  display: flex;
+  flex: 0 100000 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: nowrap;
+}
+
+.br-preview-bar__meta:empty {
+  display: none;
+}
+
+.br-preview-bar__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.br-preview-bar__actions:empty {
+  display: none;
+}
+
+/* A git ref: the one machine string the bar shows, so it is mono. */
+.br-preview-bar__ident {
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+}
+
+.br-preview-bar__notice {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The bar's controls are dense: the copy glyph's 24px square and the
+   segmented track (28px) both sit inside the 32px bar. */
+.br-preview-bar .br-preview-icon-button {
+  color: var(--text-muted);
+}
+
+.br-preview-bar .br-preview-icon-button:hover {
+  color: var(--text-default);
+}
+
+/* ── The body and its layers ── each source renders in its own layer (see
+   ArtifactViewer's "THE SWITCH"). The current layer rises 8px and fades in
+   over 175ms; a switched-away layer stays on top for its 125ms fade out. The
+   first content a panel shows does not animate: the body's own entrance does. */
+.br-preview-body {
+  background: var(--background-default);
+}
+
+.br-preview-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.br-preview-layer[data-preview-layer='outgoing'] {
+  z-index: 1;
+  pointer-events: none;
+  animation: br-preview-fade-out var(--dur-fast) var(--ease-out) forwards;
+}
+
+.br-preview-layer[data-enter]
+  > :not(iframe):not([data-preview-loading]):not([data-preview-native]) {
+  animation: br-preview-rise-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+/* A native web view cannot fade or move with the DOM; its box only fades. */
+.br-preview-layer[data-enter] > [data-preview-native] {
+  animation: br-preview-fade-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+/* Preview ↔ Raw: the incoming view fades in, nothing moves. */
+.br-preview-view {
+  height: 100%;
+}
+
+.br-preview-view[data-enter] {
+  animation: br-preview-fade-in var(--dur-fast) var(--ease-out) both;
+}
+
+/* A FRAME NEVER FLASHES (P0 3). Its page ground stays white (an agent's page
+   with no background must still read as a page in dark mode), but the frame is
+   held transparent until its document has loaded, then faded in; the paper
+   shows through until then. */
+.br-preview-frame {
+  opacity: 0;
+  transition: opacity var(--dur-fast-max) var(--ease-out);
+}
+
+.br-preview-frame[data-loaded='true'] {
+  opacity: 1;
+}
+
+/* ── First load ── nothing for 200ms (most reads land sooner), then three quiet
+   lines on the paper, in the reading column. */
+.br-preview-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: content-box;
+  max-width: var(--measure-chat);
+  margin-inline: auto;
+  padding: 28px clamp(16px, 4.5%, 32px);
+}
+
+.br-preview-skeleton > span {
+  display: block;
+  height: 10px;
+  border-radius: var(--radius-inner);
+  /* The strong fill: the quiet step the paper's fill is one short of, so a
+     placeholder line is perceivable on the paper (1.2:1) where the rest fill
+     (1.1:1) is only a tint. */
+  background: var(--background-fill-strong);
+  opacity: 0;
+  animation: br-preview-fade-in var(--dur-fast-max) var(--ease-out) forwards;
+  /* Most reads land sooner: a quick one never shows the skeleton at all. */
+  animation-delay: 200ms;
+}
+
+.br-preview-skeleton > span:nth-child(1) {
+  width: 62%;
+}
+
+.br-preview-skeleton > span:nth-child(2) {
+  width: 88%;
+}
+
+.br-preview-skeleton > span:nth-child(3) {
+  width: 46%;
+}
+
+/* ── States (error, binary, external page, empty folder) ── centred on the
+   paper: a 20px glyph, a label, one line, at most one action. No card. */
+.br-preview-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.br-preview-state__line {
+  max-width: 360px;
+}
+
+/* ── Images ── Fit shows the whole picture; 1:1 its real pixels, scrolling. It
+   fades in once decoded instead of popping in when `src` lands. */
+.br-preview-image {
+  display: flex;
+  height: 100%;
+  overflow: auto;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.br-preview-image > img {
+  margin: auto;
+  opacity: 0;
+  transition: opacity var(--dur-fast-max) var(--ease-out);
+}
+
+.br-preview-image[data-fit='fit'] > img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.br-preview-image[data-fit='actual'] > img {
+  max-width: none;
+  max-height: none;
+  flex: none;
+}
+
+.br-preview-image > img[data-loaded='true'] {
+  opacity: 1;
+}
+
+/* ── Directories ── the rail's header is the filter, one 32px row, so its
+   hairline meets the file side's at the seam. The hairline is the band's edge
+   (structural); the filter in it is a filled field, not a ruled one (R-27). */
+.br-preview-rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 42%;
+  min-width: 205px;
+  max-width: 280px;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.br-preview-rail__filter {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--tab-height);
+  box-sizing: border-box;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* The field is `.br-field` (main.css, layered): the fill at rest, the strong step
+   under the pointer, `--border-focus` only while focused, a transparent border
+   otherwise. What is written here is its size and type: 24px, the compact rung,
+   in the 32px row, with the glyph inside its left edge. */
+.br-preview-rail__input {
+  flex: 1;
+  min-width: 0;
+  block-size: var(--control-compact);
+  padding-inline: 28px 8px;
+  border-radius: var(--radius-element);
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-preview-rail__input::placeholder {
+  color: var(--text-muted);
+}
+
+.br-preview-rail__input::-webkit-search-cancel-button,
+.br-preview-rail__input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.br-preview-rail__glyph {
+  position: absolute;
+  inset-inline-start: 16px;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* ── Documents ── pages are white sheets on the paper with a hairline edge, not
+   a grey well with shadows (principle 8). A page fades in once its renderer
+   has drawn it (`data-rendered`, which the CI preview job also waits on). */
+.br-preview-page {
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+canvas.br-preview-page {
+  opacity: 0;
+  transition: opacity var(--dur-fast-max) var(--ease-out);
+}
+
+canvas.br-preview-page[data-rendered='true'] {
+  opacity: 1;
+}
+
+/* docx-preview paints its own grey wrapper and shadowed pages; on the paper the
+   wrapper is clear and a page takes the same hairline as a PDF page. */
+.artifact-docx-preview .docx-wrapper {
+  background: transparent;
+}
+
+.artifact-docx-preview .docx-wrapper > section.docx {
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+/* A deck's slide arrives with the renderer's own drop shadow, written inline on
+   the slide's frame (the first box inside each slide's wrapper; the shapes on
+   the slide are deeper and are left alone). A static page takes no shadow, so it
+   takes the one hairline edge a PDF page and a Word page take. The page edge is
+   the rendered document's own, drawn outside the page, not a box around UI: a
+   white sheet on the paper has no other edge in light mode. */
+.artifact-pptx-preview > div > div[style*='box-shadow'] {
+  box-shadow: 0 0 0 1px var(--border-subtle) !important;
+}
+
+.artifact-docx-preview[data-rendered='false'],
+.artifact-pptx-preview[data-rendered='false'] {
+  opacity: 0;
+}
+
+.artifact-docx-preview[data-rendered='true'],
+.artifact-pptx-preview[data-rendered='true'] {
+  opacity: 1;
+  transition: opacity var(--dur-fast-max) var(--ease-out);
+}
+
+/* The workbook's sheet picker: a menu trigger in the bar, named by the sheet. A
+   select is a filled control (R-27): the fill at rest, the strong step under the
+   pointer and while its menu is open, no outline. The 1px border stays but
+   transparent, so nothing moves and forced colours still draw an edge. */
+.br-preview-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: var(--background-fill);
+  color: var(--text-default);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-preview-select:hover,
+.br-preview-select[data-state='open'] {
+  background: var(--background-fill-strong);
+}
+
+/* ── Keyframes ── */
+@keyframes br-preview-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes br-preview-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes br-preview-edge-in {
+  from {
+    border-left-color: transparent;
+  }
+}
+
+@keyframes br-preview-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* @ws WS-PREVIEW end: preview panel */

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
  * side because this is where the consequence shows up.
  *
  * `ToolCallConfirmation` reads a card's `prompt` as a SECURITY FINDING: it paints
- * a warning banner and withholds "Always Allow", on the grounds that a permanent
+ * a warning banner and withholds "Always allow", on the grounds that a permanent
  * grant is not a thing to decide from a card that exists because an inspector
  * objected. That is only sound while `prompt` carries nothing but
  * `approval_prompt_for_request` — the inspectors' own reasons.
@@ -57,7 +57,7 @@ describe('the bridge and the approval card agree on what `prompt` means', () => 
   });
 
   it('records an approval the user meant to last, so the card is not lying', () => {
-    // Offering "Always Allow" is only honest if the answer survives the turn.
+    // Offering "Always allow" is only honest if the answer survives the turn.
     // `handle_approved_and_denied_tools` does this on the agent's own path; the
     // bridge only logged the permission, so the next identical call asked again.
     const calls = awaitApproval.match(/record_lasting_decision/g) ?? [];

@@ -83,6 +83,19 @@ describe('PrivacyTiersOffNote', () => {
     expect(note).toHaveAttribute('role', 'status');
   });
 
+  // V4-R7-6, class only (privacy UI, ruling 15): the headline is 600, not the preflight's `bolder`
+  // (700). `privacyEmphasisWeight.browser.test.tsx` measures the computed weight.
+  it('sets the headline at the strong weight, 600', () => {
+    configMocks.enabled = false;
+    configMocks.record = record({ origin: 'unrecorded' });
+    mount();
+
+    const emphasised = screen.getByTestId('privacy-tiers-off-note').querySelectorAll('strong');
+    expect(emphasised).toHaveLength(1);
+    expect(emphasised[0]).toHaveClass('font-semibold');
+    expect(emphasised[0]).toHaveTextContent(/^Privacy tiers are off/i);
+  });
+
   it('says the switch was turned off outside the app when no deliberate change is recorded', () => {
     configMocks.enabled = false;
     configMocks.record = record({ origin: 'unrecorded' });

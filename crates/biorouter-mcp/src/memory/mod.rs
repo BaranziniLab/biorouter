@@ -107,7 +107,7 @@ pub struct MemoryServer {
 /// `<config>/memory`, resolved through [`crate::paths`] — the one resolver in
 /// this crate that honours `BIOROUTER_PATH_ROOT`:
 /// - macOS/Linux: `~/.config/biorouter/memory/`
-/// - Windows:     `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory`
+/// - Windows:     `%APPDATA%\UCSF\biorouter\config\memory`
 /// - sandboxed:   `$BIOROUTER_PATH_ROOT/config/memory`
 ///
 /// This used to hand-roll `choose_app_strategy(…).in_config_dir("memory")`, a

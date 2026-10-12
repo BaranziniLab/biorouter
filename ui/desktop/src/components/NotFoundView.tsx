@@ -4,7 +4,17 @@ import { PageHeader } from './Layout/PageHeader';
 import { ReadableContent } from './Layout/ReadableContent';
 import { EmptyState } from './ui/empty-state';
 import { Button } from './ui/button';
-import { CircleHelp, Home } from './icons/app-icons';
+import { CircleHelp } from './icons/app-icons';
+
+/** The page's strings (copy rules, spec section 1). The empty-state title is read by
+ * `App.routing.test.tsx`, so it changes only together with that test. */
+const copy = {
+  title: 'Page not found',
+  info: 'This address does not name a page in Biorouter. It may be a typo, or a link to a page that moved.',
+  emptyTitle: 'There is nothing at this address',
+  emptyDescription: (path: string) => `Nothing answers to ${path}.`,
+  goHome: 'Go to Home',
+} as const;
 
 /**
  * The longest a mistyped address is worth echoing back. Past this the string
@@ -46,25 +56,24 @@ export default function NotFoundView() {
   const navigate = useNavigate();
 
   return (
-    <MainPanelLayout>
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <PageHeader
-          title="Page not found"
-          description="This address does not name a page in Biorouter. It may be a typo, or a link to something that has since moved."
-        />
-        <ReadableContent size="chat" className="px-6 py-4">
-          <EmptyState
-            icon={CircleHelp}
-            title="There is nothing at this address"
-            description={`Nothing answers to ${echoPath(location.pathname)}. Everything Biorouter can show you is in the sidebar.`}
-            actions={
-              <Button onClick={() => navigate('/')}>
-                <Home />
-                Go to Home
-              </Button>
-            }
-          />
-        </ReadableContent>
+    <MainPanelLayout removeTopPadding>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The band is fixed, like every other view's; only the body scrolls. */}
+        <PageHeader title={copy.title} info={copy.info} />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ReadableContent size="chat" className="px-6 pt-2 pb-6">
+            <EmptyState
+              icon={CircleHelp}
+              title={copy.emptyTitle}
+              description={copy.emptyDescription(echoPath(location.pathname))}
+              actions={
+                <Button variant="link" onClick={() => navigate('/')}>
+                  {copy.goHome}
+                </Button>
+              }
+            />
+          </ReadableContent>
+        </div>
       </div>
     </MainPanelLayout>
   );

@@ -4,19 +4,18 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { Button } from '../../../ui/button';
 import { Select } from '../../../ui/Select';
 import { Input } from '../../../ui/input';
+import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { Switch } from '../../../ui/switch';
+import { Skeleton } from '../../../ui/skeleton';
+import { ModalShell } from '../../../ModalShell';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { fetchModelsForProviders } from '../modelInterface';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../../../ui/dialog';
+import { restOnDialog, useHandFocusOnReady } from '../dialogFocus';
+import { leadWorkerCopy } from '../copy';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import './model-dialogs.css';
 
 interface LeadWorkerSettingsProps {
   isOpen: boolean;
@@ -73,16 +72,50 @@ const renderLeadWorkerOption = (rawOption: unknown, meta: { context: 'menu' | 'v
   }
   return (
     <div className="min-w-0 py-0.5">
-      <div className="truncate text-sm font-medium text-current">{option.label}</div>
-      <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-current opacity-70">
+      <div className="truncate text-label text-current">{option.label}</div>
+      <div className="mt-0.5 line-clamp-2 text-supporting text-current opacity-70">
         {unavailableLine(option.unavailableReason)}
       </div>
     </div>
   );
 };
 
+/** The eight values the dialog reads from the config and Save writes back. */
+type LeadWorkerValues = {
+  isEnabled: boolean;
+  leadModel: string;
+  leadProvider: string;
+  workerModel: string;
+  workerProvider: string;
+  leadTurns: number;
+  failureThreshold: number;
+  fallbackTurns: number;
+};
+
+/**
+ * Whether Save would leave the config as it found it (V4-R7-4, ruling 22: Save waits for a
+ * change, and a disabled primary draws neutral). Switched off, Save only removes the lead keys,
+ * so while the pair is off now and was off when the dialog opened, the inert fields do not
+ * count: turning it on, picking two models and turning it off again is no change.
+ */
+function sameEffect(loaded: LeadWorkerValues, current: LeadWorkerValues): boolean {
+  if (loaded.isEnabled !== current.isEnabled) return false;
+  if (!current.isEnabled) return true;
+  return (
+    loaded.leadModel === current.leadModel &&
+    loaded.leadProvider === current.leadProvider &&
+    loaded.workerModel === current.workerModel &&
+    loaded.workerProvider === current.workerProvider &&
+    loaded.leadTurns === current.leadTurns &&
+    loaded.failureThreshold === current.failureThreshold &&
+    loaded.fallbackTurns === current.fallbackTurns
+  );
+}
+
 export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps) {
   const { read, upsert, getProviders, getProviderModels, remove } = useConfig();
+  // The switch hears its explanation when it is reached, not only when the glyph is hovered.
+  const modeHelpId = useInfoTipId();
   const { currentModel } = useModelAndProvider();
   const [leadModel, setLeadModel] = useState<string>('');
   const [workerModel, setWorkerModel] = useState<string>('');
@@ -97,6 +130,10 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   const [isEnabled, setIsEnabled] = useState(false);
   const [modelOptions, setModelOptions] = useState<LeadWorkerModelOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // What the last load read, so Save can tell a change from the values it found. Null while
+  // loading and after a load that failed: a dialog that could not read the config does not
+  // claim there is nothing to save.
+  const [loaded, setLoaded] = useState<LeadWorkerValues | null>(null);
 
   // Load current configuration
   useEffect(() => {
@@ -105,6 +142,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     const loadConfig = async () => {
       try {
         setIsLoading(true);
+        setLoaded(null);
         const [
           leadModelConfig,
           leadProviderConfig,
@@ -119,38 +157,33 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           read('BIOROUTER_LEAD_FALLBACK_TURNS', false),
         ]);
 
-        if (leadModelConfig) {
-          setLeadModel(leadModelConfig as string);
-          setIsEnabled(true);
-        } else {
-          setLeadModel('');
-          setIsEnabled(false);
-        }
-        if (leadProviderConfig) setLeadProvider(leadProviderConfig as string);
-        else setLeadProvider('');
-        if (leadTurnsConfig) setLeadTurns(Number(leadTurnsConfig));
-        else setLeadTurns(3);
-        if (failureThresholdConfig) setFailureThreshold(Number(failureThresholdConfig));
-        else setFailureThreshold(2);
-        if (fallbackTurnsConfig) setFallbackTurns(Number(fallbackTurnsConfig));
-        else setFallbackTurns(2);
-
-        // Set worker model to current model or from config
+        // Worker model: from config, else the current model
         const workerModelConfig = await read('BIOROUTER_MODEL', false);
-        if (workerModelConfig) {
-          setWorkerModel(workerModelConfig as string);
-        } else if (currentModel) {
-          setWorkerModel(currentModel as string);
-        } else {
-          setWorkerModel('');
-        }
-
         const workerProviderConfig = await read('BIOROUTER_PROVIDER', false);
-        if (workerProviderConfig) {
-          setWorkerProvider(workerProviderConfig as string);
-        } else {
-          setWorkerProvider('');
-        }
+
+        const values: LeadWorkerValues = {
+          isEnabled: !!leadModelConfig,
+          leadModel: leadModelConfig ? (leadModelConfig as string) : '',
+          leadProvider: leadProviderConfig ? (leadProviderConfig as string) : '',
+          leadTurns: leadTurnsConfig ? Number(leadTurnsConfig) : 3,
+          failureThreshold: failureThresholdConfig ? Number(failureThresholdConfig) : 2,
+          fallbackTurns: fallbackTurnsConfig ? Number(fallbackTurnsConfig) : 2,
+          workerModel: workerModelConfig
+            ? (workerModelConfig as string)
+            : currentModel
+              ? (currentModel as string)
+              : '',
+          workerProvider: workerProviderConfig ? (workerProviderConfig as string) : '',
+        };
+        setIsEnabled(values.isEnabled);
+        setLeadModel(values.leadModel);
+        setLeadProvider(values.leadProvider);
+        setLeadTurns(values.leadTurns);
+        setFailureThreshold(values.failureThreshold);
+        setFallbackTurns(values.fallbackTurns);
+        setWorkerModel(values.workerModel);
+        setWorkerProvider(values.workerProvider);
+        setLoaded(values);
 
         // Load available models
         const options: LeadWorkerModelOption[] = [];
@@ -198,7 +231,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             if (p.provider_type !== 'Custom') {
               options.push({
                 value: `__custom__:${p.name}`,
-                label: 'Enter a model not listed...',
+                label: 'Enter a model not listed…',
                 provider: p.name,
                 unavailableReason,
               });
@@ -257,6 +290,21 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   // Only what is actually in force: the fields are inert while the pair is off.
   const barred = isEnabled && !!(leadUnavailable || workerUnavailable);
 
+  // Nothing to save is a disabled Save, which the primitive draws neutral (`.br-button-inert`);
+  // it turns coral the moment a change makes it able to act.
+  const changed =
+    loaded === null ||
+    !sameEffect(loaded, {
+      isEnabled,
+      leadModel,
+      leadProvider,
+      workerModel,
+      workerProvider,
+      leadTurns,
+      failureThreshold,
+      fallbackTurns,
+    });
+
   const handleSave = async () => {
     if (hostManaged) return;
     // The button below is already disabled on this verdict; this is its
@@ -290,238 +338,299 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
     }
   };
 
+  // The models load after the dialog mounts, so at mount its only control is the ×. The dialog
+  // rests focus on its box and the switch takes it once the form is there (`../dialogFocus.ts`).
+  const bodyRef = useHandFocusOnReady<HTMLDivElement>(
+    !isLoading,
+    'button[role="switch"]:not([disabled])'
+  );
+
+  const shellProps = {
+    open: isOpen,
+    onOpenChange: (open: boolean) => {
+      if (!open) onClose();
+    },
+    onOpenAutoFocus: restOnDialog,
+    size: 'md' as const,
+    // A form: Escape and the × leave, a click on the scrim does not (it would drop a half-made
+    // choice), and the models menus below are portalled out of the dialog's clip.
+    purpose: 'form' as const,
+    title: leadWorkerCopy.title,
+  };
+
   if (isLoading) {
     return (
-      <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent aria-describedby={undefined} className="p-0 sm:max-w-[560px]">
-          <DialogHeader className="px-5 pb-2 pt-5">
-            <DialogTitle>Lead/worker mode</DialogTitle>
-          </DialogHeader>
-          <div className="px-5 pb-5 text-sm text-text-muted">Loading...</div>
-        </DialogContent>
-      </Dialog>
+      <ModalShell {...shellProps}>
+        <div className="flex flex-col gap-3 pb-4" role="status" aria-label={leadWorkerCopy.loading}>
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      </ModalShell>
     );
   }
 
+  const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
+
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto p-0 sm:max-w-[620px]">
-        <DialogHeader className="px-5 pb-2 pt-5">
-          <DialogTitle>Lead/worker mode</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-5 px-5 pb-5">
-          <DialogDescription className="text-sm text-text-muted">
-            Configure a lead model for planning and a worker model for execution.
-          </DialogDescription>
+    <ModalShell
+      {...shellProps}
+      scrollBody
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            {leadWorkerCopy.cancel}
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={
+              hostManaged || barred || !changed || (isEnabled && (!leadModel || !workerModel))
+            }
+            // The name is set here so AppTooltipLayer does not turn the reason into it (it copies
+            // a `title` into `aria-label` on a control that has neither a label nor a name).
+            aria-label={leadWorkerCopy.save}
+            title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
+          >
+            {leadWorkerCopy.save}
+          </Button>
+        </>
+      }
+    >
+      <div ref={bodyRef} className="flex flex-col gap-4 py-3">
+        <HostManagedModelNote />
 
-          <HostManagedModelNote />
+        <div className="br-model-form-row">
+          <div className="br-model-form-head">
+            <label htmlFor="enable-lead-worker" className="text-label text-text-default">
+              {leadWorkerCopy.mode}
+            </label>
+            <InfoTip label={leadWorkerCopy.mode} help={leadWorkerCopy.modeHelp} id={modeHelpId} />
+          </div>
+          <Switch
+            id="enable-lead-worker"
+            checked={isEnabled}
+            onCheckedChange={setIsEnabled}
+            aria-describedby={modeHelpId}
+          />
+        </div>
 
-          <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-container px-3 py-2.5">
-            <div>
-              <label htmlFor="enable-lead-worker" className="text-sm font-medium text-text-default">
-                Lead/worker mode
+        <div className="br-model-fields" data-enabled={isEnabled ? 'true' : 'false'}>
+          <div className="br-model-field">
+            <div className="br-model-form-head">
+              <label htmlFor="lead-model" className="text-label text-text-default">
+                {leadWorkerCopy.leadModel}
               </label>
-              <p className="mt-0.5 text-xs text-text-muted">
-                Route planning to a lead model and routine work to a worker model.
-              </p>
+              <InfoTip label={leadWorkerCopy.leadModel} help={leadWorkerCopy.leadModelHelp} />
+              {isLeadCustomModel && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => setIsLeadCustomModel(false)}
+                >
+                  {leadWorkerCopy.backToList}
+                </Button>
+              )}
             </div>
-            <Switch
-              id="enable-lead-worker"
-              checked={isEnabled}
-              onCheckedChange={setIsEnabled}
-              variant="mono"
+            {!isLeadCustomModel ? (
+              <Select
+                inputId="lead-model"
+                options={modelOptions}
+                value={
+                  leadModel ? modelOptions.find((opt) => opt.value === leadModel) || null : null
+                }
+                onChange={(newValue: unknown) => {
+                  const option = newValue as { value: string; provider: string } | null;
+                  if (option) {
+                    if (option.value.startsWith('__custom__')) {
+                      setIsLeadCustomModel(true);
+                      setLeadModel('');
+                      setLeadProvider(option.provider);
+                      return;
+                    }
+                    setLeadModel(option.value);
+                    setLeadProvider(option.provider);
+                  }
+                }}
+                placeholder={leadWorkerCopy.leadPlaceholder}
+                isDisabled={!isEnabled}
+                menuPlacement="auto"
+                menuPortalTarget={menuPortalTarget}
+                formatOptionLabel={renderLeadWorkerOption}
+                isOptionDisabled={(rawOption: unknown) =>
+                  !!(rawOption as LeadWorkerModelOption).unavailableReason
+                }
+              />
+            ) : (
+              <Input
+                machine
+                id="lead-model"
+                placeholder={leadWorkerCopy.customPlaceholder}
+                onChange={(event) => setLeadModel(event.target.value)}
+                value={leadModel}
+                disabled={!isEnabled}
+              />
+            )}
+            {/* D4: beside the field, because a disabled row says nothing about a selection
+                nobody re-picked. The custom-model input above bypasses the option list
+                entirely and keeps its provider, so the same verdict has to be spoken here for
+                both branches. A refusal, so it stays visible (principle 2). */}
+            {isEnabled && leadUnavailable ? (
+              <p
+                data-testid="lead-worker-lead-unavailable"
+                className="text-supporting text-text-danger"
+              >
+                {unavailableLine(leadUnavailable)}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="br-model-field">
+            <div className="br-model-form-head">
+              <label htmlFor="worker-model" className="text-label text-text-default">
+                {leadWorkerCopy.workerModel}
+              </label>
+              <InfoTip label={leadWorkerCopy.workerModel} help={leadWorkerCopy.workerModelHelp} />
+              {isWorkerCustomModel && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => setIsWorkerCustomModel(false)}
+                >
+                  {leadWorkerCopy.backToList}
+                </Button>
+              )}
+            </div>
+            {!isWorkerCustomModel ? (
+              <Select
+                inputId="worker-model"
+                options={modelOptions}
+                value={
+                  workerModel ? modelOptions.find((opt) => opt.value === workerModel) || null : null
+                }
+                onChange={(newValue: unknown) => {
+                  const option = newValue as { value: string; provider: string } | null;
+                  if (option) {
+                    if (option.value.startsWith('__custom__')) {
+                      setIsWorkerCustomModel(true);
+                      setWorkerModel('');
+                      setWorkerProvider(option.provider);
+                      return;
+                    }
+                    setWorkerModel(option.value);
+                    setWorkerProvider(option.provider);
+                  }
+                }}
+                placeholder={leadWorkerCopy.workerPlaceholder}
+                isDisabled={!isEnabled}
+                menuPlacement="auto"
+                menuPortalTarget={menuPortalTarget}
+                formatOptionLabel={renderLeadWorkerOption}
+                isOptionDisabled={(rawOption: unknown) =>
+                  !!(rawOption as LeadWorkerModelOption).unavailableReason
+                }
+              />
+            ) : (
+              <Input
+                machine
+                id="worker-model"
+                placeholder={leadWorkerCopy.customPlaceholder}
+                onChange={(event) => setWorkerModel(event.target.value)}
+                value={workerModel}
+                disabled={!isEnabled}
+              />
+            )}
+            {isEnabled && workerUnavailable ? (
+              <p
+                data-testid="lead-worker-worker-unavailable"
+                className="text-supporting text-text-danger"
+              >
+                {unavailableLine(workerUnavailable)}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="br-model-numbers">
+            <NumberRow
+              id="lead-turns"
+              label={leadWorkerCopy.leadTurns}
+              help={leadWorkerCopy.leadTurnsHelp}
+              min={1}
+              max={10}
+              value={leadTurns}
+              onChange={setLeadTurns}
+              disabled={!isEnabled}
+            />
+            <NumberRow
+              id="failure-threshold"
+              label={leadWorkerCopy.failureThreshold}
+              help={leadWorkerCopy.failureThresholdHelp}
+              min={1}
+              max={5}
+              value={failureThreshold}
+              onChange={setFailureThreshold}
+              disabled={!isEnabled}
+            />
+            <NumberRow
+              id="fallback-turns"
+              label={leadWorkerCopy.fallbackTurns}
+              help={leadWorkerCopy.fallbackTurnsHelp}
+              min={1}
+              max={5}
+              value={fallbackTurns}
+              onChange={setFallbackTurns}
+              disabled={!isEnabled}
             />
           </div>
-
-          <div className={`space-y-4 ${!isEnabled ? 'opacity-60' : ''}`}>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">Lead model</label>
-                {isLeadCustomModel && (
-                  <button
-                    onClick={() => setIsLeadCustomModel(false)}
-                    className="rounded px-1.5 py-1 text-xs text-text-muted transition-colors hover:bg-background-muted hover:text-text-default"
-                    type="button"
-                  >
-                    Back to model list
-                  </button>
-                )}
-              </div>
-              {!isLeadCustomModel ? (
-                <Select
-                  options={modelOptions}
-                  value={
-                    leadModel ? modelOptions.find((opt) => opt.value === leadModel) || null : null
-                  }
-                  onChange={(newValue: unknown) => {
-                    const option = newValue as { value: string; provider: string } | null;
-                    if (option) {
-                      if (option.value.startsWith('__custom__')) {
-                        setIsLeadCustomModel(true);
-                        setLeadModel('');
-                        setLeadProvider(option.provider);
-                        return;
-                      }
-                      setLeadModel(option.value);
-                      setLeadProvider(option.provider);
-                    }
-                  }}
-                  placeholder="Select lead model..."
-                  isDisabled={!isEnabled}
-                  formatOptionLabel={renderLeadWorkerOption}
-                  isOptionDisabled={(rawOption: unknown) =>
-                    !!(rawOption as LeadWorkerModelOption).unavailableReason
-                  }
-                />
-              ) : (
-                <Input
-                  className="mb-2 h-[38px]"
-                  placeholder="Type model name here"
-                  onChange={(event) => setLeadModel(event.target.value)}
-                  value={leadModel}
-                  disabled={!isEnabled}
-                />
-              )}
-              {/* D4 — beside the field, because a disabled row says nothing about
-                  a selection nobody re-picked. The custom-model input above
-                  bypasses the option list entirely and keeps its provider, so the
-                  same verdict has to be spoken here for both branches. */}
-              {isEnabled && leadUnavailable ? (
-                <p data-testid="lead-worker-lead-unavailable" className="text-sm text-text-danger">
-                  {unavailableLine(leadUnavailable)}
-                </p>
-              ) : null}
-              <p className="text-xs text-text-muted">
-                Strong model for initial planning and fallback recovery
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">Worker model</label>
-                {isWorkerCustomModel && (
-                  <button
-                    onClick={() => setIsWorkerCustomModel(false)}
-                    className="rounded px-1.5 py-1 text-xs text-text-muted transition-colors hover:bg-background-muted hover:text-text-default"
-                    type="button"
-                  >
-                    Back to model list
-                  </button>
-                )}
-              </div>
-              {!isWorkerCustomModel ? (
-                <Select
-                  options={modelOptions}
-                  value={
-                    workerModel
-                      ? modelOptions.find((opt) => opt.value === workerModel) || null
-                      : null
-                  }
-                  onChange={(newValue: unknown) => {
-                    const option = newValue as { value: string; provider: string } | null;
-                    if (option) {
-                      if (option.value.startsWith('__custom__')) {
-                        setIsWorkerCustomModel(true);
-                        setWorkerModel('');
-                        setWorkerProvider(option.provider);
-                        return;
-                      }
-                      setWorkerModel(option.value);
-                      setWorkerProvider(option.provider);
-                    }
-                  }}
-                  placeholder="Select worker model..."
-                  isDisabled={!isEnabled}
-                  formatOptionLabel={renderLeadWorkerOption}
-                  isOptionDisabled={(rawOption: unknown) =>
-                    !!(rawOption as LeadWorkerModelOption).unavailableReason
-                  }
-                />
-              ) : (
-                <Input
-                  className="mb-2 h-[38px]"
-                  placeholder="Type model name here"
-                  onChange={(event) => setWorkerModel(event.target.value)}
-                  value={workerModel}
-                  disabled={!isEnabled}
-                />
-              )}
-              {isEnabled && workerUnavailable ? (
-                <p
-                  data-testid="lead-worker-worker-unavailable"
-                  className="text-sm text-text-danger"
-                >
-                  {unavailableLine(workerUnavailable)}
-                </p>
-              ) : null}
-              <p className="text-xs text-text-muted">Fast model for routine execution tasks</p>
-            </div>
-
-            <div className="biorouter-modal-panel grid grid-cols-3 gap-3 rounded-container p-3">
-              <div className="space-y-2">
-                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Initial lead turns
-                </label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={leadTurns}
-                  onChange={(e) => setLeadTurns(Number(e.target.value))}
-                  className="w-full"
-                  disabled={!isEnabled}
-                />
-                <p className="text-xs text-text-muted">Lead turns at start</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Failure threshold
-                </label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={5}
-                  value={failureThreshold}
-                  onChange={(e) => setFailureThreshold(Number(e.target.value))}
-                  className="w-full"
-                  disabled={!isEnabled}
-                />
-                <p className="text-xs text-text-muted">Failures before fallback</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
-                  Fallback turns
-                </label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={5}
-                  value={fallbackTurns}
-                  onChange={(e) => setFallbackTurns(Number(e.target.value))}
-                  className="w-full"
-                  disabled={!isEnabled}
-                />
-                <p className="text-xs text-text-muted">Lead turns during fallback</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-1">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSave}
-              disabled={hostManaged || barred || (isEnabled && (!leadModel || !workerModel))}
-              title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
-            >
-              Save settings
-            </Button>
-          </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ModalShell>
+  );
+}
+
+/** A label with its InfoTip on the left and a narrow number field on the right. */
+function NumberRow({
+  id,
+  label,
+  help,
+  min,
+  max,
+  value,
+  onChange,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  help: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (value: number) => void;
+  disabled: boolean;
+}) {
+  const helpId = useInfoTipId();
+  return (
+    <div className="br-model-form-row">
+      <div className="br-model-form-head">
+        <label htmlFor={id} className="text-label text-text-default">
+          {label}
+        </label>
+        <InfoTip label={label} help={help} id={helpId} />
+      </div>
+      <Input
+        id={id}
+        aria-describedby={helpId}
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="br-model-number-input"
+        disabled={disabled}
+      />
+    </div>
   );
 }

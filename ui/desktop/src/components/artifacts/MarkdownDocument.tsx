@@ -63,6 +63,9 @@ export default function MarkdownDocument({
         workingDir={dirnameFromPath(path)}
         onOpenArtifact={onOpenArtifact}
         variant="document"
+        // The front matter already shows the title, so the body's first `# H1`
+        // takes the h2 step instead of being a second title (spec 2.1).
+        demoteFirstHeading={Boolean(header?.title)}
       />
     </article>
   );

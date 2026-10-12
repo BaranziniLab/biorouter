@@ -11,6 +11,8 @@ import { onTerminalRunRequest } from '../utils/terminalRunChannel';
 import { terminalInputForCommand } from '../utils/shellCommandBlock';
 import { cn } from '../utils';
 import { GENERATED_THEMES } from '../styles/themes.generated';
+import { tildePath } from './BioRouterSidebar/sidebarChatView';
+import { TAB_CLOSE_CLASS, TAB_NEW_CLASS } from './chatGroups/tabClasses';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -73,9 +75,10 @@ function basename(path?: string) {
 
 function formatCwd(cwd?: string) {
   if (!cwd) return 'Chat terminal';
+  // The sidebar's boundary-safe shortening: `~` only when the home folder ends
+  // at a path separator, so `/Users/wgu2/work` never reads `~2/work`.
   const home = window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined;
-  if (home && cwd.startsWith(home)) return cwd.replace(home, '~');
-  return cwd;
+  return tildePath(cwd, home);
 }
 
 function makePaneTitle(workingDir: string | undefined, index: number) {
@@ -614,7 +617,10 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       className={cn(
         'no-drag flex min-h-[100px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
         open
-          ? 'animate-in slide-in-from-bottom-2 fade-in duration-[var(--motion-base)] ease-out'
+          ? // Opening rises 8px and fades in on the motion tokens (spec 3.16): the
+            // tab-enter tier and the one curve, never a literal or the browser's
+            // ease-out. The height itself snaps.
+            'animate-in slide-in-from-bottom-2 fade-in duration-[var(--dur-fast-max)] ease-[var(--ease-out)]'
           : 'hidden'
       )}
       style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
@@ -623,8 +629,9 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           the padding and the bottom hairline; `--sm` re-grounds it on the
           SURFACE (the chat and artifact strips keep `--sidebar` to continue the
           window's top edge — at the bottom edge that rationale inverts, and the
-          strip read as a floating slice of sidebar); .br-tab owns the tabs, the
-          active pill and the divider between them.
+          strip read as a floating slice of sidebar); .br-tab owns the tabs and
+          their fills (plain at rest, the ghost hover, the selected fill with its
+          accent strip; no outline and no divider, R-27).
           Nothing here may restyle any of that — the only additions are h-10 (the
           class leaves height to the host; the dock's strip is 40px) and
           flex-shrink-0, so the strip holds its height in the dock's flex column. */}
@@ -642,7 +649,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                 // .br-tab already caps at 190px and lets the label ellipsis;
                 // flex-shrink-0 is the only addition, so a full strip scrolls
                 // rather than crushing every tab.
-                className="br-tab flex-shrink-0"
+                className="br-tab group flex-shrink-0"
                 data-active={active}
               >
                 <button
@@ -650,7 +657,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setActivePaneId(pane.id)}
-                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+                  className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
                 >
                   <TerminalIcon className="h-4 w-4 flex-shrink-0" />
                   <span className="br-tab__label">{pane.title}</span>
@@ -662,7 +669,9 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                     event.stopPropagation();
                     closePane(pane.id);
                   }}
-                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                  // The chat tabs' close control (shown on hover or keyboard
+                  // focus, hovered with the ink overlay).
+                  className={TAB_CLOSE_CLASS}
                   aria-label={`Close terminal tab ${pane.title}`}
                   title={`Close ${pane.title}`}
                 >
@@ -679,7 +688,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             type="button"
             onClick={addPane}
             disabled={panes.length >= MAX_TERMINAL_PANES}
-            className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
+            className={cn(TAB_NEW_CLASS, 'disabled:pointer-events-none disabled:opacity-40')}
             aria-label="New terminal"
             title={
               panes.length >= MAX_TERMINAL_PANES
@@ -690,7 +699,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             <Plus className="h-4 w-4" />
           </button>
         </div>
-        <span className="hidden min-w-0 max-w-[38%] truncate text-xs text-text-muted sm:block">
+        <span className="hidden min-w-0 max-w-[38%] truncate text-supporting text-text-muted sm:block">
           {formatCwd(workingDir)}
         </span>
         <Button
@@ -699,7 +708,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           size="sm"
           shape="round"
           onClick={onClose}
-          className="h-7 w-7 flex-shrink-0 p-0 text-text-muted hover:bg-background-default/70 hover:text-text-default"
+          className="h-7 w-7 flex-shrink-0 p-0 text-text-muted hover:text-text-default"
           aria-label="Hide terminal"
           title="Hide terminal"
         >

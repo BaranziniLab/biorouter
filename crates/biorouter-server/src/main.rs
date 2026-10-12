@@ -101,9 +101,16 @@ async fn async_main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Agent { exit_with_parent } => {
+            // R-31: on Windows, move the app folder out of the one earlier
+            // releases used, before logging creates its first directory there.
+            // Only here: the daemon owns the folder for its whole life. The
+            // move does not happen while any other Biorouter process is using
+            // the old folder. `run` reports it once logging is up.
+            biorouter_mcp::app_folder::move_for_this_process();
             commands::agent::run(exit_with_parent).await?;
         }
         Commands::Mcp { server } => {
+            // A child of the daemon: it resolves, and never moves.
             logging::setup_logging(Some(&format!("mcp-{}", server.name())))?;
             match server {
                 McpCommand::AutoVisualiser => serve(AutoVisualiserRouter::new()).await?,

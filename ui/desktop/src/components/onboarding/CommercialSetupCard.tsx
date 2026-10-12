@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
-import { ArrowRight } from '../icons/ArrowRight';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { Input } from '../ui/input';
+import { Note } from '../ui/note';
+import { AlertTriangle, Check } from '../icons/app-icons';
+import { Field } from '../ui/field';
+import { Spinner } from '../ui/spinner';
+import { commercialCopy } from './copy';
+import { PINNED_PUBLIC_PROVIDERS } from '../settings/providers/providerOrdering';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
   onStartTesting?: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
 
 export interface DetectedProviderSetup {
@@ -54,44 +58,48 @@ interface DetectionResult {
 // Fallback list shown if the backend list can't be fetched. The authoritative
 // list comes from GET /config/detectable-providers (single source of truth in
 // the Rust `auto_detect` module).
-const FALLBACK_PROVIDERS = ['OpenAI', 'Anthropic', 'Google', 'Groq', 'xAI', 'z.ai', 'Xiaomi MiMo'];
+const FALLBACK_PROVIDERS = ['Anthropic', 'OpenAI', 'Google', 'Groq', 'xAI', 'z.ai', 'Xiaomi MiMo'];
 
-// Map a backend failure reason code to actionable copy.
-function messageForReason(reason: string | null | undefined): { title: string; detail: string } {
+/**
+ * The detectable providers in the catalog's own order: the pinned three (Anthropic, OpenAI, Google
+ * Gemini) first, as the rows below the field list them, then the rest as the daemon serves them.
+ * The key field's InfoTip names the first three (vision FR-R3-4).
+ */
+const inCatalogOrder = <T extends { name?: string | null }>(providers: T[]): T[] => {
+  const rank = (provider: T) => {
+    const index = PINNED_PUBLIC_PROVIDERS.indexOf(provider.name ?? '');
+    return index === -1 ? PINNED_PUBLIC_PROVIDERS.length : index;
+  };
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => rank(a.provider) - rank(b.provider) || a.index - b.index)
+    .map(({ provider }) => provider);
+};
+
+// Map a backend failure reason code to actionable copy. The no-match case names what IS
+// supported, in the note's own detail: it used to be a hand-drawn "·" list under the note.
+function messageForReason(
+  reason: string | null | undefined,
+  supportedLabel: string
+): { title: string; detail: string } {
   switch (reason) {
     case 'timeout':
-      return {
-        title: 'Detection timed out',
-        detail: 'The provider took too long to respond. Check your connection and try again.',
-      };
+      return commercialCopy.errors.timeout;
     case 'network':
-      return {
-        title: 'Could not reach the provider',
-        detail: 'A network error occurred while validating the key. Check your connection.',
-      };
+      return commercialCopy.errors.network;
     case 'configuration':
-      return {
-        title: 'Could not save provider',
-        detail: 'The key was valid, but Biorouter could not save the provider configuration.',
-      };
+      return commercialCopy.errors.configuration;
     case 'invalid_key':
-      return {
-        title: 'Key was rejected',
-        detail: "The key matched a provider but was rejected. Check that it's complete and active.",
-      };
+      return commercialCopy.errors.invalidKey;
     case 'no_match':
     default:
-      return {
-        title: 'Could not detect provider',
-        detail: "This key didn't match a supported provider. Pick yours from the full list below.",
-      };
+      return commercialCopy.errors.noMatch(supportedLabel);
   }
 }
 
 export default function CommercialSetupCard({
   onSuccess,
   onStartTesting,
-  chrome = 'card',
 }: CommercialSetupCardProps) {
   const [apiKey, setApiKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -107,7 +115,9 @@ export default function CommercialSetupCard({
     (async () => {
       try {
         const response = await getDetectableProviders();
-        const names = response.data?.providers?.map((p) => p.display_name).filter(Boolean);
+        const names = inCatalogOrder(response.data?.providers ?? [])
+          .map((p) => p.display_name)
+          .filter(Boolean);
         if (!cancelled && names && names.length > 0) {
           setSupported(names);
         }
@@ -170,85 +180,69 @@ export default function CommercialSetupCard({
 
   const hasInput = apiKey.trim().length > 0;
   const canSubmit = hasInput && !isLoading;
+  const detectVariant = useViewPrimaryVariant(hasInput);
   const supportedLabel = supported.join(', ');
+  const failure = errorReason ? messageForReason(errorReason, supportedLabel) : null;
 
   return (
-    <OnboardingCardShell
-      chrome={chrome}
-      titleId="commercial-setup-title"
-      category="commercial"
-      label="Commercial APIs"
-      title="Auto-detect from API key"
-      description={`Paste a key from ${supportedLabel}. We'll detect the provider for you.`}
-    >
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <label htmlFor="commercial-provider-api-key" className="sr-only">
-          Commercial provider API key
-        </label>
-        <input
+    <div className="min-w-0">
+      {/* A labelled field, the Institutional form's recipe: "API key" with what is detected in its
+          InfoTip (FR-S-5). It was an unlabelled 36px box whose placeholder was its only words, and
+          the supported list appeared only after a failure. */}
+      <div className="space-y-3">
+        <Field
           id="commercial-provider-api-key"
-          ref={inputRef}
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="Paste your API key here…"
-          className="h-9 min-w-0 rounded-md border border-border-subtle bg-background-default px-3 text-sm text-text-default transition-colors duration-150 placeholder:text-text-muted focus:border-border-strong"
-          disabled={isLoading}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) testApiKey();
-          }}
-        />
-        <Button
-          onClick={testApiKey}
-          disabled={!canSubmit}
-          aria-label="Detect provider"
-          className="h-9 px-3"
+          label={commercialCopy.apiKey}
+          info={commercialCopy.help(supported)}
         >
-          {isLoading ? (
-            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <ArrowRight className="w-4 h-4" />
-          )}
-        </Button>
+          <Input
+            ref={inputRef}
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            disabled={isLoading}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canSubmit) testApiKey();
+            }}
+          />
+        </Field>
+        {/* Secondary until there is a key to detect: an empty field's disabled coral button was a
+            second coral fill beside an open agent's "Use" (principle 7, FR-R1-11). Secondary too
+            while an open agent's panel holds the tab's one coral button (FR-R5-2). */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={detectVariant}
+            onClick={testApiKey}
+            disabled={!canSubmit}
+            data-testid="commercial-detect"
+          >
+            {isLoading ? (
+              <>
+                <Spinner size={14} />
+                {commercialCopy.detecting}
+              </>
+            ) : (
+              commercialCopy.detect
+            )}
+          </Button>
+        </div>
+
+        {result && (
+          <Note tone="success" role="status" icon={Check}>
+            <div className="text-label">{commercialCopy.detected(result.provider)}</div>
+            <div className="mt-0.5">
+              {commercialCopy.detectedDetail(result.model, result.totalModels)}
+            </div>
+          </Note>
+        )}
+
+        {failure && (
+          <Note tone="danger" role="alert" icon={AlertTriangle}>
+            <div className="text-label">{failure.title}</div>
+            <div className="mt-0.5">{failure.detail}</div>
+          </Note>
+        )}
       </div>
-
-      {isLoading && (
-        <div className="flex items-center gap-2 mt-3 text-xs text-text-muted">
-          <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
-          <span>Detecting provider and validating key…</span>
-        </div>
-      )}
-
-      {result && (
-        <div className="mt-3 text-sm p-3 rounded-md bg-background-success/10 text-text-success border border-border-success/40 flex items-center gap-2">
-          <span className="flex-shrink-0">✓</span>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium">Detected {result.provider}</div>
-            <div className="text-text-success text-xs mt-0.5">
-              {result.model} · {result.totalModels} models available
-            </div>
-          </div>
-        </div>
-      )}
-
-      {errorReason && (
-        <div className="mt-3 space-y-2">
-          <div className="text-sm p-3 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40 flex items-center gap-2">
-            <span className="flex-shrink-0">✕</span>
-            <div className="flex-1">
-              <div className="font-medium">{messageForReason(errorReason).title}</div>
-              <div className="text-text-danger text-xs mt-0.5">
-                {messageForReason(errorReason).detail}
-              </div>
-            </div>
-          </div>
-          <ul className="text-xs text-text-muted space-y-1 pl-1">
-            <li>· Supported providers: {supportedLabel}</li>
-            <li>· Verify the key is active and has sufficient credits</li>
-            <li>· For local models, use the Local tab</li>
-          </ul>
-        </div>
-      )}
-    </OnboardingCardShell>
+    </div>
   );
 }

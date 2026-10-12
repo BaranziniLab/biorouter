@@ -115,7 +115,9 @@ export function AffiliationBadge({ affiliation, dense = false, className }: Affi
       data-affiliation={affiliation.kind}
       aria-label={accessibleName}
       title={words.title}
-      className={cn('bg-background-muted text-text-default', className)}
+      // `.br-privacy-pill`: the shared rows step it to the strong fill on a washed list row,
+      // with the PrivacyBadge beside it (main.css, the rows block).
+      className={cn('br-privacy-pill bg-background-muted text-text-default', className)}
     >
       <Glyph className="h-3 w-3 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate">{words.label}</span>

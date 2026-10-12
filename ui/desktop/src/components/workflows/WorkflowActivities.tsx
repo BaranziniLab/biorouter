@@ -1,4 +1,5 @@
-import { Card } from '../ui/card';
+import { Button } from '../ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import MarkdownContent from '../MarkdownContent';
 import { substituteParameters } from '../../utils/providerUtils';
 
@@ -9,6 +10,16 @@ interface WorkflowActivitiesProps {
   parameterValues?: Record<string, string>;
 }
 
+/** A starter longer than this is cut, with the whole prompt in its tooltip. */
+const STARTER_MAX_CHARS = 60;
+
+/**
+ * A workflow chat's opening: the workflow's own message, if it has one, as
+ * prose in the column, then its starter prompts as one row of secondary
+ * buttons. Each starter is a real button (it used to be a clickable card no
+ * keyboard could reach), and a cut one shows the whole prompt in its tooltip
+ * rather than in a `title`. The group enters once with the shared `.br-enter`.
+ */
 export default function WorkflowActivities({
   append,
   activities,
@@ -29,36 +40,45 @@ export default function WorkflowActivities({
   // If we have activities or instructions (workflow mode), show a simplified version without greeting
   if (activities && activities.length > 0) {
     return (
-      <div className="flex flex-col px-6">
+      <div className="br-enter flex flex-col gap-4">
         {messagePill && (
-          <div className="mb-4 p-3 rounded-container border border-border-subtle animate-[appear_180ms_var(--ease-out)_forwards]">
-            <MarkdownContent
-              content={substituteParameters(
-                messagePill.replace(/^message:/i, '').trim(),
-                parameterValues
-              )}
-              className="text-body"
-            />
-          </div>
+          <MarkdownContent
+            content={substituteParameters(
+              messagePill.replace(/^message:/i, '').trim(),
+              parameterValues
+            )}
+            className="text-body"
+          />
         )}
 
-        <div className="flex flex-wrap gap-2 animate-[appear_180ms_var(--ease-out)_forwards]">
-          {remainingPills.map((content, index) => {
-            const substitutedContent = substituteParameters(content, parameterValues);
-            return (
-              <Card
-                key={index}
-                onClick={() => append(substitutedContent)}
-                title={substitutedContent.length > 60 ? substitutedContent : undefined}
-                className="cursor-pointer px-3 py-1.5 text-label hover:bg-overlay-hover transition-colors"
-              >
-                {substitutedContent.length > 60
-                  ? substitutedContent.slice(0, 60) + '...'
-                  : substitutedContent}
-              </Card>
-            );
-          })}
-        </div>
+        {remainingPills.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {remainingPills.map((content, index) => {
+              const prompt = substituteParameters(content, parameterValues);
+              const cut = prompt.length > STARTER_MAX_CHARS;
+              const button = (
+                <Button
+                  key={index}
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => append(prompt)}
+                >
+                  {cut ? `${prompt.slice(0, STARTER_MAX_CHARS)}…` : prompt}
+                </Button>
+              );
+              if (!cut) return button;
+              return (
+                <Tooltip key={index}>
+                  <TooltipTrigger asChild>{button}</TooltipTrigger>
+                  <TooltipContent className="max-w-[320px] whitespace-normal">
+                    {prompt}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   }

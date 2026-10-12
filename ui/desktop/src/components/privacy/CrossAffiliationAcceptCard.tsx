@@ -130,7 +130,7 @@ export function CrossAffiliationAcceptCard({
       <div
         data-testid="cross-affiliation-accepted"
         role="status"
-        className="mt-3 rounded-lg border border-border-subtle px-3 py-3 text-sm text-text-default"
+        className="mt-3 rounded-element border border-transparent bg-background-default px-3 py-3 text-body text-text-default"
       >
         {/*
           The daemon's own composition (`grant::accepted_statement`), echoed
@@ -162,7 +162,7 @@ export function CrossAffiliationAcceptCard({
   return (
     <div
       data-testid="cross-affiliation-accept"
-      className="mt-3 rounded-lg border border-border-subtle px-3 py-3 text-sm text-text-default space-y-3"
+      className="mt-3 rounded-element border border-transparent bg-background-default px-3 py-3 text-body text-text-default space-y-3"
     >
       {/*
         ⚠ **The one thing `strict` changes on this surface: the user is told the
@@ -188,8 +188,9 @@ export function CrossAffiliationAcceptCard({
               that is untested. Promising a dialog that does not appear teaches
               the user that a silent approval is normal, which is exactly the
               wrong lesson for the prompt that gates enforcement. */}
-          This machine&rsquo;s privacy policy is set to <strong>strict</strong>, so your operating
-          system may ask you to confirm it is you before this is recorded.
+          This machine&rsquo;s privacy policy is set to{' '}
+          <strong className="font-semibold">strict</strong>, so your operating system may ask you to
+          confirm it is you before this is recorded.
         </p>
       )}
       {/*

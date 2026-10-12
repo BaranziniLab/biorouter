@@ -85,7 +85,11 @@ export default {
       'heat-4': '#0e5258',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#052049',
-      'sidebar-icon': '#14828c',
+      // Nav icons wear the row's resting ink, the muted label ink, as in
+      // Parchment and Roche Limit: one ink with the labels and the chat glyphs
+      // below (V1-R2-5). The accent is held for the active rail and the lock
+      // badge (redesign principle 7); teal icons were accent outside it (V1-M3).
+      'sidebar-icon': '#506380',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -256,14 +260,14 @@ export default {
       ring: '#a5a39d',
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',
-      'heat-0': '#1e1d1b',
+      'heat-0': '#32312e', // one step up from #1e1d1b: zero days read on the dark card (redesign 2.3)
       'heat-1': '#0e5258',
       'heat-2': '#14828c',
       'heat-3': '#16a0ac',
       'heat-4': '#60d0da',
       sidebar: '#171716',
       'sidebar-foreground': '#f2f3f4',
-      'sidebar-icon': '#60d0da',
+      'sidebar-icon': '#b4b9bf', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',

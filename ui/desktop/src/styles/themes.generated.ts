@@ -48,10 +48,10 @@ export type TerminalPalette = {
 
 export type ThemeModeData = {
   /**
-   * The brand mark's two inks for this family and mode. The boot splash paints
-   * these before React exists, and BioRouterMark paints them after — reading
-   * both from here is what stops the two disagreeing. Roche Limit used to flash
-   * an orange mark that React then re-rendered in Parchment's coral.
+   * The BR monogram's two inks for this family and mode, read by BioRouterMark.
+   * The boot splash no longer paints the monogram: it draws the wordmark, which
+   * is fixed to the brand colours, so every family's splash takes the BASE
+   * family's inks and this family's own mark never reaches it.
    */
   mark: { navy: string; coral: string };
   syntax: SyntaxPalette;

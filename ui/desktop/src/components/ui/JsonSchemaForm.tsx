@@ -1,9 +1,13 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useId } from 'react';
 import { Input } from './input';
+import { Checkbox } from './Checkbox';
 import { Button } from './button';
+import { cn } from '../../utils';
 
 interface JsonSchemaProperty {
   type?: string;
+  /** The field's name for a person ("Cohort"). The key ("cohort", "sample_id") is the fallback. */
+  title?: string;
   description?: string;
   default?: unknown;
   enum?: string[];
@@ -57,6 +61,12 @@ export default function JsonSchemaForm({
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Every field's id is the form's own prefix plus its key, never the bare key: two elicitation
+  // cards in one chat that both ask for `cohort` would otherwise put two `id="cohort"` on the
+  // page, and the second card's label would name the first card's field (WS-TOOLS-2).
+  const idPrefix = useId();
+  const fieldId = (key: string) => `${idPrefix}field-${key}`;
 
   const validateField = useCallback(
     (key: string, value: unknown): string | null => {
@@ -143,19 +153,20 @@ export default function JsonSchemaForm({
     if (prop.enum) {
       return (
         <select
-          id={key}
+          id={fieldId(key)}
           value={String(value ?? '')}
           onChange={(e) => handleChange(key, e.target.value)}
           disabled={disabled}
           // The native <select> is a text field wearing a different tag, so it
           // takes the <Input> chrome exactly (§3.2): the 32px md rung, an 8px
-          // inset, the derived `--border-emphasized` edge and the inset-ring
-          // hover whisper. `main.css` already owns focus for `select` alongside
-          // input and textarea, so the old `focus:border-border-strong` was a
-          // second, weaker answer to a question already settled globally.
-          className="flex h-8 w-full rounded-element border border-border-emphasized bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0 disabled:cursor-not-allowed disabled:opacity-50"
+          // inset and the filled field (`.br-field`, R-27): the rest fill, the
+          // hover step, and the focus and invalid edges.
+          className={cn(
+            'br-field flex h-8 w-full rounded-element border px-2 text-label transition-[color,background-color,border-color] disabled:cursor-not-allowed disabled:opacity-50',
+            error && 'border-border-danger'
+          )}
         >
-          {!isRequired && <option value="">Select...</option>}
+          {!isRequired && <option value="">Select…</option>}
           {prop.enum.map((option) => (
             <option key={option} value={option}>
               {option}
@@ -168,23 +179,16 @@ export default function JsonSchemaForm({
     if (prop.type === 'boolean') {
       return (
         <label className="flex items-center gap-2 cursor-pointer">
-          {/* §3.3, and the same construction CustomRadio uses so the two controls
-              are interchangeable in a form: a 22px visual box centred in a 24px
-              target box. `accent-background-accent` is what actually binds a
-              NATIVE checkbox to the theme — `border-*` and `rounded-*` on an
-              `appearance: auto` control are inert, which is why the old classes
-              looked like theming and were not. */}
-          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center">
-            <input
-              type="checkbox"
-              id={key}
-              checked={Boolean(value)}
-              onChange={(e) => handleChange(key, e.target.checked)}
-              disabled={disabled}
-              className="h-[22px] w-[22px] cursor-pointer accent-background-accent disabled:cursor-not-allowed"
-            />
+          {/* The shared Checkbox (spec 2.6): a 16px box in a 24px target, 8px from its label. */}
+          <Checkbox
+            id={fieldId(key)}
+            checked={Boolean(value)}
+            onChange={(e) => handleChange(key, e.target.checked)}
+            disabled={disabled}
+          />
+          <span className="text-label text-text-default">
+            {prop.title || prop.description || key}
           </span>
-          <span className="text-label text-text-default">{prop.description || key}</span>
         </label>
       );
     }
@@ -193,7 +197,7 @@ export default function JsonSchemaForm({
       return (
         <Input
           type="number"
-          id={key}
+          id={fieldId(key)}
           value={String(value ?? '')}
           onChange={(e) => {
             const numValue =
@@ -212,7 +216,7 @@ export default function JsonSchemaForm({
     return (
       <Input
         type="text"
-        id={key}
+        id={fieldId(key)}
         value={String(value ?? '')}
         onChange={(e) => handleChange(key, e.target.value)}
         minLength={prop.minLength}
@@ -237,6 +241,11 @@ export default function JsonSchemaForm({
           return (
             <div key={key} className="flex flex-col gap-1">
               {renderField(key, prop)}
+              {/* A titled checkbox reads its title, so its description is the line under it, as
+                  every other field's is. An untitled one reads the description as its label. */}
+              {prop.title && prop.description && (
+                <span className="text-supporting text-text-muted">{prop.description}</span>
+              )}
               {error && <span className="text-text-danger text-supporting">{error}</span>}
             </div>
           );
@@ -244,8 +253,10 @@ export default function JsonSchemaForm({
 
         return (
           <div key={key} className="flex flex-col gap-1">
-            <label htmlFor={key} className="text-label text-text-default">
-              {key}
+            {/* The schema's `title` is the name a person reads; the key is a machine name
+                (principle 10), shown only when the schema gives no title. */}
+            <label htmlFor={fieldId(key)} className="text-label text-text-default">
+              {prop.title || key}
               {isRequired && <span className="text-text-danger ml-1">*</span>}
             </label>
             {prop.description && prop.type !== 'boolean' && (
@@ -257,15 +268,15 @@ export default function JsonSchemaForm({
         );
       })}
 
-      <div className="flex gap-2 mt-2">
-        <Button type="submit" disabled={disabled}>
-          {submitLabel}
-        </Button>
+      <div className="flex justify-end gap-2">
         {onCancel && (
-          <Button type="button" variant="outline" onClick={onCancel} disabled={disabled}>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={disabled}>
             {cancelLabel}
           </Button>
         )}
+        <Button type="submit" size="sm" disabled={disabled}>
+          {submitLabel}
+        </Button>
       </div>
     </form>
   );

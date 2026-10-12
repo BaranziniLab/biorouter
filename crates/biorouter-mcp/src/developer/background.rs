@@ -555,9 +555,8 @@ fn run_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("BIOROUTER_DEVELOPER_RUN_DIR") {
         return PathBuf::from(dir);
     }
-    use etcetera::AppStrategy;
-    etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
-        .map(|s| s.data_dir().join("developer/run"))
+    crate::paths::platform_dirs()
+        .map(|dirs| dirs.data.join("developer/run"))
         .unwrap_or_else(|_| std::env::temp_dir().join("biorouter/developer/run"))
 }
 

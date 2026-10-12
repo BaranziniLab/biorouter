@@ -139,7 +139,7 @@ review cite as `guardrails-permissions.md #N`; the numbering below is that schem
 ## Related documentation
 
 - [Hooks system](hooks-system.md) — the fourth inspector in this chain; `PreToolUse` hooks and this permission layer overlap and are best read together.
-- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how this gauntlet measures against nine other coding agents.
+- [Safety and guardrails compared with other agents](../competitive-comparison/safety-and-guardrails.md) — how this gauntlet measures against eight other coding agents.
 - [Core agent loop and tool dispatch](core-loop-and-tool-dispatch.md) — where in the loop the inspector chain runs.
 - [Permission modes guide](../../../security/permission-modes.md) — the current, living reference for `Auto` / `Approve` / `SmartApprove` / `Chat`.
 - [Wave 1 security report](../../agent-loop-campaign/wave-reports/wave-1-security.md) and [wave 2 hooks and permissions](../../agent-loop-campaign/wave-reports/wave-2-hooks-and-permissions.md) — what was built in response to these gaps.

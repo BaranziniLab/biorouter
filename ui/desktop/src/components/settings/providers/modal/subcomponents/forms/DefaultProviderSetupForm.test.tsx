@@ -1,9 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
-import DefaultProviderSetupForm, { type ConfigInput } from './DefaultProviderSetupForm';
+import DefaultProviderSetupForm, {
+  providerFieldName,
+  type ConfigInput,
+} from './DefaultProviderSetupForm';
 import CustomProviderForm from './CustomProviderForm';
+import { customProviderCopy, providerSetupCopy } from '../../../copy';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn() }));
@@ -17,7 +21,7 @@ vi.mock('../../../../../ConfigContext', () => ({
  * Secret Access Key as `<input type="text">` with spellcheck on — on screen and
  * in the DOM as it was typed. The fixture is that card's real key set
  * (`versa_bedrock.rs`): two required secrets, two optional non-secrets with
- * defaults behind "Show 2 options".
+ * defaults behind "Advanced".
  */
 const bedrock = {
   name: 'versa_bedrock',
@@ -63,13 +67,55 @@ function Harness({ provider = bedrock }: { provider?: ProviderDetails }) {
  */
 // W2-PRV-13: the placeholder is the field's name in words. It was the env var
 // with spaces ('VERSA BEDROCK SECRET ACCESS KEY').
-const SECRET_ACCESS_KEY = 'Secret Access Key';
-const ACCESS_KEY_ID = 'Access Key Id';
+const SECRET_ACCESS_KEY = 'Secret access key';
+const ACCESS_KEY_ID = 'Access key ID';
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Nothing stored yet — the state the QA run typed into.
   mocks.read.mockResolvedValue(null);
+});
+
+// V4-R3-2: the labels were Title Case ("Anthropic API Key") beside the custom form's "API key", and
+// the required error repeated it. One name per key, in sentence case, with acronyms and product
+// names kept: it is the label, the placeholder fallback, the reveal toggle and the error.
+describe('providerFieldName: a key named in sentence case', () => {
+  it.each([
+    ['anthropic', 'ANTHROPIC_API_KEY', 'Anthropic API key'],
+    ['anthropic', 'ANTHROPIC_HOST', 'Anthropic host'],
+    ['azure_openai', 'AZURE_OPENAI_DEPLOYMENT_NAME', 'Azure OpenAI deployment name'],
+    ['llamacpp', 'LLAMACPP_CONTEXT_SIZE', 'Llama Server context size'],
+    ['claude_code', 'CLAUDE_CODE_COMMAND', 'Claude CLI command'],
+    ['zai', 'ZAI_API_KEY', 'z.ai API key'],
+    ['xiaomi_mimo', 'XIAOMI_MIMO_HOST', 'Xiaomi MiMo host (region endpoint)'],
+    ['gcp_vertex_ai', 'GCP_PROJECT_ID', 'GCP project ID'],
+    // The role names, for a key with no curated label.
+    ['tetrate', 'TETRATE_API_KEY', 'API key'],
+    ['tetrate', 'TETRATE_HOST', 'API host'],
+    // The prefix-stripped fallback, with ID kept as an acronym.
+    ['versa_bedrock', 'VERSA_BEDROCK_ACCESS_KEY_ID', 'Access key ID'],
+    ['versa_bedrock', 'VERSA_BEDROCK_SECRET_ACCESS_KEY', 'Secret access key'],
+    ['litellm', 'LITELLM_CUSTOM_HEADERS', 'Custom headers'],
+  ])('names %s %s as "%s"', (provider, key, name) => {
+    expect(providerFieldName(provider, key)).toBe(name);
+  });
+
+  it('never leaves a plain later word capitalised', () => {
+    for (const key of [
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_PATH',
+      'AZURE_OPENAI_API_VERSION',
+      'LLAMACPP_ENABLE_THINKING',
+      'SNOWFLAKE_TOKEN',
+      'CODEX_COMMAND',
+    ]) {
+      const later = providerFieldName('x', key).split(' ').slice(1);
+      for (const word of later) {
+        if (/^(Server|OpenAI|Llama|Azure)$/.test(word)) continue;
+        expect(word, key).not.toMatch(/^[A-Z][a-z]+$/);
+      }
+    }
+  });
 });
 
 describe('DefaultProviderSetupForm — secrets are masked', () => {
@@ -88,7 +134,7 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
   // everything — an endpoint URL nobody can read back is its own defect.
   it('leaves a non-secret parameter readable', async () => {
     render(<Harness />);
-    fireEvent.click(await screen.findByText(/Show 2 options/));
+    fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.advanced }));
 
     expect(screen.getByDisplayValue('us-west-2')).toHaveAttribute('type', 'text');
     expect(screen.getByDisplayValue('https://unified-api.ucsf.edu/general/awsai')).toHaveAttribute(
@@ -97,13 +143,22 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     );
   });
 
-  // ⚠ By the config key, never by the words: the reveal toggle's accessible
-  // name is "Show Secret Access Key", so a query for the words would match the
-  // button as well as the field.
+  // ⚠ An EXACT label: the reveal toggle's accessible name is "Show Secret access key" and the
+  // label's InfoTip is "About Secret access key", so a pattern would match all three.
   it('labels each field, so a screen reader names the masked one', async () => {
     render(<Harness />);
     const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
-    expect(screen.getByLabelText(/\(VERSA_BEDROCK_SECRET_ACCESS_KEY\)/)).toBe(input);
+    expect(screen.getByLabelText('Secret access key')).toBe(input);
+  });
+
+  // The config key a field writes is machine text: it is the label's InfoTip, and the field is
+  // described by it, so a screen reader hears it on reaching the field (principle 10).
+  it('keeps the config key behind the label, reachable from the field', async () => {
+    render(<Harness />);
+    const input = await screen.findByPlaceholderText(SECRET_ACCESS_KEY);
+    expect(input).toHaveAccessibleDescription('Saved as VERSA_BEDROCK_SECRET_ACCESS_KEY.');
+    expect(screen.queryByText('(VERSA_BEDROCK_SECRET_ACCESS_KEY)')).toBeNull();
+    expect(screen.getByRole('button', { name: 'About Secret access key' })).toBeInTheDocument();
   });
 
   it('stays masked while typing, and reveals only on an explicit toggle', async () => {
@@ -113,36 +168,20 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
     fireEvent.change(input, { target: { value: 'dummy-not-a-real-secret' } });
     expect(input).toHaveAttribute('type', 'password');
 
-    const reveal = screen.getByRole('button', { name: 'Show Secret Access Key' });
+    const reveal = screen.getByRole('button', { name: 'Show Secret access key' });
     expect(reveal).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(reveal);
     expect(input).toHaveAttribute('type', 'text');
     // Revealed is exactly when a spellchecker would otherwise see the value.
     expect(input).toHaveAttribute('spellcheck', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Secret Access Key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Secret access key' }));
     expect(input).toHaveAttribute('type', 'password');
     expect(input).toHaveValue('dummy-not-a-real-secret');
   });
 });
 
 describe('the two provider forms mask a key the same way', () => {
-  // The custom form's "local model" checkbox is Radix Themes', which measures
-  // itself with a ResizeObserver jsdom does not have.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('gives the custom-provider key the same masked field and the same toggle', () => {
     const { container } = render(
       <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} />
@@ -152,8 +191,96 @@ describe('the two provider forms mask a key the same way', () => {
     expect(input).toHaveAttribute('autocomplete', 'off');
     expect(input).toHaveAttribute('spellcheck', 'false');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show API Key' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show API key' }));
     expect(input).toHaveAttribute('type', 'text');
+  });
+});
+
+/**
+ * Vision V4-R7-5: Configure Claude Code opened with its "Claude CLI command" field focused on
+ * `claude`, and Chromium drew a red dotted misspelling line under it. Every parameter of a provider
+ * is a machine string (a command, an endpoint, a region, a profile), so none is spellchecked,
+ * auto-corrected or auto-capitalised, secret or not, above Advanced or inside it.
+ */
+const claudeCode = {
+  name: 'claude_code',
+  is_configured: false,
+  provider_type: 'Builtin',
+  metadata: {
+    name: 'claude_code',
+    display_name: 'Claude Code',
+    description: '',
+    default_model: '',
+    known_models: [],
+    model_doc_link: '',
+    config_keys: [
+      { name: 'CLAUDE_CODE_COMMAND', required: true, secret: false, default: 'claude' },
+    ],
+  },
+} as unknown as ProviderDetails;
+
+const MACHINE_ATTRIBUTES = { spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' };
+
+function expectMachineString(input: HTMLElement) {
+  for (const [attribute, value] of Object.entries(MACHINE_ATTRIBUTES)) {
+    expect(input, `${input.id} ${attribute}`).toHaveAttribute(attribute, value);
+  }
+}
+
+describe('DefaultProviderSetupForm: machine strings are not spellchecked (V4-R7-5)', () => {
+  it("leaves the coding agent's command field alone", async () => {
+    const { container } = render(<Harness provider={claudeCode} />);
+    await screen.findByDisplayValue('claude');
+    const command = container.querySelector<HTMLInputElement>(
+      '#provider-config-CLAUDE_CODE_COMMAND'
+    );
+    expect(command).not.toBeNull();
+    expect(command).toHaveValue('claude');
+    expectMachineString(command!);
+  });
+
+  it('leaves every field of a provider alone, the ones behind Advanced and the secrets too', async () => {
+    const { container } = render(<Harness />);
+    fireEvent.click(await screen.findByRole('button', { name: providerSetupCopy.advanced }));
+
+    const fields = Array.from(container.querySelectorAll<HTMLInputElement>('input'));
+    // Two secrets, an endpoint and a region.
+    expect(fields).toHaveLength(4);
+    for (const field of fields) expectMachineString(field);
+  });
+});
+
+describe('CustomProviderForm: machine strings are not spellchecked (V4-R7-5)', () => {
+  it('leaves the name, the URL, the key and the model list alone', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    for (const id of ['display-name', 'api-url', 'api-key', 'available-models']) {
+      const field = container.querySelector<HTMLInputElement>(`#${id}`);
+      expect(field, id).not.toBeNull();
+      expectMachineString(field!);
+    }
+  });
+
+  it('keeps the same attributes on an edit', () => {
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        isEditable
+        initialData={{
+          engine: 'openai',
+          display_name: 'My provider',
+          api_url: 'https://api.example.com/v1',
+          api_key: '',
+          models: ['model-a'],
+          supports_streaming: true,
+        }}
+      />
+    );
+    for (const id of ['display-name', 'api-url', 'available-models']) {
+      expectMachineString(container.querySelector<HTMLInputElement>(`#${id}`)!);
+    }
   });
 });
 
@@ -194,14 +321,14 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('leaves the endpoint empty, with a placeholder that says whose it is', async () => {
     render(<Harness provider={azure} />);
 
-    const endpoint = await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+    const endpoint = await screen.findByLabelText('Azure OpenAI endpoint');
     expect(endpoint).toHaveValue('');
     expect(endpoint).toHaveAttribute('placeholder', 'https://<your-resource>.openai.azure.com');
   });
 
   it('fills in no value that points at the UCSF gateway', async () => {
     render(<Harness provider={azure} />);
-    await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+    await screen.findByLabelText('Azure OpenAI endpoint');
 
     expect(screen.queryByDisplayValue(/unified-api\.ucsf\.edu/)).toBeNull();
   });
@@ -211,7 +338,7 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
   it('still fills in the API version, which is the same for everyone', async () => {
     render(<Harness provider={azure} />);
 
-    expect(await screen.findByLabelText(/\(AZURE_OPENAI_API_VERSION\)/)).toHaveValue(
+    expect(await screen.findByLabelText('Azure OpenAI API version')).toHaveValue(
       '2025-01-01-preview'
     );
   });
@@ -239,13 +366,13 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
 
   it('names Llama Server\u2019s external host and suggests this machine for it', async () => {
     render(<Harness provider={llama} />);
-    const input = await screen.findByLabelText(/Llama Server External Host/);
+    const input = await screen.findByLabelText('Llama Server external host');
     expect(input).toHaveAttribute('placeholder', 'http://127.0.0.1:8080');
-    expect(screen.getByText('(LLAMACPP_EXTERNAL_HOST)')).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription('Saved as LLAMACPP_EXTERNAL_HOST.');
     expect(screen.queryByPlaceholderText('https://api.example.com')).toBeNull();
   });
 
-  it('gives every field its env-var chip, the role-named ones too', async () => {
+  it('gives every field its config key in the label’s InfoTip, the role-named ones too', async () => {
     const azure = {
       ...bedrock,
       name: 'versa_azure',
@@ -256,10 +383,31 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
       },
     } as unknown as ProviderDetails;
     render(<Harness provider={azure} />);
-    expect(await screen.findByText('(VERSA_AZURE_API_KEY)')).toBeInTheDocument();
+    expect(await screen.findByLabelText('API key')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_API_KEY.'
+    );
   });
 
-  it('counts one option as one option', async () => {
+  // Vision FR-R4-5: the first-run path's disclosures said "Details", "Advanced" and "Show 4
+  // options"; every one now says "Advanced", with its hidden fields' labels joined by "·" as the
+  // closed summary, which is also the trigger's description.
+  it('keeps the optional fields behind Advanced, summarised by their labels', async () => {
+    render(<Harness />);
+    const trigger = await screen.findByRole('button', { name: providerSetupCopy.advanced });
+    const summary = [
+      providerFieldName('versa_bedrock', 'AWS_ENDPOINT_URL_BEDROCK'),
+      providerFieldName('versa_bedrock', 'AWS_REGION'),
+    ].join(' · ');
+    expect(trigger).toHaveAccessibleDescription(summary);
+    expect(screen.queryByText(/Show \d|Hide \d/)).toBeNull();
+
+    fireEvent.click(trigger);
+    // Open, the fields say it themselves.
+    expect(trigger).toHaveAccessibleName(providerSetupCopy.advanced);
+    expect(screen.queryByText(summary)).toBeNull();
+  });
+
+  it('summarises one optional field by its label alone', async () => {
     const one = {
       ...bedrock,
       metadata: {
@@ -271,8 +419,10 @@ describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
       },
     } as unknown as ProviderDetails;
     render(<Harness provider={one} />);
-    expect(await screen.findByText(/Show 1 option\b/)).toBeInTheDocument();
-    expect(screen.queryByText(/1 options/)).toBeNull();
+    expect(
+      await screen.findByRole('button', { name: providerSetupCopy.advanced })
+    ).toHaveAccessibleDescription(providerFieldName('versa_bedrock', 'AWS_REGION'));
+    expect(screen.queryByText(/·/)).toBeNull();
   });
 });
 
@@ -322,8 +472,74 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     );
     const input = container.querySelector('#api-key') as HTMLInputElement;
     expect(input).toHaveAttribute('placeholder', 'Leave blank to keep existing key');
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Vision FR-R3-3, on the same path: Add provider's "Create provider" was coral with nothing typed,
+ * beside a Configure dialog whose Save is now secondary until its key is in. The submit follows the
+ * one rule: secondary until every field it would ask for has a value, coral once it can act.
+ */
+describe('CustomProviderForm submit is coral only once it can act', () => {
+  const coral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+
+  it('stays secondary on an empty form and turns coral once every field is in', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    const create = screen.getByRole('button', { name: customProviderCopy.create });
+    expect(coral(create)).toBe(false);
+    expect(create).toHaveClass('br-fill-rest');
+    const type = (selector: string, value: string) =>
+      fireEvent.change(container.querySelector(selector) as HTMLInputElement, {
+        target: { value },
+      });
+    type('#display-name', 'Lab gateway');
+    type('#api-url', 'https://gateway.example.org/v1');
+    type('#available-models', 'model-a');
+    expect(coral(create), 'still no key').toBe(false);
+    type('#api-key', 'sk-test');
+    expect(coral(create)).toBe(true);
+  });
+
+  it('counts a local model as needing no key', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    for (const [selector, value] of [
+      ['#display-name', 'Local'],
+      ['#api-url', 'http://127.0.0.1:8080/v1'],
+      ['#available-models', 'm'],
+    ]) {
+      fireEvent.change(container.querySelector(selector) as HTMLInputElement, {
+        target: { value },
+      });
+    }
+    fireEvent.click(container.querySelector('#local-model') as HTMLInputElement);
+    expect(coral(screen.getByRole('button', { name: customProviderCopy.create }))).toBe(true);
+  });
+
+  it('draws an edit with a saved key coral, from its definition', () => {
+    render(
+      <CustomProviderForm
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        initialData={{
+          engine: 'openai',
+          display_name: 'DeepSeek',
+          api_url: 'https://api.deepseek.com',
+          api_key: '',
+          models: ['deepseek-chat'],
+          supports_streaming: true,
+        }}
+        isEditable
+        hasSavedKey
+      />
+    );
+    expect(coral(screen.getByRole('button', { name: customProviderCopy.update }))).toBe(true);
+    expect(screen.getByDisplayValue('DeepSeek')).toBeInTheDocument();
   });
 });
 
@@ -364,7 +580,8 @@ describe('DefaultProviderSetupForm in a browser', () => {
 
     const host = await screen.findByDisplayValue('https://api.openai.com');
     expect(host).toBeDisabled();
-    expect(host).toHaveAttribute('aria-describedby', 'provider-config-host-owned-note');
+    // The host-owned note first, then the label's own InfoTip (Field merges both).
+    expect(host.getAttribute('aria-describedby')).toContain('provider-config-host-owned-note');
     const note = screen.getByTestId('host-managed-destination-note');
     expect(note.textContent).toContain('biorouter configure');
     // The key and a setting that goes nowhere stay editable.
@@ -389,21 +606,6 @@ describe('CustomProviderForm in a browser', () => {
     supports_streaming: true,
   };
 
-  // The streaming checkbox is Radix Themes', which measures itself with a
-  // ResizeObserver jsdom does not have.
-  beforeAll(() => {
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      }
-    );
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-  });
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
   });
@@ -429,14 +631,14 @@ describe('CustomProviderForm in a browser', () => {
     fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
       target: { value: 'https://elsewhere.example/v1' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByText(/Type the key again/)).toBeInTheDocument();
 
     fireEvent.change(container.querySelector('#api-key') as HTMLInputElement, {
       target: { value: 'sk-typed' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 
@@ -444,7 +646,7 @@ describe('CustomProviderForm in a browser', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const onSubmit = vi.fn();
     edit(onSubmit);
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 
@@ -455,7 +657,7 @@ describe('CustomProviderForm in a browser', () => {
     fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
       target: { value: 'https://elsewhere.example/v1' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });
 });

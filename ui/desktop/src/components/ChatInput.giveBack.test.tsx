@@ -47,18 +47,11 @@ vi.mock('./ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../hooks/useDiverge', () => ({ useDiverge: () => ({ diverge: vi.fn() }) }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({ BottomMenuSkillSelection: () => null }));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
@@ -145,7 +138,6 @@ function NewChat({
       accumulatedInputTokens={0}
       accumulatedOutputTokens={0}
       messagesLength={0}
-      disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
@@ -185,7 +177,6 @@ function PlainComposer({
         accumulatedInputTokens={0}
         accumulatedOutputTokens={0}
         messagesLength={0}
-        disableAnimation={false}
         toolCount={0}
         onWorkingDirChange={vi.fn()}
       />
@@ -233,7 +224,10 @@ const dropFile = async (label: string, path: string) => {
 };
 
 const pastedImages = (label: string) => within(pane(label)).queryAllByAltText(/^Pasted image/);
-const fileChip = (label: string, name: string) => within(pane(label)).queryByTitle(name);
+const fileChip = (label: string, name: string) =>
+  within(pane(label))
+    .queryAllByTestId('composer-file-chip')
+    .find((chip) => chip.textContent?.includes(name)) ?? null;
 
 describe('1 — a failed start gives the message back to ITS composer and no other', () => {
   it('leaves the other pane’s new tab exactly as it was', async () => {
@@ -530,7 +524,6 @@ describe('D4 — a message still in flight when its composer goes is handed back
             accumulatedInputTokens={0}
             accumulatedOutputTokens={0}
             messagesLength={0}
-            disableAnimation={false}
             toolCount={0}
             onWorkingDirChange={vi.fn()}
           />

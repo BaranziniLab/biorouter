@@ -414,5 +414,5 @@ review cite as `core-loop.md gap #N`; the numbering below is that scheme and is 
 - [Server reply flow and session lifecycle](server-reply-flow-and-session-lifecycle.md) — what sits in front of this loop: the SSE `/reply` route that drives it.
 - [Guardrails, security and the permission system](guardrails-and-permissions.md) — the inspector gauntlet every tool request passes through inside step 6 of the loop.
 - [Loop detection, repetition and stuck states](loop-and-stuck-detection.md) — the caps and cancellation paths that bound this loop.
-- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this dispatch design measures against nine other coding agents.
+- [Execution and verification compared with other agents](../competitive-comparison/execution-and-verification.md) — how this dispatch design measures against eight other coding agents.
 - [Master improvement proposals](../improvement-proposals.md) — the BR-NN proposals (BR-6, BR-13, BR-46) these gaps became.

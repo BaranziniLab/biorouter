@@ -10,13 +10,14 @@ const buttonVariants = cva(
   // NB: Tailwind v4 maps scale-*/hover:scale-*/active:scale-* to the standalone
   // `scale` property (not `transform`), so `scale` must be in the transition list
   // for the press/hover scale to ease rather than snap.
-  // `--tint-ink` is in the list for the same class of reason: four of the five
-  // variants take their hover/press from `tint-interactive`, which carries the
+  // `--tint-ink` is in the list for the same class of reason: `destructive` and
+  // `ghost` take their hover/press from `tint-interactive`, which carries the
   // tint in that registered custom property (background-image does not animate in
-  // Chrome — see main.css). Omitting it made `default` ease its own fill while
-  // destructive/outline/secondary/ghost snapped: two hover behaviours in one
-  // component. An explicit `transition-[…]` list REPLACES the utility's own
-  // fallback, so this is the only place the button can declare it.
+  // Chrome — see main.css), while `default`, `secondary` and `outline` step their
+  // own `background-color`. Omitting either made one half ease and the other
+  // snap: two hover behaviours in one component. An explicit `transition-[…]`
+  // list REPLACES the utility's own fallback, so this is the only place the
+  // button can declare it.
   // `text-label` IS 14/20/500 — it replaces `text-sm font-medium` exactly, and is
   // the one type role every control in the app now shares.
   // The duration/easing annotations are gone: `--default-transition-duration` and
@@ -25,31 +26,49 @@ const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap text-label transition-[color,background-color,border-color,transform,scale,opacity,--tint-ink] active:scale-[0.98] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
   {
     variants: {
-      // One state stack, four fills (§3.1). Hover and press are NOT authored per
-      // variant any more: `tint-interactive` carries both, as a background-IMAGE
-      // that composites over whatever fill the variant already set. This is the
-      // whole reason a filled control may not use `bg-overlay-*` — a background
-      // COLOUR replaces the fill, so `secondary` would get LIGHTER on hover
-      // (5% ink over the PARENT's ground) instead of darker.
+      // One state stack (§3.1). `destructive` and `ghost` take hover and press
+      // from `tint-interactive`, a background-IMAGE that composites over
+      // whatever fill the variant set, which is why they may not use
+      // `bg-overlay-*`: a background COLOUR would replace the fill, not darken it.
       //
-      // The two exceptions are deliberate and both are solid accent/hue fills:
-      // `default` brightens its own token (`--background-accent-hover`), which is
-      // §3.1's "solid fills brighten rather than take an overlay"; `link` has no
-      // box to tint at all.
+      // The exceptions are deliberate: `default` brightens its own token
+      // (`--background-accent-hover`), which is §3.1's "solid fills brighten
+      // rather than take an overlay"; `link` has no box to tint at all; and the
+      // two filled variants below step between two fill tokens.
       variant: {
+        // `br-button-inert` (main.css, beside `.br-button-xs`): a coral or danger button that
+        // cannot act is not coral or red. Disabled, it draws what a disabled `secondary` draws
+        // (the control ground, the default ink, the 50% fade above), so the app has one look for
+        // "not yet" and a person reads colour as "this will do something". A button that is
+        // WORKING says so with `aria-busy` and keeps its colour (the composer's Send).
         default:
-          'bg-background-accent text-text-on-accent hover:bg-background-accent-hover biorouter-focus-surface-accent',
+          'br-button-inert bg-background-accent text-text-on-accent hover:bg-background-accent-hover biorouter-focus-surface-accent',
         // Not a solid red block (§3.1). A translucent danger wash with the deep
         // danger ink on top reads as consequence without shouting, and — because
         // the fill is now translucent rather than opaque — the tint composites
         // correctly. This also retires `hover:opacity-90`, which faded the whole
         // button and let a modal scrim ghost straight through it.
         destructive:
-          'bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
+          'br-button-inert bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
+        // FILLS BEFORE LINES (owner message 13, R-27, design.md 9.11): the
+        // secondary action is a subtle solid fill with no outline. It rests on
+        // the control ground (`.br-fill-rest`: `--background-fill`, or the page
+        // ground inside a filled box, so a button never sits fill on fill) and
+        // steps to `--background-fill-strong` under the pointer and while pressed
+        // (`.br-fill-hover`, with the shared 0.98 press). Two fill tokens, not
+        // `tint-interactive`: inside a dark popover the strong step is re-pointed
+        // one step DEEPER than the popover ground (WS-TOKENS' popover fill
+        // block), where an ink overlay would lighten the button into the ground
+        // and the hover would vanish. Authored in main.css, layered, so a
+        // caller's own `bg-*` utility still wins.
+        //
+        // `outline` is kept as a name and draws the same box: a 1px TRANSPARENT
+        // border holds the width the old outline had (no row reflows), and the
+        // forced-colours rule gives every `[data-slot='button']` the system
+        // button edge either way.
         outline:
-          'bg-transparent border border-border-emphasized text-text-default tint-interactive biorouter-focus-surface',
-        secondary:
-          'bg-background-medium text-text-default tint-interactive biorouter-focus-surface',
+          'br-fill-rest br-fill-hover border border-transparent text-text-default biorouter-focus-surface',
+        secondary: 'br-fill-rest br-fill-hover text-text-default biorouter-focus-surface',
         ghost: 'bg-transparent text-text-default tint-interactive biorouter-focus-surface',
         link: 'text-text-accent underline-offset-4 hover:underline',
       },
@@ -59,7 +78,10 @@ const buttonVariants = cva(
       // retires the old 24/32/36/40 ladder and, with it, the off-scale 28px that
       // row actions were hand-rolling because no rung offered it.
       size: {
-        xs: 'h-control-compact gap-1 [&_svg:not([class*=size-])]:size-3',
+        // The compact rung draws its glyph at 14px (spec 2.6, the chip and inline-help icon size),
+        // authored as `.br-button-xs` in main.css because a new arbitrary variant can fail to
+        // generate under BIOROUTER_NO_HMR.
+        xs: 'br-button-xs h-control-compact gap-1',
         default: 'h-control-md',
         sm: 'h-control-sm gap-1.5',
         lg: 'h-control-lg',
@@ -141,10 +163,18 @@ const Button = React.forwardRef<
 
   return (
     <Comp
-      data-slot="button"
       className={cn(buttonVariants({ variant, size, shape, className }))}
       ref={ref}
       {...props}
+      // ⚠ AFTER the spread, deliberately. A Button slotted into a Radix trigger
+      // (`<DropdownMenuTrigger asChild><Button …/></DropdownMenuTrigger>`, 59 sites) is handed the
+      // trigger's own `data-slot` through `props`, and a slot written BEFORE the spread was
+      // replaced by it: the element is drawn by `buttonVariants` and is a button, but
+      // `[data-slot='button']` (main.css: the forced-colours edge on every button, the link
+      // underline, the copy field's footer) no longer matched it, so a filled trigger lost its
+      // boundary under Windows High Contrast (V4-24). Nothing keys on a trigger's slot, so
+      // "a Button is always a button" costs nothing. Pinned in button.test.tsx.
+      data-slot="button"
     />
   );
 });

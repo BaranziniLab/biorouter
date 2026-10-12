@@ -13687,7 +13687,13 @@ impl Agent {
         // model against a private session, which is the one thing Gate A exists
         // to stop. The fix is the repair card reaching this site and not only
         // `reply`, which needs a UI surface that does not exist yet.
-        self.update_provider(provider, &session.id).await
+        //
+        // R-30: restoring a chat's binding is part of opening it (resume,
+        // restart, a working-directory change on an empty chat, a cold agent
+        // before an injected turn), never activity in it, so the bind leaves
+        // `updated_at` alone. A turn that follows moves the chat by its own
+        // writes. Gate A is untouched: the scope changes only the timestamp.
+        crate::session::activity::opening(self.update_provider(provider, &session.id)).await
     }
 
     /// Restore the provider recorded by `session` only when this agent has no
@@ -22262,6 +22268,140 @@ mod gate_a_bind_tests {
             bound > 0 && refused > 0,
             "{iterations} iterations produced {bound} bound / {refused} refused, which is one-sided, so \
              the loop raced nothing. That is the state this test used to report as a pass."
+        );
+    }
+
+    // ── R-30: restoring a chat's model is opening it, not activity in it ────
+
+    async fn backdate(sm: &SessionManager, id: &str, at: &str) {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn stored_updated_at(sm: &SessionManager, id: &str) -> String {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT CAST(updated_at AS TEXT) FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// The desktop's open path, measured live (R-30): `POST /agent/resume`
+    /// with `load_model_and_extensions: true` on a cold agent reaches
+    /// `restore_persisted_provider_if_missing`, which rebinds the model the
+    /// row records. That rebind used to stamp `updated_at`, so the first open
+    /// of every chat after a daemon start moved it to the top of every list.
+    #[tokio::test]
+    async fn a_cold_restore_of_the_rows_own_model_does_not_move_the_chat() {
+        let (dir, agent, session) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        sm.add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        backdate(&sm, &session.id, "2001-01-01 00:00:00").await;
+        let row = reread(&sm, &session.id).await;
+        assert_eq!(row.provider_name.as_deref(), Some("anthropic"), "premise");
+
+        // A fresh agent over the same store holds no provider: a daemon that
+        // restarted, or an agent the LRU evicted.
+        let cold = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sm),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ));
+        seams::override_rebind_provider(sm.as_ref(), &session.id, "anthropic", public_provider());
+        cold.restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+
+        assert!(
+            cold.bound_provider_unchecked().await.is_some(),
+            "the restore itself must still bind the model"
+        );
+        assert_eq!(
+            stored_updated_at(&sm, &session.id).await,
+            "2001-01-01 00:00:00",
+            "opening a chat is not activity in it (R-30)"
+        );
+    }
+
+    /// The other side of the same line: a model the person picks for a chat
+    /// (`POST /agent/update_provider`) is not part of opening it, and keeps
+    /// moving it. R-30 does not classify a model switch, so this pins the
+    /// behaviour that predates it rather than inventing a new one.
+    #[tokio::test]
+    async fn an_explicit_model_switch_still_moves_the_chat() {
+        let (_dir, agent, session) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        backdate(&sm, &session.id, "2001-01-01 00:00:00").await;
+
+        agent
+            .update_provider(private_provider(), &session.id)
+            .await
+            .unwrap();
+
+        assert_ne!(
+            stored_updated_at(&sm, &session.id).await,
+            "2001-01-01 00:00:00"
+        );
+    }
+
+    /// The same cold restore on a PRIVATE chat bound to a private model. Gate
+    /// A admits it, the model is bound, and the chat stays where it was: the
+    /// open path is the same for both tiers, so the timestamp must be too.
+    #[tokio::test]
+    async fn a_cold_restore_of_a_private_chats_own_model_does_not_move_it() {
+        let (dir, agent, session) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        sm.add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        ratchet_to_private(&sm, &session.id).await;
+        backdate(&sm, &session.id, "2001-01-01 00:00:00").await;
+        let row = reread(&sm, &session.id).await;
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"), "premise");
+        assert_eq!(
+            row.privacy_tier,
+            SessionClassification::Private,
+            "premise: the chat is private"
+        );
+
+        let cold = Agent::with_config(AgentConfig::new(
+            Arc::clone(&sm),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ));
+        seams::override_rebind_provider(
+            sm.as_ref(),
+            &session.id,
+            "versa_azure",
+            private_provider(),
+        );
+        cold.restore_persisted_provider_if_missing(&row)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            cold.bound_provider_unchecked()
+                .await
+                .map(|p| p.get_name().to_string()),
+            Some("versa_azure".to_string()),
+            "the restore itself must still bind the private model"
+        );
+        assert_eq!(
+            stored_updated_at(&sm, &session.id).await,
+            "2001-01-01 00:00:00",
+            "opening a private chat is not activity in it (R-30)"
         );
     }
 }

@@ -156,3 +156,55 @@ describe('Command highlight', () => {
     await waitFor(() => expect(highlighted()).toBe('Manage bases…'));
   });
 });
+
+/**
+ * The listbox keys belong to the field (WS-PICKERS-2). A control inside the root keeps its own
+ * Enter and arrows: Enter on a button there used to bubble to the root, be prevented, and click
+ * the highlighted row instead.
+ */
+describe('Command keys stay with the field', () => {
+  it('lets Enter on a button inside the root activate that button, not the highlighted row', async () => {
+    const onPick = vi.fn();
+    const onBulk = vi.fn();
+    render(
+      <Command label="Bases" query="" onQueryChange={() => {}}>
+        <CommandInput placeholder="Find a base" />
+        <button type="button" onClick={onBulk}>
+          Select all
+        </button>
+        <CommandList>
+          <CommandGroup>
+            <CommandItem onSelect={() => onPick('Alpha')}>Alpha</CommandItem>
+            <CommandItem onSelect={() => onPick('Beta')}>Beta</CommandItem>
+          </CommandGroup>
+        </CommandList>
+      </Command>
+    );
+    await waitFor(() => expect(highlighted()).toBe('Alpha'));
+    screen.getByRole('button', { name: 'Select all' }).focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onBulk).toHaveBeenCalledTimes(1);
+    expect(onPick).not.toHaveBeenCalled();
+    // ArrowDown on the button does not move the field's highlight either.
+    await userEvent.keyboard('{ArrowDown}');
+    expect(highlighted()).toBe('Alpha');
+  });
+
+  it('still answers Enter from the field', async () => {
+    const onPick = vi.fn();
+    render(
+      <Command label="Bases" query="" onQueryChange={() => {}}>
+        <CommandInput placeholder="Find a base" />
+        <CommandList>
+          <CommandGroup>
+            <CommandItem onSelect={() => onPick('Alpha')}>Alpha</CommandItem>
+          </CommandGroup>
+        </CommandList>
+      </Command>
+    );
+    await waitFor(() => expect(highlighted()).toBe('Alpha'));
+    screen.getByRole('combobox').focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onPick).toHaveBeenCalledWith('Alpha');
+  });
+});

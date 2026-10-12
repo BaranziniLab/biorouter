@@ -13,11 +13,11 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  *
  * `ChatGroupsShell` keys `BaseChat` on the tab id, so that landing unmounts the
  * placeholder and mounts a fresh `<Greeting>` — which draws a NEW random
- * sentence, by design. The unroll takes about a second and the awaited
- * `createSession` on the new-window paths takes about as long, so the
- * placeholder had time to finish before being discarded: the user saw a heading
- * arrive, vanish, and a different heading arrive after it. That is the reported
- * "flash then re-animate", reached by a second route. The first-frame fix in
+ * sentence, by design. The awaited `createSession` on the new-window paths
+ * takes about a second, so the placeholder's sentence was on screen long enough
+ * to read before being discarded: the user saw a heading arrive, vanish, and a
+ * different heading arrive after it. That is the reported "flash then
+ * re-animate", reached by a second route. The first-frame fix in
  * `use-text-animator` cannot touch it, because this is a whole extra mount
  * rather than a flash inside one.
  *

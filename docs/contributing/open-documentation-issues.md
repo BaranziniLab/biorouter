@@ -405,10 +405,8 @@ in the same bullet that says H4 was deferred — seven shipped.
 
 **Verified:** the script exists but nothing invokes it — not the `Justfile`, not
 `just check-everything`, not any workflow. It would also fail against the current tree by design:
-its "no `.html` files in `docs/`" check is violated by eleven deliberate design studio pages, its
-"no goose/geese references" check by
-[the Goose competitive report](../research/coding-agent-landscape/goose.md), and all of its
-exclusions are written as `grep -v 'superpowers/'` against a `docs/superpowers/` directory that
+its "no `.html` files in `docs/`" check is violated by eleven deliberate design studio pages, and
+all of its exclusions are written as `grep -v 'superpowers/'` against a `docs/superpowers/` directory that
 no longer exists. Also drifted from the inline copy embedded in the migration plan.
 
 ### A malformed command line preserved verbatim

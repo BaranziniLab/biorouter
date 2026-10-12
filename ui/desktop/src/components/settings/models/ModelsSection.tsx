@@ -11,16 +11,17 @@ import { toastError } from '../../../toasts';
 import ResetProviderSection from '../reset_provider/ResetProviderSection';
 import LocalModelInventory from './LocalModelInventory';
 import { Skeleton } from '../../ui/skeleton';
+import { SettingSection } from '../../ui/setting-row';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { defaultModelCopy, modelsDangerCopy } from './copy';
+import { joinModelValue, knownDefaultModelValue } from './defaultModelValue';
 
 interface ModelsSectionProps {
   setView: (view: View) => void;
 }
 
 export default function ModelsSection({ setView }: ModelsSectionProps) {
-  const [provider, setProvider] = useState<string | null>(null);
-  const [displayModelName, setDisplayModelName] = useState<string>('');
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const { read, getProviders } = useConfig();
+  const { read, getProviders, providersList } = useConfig();
   const {
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
@@ -28,16 +29,22 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
     currentProvider,
   } = useModelAndProvider();
 
+  // The Model row's value. `null` is "not known yet" and is the only state that draws a skeleton:
+  // the app already holds the model and provider in force, so a visit to this tab starts on the
+  // words and the daemon's answer, which says the same, replaces them in place (V4-R7-1).
+  const [modelValue, setModelValue] = useState<string | null>(() =>
+    knownDefaultModelValue(currentModel, currentProvider, providersList)
+  );
+
   const loadModelData = useCallback(async () => {
+    let modelDisplayName = '';
     try {
-      setIsLoading(true);
+      modelDisplayName = await getCurrentModelDisplayName();
 
-      const modelDisplayName = await getCurrentModelDisplayName();
-      setDisplayModelName(modelDisplayName);
-
+      let providerLabel: string | null;
       const providerDisplayName = await getCurrentProviderDisplayName();
       if (providerDisplayName) {
-        setProvider(providerDisplayName);
+        providerLabel = providerDisplayName;
       } else {
         const providerName = (await read('BIOROUTER_PROVIDER', false)) as string;
         const providers = await getProviders(false);
@@ -48,16 +55,17 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
             title: UNKNOWN_PROVIDER_TITLE,
             msg: UNKNOWN_PROVIDER_MSG,
           });
-          setProvider(providerName);
+          providerLabel = providerName;
         } else {
-          const fallbackProviderDisplayName = providerDetailsList[0].metadata.display_name;
-          setProvider(fallbackProviderDisplayName);
+          providerLabel = providerDetailsList[0].metadata.display_name;
         }
       }
+      // One write once both halves are known, so a row that already shows a value never reads
+      // the new model beside the old provider.
+      setModelValue(joinModelValue(modelDisplayName, providerLabel));
     } catch (error) {
       console.error('Error loading model data:', error);
-    } finally {
-      setIsLoading(false);
+      setModelValue((shown) => shown ?? joinModelValue(modelDisplayName, null));
     }
   }, [read, getProviders, getCurrentModelDisplayName, getCurrentProviderDisplayName]);
 
@@ -77,47 +85,32 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
     ) {
       prevModelRef.current = currentModel;
       prevProviderRef.current = currentProvider;
+      // A switch made while this tab is open changes the words now, from what the app holds, and
+      // when it cannot say, the row waits on a skeleton: the old model beside a new switch would
+      // be wrong, and a wrong word is worse than a short wait.
+      setModelValue(knownDefaultModelValue(currentModel, currentProvider, providersList));
       loadModelData();
     }
-  }, [currentModel, currentProvider, loadModelData]);
+  }, [currentModel, currentProvider, providersList, loadModelData]);
 
   return (
     <section id="models" className="pb-8">
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted">Current Model</h2>
-        </div>
-        <div className="biorouter-settings-list">
-          <div className="biorouter-settings-row px-3 py-2.5">
-            {isLoading ? (
-              <>
-                <Skeleton className="h-5 w-48" />
-                <Skeleton className="mt-1.5 h-4 w-32" />
-              </>
-            ) : (
-              <div className="animate-in fade-in duration-100">
-                <p className="text-label text-text-default">{displayModelName}</p>
-                <p className="mt-0.5 text-supporting text-text-muted">{provider}</p>
-              </div>
-            )}
-          </div>
-        </div>
-        {/* The button strip is a SECTION action, not a row's trailing control:
-            nested inside the row it inherited the row's hover wash, so pointing
-            anywhere near the buttons washed the whole model readout. */}
-        <ModelSettingsButtons setView={setView} />
-      </div>
+      <SettingSection
+        id={SETTINGS_SECTION_IDS.defaultModel}
+        title={defaultModelCopy.section}
+        help={defaultModelCopy.sectionHelp}
+      >
+        <ModelSettingsButtons
+          setView={setView}
+          modelValue={modelValue === null ? <Skeleton className="h-4 w-40" /> : modelValue}
+        />
+      </SettingSection>
 
       <LocalModelInventory />
 
-      <div className="biorouter-settings-section">
-        <div className="biorouter-settings-section-header">
-          <h2 className="text-caps text-text-muted">Reset</h2>
-        </div>
-        <div className="biorouter-settings-list">
-          <ResetProviderSection setView={setView} />
-        </div>
-      </div>
+      <SettingSection id={SETTINGS_SECTION_IDS.modelsDangerZone} title={modelsDangerCopy.section}>
+        <ResetProviderSection setView={setView} />
+      </SettingSection>
     </section>
   );
 }

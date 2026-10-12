@@ -1,15 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { ChangeKind, HistoryEntry } from '../../../api/types.gen';
-import { AlertCircle, History } from '../../icons/app-icons';
+import { AlertCircle, Eye, History, RotateCcw } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
-import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
+import { IconAction, RowActions, type RowActionItem } from '../../ui/row-actions';
+import { Sheet, SheetContent, SheetTitle } from '../../ui/sheet';
+import { knowledgeCopy } from '../copy';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { useKnowledge } from '../KnowledgeContext';
 import { useHistory } from '../hooks/useHistory';
 import { ChangeKindChip } from './ChangeKindChip';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { toastError } from '../../../toasts';
+import { rowTime, rowTimeTitle } from '../../workflows/shared/rowTime';
 
 interface Props {
   open: boolean;
@@ -20,18 +23,25 @@ interface Props {
 
 const ALL_KINDS: ChangeKind[] = ['ingest', 'link', 'flag', 'query', 'lint', 'restore', 'manual'];
 
-function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
-  const diff = Date.now() - t;
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
+/**
+ * An entry's time in the one compact form every list meta uses ("now", "5m", "3h", "4d", then
+ * "Oct 7"), with the full date in its tooltip (V3-22). It is `rowTime`, shared with the
+ * Workflows and Built apps rows; the drawer used to spell its own "11m ago".
+ */
+function entryTime(iso: string): ReactNode | undefined {
+  const when = new Date(iso);
+  const text = rowTime(when);
+  // `undefined`, not an empty element: RowActions reserves its meta slot for any truthy node.
+  if (!text) return undefined;
+  return (
+    <time
+      className="tabular-nums"
+      dateTime={when.toISOString()}
+      title={rowTimeTitle(when) ?? undefined}
+    >
+      {text}
+    </time>
+  );
 }
 
 /**
@@ -42,8 +52,9 @@ function relativeTime(iso: string): string {
  * - **Width is `--knowledge-rail-detail`**, so the drawer and the workspace's
  *   detail rail are the same object at the same width instead of two arbitrary
  *   numbers (420 here, 340 there).
- * - **`SheetTitle` keeps `text-subheading`.** The `text-label` override made
- *   this the app's second overlay title size, on a screen that can open both.
+ * - **The header is Crew's pane header** (spec 3.12): 44px, `bg-sidebar`, a
+ *   `text-label` title and a ghost round close with a Tooltip, the same one the
+ *   node and edge previews draw.
  * - **Kind filters are real toggle buttons**, through `Badge asChild` so the
  *   chip IS the button and takes the global focus fill. They used to be ~20px
  *   lowercase words with no background at all in the unselected state, so the
@@ -52,6 +63,13 @@ function relativeTime(iso: string): string {
  *   buttons inside them; a row that lights up under the pointer and does nothing
  *   when clicked is a promise the surface does not keep. The row keeps
  *   `.biorouter-list-row` for its hairline.
+ * - **Actions appear on intent** (V3-10). A row rests as its kind, its time and its
+ *   summary; hovering or focusing it swaps the time for Preview (an icon) and a `⋯`
+ *   holding "Restore…". They were two labelled buttons on every entry, and the newest
+ *   commit offered a Restore that restores nothing, so it has none.
+ * - **A strip that filters nothing is quiet.** With every kind on, the seven chips
+ *   rest in the ordinary fill and differ from an off chip by their ink alone; only
+ *   once the log is narrowed do the kinds still shown take the selected tint.
  */
 export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: Props) {
   const { primaryKbId, triggerGraphRefresh } = useKnowledge();
@@ -66,6 +84,22 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     () => history.filter((h) => activeKinds.has(h.kind)),
     [history, activeKinds]
   );
+  // The log is newest first. Restoring to the newest commit restores the state the base is
+  // already in, so it is not offered, whatever the kind filter hides.
+  const headSha = history[0]?.commit_sha;
+  const allKindsOn = activeKinds.size === ALL_KINDS.length;
+
+  function menuFor(entry: HistoryEntry): RowActionItem[] {
+    if (entry.commit_sha === headSha) return [];
+    return [
+      {
+        label: knowledgeCopy.drawers.restore,
+        icon: RotateCcw,
+        disabled: restoring !== null,
+        onSelect: () => setEntryToRestore(entry),
+      },
+    ];
+  }
 
   function toggleKind(k: ChangeKind) {
     setActiveKinds((prev) => {
@@ -99,17 +133,25 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        // This drawer's header is a bare title on an `h-row` bar — there is no
+        // This drawer's header is a bare title on the pane band — there is no
         // explanatory line on screen to link, so it takes Radix's own explicit
         // opt-out. Without it Radix leaves `aria-describedby` pointing at an id
         // nothing claims and warns on every open. See `ui/sheet.tsx` for why the
         // choice cannot be defaulted in the primitive.
         aria-describedby={undefined}
-        className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
+        className="br-knowledge-drawer flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
       >
-        <SheetHeader className="h-row flex-none flex-row items-center justify-between border-b border-border-subtle px-4 py-0">
-          <SheetTitle>Change log</SheetTitle>
-        </SheetHeader>
+        {/* Crew's pane header (spec 3.12): 44px, `bg-sidebar`, a `text-label`
+            title and a ghost round close. */}
+        <KnowledgePaneHeader
+          sheet
+          closeLabel={knowledgeCopy.drawers.closeChangeLog}
+          title={
+            <SheetTitle className="min-w-0 truncate text-label">
+              {knowledgeCopy.drawers.changeLog}
+            </SheetTitle>
+          }
+        />
 
         <div className="flex flex-none flex-wrap gap-2 border-b border-border-subtle px-4 py-2">
           {ALL_KINDS.map((k) => {
@@ -119,22 +161,21 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                 key={k}
                 variant="chip"
                 asChild
-                uppercase
                 className={
                   on
-                    ? 'tint-selected tint-interactive text-text-default'
+                    ? `${allKindsOn ? '' : 'tint-selected '}tint-interactive text-text-default`
                     : 'tint-interactive text-text-muted'
                 }
               >
                 <button type="button" aria-pressed={on} onClick={() => toggleKind(k)}>
-                  {k}
+                  {knowledgeCopy.changeKind[k]}
                 </button>
               </Badge>
             );
           })}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="br-rows-flat min-h-0 flex-1 overflow-y-auto px-2 py-1">
           {loading && (
             <EmptyState
               compact
@@ -162,32 +203,30 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
           {!loading &&
             !error &&
             filtered.map((entry) => (
-              <div key={entry.commit_sha} className="biorouter-list-row flex flex-col px-4 py-3">
-                <div className="mb-1 flex items-center gap-2">
-                  <ChangeKindChip kind={entry.kind} />
-                  <span className="text-supporting font-mono text-text-muted">
-                    {entry.commit_sha.slice(0, 7)}
-                  </span>
-                  <span className="ml-auto text-supporting text-text-muted">
-                    {relativeTime(entry.timestamp)}
-                  </span>
-                </div>
-                <div className="mb-2 text-body text-text-default">{entry.summary}</div>
+              <div
+                key={entry.commit_sha}
+                className="biorouter-list-row flex flex-col gap-1 px-2 py-3"
+              >
+                {/* No commit id on the row (principle 10: ids stay off everyday
+                    rows). Previewing a commit names it in the graph's banner. */}
                 <div className="flex items-center gap-2">
-                  {/* `sm` (28px), not `xs`. The compact tier's contract is
-                      glyph-only — "a control carrying a label never uses it". */}
-                  <Button variant="ghost" size="sm" onClick={() => onPreview(entry.commit_sha)}>
-                    Preview
-                  </Button>
-                  <Button
-                    variant="secondary"
+                  <ChangeKindChip kind={entry.kind} />
+                  <RowActions
+                    className="ml-auto"
                     size="sm"
-                    onClick={() => setEntryToRestore(entry)}
-                    disabled={restoring !== null}
-                  >
-                    {restoring === entry.commit_sha ? 'Restoring…' : 'Restore'}
-                  </Button>
+                    meta={entryTime(entry.timestamp)}
+                    primary={
+                      <IconAction
+                        icon={Eye}
+                        size="sm"
+                        label={knowledgeCopy.drawers.preview}
+                        onSelect={() => onPreview(entry.commit_sha)}
+                      />
+                    }
+                    menu={menuFor(entry)}
+                  />
                 </div>
+                <div className="text-body text-text-default">{entry.summary}</div>
               </div>
             ))}
         </div>

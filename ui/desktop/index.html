@@ -50,6 +50,20 @@
           }
         }
 
+        // Stamp the page's mode on <html> as a class, `dark` OR `light`, never
+        // neither. ThemeContext tells a theme CHANGE from a mount by asking
+        // whether the class it is about to apply is already there; a light page
+        // used to carry no class at all, so every light mount looked like a
+        // change and stilled every transition on <html> for two frames, which
+        // included the boot splash's own 260 ms fade-out (vision FR-R4-1). The
+        // two branches below and ThemeContext's answer to "which mode?" must
+        // stay the same question, as loadThemePreference there already says.
+        function applyMode(isDark) {
+          const root = document.documentElement;
+          root.classList.add(isDark ? 'dark' : 'light');
+          root.classList.remove(isDark ? 'light' : 'dark');
+        }
+
         function initializeTheme() {
           initializeThemeFamily();
           try {
@@ -57,25 +71,13 @@
               const useSystemTheme = localStorage.getItem('use_system_theme') === 'true';
               const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
               const savedTheme = localStorage.getItem('theme');
-              const isDark = useSystemTheme ? systemPrefersDark : (savedTheme ? savedTheme === 'dark' : systemPrefersDark);
-
-              if (isDark) {
-                document.documentElement.classList.add('dark');
-              } else {
-                document.documentElement.classList.remove('dark');
-              }
+              applyMode(useSystemTheme ? systemPrefersDark : (savedTheme ? savedTheme === 'dark' : systemPrefersDark));
             } else {
-              const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-              if (systemPrefersDark) {
-                document.documentElement.classList.add('dark');
-              }
+              applyMode(window.matchMedia('(prefers-color-scheme: dark)').matches);
             }
           } catch (error) {
             console.warn('Failed to initialize theme from localStorage, using system preference:', error);
-            const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            if (systemPrefersDark) {
-              document.documentElement.classList.add('dark');
-            }
+            applyMode(window.matchMedia('(prefers-color-scheme: dark)').matches);
           }
         }
 
@@ -118,43 +120,47 @@
          Spec: docs/superpowers/specs/2026-07-18-boot-splash-design.md
          ═══════════════════════════════════════════════════════════════════ */
       #br-boot {
-        /* Parchment (the default family), light.
+        /* The page ground, light.
 
-           These are LITERAL values, not var(--background-muted) and friends —
-           but NOT for the reason this comment used to give. It claimed Tailwind
-           v4's `@theme inline` "compiles those tokens away" so they "do not
-           exist as runtime custom properties". That is false: a probe styled
-           `background: var(--background-muted, magenta)` computes #f2f3f4, and
-           injecting a whole new `[data-theme]` block at runtime recolours every
-           utility correctly. The tokens are ordinary custom properties.
+           These are LITERAL values, not var(--background-canvas) and friends,
+           for a reason of TIMING: this splash paints before the stylesheet has
+           been applied (in dev, Vite injects main.css via JS after first
+           paint), so a var() here would resolve to its fallback during exactly
+           the window the splash exists to fill. The tokens themselves are
+           ordinary custom properties; only their availability at this moment is
+           the problem. (An earlier version of this comment blamed Tailwind's
+           `@theme inline` for compiling them away. That is false.)
 
-           The real reason is TIMING. This splash paints before the stylesheet
-           has been applied — in dev, Vite injects main.css via JS after first
-           paint — so a var() here resolves to its fallback during exactly the
-           window the splash exists to fill. Hence literals.
+           THE GROUND IS THE PAGE'S. `--br-bg` is `--background-canvas`, the
+           ground the first-run page, Home and the loader between them all paint.
+           It used to be `--background-muted`, a grey one step off that ground,
+           so a launch that crossed the threshold flashed grey before it faded
+           onto white (vision FR-R1-7, R-34). `--background-app`, the window
+           behind everything, is the same value today; the canvas is the one a
+           person is looking at when this fades out.
 
-           Most are no longer hand-copied: `npm run themes` generates every rule
-           inside the THEMES:GENERATED:SPLASH region below, from each family's
-           --background-muted. Edit the theme definition, not that region.
+           THE INKS ARE THE WORDMARK'S, AND THEY DO NOT FOLLOW THE FAMILY. What
+           is drawn below is the Biorouter wordmark (R-29: the text logo is the
+           logo), and `icons/BioRouterWordmark.tsx` is deliberately fixed to the
+           brand colours in every family, so a splash that took Alma Mater's
+           teal or Roche Limit's orange would hand off to a differently coloured
+           logo one frame later. `npm run themes` writes every rule inside the
+           THEMES:GENERATED:SPLASH region below: each family's own canvas, and
+           the BASE family's mark inks for all of them. Edit the theme
+           definitions, not that region.
 
-           THIS BLOCK IS THE EXCEPTION. These four values are Parchment LIGHT,
-           and they are hand-written because this `#br-boot` rule is also the
-           base every other rule cascades from — emitting a generated
+           THIS BLOCK IS THE EXCEPTION. These four values are the base family,
+           light, and they are hand-written because this `#br-boot` rule is also
+           the base every other rule cascades from: emitting a generated
            `html #br-boot` duplicate would give one ground two rules. They are
-           pinned to parchment.theme.mjs by a test instead, so they cannot drift.
-
-           --br-bg and --br-track are SHARED across families: the neutral set is
-           one set, so every family's light splash is #f4f4f2 on the same
-           hairline. Only --br-navy and --br-coral — the mark's ink and accent —
-           vary, which is the same axis that distinguishes the families in the
-           booted app. The ground mirrors --background-muted, which is what the
-           post-boot Hub uses, so the hand-off has no colour jump.
+           pinned to parchment.theme.mjs, and the inks to the wordmark's own
+           constants, by boot-splash.test.ts, so they cannot drift.
 
            EVERY theme family needs a light and a dark rule below.
            boot-splash.test.ts cross-checks this list against THEME_FAMILIES in
            src/contexts/ThemeContext.tsx and fails if one is missing, so adding
            a family cannot silently regress this screen. */
-        --br-bg: #f4f4f2;
+        --br-bg: #ffffff;
         --br-navy: #052049;
         --br-coral: #b85a32;
         --br-track: #e4e4e0;
@@ -166,9 +172,9 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        /* NO `gap`, and the sweep is NOT in this flow — see .br-sweep below.
-           The mark must be the ONLY in-flow child so that centring this column
-           centres the MARK, not the mark-plus-sweep stack. */
+        /* NO `gap`, and the sweep is NOT in this flow, see .br-sweep below. The
+           wordmark must be the ONLY in-flow child so that centring this column
+           centres the WORDMARK, not the wordmark-plus-sweep stack. */
         background: var(--br-bg);
         opacity: 1;
         transition: opacity 260ms cubic-bezier(0.2, 0, 0, 1);
@@ -179,77 +185,86 @@
 
       /* THEMES:GENERATED:SPLASH:START */
       html.dark #br-boot {
-        --br-bg: #232320;
+        --br-bg: #131312;
         --br-navy: #18a3ac;
         --br-coral: #b85a32;
         --br-track: #302f2c;
       }
       html[data-theme='alma-mater'] #br-boot {
-        --br-bg: #f4f4f2;
+        --br-bg: #ffffff;
         --br-navy: #052049;
-        --br-coral: #16a0ac;
+        --br-coral: #b85a32;
         --br-track: #e4e4e0;
       }
       html.dark[data-theme='alma-mater'] #br-boot {
-        --br-bg: #232320;
+        --br-bg: #131312;
         --br-navy: #18a3ac;
-        --br-coral: #16a0ac;
+        --br-coral: #b85a32;
         --br-track: #302f2c;
       }
       html[data-theme='roche-limit'] #br-boot {
-        --br-bg: #f4f4f2;
-        --br-navy: #1f1e1c;
-        --br-coral: #ee6c1a;
+        --br-bg: #ffffff;
+        --br-navy: #052049;
+        --br-coral: #b85a32;
         --br-track: #e4e4e0;
       }
       html.dark[data-theme='roche-limit'] #br-boot {
-        --br-bg: #232320;
-        --br-navy: #ededea;
-        --br-coral: #ee6c1a;
+        --br-bg: #131312;
+        --br-navy: #18a3ac;
+        --br-coral: #b85a32;
         --br-track: #302f2c;
       }
 /* THEMES:GENERATED:SPLASH:END */
 
-      #br-boot .br-mark { width: 84px; height: 84px; display: block; }
-      /* The mark is set in Inter (bundled @font-face in main.css), like the
-         rest of the brand — never the native UI stack. */
-      #br-boot .br-mark text {
+      /* The wordmark is drawn AT REST: no entrance, no stagger, no blur. A launch
+         surface appears whole (spec principle 9), and the only thing that moves
+         on this screen is the sweep below, a progress cue that stays inside
+         `transform`. The box is the viewBox's own ratio (486.55 x 149.05).
+
+         The `margin-top` centres the INK, not the box. The viewBox is padded
+         around the text's line box, which carries ascender room above the
+         capitals, so the lockup's ink (capital tops to the underline's bottom)
+         sits 4px BELOW the box centre. Measured in Chromium at 2x; -8px on the
+         only in-flow child lifts the box 4px, which puts the ink centre on the
+         window's centre. bootSplash.browser.test.ts holds it to 1px. */
+      #br-boot .br-wordmark { width: 160px; height: 49px; display: block; margin-top: -8px; }
+      /* Set in Inter (bundled @font-face in main.css), like the in-app wordmark
+         (`icons/brandFont.ts`), never the native UI stack. */
+      #br-boot .br-wordmark text {
         font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto,
           'Helvetica Neue', Arial, sans-serif;
-        font-weight: 800;
+        font-weight: 600;
+        letter-spacing: 0;
       }
       #br-boot .br-navy { fill: var(--br-navy); }
       #br-boot .br-coral { fill: var(--br-coral); }
-      #br-boot .br-part { opacity: 0; }
 
       /* The sweep is taken OUT OF THE FLEX FLOW on purpose, and anchored to the
-         viewport centre rather than to the mark.
+         viewport centre rather than to the wordmark.
 
-         It used to be a second in-flow child with `gap: 26px` on the container.
-         That made the centred column 84 + 26 + 2 = 112px tall, so the MARK's
-         centre sat 14px ABOVE the true viewport centre — while the very next
-         screen (ProviderGuard's `isChecking` loader, which shows the same mark
-         with no sweep) centres it exactly. Handing off jumped the logo down
-         ~14px. Measured, not guessed: mark ink centre y was 447.59 on the
-         splash vs 461.49 on the loader, in a 923px-tall viewport.
+         It used to be a second in-flow child with a `gap` on the container. That
+         made the centred column taller than its logo, so the logo sat ABOVE the
+         true viewport centre while the very next screen (ProviderGuard's
+         loader) centred exactly, and handing off jumped the logo down 14px.
+         Measured, not guessed: ink centre y was 447.59 on the splash against
+         461.49 on the loader, in a 923px-tall viewport.
 
-         Anchoring here keeps the sweep exactly where it was RELATIVE TO THE
-         MARK — 26px below an 84px mark, i.e. 42 + 26 = 68px below centre — but
-         it can no longer push the mark around. `#br-boot` is `position: fixed`,
-         so it is the containing block. Keep these numbers in sync with
-         `.br-mark`'s 84px and this rule's own 120px width. */
+         Anchoring here keeps the sweep a fixed distance BELOW the wordmark, but
+         it can no longer push the wordmark around. `#br-boot` is `position:
+         fixed`, so it is the containing block. Keep these numbers in sync with
+         `.br-wordmark`'s 49px height and -8px margin, and this rule's own
+         120px width. */
       #br-boot .br-sweep {
         position: absolute;
         top: 50%;
         left: 50%;
-        margin-top: 68px; /* half the 84px mark + the 26px gap */
+        margin-top: 42px; /* the ink's lower half (about 18px) + a 24px gap */
         margin-left: -60px; /* half of the 120px width */
         width: 120px;
         height: 2px;
         border-radius: 2px;
         background: var(--br-track);
         overflow: hidden;
-        opacity: 0;
       }
       #br-boot .br-sweep i {
         position: absolute;
@@ -258,11 +273,12 @@
         border-radius: 2px;
         background: linear-gradient(90deg, transparent, var(--br-navy), transparent);
         transform: translateX(-100%);
+        animation: br-boot-sweep 1150ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
       }
       @keyframes br-boot-sweep { to { transform: translateX(100%); } }
 
-      /* No visible text on this screen, so the only thing announcing the wait
-         is this line. Without it a slow boot is silent to a screen reader. */
+      /* The wordmark is `aria-hidden`, so this line is the only thing announcing
+         the wait. Without it a slow boot is silent to a screen reader. */
       #br-boot .br-sr {
         position: absolute;
         width: 1px;
@@ -276,30 +292,44 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        #br-boot .br-part { opacity: 1; }
-        #br-boot .br-sweep { opacity: 1; }
         #br-boot .br-sweep i { animation: none; }
+      }
+
+      /* Chromium does not force an SVG `fill` it was given as a colour, so under
+         forced colours the navy half of the wordmark keeps its authored ink on
+         whatever canvas the person chose (measured on the in-app wordmark at
+         about 1.3:1). `CanvasText` is the one ink their palette guarantees. This
+         mirrors main.css's "wordmark forced colours" rule, restated here because
+         this block cannot wait for the stylesheet. */
+      @media (forced-colors: active) {
+        #br-boot .br-navy,
+        #br-boot .br-coral { fill: CanvasText; }
       }
     </style>
   </head>
   <body>
     <!-- br-boot:start -->
     <div id="br-boot" hidden>
-      <span class="br-sr" role="status">Loading BioRouter…</span>
+      <span class="br-sr" role="status">Loading Biorouter…</span>
       <!--
-        The BR monogram, emitted as static geometry rather than measured at
-        runtime like BioRouterMark.tsx does. On the boot path there is no time
-        to wait for fonts before a getBBox() pass, and the numbers are
-        deterministic for Inter 800 anyway. To regenerate after a brand change,
-        render <BioRouterMark/> in a browser and copy the resulting viewBox and
-        child coordinates. Reveal order is left to right: B, R, then the two
-        halves of the underline.
+        The Biorouter wordmark (R-29: the text logo is the logo), emitted as
+        static geometry rather than measured at runtime like
+        icons/BioRouterWordmark.tsx does. On the boot path there is no time to
+        wait for fonts before a getBBox() pass, and the numbers are deterministic
+        for Inter 600 anyway. To regenerate after a brand change, render
+        <BioRouterWordmark/> in a browser at 160 by 49 (the component's own
+        measurement moves by a few hundredths with its rendered size, so measure
+        it at the size drawn here) and copy the resulting viewBox, the two rects
+        and the text's size and weight. The navy rect is the WHOLE bar and
+        the coral one is drawn over its right half, as in the component, so no
+        anti-aliased seam can show between two rects that meet at a fraction.
+        `aria-hidden`: the status line above names the wait once; the lockup
+        would only read it a second time.
       -->
-      <svg class="br-mark" viewBox="-24.5235 -110.806 165.672 165.672" role="img" aria-label="BioRouter">
-        <text class="br-part br-navy" x="0" y="0" font-size="100">B</text>
-        <text class="br-part br-coral" x="68.140625" y="0" font-size="74">R</text>
-        <rect class="br-part br-navy" x="0" y="23.36" width="66.640625" height="17.7"/>
-        <rect class="br-part br-coral" x="66.640625" y="23.36" width="49.984375" height="17.7"/>
+      <svg class="br-wordmark" viewBox="-7.21 -103.38 486.55 149.05" aria-hidden="true" focusable="false">
+        <text x="0" y="0" font-size="100"><tspan class="br-navy">Bio</tspan><tspan class="br-coral">Router</tspan></text>
+        <rect class="br-navy" x="92.03" y="26.44" width="124.85" height="12.02"/>
+        <rect class="br-coral" x="152.93" y="26.44" width="63.95" height="12.02"/>
       </svg>
       <div class="br-sweep"><i></i></div>
     </div>
@@ -310,94 +340,64 @@
          and runs this exact source, so it is the tested artefact. */
       (function () {
         var THRESHOLD_MS = 400; // below this, a boot is fast enough to show nothing
-        var DURATION_MS = 420;
-        var STAGGER_MS = 70;
-        var SLIDE_EM = 0.18;
-        var BLUR_PX = 2;
-        var EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
+        var FONT_WAIT_MS = 250; // the longest the first frame waits for the brand face
         var FADE_OUT_MS = 260;
-
-        // Inside an SVG a CSS length is a user-space unit, not a device pixel,
-        // so px and em have to be converted against the viewBox or the blur
-        // would scale with the mark and read wrong at every size.
-        var WORK = 100; // the B's font-size, i.e. 1em, in user units
-        var VIEWBOX_SIDE = 165.672;
-        var RENDERED_PX = 84;
+        // Dispatched on `window` once, when the splash is no longer on screen. The app reads it
+        // (`components/privacy/firstRunNoticeHandoff.ts` keeps the same spelling and
+        // boot-splash.test.ts pins the two together) so a dialog never opens under, or through,
+        // the fading wordmark (vision FR-R5-1).
+        var GONE_EVENT = 'br-boot-splash-gone';
 
         var el = document.getElementById('br-boot');
         if (!el) return;
 
         var showTimer = null;
         var removeTimer = null;
-        var anims = [];
         var shown = false;
         var finished = false;
+        var gone = false;
 
-        function prefersReducedMotion() {
-          return !!(
-            window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-          );
-        }
-
+        // The splash appears at REST (spec principle 9, vision FR-R1-7): the
+        // wordmark is drawn whole in the first frame, so there is nothing to
+        // animate from script. The one moving part, the sweep, is a CSS
+        // animation that starts when `hidden` comes off and stops with
+        // `prefers-reduced-motion`; it dies with the element, so teardown has
+        // nothing to cancel.
         function show() {
           if (finished || shown) return;
           shown = true;
           showTimer = null;
           el.hidden = false;
+        }
 
-          var parts = el.querySelectorAll('.br-part');
-          var sweep = el.querySelector('.br-sweep');
-          var bar = sweep ? sweep.querySelector('i') : null;
-
-          // No Web Animations (jsdom, or reduced motion): render settled.
-          if (prefersReducedMotion() || typeof el.animate !== 'function') {
-            for (var s = 0; s < parts.length; s++) parts[s].style.opacity = '1';
-            if (sweep) sweep.style.opacity = '1';
+        // Inter is `font-display: block` and is not requested until something
+        // paints with it, so a splash that came off `hidden` at once drew the
+        // bars of the lockup first and its letters a frame or more later
+        // (measured in Chromium: the face reads `unloaded` at the moment the
+        // splash is shown and `loaded` 10 to 20 ms after). Load it first, so
+        // the first frame is the whole logo. A face that is slow or missing
+        // never holds the splash past FONT_WAIT_MS, and no `document.fonts`
+        // (jsdom) shows it at once.
+        function showWhenFontReady() {
+          showTimer = null;
+          var fonts = document.fonts;
+          if (finished || !fonts || typeof fonts.load !== 'function') {
+            show();
             return;
           }
-
-          var unitsPerPx = VIEWBOX_SIDE / RENDERED_PX;
-          var slideU = SLIDE_EM * WORK;
-          var blurU = BLUR_PX * unitsPerPx;
-
-          for (var i = 0; i < parts.length; i++) {
-            anims.push(
-              parts[i].animate(
-                [
-                  {
-                    opacity: 0,
-                    transform: 'translateX(-' + slideU.toFixed(2) + 'px)',
-                    filter: 'blur(' + blurU.toFixed(2) + 'px)',
-                  },
-                  {
-                    opacity: 0.7,
-                    transform: 'translateX(-' + (slideU * 0.2222).toFixed(2) + 'px)',
-                    filter: 'blur(' + (blurU * 0.3).toFixed(2) + 'px)',
-                  },
-                  { opacity: 1, transform: 'translateX(0px)', filter: 'blur(0px)' },
-                ],
-                {
-                  duration: DURATION_MS,
-                  easing: EASE,
-                  delay: i * STAGGER_MS,
-                  fill: 'forwards',
-                }
-              )
-            );
+          var released = false;
+          function release() {
+            if (released) return;
+            released = true;
+            show();
           }
-
-          var settle = (parts.length - 1) * STAGGER_MS + DURATION_MS;
-          if (sweep) {
-            anims.push(
-              sweep.animate([{ opacity: 0 }, { opacity: 1 }], {
-                duration: 260,
-                easing: EASE,
-                delay: Math.max(0, settle - 160),
-                fill: 'forwards',
-              })
-            );
-            if (bar) bar.style.animation = 'br-boot-sweep 1150ms cubic-bezier(.4,0,.2,1) infinite';
+          try {
+            fonts.load('600 100px Inter', 'BioRouter').then(release, release);
+          } catch (e) {
+            release();
+            return;
           }
+          setTimeout(release, FONT_WAIT_MS);
         }
 
         function teardown() {
@@ -405,15 +405,14 @@
             clearTimeout(removeTimer);
             removeTimer = null;
           }
-          for (var i = 0; i < anims.length; i++) {
-            try {
-              anims[i].cancel();
-            } catch (e) {
-              /* already finished */
-            }
-          }
-          anims = [];
           if (el && el.parentNode) el.parentNode.removeChild(el);
+          if (gone) return;
+          gone = true;
+          try {
+            window.dispatchEvent(new Event(GONE_EVENT));
+          } catch (e) {
+            // No Event constructor: nothing was listening for it either. `isGone()` still answers.
+          }
         }
 
         // Called by renderer.tsx once React has actually mounted the app.
@@ -434,12 +433,18 @@
           el.addEventListener('transitionend', teardown, { once: true });
         }
 
-        showTimer = setTimeout(show, THRESHOLD_MS);
+        showTimer = setTimeout(showWhenFontReady, THRESHOLD_MS);
 
         window.__brBootSplash = {
           dismiss: dismiss,
           isShown: function () {
             return shown;
+          },
+          // True once the splash has left the screen: removed after its fade, or taken down
+          // before it was ever drawn. False from the first script run until then, so "not gone"
+          // covers the fade as well as the wait.
+          isGone: function () {
+            return gone;
           },
         };
       })();

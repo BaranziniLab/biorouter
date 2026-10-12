@@ -8,6 +8,7 @@ import type { TodoItem } from '../utils/sessionTodos';
 // had already drifted in shape before they could drift in behaviour.
 import { scriptedTodoExchange } from '../utils/scriptedTodoExchange.fixture';
 import { useSessionTodos } from '../hooks/useSessionTodos';
+import { summaryCopy } from './summary/copy';
 
 const mocks = vi.hoisted(() => ({ getSession: vi.fn(), headers: vi.fn() }));
 vi.mock('../api', () => ({ getSession: mocks.getSession }));
@@ -19,7 +20,6 @@ const items: TodoItem[] = [
   { id: '3', text: 'Present the comparison', status: 'pending' },
 ];
 const props = {
-  name: 'Clinic comparison',
   toolCalls: '6',
   billedTokens: '211k',
   artifacts: '1',
@@ -31,19 +31,105 @@ const props = {
 };
 
 describe('compact chat summary', () => {
-  it('does not flash a To Do section while an empty summary refreshes', () => {
+  it('does not flash a To do section while an empty summary refreshes', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, loading: true }} />);
-    expect(screen.queryByText(/To Do/)).not.toBeInTheDocument();
-  });
-  it('uses compact label/value typography and hides absent progress', () => {
-    render(<ChatSummary {...props} />);
-    expect(screen.getByText('6')).toHaveClass('text-sm');
-    expect(screen.getByText('Tool calls')).toHaveClass('text-xs');
-    expect(screen.getAllByRole('definition')).toHaveLength(4);
-    expect(screen.queryByRole('region', { name: 'To Do progress' })).not.toBeInTheDocument();
+    expect(screen.queryByText(summaryCopy.todo)).not.toBeInTheDocument();
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
-  it('labels a blocked step and indents an expanded one', () => {
+
+  it('draws the statistics as label and value rows, and hides absent progress', () => {
+    render(<ChatSummary {...props} />);
+    expect(screen.getByText('6')).toHaveClass('br-summary__stat-value');
+    expect(screen.getByText(summaryCopy.toolCalls).closest('dt')).toHaveClass(
+      'br-summary__stat-label'
+    );
+    expect(screen.getAllByRole('definition')).toHaveLength(4);
+    expect(screen.getByText('6').closest('dl')).toHaveAttribute(
+      'aria-label',
+      summaryCopy.statsLabel
+    );
+    expect(screen.queryByRole('region', { name: summaryCopy.todo })).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    // No "no tasks" sentence: the statistics simply come first.
+    expect(screen.queryByText(/no tasks|nothing to do/i)).not.toBeInTheDocument();
+  });
+
+  it('explains Tokens in hover help that a screen reader also hears', () => {
+    render(<ChatSummary {...props} />);
+    expect(screen.getByText(summaryCopy.tokens)).toBeInTheDocument();
+    const help = screen.getByRole('button', { name: `About ${summaryCopy.tokens}` });
+    expect(help).toHaveAccessibleDescription(summaryCopy.tokensHelp);
+    // The explanation is not a visible line of its own.
+    expect(screen.queryByText('Billed tokens')).not.toBeInTheDocument();
+  });
+
+  it('reads the code delta as words and draws it with a real minus sign', () => {
+    render(<ChatSummary {...props} codeDelta={{ added: 120, removed: 8 }} />);
+    expect(screen.getByText(summaryCopy.codeDelta(120, 8))).toHaveClass('sr-only');
+    expect(screen.getByText('−8')).toHaveClass('text-text-danger');
+    expect(screen.getByText('+120')).toHaveClass('text-text-success');
+  });
+
+  it('mutes a count that is not a change, so a chat that touched no code shows no red', () => {
+    const { rerender } = render(<ChatSummary {...props} codeDelta={{ added: 0, removed: 0 }} />);
+    expect(screen.getByText('+0')).toHaveClass('text-text-muted');
+    expect(screen.getByText('−0')).toHaveClass('text-text-muted');
+    rerender(<ChatSummary {...props} codeDelta={{ added: 0, removed: 4 }} />);
+    expect(screen.getByText('+0')).toHaveClass('text-text-muted');
+    expect(screen.getByText('−4')).toHaveClass('text-text-danger');
+  });
+
+  it('leaves a figure it does not know yet empty, in a row that keeps its place (V2-R5-5, V2-R5-6)', () => {
+    // The transcript is loading: every value is unknown.
+    const { rerender } = render(
+      <ChatSummary
+        {...props}
+        toolCalls={null}
+        billedTokens={null}
+        artifacts={null}
+        codeDelta={null}
+      />
+    );
+    const values = () => screen.getAllByRole('definition');
+    expect(values()).toHaveLength(4);
+    for (const value of values()) {
+      expect(value).toHaveClass('br-summary__stat-value');
+      expect(value).toBeEmptyDOMElement();
+    }
+    // The labels stay, so the card does not change shape when the figures land.
+    expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
+    expect(screen.getByText(summaryCopy.code)).toBeInTheDocument();
+    const dl = screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;
+    expect(dl).toHaveAttribute('aria-busy', 'true');
+    // No stand-in that the load would replace.
+    expect(screen.queryByText('N/A')).not.toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    expect(screen.queryByText('+0')).not.toBeInTheDocument();
+
+    // The transcript has landed; only the usage ledger is still to answer.
+    rerender(<ChatSummary {...props} billedTokens={null} />);
+    expect(screen.getByText('6')).toHaveClass('br-summary__stat-value');
+    const tokens = screen.getByText(summaryCopy.tokens).closest('dt')?.nextElementSibling;
+    expect(tokens).toBeEmptyDOMElement();
+    expect(dl).toHaveAttribute('aria-busy', 'true');
+
+    // The ledger answered: one value, and the list is no longer busy.
+    rerender(<ChatSummary {...props} />);
+    expect(screen.getByText('211k')).toHaveClass('br-summary__stat-value');
+    expect(dl).not.toHaveAttribute('aria-busy');
+  });
+
+  it('parts the statistics from the list or from the refresh error that stands in for it', () => {
+    const { rerender } = render(<ChatSummary {...props} />);
+    const dl = () => screen.getByText(summaryCopy.toolCalls).closest('dl') as HTMLElement;
+    expect(dl()).not.toHaveAttribute('data-after-todos');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, error: true }} />);
+    expect(dl()).toHaveAttribute('data-after-todos', '');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    expect(dl()).toHaveAttribute('data-after-todos', '');
+  });
+
+  it('labels a blocked step for assistive technology and indents an expanded one', () => {
     // A status the panel does not render is a task the user cannot see: the
     // list reader keeps unknown statuses, so every one the backend can persist
     // must have a label here.
@@ -59,25 +145,40 @@ describe('compact chat summary', () => {
         }}
       />
     );
-    const rows = within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem');
+    const rows = within(screen.getByRole('list', { name: summaryCopy.todoListLabel })).getAllByRole(
+      'listitem'
+    );
     expect(rows.map((row) => row.textContent)).toEqual([
-      'Do the actual workPending',
-      'Write itBlocked',
+      'Pending, Do the actual work',
+      'Blocked, Write it',
     ]);
-    expect(rows[0]).not.toHaveClass('pl-4');
-    expect(rows[1]).toHaveClass('pl-4');
+    // The word is read, not shown: status is told apart by the glyph's shape.
+    expect(within(rows[1]).getByText('Blocked,', { exact: false })).toHaveClass('sr-only');
+    expect(rows[0]).not.toHaveAttribute('data-nested');
+    expect(rows[1]).toHaveAttribute('data-nested');
+    expect(rows.map((row) => row.getAttribute('data-status'))).toEqual(['pending', 'blocked']);
   });
-  it('shows ordered, explicitly labelled steps and accessible progress', () => {
+
+  it('shows ordered, labelled steps and accessible progress', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '3');
-    const rows = within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem');
+    expect(screen.getByRole('progressbar')).toHaveAccessibleName(summaryCopy.todoProgressLabel);
+    const rows = within(screen.getByRole('list', { name: summaryCopy.todoListLabel })).getAllByRole(
+      'listitem'
+    );
     expect(rows.map((row) => row.textContent)).toEqual([
-      'Compare clinic optionsComplete',
-      'Verify arithmeticIn progress',
-      'Present the comparisonPending',
+      'Complete, Compare clinic options',
+      'In progress, Verify arithmetic',
+      'Pending, Present the comparison',
     ]);
+    // The visible count is "1 of 3"; the live region reads "1 of 3 complete".
+    expect(screen.getByText('1 of 3')).toHaveAttribute('aria-hidden', 'true');
+    const count = screen.getByText('1 of 3 complete');
+    expect(count).toHaveAttribute('aria-live', 'polite');
+    expect(count).toHaveClass('sr-only');
   });
+
   it('updates completion, reopening, renaming, replacement and clearing without stale rows', () => {
     const { rerender } = render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
     rerender(
@@ -102,20 +203,132 @@ describe('compact chat summary', () => {
     rerender(<ChatSummary {...props} />);
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
-  it('keeps the To Do list a list with a tab stop, marked as a focus region not a control', () => {
+
+  it('crossfades a glyph only when a status changes after the row first rendered', () => {
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    expect(container.querySelectorAll('.br-summary__glyph[data-changed]')).toHaveLength(0);
+    rerender(
+      <ChatSummary
+        {...props}
+        todos={{
+          ...props.todos,
+          items: items.map((item) => ({ ...item, status: 'completed' as const })),
+        }}
+      />
+    );
+    // Two rows changed status (the first was already complete).
+    expect(container.querySelectorAll('.br-summary__glyph[data-changed]')).toHaveLength(2);
+  });
+
+  it('enters rows added after the first snapshot, at most five at once, never the first ones', () => {
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    expect(container.querySelectorAll('.br-enter')).toHaveLength(0);
+    const added = Array.from({ length: 7 }, (_, i) => ({
+      id: `new-${i}`,
+      text: `Added ${i}`,
+      status: 'pending' as const,
+    }));
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items: [...items, ...added] }} />);
+    const entering = Array.from(container.querySelectorAll<HTMLElement>('.br-enter'));
+    expect(entering).toHaveLength(5);
+    expect(entering.map((row) => row.style.animationDelay)).toEqual([
+      '0ms',
+      '30ms',
+      '60ms',
+      '90ms',
+      '120ms',
+    ]);
+  });
+
+  it('keeps a new row’s entrance through the re-renders that follow it', () => {
+    // BaseChat re-renders on every streamed chunk, so the summary re-renders
+    // within milliseconds of a row arriving: the entrance must not be cut off
+    // (a row losing `.br-enter` mid-animation just pops to full opacity).
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    const added = Array.from({ length: 3 }, (_, i) => ({
+      id: `new-${i}`,
+      text: `Added ${i}`,
+      status: 'pending' as const,
+    }));
+    const next = { ...props.todos, items: [...items, ...added] };
+    rerender(<ChatSummary {...props} todos={next} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    const entering = Array.from(container.querySelectorAll<HTMLElement>('.br-enter'));
+    expect(entering.map((row) => row.dataset.todoId)).toEqual(['new-0', 'new-1', 'new-2']);
+    expect(entering.map((row) => row.style.animationDelay)).toEqual(['0ms', '30ms', '60ms']);
+  });
+
+  it('does not enter a row that was past the five-row cap when it arrived, on a later render', () => {
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    const added = Array.from({ length: 7 }, (_, i) => ({
+      id: `new-${i}`,
+      text: `Added ${i}`,
+      status: 'pending' as const,
+    }));
+    const next = { ...props.todos, items: [...items, ...added] };
+    rerender(<ChatSummary {...props} todos={next} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    const entering = Array.from(container.querySelectorAll<HTMLElement>('.br-enter'));
+    expect(entering.map((row) => row.dataset.todoId)).toEqual([
+      'new-0',
+      'new-1',
+      'new-2',
+      'new-3',
+      'new-4',
+    ]);
+  });
+
+  it('crossfades a glyph on every change, including a return to the status the row began with', () => {
+    const begin = [{ id: '1', text: 'Verify', status: 'pending' as const }];
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items: begin }} />
+    );
+    const glyph = () => container.querySelector('.br-summary__glyph');
+    expect(glyph()).not.toHaveAttribute('data-changed');
+    rerender(
+      <ChatSummary
+        {...props}
+        todos={{ ...props.todos, items: [{ ...begin[0], status: 'in_progress' }] }}
+      />
+    );
+    expect(glyph()).toHaveAttribute('data-changed');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items: begin }} />);
+    expect(glyph()).toHaveAttribute('data-changed');
+  });
+
+  it('draws the progress as the thin 4px bar', () => {
     render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
-    const list = screen.getByRole('list', { name: 'To Do tasks' });
+    expect(screen.getByRole('progressbar')).toHaveAttribute('data-size', 'thin');
+  });
+
+  it('scrolls its body, not the list, and keeps the list a list', () => {
+    const { container } = render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    const body = container.querySelector('[data-summary-body]');
     // The tab stop is what lets a keyboard user scroll it; the class is what
     // keeps D-15's focus fill off it (asserted at the source in
     // `styles/tabFocus.test.ts`, since jsdom never evaluates `:focus-visible`).
-    expect(list).toHaveAttribute('tabindex', '0');
-    expect(list).toHaveClass('biorouter-focus-region');
-    // No `role`: `role="region"` would orphan the rows' list semantics.
+    expect(body).toHaveAttribute('tabindex', '0');
+    expect(body).toHaveClass('br-summary__body', 'biorouter-focus-region');
+    expect(body).not.toHaveAttribute('role');
+    const list = screen.getByRole('list', { name: summaryCopy.todoListLabel });
+    expect(body).toContainElement(list);
+    // No `role` on the list either: `role="region"` would orphan the rows.
     expect(list).not.toHaveAttribute('role');
+    expect(list).not.toHaveAttribute('tabindex');
   });
+
   it('contains long lists, wraps labels and never executes task markup', () => {
     const text = '検証 🧬 <img src=x onerror=alert(1)> '.repeat(20);
-    render(
+    const { container } = render(
       <ChatSummary
         {...props}
         todos={{
@@ -129,23 +342,29 @@ describe('compact chat summary', () => {
       />
     );
     expect(screen.getAllByRole('listitem')).toHaveLength(200);
-    expect(screen.getByRole('list')).toHaveClass('max-h-60', 'overflow-y-auto');
+    expect(container.querySelector('[data-summary-body]')).toContainElement(
+      screen.getByRole('list')
+    );
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
   });
-  it('retains actions, loading feedback and recoverable refresh errors', () => {
+
+  it('retains actions, marks a refresh busy and offers a retry on a failed one', () => {
     const { rerender } = render(
       <ChatSummary {...props} todos={{ ...props.todos, items, loading: true }} />
     );
-    expect(screen.getByRole('status')).toHaveTextContent('Refreshing To Do');
-    fireEvent.click(screen.getByRole('button', { name: 'Make workflow' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Diagnostics' }));
+    expect(screen.getByRole('region', { name: summaryCopy.todo })).toHaveAttribute(
+      'aria-busy',
+      'true'
+    );
+    fireEvent.click(screen.getByRole('button', { name: summaryCopy.makeWorkflow }));
+    fireEvent.click(screen.getByRole('button', { name: summaryCopy.diagnostics }));
     expect(props.onWorkflow).toHaveBeenCalled();
     expect(props.onDiagnostics).toHaveBeenCalled();
     rerender(<ChatSummary {...props} hasWorkflow todos={{ ...props.todos, items, error: true }} />);
-    expect(screen.getByRole('alert')).toHaveTextContent('may be out of date');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(summaryCopy.todoRefreshFailed);
+    fireEvent.click(screen.getByRole('button', { name: summaryCopy.retry }));
     expect(props.todos.refresh).toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Workflow' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: summaryCopy.workflow })).toBeInTheDocument();
   });
 });
 
@@ -218,7 +437,7 @@ describe('the summary panel over persisted To Do state', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '1');
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '4');
     expect(
-      within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem')
+      within(screen.getByRole('list', { name: summaryCopy.todoListLabel })).getAllByRole('listitem')
     ).toHaveLength(4);
   });
 
@@ -228,7 +447,7 @@ describe('the summary panel over persisted To Do state', () => {
     // loaded session, only from a refresh.
     const { rerender } = render(<SummaryHarness session={undefined} messages={[]} />);
     await waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('region', { name: 'To Do progress' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: summaryCopy.todo })).not.toBeInTheDocument();
 
     // The agent now creates the list from a script. The only trace in the
     // transcript is the enclosing call's executed-sub-call meta.
@@ -248,7 +467,7 @@ describe('the summary panel over persisted To Do state', () => {
     await waitFor(() => expect(screen.getByText('1 of 4 complete')).toBeInTheDocument());
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '4');
     expect(
-      within(screen.getByRole('list', { name: 'To Do tasks' })).getAllByRole('listitem')
+      within(screen.getByRole('list', { name: summaryCopy.todoListLabel })).getAllByRole('listitem')
     ).toHaveLength(4);
   });
 
@@ -259,7 +478,7 @@ describe('the summary panel over persisted To Do state', () => {
     mocks.getSession.mockResolvedValue({ data: NO_TASK_SESSION });
     const { rerender } = render(<SummaryHarness session={undefined} messages={[]} />);
     await waitFor(() => expect(mocks.getSession).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('region', { name: 'To Do progress' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: summaryCopy.todo })).not.toBeInTheDocument();
 
     const direct = (id: string, name: string): Message[] =>
       [

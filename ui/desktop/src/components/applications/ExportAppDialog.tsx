@@ -1,22 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from '../icons/app-icons';
 import { Button } from '../ui/button';
-// V8 — the app's OWN checkbox, not `@radix-ui/themes`'. It is built exactly
-// like the `CustomRadio` it sits under (a `peer sr-only` input driving styled
-// siblings, 22px inside a 24px target), so the two controls in this dialog share
-// an optical axis and one theme. The Radix Themes control is a different design
-// system's box: it reads its own accent, not the family's, and nothing around it
-// can reach inside.
 import { Checkbox } from '../ui/Checkbox';
 import CustomRadio from '../ui/CustomRadio';
-import { MODAL_SIZE } from '../ModalShell';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
+import { InfoTip } from '../ui/info-tip';
+import { Note } from '../ui/note';
+import { ModalShell } from '../ModalShell';
 import {
   exportableExtensions,
   referencedKnowledgeBases,
@@ -28,6 +17,9 @@ import type {
   AppExportRequest,
   AppExportResult,
 } from '../../utils/appExportRequest';
+import { appsCopy } from './copy';
+
+const copy = appsCopy.exportDialog;
 
 interface ExportAppDialogProps {
   app: AppManifest;
@@ -42,71 +34,85 @@ interface ExportAppDialogProps {
 }
 
 /**
- * A compact labelled checkbox with a one-line explanation underneath.
- *
- * V2 — **no `min-h-*`**: `.biorouter-list-row` already carries
- * `min-height: var(--row-height)`, and the `min-h-10` this replaced was a
- * second spelling of the same 40px that could drift from the token.
- *
- * The 4px horizontal inset is deliberately NOT the settings row's `px-3`.
- * These rows sit directly under the `CustomRadio`s above them, which carry no
- * horizontal padding at all, so `px-3` would indent every checkbox past the
- * radio ring it is meant to line up with.
+ * One included item: the checkbox and its name, nothing else (spec 3.10: "the item rows are
+ * checkbox plus name"). What a group of items does on the other machine is said once, in the
+ * group's InfoTip, not repeated under every skill and every extension. The whole row is the
+ * label, so a click anywhere on it toggles the box (the app's `Checkbox` is an sr-only input
+ * whose square only toggles inside a `<label>`).
  */
-function IncludeCheckbox({
+function IncludeRow({
   id,
   checked,
   onChange,
-  label,
-  hint,
+  name,
   disabled,
 }: {
   id: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
-  label: string;
-  hint: string;
+  name: string;
   disabled?: boolean;
 }) {
   return (
-    <div className="biorouter-list-row flex items-start gap-2 rounded-none px-1 py-2">
+    <label htmlFor={id} className="flex min-h-8 min-w-0 cursor-pointer items-center gap-2">
       <Checkbox
         id={id}
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5"
       />
-      <label htmlFor={id} className="min-w-0 cursor-pointer">
-        <span className="block text-label text-text-default">{label}</span>
-        <span className="block text-supporting text-text-muted">{hint}</span>
-      </label>
+      <span className="min-w-0 truncate text-body text-text-default">{name}</span>
+    </label>
+  );
+}
+
+/** A group of included items under a caps section label with one InfoTip. */
+function IncludeGroup({
+  title,
+  info,
+  children,
+}: {
+  title: string;
+  info: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div role="group" aria-label={title} className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <span className="text-caps text-text-muted">{title}</span>
+        <InfoTip label={title} help={info} />
+      </div>
+      {children}
     </div>
   );
 }
 
-/** The dialog's three faces: the choice, the export running, and the harness's findings. */
-type Phase =
-  | { kind: 'choose' }
-  | { kind: 'running' }
-  | { kind: 'lint'; message: string; findings: string[]; request: AppExportRequest };
-
-/** How many findings are listed before "and N more". */
-const SHOWN_FINDINGS = 8;
+/**
+ * What the harness lint answered: its findings, and the request that exports anyway (the same
+ * choice, `allowLintErrors` set, and the folder the first attempt already picked).
+ */
+type LintAnswer = { message: string; findings: string[]; request: AppExportRequest };
 
 /**
- * The Applications-panel export dialog (Apps SDK v2, design §3.9): launcher vs
- * full export, with per-item payload toggles pre-checked from everything the
- * app references. Confirm runs the export through `onExport`; Cancel sends
- * nothing.
+ * The Built apps export dialog (Apps SDK v2, design §3.9): launcher or full export, with every
+ * item the app references pre-checked. Confirm runs the export through `onExport` and the dialog
+ * stays open, busy, until it answers; Cancel sends nothing.
  *
- * In full mode all three lists are sent, an unchecked item left out and an
- * empty list meaning "none": a list with nothing checked used to be dropped, and
- * the daemon read a missing list as "everything the app references", so a
- * knowledge base the person had unchecked shipped anyway.
+ * In full mode all three lists are sent, an unchecked item left out and an empty list meaning
+ * "none": a list with nothing checked used to be dropped, and the daemon read a missing list as
+ * "everything the app references", so a knowledge base the person had unchecked shipped anyway.
  *
- * When the harness lint blocks the export, the findings are shown here and the
- * person may export anyway. That is the only way `allowLintErrors` is ever set.
+ * When the harness lint blocks the export, the dialog turns to a second face that shows the
+ * findings and lets the person export anyway. That is the only way `allowLintErrors` is ever set.
+ * The face stays while "Export anyway" runs: it used to fall back to the first face, so the
+ * findings the person had just answered were swapped for the mode choice under the pointer.
+ *
+ * `ModalShell size="md"` (the forms rung), both faces with a scrolling body: a full export of an
+ * app that reaches four knowledge bases, a skill and an extension is taller than the body a
+ * 600px window leaves, and a body that does not scroll is clipped (the shell hides its overflow),
+ * so the last items and the "Include Biorouter" row could not be reached. Radio rows appear here
+ * because a dialog is the one place principle 5 allows them, each with one consequence line.
+ * "Credentials are never included." stays visible: a safety fact is never hidden behind help.
  */
 export default function ExportAppDialog({
   app,
@@ -129,14 +135,30 @@ export default function ExportAppDialog({
   const [selectedExtensions, setSelectedExtensions] = useState<ReadonlySet<string>>(
     () => new Set(extensions)
   );
-  const [phase, setPhase] = useState<Phase>({ kind: 'choose' });
-  const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  const [running, setRunning] = useState(false);
+  const [lint, setLint] = useState<LintAnswer | null>(null);
+  // ⚠ Set true IN the effect, not by the ref's initial value. React.StrictMode (renderer.tsx)
+  // runs every effect's cleanup once and then the effect again on mount in development: a ref
+  // that started true and was only ever cleared stayed false for the dialog's whole life, so
+  // `run` returned before `onClose` or the lint face, and the dialog sat on "Exporting…" after
+  // the export had finished. `ExportAppDialog.test.tsx` renders it under StrictMode for this.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    []
-  );
+    };
+  }, []);
+
+  // The findings take focus when they arrive. The button that asked turned disabled while the
+  // export ran, which drops focus to <body> in Chromium, so a keyboard or screen reader user would
+  // otherwise land nowhere, and hear nothing of what the check found. The list is named, so
+  // reaching it reads "Problems found" and its length (the non-private model disclosure's
+  // pattern: focus the words, not the button that acts on them).
+  const findingsRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (lint) findingsRef.current?.focus();
+  }, [lint]);
 
   const toggle = (set: ReadonlySet<string>, item: string, checked: boolean): Set<string> => {
     const next = new Set(set);
@@ -146,17 +168,17 @@ export default function ExportAppDialog({
   };
 
   const run = async (request: AppExportRequest) => {
-    setPhase({ kind: 'running' });
+    setRunning(true);
     let result: AppExportResult;
     try {
       result = await onExport(request);
     } catch {
-      result = { status: 'failed', message: 'Could not export the app.' };
+      result = { status: 'failed', message: appsCopy.couldNotExport };
     }
     if (!mounted.current) return;
+    setRunning(false);
     if (result.status === 'lint') {
-      setPhase({
-        kind: 'lint',
+      setLint({
         message: result.message,
         findings: result.findings,
         request: { ...request, allowLintErrors: true, retry: result.retry || undefined },
@@ -173,6 +195,7 @@ export default function ExportAppDialog({
       allowLintErrors: false,
       ...(mode === 'full'
         ? {
+            // ⚠ All three, always: `[]` means none, and a missing key means everything.
             include: {
               knowledge_bases: knowledgeBases.filter((kb) => selectedKbs.has(kb)),
               skills: skills.filter((s) => selectedSkills.has(s)),
@@ -183,101 +206,125 @@ export default function ExportAppDialog({
     });
   };
 
-  const running = phase.kind === 'running';
+  const handleOpenChange = (open: boolean) => {
+    if (!open) onClose();
+  };
+
+  if (lint) {
+    const findings = lint.findings.length > 0 ? lint.findings : [lint.message];
+    return (
+      <ModalShell
+        open
+        onOpenChange={handleOpenChange}
+        size="md"
+        purpose="form"
+        scrollBody
+        title={copy.lintTitle(app.title)}
+        // The consequence is the subtitle, visible at the moment of decision (principle 2); what
+        // to do about it is advice, so it waits behind the glyph.
+        titleInfo={<InfoTip label={copy.problemsFound} help={copy.lintHelp} />}
+        subtitle={copy.lintSubtitle}
+        footer={
+          <>
+            <Button variant="secondary" onClick={onClose}>
+              {copy.cancel}
+            </Button>
+            <Button onClick={() => void run(lint.request)} disabled={running}>
+              {running ? copy.exporting : copy.exportAnyway}
+            </Button>
+          </>
+        }
+      >
+        {/* One warning Note holds the list. Its own ceiling (eight lines, then "Show more")
+            replaces the hand-rolled "N more" that left the rest of the findings unreadable, and
+            the shell's body is the one scroller: no box scrolls inside the dialog. */}
+        <div className="py-4">
+          <Note tone="warning" icon={AlertTriangle} testId="export-lint-findings">
+            <ul
+              ref={findingsRef}
+              tabIndex={-1}
+              aria-label={copy.problemsFound}
+              className="flex flex-col gap-1 outline-none"
+            >
+              {findings.map((finding, index) => (
+                <li key={index} className="break-words">
+                  {finding}
+                </li>
+              ))}
+            </ul>
+          </Note>
+        </div>
+      </ModalShell>
+    );
+  }
 
   return (
-    <Dialog
+    <ModalShell
       open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
+      onOpenChange={handleOpenChange}
+      size="md"
+      purpose="form"
+      scrollBody
+      title={copy.title(app.title)}
+      subtitle={browser ? copy.browserSubtitle : copy.credentials}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            {copy.cancel}
+          </Button>
+          <Button onClick={confirm} disabled={running}>
+            {running ? copy.exporting : copy.export}
+          </Button>
+        </>
+      }
     >
-      {/* V8 — a dialog's width comes off the `MODAL_SIZE` ladder, never from a
-          Tailwind `max-w-*` fork. `md` is the forms rung, and this dialog is a
-          form: a mode choice plus a column of include toggles. The `sm:max-w-md`
-          it replaces was 448px, a fifteenth width nobody chose. */}
-      <DialogContent className={MODAL_SIZE.md}>
-        {phase.kind === 'lint' ? (
-          <>
-            <DialogHeader>
-              <DialogTitle>Export “{app.title}” anyway?</DialogTitle>
-              <DialogDescription>
-                The app check found problems that can keep the exported app from working. Fix them
-                in the chat that built it, or export it as it is.
-              </DialogDescription>
-            </DialogHeader>
-            <ul
-              aria-label="Problems found"
-              className="flex max-h-60 flex-col gap-1 overflow-y-auto border-y border-border-subtle py-2"
-            >
-              {(phase.findings.length > 0 ? phase.findings : [phase.message])
-                .slice(0, SHOWN_FINDINGS)
-                .map((finding, index) => (
-                  <li key={index} className="text-supporting text-text-default">
-                    {finding}
-                  </li>
-                ))}
-              {phase.findings.length > SHOWN_FINDINGS && (
-                <li className="text-supporting text-text-muted">
-                  and {phase.findings.length - SHOWN_FINDINGS} more
-                </li>
-              )}
-            </ul>
-            <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button onClick={() => void run(phase.request)}>Export anyway</Button>
-            </DialogFooter>
-          </>
-        ) : (
-          <>
-            <DialogHeader>
-              <DialogTitle>Export “{app.title}”</DialogTitle>
-              <DialogDescription>
-                {browser
-                  ? 'Downloads the app as a .zip of a folder that runs on another computer. '
-                  : 'Writes a folder that runs on another computer. '}
-                Credentials never travel. The recipient is prompted on first run.
-              </DialogDescription>
-            </DialogHeader>
+      <div className="flex flex-col gap-4 py-4">
+        <div role="radiogroup" aria-label={copy.mode} className="flex flex-col">
+          <CustomRadio
+            id="export-mode-launcher"
+            name="export-mode"
+            value="launcher"
+            checked={mode === 'launcher'}
+            disabled={running}
+            onChange={() => setMode('launcher')}
+            label={copy.launcher}
+            secondaryLabel={copy.launcherHint}
+          />
+          <CustomRadio
+            id="export-mode-full"
+            name="export-mode"
+            value="full"
+            checked={mode === 'full'}
+            disabled={running}
+            onChange={() => setMode('full')}
+            label={copy.full}
+            secondaryLabel={copy.fullHint}
+          />
+        </div>
 
-            <div role="radiogroup" aria-label="Export mode" className="flex flex-col">
-              <CustomRadio
-                id="export-mode-launcher"
-                name="export-mode"
-                value="launcher"
-                checked={mode === 'launcher'}
-                onChange={() => setMode('launcher')}
-                label="Launcher (app + scripts)"
-                secondaryLabel="Smallest folder. Uses the knowledge bases, skills, and extensions already on the target machine."
-              />
-              <CustomRadio
-                id="export-mode-full"
-                name="export-mode"
-                value="full"
-                checked={mode === 'full'}
-                onChange={() => setMode('full')}
-                label="Full (bundle server-side content)"
-                secondaryLabel="Carries the items below so a fresh machine can run the app."
-              />
-            </div>
-
-            {mode === 'full' && (
-              <div className="flex flex-col border-y border-border-subtle">
+        {mode === 'full' && (
+          <div className="flex flex-col gap-3">
+            {knowledgeBases.length > 0 && (
+              <IncludeGroup
+                title={knowledgeBases.length > 1 ? copy.knowledgeBases : copy.knowledgeBase}
+                info={copy.knowledgeBaseInfo}
+              >
                 {knowledgeBases.map((kb) => (
-                  <IncludeCheckbox
+                  <IncludeRow
                     key={kb}
                     id={`export-include-kb-${kb}`}
                     checked={selectedKbs.has(kb)}
                     disabled={running}
                     onChange={(checked) => setSelectedKbs((prev) => toggle(prev, kb, checked))}
-                    label={`Knowledge base: ${kb}`}
-                    hint="Bundled as a .brkb with its sources. A private base is included only when you could open it."
+                    name={kb}
                   />
                 ))}
+              </IncludeGroup>
+            )}
+            {skills.length > 0 && (
+              <IncludeGroup title={copy.skills} info={copy.skillsInfo}>
                 {skills.map((skill) => (
-                  <IncludeCheckbox
+                  <IncludeRow
                     key={skill}
                     id={`export-include-skill-${skill}`}
                     checked={selectedSkills.has(skill)}
@@ -285,12 +332,15 @@ export default function ExportAppDialog({
                     onChange={(checked) =>
                       setSelectedSkills((prev) => toggle(prev, skill, checked))
                     }
-                    label={`Skill: ${skill}`}
-                    hint="Staged in the export and installed into the recipient's skills on first run."
+                    name={skill}
                   />
                 ))}
+              </IncludeGroup>
+            )}
+            {extensions.length > 0 && (
+              <IncludeGroup title={copy.extensions} info={copy.extensionsInfo}>
                 {extensions.map((ext) => (
-                  <IncludeCheckbox
+                  <IncludeRow
                     key={ext}
                     id={`export-include-extension-${ext}`}
                     checked={selectedExtensions.has(ext)}
@@ -298,42 +348,32 @@ export default function ExportAppDialog({
                     onChange={(checked) =>
                       setSelectedExtensions((prev) => toggle(prev, ext, checked))
                     }
-                    label={`Extension: ${ext}`}
-                    hint="Recorded in export.json for the recipient to install from the marketplace."
+                    name={ext}
                   />
                 ))}
-                {knowledgeBases.length === 0 && skills.length === 0 && extensions.length === 0 && (
-                  <p className="py-2 text-supporting text-text-muted">
-                    This app references no knowledge bases, skills, or extensions.
-                  </p>
-                )}
-                {!browser && (
-                  <IncludeCheckbox
-                    id="export-bundle-daemon"
-                    checked={bundleDaemon}
-                    disabled={running}
-                    onChange={setBundleDaemon}
-                    label="Bundle daemon binary (~110 MB)"
-                    hint="Runs on a computer like this one with no Biorouter installed."
-                  />
-                )}
-                <p className="text-supporting text-text-muted mt-1">
-                  Full exports can be large. A bundled knowledge base carries its sources.
-                </p>
+              </IncludeGroup>
+            )}
+            {/* An empty-store line: the in-place prose block, as Settings' are. */}
+            {knowledgeBases.length === 0 && skills.length === 0 && extensions.length === 0 && (
+              <Note testId="export-nothing-to-include">{copy.nothingToInclude}</Note>
+            )}
+            {/* Not offered in a browser: the daemon there was built for the server, not for
+                whoever downloads the zip. */}
+            {!browser && (
+              <div className="flex items-center gap-1">
+                <IncludeRow
+                  id="export-bundle-daemon"
+                  checked={bundleDaemon}
+                  disabled={running}
+                  onChange={setBundleDaemon}
+                  name={copy.includeBiorouter}
+                />
+                <InfoTip label={copy.includeBiorouter} help={copy.includeBiorouterInfo} />
               </div>
             )}
-
-            <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button onClick={confirm} disabled={running} aria-busy={running || undefined}>
-                {running ? 'Exporting…' : 'Export'}
-              </Button>
-            </DialogFooter>
-          </>
+          </div>
         )}
-      </DialogContent>
-    </Dialog>
+      </div>
+    </ModalShell>
   );
 }

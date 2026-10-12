@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ProviderGuard from './ProviderGuard';
 import { BROWSER_SURFACE_MARKER } from '../utils/surface';
+import { firstRunCopy } from './onboarding/copy';
 
 /**
  * SD-1's dead end: a fresh browser user lands in onboarding, which is exactly
@@ -83,6 +84,17 @@ describe('ProviderGuard on a browser-served surface', () => {
       expect(screen.queryByText(marker)).toBeNull();
     }
     expect(screen.queryByTestId('onboarding-skip-header')).toBeNull();
+  });
+
+  // FR-S-13: the panel carries the reason, so the band above it says nothing of its own beyond
+  // its title: the sentence that used to sit under the old header said the same thing twice.
+  it('heads the panel with the band alone, with no second sentence above it', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    renderGuard();
+    await screen.findByTestId('host-managed-model-panel');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(firstRunCopy.hostTitle);
+    expect(screen.queryByText(/is being served to this browser/)).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
   });
 
   /**

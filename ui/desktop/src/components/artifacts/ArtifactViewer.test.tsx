@@ -1,13 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import MarkdownContent from '../MarkdownContent';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
 import { artifactSourceFromResource, PAPER_GUTTER_EM, titleFromResourceUri } from './artifactUtils';
 import {
   onArtifactAnnotation,
@@ -25,6 +26,17 @@ vi.mock('utif2', () => ({
   decodeImage: decodeTiffImage,
   toRGBA8: tiffToRgba,
 }));
+
+/**
+ * "Send a region to the chat" is an item in the header's More actions menu
+ * (spec 3.8), except where the menu would hold nothing else (a figure, a report,
+ * a page), where it stands in the header as an icon.
+ */
+async function startAnnotating() {
+  const more = screen.queryByRole('button', { name: PREVIEW_COPY.moreActions });
+  if (more) await userEvent.click(more);
+  await userEvent.click(await screen.findByTestId('artifact-annotate'));
+}
 
 /** The `rgb(r, g, b)` spelling jsdom reports for an inline `#rrggbb` colour. */
 function hexToRgb(hex: string) {
@@ -170,7 +182,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('External page')).toBeInTheDocument();
+    expect(await screen.findByTestId('artifact-external-page')).toBeInTheDocument();
     expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
     // Nothing has loaded: arriving at a URL artifact must never start a page.
     expect(screen.queryByTestId('embedded-browser-slot')).not.toBeInTheDocument();
@@ -201,13 +213,14 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Loading')).toBeInTheDocument();
-    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    // The first load is the quiet skeleton, not a word (spec 3.8).
+    await waitFor(() => expect(document.querySelector('[data-preview-loading]')).not.toBeNull());
+    expect(screen.queryByTestId('artifact-external-page')).not.toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
 
     await act(async () => approve(true));
     expect(await screen.findByTestId('embedded-browser-slot')).toBeInTheDocument();
-    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('artifact-external-page')).not.toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).toHaveBeenCalledWith(
       expect.any(String),
       'http://127.0.0.1:64005/apps/queue-workbench/',
@@ -235,7 +248,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('External page')).toBeInTheDocument();
+    expect(await screen.findByTestId('artifact-external-page')).toBeInTheDocument();
     expect(screen.getByTestId('artifact-open-here')).toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
   });
@@ -262,7 +275,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await screen.findByText('External page');
+    await screen.findByTestId('artifact-external-page');
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId('artifact-open-here'));
@@ -383,7 +396,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
     await waitFor(() => expect(window.electron.embeddedBrowser.create).toHaveBeenCalled());
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     expect(
       await screen.findByAltText('Snapshot of the live page for region selection')
     ).toBeInTheDocument();
@@ -418,7 +431,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     await screen.findByAltText('Snapshot of the live page for region selection');
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
@@ -461,7 +474,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
 
     await waitFor(() =>
       expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/browser-capture.png')
@@ -496,7 +509,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
     fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
@@ -538,7 +551,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const body = screen.queryByTestId('artifact-preview-content');
     expect(body).not.toBeNull();
     vi.spyOn(body as HTMLElement, 'getBoundingClientRect').mockReturnValue({
@@ -644,7 +657,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
     fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
@@ -653,7 +666,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await waitFor(() => expect(window.electron.captureRegion).toHaveBeenCalled());
 
     rerender(renderViewer({ kind: 'file', title: 'other.png', path: '/tmp/other.png' }));
-    await waitFor(() => expect(screen.getByText('other.png')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'other.png' })).toBeInTheDocument());
     resolveCapture({ path: '/tmp/stale-region.png', width: 200, height: 120 });
 
     await waitFor(() =>
@@ -879,7 +892,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalledWith(path));
       fireEvent.click(screen.getByRole('button', { name: 'Line' }));
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Raw' })).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByRole('radio', { name: 'Raw' })).toHaveAttribute('aria-checked', 'true');
         expect(
           container.querySelector('[data-source-line="2"][aria-current="location"]')
         ).toHaveTextContent('second_sentinel');
@@ -973,9 +986,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         "This file was moved, renamed, or deleted, so it can't be previewed anymore."
       )
     ).toBeInTheDocument();
-    expect(
-      screen.getByText('/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png')
-    ).toBeInTheDocument();
+    // The path is a machine string (principle 10): it is the title's tooltip,
+    // and the bar above already names the file.
+    expect(screen.getByText('File not available')).toHaveAttribute(
+      'title',
+      '/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png'
+    );
     expect(screen.queryByText(/ENOENT/)).not.toBeInTheDocument();
   });
 
@@ -1218,6 +1234,92 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(screen.getByRole('treeitem', { name: 'report.md' })).toBeVisible();
   });
 
+  it('draws each tab with the glyph of what it holds: a repository, a folder, code, prose (V2-R3-3)', async () => {
+    installElectronMock();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    const entry = (name: string) => ({
+      name,
+      path: `/work/repo/${name}`,
+      relativePath: name,
+      parentPath: '',
+      isDirectory: false,
+      status: 'pushed',
+    });
+    readFile.mockImplementation(async (path: string) => {
+      if (path === '/work/repo') {
+        return {
+          kind: 'gitDirectory',
+          title: 'repo',
+          path,
+          branch: 'main',
+          entries: [entry('lib.rs'), entry('Cargo.toml'), entry('notes.md')],
+          found: true,
+        };
+      }
+      if (path === '/work/results') {
+        return { kind: 'directory', title: 'results', path, entries: [], found: true };
+      }
+      const name = path.split('/').pop() ?? path;
+      return {
+        kind: 'text',
+        title: name,
+        path,
+        mimeType: 'text/plain',
+        text: 'x',
+        size: 1,
+        found: true,
+      };
+    });
+
+    function Harness() {
+      const [artifact, setArtifact] = useState<ArtifactSource>({
+        kind: 'file' as const,
+        title: 'repo',
+        path: '/work/repo',
+      });
+      return (
+        <ThemeProvider>
+          <button
+            type="button"
+            onClick={() => setArtifact({ kind: 'file', title: 'results', path: '/work/results' })}
+          >
+            open results
+          </button>
+          <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={setArtifact} />
+        </ThemeProvider>
+      );
+    }
+
+    const glyphOf = (name: string) =>
+      screen.getByRole('tab', { name }).querySelector('svg')?.getAttribute('class') ?? '';
+
+    render(<Harness />);
+    expect(await screen.findByRole('tree', { name: 'repo repository files' })).toBeVisible();
+    // Before any entry is opened, a git directory is a repository, whatever its name.
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+
+    for (const name of ['lib.rs', 'Cargo.toml', 'notes.md']) {
+      // The tree belongs to the repository's tab; a file's tab shows the file.
+      await userEvent.click(screen.getByRole('tab', { name: 'repo' }));
+      await userEvent.dblClick(screen.getByRole('treeitem', { name: new RegExp(`^${name}`) }));
+      expect(await screen.findByRole('tab', { name })).toHaveAttribute('aria-selected', 'true');
+    }
+    // `.rs` and `.toml` are both code to the code view, so both are code here.
+    expect(glyphOf('lib.rs')).toContain('lucide-code');
+    expect(glyphOf('Cargo.toml')).toContain('lucide-code');
+    expect(glyphOf('notes.md')).toContain('lucide-file-text');
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+
+    await userEvent.click(screen.getByRole('button', { name: 'open results' }));
+    expect(await screen.findByRole('tab', { name: 'results' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    // A plain folder: the folder glyph, once the folder has loaded.
+    await waitFor(() => expect(glyphOf('results')).toContain('lucide-folder'));
+    expect(glyphOf('repo')).toContain('lucide-git-branch');
+  });
+
   it('renders a written markdown report as prose, with the raw text one click away', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -1245,10 +1347,14 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       expect(screen.getByRole('heading', { name: 'Findings' })).toBeInTheDocument();
     });
     expect(screen.getByText('FDR < 0.05').tagName).toBe('STRONG');
+    // No front matter, so the body's `# Findings` is the document's title.
+    expect(document.querySelector('.br-paper-doc > .br-paper-prose')).not.toHaveAttribute(
+      'data-demote-h1'
+    );
 
     // Raw shows the markdown source itself. The syntax highlighter splits it
     // across token spans, so assert on the rendered text as a whole.
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Findings' })).not.toBeInTheDocument();
     });
@@ -1328,22 +1434,23 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(firstRow.firstElementChild).toHaveTextContent('1');
     expect(firstRow.lastElementChild).toHaveClass('br-paper-fill');
     expect(screen.getAllByRole('row')[0].lastElementChild).toHaveClass('br-paper-fill');
-    // The strip states the table's shape, with a noun, instead of a line count.
-    expect(screen.getByText('2 rows · 3 columns')).toBeInTheDocument();
-    // The header's filler carries the overflow hint through the opaque sticky
-    // header row (main.css, `.br-paper-fill-hint`).
-    expect(
-      screen.getAllByRole('row')[0].lastElementChild!.querySelector('.br-paper-fill-hint')
-    ).not.toBeNull();
+    // The bar states the table's row count, with a noun, instead of a line count.
+    expect(screen.getByTestId('artifact-strip-count')).toHaveTextContent(/^2 rows$/);
+    // The right-edge fade is drawn by every row's own filler (main.css), so the
+    // cell carries nothing of its own: no hint element left over from the older
+    // header-only workaround.
+    expect(screen.getAllByRole('row')[0].lastElementChild).toBeEmptyDOMElement();
+    expect(firstRow.lastElementChild).toBeEmptyDOMElement();
   });
 
   // A `shrink-0` count ("70 rows · 11 columns") kept its full width in a
   // narrow panel: it squeezed the file name to nothing and then pushed Table /
   // Raw past the panel's edge, where neither could be clicked. The count is
-  // now the first thing to give way (main.css, `.br-paper-strip-count`, whose
-  // geometry artifactPaper.test.ts pins); the controls still never shrink.
+  // now the first thing to give way (main.css, `.br-paper-strip-count`, and the
+  // bar's meta slot in preview-panel.css, both pinned by artifactPaper.test.ts);
+  // the controls' slot never shrinks.
   it.each([
-    ['a table', false, '2 rows · 1 column'],
+    ['a table', false, '2 rows'],
     ['the raw view', true, '3 lines'],
   ])('lets the strip count yield before the controls in %s', async (_view, raw, count) => {
     installElectronMock();
@@ -1366,17 +1473,20 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
     const strip = await screen.findByTestId('artifact-status-strip');
-    if (raw) fireEvent.click(within(strip).getByRole('button', { name: 'Raw' }));
+    if (raw) fireEvent.click(within(strip).getByRole('radio', { name: 'Raw' }));
     const counter = await within(strip).findByTestId('artifact-strip-count');
     expect(counter).toHaveTextContent(count);
     expect(counter).toHaveClass('br-paper-strip-count');
     expect(counter).not.toHaveClass('shrink-0');
-    // The controls' group is what never shrinks.
-    const controls = within(strip).getByRole('button', { name: 'Raw' }).closest('.ml-auto');
-    expect(controls).toHaveClass('shrink-0');
+    // The controls' slot is what never shrinks (`flex: none`, preview-panel.css).
+    const controls = within(strip)
+      .getByRole('radio', { name: 'Raw' })
+      .closest('.br-preview-bar__actions');
+    expect(controls).not.toBeNull();
+    expect(counter.closest('.br-preview-bar__meta')).not.toBeNull();
   });
 
-  it('states a table shape as rows and columns, singular and plural', async () => {
+  it('states a table as its row count, singular and plural, with the name first', async () => {
     installElectronMock();
     const header = Array.from({ length: 11 }, (_, i) => `col${i + 1}`).join(',');
     const body = Array.from({ length: 70 }, (_, r) =>
@@ -1403,8 +1513,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
     const strip = await screen.findByTestId('artifact-status-strip');
-    await waitFor(() => expect(strip).toHaveTextContent('70 rows · 11 columns'));
-    expect(strip).toHaveTextContent(/^CSV/);
+    await waitFor(() =>
+      expect(within(strip).getByTestId('artifact-strip-count')).toHaveTextContent(/^70 rows$/)
+    );
+    // The bar leads with the file's name; no language label (spec 3.8).
+    expect(strip).toHaveTextContent(/^deseq-results\.csv/);
     unmount();
 
     read.mockResolvedValue({
@@ -1425,7 +1538,39 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByText('1 row · 1 column')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('artifact-strip-count')).toHaveTextContent(/^1 row$/)
+    );
+  });
+
+  // Past the cap the bar says how many rows show out of how many, and the
+  // sentence about the cap is that count's InfoTip, not a line of its own.
+  it('states a capped table as N of M rows, with the cap explained in an InfoTip', async () => {
+    installElectronMock();
+    const body = Array.from({ length: 620 }, (_, r) => `GENE${r},${r}`).join('\n');
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'text',
+      title: 'big.csv',
+      path: '/w/big.csv',
+      mimeType: 'text/csv',
+      text: `gene,count\n${body}\n`,
+      size: 8000,
+      found: true,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'big.csv', path: '/w/big.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    const count = await screen.findByTestId('artifact-strip-count');
+    await waitFor(() => expect(count).toHaveTextContent(PREVIEW_COPY.rowsShown(500, 620)));
+    expect(
+      screen.getByRole('button', { name: `About ${PREVIEW_COPY.rowsShown(500, 620)}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.rowsCapHint(120));
   });
 
   // Prism's bundled `csv` grammar has two token kinds, so a raw results table
@@ -1453,8 +1598,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
     );
@@ -1473,7 +1618,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         false
       );
     }
-    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^CSV/);
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^deseq\.csv/);
   });
 
   it('highlights a raw TSV, which Prism has no grammar for', async () => {
@@ -1496,12 +1641,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
     );
-    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^TSV/);
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^sample-sheet\.tsv/);
   });
 
   // R Markdown opens with YAML front matter and ```{r setup} chunks. Unhandled,
@@ -1543,6 +1688,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     const disclosure = screen.getByText('Front matter').closest('details');
     expect(disclosure).not.toBeNull();
     expect(disclosure!.open).toBe(false);
+    // The title is the front matter's, so the body's first `# H1` takes the h2
+    // step rather than reading as a second title (spec 2.1).
+    expect(container.querySelector('.br-paper-doc > .br-paper-prose')).toHaveAttribute(
+      'data-demote-h1'
+    );
     const chunk = container.querySelector('.br-paper-doc > .br-paper-prose .biorouter-md-code');
     expect(chunk).not.toBeNull();
     expect(chunk!.querySelector('.token')).not.toBeNull();
@@ -1646,16 +1796,16 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     // Like markdown, an HTML file offers both a rendered Preview and the raw source.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: 'Preview' })).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument();
 
     // Preview by default: rendered inside a sandboxed iframe.
     const frame = screen.getByTestId('artifact-viewer').querySelector('iframe');
     expect(frame).toHaveAttribute('sandbox');
 
     // Raw shows the HTML source itself.
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() => {
       expect(screen.getByTestId('artifact-viewer').textContent).toContain('Volcano');
     });
@@ -1675,10 +1825,10 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => expect(screen.getByText(/select/)).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: 'Raw' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Raw' })).not.toBeInTheDocument();
   });
 
-  it('labels a script with its language, line count and a copy action', async () => {
+  it('names a script in the bar with its line count and a copy action', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
       kind: 'text',
@@ -1700,22 +1850,56 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await waitFor(() => expect(screen.getByText('R')).toBeInTheDocument());
     // The file has two lines; its trailing newline must not add a phantom third.
-    expect(screen.getByText('2 lines')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('2 lines')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: PREVIEW_COPY.copy })).toBeInTheDocument();
     // Highlighted, not dumped as one blob of plain text.
     expect(
       screen.getByTestId('artifact-viewer').querySelectorAll('span.token').length
     ).toBeGreaterThan(0);
 
-    // One status strip carries the language, the path (dir dimmed, filename not)
-    // and the toggle — there is no second per-preview sub-header.
+    // One bar carries the name (the full path is its tooltip, never the row),
+    // the count and the controls. No language label, no second sub-header.
     const strip = screen.getByTestId('artifact-status-strip');
-    expect(strip).toHaveTextContent('R');
-    expect(strip).toHaveTextContent('/work/');
-    expect(strip).toHaveTextContent('analysis.R');
-    expect(strip.querySelector('[title="/work/analysis.R"]')).toBeInTheDocument();
+    expect(strip).toHaveTextContent(/^analysis\.R2 lines$/);
+    expect(strip).not.toHaveTextContent('/work/');
+    expect(strip.querySelector('[title="/work/analysis.R"]')).toHaveTextContent('analysis.R');
+    expect(screen.getAllByTestId('artifact-status-strip')).toHaveLength(1);
+    // Text sits on the reading column, so the name starts on its left edge.
+    expect(strip).toHaveClass('br-preview-measure-strip');
+  });
+
+  // An image uses the panel's width, so its bar keeps to the gutter rather than
+  // the reading column; the bar states its pixel size and file size.
+  it('keeps an image bar on the gutter and states its size', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'image',
+      title: 'figure.png',
+      path: '/tmp/figure.png',
+      mimeType: 'image/png',
+      size: 2048,
+      found: true,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'figure.png', path: '/tmp/figure.png' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
+    const strip = screen.getByTestId('artifact-status-strip');
+    expect(strip).toHaveClass('br-preview-bar--gutter');
+    expect(strip).not.toHaveClass('br-preview-measure-strip');
+    expect(within(strip).getByTestId('artifact-strip-count')).toHaveTextContent('2.0 KB');
+    expect(within(strip).getByRole('radio', { name: PREVIEW_COPY.fit })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
   });
 
   it('sits the preview directly on the panel ground: panel → strip → content', async () => {
@@ -1816,8 +2000,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
 
     await waitFor(() => expect(container.querySelector('code')).toBeTruthy());
     expect(container.querySelectorAll('code .token.table').length).toBeGreaterThan(0);
@@ -1868,7 +2052,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'Findings' })).toBeInTheDocument()
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Findings' })).not.toBeInTheDocument()
     );
@@ -1885,7 +2069,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('radio', { name: 'Table' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('reports visualization render errors from the preview frame once', async () => {
@@ -1959,15 +2143,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /open active artifact outside preview/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: PREVIEW_COPY.openExternally })).toBeInTheDocument();
     });
 
     const viewer = screen.getByTestId('artifact-viewer');
-    const expandButton = screen.getByRole('button', {
-      name: /open active artifact outside preview/i,
-    });
+    const expandButton = screen.getByRole('button', { name: PREVIEW_COPY.openExternally });
     const closeButton = screen.getByRole('button', { name: /close preview panel/i });
     expect(viewer).toHaveClass('no-drag');
     expect(expandButton).toHaveClass('no-drag');
@@ -2030,8 +2210,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       'overflow-hidden'
     );
     // Tabs are painted by the shared `br-tab` class (styles/main.css), not by
-    // per-tab utilities: sizing, the active pill and the Safari divider all live
-    // there, so the panel can never drift from the sidebar's tabs.
+    // per-tab utilities: sizing, the hover and selected fills and the accent strip
+    // all live there, so the panel can never drift from the chat strip's tabs.
     const chartChip = chartTab.closest('[data-artifact-tab-id]');
     const summaryChip = summaryTab.closest('[data-artifact-tab-id]');
     expect(chartChip).toHaveClass('br-tab');
@@ -2058,7 +2238,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
     expect(onClose).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: /open active artifact outside preview/i }));
+    await user.click(screen.getByRole('button', { name: PREVIEW_COPY.openExternally }));
     expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(
       '/work/reports/summary.md'
     );
@@ -2330,21 +2510,82 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     expect(await screen.findByRole('tree', { name: 'repository repository files' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /up to parent|back to containing/i })).toBeNull();
-    expect(screen.getByRole('treeitem', { name: 'staged.ts' })).toHaveAttribute(
+    // The status is said once: a dot, with the word in the row's name and its
+    // tooltip. No coloured name and no legend (spec 3.8).
+    expect(screen.getByRole('treeitem', { name: 'staged.ts, Staged' })).toHaveAttribute(
       'title',
       'src/staged.ts · Staged'
     );
+    // The branch is the bar's meta, the one machine string it shows.
+    expect(screen.getByTestId('artifact-directory-branch')).toHaveTextContent('feat/preview');
 
-    await user.click(screen.getByRole('treeitem', { name: 'staged.ts' }));
+    await user.click(screen.getByRole('treeitem', { name: 'staged.ts, Staged' }));
     expect(await screen.findByText('export')).toBeInTheDocument();
+    // The selected file has its own bar beside the rail; the panel's bar keeps
+    // the folder's name and branch.
+    const bars = screen.getAllByTestId('artifact-status-strip');
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveTextContent(/^repository/);
+    expect(bars[1]).toHaveTextContent(/^staged\.ts1 line/);
     expect(
-      screen.getByRole('treeitem', { name: /staged\.ts, currently viewing/i })
+      screen.getByRole('treeitem', {
+        name: `staged.ts, Staged, ${PREVIEW_COPY.currentlyViewing}`,
+      })
     ).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('tree', { name: 'repository repository files' })).toBeVisible();
 
-    await user.type(screen.getByRole('searchbox', { name: 'Filter repository files' }), 'readme');
-    expect(screen.getByRole('treeitem', { name: 'README.md' })).toBeVisible();
-    expect(screen.queryByRole('treeitem', { name: 'staged.ts' })).toBeNull();
+    await user.type(
+      screen.getByRole('searchbox', { name: PREVIEW_COPY.filterRepository }),
+      'readme'
+    );
+    expect(screen.getByRole('treeitem', { name: 'README.md, Pushed' })).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: /^staged\.ts/ })).toBeNull();
+  });
+
+  it('draws no GitHub mark for a git folder with nothing selected (V2-R2-7)', async () => {
+    installElectronMock();
+    const readFile = window.electron.readArtifactFile as ReturnType<typeof vi.fn>;
+    const entries = [
+      {
+        name: 'README.md',
+        path: '/work/repository/README.md',
+        relativePath: 'README.md',
+        parentPath: '',
+        isDirectory: false,
+        status: 'pushed',
+      },
+    ];
+    const open = async (kind: 'gitDirectory' | 'directory') => {
+      readFile.mockResolvedValue({
+        kind,
+        title: 'repository',
+        path: '/work/repository',
+        ...(kind === 'gitDirectory' ? { branch: 'main', found: true } : {}),
+        entries,
+      });
+      const view = render(
+        <ThemeProvider>
+          <ArtifactViewer
+            artifact={{ kind: 'file', title: 'repository', path: '/work/repository' }}
+            onClose={vi.fn()}
+            onOpenArtifact={vi.fn()}
+          />
+        </ThemeProvider>
+      );
+      const hint = (await screen.findByText(PREVIEW_COPY.selectFile)).parentElement as HTMLElement;
+      const glyph = hint.querySelector('svg');
+      view.unmount();
+      return glyph;
+    };
+
+    // A git folder is not a GitHub one: the branch glyph, never the third-party mark.
+    const git = await open('gitDirectory');
+    expect(git).not.toBeNull();
+    expect(git?.getAttribute('class')).toContain('lucide-git-branch');
+    expect(git?.getAttribute('class')).not.toContain('lucide-github');
+    // A plain folder keeps the folder glyph.
+    const plain = await open('directory');
+    expect(plain?.getAttribute('class')).toContain('lucide-folder');
   });
 
   it('recognizes Jupyter notebook files in the file-preview flow', async () => {
@@ -2373,8 +2614,13 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Notebook')).toBeInTheDocument();
-    expect(screen.getByText('1 cell')).toBeInTheDocument();
+    // The bar names the file and counts its cells; the kernel is that count's
+    // InfoTip, not a second label (spec 3.8).
+    expect(await screen.findByText('1 cell')).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^analysis\.ipynb/);
+    expect(
+      screen.getByRole('button', { name: `About ${PREVIEW_COPY.kernel}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.kernelHelp('Python 3'));
     expect(screen.getByRole('heading', { name: 'Notebook result' })).toBeInTheDocument();
   });
 });
@@ -2445,17 +2691,18 @@ describe('artifact render-error provenance', () => {
 /**
  * The same guard ChatTabStrip.test.tsx carries, for the panel's strip.
  *
- * design.md §3.9 fixes the icon scale at 16 (inline/dense) / 20 (default) /
- * 24 (page-level). This strip is the window's third one and had drifted to its
- * own third geometry — 14px (the tab glyph) and 12px (the close ×). The sweep is
- * scoped to `.br-tabstrip`, so it holds the whole bar (tab glyphs, the close ×,
- * the ▾ and the two panel actions) without reaching the preview body below it.
+ * The icon scale (spec 2.2) is 14 (chips, a tab's glyph and its close ×), 16
+ * (rows and controls) and 20 (banners, empty states). Spec 3.8 puts the tab's
+ * kind glyph and its close × at 14px, so they yield to the label; the header's
+ * actions are 16px controls. The sweep is scoped to `.br-tabstrip`, so it holds
+ * the whole band (tab glyphs, the close ×, the ▾ and the header actions) without
+ * reaching the preview body below it.
  *
  * Tailwind size classes are real DOM, so jsdom CAN hold this line: the classes
  * are the single source of the rendered px.
  */
-describe('ArtifactViewer — strip icons stay on the design.md §3.9 scale', () => {
-  const ON_SCALE = ['h-4 w-4', 'h-5 w-5', 'h-6 w-6'];
+describe('ArtifactViewer — strip icons stay on the icon scale', () => {
+  const ON_SCALE = ['h-3.5 w-3.5', 'h-4 w-4', 'h-5 w-5'];
 
   const viewer = (artifact: ArtifactSource) => (
     <ThemeProvider>
@@ -2487,6 +2734,14 @@ describe('ArtifactViewer — strip icons stay on the design.md §3.9 scale', () 
       expect(cls).not.toMatch(/[hw]-\[/);
       expect(ON_SCALE.some((size) => cls.includes(size))).toBe(true);
     }
+    // Inside a tab, 14px: the kind glyph and the close × yield to the label.
+    const tabGlyphs = [...container.querySelectorAll('.br-tab svg')];
+    expect(tabGlyphs.length).toBeGreaterThan(0);
+    for (const svg of tabGlyphs) expect(svg.getAttribute('class')).toContain('h-3.5 w-3.5');
+    // The header's actions are 16px, the size of every band's actions.
+    const actionGlyphs = [...container.querySelectorAll('.br-preview-actions svg')];
+    expect(actionGlyphs.length).toBeGreaterThan(0);
+    for (const svg of actionGlyphs) expect(svg.getAttribute('class')).toContain('h-4 w-4');
   });
 
   it('draws every strip glyph at stroke 1.5, which is what app-icons guarantees', async () => {
@@ -2529,7 +2784,7 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     };
   }
 
-  const viewer = (artifact: ArtifactSource) => (
+  const viewer = (artifact: ArtifactSource | null) => (
     <ThemeProvider>
       <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
     </ThemeProvider>
@@ -2565,6 +2820,68 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     }
   });
 
+  it('marks the shown preview in the ▾ with a trailing check, not a heavier weight', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('chart-b.html')));
+      rerender(viewer(file('summary.md')));
+
+      fireEvent.pointerDown(await screen.findByTestId('artifact-tab-overflow-trigger'));
+      const items = await screen.findAllByTestId(/^artifact-tab-overflow-item-/);
+      expect(items).toHaveLength(3);
+      const current = items.filter((item) => item.getAttribute('aria-current') === 'true');
+      // Arial draws 500 as 400, so a weight is no mark at all: one row carries the
+      // check (spec 2.6), the chat strip's overflow marks its current tab the same way.
+      expect(current).toHaveLength(1);
+      expect(current[0]).toHaveTextContent('summary.md');
+      expect(within(current[0]).getByRole('img', { name: PREVIEW_COPY.currentTab })).toBeTruthy();
+      expect(current[0].className).not.toMatch(/font-medium/);
+      for (const other of items.filter((item) => item !== current[0])) {
+        expect(within(other).queryByRole('img')).toBeNull();
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('fades the end it has tabs scrolled past, on a strip that mounted after the hook', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      // No artifact, so no tab and no tablist: the strip mounts on a later render,
+      // which is the case `useTabStripScrolledEdges` follows.
+      const { rerender } = render(viewer(null));
+      expect(screen.queryByRole('tablist')).toBeNull();
+      rerender(viewer(file('chart-a.html')));
+      const list = await screen.findByRole('tablist');
+      await waitFor(() => expect(list).toHaveAttribute('data-scrolled-end'));
+      expect(list).not.toHaveAttribute('data-scrolled-start');
+
+      let left = 0;
+      Object.defineProperty(list, 'scrollLeft', {
+        configurable: true,
+        get: () => left,
+        set: (value: number) => {
+          left = value;
+        },
+      });
+      left = 120;
+      fireEvent.scroll(list);
+      await waitFor(() => expect(list).toHaveAttribute('data-scrolled-start'));
+      expect(list).toHaveAttribute('data-scrolled-end');
+
+      // 600 + 300 reaches the 900 the strip holds: nothing is hidden past the end.
+      left = 600;
+      fireEvent.scroll(list);
+      await waitFor(() => expect(list).not.toHaveAttribute('data-scrolled-end'));
+      expect(list).toHaveAttribute('data-scrolled-start');
+    } finally {
+      restore();
+    }
+  });
+
   it('stays away while the tabs fit', async () => {
     installElectronMock();
     const restore = stubTabListMetrics(300, 300);
@@ -2588,5 +2905,162 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     } finally {
       restore();
     }
+  });
+});
+
+/**
+ * Which scroll the panel gives its tab list when it reveals the active tab (vision V2-R4-4).
+ *
+ * The reveal used to stop 8px from the list's edge, but an end that has tabs past it fades over
+ * `--tab-edge-fade` (32px), so a tab selected where an end cut it had its close slot and the end of
+ * its accent strip under the fade. The rule is `tabRevealScrollLeft` (Layout/useTabStripOverflow,
+ * unit-tested there, shared with the chat strip). jsdom computes no layout, so these stub the
+ * geometry the reveal reads: 6 tabs, 136px wide every 139px from 8, in a 500px list that starts at
+ * x=100 and fades 32px at an end with tabs past it. What the reveal asks of the browser is
+ * `scrollTo`; the pixels (the fade, the settle) are checked in the panel harness, in Chromium.
+ */
+describe('ArtifactViewer — the active tab is revealed clear of the edge fade', () => {
+  const LIST_LEFT = 100;
+  const LIST_WIDTH = 500;
+  const TAB_WIDTH = 136;
+  const TAB_COUNT = 6;
+  const SCROLL_WIDTH = 8 + (TAB_COUNT - 1) * 139 + TAB_WIDTH + 8;
+  const MAX_SCROLL = SCROLL_WIDTH - LIST_WIDTH;
+
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  let watchers: Array<{ target: Element; callback: () => void }> = [];
+
+  const viewer = (artifact: ArtifactSource) => (
+    <ThemeProvider>
+      <ArtifactViewer artifact={artifact} onClose={vi.fn()} onOpenArtifact={vi.fn()} />
+    </ThemeProvider>
+  );
+  const file = (title: string): ArtifactSource => ({ kind: 'file', title, path: `/work/${title}` });
+
+  beforeEach(() => {
+    watchers = [];
+    class FakeResizeObserver {
+      constructor(private readonly callback: () => void) {}
+      observe(target: Element) {
+        watchers.push({ target, callback: this.callback });
+      }
+      unobserve() {}
+      disconnect() {
+        watchers = watchers.filter((watcher) => watcher.callback !== this.callback);
+      }
+    }
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+  });
+
+  afterEach(() => {
+    globalThis.ResizeObserver = OriginalResizeObserver;
+  });
+
+  /**
+   * Mounts six tabs (the last is active), then lays them out: `state.scrollLeft` is the list's
+   * scroll, every tab's rect follows it, and `scale` shrinks a tab's painted rect about its
+   * centre while its `offsetWidth` stays the layout width (the select settle).
+   */
+  async function layOutSixTabs() {
+    installElectronMock();
+    const { rerender } = render(viewer(file('t0.md')));
+    for (let index = 1; index < TAB_COUNT; index += 1) rerender(viewer(file(`t${index}.md`)));
+    const list = await screen.findByRole('tablist');
+    const tabs = screen
+      .getAllByRole('tab')
+      .map((button) => button.closest('.br-tab') as HTMLElement);
+    expect(tabs).toHaveLength(TAB_COUNT);
+
+    const state = { scrollLeft: 0, scale: 1 };
+    const scrollTo = vi.fn((options: { left?: number; behavior?: string }) => {
+      state.scrollLeft = options.left ?? state.scrollLeft;
+    });
+    Object.defineProperty(list, 'scrollLeft', {
+      configurable: true,
+      get: () => state.scrollLeft,
+      set: (value: number) => {
+        state.scrollLeft = value;
+      },
+    });
+    Object.defineProperty(list, 'clientWidth', { configurable: true, value: LIST_WIDTH });
+    Object.defineProperty(list, 'scrollWidth', { configurable: true, value: SCROLL_WIDTH });
+    list.scrollTo = scrollTo as unknown as typeof list.scrollTo;
+    list.style.setProperty('--tab-edge-fade', '32px');
+    list.getBoundingClientRect = () =>
+      ({ left: LIST_LEFT, right: LIST_LEFT + LIST_WIDTH, width: LIST_WIDTH }) as DOMRect;
+    for (const [index, tab] of tabs.entries()) {
+      Object.defineProperty(tab, 'offsetWidth', { configurable: true, value: TAB_WIDTH });
+      tab.getBoundingClientRect = () => {
+        const laidOut = LIST_LEFT + 8 + index * 139 - state.scrollLeft;
+        const width = TAB_WIDTH * state.scale;
+        const left = laidOut + (TAB_WIDTH - width) / 2;
+        return { left, right: left + width, width } as DOMRect;
+      };
+    }
+    return { list, tabs, state, scrollTo };
+  }
+
+  /** The list's ResizeObserver fires: the reveal runs against the geometry as it is now. */
+  function resizeList(list: HTMLElement) {
+    act(() => {
+      for (const watcher of watchers) if (watcher.target === list) watcher.callback();
+    });
+  }
+
+  const lastScroll = (scrollTo: ReturnType<typeof vi.fn>) =>
+    (scrollTo.mock.calls[scrollTo.mock.calls.length - 1][0] as { left: number }).left;
+
+  it('stops a tab the end cuts 32px short of it, outside the fade', async () => {
+    const { list, tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 0;
+    // Tab 3 is 425..561 in the list; the box ends at 500.
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    // Its end sits 32px before the box's end, where the fade ends: 561 - (500 - 32).
+    expect(lastScroll(scrollTo)).toBe(93);
+    // And it is not moved twice: the reveal that has landed asks for nothing more.
+    scrollTo.mockClear();
+    resizeList(list);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('stops a tab the start cuts 32px past it', async () => {
+    const { tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 200;
+    // Tab 1 is 147..283: its start is under the start fade at 200.
+    fireEvent.click(within(tabs[1]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    expect(lastScroll(scrollTo)).toBe(147 - 32);
+  });
+
+  it('takes the last tab to the end of the list, where nothing fades', async () => {
+    const { list, state, scrollTo } = await layOutSixTabs();
+    // The active tab is the last, 703..839; at 330 the box is 330..830 and it ends 9px past it.
+    state.scrollLeft = 330;
+    resizeList(list);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+    expect(lastScroll(scrollTo)).toBe(MAX_SCROLL);
+  });
+
+  it('leaves a tab that is already clear of both fades where it is', async () => {
+    const { list, tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 100;
+    // Tab 3 is 425..561: 325..461 in the box 0..500, clear of the end fade that starts at 468.
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(tabs[3]).toHaveAttribute('data-active', 'true'));
+    resizeList(list);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('reads the tab as laid out, not as the select settle paints it', async () => {
+    const { tabs, state, scrollTo } = await layOutSixTabs();
+    state.scrollLeft = 0;
+    // A newly active tab is 3% short in its first frame (`scale` 0.97 about its centre).
+    state.scale = 0.97;
+    fireEvent.click(within(tabs[3]).getByRole('tab'));
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+    // The same 93 as the unscaled case. Measured from the rect it is 91, and the settled tab
+    // would end 2px inside the fade.
+    expect(lastScroll(scrollTo)).toBe(93);
   });
 });

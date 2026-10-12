@@ -2,6 +2,9 @@
 //! builtin registry, and it serves its tools correctly over a real MCP transport
 //! (the same duplex path `extension_manager` uses to spawn builtins).
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::AgentDrafterServer;
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::ServiceExt;

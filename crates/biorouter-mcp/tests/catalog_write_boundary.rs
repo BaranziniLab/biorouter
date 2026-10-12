@@ -11,6 +11,9 @@
 //! rejected at the write boundary, with an error that names what is really
 //! installed.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use biorouter_mcp::agent_drafter::catalog::{Catalog, KbEntry, SkillEntry};
 use biorouter_mcp::agent_drafter::store::{Requirement, RequirementKind};
 use biorouter_mcp::agent_drafter::validate;

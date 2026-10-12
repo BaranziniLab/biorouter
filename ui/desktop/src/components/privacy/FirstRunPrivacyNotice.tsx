@@ -1,139 +1,20 @@
 import { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
+import { ModalShell } from '../ModalShell';
+import { DialogDescription } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { listSessions, type Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
+import {
+  computeNoticeCounts,
+  shouldShowFirstRunNotice,
+  UNKNOWN_PROVIDER,
+  type NoticeCounts,
+} from './noticeCounts';
 
-/**
- * The numbers the day-one notice quotes, over the population **History actually
- * shows** (issue #56 §15.5).
- *
- * The mirror of `biorouter::session::session_manager::PrivacyNoticeCounts`, and
- * the two agree by construction rather than by coincidence: `GET /sessions`
- * without `include_subagents` is backed by `list_sessions_by_types(&[User,
- * Scheduled])`, whose `INNER JOIN messages` selects exactly the rows the Rust
- * helper's `EXISTS (SELECT 1 FROM messages …)` selects. Counting the array the
- * renderer already holds is therefore the same question asked of the same rows,
- * with no second endpoint to keep in step.
- */
-export interface NoticeCounts {
-  /** Private to the fail-closed reader, and visible in History. */
-  privateVisible: number;
-  /** Public, visible, and bound to a named provider — read, not guessed. */
-  publicNamedVisible: number;
-  /**
-   * Public, visible, and bound to NO provider. The migration could not tell what
-   * these ran on and failed **open**, by decision. Historically the largest of
-   * the three, and the honest residual of the whole feature.
-   */
-  unknownProviderVisible: number;
-  /** The denominator: everything History will list. */
-  totalVisible: number;
-  /**
-   * Of the private rows, the ones the **migration** marked — a `backfill:*`
-   * provenance rather than `turn:*`, `mcp:*` or `diverged:*`.
-   *
-   * ⚠ **This, not `privateVisible`, is what makes the notice due.** A fresh
-   * install has no backfilled rows and never will; its private chats arrive one
-   * at a time, from turns the user themselves ran on a private model. Triggering
-   * on `privateVisible` would ambush that user weeks later with a modal
-   * announcing that their chats "are now marked private because that is the
-   * model each of them was last using" — describing a migration that never
-   * touched their database. See {@link shouldShowFirstRunNotice}.
-   */
-  backfilledVisible: number;
-  /**
-   * The private rows grouped by the provider the migration read, descending by
-   * count. This is what makes §15.5's "review by provider" list possible: a
-   * backfill tier is a **guess the system made from the last-used provider**,
-   * not a user's assertion about content, so the notice owes the user a way to
-   * see the guess broken down before living with it.
-   */
-  privateByProvider: Array<{ provider: string; count: number }>;
-}
-
-/** A `privacy_reason` of `backfill:<provider>` yields `<provider>`. */
-const BACKFILL_PREFIX = 'backfill:';
-
-/** The bucket a private row with no readable provenance lands in. */
-export const UNKNOWN_PROVIDER = 'unknown';
-
-/**
- * Fail-closed, exactly like `SessionClassification::from_stored` and like
- * `PrivacyBadge`'s `Record` map: anything that is not precisely `'public'` reads
- * Private.
- *
- * That includes `undefined` — a daemon too old to send the column, or a
- * projection that dropped it. The alternative (treat unknown as public) would
- * make the notice quote a smaller, friendlier number than the badges beside it,
- * and the one property the notice must have is that it describes what the user
- * is about to see.
- */
-function isPrivate(session: Session): boolean {
-  return session.privacy_tier !== 'public';
-}
-
-function providerOf(session: Session): string {
-  // The provenance first, because it records what the migration actually
-  // concluded and survives a later provider switch; `provider_name` is the
-  // fallback for a row raised by a turn rather than by the backfill.
-  const reason = session.privacy_reason ?? '';
-  if (reason.startsWith(BACKFILL_PREFIX)) {
-    const named = reason.slice(BACKFILL_PREFIX.length).trim();
-    if (named !== '') return named;
-  }
-  const bound = (session.provider_name ?? '').trim();
-  return bound === '' ? UNKNOWN_PROVIDER : bound;
-}
-
-/**
- * Count the user's own conversations. Pure, and the only place the rule lives.
- *
- * ⚠ **Never hardcode these numbers.** §16's table was re-measured three times
- * while the feature was being designed and moved by a factor of three in four
- * days; the `user` NULL-provider bucket alone went from 29 rows to 2,831. A
- * notice carrying a figure from a design document is a notice that is wrong on
- * every machine including the author's — and this file's own comments were
- * caught quoting stale ones. Any figure written down in this folder must carry
- * the date it was measured, and nothing may read it.
- */
-export function computeNoticeCounts(sessions: Session[]): NoticeCounts {
-  let privateVisible = 0;
-  let backfilledVisible = 0;
-  let publicNamedVisible = 0;
-  let unknownProviderVisible = 0;
-  const byProvider = new Map<string, number>();
-
-  for (const session of sessions) {
-    if (isPrivate(session)) {
-      privateVisible += 1;
-      if ((session.privacy_reason ?? '').startsWith(BACKFILL_PREFIX)) backfilledVisible += 1;
-      const provider = providerOf(session);
-      byProvider.set(provider, (byProvider.get(provider) ?? 0) + 1);
-      continue;
-    }
-    if ((session.provider_name ?? '').trim() === '') {
-      unknownProviderVisible += 1;
-    } else {
-      publicNamedVisible += 1;
-    }
-  }
-
-  const privateByProvider = [...byProvider.entries()]
-    .map(([provider, count]) => ({ provider, count }))
-    // Count descending, then name ascending — a stable order, so the list does
-    // not reshuffle between two renders of the same data.
-    .sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider));
-
-  return {
-    privateVisible,
-    backfilledVisible,
-    publicNamedVisible,
-    unknownProviderVisible,
-    totalVisible: sessions.length,
-    privateByProvider,
-  };
-}
+// The counting rules live in `noticeCounts.ts` (a leaf the boot can import without this dialog) and
+// are re-exported under their old names, so every importer and test reads them from here as before.
+export { computeNoticeCounts, shouldShowFirstRunNotice, UNKNOWN_PROVIDER };
+export type { NoticeCounts };
 
 /**
  * How a person names each private-tier provider. Unknown ids pass through
@@ -151,26 +32,6 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
-}
-
-/**
- * Worth showing at all? Only if the **migration** marked something the user can
- * see.
- *
- * ⚠ **`backfilledVisible`, not `privateVisible`, and the difference is a real
- * defect either way round.** Every sentence in this notice is about a thing that
- * happened once, to data at rest, during an upgrade. On a machine where the
- * backfill marked nothing — a fresh install, or one whose chats all record a
- * commercial provider — those sentences describe nothing that occurred, and
- * `privateVisible` would still climb above zero the first time the user ran a
- * turn on Ollama. That fires this modal weeks after any upgrade, announcing a
- * migration that never touched their database.
- *
- * Exported so the surface that mounts the notice can decide **before** rendering
- * a modal, rather than opening one that says "0 conversations changed".
- */
-export function shouldShowFirstRunNotice(counts: NoticeCounts): boolean {
-  return counts.backfilledVisible > 0;
 }
 
 /**
@@ -197,6 +58,13 @@ async function fetchVisibleSessions(): Promise<Session[]> {
   });
   return response.data.sessions;
 }
+
+/**
+ * The id the count sentence carries, so the dialog's `aria-describedby` can name it. Whichever of
+ * the three stand-ins renders (could not count, counting, the headline) wears it, and never two at
+ * once, so the id is unique.
+ */
+const SUMMARY_ID = 'first-run-privacy-notice-summary';
 
 export interface FirstRunPrivacyNoticeProps {
   open: boolean;
@@ -261,6 +129,13 @@ export interface FirstRunPrivacyNoticeProps {
  * reports something that has already happened to data at rest. Trapping someone
  * in it buys nothing, and a modal that cannot be closed is the surest way to
  * make the next one go unread.
+ *
+ * It is the shared dialog, not a shell of its own (R-34, first run round 1,
+ * FR-R1-14): a `ModalShell` at size `md`, pinned at the top edge with the header
+ * rule, the same anatomy as `AnnouncementModal`, the other "Got it" notice. On an
+ * upgraded install it is the first thing on screen, so it is also the first thing
+ * that shows whether the app wears one dialog or two. A presentation change
+ * only: the copy, the props, the counting and every test id are as they were.
  */
 export function FirstRunPrivacyNotice({
   open,
@@ -293,98 +168,111 @@ export function FirstRunPrivacyNotice({
   const resolved = counts ?? fetched;
 
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && onDismiss()}>
-      <DialogContent data-testid="first-run-privacy-notice" className="sm:max-w-[560px]">
-        <DialogHeader>
-          <DialogTitle>Some of your chats are now marked private</DialogTitle>
-        </DialogHeader>
+    <ModalShell
+      open={open}
+      onOpenChange={(next) => !next && onDismiss()}
+      size="md"
+      purpose="info"
+      scrollBody
+      title="Some of your chats are now marked private"
+      // The count sentence (or its counting and could-not-count stand-ins: only one renders at a
+      // time) is the dialog's description, exactly as it was when these were Radix descriptions.
+      describedBy={SUMMARY_ID}
+      footer={
+        <Button type="button" onClick={onDismiss} data-testid="notice-acknowledge">
+          Got it
+        </Button>
+      }
+    >
+      <div
+        data-testid="first-run-privacy-notice"
+        className="space-y-4 py-3 text-body text-text-default tabular-nums"
+      >
+        {failed && (
+          <DialogDescription
+            id={SUMMARY_ID}
+            data-testid="notice-count-error"
+            className="text-body text-text-default"
+          >
+            Biorouter could not read your chat list, so the numbers below are unavailable. Your
+            chats are unchanged by this message.
+          </DialogDescription>
+        )}
 
-        <div className="space-y-4 text-sm text-text-default">
-          {failed && (
+        {!failed && !resolved && (
+          <DialogDescription
+            id={SUMMARY_ID}
+            data-testid="notice-counting"
+            className="text-body text-text-default"
+          >
+            Counting your chats…
+          </DialogDescription>
+        )}
+
+        {!failed && resolved && (
+          <>
             <DialogDescription
-              data-testid="notice-count-error"
-              className="text-sm text-text-default"
+              id={SUMMARY_ID}
+              data-testid="notice-headline"
+              className="text-body text-text-default"
             >
-              Biorouter could not read your chat list, so the numbers below are unavailable. Your
-              chats are unchanged by this message.
+              <strong className="font-semibold">{resolved.privateVisible}</strong> of your{' '}
+              <strong className="font-semibold">{resolved.totalVisible}</strong> chats are now
+              marked private, because that is the model each of them was last using.
             </DialogDescription>
-          )}
 
-          {!failed && !resolved && (
-            <DialogDescription data-testid="notice-counting" className="text-sm text-text-default">
-              Counting your chats…
-            </DialogDescription>
-          )}
+            {resolved.privateByProvider.length > 0 && (
+              <div>
+                <p className="text-text-muted">Marked private by model:</p>
+                <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
+                  {resolved.privateByProvider.map(({ provider, count }) => (
+                    <li key={provider} data-provider={provider}>
+                      {providerLabel(provider)}: {count}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
-          {!failed && resolved && (
-            <>
-              <DialogDescription
-                data-testid="notice-headline"
-                className="text-sm text-text-default"
-              >
-                <strong>{resolved.privateVisible}</strong> of your{' '}
-                <strong>{resolved.totalVisible}</strong> chats are now marked private, because that
-                is the model each of them was last using.
-              </DialogDescription>
+            {resolved.unknownProviderVisible > 0 && (
+              <p data-testid="notice-unknown">
+                <strong className="font-semibold">{resolved.unknownProviderVisible}</strong> chats
+                record no model at all. Biorouter cannot tell what those ran on, so they are left
+                public.
+              </p>
+            )}
+          </>
+        )}
 
-              {resolved.privateByProvider.length > 0 && (
-                <div>
-                  <p className="text-text-muted">Marked private by model:</p>
-                  <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
-                    {resolved.privateByProvider.map(({ provider, count }) => (
-                      <li key={provider} data-provider={provider}>
-                        {providerLabel(provider)}: {count}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+        <p data-testid="notice-last-model-caveat">
+          Chats from before this version are marked by the model they were last using. If an older
+          chat contains work you want kept private, switch it to a private model. It will be marked
+          private from its next turn on.
+        </p>
 
-              {resolved.unknownProviderVisible > 0 && (
-                <p data-testid="notice-unknown">
-                  <strong>{resolved.unknownProviderVisible}</strong> chats record no model at all.
-                  Biorouter cannot tell what those ran on, so they are left public.
-                </p>
-              )}
-            </>
-          )}
+        <p data-testid="notice-knowledge-bases" className="text-text-muted">
+          Knowledge bases that already existed start public, whatever fed them. If one holds private
+          material you can mark it private yourself from the Knowledge view.
+        </p>
 
-          <p data-testid="notice-last-model-caveat">
-            Chats from before this version are marked by the model they were last using. If an older
-            chat contains work you want kept private, switch it to a private model. It will be
-            marked private from its next turn on.
+        {/*
+          §13.5's day-one extension disclosure. Rendered only when there is
+          something to name — a paragraph that says "no extensions are
+          affected" is noise on every machine that reads it.
+        */}
+        {publicClinicalExtensions.length > 0 && (
+          <p data-testid="notice-public-clinical-extensions">
+            {publicClinicalExtensions.length === 1
+              ? 'One extension you have enabled is set up for clinical data and is not marked private: '
+              : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
+            <strong className="font-semibold">{publicClinicalExtensions.join(', ')}</strong>. Any
+            model, including commercial models hosted outside your institution, can still call{' '}
+            {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
+            {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
+            you know.
           </p>
-
-          <p data-testid="notice-knowledge-bases" className="text-text-muted">
-            Knowledge bases that already existed start public, whatever fed them. If one holds
-            private material you can mark it private yourself from the Knowledge view.
-          </p>
-
-          {/*
-            §13.5's day-one extension disclosure. Rendered only when there is
-            something to name — a paragraph that says "no extensions are
-            affected" is noise on every machine that reads it.
-          */}
-          {publicClinicalExtensions.length > 0 && (
-            <p data-testid="notice-public-clinical-extensions" className="text-text-muted">
-              {publicClinicalExtensions.length === 1
-                ? 'One extension you have enabled is set up for clinical data and is not marked private: '
-                : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
-              <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
-              commercial models hosted outside your institution, can still call{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
-              you know.
-            </p>
-          )}
-        </div>
-
-        <div className="flex justify-end">
-          <Button type="button" onClick={onDismiss} data-testid="notice-acknowledge">
-            Got it
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        )}
+      </div>
+    </ModalShell>
   );
 }

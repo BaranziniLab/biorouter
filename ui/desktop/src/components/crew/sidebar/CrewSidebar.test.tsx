@@ -491,6 +491,14 @@ describe('crew-sidebar.css', () => {
     expect(name).toMatch(/max-width:\s*100%/);
   });
 
+  // Redesign D5: a section label takes the caps role's 500, so every caps label has one weight.
+  it('leaves the section label’s weight to the caps role (D5)', () => {
+    const [label] = bodiesOf(css, '.crew-sidebar-section-label');
+    expect(label).not.toMatch(/font-weight/);
+    // Redesign D3: 8px between a team header's chevron and its name.
+    expect(bodiesOf(css, '.crew-sidebar-team-toggle')[0]).toMatch(/gap:\s*8px/);
+  });
+
   it('matches the app sidebar’s rhythm and tints the whole team header (T-62)', () => {
     const [row] = bodiesOf(css, '.crew-sidebar-row');
     expect(row).toMatch(/font-size:\s*var\(--text-body\)/);

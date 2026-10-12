@@ -2,9 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { getKbTier, setKbTier, type KbTier } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
-import { Button } from '../ui/button';
+import { usePrivacyTiersEnabled } from '../ConfigContext';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { knowledgeCopy } from './copy';
 import { useKnowledge } from './KnowledgeContext';
 
 /**
@@ -71,6 +79,8 @@ function blastRadius(kb: KbTierControlKb): string {
 export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProps) {
   const [confirming, setConfirming] = useState(false);
   const isPrivate = kb.tier === 'private';
+  const enforcementOff = !usePrivacyTiersEnabled();
+  const hint = isPrivate ? knowledgeCopy.tier.privateHint : knowledgeCopy.tier.publicHint;
 
   // A dialog left open while the subject changes must not confirm against the
   // base the user is no longer looking at.
@@ -79,35 +89,54 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
   }, [kb.id]);
 
   return (
-    <div className="flex min-w-0 items-center gap-2 rounded-element border border-border-subtle px-3 py-2">
-      {/* R10's one tier indicator, not a second one that happens to look like
-          it: `PrivacyBadge` owns the glyph, the ink pair and the measured
-          contrast, and a knowledge base's tier must read exactly as a chat's
-          does. The wrapper exists only to give this instance a handle. */}
-      <span
-        data-testid="kb-tier-chip"
-        title={
-          isPrivate
-            ? 'Private. Biorouter only lets a private model read or write this knowledge base.'
-            : 'Any model, including public ones, can read this knowledge base.'
-        }
-      >
-        <PrivacyBadge tier={kb.tier} />
-      </span>
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        disabled={busy}
-        // The whole sentence, not "Make public" — the button is the thing a
-        // screen reader and a hurried eye both land on first.
-        aria-label={
-          isPrivate ? 'Make this knowledge base public' : 'Make this knowledge base private'
-        }
-        onClick={() => (isPrivate ? setConfirming(true) : onSetTier(kb.id, 'private'))}
-      >
-        {isPrivate ? 'Make public' : 'Make private'}
-      </Button>
+    <>
+      {/* THE TRIGGER, AND ONLY THE TRIGGER, MOVED (spec 3.12). It used to be a
+          bordered box at the top of the Sources rail: a badge plus a "Make
+          public" button, with its explanation in a native `title` on a span no
+          keyboard could reach. Below the 860px step the rail hides behind the
+          default Graph tab, so on a narrow pane the base's tier and its control
+          were both off screen. Now the badge in the Knowledge band IS the
+          control, Crew's `ClassificationBadge`: the tooltip explains, the
+          hidden run gives a screen reader the same sentence, and pressing it
+          opens the one tier action. Everything from `confirming` down (the typed
+          id, the counts from the daemon, `onSetTier`) is unchanged.
+
+          `PrivacyBadge`, not a bare `Badge`: it stays the app's one tier mark
+          (R10), with its padlock, its measured ink pair and its "(enforcement
+          off)" suffix, so a base's tier reads exactly as a chat's does. The
+          button around it is transparent and draws its focus as an outline
+          outside the chip (`.br-knowledge-tier`), because the badge's opaque
+          fill would cover the D-15 focus surface. */}
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-testid="kb-tier-chip"
+                data-privacy={kb.tier}
+                disabled={busy}
+                className="br-knowledge-tier"
+              >
+                <span aria-hidden="true" className="inline-flex">
+                  <PrivacyBadge tier={kb.tier} />
+                </span>
+                <span className="sr-only">
+                  {knowledgeCopy.tier.name(isPrivate ? 'Private' : 'Public', hint, enforcementOff)}
+                </span>
+              </button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{hint}</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem
+            onSelect={() => (isPrivate ? setConfirming(true) : onSetTier(kb.id, 'private'))}
+          >
+            {isPrivate ? knowledgeCopy.tier.makePublic : knowledgeCopy.tier.makePrivate}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {confirming && (
         <DangerousConfirmDialog
@@ -136,7 +165,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
               arbitrary alpha on an opaque surface STEP, which is a colour no
               token names; and `text-sm font-medium` / `text-xs` were the raw
               Tailwind spellings of `text-label` / `text-supporting`. */}
-          <div className="rounded-element border border-border-subtle bg-background-muted p-3">
+          <div className="rounded-element border border-transparent bg-background-fill p-3">
             <p className="truncate text-label text-text-default" title={kb.name}>
               {kb.name}
             </p>
@@ -144,7 +173,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
           </div>
         </DangerousConfirmDialog>
       )}
-    </div>
+    </>
   );
 }
 

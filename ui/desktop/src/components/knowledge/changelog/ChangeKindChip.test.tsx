@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { ChangeKind } from '../../../api/types.gen';
 import { ChangeKindChip } from './ChangeKindChip';
+import { knowledgeCopy } from '../copy';
 
 const ALL_KINDS: ChangeKind[] = ['ingest', 'link', 'flag', 'query', 'lint', 'restore', 'manual'];
 
@@ -25,7 +26,9 @@ describe('ChangeKindChip', () => {
     );
 
     for (const kind of ALL_KINDS) {
-      const chip = screen.getByText(kind).closest('[data-testid="change-kind-chip"]');
+      const chip = screen
+        .getByText(knowledgeCopy.changeKind[kind])
+        .closest('[data-testid="change-kind-chip"]');
       expect(chip, `${kind} chip`).not.toBeNull();
       const className = chip!.className;
       if (kind === 'flag') {
@@ -55,5 +58,16 @@ describe('ChangeKindChip', () => {
       unmount();
     }
     expect(seen.size).toBe(ALL_KINDS.length);
+  });
+
+  // Spec 3.12: sentence case, never the caps style.
+  it('names each kind in sentence case', () => {
+    for (const kind of ALL_KINDS) {
+      const { unmount } = render(<ChangeKindChip kind={kind} />);
+      const chip = screen.getByTestId('change-kind-chip');
+      expect(chip).toHaveTextContent(knowledgeCopy.changeKind[kind]);
+      expect(chip.className).not.toMatch(/text-caps|uppercase/);
+      unmount();
+    }
   });
 });

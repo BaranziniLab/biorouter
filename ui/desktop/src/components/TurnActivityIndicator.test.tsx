@@ -14,7 +14,7 @@ describe('TurnActivityIndicator', () => {
     vi.setSystemTime(now);
     return render(
       <TurnActivityIndicator
-        activity={{ phase: 'thinking', label: 'Working on the result', since: now - sinceOffsetMs }}
+        activity={{ phase: 'thinking', label: 'Thinking', since: now - sinceOffsetMs }}
       />
     );
   };
@@ -22,7 +22,7 @@ describe('TurnActivityIndicator', () => {
   it('shows the label immediately but withholds the number below the reveal threshold', () => {
     renderAt(0);
     // Twice on purpose: the visible label plus the sr-only announcement copy.
-    expect(screen.getAllByText('Working on the result')).toHaveLength(2);
+    expect(screen.getAllByText('Thinking')).toHaveLength(2);
     expect(screen.queryByTestId('turn-activity-elapsed')).toBeNull();
   });
 
@@ -48,37 +48,33 @@ describe('TurnActivityIndicator', () => {
     expect(screen.queryByTestId('turn-activity-elapsed')).toBeNull();
   });
 
-  it('surfaces the nudge past 45 seconds', () => {
-    renderAt(46_000);
-    expect(screen.getByText(/Still working/)).toBeInTheDocument();
-  });
-
-  it('keeps the nudge hidden before 45 seconds', () => {
-    renderAt(10_000);
+  it('never adds a "still working" line, however long the wait', () => {
+    // The 45-second nudge is gone (spec 3.6): Stop is on screen, and the
+    // line's own clock already says how long it has been.
+    renderAt(120_000);
     expect(screen.queryByText(/Still working/)).toBeNull();
+    expect(screen.queryByText(/stop the turn/)).toBeNull();
+    expect(screen.getByTestId('turn-activity-elapsed')).toHaveTextContent('2m');
   });
 
-  it('points at the composer only where there is one to stop from', () => {
-    // A delegated subagent's tab in a browser has no composer (SD-8), so the
-    // half of the nudge that sends the reader there is dropped, not left
-    // pointing at nothing. The reassurance stays.
-    const now = Date.now();
-    vi.setSystemTime(now);
-    render(
+  it('is the transcript row: a spinner that breathes while the agent works', () => {
+    const { container } = renderAt(0);
+    const row = container.querySelector('.br-transcript-row')!;
+    expect(row).toHaveAttribute('data-running');
+    expect(container.querySelector('[data-tool-glyph="working"] .br-spinner')).not.toBeNull();
+    // The ring and glow it used to draw were a third working loop.
+    expect(container.innerHTML).not.toContain('biorouter-working-ring');
+  });
+
+  it('stands still while a steer waits behind a card: nothing is working', () => {
+    const { container } = render(
       <TurnActivityIndicator
-        canStopHere={false}
-        activity={{ phase: 'thinking', label: 'Working on the result', since: now - 46_000 }}
+        activity={{ phase: 'steerQueued', label: 'Waiting for your answer', steerText: 'use R' }}
       />
     );
-    expect(screen.getByText('Still working.')).toBeInTheDocument();
-    expect(screen.queryByText(/stop the turn from the composer/)).toBeNull();
-  });
-
-  it('still names the composer by default', () => {
-    renderAt(46_000);
-    expect(
-      screen.getByText('Still working. You can stop the turn from the composer.')
-    ).toBeInTheDocument();
+    expect(container.querySelector('.br-transcript-row')).not.toHaveAttribute('data-running');
+    expect(container.querySelector('.br-spinner')).toBeNull();
+    expect(container.querySelector('[data-tool-glyph="waiting"]')).not.toBeNull();
   });
 
   it('exposes a polite live region and hides the ticking chip from screen readers', () => {
@@ -99,7 +95,7 @@ describe('TurnActivityIndicator', () => {
   it('announces no duration at all below the first bucket', () => {
     const { container } = renderAt(5000);
     const srText = container.querySelector('.sr-only')?.textContent ?? '';
-    expect(srText).toContain('Working on the result');
+    expect(srText).toContain('Thinking');
     expect(srText).not.toContain('seconds elapsed');
   });
 

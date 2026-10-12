@@ -69,6 +69,9 @@
 //! seen, and [`the_known_hot_paths_are_covered`] names specific files that must
 //! be found *and* covered, so a walk that silently stops early fails.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

@@ -10,6 +10,13 @@
 > authoritative over the records above them.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
+> **Superseded in part (2026-10).** The Codex simplicity redesign (section 3.12 of
+> [its implementation spec](../../design/codex-simplicity-redesign/implementation-spec.md)) merged
+> the title and subject bands into one 44px `PageHeader` band, moved the tier control's trigger
+> into that band as a badge-button (its confirmation is unchanged), flattened the Sources rail and
+> graph into flush columns, made the facet strip 44px, and retired the height step. The container
+> ladder (860/940/1140/1400) is unchanged.
+
 Read the specification first, then open the studio beside it — the studio draws every surface the
 specification describes, at BioRouter's real token values, in both light and dark, so a disagreement
 about a decision can be settled by looking at it rather than by imagining it.

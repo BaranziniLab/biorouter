@@ -21,10 +21,11 @@ export const KEY_STORAGE_NOTICE =
  * @returns {JSX.Element} - The storage notice component
  */
 export function SecureStorageNotice({ className = '', message = KEY_STORAGE_NOTICE }) {
+  // Margins belong to the caller: a default `mt-*` here fought whatever the caller passed.
   return (
-    <div className={`flex items-center mt-3 text-text-muted ${className}`}>
-      <Lock className="w-3.5 h-3.5 flex-shrink-0" />
-      <span className="text-xs ml-1.5">{message}</span>
+    <div className={`flex items-start gap-1.5 text-text-muted ${className}`}>
+      <Lock className="mt-0.5 size-3.5 flex-shrink-0" aria-hidden />
+      <span className="text-supporting">{message}</span>
     </div>
   );
 }

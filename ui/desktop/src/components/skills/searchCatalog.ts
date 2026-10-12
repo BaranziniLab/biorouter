@@ -20,7 +20,7 @@
  * a change to three files, `landing/marketplace-search.js` included — is that
  * file's, not this one's.
  *
- * # The two decisions this file had to make
+ * # The three decisions this file had to make
  *
  * **1. A bundle row has no counterpart in Rust.** `skills__searchSkills` ranks
  * individual skills (`search_fields` in `agents/skills_extension.rs`): the
@@ -49,12 +49,34 @@
  * "Matches (n)" list under a query, the headings when browsing — and reads
  * `isBrowseQuery` from the same module to decide which. The composer's list is
  * flat, so the ranking reaches it directly.
+ *
+ * **3. The Settings list is typed into, so the word under the cursor is not a
+ * finished word (V3-23).** The shared matcher holds a term under three
+ * characters to whole words, which is right for a model that sends complete
+ * words and for a Browse modal, and wrong for a filter: typing `gg` on the way to
+ * `ggplot` listed nothing and read as a broken list, while `ggp` found it. So
+ * `SkillsView` passes `{ typeahead: true }`, and the LAST word, while nothing
+ * follows it, also matches the start of a word in a skill's name or in a
+ * package's member names, ranked below the whole word. `r-scripting` still
+ * precedes `ralph` for `r`. Descriptions are still read by whole words, so a
+ * one-letter query does not wake up every sentence that has a word starting with
+ * it, and `gg ` (a space after it) or `gg plot` hold `gg` to whole words again,
+ * because the person has finished it. This is a TypeScript-only rule, argued
+ * like decision 1 and not ported: there is no Rust or website counterpart to
+ * keep it in step with, and the Browse modals do not ask for it.
+ *
+ * ⚠ **The composer's picker does not pass it, on purpose.** Its "Enable all"
+ * button writes every row the filter left on screen, so a filter that widens
+ * while a word is half typed is a bulk write over rows the person has not named
+ * yet. The picker keeps the whole-word floor; opting it in is a decision about
+ * that button, not about the filter.
  */
 
 import {
   rankEntries,
   SKILL_NOISE,
   Weight,
+  type RankOptions,
   type SearchField,
   type SearchResult,
 } from '../baam/search';
@@ -92,11 +114,12 @@ export function catalogSearchFields(entry: SkillCatalogEntry): SearchField[] {
 /**
  * Rank installed catalog rows against what the user typed, best first. An empty
  * query returns every row in catalog order, which is what both surfaces showed
- * before a character was typed.
+ * before a character was typed. `options.typeahead` is decision 3 above.
  */
 export function rankCatalogEntries(
   entries: readonly SkillCatalogEntry[],
-  query: string
+  query: string,
+  options: RankOptions = {}
 ): SearchResult<SkillCatalogEntry> {
-  return rankEntries(query, SKILL_NOISE, entries, catalogSearchFields);
+  return rankEntries(query, SKILL_NOISE, entries, catalogSearchFields, options);
 }

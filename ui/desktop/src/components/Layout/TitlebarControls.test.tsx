@@ -67,6 +67,19 @@ describe('TitlebarControls', () => {
       'title',
       'Start a new chat in a new window'
     );
+    // The pair reads alike: both name themselves in the app tooltip, and both hover on the
+    // strong fill, the band's fill step (R-27), not a one-off token.
+    expect(screen.getByTestId('titlebar-sidebar-toggle')).toHaveAttribute(
+      'title',
+      'Toggle sidebar'
+    );
+    expect(screen.getByRole('button', { name: 'Toggle sidebar' })).toBe(
+      screen.getByTestId('titlebar-sidebar-toggle')
+    );
+    for (const id of ['titlebar-sidebar-toggle', 'titlebar-new-window']) {
+      expect(screen.getByTestId(id)).toHaveClass('hover:!bg-background-fill-strong');
+      expect(screen.getByTestId(id).className).not.toMatch(/background-medium/);
+    }
   });
 
   // A reserve that fails silently is worse than no reserve: the session title

@@ -1,0 +1,166 @@
+import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import MentionPopover from './MentionPopover';
+import { COMPOSER_COPY } from './composer/copy';
+
+/**
+ * The mention and slash-command menu wears the app's one menu recipe (spec 3.7):
+ * rows in the shared 32px row, no "N items found" header, a spinner with
+ * "Searching…" while it loads, and the modal-dropdown layer token instead of a
+ * literal z-index.
+ */
+const mocks = vi.hoisted(() => ({
+  getSlashCommands: vi.fn(),
+  listBases: vi.fn(),
+  getSessionExtensions: vi.fn(),
+  listFiles: vi.fn(),
+  extensionsList: [] as never[],
+}));
+
+vi.mock('../api', () => ({
+  getActive: vi.fn(async () => ({ data: null })),
+  listBases: mocks.listBases,
+  getSlashCommands: mocks.getSlashCommands,
+  getSessionExtensions: mocks.getSessionExtensions,
+}));
+
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({ extensionsList: mocks.extensionsList }),
+}));
+
+vi.mock('./skills/useSkillCatalog', () => ({
+  fetchSkillCatalog: vi.fn(async () => ({ generation: 0, roots: [], skills: [], bundles: [] })),
+  pickerBundles: () => [],
+  standaloneSkills: () => [],
+}));
+
+function renderMenu({
+  query = '',
+  isSlashCommand = true,
+  selectedIndex = 0,
+  sessionId = null,
+}: {
+  query?: string;
+  isSlashCommand?: boolean;
+  selectedIndex?: number;
+  sessionId?: string | null;
+} = {}) {
+  return render(
+    <MentionPopover
+      isOpen
+      isSlashCommand={isSlashCommand}
+      query={query}
+      sessionId={sessionId}
+      workingDir="/w"
+      position={{ x: 0, y: 400 }}
+      selectedIndex={selectedIndex}
+      onSelectedIndexChange={() => {}}
+      onSelect={vi.fn()}
+      onClose={() => {}}
+    />
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  Object.assign(window, {
+    electron: {
+      platform: 'darwin',
+      getUserActionKey: vi.fn(async () => null),
+      listFiles: mocks.listFiles,
+      listSkillDirs: vi.fn(async () => []),
+    },
+  });
+  mocks.listFiles.mockResolvedValue([]);
+  mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } });
+  mocks.listBases.mockResolvedValue({ data: [] });
+  mocks.getSlashCommands.mockResolvedValue({
+    data: {
+      commands: [
+        { command: 'compact', help: 'Compact the chat', command_type: 'Builtin' },
+        { command: 'clear', help: 'Clear the chat', command_type: 'Builtin' },
+      ],
+    },
+  });
+});
+
+describe('the mention menu', () => {
+  it('says "Searching…" with a spinner while it loads', async () => {
+    mocks.getSlashCommands.mockReturnValue(new Promise(() => {}));
+    renderMenu();
+    expect(await screen.findByText(COMPOSER_COPY.mention.searching)).toBeInTheDocument();
+    expect(document.querySelector('.br-spinner')).not.toBeNull();
+  });
+
+  it('lists rows in the shared menu recipe, with no count header', async () => {
+    renderMenu({ selectedIndex: 1 });
+    const options = await screen.findAllByRole('option');
+    expect(options.length).toBeGreaterThan(1);
+    expect(screen.queryByText(/items? found/)).toBeNull();
+    for (const option of options) {
+      expect(option.className).toContain('min-h-control-md');
+      expect(option.className).toContain('text-secondary');
+    }
+    expect(options[1]).toHaveAttribute('aria-selected', 'true');
+    expect(options[1]).toHaveAttribute('data-selected');
+    expect(options[0]).not.toHaveAttribute('data-selected');
+  });
+
+  it('sits on the modal-dropdown layer, not a literal z-index', async () => {
+    renderMenu();
+    const menu = await screen.findByTestId('mention-popover');
+    expect(menu.className).toContain('br-mention-menu');
+    expect(menu.className).not.toMatch(/z-\[\d+\]/);
+  });
+
+  it('uses no off-scale type', async () => {
+    renderMenu();
+    await screen.findAllByRole('option');
+    expect(document.body.innerHTML).not.toMatch(/text-\[1[01]px\]/);
+  });
+
+  /**
+   * V2-R3-4: "Mention (@)" from the `+` menu, or an `@` typed alone, drew nothing
+   * until two more characters were typed. It always answers now; with a folder
+   * that has nothing to list, it says so.
+   */
+  it('says the folder has nothing to list for an "@" alone in an empty folder', async () => {
+    renderMenu({ isSlashCommand: false, query: '' });
+    expect(await screen.findByText(COMPOSER_COPY.mention.emptyFolder)).toBeInTheDocument();
+    expect(screen.getByTestId('mention-popover')).toHaveAttribute(
+      'aria-label',
+      COMPOSER_COPY.mention.mentionsLabel
+    );
+  });
+
+  it('says "Searching…", never that the folder is empty, until the scan answers', async () => {
+    mocks.listFiles.mockReturnValue(new Promise(() => {}));
+    renderMenu({ isSlashCommand: false, query: '' });
+    expect(screen.getByText(COMPOSER_COPY.mention.searching)).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(mocks.listFiles).toHaveBeenCalledWith('/w');
+    expect(screen.getByText(COMPOSER_COPY.mention.searching)).toBeInTheDocument();
+    expect(screen.queryByText(COMPOSER_COPY.mention.emptyFolder)).toBeNull();
+  });
+});
+
+/**
+ * V2-R3-6: the `/diverge` row read "Continue in a new chat with the full history.
+ * Press Enter", a typed instruction with a period inside a one-line description.
+ * The client's own command descriptions live in the composer's copy.
+ */
+describe('the client commands in the "/" list', () => {
+  it('describe themselves from the composer copy', async () => {
+    renderMenu({ sessionId: 'chat-1' });
+    expect(await screen.findByText(COMPOSER_COPY.commands.diverge)).toBeInTheDocument();
+    expect(screen.getByText(COMPOSER_COPY.commands.crew)).toBeInTheDocument();
+    expect(screen.getByText(COMPOSER_COPY.commands.knowledge)).toBeInTheDocument();
+    expect(COMPOSER_COPY.commands.diverge).toBe('Continue in a new chat with the full history');
+  });
+
+  it('carry no period and no instruction to press a key', () => {
+    for (const description of Object.values(COMPOSER_COPY.commands)) {
+      expect(description).not.toMatch(/\.\s*$|\.\s|press/i);
+    }
+  });
+});

@@ -107,9 +107,8 @@ Biorouter uses a shared Rust agent core, an Electron and React desktop app, and 
 
 Developed by **Wanjun Gu** at UCSF's [Baranzini Lab](https://baranzinilab.ucsf.edu/), with support from UCSF IT and Information Commons.
 
-Biorouter is licensed under [Apache 2.0](LICENSE). Its design was inspired by the agents below, and Block's Goose was a major influence.
+Biorouter is licensed under [Apache 2.0](LICENSE). Its design was inspired by the agents below.
 
-- [Goose](https://github.com/block/goose) (Block): a command line and desktop agent for developer workflows.
 - [Claude Code](https://github.com/anthropics/claude-code) (Anthropic): a coding agent for the terminal and the IDE.
 - [Codex CLI](https://github.com/openai/codex) (OpenAI): an open source coding agent that runs in the terminal.
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (Google): an open source AI agent for the terminal.

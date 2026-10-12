@@ -186,7 +186,11 @@ export function useFormValidation() {
   };
 }
 
-/** A switch with its label beside it. Options that change behavior are switches, never checkboxes. */
+/**
+ * A switch with its label beside it. Options that change behavior are switches, never checkboxes.
+ * The label (and its hint under it) sits on the left and the switch on the right, the side every
+ * switch in the app takes (redesign spec 3.2, D1).
+ */
 export function SwitchRow({
   label,
   checked,
@@ -205,7 +209,17 @@ export function SwitchRow({
   const hintId = `${id}-hint`;
   return (
     <div className="crew-onboard-field">
-      <div className="crew-onboard-row">
+      <div className="crew-onboard-row justify-between">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <label htmlFor={id} className="text-label text-text-default">
+            {label}
+          </label>
+          {hint ? (
+            <p id={hintId} className="text-supporting text-text-muted">
+              {hint}
+            </p>
+          ) : null}
+        </div>
         <Switch
           id={id}
           checked={checked}
@@ -213,15 +227,7 @@ export function SwitchRow({
           aria-describedby={hint ? hintId : undefined}
           onCheckedChange={onCheckedChange}
         />
-        <label htmlFor={id} className="text-label text-text-default">
-          {label}
-        </label>
       </div>
-      {hint ? (
-        <p id={hintId} className="text-supporting text-text-muted">
-          {hint}
-        </p>
-      ) : null}
     </div>
   );
 }

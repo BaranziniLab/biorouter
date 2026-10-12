@@ -7,6 +7,9 @@
 //!   PREVIEW_FIXTURE_DIR=/tmp/fixtures cargo test -p biorouter-mcp \
 //!     --test preview_fixture_dump -- --ignored --nocapture
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use biorouter_mcp::AgentDrafterServer;
 use image::{Rgb, RgbImage};

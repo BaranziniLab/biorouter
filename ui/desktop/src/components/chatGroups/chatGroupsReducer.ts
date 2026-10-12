@@ -94,6 +94,15 @@ export type ChatGroupsAction =
   | { type: 'openTab'; payload: OpenTabPayload }
   | { type: 'activateTab'; tabId: ChatTabId }
   | { type: 'closeTab'; tabId: ChatTabId }
+  /**
+   * "Close other tabs" on a tab's menu: every other tab in THAT tab's group
+   * goes at once and the tab itself is what is left, active. One action rather
+   * than a `closeTab` per tab so the pane renders once instead of walking
+   * through every successor on the way (each would mount a chat, and send its
+   * pending message, only to be closed). Other groups of a split are the
+   * person's other panes and keep their tabs.
+   */
+  | { type: 'closeOtherTabs'; tabId: ChatTabId }
   | { type: 'reorderTab'; draggedTabId: ChatTabId; targetTabId: ChatTabId }
   | { type: 'renameTab'; sessionId: string; title: string; userSetName?: boolean }
   | { type: 'setTabCwd'; sessionId: string; cwd: string }
@@ -588,6 +597,29 @@ function closeTab(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
   );
 }
 
+function closeOtherTabs(state: ChatGroupsState, tabId: ChatTabId): ChatGroupsState {
+  const hit = findTabGroup(state, (t) => t.tabId === tabId);
+  if (!hit) return state;
+  const { group } = hit;
+  const kept = group.tabs.find((t) => t.tabId === tabId);
+  if (!kept) return state;
+  // Nothing beside it and it is already the one in front: no new state object, so
+  // no render, no storage write.
+  if (
+    group.tabs.length === 1 &&
+    group.activeTabId === tabId &&
+    state.activeGroupId === group.groupId
+  ) {
+    return state;
+  }
+  // The group keeps its one tab, so (unlike `closeTab`) it can never be the empty
+  // group `collapseEmptyGroup` exists for.
+  return {
+    ...withGroup(state, group.groupId, { ...group, tabs: [kept], activeTabId: tabId }),
+    activeGroupId: group.groupId,
+  };
+}
+
 function moveTabToGroup(
   state: ChatGroupsState,
   action: ChatGroupsAction & { type: 'moveTabToGroup' }
@@ -688,6 +720,9 @@ export function chatGroupsReducer(
 
     case 'closeTab':
       return closeTab(state, action.tabId);
+
+    case 'closeOtherTabs':
+      return closeOtherTabs(state, action.tabId);
 
     case 'reorderTab': {
       const hit = findTabGroup(state, (t) => t.tabId === action.draggedTabId);

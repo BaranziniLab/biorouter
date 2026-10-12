@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cn } from '../../utils';
+import { MENU_GROUP_LABEL_CLASS_NAME, MENU_ROW_CLASS_NAME } from './dropdown-menu';
 import { Search } from '../icons/app-icons';
 
 /**
@@ -166,6 +167,12 @@ export function Command({
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    // The listbox keys belong to the field. A control placed inside the root (a "Select all"
+    // button, an InfoTip, a scope bar) keeps its own keys: without this, Enter on that button
+    // bubbled here, was prevented, and clicked the highlighted row instead (WS-PICKERS-2).
+    if (event.target instanceof HTMLElement && event.target.getAttribute('role') !== 'combobox') {
+      return;
+    }
     switch (event.key) {
       case 'ArrowDown':
         event.preventDefault();
@@ -223,7 +230,12 @@ export function CommandInput({ className, placeholder, ...props }: CommandInputP
     // The field's own 32px, from the Input primitive's geometry. Sub-32px fields
     // do not exist in this app and adding a `size` variant to `Input` is a
     // design-system change this surface does not own (ui-spec §4.0).
-    <div className="flex h-control-md flex-none items-center gap-2 border-b border-border-subtle px-2">
+    // `px-4` puts the glyph on the 16px edge every row's text starts on (the list's 4px plus
+    // the row's 12px) and the typed text at 40px, where an icon row's label starts. At `px-2`
+    // the glyph was the one thing in the popover 8px left of that edge (WS-PICKERS-4,
+    // coordinator ruling 13). The rule below it stays: the field is pinned and the list
+    // scrolls under it, a structural scroll edge (R-27 keeps those).
+    <div className="flex h-control-md flex-none items-center gap-2 border-b border-border-subtle px-4">
       <Search className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
       <input
         type="text"
@@ -265,7 +277,7 @@ export function CommandGroup({
   return (
     <div role="group" aria-labelledby={heading ? headingId : undefined} {...props}>
       {heading ? (
-        <div id={headingId} className="px-2 pb-1 pt-2 text-caps text-text-muted">
+        <div id={headingId} className={MENU_GROUP_LABEL_CLASS_NAME}>
           {heading}
         </div>
       ) : null}
@@ -316,11 +328,13 @@ export function CommandItem({
         if (!disabled) onSelect();
       }}
       className={cn(
-        // A row inside a 12px popover takes the next step down: `rounded-inner`
-        // is the nested-in-a-control rung.
-        'flex h-row-rail cursor-pointer select-none items-center gap-2 rounded-inner px-2 text-label',
+        // The one menu row (spec 2.6): 32px minimum, 12px inset, radius 8 (12 − 4 of the
+        // popover's padding), 13/18, the `--overlay-hover` highlight. A minimum, not a fixed
+        // height, so a row with a second muted line owns its height instead of spilling.
+        MENU_ROW_CLASS_NAME,
+        'cursor-pointer',
         disabled && 'cursor-not-allowed opacity-50',
-        active && !disabled && 'tint-selected tint-interactive',
+        active && !disabled && 'bg-overlay-hover text-text-default',
         className
       )}
       {...props}

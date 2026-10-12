@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { stageSkeleton } from '../integration/stageSkeleton';
+import { DUR } from '../../../styles/motion';
 
 const crewDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STYLESHEETS = [
@@ -45,11 +46,11 @@ const TOKENS = `:root {
   --biorouter-titlebar-control-reserve: 172px;
   --border-subtle: rgb(200, 200, 200);
   --sidebar-border: rgb(200, 200, 200);
-  --dur-fast: 120ms;
-  --dur-fast-min: 80ms;
-  --dur-fast-max: 175ms;
-  --dur-med: 300ms;
-  --dur-slow: 525ms;
+  --dur-fast: ${DUR.fast}ms;
+  --dur-fast-min: ${DUR.fastMin}ms;
+  --dur-fast-max: ${DUR.fastMax}ms;
+  --dur-med: ${DUR.med}ms;
+  --dur-slow: ${DUR.slow}ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
 }
 body { margin: 0; font: 14px/20px sans-serif; }
@@ -260,6 +261,36 @@ describe('the Crew column in a real layout engine', () => {
       const between = samples.filter((sample) => sample.pane > 20 && sample.pane < PANE_WIDTH - 20);
       expect(between.length).toBeGreaterThanOrEqual(2);
       near(samples[samples.length - 1].pane, PANE_WIDTH, 'pane at rest');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * Redesign spec 3.2, D3: a team header's chevron and its name sit 8px apart, the app's default
+   * gap (it was 4px, tighter than every other glyph-and-label pair in the column).
+   */
+  it('spaces a team header’s chevron 8px from its name (D3)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await browser!.newPage({ viewport: WINDOW });
+    try {
+      await tab.setContent(
+        '<!doctype html><html><head><style>' +
+          TOKENS +
+          css +
+          '</style></head><body><div class="crew-app"><div class="crew-sidebar">' +
+          '<div class="crew-sidebar-team"><div class="crew-sidebar-team-header">' +
+          '<button type="button" class="crew-sidebar-team-toggle" id="toggle">' +
+          '<svg class="crew-sidebar-chevron" id="chevron" viewBox="0 0 16 16"></svg>' +
+          '<bdi class="crew-sidebar-truncate" id="team">chen-lab</bdi>' +
+          '</button></div></div></div></div></body></html>'
+      );
+      const gap = await tab.evaluate(
+        () =>
+          document.getElementById('team')!.getBoundingClientRect().left -
+          document.getElementById('chevron')!.getBoundingClientRect().right
+      );
+      near(gap, 8, 'chevron to team name');
     } finally {
       await tab.close();
     }

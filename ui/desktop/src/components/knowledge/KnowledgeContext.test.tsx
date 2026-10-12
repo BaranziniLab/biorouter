@@ -75,6 +75,7 @@ function Probe() {
     basesError,
     defaultPrimaryKb,
     canFollowDefaultPrimary,
+    selectionSettled,
     followDefaultPrimary,
     refreshDefaultPrimary,
     setPrimaryKbId,
@@ -91,6 +92,7 @@ function Probe() {
       <span data-testid="bases-error">{basesError ?? 'none'}</span>
       <span data-testid="default-primary">{defaultPrimaryKb?.id ?? 'none'}</span>
       <span data-testid="can-follow-default">{canFollowDefaultPrimary ? 'yes' : 'no'}</span>
+      <span data-testid="settled">{selectionSettled ? 'settled' : 'waiting'}</span>
       <button type="button" onClick={() => void refresh()}>
         refresh
       </button>
@@ -821,6 +823,253 @@ describe('KnowledgeContext', () => {
       await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
       const calls = mocks.setActive.mock.calls;
       expect(calls[calls.length - 1]?.[0]?.body.hidden_kbs).toEqual(['alpha', 'beta']);
+    });
+  });
+
+  // V2-R7-3. The composer's Tools chip sums the knowledge count with the other
+  // two lists and shows no number until all three have answered for this chat.
+  // `hiddenKbIds` is three different things in turn on a chat switch (the
+  // previous scope's, this renderer's cached copy, the daemon's), and nothing
+  // told a reader which: for a chat opened first in this profile the cached copy
+  // is `[]`, every base visible, and the daemon's answer can hide some, so a
+  // count shown early dropped afterwards.
+  describe('selectionSettled', () => {
+    type Seen = { scope: string | null; settled: boolean; hidden: string };
+    const seen: Seen[] = [];
+
+    /** Records every render the provider's consumers get, with the scope that render was for. */
+    function Recorder({ scope }: { scope: string | null }) {
+      const { selectionSettled, hiddenKbIds } = useKnowledge();
+      seen.push({ scope, settled: selectionSettled, hidden: hiddenKbIds.join(',') || 'none' });
+      return null;
+    }
+
+    function Harness({ scope }: { scope: string | null }) {
+      return (
+        <KnowledgeProvider sessionId={scope}>
+          <Probe />
+          <Recorder scope={scope} />
+        </KnowledgeProvider>
+      );
+    }
+
+    const settledText = () => screen.getByTestId('settled').textContent;
+    const rendersFor = (scope: string | null) => seen.filter((entry) => entry.scope === scope);
+
+    beforeEach(() => {
+      seen.length = 0;
+    });
+
+    it("waits for the hydrate, then says the selection is the scope's own", async () => {
+      const answer = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => answer.promise);
+
+      render(<Harness scope="chat-1" />);
+
+      await settle(() => {});
+      expect(settledText()).toBe('waiting');
+      // The cached copy is what the chip would have summed: nothing hidden.
+      expect(screen.getByTestId('hidden').textContent).toBe('none');
+
+      await settle(() => answer.resolve({ data: daemon.session }));
+
+      expect(settledText()).toBe('settled');
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+      // No render ever called a cached or previous selection settled.
+      const settledRenders = rendersFor('chat-1').filter((entry) => entry.settled);
+      expect(settledRenders).not.toHaveLength(0);
+      expect(settledRenders.every((entry) => entry.hidden === 'beta')).toBe(true);
+    });
+
+    // Machine scope is `sessionId === null`, which is also what "no scope has
+    // settled" would be if it were stored bare.
+    it('settles the machine scope too, and not before its answer', async () => {
+      const answer = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => answer.promise);
+
+      render(<Harness scope={null} />);
+
+      await settle(() => {});
+      expect(settledText()).toBe('waiting');
+
+      await settle(() => answer.resolve({ data: daemon.machine }));
+      expect(settledText()).toBe('settled');
+    });
+
+    it('is false in the very render that changes the scope, and true once the new scope answers', async () => {
+      const first = deferred<unknown>();
+      const second = deferred<unknown>();
+      mocks.getActive
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise);
+      const view = render(<Harness scope="chat-1" />);
+      await settle(() => first.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+
+      seen.length = 0;
+      view.rerender(<Harness scope="chat-2" />);
+      await settle(() => {});
+
+      // chat-1's answer was still in state when chat-2's first render ran.
+      expect(rendersFor('chat-2').length).toBeGreaterThan(0);
+      expect(rendersFor('chat-2').every((entry) => !entry.settled)).toBe(true);
+      expect(settledText()).toBe('waiting');
+
+      daemon.session = { ...daemon.session, hidden_kbs: [] };
+      await settle(() => second.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+      expect(screen.getByTestId('hidden').textContent).toBe('none');
+    });
+
+    // Leaving a scope must forget that it settled. Otherwise returning to it
+    // before the scope in between has answered finds the old settle standing,
+    // over a selection that is the in-between scope's.
+    it("does not carry a scope's earlier settle into a quick return to it", async () => {
+      const a1 = deferred<unknown>();
+      const b = deferred<unknown>();
+      const a2 = deferred<unknown>();
+      mocks.getActive
+        .mockImplementationOnce(() => a1.promise)
+        .mockImplementationOnce(() => b.promise)
+        .mockImplementationOnce(() => a2.promise);
+      const view = render(<Harness scope="chat-1" />);
+      await settle(() => a1.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+
+      view.rerender(<Harness scope="chat-2" />);
+      await settle(() => {});
+      seen.length = 0;
+      view.rerender(<Harness scope="chat-1" />);
+      await settle(() => {});
+
+      expect(rendersFor('chat-1').length).toBeGreaterThan(0);
+      expect(rendersFor('chat-1').every((entry) => !entry.settled)).toBe(true);
+      expect(settledText()).toBe('waiting');
+
+      // The answer for the scope that was left lands late, and settles nothing.
+      await settle(() => b.resolve({ data: daemon.machine }));
+      expect(settledText()).toBe('waiting');
+
+      await settle(() => a2.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+    });
+
+    it('settles on the last confirmed selection when the hydrate cannot be read', async () => {
+      localStorage.setItem('knowledge_active_kb:chat-1', 'beta');
+      localStorage.setItem('knowledge_hidden_kbs:chat-1', '["alpha"]');
+      const answer = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => answer.promise);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      render(<Harness scope="chat-1" />);
+      await settle(() => {});
+      expect(settledText()).toBe('waiting');
+
+      await settle(() => answer.reject(new Error('network down')));
+
+      expect(settledText()).toBe('settled');
+      expect(screen.getByTestId('hidden').textContent).toBe('alpha');
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+      warn.mockRestore();
+    });
+
+    it('does not settle a scope the user left while its hydrate failed', async () => {
+      const first = deferred<unknown>();
+      const second = deferred<unknown>();
+      mocks.getActive
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const view = render(<Harness scope="chat-1" />);
+      await settle(() => {});
+
+      view.rerender(<Harness scope="chat-2" />);
+      await settle(() => {});
+      await settle(() => first.reject(new Error('late failure')));
+
+      expect(settledText()).toBe('waiting');
+      await settle(() => second.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+      warn.mockRestore();
+    });
+
+    // A write made while the hydrate is out bumps the generation, which throws
+    // the hydrate's answer away. The write's own answer is then the scope's.
+    it("settles on the write's answer when a write supersedes the hydrate", async () => {
+      const hydrate = deferred<unknown>();
+      const write = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => hydrate.promise);
+      mocks.setActive.mockReturnValueOnce(write.promise);
+      render(<Harness scope="chat-1" />);
+      await settle(() => {});
+
+      await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+      expect(mocks.setActive).toHaveBeenCalledTimes(1);
+
+      await settle(() => hydrate.resolve({ data: daemon.session }));
+      // The hydrate was superseded: it settles nothing, and does not overwrite
+      // the click.
+      expect(settledText()).toBe('waiting');
+      expect(screen.getByTestId('hidden').textContent).toBe('alpha');
+
+      await settle(() =>
+        write.resolve({
+          data: { kb_ids: ['beta'], primary_kb: 'beta', active_kb: 'beta', hidden_kbs: ['alpha'] },
+        })
+      );
+      expect(settledText()).toBe('settled');
+      expect(screen.getByTestId('hidden').textContent).toBe('alpha');
+    });
+
+    it('settles on the recovery read when the write that superseded the hydrate fails', async () => {
+      const hydrate = deferred<unknown>();
+      const write = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => hydrate.promise);
+      mocks.setActive.mockReturnValueOnce(write.promise);
+      render(<Harness scope="chat-1" />);
+      await settle(() => {});
+      await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+
+      await settle(() => write.reject(new Error('network down')));
+
+      await waitFor(() => expect(settledText()).toBe('settled'));
+      // The recovery read is the daemon's answer, not the optimistic click.
+      expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    });
+
+    it('settles on the last confirmed selection when the recovery read fails too', async () => {
+      const hydrate = deferred<unknown>();
+      const write = deferred<unknown>();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mocks.getActive
+        .mockImplementationOnce(() => hydrate.promise)
+        .mockImplementationOnce(() => Promise.reject(new Error('still down')));
+      mocks.setActive.mockReturnValueOnce(write.promise);
+      render(<Harness scope="chat-1" />);
+      await settle(() => {});
+      await userEvent.click(screen.getByRole('button', { name: 'toggle alpha' }));
+
+      await settle(() => write.reject(new Error('network down')));
+
+      await waitFor(() => expect(settledText()).toBe('settled'));
+      expect(screen.getByTestId('hidden').textContent).toBe('none');
+      warn.mockRestore();
+    });
+
+    it('stays settled while the same scope is re-read', async () => {
+      render(<Harness scope="chat-1" />);
+      await waitFor(() => expect(settledText()).toBe('settled'));
+
+      const reread = deferred<unknown>();
+      mocks.getActive.mockImplementationOnce(() => reread.promise);
+      seen.length = 0;
+      await userEvent.click(screen.getByRole('button', { name: 'refresh' }));
+      await settle(() => {});
+
+      expect(settledText()).toBe('settled');
+      await settle(() => reread.resolve({ data: daemon.session }));
+      expect(settledText()).toBe('settled');
+      expect(seen.every((entry) => entry.settled)).toBe(true);
     });
   });
 });

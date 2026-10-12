@@ -1,7 +1,7 @@
 # Context injection, system prompts and environment awareness
 
 > **What this is.** Chapter 1 of the four-part competitive comparison in the
-> 2026-07 agentic-loop review: how BioRouter and nine other open-source coding
+> 2026-07 agentic-loop review: how BioRouter and eight other open-source coding
 > agents build their system prompts, read project-context files, inject context
 > over time, and give the model awareness of its surroundings.
 > **Status:** Superseded — the BioRouter column no longer describes the system. The
@@ -45,42 +45,41 @@ Four conventions used throughout:
 The reviewed BioRouter commit was not recorded in the original document.
 
 > **Note on column confidence.** The original scope note claimed that no report
-> files existed for Goose, Cline, OpenCode, Aider, or Gemini CLI, and
-> hedged those five columns as secondary to a primary BioRouter-vs-Pi/OpenHands/
+> files existed for Cline, OpenCode, Aider, or Gemini CLI, and
+> hedged those four columns as secondary to a primary BioRouter-vs-Pi/OpenHands/
 > Codex comparison. That claim is contradicted by the review's own research
-> folder: [goose](../../../research/coding-agent-landscape/goose.md),
-> [cline](../../../research/coding-agent-landscape/cline.md),
+> folder: [cline](../../../research/coding-agent-landscape/cline.md),
 > [opencode](../../../research/coding-agent-landscape/opencode.md),
 > [aider](../../../research/coding-agent-landscape/aider.md) and
 > [gemini-cli](../../../research/coding-agent-landscape/gemini-cli.md) all exist.
-> The substantive caveat still stands: those five columns were written from
+> The substantive caveat still stands: those four columns were written from
 > widely-documented public behaviour rather than from the reports, so treat them
 > as lower-confidence than the BioRouter, Pi, OpenHands and Codex CLI columns.
 
-## Comparison across ten agents
+## Comparison across nine agents
 
-The table has one column per agent, in this order: BioRouter, Goose,
-Cline, OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
+The table has one column per agent, in this order: BioRouter, Cline,
+OpenCode, Pi, Aider, OpenHands, Codex CLI, Gemini CLI, Claude Code. It is
 wide and scrolls horizontally.
 
-> **Note.** The BioRouter column is superseded — see the status header. The nine
+> **Note.** The BioRouter column is superseded — see the status header. The eight
 > competitor columns are a 2026-07 snapshot and have not been re-verified since.
 
-| Aspect | BioRouter | Goose | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
-|---|---|---|---|---|---|---|---|---|---|---|
-| System prompt source | Embedded `system.md`, MiniJinja-rendered | Embedded template | Large hardcoded prompt | Templated prompt | ~1000-token minimal prompt | Compact prompt | Jinja `.j2` preset registry | Checked-in Markdown per model | Templated prompt | Hardcoded prompt |
-| Per-model prompt variants | None except toolshim JSON rewrite | None | None | None | None | None | Presets (DEFAULT/PLANNING), not per-model | **Yes — per-model files** (`gpt-5.2-codex_prompt.md`, etc.) | None | None |
-| Project context file | `.biorouterhints` + `AGENTS.md` (configurable, `CLAUDE.md` works) | `.goosehints` | `.clinerules` | `AGENTS.md` | `AGENTS.md`/`CLAUDE.md` | `CONVENTIONS.md` | `AGENTS.md` (+`CLAUDE.md`/`GEMINI.md` variants) | `AGENTS.md` (+`.override.md`) | `AGENTS.md`/`CLAUDE.md` | `CLAUDE.md` |
-| Hierarchy / precedence | Global + git-root→cwd walk, deeper appended | Global + project | Project + global | Dir walk | Global→parents→cwd, most-specific last | Repo-level | Repo skill always-loaded | Global override→root→cwd, deeper overrides (32 KiB cap) | Global→hierarchical `GEMINI.md` | Hierarchical enterprise→project→user |
-| Untrusted-file framing | **No** — hint body inserted verbatim as system-level instruction | No | No | No | No (explicitly "expected local risk") | No | Skill/repo context trusted | Trusted | No | **Yes — project files treated as lower-trust** |
-| When base prompt built | **Rebuilt every user turn** (re-reads hints from disk) | Per turn | Per turn (+ env each msg) | Per turn | Startup + per-turn extension rewrite | Startup/per-turn | Conversation start | Once per run/session | Startup | Session start |
-| Ambient/env awareness | cwd + time via per-turn MOIM `<info-msg>` | cwd/time | **Rich `environment_details`** each msg (file list, open tabs, cwd) | cwd + LSP | cwd in prompt options | cwd, git | cwd, workspace | world-state + `current_time.rs` context fragments | cwd, env | git status + cwd + dir snapshot at start |
-| Repo map / structure | **None** — one "Working directory" line only | None | File list injected | LSP symbols | None | **Ranked tree-sitter repo-map** | None (agent explores) | None (agent explores) | Dir tree snapshot | Dir listing at start |
-| Mid-conversation dynamic injection | MOIM re-injected **every action**; explicit-resource-context; skill inlining | No | env_details each msg | LSP diagnostics | `before_agent_start`/`context` extension hooks rewrite prompt/msgs | repo-map refresh | Path-triggered rules on file ops; condensation | `context-fragments`, `@`-mention, memories layer | context refresh | Reminders, `@`-mention |
-| Transclusion / imports | **`@import`** with boundary+depth(3)+cycle+gitignore guards | No | No | No | No | No | No | `@`-mention file expansion | `@`-mention imports | `@`-mention imports |
-| Total context budget | **None** — 128 KB per-file *parse* cap only, no aggregate | None | Window-managed | Window-managed | Window-managed | Repo-map token budget | Condenser (`max_size`, `keep_first`) | `project_doc_max_bytes` 32 KiB + compaction | Window-managed | Window-managed |
-| MCP/extension instructions → prompt | Each server's `instructions` rendered verbatim under `## <name>` (Unicode-sanitized) | Same as BioRouter | MCP instructions | MCP | MCP omitted by design (skills instead) | n/a | MCP tools + skills | MCP instructions | MCP | MCP + skills |
-| Cross-session durable memory into prompt | Opt-in KB/"Soul", not auto-injected | No | Memory-bank (user pattern) | No | File-based (`TODO.md`) | No | Persisted event store | **Self-maintained ranked `~/.codex/memories/`** | No | Memory files |
+| Aspect | BioRouter | Cline | OpenCode | Pi | Aider | OpenHands | Codex CLI | Gemini CLI | Claude Code |
+|---|---|---|---|---|---|---|---|---|---|
+| System prompt source | Embedded `system.md`, MiniJinja-rendered | Large hardcoded prompt | Templated prompt | ~1000-token minimal prompt | Compact prompt | Jinja `.j2` preset registry | Checked-in Markdown per model | Templated prompt | Hardcoded prompt |
+| Per-model prompt variants | None except toolshim JSON rewrite | None | None | None | None | Presets (DEFAULT/PLANNING), not per-model | **Yes — per-model files** (`gpt-5.2-codex_prompt.md`, etc.) | None | None |
+| Project context file | `.biorouterhints` + `AGENTS.md` (configurable, `CLAUDE.md` works) | `.clinerules` | `AGENTS.md` | `AGENTS.md`/`CLAUDE.md` | `CONVENTIONS.md` | `AGENTS.md` (+`CLAUDE.md`/`GEMINI.md` variants) | `AGENTS.md` (+`.override.md`) | `AGENTS.md`/`CLAUDE.md` | `CLAUDE.md` |
+| Hierarchy / precedence | Global + git-root→cwd walk, deeper appended | Project + global | Dir walk | Global→parents→cwd, most-specific last | Repo-level | Repo skill always-loaded | Global override→root→cwd, deeper overrides (32 KiB cap) | Global→hierarchical `GEMINI.md` | Hierarchical enterprise→project→user |
+| Untrusted-file framing | **No** — hint body inserted verbatim as system-level instruction | No | No | No (explicitly "expected local risk") | No | Skill/repo context trusted | Trusted | No | **Yes — project files treated as lower-trust** |
+| When base prompt built | **Rebuilt every user turn** (re-reads hints from disk) | Per turn (+ env each msg) | Per turn | Startup + per-turn extension rewrite | Startup/per-turn | Conversation start | Once per run/session | Startup | Session start |
+| Ambient/env awareness | cwd + time via per-turn MOIM `<info-msg>` | **Rich `environment_details`** each msg (file list, open tabs, cwd) | cwd + LSP | cwd in prompt options | cwd, git | cwd, workspace | world-state + `current_time.rs` context fragments | cwd, env | git status + cwd + dir snapshot at start |
+| Repo map / structure | **None** — one "Working directory" line only | File list injected | LSP symbols | None | **Ranked tree-sitter repo-map** | None (agent explores) | None (agent explores) | Dir tree snapshot | Dir listing at start |
+| Mid-conversation dynamic injection | MOIM re-injected **every action**; explicit-resource-context; skill inlining | env_details each msg | LSP diagnostics | `before_agent_start`/`context` extension hooks rewrite prompt/msgs | repo-map refresh | Path-triggered rules on file ops; condensation | `context-fragments`, `@`-mention, memories layer | context refresh | Reminders, `@`-mention |
+| Transclusion / imports | **`@import`** with boundary+depth(3)+cycle+gitignore guards | No | No | No | No | No | `@`-mention file expansion | `@`-mention imports | `@`-mention imports |
+| Total context budget | **None** — 128 KB per-file *parse* cap only, no aggregate | Window-managed | Window-managed | Window-managed | Repo-map token budget | Condenser (`max_size`, `keep_first`) | `project_doc_max_bytes` 32 KiB + compaction | Window-managed | Window-managed |
+| MCP/extension instructions → prompt | Each server's `instructions` rendered verbatim under `## <name>` (Unicode-sanitized) | MCP instructions | MCP | MCP omitted by design (skills instead) | n/a | MCP tools + skills | MCP instructions | MCP | MCP + skills |
+| Cross-session durable memory into prompt | Opt-in KB/"Soul", not auto-injected | Memory-bank (user pattern) | No | File-based (`TODO.md`) | No | Persisted event store | **Self-maintained ranked `~/.codex/memories/`** | No | Memory files |
 
 ## Where BioRouter was ahead
 
@@ -200,8 +199,7 @@ wide and scrolls horizontally.
   accumulates repeated blocks.
 - **Import/transclusion safety:** Best = **BioRouter** (`@import` with
   boundary/depth/cycle/gitignore guards). Others offer at most `@`-mention file
-  expansion without documented guards. Worst = tools with none (Cline, Aider,
-  Goose).
+  expansion without documented guards. Worst = tools with none (Cline, Aider).
 - **Context budgeting:** Best = **OpenHands** (structured condenser with pinned
   head + minimum-progress + hard-reset). Worst = **BioRouter** (no aggregate
   budget at all).

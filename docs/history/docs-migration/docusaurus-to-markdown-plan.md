@@ -4,17 +4,17 @@
 > **Status:** Historical record — written 2026-05-07 and carried out. `documentation/` no longer exists, `docs/` is plain markdown in the getting-started / architecture / guides / extensions / troubleshooting layout this plan creates, and the throwaway `scripts/migrate-docs.py` was removed by Task 6 as designed. `scripts/verify-docs.sh` survives.
 > **Audience:** maintainers and agents tracing how a documentation page reached its current path.
 
-Two terms this plan assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree; its output mixes JSX components into Markdown (MDX) and ships generated HTML, feeds and media beside the source. **Goose** is the open source agent project whose design influenced BioRouter most, published by the company **Block**. Both appear as branding in the old pages, and the migration replaces that branding with BioRouter.
+One term this plan assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree; its output mixes JSX components into Markdown (MDX) and ships generated HTML, feeds and media beside the source. The old pages also carried a product name, a company attribution and web addresses that were not BioRouter's, and the migration replaces all of them with BioRouter's own.
 
 The design this plan implements is [consolidation-design.md](consolidation-design.md), its sibling in this folder: that document holds the file-by-file move tables, the deletion list and the transformation rules, while this one holds the runnable steps.
 
 > **Note.** Every command below hardcodes `/Users/wgu/Desktop/biorouter`, the author's checkout at the time of the run. To replay any step, substitute the path of your own clone.
 
-> **Note.** Tasks 1 and 2 author `scripts/verify-docs.sh` and `scripts/migrate-docs.py` inline through `cat > … << 'EOF'` heredocs, so the script bodies below are a snapshot taken at authoring time, not the live source. `scripts/verify-docs.sh` has since been edited in the repository (its Goose check gained a `mongoose` false-positive filter) — treat the checked-in file as authoritative. `scripts/migrate-docs.py` was deleted by Task 6, Step 2, so the copy below is the only remaining record of it.
+> **Note.** Tasks 1 and 2 author `scripts/verify-docs.sh` and `scripts/migrate-docs.py` inline through `cat > … << 'EOF'` heredocs, so the script bodies below are a snapshot taken at authoring time, not the live source. `scripts/verify-docs.sh` has since been edited in the repository (its old-name check gained a false-positive filter) — treat the checked-in file as authoritative. `scripts/migrate-docs.py` was deleted by Task 6, Step 2, so the copy below is the only remaining record of it.
 
 **How this plan was run:** as an agentic worker task, using the `superpowers:subagent-driven-development` sub-skill (`superpowers:executing-plans` was the alternative). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Merge `documentation/` and `docs/` into a single plain-markdown `docs/` folder, purging all Docusaurus infrastructure, Goose/Block branding, and recipe→workflow renaming.
+**Goal:** Merge `documentation/` and `docs/` into a single plain-markdown `docs/` folder, purging all Docusaurus infrastructure, replacing the old pages' product name and company references with BioRouter's own, and renaming recipe→workflow.
 
 **Architecture:** A Python migration script reads each source file, applies transformations (JSX stripping, branding replacement, recipe→workflow rename), and writes to the new location. A shell verification script acts as the test suite. All deletions happen after migration is confirmed complete.
 
@@ -102,8 +102,8 @@ check "no .html files in docs/" \
 check "no .mp4/.mp3 files in docs/" \
   "find '$DOCS' \( -name '*.mp4' -o -name '*.mp3' \) 2>/dev/null"
 
-check "no goose/geese references in markdown (outside superpowers/)" \
-  "grep -ril 'goose\|geese' '$DOCS' --include='*.md' 2>/dev/null \
+check "no references to the old product name in markdown (outside superpowers/)" \
+  "grep -ril '<old-name>\|<old-name-plural>' '$DOCS' --include='*.md' 2>/dev/null \
    | grep -v 'superpowers/' || true"
 
 check "no recipe/recipes references in markdown (outside superpowers/)" \
@@ -161,7 +161,7 @@ Migrate docs from Docusaurus/MDX to plain markdown.
 Transformations applied to every file:
   1. Strip Docusaurus-only frontmatter keys
   2. Strip JSX/MDX (imports, component tags, admonitions wrappers)
-  3. Replace Goose/Block branding → BioRouter
+  3. Replace the old product name and company branding → BioRouter
   4. Replace recipe/recipes → workflow/workflows
   5. Basic link cleanup (remove /BioRouter/ prefix, fix recipe→workflow paths)
 
@@ -185,23 +185,25 @@ STRIP_FM_KEYS = {
 }
 
 # ── Branding replacements (order matters — longer patterns first) ──────────────
+# <old-name> and <old-domain> stand for the old pages' product name and web
+# addresses; the literal patterns are not reproduced in this record.
 BRANDING = [
     # URLs first (before bare word replacements)
-    ('block.gitmcp.io',          'github.com/BaranziniLab/biorouter'),
-    ('block.xyz',                'https://github.com/BaranziniLab/biorouter'),
-    ('block.github.io',          'https://github.com/BaranziniLab/biorouter'),
-    ('sq.github.io/goose',       'https://github.com/BaranziniLab/biorouter'),
-    # Bare word branding (case variants)
-    (re.compile(r'\bGOOSE\b'),   'BIOROUTER'),
-    (re.compile(r'\bGoose\b'),   'BioRouter'),
-    (re.compile(r'\bgoose\b'),   'BioRouter'),
-    (re.compile(r'\bGEESE\b'),   'BIOROUTER'),
-    (re.compile(r'\bGeese\b'),   'BioRouter'),
-    (re.compile(r'\bgeese\b'),   'BioRouter'),
-    # Remove "by Block" / "from Block" attributions
-    (re.compile(r'\s*[Bb]y\s+Block\b'),  ''),
-    (re.compile(r'\s*[Ff]rom\s+Block\b'), ''),
-    (re.compile(r',?\s*[Bb]lock\s+[Ii]nc\.?'), ''),
+    ('<old-domain-1>',           'github.com/BaranziniLab/biorouter'),
+    ('<old-domain-2>',           'https://github.com/BaranziniLab/biorouter'),
+    ('<old-domain-3>',           'https://github.com/BaranziniLab/biorouter'),
+    ('<old-domain-4>/<old-name>', 'https://github.com/BaranziniLab/biorouter'),
+    # Bare word branding (case variants, plural form included)
+    (re.compile(r'\b<OLD-NAME>\b'),        'BIOROUTER'),
+    (re.compile(r'\b<Old-name>\b'),        'BioRouter'),
+    (re.compile(r'\b<old-name>\b'),        'BioRouter'),
+    (re.compile(r'\b<OLD-NAME-PLURAL>\b'), 'BIOROUTER'),
+    (re.compile(r'\b<Old-name-plural>\b'), 'BioRouter'),
+    (re.compile(r'\b<old-name-plural>\b'), 'BioRouter'),
+    # Remove company attributions ("by <company>", "from <company>", "<company> Inc.")
+    (re.compile(r'\s*[Bb]y\s+<company>\b'),  ''),
+    (re.compile(r'\s*[Ff]rom\s+<company>\b'), ''),
+    (re.compile(r',?\s*<company>\s+[Ii]nc\.?'), ''),
 ]
 
 # ── Recipe → Workflow renames ─────────────────────────────────────────────────
@@ -446,17 +448,17 @@ Expected: 36 lines of `source -> dest`, then `Done. 36/36 files migrated.`
 - [ ] **Step 2: Spot-check three representative output files**
 
 ```bash
-# 1. extensions-skills.md — should have no JSX, no Goose references
+# 1. extensions-skills.md — should have no JSX and no old-name references
 head -40 /Users/wgu/Desktop/biorouter/docs/guides/extensions-skills.md
 
 # 2. guides/workflows/reference.md — verify recipe→workflow rename
-grep -i "recipe\|goose" /Users/wgu/Desktop/biorouter/docs/guides/workflows/reference.md | head -10
+grep -i "recipe" /Users/wgu/Desktop/biorouter/docs/guides/workflows/reference.md | head -10
 
-# 3. extensions/developer.md — verify JSX stripped, GooseBuiltinInstaller gone
-grep -i "GooseBuiltinInstaller\|className\|import " /Users/wgu/Desktop/biorouter/docs/extensions/developer.md | head -10
+# 3. extensions/developer.md — verify JSX stripped, the old installer component gone
+grep -i "BuiltinInstaller\|className\|import " /Users/wgu/Desktop/biorouter/docs/extensions/developer.md | head -10
 ```
 
-Expected for check 2: no output (no recipe/goose hits).
+Expected for check 2: no output (no recipe hits).
 Expected for check 3: no output (no JSX artifacts).
 
 - [ ] **Step 3: Check landing pages that were pure JSX — may need a content line**
@@ -481,7 +483,7 @@ If any file is under 5 lines, view it and add a one-sentence intro describing wh
 ```bash
 cd /Users/wgu/Desktop/biorouter
 git add docs/getting-started/ docs/architecture/ docs/guides/ docs/extensions/ docs/troubleshooting/
-git commit -m "docs: migrate 36 files to plain markdown, purge Goose branding and recipe terminology"
+git commit -m "docs: migrate 36 files to plain markdown, replace old branding and recipe terminology"
 ```
 
 ---
@@ -589,19 +591,19 @@ cd /Users/wgu/Desktop/biorouter && bash scripts/verify-docs.sh
 
 Expected: `ALL CHECKS PASSED` with all 7 checks showing `PASS`.
 
-- [ ] **Step 2: Fix any remaining Goose/Block references**
+- [ ] **Step 2: Fix any remaining old-branding references**
 
-If check 3 (goose/geese) fails, find and fix the specific file:
+If check 3 (old product name) fails, find and fix the specific file:
 
 ```bash
-grep -rn "goose\|geese\|Goose\|Geese" /Users/wgu/Desktop/biorouter/docs --include="*.md" \
+grep -rn -i "<old-name>\|<old-name-plural>" /Users/wgu/Desktop/biorouter/docs --include="*.md" \
   | grep -v superpowers/
 ```
 
 For each hit, open the file and replace manually. Common missed cases:
 
-- `**BioRouter Prompt:**` ← was `**goose Prompt:**` in `subagents.md`
-- URLs containing `goose` in GitHub links
+- `**BioRouter Prompt:**` ← was a prompt label carrying the old product name in `subagents.md`
+- URLs containing the old product name in GitHub links
 
 - [ ] **Step 3: Fix any remaining recipe references**
 
@@ -620,7 +622,7 @@ Fix each file. Common missed cases:
 - [ ] **Step 4: Check for leftover JSX artifacts**
 
 ```bash
-grep -rn "className\|import React\|<Card\|<Tabs\|<TabItem\|<GooseBuiltin" \
+grep -rn "className\|import React\|<Card\|<Tabs\|<TabItem\|<BuiltinInstaller" \
   /Users/wgu/Desktop/biorouter/docs --include="*.md" | grep -v superpowers/
 ```
 
@@ -702,7 +704,7 @@ Each requirement from [consolidation-design.md](consolidation-design.md), mapped
 | --- | --- |
 | Drop Docusaurus entirely — no HTML files | Task 4 + verify check 1 |
 | No audio/video files | Task 4 + verify check 2 |
-| Purge Goose/Block branding | Tasks 2–3 (migration script) + verify check 3 |
+| Replace the old branding | Tasks 2–3 (migration script) + verify check 3 |
 | recipe → workflow rename | Tasks 2–3 (migration script) + verify check 4 |
 | Delete `docs/docs/` | Task 4, Step 3 |
 | Delete `documentation/` | Task 4, Step 4 |

@@ -47,11 +47,6 @@ const LADDER: { token: string; px: number; query: RegExp }[] = [
     px: 1400,
     query: /@container br-knowledge-pane \(min-width: 1400px\)/,
   },
-  {
-    token: '--knowledge-pane-short',
-    px: 620,
-    query: /@container br-knowledge-pane \(max-height: 620px\)/,
-  },
 ];
 
 describe('the Knowledge pane ladder', () => {
@@ -62,6 +57,16 @@ describe('the Knowledge pane ladder', () => {
       expect(CSS).toMatch(query);
     }
   );
+
+  /**
+   * The height step is retired with the subtitle it hid (spec 3.12): the view's description is
+   * the band's InfoTip now, so a short pane has nothing left to yield. A height query coming back
+   * would be a step the ladder above does not document.
+   */
+  it('has no height step', () => {
+    expect(CSS).not.toMatch(/@container br-knowledge-pane \(max-height:/);
+    expect(CSS).not.toContain('.br-knowledge-subtitle');
+  });
 
   it('has no @container step the ladder above does not account for', () => {
     const found = [
@@ -128,5 +133,54 @@ describe('the Knowledge pane ladder', () => {
       (m) => m[1]
     );
     expect(menu.sort()).toEqual(extra.sort());
+  });
+});
+
+/**
+ * The filter strip's two states that jsdom cannot see, asserted at the source like the ladder.
+ * Both were found by driving a real render of the pane, not by a test.
+ */
+describe('the filter strip', () => {
+  /**
+   * ⚠ **The readout and the Clear label wait for the step where the Legend chip retires.** They
+   * used to appear at 1140 beside all four facets AND the Legend: with a filter engaged the row
+   * needed ~977px in an 820px column at the common 1152px pane, and "Showing 3 of 16" painted
+   * over the Legend. Below the step Clear is the bare icon, whose Tooltip carries the count.
+   */
+  it('shows the readout only at the step where the Legend chip gives its room back', () => {
+    const at = (px: number) => {
+      const from = CSS.indexOf(`@container br-knowledge-pane (min-width: ${px}px)`);
+      const next = CSS.indexOf('@container br-knowledge-pane', from + 1);
+      return CSS.slice(from, next === -1 ? undefined : next);
+    };
+    expect(at(1140)).not.toContain('.br-knowledge-readout');
+    expect(at(1400)).toMatch(/\.br-knowledge-readout\s*\{\s*display:\s*flex/);
+  });
+
+  /**
+   * ⚠ **An engaged facet is NEUTRAL now (R-27), and that is what keeps it readable under focus.**
+   * It was a solid accent fill, which cannot take the grey focus surface (white `--text-on-accent`
+   * over `--background-focus`) and needed its own restated focus rule. The strong fill under the
+   * selected wash carries the default ink on every ground, so there is no accent and no on-accent
+   * ink to protect, and the wash is a background-IMAGE, so the focus ground (a background-colour)
+   * still reads under it. A rule that painted a facet accent again, or restated its focus ground,
+   * would bring the old failure back.
+   */
+  it('keeps an engaged facet readable under keyboard focus', () => {
+    const from = CSS.indexOf('/* @ws WS-KNOWLEDGE begin: filter facet */');
+    const to = CSS.indexOf('/* @ws WS-KNOWLEDGE end: filter facet */');
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const block = CSS.slice(from, to);
+    const rule = block.match(/\.br-facet\[data-engaged='true'\]\s*\{([^}]*)\}/);
+    expect(rule, 'an engaged facet needs its own rule').not.toBeNull();
+    expect(rule![1]).toContain('background-color: var(--background-fill-strong)');
+    expect(rule![1]).toContain('background-image: linear-gradient(var(--overlay-selected)');
+    // Neutral: no accent ground and no accent ink anywhere in the facet block.
+    expect(block.replace(/\/\*[\s\S]*?\*\//g, '')).not.toMatch(
+      /--background-accent|--text-on-accent/
+    );
+    // And no focus rule of its own: the global focus surface reads through the wash.
+    expect(block.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain(':focus-visible');
   });
 });

@@ -1,8 +1,10 @@
 import React from 'react';
 import { Button } from '../../../ui/button';
+import { InfoTip } from '../../../ui/info-tip';
+import { IconAction } from '../../../ui/row-actions';
 import { Plus, X } from '../../../icons/app-icons';
 import { Input } from '../../../ui/input';
-import { cn } from '../../../../utils';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 
 interface HeadersSectionProps {
   headers: { key: string; value: string; isEdited?: boolean }[];
@@ -50,7 +52,7 @@ export default function HeadersSection({
         key: keyEmpty,
         value: valueEmpty,
       });
-      setValidationError('Both header name and value must be entered');
+      setValidationError(COPY.headerNeedsBoth);
       return;
     }
 
@@ -59,7 +61,7 @@ export default function HeadersSection({
         key: true,
         value: false,
       });
-      setValidationError('Header name cannot contain spaces');
+      setValidationError(COPY.headerNoSpaces);
       return;
     }
 
@@ -81,86 +83,88 @@ export default function HeadersSection({
     return value === '';
   };
 
+  const titleId = React.useId();
+  const errorId = React.useId();
+
+  // An invalid cell's red edge is the Input's own: `aria-invalid` draws it, focused or not.
   return (
-    <div>
-      <div className="relative mb-2">
-        <label className="text-sm font-medium text-text-default mb-2 block">Request Headers</label>
-        <p className="text-xs text-text-muted mb-4">
-          Add custom HTTP headers to include in requests to the MCP server. Click the "+" button to
-          add after filling both fields.
-        </p>
+    <div className="br-ext-section" role="group" aria-labelledby={titleId}>
+      <div className="br-ext-section-title">
+        <h3 id={titleId} className="text-label text-text-default">
+          {COPY.headersTitle}
+        </h3>
+        <InfoTip label={COPY.headersTitle} help={COPY.headersHelp} />
       </div>
-      <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-center">
+      <div className="br-ext-kv">
         {/* Existing headers */}
         {headers.map((header, index) => (
           <React.Fragment key={index}>
-            <div className="relative">
-              <Input
-                value={header.key}
-                onChange={(e) => onChange(index, 'key', e.target.value)}
-                placeholder="Header name"
-                className={cn(
-                  'w-full text-text-default border-border-subtle hover:border-border-default',
-                  isFieldInvalid(index, 'key') && 'border-border-danger focus:border-border-danger'
-                )}
-              />
-            </div>
-            <div className="relative">
-              <Input
-                value={header.value}
-                onChange={(e) => onChange(index, 'value', e.target.value)}
-                placeholder="Value"
-                className={cn(
-                  'w-full text-text-default border-border-subtle hover:border-border-default',
-                  isFieldInvalid(index, 'value') &&
-                    'border-border-danger focus:border-border-danger'
-                )}
-              />
-            </div>
-            <Button
-              onClick={() => onRemove(index)}
-              variant="ghost"
-              className="group p-2 h-auto text-text-muted"
-            >
-              <X className="h-3 w-3 text-text-muted group-hover:text-text-default transition-all" />
-            </Button>
+            <Input
+              machine
+              value={header.key}
+              onChange={(e) => onChange(index, 'key', e.target.value)}
+              placeholder={COPY.headerName}
+              aria-label={COPY.headerName}
+              aria-invalid={isFieldInvalid(index, 'key') || undefined}
+              className="w-full"
+            />
+            <Input
+              machine
+              value={header.value}
+              onChange={(e) => onChange(index, 'value', e.target.value)}
+              placeholder={COPY.value}
+              aria-label={COPY.value}
+              aria-invalid={isFieldInvalid(index, 'value') || undefined}
+              className="w-full"
+            />
+            {/* The same four columns as the environment variables, so the two groups share one
+                rhythm: a header has nothing to edit in place, so that column is empty. */}
+            <span aria-hidden="true" />
+            <IconAction
+              icon={X}
+              label={COPY.removeEntry(header.key)}
+              onSelect={() => onRemove(index)}
+            />
           </React.Fragment>
         ))}
 
         {/* Empty row with Add button */}
         <Input
+          machine
           value={newKey}
           onChange={(e) => {
             setNewKey(e.target.value);
             clearValidation();
           }}
-          placeholder="Header name"
-          className={cn(
-            'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.key && 'border-border-danger focus:border-border-danger'
-          )}
+          placeholder={COPY.headerName}
+          aria-label={COPY.headerName}
+          aria-invalid={invalidFields.key || undefined}
+          aria-describedby={validationError ? errorId : undefined}
+          className="w-full"
         />
         <Input
+          machine
           value={newValue}
           onChange={(e) => {
             setNewValue(e.target.value);
             clearValidation();
           }}
-          placeholder="Value"
-          className={cn(
-            'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.value && 'border-border-danger focus:border-border-danger'
-          )}
+          placeholder={COPY.value}
+          aria-label={COPY.value}
+          aria-invalid={invalidFields.value || undefined}
+          aria-describedby={validationError ? errorId : undefined}
+          className="w-full"
         />
-        <Button
-          onClick={handleAdd}
-          variant="ghost"
-          className="flex items-center justify-start gap-1 px-2 pr-4 text-sm rounded-element text-text-default bg-background-default border border-border-subtle hover:border-border-default transition-colors min-w-[60px] h-9 [&>svg]:!size-4"
-        >
-          <Plus /> Add
+        <Button variant="secondary" onClick={handleAdd} className="br-ext-kv-add">
+          <Plus aria-hidden />
+          {COPY.add}
         </Button>
       </div>
-      {validationError && <div className="mt-2 text-text-danger text-sm">{validationError}</div>}
+      {validationError && (
+        <p id={errorId} role="alert" className="text-supporting text-text-danger">
+          {validationError}
+        </p>
+      )}
     </div>
   );
 }

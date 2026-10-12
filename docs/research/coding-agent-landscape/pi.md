@@ -2,7 +2,7 @@
 
 > **What this is.** An external review of Pi's deliberately minimal agent loop — a
 > ~1000-token system prompt, no MCP, no subagents, session-tree branching, and typed
-> extension hooks that can rewrite the prompt and the message array. One of nine tool
+> extension hooks that can rewrite the prompt and the message array. One of eight tool
 > reports in this folder, each covering the same ten dimensions.
 > **Status:** Current. External-tool research; the source for the per-directory Project
 > Trust idea cited by proposal BR-9 and for the "split turn" compaction fallback in BR-11.

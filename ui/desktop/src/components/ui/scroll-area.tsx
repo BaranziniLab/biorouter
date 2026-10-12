@@ -31,12 +31,33 @@ interface ScrollAreaProps extends React.ComponentPropsWithoutRef<typeof ScrollAr
    * preview opened. A function rather than a boolean because it is asked at the
    * instant of the resize, which lands between React commits.
    *
-   * Opt-in, and only the live chat's transcript opts in. Every other scroll area,
-   * and the live chat itself whenever no stacked sheet is on screen, keeps the
-   * behaviour it had.
+   * Opt-in. The live chat's transcript engages it under a stacked preview and
+   * while the reader follows the newest line (`summary/useTranscriptFollow.ts`);
+   * Crew's timeline while its reader follows (`crew/timeline/Timeline.tsx`).
+   * Every other scroll area keeps `scrollTop` through a resize.
    */
   anchorBottomOnResize?: () => boolean;
+  /**
+   * Asked when the content has grown while the reader follows the end, before
+   * the scroll area follows it there, and again in the frame that would
+   * scroll; false keeps `scrollTop` for that growth. A function, read at the
+   * instant of the growth, like `anchorBottomOnResize`. Omitted: every growth
+   * is followed, as before.
+   *
+   * A growth it declines is not followed later either: the height it reached
+   * is remembered whatever this answers, so only the next growth asks again.
+   *
+   * The live chat's transcript passes it (`summary/useTranscriptFollow.ts`): a
+   * turn error row the person did not cause, landing after they could be
+   * reading (a chat whose model failed to restore seconds after it opened,
+   * vision V2-R9-2), is added below the fold instead of moving every card on
+   * screen up under the pointer. Every other scroll area follows every growth.
+   */
+  followGrowth?: () => boolean;
 }
+
+/** How long after the last scroll event the scrollbar stays shown. */
+export const SCROLLING_SETTLE_MS = 800;
 
 const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
   (
@@ -49,6 +70,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       paddingY,
       handleScroll: handleScrollProp,
       anchorBottomOnResize,
+      followGrowth,
       ...props
     },
     ref
@@ -62,6 +84,8 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
     const lastScrollHeightRef = React.useRef(0);
     const isActivelyScrollingRef = React.useRef(false);
     const scrollTimeoutRef = React.useRef<number | null>(null);
+    const followGrowthRef = React.useRef(followGrowth);
+    followGrowthRef.current = followGrowth;
 
     const BOTTOM_SCROLL_THRESHOLD = 200;
 
@@ -183,6 +207,13 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       lastScrollTopRef.current = scrollTop;
 
       // Detect if user manually scrolled up from the bottom
+      // ⚠ Known edge, left on purpose: this also reads the follow's OWN scroll as the reader
+      // scrolling up when more than BOTTOM_SCROLL_THRESHOLD of content lands between the follow's
+      // `scrollTo` (in a frame) and its scroll event (the next frame), so following stops
+      // (measured by WS-SUMMARY: 432px from eight rows appended at once). Exempting that event
+      // alone would leave the view following yet short of the end, because the same event marks
+      // the reader as actively scrolling and the next frame's follow is skipped; a real fix also
+      // changes that throttle for every caller, Crew's timeline included.
       if (!currentIsAtBottom && isFollowing) {
         // user scrolled up, disabling auto-scroll
         userScrolledUpRef.current = true;
@@ -214,19 +245,27 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       // 2. User was following (at the bottom)
       // 3. User hasn't manually scrolled up
       // 4. User is not actively scrolling
+      // 5. The owner does not hold this growth below the fold (`followGrowth`)
       if (
         currentScrollHeight > lastScrollHeightRef.current &&
         isFollowing &&
         !userScrolledUpRef.current &&
-        !isActivelyScrollingRef.current
+        !isActivelyScrollingRef.current &&
+        (followGrowthRef.current?.() ?? true)
       ) {
         // Use requestAnimationFrame to ensure DOM has updated.
         // Follow streaming content with an INSTANT scroll: a smooth scroll is
         // re-issued on every content chunk and never settles, so it fights the
         // growing transcript and janks. Smooth is reserved for the explicit
         // jump-to-bottom button (scrollToBottom).
+        // `followGrowth` is asked again here: a growth from an earlier commit
+        // whose frame has not run yet when a held row lands must not carry it.
         requestAnimationFrame(() => {
-          if (viewportRef.current && !isActivelyScrollingRef.current) {
+          if (
+            viewportRef.current &&
+            !isActivelyScrollingRef.current &&
+            (followGrowthRef.current?.() ?? true)
+          ) {
             viewportRef.current.scrollTo({
               top: viewportRef.current.scrollHeight,
               behavior: 'auto',
@@ -308,21 +347,40 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       };
     }, [handleScroll]);
 
+    // Spec 2.6: the scrollbar rests hidden and shows on hover and while scrolling. Hover is CSS;
+    // "while scrolling" is this attribute, set on every scroll and cleared once the wheel stops.
+    // A DOM attribute rather than state, so a scroll never re-renders the transcript.
+    React.useEffect(() => {
+      const viewport = viewportRef.current;
+      const root = rootRef.current;
+      if (!viewport || !root) return;
+      let timer: number | null = null;
+      const onScroll = () => {
+        root.setAttribute('data-scrolling', '');
+        if (timer !== null) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          timer = null;
+          root.removeAttribute('data-scrolling');
+        }, SCROLLING_SETTLE_MS);
+      };
+      viewport.addEventListener('scroll', onScroll, { passive: true });
+      return () => {
+        viewport.removeEventListener('scroll', onScroll);
+        if (timer !== null) window.clearTimeout(timer);
+      };
+    }, []);
+
     return (
       <ScrollAreaPrimitive.Root
         ref={rootRef}
-        className={cn('relative overflow-hidden', className)}
+        className={cn('br-scroll-root relative overflow-hidden', className)}
         data-scrolled={isScrolled}
         {...props}
       >
-        <div
-          className={cn(
-            'absolute top-0 left-0 right-0 z-10 transition-opacity duration-[var(--motion-base)]'
-          )}
-        />
+        <div className="absolute top-0 left-0 right-0 z-10" />
         <ScrollAreaPrimitive.Viewport
           ref={viewportRef}
-          className="h-full w-full rounded-[inherit] [&>div]:!block"
+          className="br-scroll-viewport h-full w-full rounded-[inherit] [&>div]:!block"
         >
           <div className={cn(paddingX ? `px-${paddingX}` : '', paddingY ? `py-${paddingY}` : '')}>
             {children}

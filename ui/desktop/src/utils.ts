@@ -33,12 +33,13 @@ import { extendTailwindMerge } from 'tailwind-merge';
 const twMerge = extendTailwindMerge({
   extend: {
     theme: {
+      // `heading` and `display` are gone (redesign 2026-10): the sizes they named
+      // are `subheading` and `title`.
       text: [
-        'display',
         'title',
-        'heading',
         'subheading',
         'body',
+        'prose',
         'label',
         'secondary',
         'supporting',
@@ -65,6 +66,7 @@ const twMerge = extendTailwindMerge({
         'tab',
         'row',
         'row-rail',
+        'row-nav',
         'dialog-sm',
         'dialog-md',
         'dialog-lg',
@@ -74,8 +76,6 @@ const twMerge = extendTailwindMerge({
         'measure-graph',
         'knowledge-rail-sources',
         'knowledge-rail-detail',
-        'knowledge-subject-height',
-        'knowledge-filter-height',
       ],
       // All five elevations, not just the new one. The four that shipped before
       // `raised` were never registered, so they fell through to the `shadow-color`

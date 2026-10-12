@@ -1497,8 +1497,8 @@ carrying the secret in the environment at all: pass it on a pipe/fd at startup, 
 daemon reads and unlinks (`BIOROUTER_PORT` may stay). This is what turns the guarantee from "we
 remembered to filter this name" into "there is nothing to filter"; the filter's key list
 (`is_daemon_private_env_key`, `environment.rs:36-50`) is deny-by-default only inside
-`BIOROUTER_SERVER__`/`GOOSE_SERVER__` and falls back to name-shaped markers elsewhere, so a future
-daemon-private variable named outside those prefixes and without a credential-shaped word in it
+`BIOROUTER_SERVER__` and falls back to name-shaped markers elsewhere, so a future
+daemon-private variable named outside that prefix and without a credential-shaped word in it
 would pass straight through. The same list is also only consulted for names that are valid UTF-8 —
 `doomed_env_keys` filters on `key.to_str().is_some_and(..)` (`environment.rs:85`), so a non-UTF-8
 key is never even offered to it. That is out of reach for any name BioRouter sets itself, but it is
@@ -2516,7 +2516,9 @@ If the chat is private by inheritance, one extra line appears: *This chat inheri
 badge from **"OMOP cohort characterisation"**. Making this one public does not change that chat.*
 
 Destructive button styling using the app's existing destructive treatment (no new colour). `Cancel`
-holds initial focus. No keyboard shortcut binds the confirm button.
+holds initial focus when the dialog is opened from the keyboard; opened with the pointer, focus
+rests on the dialog itself and the next Tab reaches Cancel (or the typed field before it), so the
+confirm button is never the first stop. No keyboard shortcut binds the confirm button.
 
 ### 12.4 The confirmation — graded by what was actually touched
 
@@ -2750,7 +2752,8 @@ Never colour alone: shape plus glyph plus word.
 > `ui/desktop/src/components/ui/PrivacyBadge.tsx`, which is the authority.
 >
 > 1. **The glyph is a PADLOCK, not a shield.** The app was marking one fact with three unrelated
->    figures: a padlocked speech bubble on a private conversation (`chatKind.ts`), a shield on a
+>    figures: a padlocked speech bubble on a private conversation (since replaced by the lock
+>    badge on every chat kind's glyph, `ChatKindIcon`), a shield on a
 >    private extension, and a bare dot on a private model. They are the same tier, so they are now
 >    the same mark, and `Shield` has been removed from the icon barrel. Do not reintroduce a second
 >    privacy glyph for a fourth subject — name the *subject* in words beside the padlock instead.

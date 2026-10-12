@@ -21,7 +21,7 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
     const trigger = screen.getByLabelText('Reasoning effort: Normal');
     expect(trigger).toBeInTheDocument();
     expect(trigger).not.toHaveAttribute('title');
-    expect(trigger.querySelector('svg')).toHaveClass('size-[17px]');
+    expect(trigger.querySelector('svg')).toHaveClass('size-icon-row');
     expect(screen.queryByText('Normal')).not.toBeInTheDocument();
   });
 

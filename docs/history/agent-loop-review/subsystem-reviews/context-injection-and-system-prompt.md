@@ -322,6 +322,6 @@ review cite as `context-injection.md gap #N`; the numbering below is that scheme
 
 - [State, awareness, todos, goals and version control](state-awareness-and-version-control.md) — the sibling review that covers what MOIM carries and the missing repo map; the two overlap on workspace awareness.
 - [Compaction and context management](compaction-and-context-management.md) — the other half of context handling: what happens when the assembled context grows too large.
-- [Context and prompts compared with other agents](../competitive-comparison/context-and-prompts.md) — how this prompt architecture measures against nine other coding agents.
+- [Context and prompts compared with other agents](../competitive-comparison/context-and-prompts.md) — how this prompt architecture measures against eight other coding agents.
 - [Context engineering guide](../../../agent-loop/context-engineering.md) — the current, living guidance on shaping BioRouter's context.
 - [Wave 1 context and prompts report](../../agent-loop-campaign/wave-reports/wave-1-context-and-prompts.md) — what was actually built in response to these gaps.

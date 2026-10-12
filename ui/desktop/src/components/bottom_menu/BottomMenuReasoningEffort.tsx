@@ -42,7 +42,7 @@ const EFFORT_BARS = [
   { x: 11.9, y: 3, height: 11 },
 ];
 
-function EffortBars({ effort, className }: { effort: ReasoningEffort; className?: string }) {
+export function EffortBars({ effort, className }: { effort: ReasoningEffort; className?: string }) {
   const filled = EFFORT_BAR_COUNT[effort];
   return (
     <svg viewBox="0 0 16 16" fill="none" className={className} aria-hidden="true">
@@ -63,6 +63,20 @@ function EffortBars({ effort, className }: { effort: ReasoningEffort; className?
 }
 
 /**
+ * The effort kept for `scope`, live; `null` when there is no scope to read.
+ * The model chip reads it to name a non-default level and to check the radio
+ * row in its menu.
+ */
+export function useReasoningEffortValue(scope: string | undefined): ReasoningEffort | null {
+  const subscribe = useCallback(
+    (listener: () => void) => (scope ? subscribeToReasoningEffort(scope, listener) : () => {}),
+    [scope]
+  );
+  const snapshot = useCallback(() => (scope ? getReasoningEffort(scope) : null), [scope]);
+  return useSyncExternalStore(subscribe, snapshot);
+}
+
+/**
  * BR-63: the composer's reasoning-effort control — the explore-vs-answer knob.
  *
  * The picked level rides on the next chat request (`reasoning_effort`), where it
@@ -72,12 +86,7 @@ function EffortBars({ effort, className }: { effort: ReasoningEffort; className?
  */
 export function BottomMenuReasoningEffort({ scope }: { scope: string }) {
   const [open, setOpen] = useState(false);
-  const subscribe = useCallback(
-    (listener: () => void) => subscribeToReasoningEffort(scope, listener),
-    [scope]
-  );
-  const snapshot = useCallback(() => getReasoningEffort(scope), [scope]);
-  const effort = useSyncExternalStore(subscribe, snapshot);
+  const effort = useReasoningEffortValue(scope) ?? DEFAULT_REASONING_EFFORT;
   const isDefault = effort === DEFAULT_REASONING_EFFORT;
 
   const select = (next: ReasoningEffort) => {
@@ -98,7 +107,7 @@ export function BottomMenuReasoningEffort({ scope }: { scope: string }) {
               className="flex h-7 items-center gap-1.5 rounded-md px-0.5 cursor-pointer text-text-muted hover:bg-background-medium hover:text-text-default text-supporting"
               aria-label={`Reasoning effort: ${REASONING_EFFORT_LABELS[effort]}`}
             >
-              <EffortBars effort={effort} className="size-[17px] shrink-0" />
+              <EffortBars effort={effort} className="size-icon-row shrink-0" />
               {/* The default stays the quiet state. It matters MORE now, not
                   less: the bars already say which of the three levels is set, so
                   spending composer width on a word that repeats the glyph is the

@@ -1,13 +1,5 @@
+import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Layers } from '../icons/app-icons';
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
-import { Input } from '../ui/input';
-import { Switch } from '../ui/switch';
 import {
   skillCatalogToggleKey,
   useSkillCatalog,
@@ -16,71 +8,74 @@ import {
 import { rankCatalogEntries } from '../skills/searchCatalog';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { uiCopy } from '../ui/copy';
+import { SKILLS_COPY, TOOLS_COPY } from './copy';
+import { PickerPanel, PickerRow } from './PickerPanel';
 
-interface BottomMenuSkillSelectionProps {
+/** What the skills list needs from its picker state (see `useSkillPicker`). */
+export interface SkillPicker {
   sessionId: string | null;
+  /** Enabled skills, the chip's share of the Tools count. */
+  activeCount: number;
+  /**
+   * Whether `activeCount` is this chat's: the catalog has answered (or failed)
+   * since the chat came into view. Until then the Tools chip shows no number
+   * (V2-R7-3).
+   */
+  answered: boolean;
+  query: string;
+  setQuery: (query: string) => void;
+  entries: SkillCatalogEntry[];
+  toggle: (entry: SkillCatalogEntry) => void;
+  bulk: { label: string; onClick: () => void } | null;
+  emptyText: string;
 }
 
 /**
- * The composer's skill menu.
+ * The composer's skill list: state and toggles, without any trigger.
  *
  * ⚠ **Every toggle here goes to the daemon and waits for its answer** (#113).
  * The session branch used to write React state and raise a success toast
- * reading "<skill> enabled for this chat" without calling anything — no
- * request, no `extension_data` write, no catalog refresh, no live agent. The
- * switch moved, the toast was green, and the next turn saw the same skills as
- * before. A control that reports intent as if it were state is worse than no
- * control, so the toast is raised only on a confirmed write, and a refusal puts
- * the switch back.
+ * reading "<skill> enabled for this chat" without calling anything. A control
+ * that reports intent as if it were state is worse than no control, so a
+ * refusal puts the switch back and says why. There is no success toast at all
+ * now (decision 6.9): the switch is the confirmation.
  *
  * The inventory is fetched rather than scanned, for the reason recorded on
- * `useSkillCatalog`: this component's own three-root scan omitted skills
- * bundled inside installed extensions, which the backend has always loaded.
+ * `useSkillCatalog`: a three-root scan omitted skills bundled inside installed
+ * extensions, which the backend has always loaded.
+ *
+ * @param open whether the list is on screen. Opening it asks the daemon to
+ *   rescan, the cheapest honest moment to notice an install made elsewhere.
  */
-export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelectionProps) => {
+export function useSkillPicker(sessionId: string | null, { open }: { open: boolean }): SkillPicker {
   const [searchQuery, setSearchQuery] = useState('');
-  const [isOpen, setIsOpen] = useState(false);
   const catalog = useSkillCatalog(sessionId);
   const { entries, reload, setEnabled } = catalog;
-  const scope = sessionId ? 'for this chat' : 'in new chats';
 
-  // Opening the menu is the cheapest honest moment to notice an install made
-  // elsewhere — a marketplace click, `biorouter skill install` in a terminal —
-  // so it asks the daemon to rescan rather than trusting the cached snapshot.
   useEffect(() => {
-    if (isOpen) void reload(true);
-  }, [isOpen, reload]);
+    if (open) void reload(true);
+  }, [open, reload]);
 
   const applyToggle = useCallback(
-    async (keys: string[], enabled: boolean, describe: (count: number) => string) => {
+    async (keys: string[], enabled: boolean) => {
       const result = await setEnabled(keys, enabled);
-      if (result.ok) {
-        toastService.success({
-          title: keys.length === 1 ? 'Skill updated' : 'Skills updated',
-          msg: describe(keys.length),
-        });
-        return;
-      }
+      if (result.ok) return;
       // The reason travels back with the result rather than through hook
       // state, which this callback's captured render would have read stale.
       toastService.error({
-        title: 'Skill update failed',
-        msg: `The change was not saved: ${result.error}`,
+        title: SKILLS_COPY.updateFailedTitle,
+        msg: SKILLS_COPY.updateFailed(result.error),
       });
     },
     [setEnabled]
   );
 
-  const handleToggle = useCallback(
-    (key: string, displayName: string, currentlyEnabled: boolean) => {
-      void applyToggle(
-        [key],
-        !currentlyEnabled,
-        () => `${displayName} ${!currentlyEnabled ? 'enabled' : 'disabled'} ${scope}`
-      );
+  const toggle = useCallback(
+    (entry: SkillCatalogEntry) => {
+      void applyToggle([skillCatalogToggleKey(entry)], !entry.enabled);
     },
-    [applyToggle, scope]
+    [applyToggle]
   );
 
   // One matcher, shared with Settings -> Skills, the Browse modals and the
@@ -99,6 +94,19 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   );
 
   const activeCount = useMemo(() => entries.filter((e) => e.enabled).length, [entries]);
+
+  // Whether the catalog has answered for THIS chat (V2-R7-3). `useSkillCatalog`
+  // keeps what it last held (the previous chat's view, or an empty one at
+  // first) until the new chat's read commits, and `loading` cannot say which
+  // read settled. So the chat counts as answered once a view, or an error,
+  // newer than the one it came into view with has been committed.
+  const [openedOn, setOpenedOn] = useState(() => ({ sessionId, entries, error: catalog.error }));
+  if (openedOn.sessionId !== sessionId) {
+    setOpenedOn({ sessionId, entries, error: catalog.error });
+  }
+  const answered =
+    openedOn.sessionId === sessionId &&
+    (entries !== openedOn.entries || (catalog.error !== null && catalog.error !== openedOn.error));
   const visibleEnabledCount = useMemo(
     () => filteredEntries.filter((e) => e.enabled).length,
     [filteredEntries]
@@ -113,151 +121,101 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       ),
     ];
     if (keys.length === 0) return;
-    void applyToggle(
-      keys,
-      targetEnabled,
-      (count) =>
-        `${count} skill${count === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} ${scope}`
-    );
-  }, [applyToggle, filteredEntries, scope, visibleEnabledCount]);
+    void applyToggle(keys, targetEnabled);
+  }, [applyToggle, filteredEntries, visibleEnabledCount]);
 
-  const emptyMessage = () => {
-    if (catalog.error) return catalog.error;
-    if (catalog.loading) return 'Loading skills…';
-    return searchQuery ? 'No skills found' : 'No skills available';
+  const emptyText = catalog.error
+    ? catalog.error
+    : catalog.loading
+      ? SKILLS_COPY.loading
+      : searchQuery
+        ? SKILLS_COPY.noMatch
+        : SKILLS_COPY.empty;
+
+  return {
+    sessionId,
+    activeCount,
+    answered,
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    entries: filteredEntries,
+    toggle,
+    bulk:
+      filteredEntries.length > 0
+        ? {
+            label:
+              visibleEnabledCount === 0
+                ? SKILLS_COPY.enableAll(filteredEntries.length)
+                : SKILLS_COPY.disableAll(visibleEnabledCount),
+            onClick: handleBulkToggle,
+          }
+        : null,
+    emptyText,
   };
+}
 
+/** The skills list inside the Tools popover. */
+export function SkillsPanel({
+  picker,
+  inputRef,
+}: {
+  picker: SkillPicker;
+  inputRef?: React.Ref<HTMLInputElement>;
+}) {
   return (
-    <DropdownMenu
-      open={isOpen}
-      onOpenChange={(open) => {
-        setIsOpen(open);
-        if (!open) {
-          setSearchQuery('');
-        }
-      }}
+    <PickerPanel
+      data-testid="tools-skills-panel"
+      listLabel={SKILLS_COPY.listLabel}
+      searchPlaceholder={SKILLS_COPY.search}
+      query={picker.query}
+      onQueryChange={picker.setQuery}
+      scopeLabel={picker.sessionId ? TOOLS_COPY.scope.thisChat : TOOLS_COPY.scope.newChats}
+      scopeHelp={picker.sessionId ? SKILLS_COPY.helpChat : SKILLS_COPY.helpNewChats}
+      bulk={picker.bulk}
+      emptyText={picker.emptyText}
+      inputRef={inputRef}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              // `text-supporting`, not the `text-secondary` main.css prescribes
-              // for a dense control — the override is explained once in
-              // ChatInput.tsx, search "THE RAILS' TYPE".
-              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-supporting"
-              aria-label={`Manage skills (${activeCount} enabled)`}
-            >
-              <Layers className="mr-0.5 h-4 w-4" />
-              <span>{activeCount}</span>
-            </button>
-          </DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top">Manage skills</TooltipContent>
-      </Tooltip>
-      <DropdownMenuContent
-        side="top"
-        align="center"
-        className="w-64"
-        onCloseAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="p-2">
-          <Input
-            type="text"
-            placeholder="Search skills..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8"
-            autoFocus
-          />
-          {filteredEntries.length > 0 && (
-            <button
-              type="button"
-              onClick={handleBulkToggle}
-              className="mt-1.5 cursor-pointer text-supporting text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
-            >
-              {visibleEnabledCount === 0
-                ? `Enable all (${filteredEntries.length})`
-                : `Disable all (${visibleEnabledCount})`}
-            </button>
-          )}
-        </div>
-        <div className="max-h-[400px] overflow-y-auto">
-          {filteredEntries.length === 0 ? (
-            <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {emptyMessage()}
-            </div>
-          ) : (
-            filteredEntries.map((entry) => (
-              <SkillRow key={entry.key} entry={entry} onToggle={handleToggle} />
-            ))
-          )}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      {picker.entries.map((entry) => (
+        <SkillRow key={entry.key} entry={entry} onToggle={picker.toggle} />
+      ))}
+    </PickerPanel>
   );
-};
+}
 
 function SkillRow({
   entry,
   onToggle,
 }: {
   entry: SkillCatalogEntry;
-  onToggle: (key: string, displayName: string, currentlyEnabled: boolean) => void;
+  onToggle: (entry: SkillCatalogEntry) => void;
 }) {
   if (entry.kind === 'single') {
     const { skill, enabled } = entry;
-    // `label` is the extension's own name when the skill was bundled inside one
-    // — the piece of provenance the picker could not show while it scanned
-    // only three roots and never saw those skills at all.
-    const from = skill.source.kind === 'extension' ? skill.source.label : null;
+    // `label` is the extension's own name when the skill was bundled inside one:
+    // provenance the picker could not show while it scanned only three roots.
+    const from = skill.source.kind === 'extension' ? skill.source.label : undefined;
     return (
-      <DropdownMenuCheckboxItem
+      <PickerRow
+        name={skill.name}
         checked={enabled}
-        showIndicator={false}
-        onCheckedChange={() => onToggle(skillCatalogToggleKey(entry), skill.name, enabled)}
-        onSelect={(event) => event.preventDefault()}
-        className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
-        title={skill.description || skill.name}
-      >
-        <div className="flex items-center gap-1.5 min-w-0 pr-2">
-          <div className="font-medium text-text-default truncate">{skill.name}</div>
-          {skill.builtin && <BuiltInBadge />}
-          {from && <span className="text-supporting text-text-subtle truncate">{from}</span>}
-        </div>
-        <div className="pointer-events-none" aria-hidden="true">
-          <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
-        </div>
-      </DropdownMenuCheckboxItem>
+        onToggle={() => onToggle(entry)}
+        badge={skill.builtin ? <BuiltInBadge /> : undefined}
+        meta={from}
+        // A shipped skill with no description still explains its badge.
+        description={skill.description || (skill.builtin ? uiCopy.builtInHelp : undefined)}
+      />
     );
   }
 
+  // A bundle: its count beside the name, its members in the tooltip.
   const { bundle, enabled } = entry;
-  const subNames = bundle.skills.join(', ');
-  const entryPoint = bundle.package?.entryPoint ?? null;
   return (
-    <DropdownMenuCheckboxItem
+    <PickerRow
+      name={bundle.displayName}
       checked={enabled}
-      showIndicator={false}
-      onCheckedChange={() => onToggle(skillCatalogToggleKey(entry), bundle.displayName, enabled)}
-      onSelect={(event) => event.preventDefault()}
-      className="flex cursor-pointer items-start justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
-      title={`Bundle: ${subNames}`}
-    >
-      <div className="flex-1 min-w-0 pr-2">
-        <div className="font-medium text-text-default">
-          {bundle.displayName}
-          <span className="ml-1 text-supporting text-text-subtle">
-            {bundle.skills.length} skill{bundle.skills.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <div className="text-supporting text-text-subtle truncate">
-          {entryPoint ? `entry point: ${entryPoint} · ${subNames}` : subNames}
-        </div>
-      </div>
-      <div className="pointer-events-none mt-0.5 flex-shrink-0" aria-hidden="true">
-        <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
-      </div>
-    </DropdownMenuCheckboxItem>
+      onToggle={() => onToggle(entry)}
+      meta={SKILLS_COPY.bundleCount(bundle.skills.length)}
+      description={SKILLS_COPY.bundleMembers(bundle.skills)}
+    />
   );
 }

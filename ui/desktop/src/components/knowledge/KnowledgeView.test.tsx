@@ -1,8 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import KnowledgeView from './KnowledgeView';
+import { knowledgeCopy } from './copy';
+import { LEGACY_FORMAT_TITLE } from './kbFormat';
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -11,8 +13,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const state = vi.hoisted(() => ({
-  primaryKb: null as { id: string; name: string; tier?: string; color?: string } | null,
+  primaryKb: null as {
+    id: string;
+    name: string;
+    tier?: string;
+    color?: string;
+    schema_version?: number;
+    format?: string;
+  } | null,
   bases: [] as { id: string }[],
+  graphLoading: false,
 }));
 
 vi.mock('./KnowledgeContext', () => ({
@@ -28,7 +38,7 @@ vi.mock('./KnowledgeContext', () => ({
 vi.mock('./hooks/useKnowledgeGraph', () => ({
   useKnowledgeGraph: () => ({
     graph: { nodes: [], edges: [] },
-    loading: false,
+    loading: state.graphLoading,
     error: null,
     refresh: mocks.refreshGraph,
   }),
@@ -50,10 +60,6 @@ vi.mock('./KbTierControl', () => ({
 
 vi.mock('../Layout/MainPanelLayout', () => ({
   MainPanelLayout: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
-
-vi.mock('../Layout/ReadableContent', () => ({
-  ReadableContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 vi.mock('./KBSelector/KBSelectorTrigger', () => ({
@@ -100,8 +106,16 @@ afterAll(() => vi.unstubAllGlobals());
 
 beforeEach(() => {
   vi.clearAllMocks();
-  state.primaryKb = { id: 'omop', name: 'OMOP', tier: 'private', color: '#cf6d47' };
+  state.primaryKb = {
+    id: 'omop',
+    name: 'OMOP',
+    tier: 'private',
+    color: '#cf6d47',
+    schema_version: 3,
+    format: 'okf',
+  };
   state.bases = [{ id: 'omop' }];
+  state.graphLoading = false;
 });
 
 describe('KnowledgeView compact workspace', () => {
@@ -133,6 +147,32 @@ describe('KnowledgeView compact workspace', () => {
     expect(graphTab).toHaveAttribute('aria-selected', 'true');
     expect(graphPanel).toHaveClass('flex');
     expect(digestPanel).toHaveClass('hidden');
+  });
+
+  // V3-01: a panel fades in for a PICK only. The layout also flips a panel from hidden to shown
+  // (the 860px step), and the browser would replay the fade then, so `data-entering` is what the
+  // animation rule in `main.css` keys on (`knowledgeBand.browser.test.tsx` measures the rule).
+  it('marks a panel as entering only for a tab a person picked, until its own animation ends', async () => {
+    render(<KnowledgeView />);
+    const digestPanel = screen.getByTestId('knowledge-digest-panel');
+    const graphPanel = screen.getByTestId('knowledge-graph-panel');
+    expect(digestPanel).not.toHaveAttribute('data-entering');
+    expect(graphPanel).not.toHaveAttribute('data-entering');
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Sources' }));
+    expect(digestPanel).toHaveAttribute('data-entering');
+    expect(graphPanel).not.toHaveAttribute('data-entering');
+
+    // Something animating INSIDE the panel is not the panel's enter.
+    fireEvent.animationEnd(within(digestPanel).getByText('Digest workspace'));
+    expect(digestPanel).toHaveAttribute('data-entering');
+
+    fireEvent.animationEnd(digestPanel);
+    expect(digestPanel).not.toHaveAttribute('data-entering');
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
+    expect(graphPanel).toHaveAttribute('data-entering');
+    expect(digestPanel).not.toHaveAttribute('data-entering');
   });
 
   // ⚠ This is why the `Tabs` root spans the subject band AND the workspace. The
@@ -178,19 +218,105 @@ describe('KnowledgeView lint affordance', () => {
   });
 });
 
-// Issue #56 DR-18. The tier control lives beside the base it acts on — at the
-// top of the Sources rail — not in a settings page, where a user reading a
-// private base would never meet it.
-describe('KnowledgeView tier control', () => {
-  it('offers the tier control for the base the view is showing', () => {
+// V3-R2-1 (from WS-VIEWS-A): a focused button that turns `disabled` hands focus to <body> in
+// Chromium, so the band's Refresh stays a live, focused control while its own request is out.
+describe('KnowledgeView refresh while the graph loads', () => {
+  it('stays enabled and focusable while loading, says it is busy, and ignores the press', async () => {
+    state.graphLoading = true;
     render(<KnowledgeView />);
-    expect(screen.getByText(/tier control for omop/)).toBeInTheDocument();
+    const refresh = screen.getByRole('button', { name: knowledgeCopy.actions.refresh });
+    expect(refresh).toBeEnabled();
+    expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    refresh.focus();
+    await userEvent.click(refresh);
+    expect(mocks.refreshGraph).not.toHaveBeenCalled();
+    expect(refresh).toHaveFocus();
+  });
+
+  it('refreshes when it is not loading', async () => {
+    render(<KnowledgeView />);
+    const refresh = screen.getByRole('button', { name: knowledgeCopy.actions.refresh });
+    expect(refresh).not.toHaveAttribute('aria-busy');
+    await userEvent.click(refresh);
+    expect(mocks.refreshGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it('is still disabled when there is no base to refresh', () => {
+    state.primaryKb = null;
+    render(<KnowledgeView />);
+    expect(screen.getByRole('button', { name: knowledgeCopy.actions.refresh })).toBeDisabled();
+  });
+});
+
+// Issue #56 DR-18. The tier control lives beside the base it acts on, not in a
+// settings page, where a user reading a private base would never meet it. Spec
+// 3.12 moved it from the top of the Sources rail into the band: below the 860px
+// step the rail hides behind the default Graph tab, so the tier used to be off
+// screen on a narrow pane. In the band it is outside both tab panels.
+describe('KnowledgeView tier control', () => {
+  it('offers the tier control for the base the view is showing, in the band', () => {
+    render(<KnowledgeView />);
+    const band = screen.getByTestId('page-header');
+    expect(within(band).getByText(/tier control for omop/)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('knowledge-digest-panel')).queryByText(/tier control/)
+    ).toBeNull();
+    expect(
+      within(screen.getByTestId('knowledge-graph-panel')).queryByText(/tier control/)
+    ).toBeNull();
   });
 
   it('offers nothing when there is no base to act on', () => {
     state.primaryKb = null;
     render(<KnowledgeView />);
     expect(screen.queryByText(/tier control for/)).toBeNull();
+  });
+});
+
+// Spec 3.12: one 44px band through `PageHeader`. The h1 is still named
+// "Knowledge" (e2e `knowledge-ingest.spec.ts` finds it), its description is an
+// InfoTip rather than a visible line, and the counts are sans tabular figures.
+describe('KnowledgeView band', () => {
+  it('is the one page band, with the title, its help, the subject and the actions', () => {
+    render(<KnowledgeView />);
+    const band = screen.getByTestId('page-header');
+    expect(
+      within(band).getByRole('heading', { level: 1, name: knowledgeCopy.title })
+    ).toBeVisible();
+    expect(
+      within(band).getByRole('button', { name: `About ${knowledgeCopy.title}` })
+    ).toHaveAccessibleDescription(knowledgeCopy.viewInfo);
+    expect(within(band).getByRole('button', { name: 'Knowledge base' })).toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: knowledgeCopy.actions.check })).toBeVisible();
+    expect(within(band).getByRole('button', { name: knowledgeCopy.actions.refresh })).toBeVisible();
+    expect(within(band).getByRole('button', { name: knowledgeCopy.actions.more })).toBeVisible();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+  });
+
+  it('draws the counts in the sans face and the format in sentence case', () => {
+    render(<KnowledgeView />);
+    const summary = screen.getByTestId('knowledge-graph-summary');
+    expect(summary).toHaveTextContent(knowledgeCopy.summary(0, 0));
+    expect(summary.className).not.toMatch(/font-mono/);
+    const format = screen.getByTestId('knowledge-format-badge');
+    expect(format).toHaveTextContent('OKF');
+    expect(format.className).not.toMatch(/text-caps|uppercase/);
+  });
+
+  it('explains a legacy base in an InfoTip on the badge, not a native title', () => {
+    state.primaryKb = { id: 'omop', name: 'OMOP', tier: 'private', schema_version: 1 };
+    render(<KnowledgeView />);
+    const format = screen.getByTestId('knowledge-format-badge');
+    expect(format).toHaveTextContent('Legacy');
+    expect(format).not.toHaveAttribute('title');
+    expect(format).toHaveAccessibleDescription(LEGACY_FORMAT_TITLE);
+  });
+
+  it('puts help in tooltips, never in a native title', () => {
+    render(<KnowledgeView />);
+    const band = screen.getByTestId('page-header');
+    expect(band.querySelectorAll('[title]')).toHaveLength(0);
   });
 });
 
@@ -210,7 +336,7 @@ describe('KnowledgeView empty states', () => {
     state.primaryKb = null;
     state.bases = [{ id: 'omop' }];
     render(<KnowledgeView />);
-    // The subject band names the same absence, so scope to the EmptyState's own
+    // The band names the same absence, so scope to the EmptyState's own
     // heading rather than to the words.
     expect(screen.getByRole('heading', { name: 'No primary knowledge base' })).toBeInTheDocument();
     // D13: the EmptyState replaces the WHOLE body, the Sources rail and its

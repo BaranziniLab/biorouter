@@ -11,8 +11,9 @@ import { Input } from './input';
 import { Separator } from './separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './sheet';
 import { Skeleton } from './skeleton';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './Tooltip';
+import { AppTooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 import { useIsMobile } from '../../hooks/use-mobile';
+import { MOTION, RESIZING_CLASSES } from '../../styles/motion';
 import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -38,6 +39,8 @@ const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
 /** Marks the drag on `<body>` so the width transitions stop lagging the pointer. */
 const SIDEBAR_RESIZING_CLASS = 'biorouter-sidebar-resizing';
+/** The window-resize half of `RESIZING_CLASSES` (`styles/motion.ts`), which `AppLayout` also sets. */
+const WINDOW_RESIZING_CLASS = RESIZING_CLASSES[0];
 /**
  * The class that makes an open sidebar an OVERLAY rather than a column.
  *
@@ -274,6 +277,40 @@ function SidebarProvider({
     };
   }, []);
 
+  // Mark `<body>` resizing on every window resize and lift the class after the
+  // same settle as `AppLayout` (`MOTION.resizeSettleMs`), so `main.css`'s "layout
+  // snaps while the window moves" rule holds wherever the provider is mounted,
+  // `AppLayout` or not (the sidebar's own browser tests mount it alone).
+  //
+  // This listener runs AFTER every `resize` listener registered before it, a
+  // child's effect included, so it cannot mark the window ahead of a resize that
+  // moves the sidebar. Chromium fires window `resize` listeners in registration
+  // order whatever their capture flag (measured in Chrome 155, vision V1-R4-1).
+  // It was a capturing listener on the claim that it ran first (V3-02); it never
+  // did, and the first crossing of the 1120 rung after a load still slid. So
+  // whatever moves the sidebar on a resize holds the window still ITSELF, first:
+  // `AppLayout`'s width watcher calls its `holdWindowStill` before it collapses
+  // or restores the sidebar (`Layout/sidebarAutoCollapseMotion.browser.test.tsx`).
+  React.useEffect(() => {
+    let settle: number | undefined;
+    const markResizing = () => {
+      document.body.classList.add(WINDOW_RESIZING_CLASS);
+      if (settle !== undefined) window.clearTimeout(settle);
+      settle = window.setTimeout(() => {
+        settle = undefined;
+        document.body.classList.remove(WINDOW_RESIZING_CLASS);
+      }, MOTION.resizeSettleMs);
+    };
+    window.addEventListener('resize', markResizing);
+    return () => {
+      window.removeEventListener('resize', markResizing);
+      if (settle !== undefined) {
+        window.clearTimeout(settle);
+        document.body.classList.remove(WINDOW_RESIZING_CLASS);
+      }
+    };
+  }, []);
+
   const nudgeWidth = React.useCallback((delta: number) => {
     setWidth((current) => {
       const next = clampSidebarWidth(current + delta);
@@ -425,7 +462,11 @@ function SidebarProvider({
 
   return (
     <SidebarContext.Provider value={contextValue}>
-      <TooltipProvider delayDuration={0}>
+      {/* The app's one tooltip provider (spec 2.6): 500ms to open, 300ms skip
+          between neighbours. It was `delayDuration={0}`, which every tooltip
+          in the shell would have inherited once tooltips stopped bringing
+          their own provider. */}
+      <AppTooltipProvider>
         <div
           data-slot="sidebar-wrapper"
           style={
@@ -443,7 +484,7 @@ function SidebarProvider({
         >
           {children}
         </div>
-      </TooltipProvider>
+      </AppTooltipProvider>
     </SidebarContext.Provider>
   );
 }
@@ -593,7 +634,7 @@ function Sidebar({
       <div
         data-slot="sidebar"
         className={cn(
-          'bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col',
+          'br-ground-recessed bg-sidebar text-sidebar-foreground flex h-full w-(--sidebar-width) flex-col',
           className
         )}
         {...props}
@@ -610,7 +651,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-(--sidebar-width) min-w-(--sidebar-width) max-w-(--sidebar-width) px-4 py-0 [&>button]:hidden"
+          className="br-ground-recessed bg-sidebar text-sidebar-foreground w-(--sidebar-width) min-w-(--sidebar-width) max-w-(--sidebar-width) px-4 py-0 [&>button]:hidden"
           style={
             {
               '--sidebar-width': SIDEBAR_WIDTH_MOBILE,
@@ -658,11 +699,14 @@ function Sidebar({
       data-side={side}
       data-slot="sidebar"
     >
-      {/* This is what handles the sidebar gap on desktop */}
+      {/* This is what handles the sidebar gap on desktop. Its open and close
+          motion (300ms in, 175ms out) is authored in `main.css`, keyed on
+          `data-slot`, and `data-motion-layout` stops it during a resize. */}
       <div
         data-slot="sidebar-gap"
+        data-motion-layout=""
         className={cn(
-          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
+          'relative w-(--sidebar-width) bg-transparent',
           'group-data-[collapsible=offcanvas]:w-0',
           'group-data-[side=right]:rotate-180',
           variant === 'floating' || variant === 'inset'
@@ -673,25 +717,37 @@ function Sidebar({
       <div
         ref={panelRef}
         data-slot="sidebar-container"
+        data-motion-layout=""
         inert={offCanvas}
         onClick={handlePanelClick}
         className={cn(
-          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-[var(--motion-slow)] ease-[var(--ease-out)] will-change-transform md:flex',
+          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) will-change-transform md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]'
             : 'right-0 group-data-[collapsible=offcanvas]:translate-x-[100%]',
-          // Adjust the padding for floating and inset variants.
-          variant === 'floating' || variant === 'inset'
-            ? 'py-2 pl-2 pr-4 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'
-            : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
+          // The inset variant (the app's) has no padding of its own: every list
+          // inside pads 8px on BOTH sides, so rows span x 8 to 280 at 288px and
+          // the band's hairline runs the full width to meet the chat header's at
+          // the seam. It used to pad 8px left and 16px right (spec 3.4, F-03).
+          variant === 'inset'
+            ? 'p-0'
+            : variant === 'floating'
+              ? 'py-2 pl-2 pr-4 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'
+              : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className
         )}
         {...panelProps}
       >
+        {/* The sidebar is a RECESSED ground (R-27): its rest fill is the ground itself (1.03:1), so
+            a filled control placed on it rests on the strong step, and a filled button hovers a
+            step deeper. `.br-ground-recessed` says so once for everything inside; a Note or card
+            in the column still sets its own grounds for its children (`shared-controls.md`,
+            "Fills before lines"). Nothing in the column rests on it today (rows are clear, the
+            notice is a Note), so this changes no pixel: it keeps the next filled control right. */}
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-container group-data-[variant=floating]:border"
+          className="br-ground-recessed bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-container group-data-[variant=floating]:border"
         >
           {children}
         </div>
@@ -808,7 +864,7 @@ function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
       onClick={toggleSidebar}
       title="Toggle sidebar"
       className={cn(
-        'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex',
+        'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-colors group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex',
         'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
         '[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize',
         'hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full',
@@ -832,6 +888,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="sidebar-inset"
+      data-motion-layout=""
       className={cn(
         'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
         // For inset variant (used in the app): flush against the straight,
@@ -841,8 +898,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
         // For offcanvas variant - ensure content doesn't go under sidebar
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=expanded]:ml-[var(--sidebar-width)]',
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=collapsed]:ml-0',
-        // Smooth transition when sidebar state changes
-        'transition-[margin-left] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
+        // The margin's motion follows the sidebar's (authored in `main.css`).
         className
       )}
       {...props}
@@ -931,7 +987,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        'text-sidebar-foreground/70 ring-sidebar-ring flex h-8 shrink-0 items-center rounded-element px-2 text-supporting transition-[margin,opacity] duration-200 ease-linear [&>svg]:size-4 [&>svg]:shrink-0',
+        'text-sidebar-foreground/70 ring-sidebar-ring flex h-8 shrink-0 items-center rounded-element px-2 text-supporting transition-[margin,opacity] [&>svg]:size-4 [&>svg]:shrink-0',
         'group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0',
         className
       )}
@@ -996,8 +1052,11 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<'li'>) {
   );
 }
 
+// Only colour eases here (principle 9): shadcn's `transition-[width,height,padding]`
+// could animate the row's own geometry. The app's rows also carry `.br-nav-row`
+// (`BioRouterSidebar/sidebar.css`), whose authored transition wins.
 const sidebarMenuButtonVariants = cva(
-  'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-element px-2 py-0 text-left text-label ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
+  'peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-element px-2 py-0 text-left text-label ring-sidebar-ring transition-[color,background-color] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0',
   {
     variants: {
       variant: {

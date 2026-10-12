@@ -31,11 +31,13 @@ describe('InstructionsEditor', () => {
     }
 
     render(<Harness />);
-    expect(screen.getByText('Instructions editor')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Instructions' })).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
 
-    await waitFor(() => expect(screen.queryByText('Instructions editor')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Instructions' })).not.toBeInTheDocument()
+    );
     expect(screen.getByText('Workflow editor')).toBeInTheDocument();
   });
 });

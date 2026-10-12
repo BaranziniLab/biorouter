@@ -1,7 +1,8 @@
 import { render, act } from '@testing-library/react';
 import { useRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { usePreviewMotion } from './usePreviewMotion';
+import { EASE_OUT } from '../../styles/motion';
+import { previewMotionKeyframes, usePreviewMotion } from './usePreviewMotion';
 
 function Host({
   open = true,
@@ -98,6 +99,97 @@ describe('preview content motion', () => {
       rerender(<Host layout="stack" />);
       rerender(<Host open={false} />);
       expect(motion.animate).not.toHaveBeenCalled();
+    } finally {
+      motion.restore();
+    }
+  });
+
+  it('runs on the token curve, never a private one (spec 2.4)', () => {
+    const motion = animations();
+    try {
+      const { rerender } = render(<Host />);
+      act(() => motion.results[0].onfinish?.());
+      rerender(<Host open={false} />);
+      for (const call of motion.animate.mock.calls) {
+        expect(call[1]).toMatchObject({ easing: EASE_OUT });
+      }
+    } finally {
+      motion.restore();
+    }
+  });
+
+  it('snaps a side and stack crossing while the window is being resized', () => {
+    const motion = animations();
+    try {
+      const { rerender } = render(<Host />);
+      act(() => motion.results[0].onfinish?.());
+      document.body.classList.add('biorouter-window-resizing');
+      rerender(<Host layout="stack" />);
+      expect(motion.animate).toHaveBeenCalledTimes(1);
+      document.body.classList.remove('biorouter-window-resizing');
+      // An action crossing back plays the crossfade.
+      rerender(<Host layout="side" />);
+      expect(motion.animate).toHaveBeenCalledTimes(2);
+      expect(motion.animate.mock.calls[1][1]).toMatchObject({ duration: 250 });
+    } finally {
+      document.body.classList.remove('biorouter-window-resizing');
+      motion.restore();
+    }
+  });
+});
+
+describe('preview motion keyframes', () => {
+  it('enters 32px from the right beside the chat and leaves half as far', () => {
+    expect(previewMotionKeyframes('open', 'side')[0]).toEqual({
+      opacity: 0,
+      transform: 'translateX(32px)',
+    });
+    expect(previewMotionKeyframes('close', 'side')[1]).toEqual({
+      opacity: 0,
+      transform: 'translateX(16px)',
+    });
+  });
+
+  it('drops a sheet 16px from under the header and lets it fade out in place', () => {
+    expect(previewMotionKeyframes('open', 'stack')[0]).toEqual({
+      opacity: 0,
+      transform: 'translateY(-16px)',
+    });
+    expect(previewMotionKeyframes('close', 'stack')).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+  });
+
+  it('crossfades a crossing with no travel', () => {
+    expect(previewMotionKeyframes('orientation', 'stack')).toEqual([
+      { opacity: 0 },
+      { opacity: 1 },
+    ]);
+  });
+});
+
+describe('the panel motion marker', () => {
+  function PanelHost({ open }: { open: boolean }) {
+    const ref = useRef<HTMLDivElement>(null);
+    usePreviewMotion(ref, { isOpen: open, layout: 'side', ready: true });
+    return (
+      <aside className="br-preview-panel" data-testid="panel">
+        <div ref={ref} />
+      </aside>
+    );
+  }
+
+  // The strip and the bar fade on this marker (preview-panel.css), so it must be
+  // on the panel for exactly as long as the body's own motion runs.
+  it('marks the panel while the body opens and clears it when the motion ends', () => {
+    const motion = animations();
+    try {
+      const { getByTestId, rerender } = render(<PanelHost open={false} />);
+      expect(getByTestId('panel').dataset.previewMotion).toBeUndefined();
+      rerender(<PanelHost open />);
+      expect(getByTestId('panel').dataset.previewMotion).toBe('open');
+      act(() => motion.results[0].onfinish?.());
+      expect(getByTestId('panel').dataset.previewMotion).toBeUndefined();
+      rerender(<PanelHost open={false} />);
+      expect(getByTestId('panel').dataset.previewMotion).toBe('close');
     } finally {
       motion.restore();
     }

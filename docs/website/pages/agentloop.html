@@ -81,10 +81,10 @@ biorouter session attach &lt;id&gt;</code></pre>
 <p><code>attach</code> needs a <code>biorouterd</code> this terminal can reach, and the desktop app's own service is not one. <a href="#cli-sessions">Command line</a> covers the session commands.</p>
 
 <h2 id="agentloop-steering">Steering a running turn</h2>
-<p>You do not have to wait for a turn to finish. A message you send while it runs waits in a queue at the text box, with two choices:</p>
+<p>You do not have to wait for a turn to finish. A message you send while it runs waits in a queue above the text box. Each queued message has two buttons, named by their hover text:</p>
 <ul>
-  <li><strong>Add now</strong> adds the message to the running turn without stopping it. With the text box empty, <kbd>Cmd+Enter</kbd> (<kbd>Ctrl+Enter</kbd> on Windows and Linux) does the same for the first message in the queue.</li>
-  <li><strong>Stop &amp; send</strong> stops the turn and sends the message as a new one.</li>
+  <li><strong>Add now</strong>, “Add to the running turn without stopping”, adds the message to the running turn without stopping it. With the text box empty, <kbd>Cmd+Enter</kbd> (<kbd>Ctrl+Enter</kbd> on Windows and Linux) does the same for the first message in the queue.</li>
+  <li><strong>Stop &amp; send</strong>, “Stop the running turn, then send this”, stops the turn and sends the message as a new one.</li>
 </ul>
 <p>An added message reaches the model at the next safe point. A running tool is never cut off for it. If an approval card is waiting, the message waits until you answer the card, because a message never answers a card. If the turn ends before the model reads it, the message stays in the chat marked as not answered. A message with attachments cannot be added to a running turn; it waits, or you can use <strong>Stop &amp; send</strong>.</p>
 <div class="note"><p>A browser opened with <code>biorouter serve</code> cannot add messages to a running turn, and neither can any other client of that service. Stop still works. Use the desktop app. <code>biorouter session attach</code> can add to a running turn only on a service started with a user action key; see <a href="#cli-sessions">Command line</a>.</p></div>

@@ -3,6 +3,9 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import WorkflowActivityEditor from '../../WorkflowActivityEditor';
+import { workflowFormCopy } from '../../copy';
+
+const copy = workflowFormCopy.activities;
 
 describe('WorkflowActivityEditor', () => {
   const mockOnChange = vi.fn();
@@ -23,19 +26,27 @@ describe('WorkflowActivityEditor', () => {
       expect(screen.getByText('Activities')).toBeInTheDocument();
     });
 
-    it('shows helper text', () => {
+    it('keeps its help behind InfoTips, not in paragraphs', () => {
       render(<WorkflowActivityEditor activities={[]} setActivities={mockOnChange} />);
-      expect(screen.getByText(/top-line prompts and activity buttons/)).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `About ${copy.title}` })
+      ).toHaveAccessibleDescription(copy.info);
+      expect(screen.getByRole('textbox', { name: copy.message })).toHaveAccessibleDescription(
+        copy.messageInfo
+      );
+      expect(
+        screen.getByRole('button', { name: `About ${copy.buttons}` })
+      ).toHaveAccessibleDescription(copy.buttonsInfo);
     });
   });
 
   describe('Empty State', () => {
     it('shows message input when no activities', () => {
       render(<WorkflowActivityEditor activities={[]} setActivities={mockOnChange} />);
-      expect(screen.getByText('Message')).toBeInTheDocument();
-      expect(
-        screen.getByPlaceholderText(/Enter a user facing introduction message/)
-      ).toBeInTheDocument();
+      expect(screen.getByRole('textbox', { name: copy.message })).toHaveAttribute(
+        'placeholder',
+        copy.messagePlaceholder
+      );
     });
   });
 
@@ -44,16 +55,15 @@ describe('WorkflowActivityEditor', () => {
       const activities = ['message: Hello World', 'button: Click me', 'action: Do something'];
       render(<WorkflowActivityEditor activities={activities} setActivities={mockOnChange} />);
 
-      const messageTextarea = screen.getByPlaceholderText(
-        /Enter a user facing introduction message/
-      );
+      const messageTextarea = screen.getByRole('textbox', { name: copy.message });
       expect(messageTextarea).toHaveValue(' Hello World');
 
       expect(screen.getByText('button: Click me')).toBeInTheDocument();
       expect(screen.getByText('action: Do something')).toBeInTheDocument();
 
-      const removeButtons = screen.getAllByText('×');
+      const removeButtons = screen.getAllByRole('button', { name: /^Remove / });
       expect(removeButtons).toHaveLength(2);
+      expect(removeButtons[0]).toHaveAccessibleName(copy.remove('button: Click me'));
     });
 
     it('truncates long activity text in boxes', () => {
@@ -63,15 +73,16 @@ describe('WorkflowActivityEditor', () => {
 
       expect(screen.getByText(/button: a+…/)).toBeInTheDocument();
 
-      const activityBox = screen.getByText(/button: a+…/).closest('div');
-      expect(activityBox).toHaveAttribute('title', longActivity);
+      // The whole label is the row's tooltip.
+      const row = screen.getByText(/button: a+…/).closest('li');
+      expect(row).toHaveAttribute('title', longActivity);
     });
 
     it('handles empty activities array', () => {
       render(<WorkflowActivityEditor activities={[]} setActivities={mockOnChange} />);
       expect(screen.getByText('Activities')).toBeInTheDocument();
 
-      expect(screen.queryByText('×')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
     });
 
     it('allows removing activities via remove buttons', async () => {
@@ -79,7 +90,7 @@ describe('WorkflowActivityEditor', () => {
       const activities = ['button: Click me', 'action: Do something'];
       render(<WorkflowActivityEditor activities={activities} setActivities={mockOnChange} />);
 
-      const removeButtons = screen.getAllByText('×');
+      const removeButtons = screen.getAllByRole('button', { name: /^Remove / });
       await user.click(removeButtons[0]);
 
       expect(mockOnChange).toHaveBeenCalledWith(['action: Do something']);
@@ -87,11 +98,22 @@ describe('WorkflowActivityEditor', () => {
   });
 
   describe('User Interactions', () => {
+    it('adds a starter button on Enter, on the shared field skin', async () => {
+      const user = userEvent.setup();
+      render(<WorkflowActivityEditor activities={[]} setActivities={mockOnChange} />);
+
+      const input = screen.getByRole('textbox', { name: copy.buttons });
+      expect(input).toHaveClass('br-field');
+      await user.type(input, 'Summarize{Enter}');
+
+      expect(mockOnChange).toHaveBeenCalledWith(['Summarize']);
+    });
+
     it('allows typing in message field', async () => {
       const user = userEvent.setup();
       render(<WorkflowActivityEditor activities={[]} setActivities={mockOnChange} />);
 
-      const messageInput = screen.getByPlaceholderText(/Enter a user facing introduction message/);
+      const messageInput = screen.getByRole('textbox', { name: copy.message });
       await user.type(messageInput, 'Test message');
 
       expect(messageInput).toHaveValue('Test message');
@@ -103,7 +125,7 @@ describe('WorkflowActivityEditor', () => {
         <WorkflowActivityEditor activities={[]} setActivities={mockOnChange} onBlur={mockOnBlur} />
       );
 
-      const messageInput = screen.getByPlaceholderText(/Enter a user facing introduction message/);
+      const messageInput = screen.getByRole('textbox', { name: copy.message });
       await user.click(messageInput);
       await user.tab();
 

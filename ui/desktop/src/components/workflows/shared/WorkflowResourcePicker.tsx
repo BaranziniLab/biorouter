@@ -1,9 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { Check, ChevronDown, Search } from '../../icons/app-icons';
+import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
+import { Checkbox } from '../../ui/Checkbox';
+import { InfoTip } from '../../ui/info-tip';
+import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
-import { Switch } from '../../ui/switch';
 import { cn } from '../../../utils';
+import { workflowFormCopy } from '../copy';
+
+const copy = workflowFormCopy.picker;
 
 export interface WorkflowResourceItem {
   id: string;
@@ -14,6 +21,7 @@ export interface WorkflowResourceItem {
 
 interface WorkflowResourcePickerProps {
   label: string;
+  /** What the picker is for: help behind an InfoTip beside the label, never a paragraph. */
   description?: string;
   items: WorkflowResourceItem[];
   selectedIds: string[];
@@ -21,16 +29,15 @@ interface WorkflowResourcePickerProps {
   defaultId?: string | null;
   onDefaultIdChange?: (id: string | null) => void;
   /**
-   * What "no default" MEANS here, shown on the card whenever a default could be
-   * named and none is.
+   * What "no default" MEANS here, behind the InfoTip on the card's "No default" line, which
+   * shows whenever a default could be named and none is.
    *
-   * The rows — and with them the only mark of which item is the default — live
-   * inside a closed popover, so a card with a default and a card with none read
-   * identically from outside it. That is fine for a control whose unset state is
-   * obvious and wrong for one whose description promises a default: the reader
-   * cannot tell a captured "this chat has no primary base" from a bug. The
-   * wording belongs to the caller because what the absence costs is
-   * domain-specific.
+   * The rows, and with them the only mark of which item is the default, live inside a closed
+   * popover, so a card with a default and a card with none would read identically from outside
+   * it. That is fine for a control whose unset state is obvious and wrong for one whose purpose
+   * is a default: the reader cannot tell a captured "this chat has no primary base" from a bug.
+   * So the card says "No default" in words, and the consequence is one hover or Tab away. The
+   * wording belongs to the caller because what the absence costs is domain-specific.
    */
   noDefaultText?: string;
   /** A standing condition the selection is subject to, shown under the label. */
@@ -40,12 +47,14 @@ interface WorkflowResourcePickerProps {
   noun: string;
 }
 
-function countLabel(count: number, noun: string): string {
-  if (count === 0) return `No ${noun}s selected`;
-  if (count === 1) return `1 ${noun} selected`;
-  return `${count} ${noun}s selected`;
-}
-
+/**
+ * Pick items from a set (knowledge bases, skills, extensions) for a workflow.
+ *
+ * Set membership is a `Checkbox` on the left of its label (spec 2.6, principle 5; Crew's
+ * PersonPicker), never a Switch: a switch applies a setting now, and these choices are only
+ * submitted with the form. Each checkbox is named by its item's label, and its description is
+ * the box's description.
+ */
 export function WorkflowResourcePicker({
   label,
   description,
@@ -63,6 +72,8 @@ export function WorkflowResourcePicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const idBase = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const labelId = `${idBase}-label`;
 
   // Named by id, labelled by label: the id is what is saved, and a picker whose
   // items have not loaded yet must still be able to say a default is set.
@@ -71,18 +82,14 @@ export function WorkflowResourcePicker({
     : null;
   // Nothing selected already says its own thing on the trigger ("No KBs
   // selected"), and "no default" on top of it is noise about a set that is empty.
-  const defaultSummary =
-    !onDefaultIdChange || selectedIds.length === 0
-      ? null
-      : defaultLabel
-        ? `Default: ${defaultLabel}`
-        : (noDefaultText ?? null);
+  const showDefault = Boolean(onDefaultIdChange) && selectedIds.length > 0;
+  const showNoDefault = showDefault && !defaultLabel && Boolean(noDefaultText);
 
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = q
       ? items.filter((item) =>
-          [item.label, item.description, item.badge]
+          [item.label, item.id, item.description, item.badge]
             .filter(Boolean)
             .some((value) => value!.toLowerCase().includes(q))
         )
@@ -95,12 +102,12 @@ export function WorkflowResourcePicker({
     });
   }, [items, query, selected]);
 
-  // Switching an item on or off changes the selection, never the default: only
+  // Checking an item on or off changes the selection, never the default: only
   // the Default control names one. For knowledge bases the default becomes the
   // primary of every chat the workflow starts, which is where KB-less writes
   // go, and the daemon never infers that pointer (`plan_knowledge_selection`).
-  // So a base switched on is not made the default, and switching the default
-  // off leaves none rather than passing the role to the first base left.
+  // So a base checked on is not made the default, and unchecking the default
+  // leaves none rather than passing the role to the first base left.
   const toggleSelected = (id: string) => {
     if (selected.has(id)) {
       onSelectedIdsChange(selectedIds.filter((selectedId) => selectedId !== id));
@@ -114,110 +121,118 @@ export function WorkflowResourcePicker({
   };
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <label className="text-label text-text-default">{label}</label>
-          {description && <p className="mt-0.5 text-supporting text-text-muted">{description}</p>}
-          {defaultSummary && (
+    <div className="flex flex-col gap-1.5" role="group" aria-labelledby={labelId}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <div className="flex min-w-0 items-center">
+            <span id={labelId} className="text-label text-text-default">
+              {label}
+            </span>
+            {description && <InfoTip label={label} help={description} />}
+          </div>
+          {showDefault && (defaultLabel || showNoDefault) && (
             <p
-              className="mt-0.5 text-supporting text-text-muted"
+              className="flex min-w-0 items-center text-supporting text-text-muted"
               data-testid="resource-picker-default-summary"
             >
-              {defaultSummary}
+              <span className="truncate">
+                {defaultLabel ? copy.defaultIs(defaultLabel) : copy.noDefault}
+              </span>
+              {!defaultLabel && noDefaultText && (
+                <InfoTip label={copy.noDefault} help={noDefaultText} />
+              )}
             </p>
           )}
         </div>
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex h-8 shrink-0 items-center gap-2 rounded-element bg-background-medium px-2.5 text-supporting text-text-default transition-colors hover:bg-overlay-hover "
-            >
-              <span>{countLabel(selectedIds.length, noun)}</span>
-              <ChevronDown
-                className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')}
-              />
-            </button>
+            <Button type="button" variant="secondary" className="shrink-0">
+              {copy.count(selectedIds.length, noun)}
+              <ChevronDown aria-hidden />
+            </Button>
           </PopoverTrigger>
           <PopoverContent
             align="end"
-            className="w-[min(440px,calc(100vw-32px))] border-border-subtle p-2"
+            className="w-[min(440px,calc(100vw-32px))] p-1"
             onOpenAutoFocus={(event) => event.preventDefault()}
           >
-            <div className="flex h-8 items-center gap-2 rounded-element bg-background-default px-2 ring-1 ring-border-input">
-              <Search className="h-3.5 w-3.5 text-text-muted" />
-              <input
+            <div className="relative p-1">
+              <Search
+                aria-hidden
+                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-text-muted"
+              />
+              <Input
+                type="search"
+                aria-label={searchPlaceholder}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={searchPlaceholder}
-                className="h-full min-w-0 flex-1 bg-transparent text-body text-text-default placeholder:text-text-muted"
+                className="pl-8"
                 autoFocus
               />
             </div>
-            <div className="mt-2 max-h-72 overflow-y-auto">
+            <div className="max-h-72 overflow-y-auto pt-1">
               {filteredItems.length === 0 ? (
-                <div className="px-2 py-6 text-center text-supporting text-text-muted">
+                <div className="px-3 py-6 text-center text-supporting text-text-muted">
                   {emptyText}
                 </div>
               ) : (
-                filteredItems.map((item) => {
+                filteredItems.map((item, index) => {
                   const isSelected = selected.has(item.id);
                   const isDefault = defaultId === item.id;
+                  const checkboxId = `${idBase}-item-${index}`;
+                  const nameId = `${checkboxId}-name`;
+                  const descriptionId = item.description ? `${checkboxId}-description` : undefined;
                   return (
                     <div
                       key={item.id}
-                      className={cn(
-                        'flex cursor-pointer items-center gap-3 rounded-element px-2 py-2 transition-colors',
-                        isSelected ? 'bg-overlay-selected' : 'hover:bg-overlay-hover'
-                      )}
-                      onClick={() => toggleSelected(item.id)}
+                      className="flex min-h-8 items-center gap-2 rounded-element px-2 py-1 hover:bg-overlay-hover"
                     >
-                      <Switch
-                        checked={isSelected}
-                        onCheckedChange={() => toggleSelected(item.id)}
-                        onClick={(event) => event.stopPropagation()}
-                        variant="mono"
-                        aria-label={`Toggle ${item.label}`}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-label text-text-default">
-                            {item.label}
+                      {/* The whole label toggles the box; the Default control is its
+                          sibling, so pressing it never checks or unchecks the item. */}
+                      <label
+                        htmlFor={checkboxId}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+                      >
+                        <Checkbox
+                          id={checkboxId}
+                          checked={isSelected}
+                          onChange={() => toggleSelected(item.id)}
+                          aria-labelledby={nameId}
+                          aria-describedby={descriptionId}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span id={nameId} className="truncate text-label text-text-default">
+                              {item.label}
+                            </span>
+                            {item.badge && <Badge tone="neutral">{item.badge}</Badge>}
                           </span>
-                          {item.badge && (
-                            <span className="shrink-0 rounded-inner bg-background-muted px-1.5 py-0.5 text-caps text-text-muted">
-                              {item.badge}
+                          {item.description && (
+                            <span
+                              id={descriptionId}
+                              className="block truncate text-supporting text-text-muted"
+                            >
+                              {item.description}
                             </span>
                           )}
-                        </div>
-                        {item.description && (
-                          <p className="truncate text-supporting text-text-muted">
-                            {item.description}
-                          </p>
-                        )}
-                      </div>
+                        </span>
+                      </label>
                       {onDefaultIdChange && isSelected && (
                         // A toggle, so "selected, and no default" stays reachable
                         // once a default has been named.
-                        <button
+                        <Button
                           type="button"
+                          variant="ghost"
+                          size="sm"
                           aria-pressed={isDefault}
-                          aria-label={`Default ${noun}: ${item.label}`}
-                          className={cn(
-                            'inline-flex h-6 shrink-0 items-center gap-1 rounded-element px-1.5 text-supporting transition-colors',
-                            isDefault
-                              ? 'bg-background-default text-text-default'
-                              : 'text-text-muted hover:bg-overlay-hover hover:text-text-default'
-                          )}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onDefaultIdChange(isDefault ? null : item.id);
-                          }}
+                          aria-label={copy.defaultNamed(noun, item.label)}
+                          className={cn(isDefault ? 'text-text-default' : 'text-text-muted')}
+                          onClick={() => onDefaultIdChange(isDefault ? null : item.id)}
                         >
-                          {isDefault && <Check className="h-3 w-3" />}
-                          Default
-                        </button>
+                          {isDefault && <Check aria-hidden />}
+                          {copy.default}
+                        </Button>
                       )}
                     </div>
                   );

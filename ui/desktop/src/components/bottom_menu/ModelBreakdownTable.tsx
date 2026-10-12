@@ -43,9 +43,12 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
   }
 
   return (
-    <table className="w-full border-collapse text-left text-xs" data-testid="model-breakdown-table">
+    <table
+      className="w-full border-collapse text-left text-supporting"
+      data-testid="model-breakdown-table"
+    >
       <thead>
-        <tr className="h-8 border-b border-border-subtle text-caps text-text-muted">
+        <tr className="h-8 border-b border-border-subtle text-text-muted">
           <th className="pr-3 font-medium">Model</th>
           <th className="px-2 text-right font-medium">Turns</th>
           <th className="px-2 text-right font-medium">Fresh in</th>
@@ -62,7 +65,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
             key={modelLabel(row)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
-            <td className="pr-3 font-mono">{modelLabel(row)}</td>
+            <td className="pr-3">{modelLabel(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.turns.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheReadTokens)}</td>

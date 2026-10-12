@@ -34,6 +34,8 @@ import {
   discoverFamilies,
   assertBlockOrder,
   blend,
+  blocks,
+  parseDecls,
   resolveHex,
   resolveRaw,
   contrast as ratioOf,
@@ -71,6 +73,26 @@ function assert(label, fg, bg, min, scope) {
 }
 
 /**
+ * The CEILING twin of `assert`: a pair that must stay close. A quiet surface
+ * step (the R-27 fills) has to be visible AND subtle, and only a ceiling keeps
+ * "subtle" from drifting into a grey slab one nudge at a time.
+ */
+function assertAtMost(label, fg, bg, max, scope) {
+  const f = resolve(fg, scope);
+  const b = resolve(bg, scope);
+  if (!f || !b) {
+    failures++;
+    rows.push(['UNRESOLVED', '', label, `${!f ? fg : bg} does not resolve to a hex`]);
+    return;
+  }
+  const r = ratio(f, b);
+  checks++;
+  const ok = r <= max;
+  if (!ok) failures++;
+  rows.push([ok ? 'pass' : 'FAIL', `${r.toFixed(2)}:1`, label, `${f} on ${b} (at most ${max})`]);
+}
+
+/**
  * Assert against a TRANSLUCENT fill, composited over the ground it sits on.
  *
  * Everything above measures opaque token pairs, which is blind to Tailwind's
@@ -104,6 +126,57 @@ function assertOverTint(label, fg, fill, alpha, ground, min, scope) {
     label,
     `${f} on ${fillHex}@${alpha} over ${groundHex} = ${composited} (need ${min})`,
   ]);
+}
+
+/**
+ * The off Switch on a popover's rows (WS-PICKERS-2). The composer's Tools
+ * popover is a list of rows whose trailing control is a Switch, and a command
+ * list opens with its first row highlighted: `--overlay-hover` (ink at an
+ * alpha, mixed to `transparent`) over the popover ground. So the track owes a
+ * visible step on BOTH row grounds, the resting one and the highlighted one,
+ * at the fills' own visible-step floor (1.08). In dark the old track
+ * (#33332f) sat 1.10:1 on the lifted ground and 1.05:1 on the highlighted row,
+ * a bare knob; main.css "popover fill" sinks it to a well.
+ *
+ * The highlight is read from the `--overlay-hover` DECLARATION, not copied
+ * here, so a change to its alpha moves the measurement with it. Mixing an ink
+ * to `transparent` keeps the ink and scales its alpha, and the browser
+ * composites that in sRGB, which is what `blend` does (WS-PICKERS read #363632
+ * off the dark popover's highlighted row in Chromium, the blend's own answer).
+ * A declaration of any other shape fails closed rather than skipping the row.
+ */
+function assertOffTrackOnRows(at, scope) {
+  assert(
+    `${at}: switch off track is a step off a resting row`,
+    '--control-track-off',
+    '--background-default',
+    1.08,
+    scope
+  );
+  const label = `${at}: switch off track is a step off the highlighted row`;
+  const overlay = resolveRaw('--overlay-hover', scope);
+  const parts =
+    overlay &&
+    /^color-mix\(in \w+,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)$/.exec(overlay);
+  if (!parts) {
+    failures++;
+    rows.push([
+      'UNRESOLVED',
+      '',
+      label,
+      `--overlay-hover is ${JSON.stringify(overlay)}, not color-mix(in <space>, var(--ink) N%, transparent)`,
+    ]);
+    return;
+  }
+  assertOverTint(
+    label,
+    '--control-track-off',
+    parts[1],
+    Number(parts[2]) / 100,
+    '--background-default',
+    1.08,
+    scope
+  );
 }
 
 // Grounds that body text can legitimately land on.
@@ -470,11 +543,13 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
 
   // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
   // asks it against every row the icon can sit on — the resting sidebar, the
-  // hover fill, and the active fill. The darkest row is what binds. Alma Mater
-  // paints these in the brand teal (the one place it appears at reading size),
-  // so an accent change that only checked the resting sidebar could ship an
-  // icon that disappears the moment a row is selected. Parchment passes these
-  // trivially because its --sidebar-icon is a pass-through to the label ink.
+  // hover fill, and the active fill. The darkest row is what binds. Every
+  // family now paints them in its muted ink, the ink a nav label and a chat
+  // glyph wear at rest (the 2026-10 redesign: V1-M3 held the accent for the
+  // active rail and the lock badge, V1-R2-5 made the icon column one ink), so
+  // these pass with room today. The token stays per family and stays asserted,
+  // because a family that points it back at its accent, or at a lighter step,
+  // could ship an icon that disappears the moment a row is selected.
   for (const g of ['--sidebar', '--sidebar-hover', '--sidebar-active']) {
     assert(`${theme}: sidebar icon on ${g}`, '--sidebar-icon', g, 3.0, scope);
   }
@@ -521,6 +596,257 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
         ? `closest pair: ${closest.a} and ${closest.b} (need ΔE00 >= 8)`
         : 'no avatar fill resolved to a hex',
     ]);
+  }
+
+  // ── The 2026-10 redesign (implementation spec §2.3) ──────────────────────
+  //
+  // Control edges. `--border-control` is the resting boundary of every input,
+  // checkbox, radio, select trigger and the switch knob's ring, so it owes SC
+  // 1.4.11's 3:1 against the grounds a control sits on. It replaced
+  // `--border-emphasized` (ink at 24%, 1.6:1 on white) on those controls.
+  for (const g of ['--background-default', '--background-card']) {
+    assert(`${theme}: control edge (border-control) on ${g}`, '--border-control', g, 3.0, scope);
+  }
+  // The Switch. Off, the knob is the page ground ringed in `--border-control`
+  // on `--control-track-off`: the ring is what shows where the knob is, so it
+  // owes 3:1 against the track it sits on. That is what fixed the track's
+  // lightness: a mid-grey track (the spec's starting point, ink at 24%) cannot
+  // clear 3:1 against a ring that also clears 3:1 against white. The track must
+  // still be a step off the page (1.1 flags a collapse, the same floor as the
+  // other surface steps in this file). On, the knob is `--text-on-accent` on
+  // the accent track.
+  assert(
+    `${theme}: switch off knob ring on its track`,
+    '--border-control',
+    '--control-track-off',
+    3.0,
+    scope
+  );
+  assert(
+    `${theme}: switch off track is a step off the page`,
+    '--control-track-off',
+    '--background-default',
+    1.1,
+    scope
+  );
+  assert(
+    `${theme}: switch on knob on the accent track`,
+    '--text-on-accent',
+    '--background-accent',
+    3.0,
+    scope
+  );
+  // The heatmap's zero day must be visible on the usage card. In dark it was
+  // #1e1d1b, 1.02:1 on the card, so an idle day vanished; it is now held to
+  // 1.3. Light is held to 1.1, a collapse floor only: #eeeeea measures 1.16 on
+  // white and reads as a step, because contrast ratios compress toward black and
+  // the same ratio is a far smaller visible step in dark than in light. Raising
+  // light to 1.3 would retune the light ramp, which the spec keeps unchanged.
+  // The first step must also stay a step above zero, or lifting heat-0 would
+  // merge it with heat-1: Roche Limit dark measured 1.01:1 and Parchment dark
+  // 1.13:1 (down from 1.46) until each family's heat-1 moved up a step. Dark is
+  // held to 1.2, a step the eye separates on a dark ground; light keeps its
+  // original ramp and the 1.1 collapse floor.
+  assert(
+    `${theme}: heatmap zero day on the card`,
+    '--heat-0',
+    '--background-card',
+    theme.endsWith(':dark') ? 1.3 : 1.1,
+    scope
+  );
+  assert(
+    `${theme}: heatmap first step off the zero day`,
+    '--heat-1',
+    '--heat-0',
+    theme.endsWith(':dark') ? 1.2 : 1.1,
+    scope
+  );
+  // The lock badge on a private chat's glyph is the family accent
+  // (`.br-icon-lock-badge`, ink `--text-accent`) and it carries the privacy
+  // state, so it owes 3:1 on every row it can sit on: the resting sidebar, the
+  // active row and the page (a tab, a header, a History row).
+  for (const g of ['--sidebar', '--sidebar-active', '--background-default']) {
+    assert(`${theme}: private lock badge (text-accent) on ${g}`, '--text-accent', g, 3.0, scope);
+  }
+
+  // Fills before lines (owner message 13, R-27). A card, button, chip, strip
+  // tab, segmented track, field or the composer rests on `--background-fill`
+  // with NO outline, so the fill alone has to say "there is a box here". Held
+  // two ways:
+  //   - VISIBLE: at least 1.08:1 off every page ground it rests on (the canvas
+  //     the transcript paints, the default surface, the card). 1.05 elsewhere in
+  //     this file only flags a collapse; this is the step the eye must find
+  //     without a line. On a recessed ground (the sidebar, the muted panel) the
+  //     rest fill is the muted value itself, so there the STRONG step is the
+  //     resting fill and owes the same 1.08.
+  //   - SUBTLE: at most 1.35:1 on the page grounds, so a filled card reads as a
+  //     quiet ground change and not as a grey slab; the strong step at most 1.5.
+  // Hover and press step to `--background-fill-strong`, which must stay a
+  // visible step off the rest fill (1.08) and off the focus fill (focus is a
+  // surface shift of its own, D-15; 1.05 there, the `background-focus vs
+  // medium` assertion above holds the same pair from the other side). Ink keeps
+  // its usual floors on both fills; `--text-subtle` (placeholders) is held on
+  // the rest fill only, because opaque `--background-medium` already shows it
+  // sub-AA in three scopes and a hovered field is transient. Control edges and
+  // the focus edge keep 3:1, since a checkbox, a radio or a focused control
+  // sits inside a filled card. The off switch keeps its track a step off the
+  // rest fill (1.05 collapse floor); on the strong step the knob ring carries it.
+  for (const g of ['--background-canvas', '--background-default', '--background-card']) {
+    assert(`${theme}: fill is a visible step off ${g}`, '--background-fill', g, 1.08, scope);
+    assertAtMost(`${theme}: fill stays subtle on ${g}`, '--background-fill', g, 1.35, scope);
+    assertAtMost(
+      `${theme}: strong fill stays subtle on ${g}`,
+      '--background-fill-strong',
+      g,
+      1.5,
+      scope
+    );
+  }
+  for (const g of ['--sidebar', '--background-muted']) {
+    assert(
+      `${theme}: strong fill rests a visible step off recessed ${g}`,
+      '--background-fill-strong',
+      g,
+      1.08,
+      scope
+    );
+  }
+  assert(
+    `${theme}: strong fill (hover, press) is a step off the fill`,
+    '--background-fill-strong',
+    '--background-fill',
+    1.08,
+    scope
+  );
+  assert(
+    `${theme}: focus fill is a step off the strong fill`,
+    '--background-focus',
+    '--background-fill-strong',
+    1.05,
+    scope
+  );
+  for (const fill of ['--background-fill', '--background-fill-strong']) {
+    const name = fill.slice(2);
+    assert(`${theme}: text-default on ${name}`, '--text-default', fill, 4.5, scope);
+    assert(`${theme}: text-muted on ${name}`, '--text-muted', fill, 4.5, scope);
+    assert(
+      `${theme}: control edge (border-control) on ${name}`,
+      '--border-control',
+      fill,
+      3.0,
+      scope
+    );
+    assert(`${theme}: focus edge (border-focus) on ${name}`, '--border-focus', fill, 3.0, scope);
+  }
+  assert(
+    `${theme}: text-subtle on background-fill`,
+    '--text-subtle',
+    '--background-fill',
+    4.5,
+    scope
+  );
+  assert(
+    `${theme}: switch off track is a step off the fill`,
+    '--control-track-off',
+    '--background-fill',
+    1.05,
+    scope
+  );
+
+  // The same fills INSIDE a dark popover (R-27 phase B; main.css "popover fill").
+  // `.dark .biorouter-popover-surface` lifts the ground to `--background-medium`
+  // (re-pointing `--background-default`), which is also the dark strong step, so
+  // a hovered field would have vanished into the popover; the rule re-points the
+  // strong step one step deeper. The scope is built the way the browser builds
+  // it: the family's own tokens under the rule's custom properties. A LIFTED
+  // fill was measured and rejected: `--text-subtle` falls under 4.5:1 on any
+  // fill a visible step above the lifted ground. So here the rest fill stays a
+  // well (darker than the ground) and the hover goes deeper still.
+  if (theme.endsWith(':dark')) {
+    const popover = Object.assign(
+      {},
+      ...blocks(css, (sel) => sel === '.dark .biorouter-popover-surface').map((b) =>
+        parseDecls(b.body)
+      )
+    );
+    const inside = { decls: { ...scope.decls, ...popover }, theme: scope.theme };
+    const at = `${theme} dark popover`;
+    assert(
+      `${at}: fill is a visible step off the ground`,
+      '--background-fill',
+      '--background-default',
+      1.08,
+      inside
+    );
+    assertAtMost(
+      `${at}: fill stays subtle on the ground`,
+      '--background-fill',
+      '--background-default',
+      1.35,
+      inside
+    );
+    assert(
+      `${at}: strong fill (hover) is a step off the fill`,
+      '--background-fill-strong',
+      '--background-fill',
+      1.08,
+      inside
+    );
+    assert(
+      `${at}: a hovered field is still a step off the ground`,
+      '--background-fill-strong',
+      '--background-default',
+      1.08,
+      inside
+    );
+    assertAtMost(
+      `${at}: strong fill stays subtle on the ground`,
+      '--background-fill-strong',
+      '--background-default',
+      1.5,
+      inside
+    );
+    assert(
+      `${at}: focus fill is a step off the strong fill`,
+      '--background-focus',
+      '--background-fill-strong',
+      1.05,
+      inside
+    );
+    for (const fill of ['--background-fill', '--background-fill-strong']) {
+      const name = fill.slice(2);
+      assert(`${at}: text-default on ${name}`, '--text-default', fill, 4.5, inside);
+      assert(`${at}: text-muted on ${name}`, '--text-muted', fill, 4.5, inside);
+      assert(`${at}: text-subtle (placeholder) on ${name}`, '--text-subtle', fill, 4.5, inside);
+      assert(
+        `${at}: control edge (border-control) on ${name}`,
+        '--border-control',
+        fill,
+        3.0,
+        inside
+      );
+      assert(`${at}: focus edge (border-focus) on ${name}`, '--border-focus', fill, 3.0, inside);
+    }
+    assert(
+      `${at}: switch off track is a step off the fill`,
+      '--control-track-off',
+      '--background-fill',
+      1.05,
+      inside
+    );
+    // The off Switch on the popover's own rows, and its knob ring on the re-pointed track.
+    assertOffTrackOnRows(at, inside);
+    assert(
+      `${at}: switch off knob ring on its track`,
+      '--border-control',
+      '--control-track-off',
+      3.0,
+      inside
+    );
+  } else {
+    // Light has no popover rule: a popover there paints the page's own ground, so these rows
+    // hold the track on every light list, and the highlighted row (1.09) is the binding case.
+    assertOffTrackOnRows(`${theme} popover`, scope);
   }
 
   // NOT ASSERTED: --accent-bar. It is tempting to hold the active-nav rail to

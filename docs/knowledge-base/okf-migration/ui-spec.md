@@ -30,6 +30,13 @@
 > at 216–360px; the window floor moved with the default, the pane at that floor is still exactly 760,
 > and the finding is unchanged.)
 
+> **Superseded in part (2026-10).** The Codex simplicity redesign (section 3.12 of
+> [its implementation spec](../../design/codex-simplicity-redesign/implementation-spec.md)) merged
+> the title and subject bands into one 44px `PageHeader` band, moved the tier control's trigger
+> into that band as a badge-button (its confirmation is unchanged), flattened the Sources rail and
+> graph into flush columns, made the facet strip 44px, and retired the height step. The container
+> ladder (860/940/1140/1400) is unchanged.
+
 The Knowledge section is the one place in BioRouter where the app draws a *data* surface — a canvas
 of typed nodes and edges — rather than chrome around prose. That is why it drifted: the graph subtree
 grew a second visual language (thirteen hardcoded hexes, a gradient wash, fractional type sizes), and
@@ -877,9 +884,9 @@ re-exports land in the same commit.
 
 | # | Where | Icon | Title | Description | Actions |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Workspace — no bases at all | `KnowledgeIcon` | No knowledge bases yet | Create one and Biorouter will build and maintain notes, sources and links for you. | `Create knowledge base` (default) · `Import .brkb` (secondary) |
-| 2 | Workspace — bases exist, none primary | `Target` | No primary knowledge base | Choose which base this chat reads and writes. | `Choose a base` (default) |
-| 3 | Canvas — base primary, zero pages | `Sparkles` | Nothing digested yet | Stage a source in the Sources rail and press Digest. | none |
+| 1 | Workspace — no bases at all | `ENTITY_ICONS.knowledge` | No knowledge bases yet | Create one and Biorouter will build and maintain notes, sources and links for you. | `Create knowledge base` (default) · `Import .brkb` (secondary) |
+| 2 | Workspace — bases exist, none primary | `ENTITY_ICONS.knowledge` | No primary knowledge base | Choose which base this chat reads and writes. | `Choose a base` (default) |
+| 3 | Canvas — base primary, zero pages | `Sparkles` | Nothing digested yet | Stage a source, then digest it. | none |
 | 4 | Canvas — graph load failed | `AlertCircle` | Could not load the graph | *the error message* | `Try again` (secondary) |
 | 5 | Canvas — filters exclude everything | `Filter` | No pages match these filters | Widen or clear the filters to bring the map back. *(compact)* | `Clear filters` (ghost) |
 | 6 | Staged list — nothing staged | `Inbox` | Nothing staged | Drop files above, paste text, or choose a folder. *(compact)* | none |

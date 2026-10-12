@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Copy,
   Download,
   FolderInput,
   FolderPlus,
-  MoreHorizontal,
   Pencil,
   Search,
   Trash2,
@@ -13,24 +13,23 @@ import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { Field, fieldHelpId } from '../../ui/field';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import { Skeleton } from '../../ui/skeleton';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../../ui/dropdown-menu';
+import { RowActions, type RowActionItem } from '../../ui/row-actions';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ModalShell } from '../../ModalShell';
 import BuiltInBadge from '../../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/builtins';
+import { copyToClipboard } from '../../../utils/clipboard';
+import { toastError, toastSuccess } from '../../../toasts';
+import { knowledgeCopy } from '../copy';
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 import { KbDot } from '../KbDot';
-import { kbFormatLabel, LEGACY_FORMAT_TITLE } from '../kbFormat';
+import { kbFormatLabel } from '../kbFormat';
 import { KbFormatChooser } from './KbFormatChooser';
 
 interface Props {
@@ -38,6 +37,12 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   /** Open with the create flow already started (the picker's "Create…" row). */
   startInCreate?: boolean;
+  /**
+   * Radix's close-focus hook for the manager, for a caller that opens it from a control which is
+   * gone by the time it closes (the picker's row): call `event.preventDefault()` and place focus.
+   * The chooser needs none, because it always ends in the manager.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -65,7 +70,12 @@ type DraftMode = { kind: 'rename'; base: KbListEntry } | null;
  * — is untinted. A 1px box drawn around a panel's quietest actions was the
  * heaviest line in it.
  */
-export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: Props) {
+export function KBManagerDialog({
+  open,
+  onOpenChange,
+  startInCreate = false,
+  onCloseAutoFocus,
+}: Props) {
   const { bases, loading, primaryKbId, hiddenKbIds, refresh, setPrimaryKbId, toggleKbHidden } =
     useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
@@ -75,14 +85,31 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   const [busyId, setBusyId] = useState<string | null>(null);
   const [baseToDelete, setBaseToDelete] = useState<KbListEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // What is wrong with the name typed into the rename card: the Field's error, on the field.
+  // `error` above is a request that failed, which is not about the field.
+  const [draftError, setDraftError] = useState<string | null>(null);
   const [chooserOpen, setChooserOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
+  const renameRef = useRef<HTMLInputElement>(null);
+  const createRef = useRef<HTMLButtonElement>(null);
+  // True from the moment the format chooser takes this dialog's place until the manager comes back
+  // under it. The manager is UNMOUNTED while the chooser is up (one usable dialog, see the return
+  // below), so what comes back is a new dialog whose first focus would otherwise be the first
+  // tabbable in its header, the "About bases in this chat" InfoTip, ringed after a keyboard close
+  // (V3-R2-4). `placeFocus` sends it to the button that opened the chooser instead.
+  const returnToCreate = useRef(false);
 
   useEffect(() => {
+    if (chooserOpen) returnToCreate.current = true;
+  }, [chooserOpen]);
+
+  useEffect(() => {
+    returnToCreate.current = false;
     if (!open) return;
     setDraftMode(null);
     setChooserOpen(startInCreate);
     setDraft('');
+    setDraftError(null);
     setError(null);
     // A base created elsewhere (chat, the knowledge MCP tools) is invisible here
     // until something asks again.
@@ -126,6 +153,21 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   }
 
   /**
+   * Radix's open-focus hook for the manager: when it is coming back from the chooser, focus goes to
+   * "Create knowledge base", the control the person was on, and not to the header's InfoTip. A
+   * first open, and a reopen, keep Radix's own first stop. No ring is forced: a script focus
+   * wears one only when the chooser was closed with the keyboard, which is the person who needs it.
+   */
+  function placeFocus(event: Event) {
+    if (!returnToCreate.current) return;
+    returnToCreate.current = false;
+    const target = createRef.current;
+    if (!target) return;
+    event.preventDefault();
+    target.focus({ preventScroll: true });
+  }
+
+  /**
    * Create through the chooser.
    *
    * The id is a LOCAL uniqueness pass over the bases this client knows about;
@@ -135,7 +177,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
    */
   async function createWithFormat(name: string, format: KbFormat): Promise<string | undefined> {
     const id = makeUniqueId(name);
-    if (!id) throw new Error('Choose a name with letters or numbers.');
+    if (!id) throw new Error(knowledgeCopy.format.nameNeedsLetters);
     setBusyId('__create');
     try {
       const manifest = await create(id, name, { format });
@@ -149,6 +191,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
 
   function startRename(base: KbListEntry) {
     setError(null);
+    setDraftError(null);
     setDraftMode({ kind: 'rename', base });
     setDraft(base.name);
   }
@@ -156,15 +199,21 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   function resetDraft() {
     setDraft('');
     setDraftMode(null);
+    setDraftError(null);
     setError(null);
   }
 
   async function submitDraft() {
     const trimmed = draft.trim();
     if (!trimmed) {
-      setError('Enter a name.');
+      // On the field, with the caret in it (V3-R4-3): a bare line under the card had no danger
+      // edge and no `aria-invalid`, and left focus on Save.
+      setDraftError(knowledgeCopy.format.nameRequired);
+      setError(null);
+      renameRef.current?.focus();
       return;
     }
+    setDraftError(null);
 
     try {
       if (draftMode?.kind === 'rename') {
@@ -212,6 +261,20 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     }
   }
 
+  // The id is no longer printed on every row (principle 10, Crew's "IDs for
+  // support"); it is one menu item away for the person who needs it.
+  async function handleCopyId(base: KbListEntry) {
+    if (await copyToClipboard(base.id, null)) {
+      toastSuccess({
+        title: knowledgeCopy.manager.copied,
+        msg: base.id,
+        toastOptions: { autoClose: 2000 },
+      });
+    } else {
+      toastError({ title: knowledgeCopy.manager.copyFailed, msg: base.id });
+    }
+  }
+
   async function handleImport(file: File | null) {
     if (!file) return;
     setError(null);
@@ -226,6 +289,39 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     }
   }
 
+  // The menu behind a row's ⋯. A destructive item stays behind the separator, and every item is
+  // inert while this row's own request is in flight (the old ⋯ disabled itself for that).
+  function rowMenu(base: KbListEntry, busy: boolean): RowActionItem[] {
+    return [
+      {
+        label: knowledgeCopy.actions.export,
+        icon: Download,
+        disabled: busy,
+        onSelect: () => void handleExport(base),
+      },
+      {
+        label: knowledgeCopy.manager.rename,
+        icon: Pencil,
+        disabled: busy,
+        onSelect: () => startRename(base),
+      },
+      {
+        label: knowledgeCopy.manager.copyId,
+        icon: Copy,
+        disabled: busy,
+        onSelect: () => void handleCopyId(base),
+      },
+      { kind: 'separator' },
+      {
+        label: knowledgeCopy.actions.delete,
+        icon: Trash2,
+        destructive: true,
+        disabled: busy,
+        onSelect: () => setBaseToDelete(base),
+      },
+    ];
+  }
+
   return (
     <>
       {!chooserOpen && (
@@ -238,25 +334,25 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           size="lg"
           purpose={busyId !== null ? 'required' : 'form'}
           scrollBody
-          title="Knowledge bases"
-          subtitle="Choose which knowledge bases this chat uses, and which one of them is the primary: the base a knowledge write lands in when none is named."
-          bodyClassName="px-0"
-          footer={
-            <div className="flex w-full flex-wrap items-center justify-between gap-2">
-              <p className="min-w-0 flex-1 text-supporting text-text-muted">
-                Tip: the switch decides whether a base is in this chat; clicking its name makes it
-                the primary. Bases left out are still reachable by naming them explicitly.
-              </p>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => onOpenChange(false)}
-                disabled={busyId !== null}
-              >
-                Close
-              </Button>
-            </div>
+          onOpenAutoFocus={placeFocus}
+          onCloseAutoFocus={onCloseAutoFocus}
+          title={knowledgeCopy.manager.title}
+          // ONE sentence, because ModalShell makes the subtitle the dialog's
+          // `aria-describedby` (ModalShell.test.tsx names this dialog). The rest
+          // of the explanation, and the footer Tip that repeated it, are the
+          // InfoTip at the end of the line (spec 3.12). The dialog has its ×, so
+          // there is no footer.
+          subtitle={
+            <span className="inline-flex items-center gap-1">
+              {knowledgeCopy.manager.subtitle}
+              <InfoTip
+                label={knowledgeCopy.manager.infoLabel}
+                help={knowledgeCopy.manager.info}
+                side="bottom"
+              />
+            </span>
           }
+          bodyClassName="px-0"
         >
           {/* ⚠ **Pinned** (R-07). Search and the two create paths lived in the
             scrolling body, so at the app's own minimum 600px window height —
@@ -285,6 +381,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
 
             <div className="mt-3 flex flex-wrap gap-2">
               <Button
+                ref={createRef}
                 data-testid="knowledge-kb-create"
                 type="button"
                 variant="default"
@@ -319,14 +416,29 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
             {draftMode && (
               // An element inside the 12px dialog container takes the next step
               // DOWN, so 8px — not the 12px this block used to carry.
-              <div className="mt-4 rounded-element border border-border-subtle p-3">
-                <div className="mb-2 text-label">{`Rename "${draftMode.base.name}"`}</div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+              // The label points at the Input by id, and the row is the Field's child (the schedule
+              // dialog's shape for a field with buttons beside it), so the Input names its own
+              // description and validity.
+              <Field
+                id="kb-rename-name"
+                label={`Rename "${draftMode.base.name}"`}
+                error={draftError ? <span role="alert">{draftError}</span> : undefined}
+                className="mt-3"
+              >
+                <div id="kb-rename-name-row" className="flex flex-col gap-2 sm:flex-row">
                   <Input
+                    ref={renameRef}
+                    id="kb-rename-name"
                     data-testid="knowledge-kb-name-input"
                     type="text"
+                    aria-required
+                    aria-invalid={draftError ? true : undefined}
+                    aria-describedby={draftError ? fieldHelpId('kb-rename-name') : undefined}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => {
+                      setDraft(e.target.value);
+                      setDraftError(null);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
@@ -341,16 +453,19 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                     <Button type="button" variant="secondary" onClick={resetDraft}>
                       Cancel
                     </Button>
+                    {/* Coral only while it can act (ruling 22): an emptied name leaves Save
+                        neutral, still pressable, and a click names the missing field. */}
                     <Button
                       data-testid="knowledge-kb-submit"
                       type="button"
+                      variant={draft.trim() ? 'default' : 'secondary'}
                       onClick={() => void submitDraft()}
                     >
                       Save
                     </Button>
                   </div>
                 </div>
-              </div>
+              </Field>
             )}
 
             {error && <div className="mt-3 text-body text-text-danger">{error}</div>}
@@ -377,7 +492,11 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                 description="Try a different name or id."
               />
             ) : (
-              <div className="biorouter-list-shell" role="listbox" aria-label="Knowledge bases">
+              <div
+                className="biorouter-list-shell br-rows-flat"
+                role="listbox"
+                aria-label="Knowledge bases"
+              >
                 {filtered.map((base) => {
                   const isPrimary = primaryKbId === base.id;
                   const isBusy = busyId === base.id;
@@ -410,7 +529,12 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                         <KbDot color={base.color} />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <div className="truncate text-label text-text-default">{base.name}</div>
+                            <div
+                              id={`kb-row-name-${base.id}`}
+                              className="truncate text-label text-text-default"
+                            >
+                              {base.name}
+                            </div>
                             {isBuiltinKnowledgeBase(base.id) && (
                               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
                             )}
@@ -432,14 +556,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                               manifest deserializes as `okf` and a badge written
                               against the field alone would call every legacy base
                               OKF. */}
-                            <Badge
-                              uppercase
-                              title={
-                                kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined
-                              }
-                            >
-                              {kbFormatLabel(base)}
-                            </Badge>
+                            <Badge>{kbFormatLabel(base)}</Badge>
                             {base.tier !== 'public' && <PrivacyBadge tier={base.tier} />}
                             {/* ⚠ **No `Not in this chat` badge** (R-07). The switch
                               at the end of this row already states membership,
@@ -447,68 +564,42 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                               40px row carry 12 visual objects. */}
                           </div>
                         </div>
-                        {isPrimary && (
-                          <Badge uppercase tone="accent">
-                            Primary
-                          </Badge>
-                        )}
+                        {/* Neutral, not accent: the accent marks state and adds
+                            zest, and a word on one row of a list is neither
+                            (principle 7). */}
+                        {isPrimary && <Badge>{knowledgeCopy.manager.primary}</Badge>}
                       </button>
 
                       <div className="flex shrink-0 items-center gap-2">
                         {/* Unwrapped. The switch is its own affordance and carries
                           its own name; the bordered `px-2 py-1` box around it was
                           a second control drawn around a control. */}
+                        {/* Named by the row's label, the base's name (spec 2.6):
+                          the switch says whether the base is in this chat. */}
                         <Switch
                           checked={!hidden}
                           onCheckedChange={() => toggleKbHidden(base.id)}
-                          variant="mono"
-                          aria-label={`Include ${base.name} in this chat`}
+                          aria-labelledby={`kb-row-name-${base.id}`}
                         />
                         {/* ⚠ **ONE overflow control, not three** (R-07). Export,
                           rename and ⋯ reserved a fixed 160px cluster at the end
-                          of every row before the name column got anything —
-                          40 for the switch, three 32px buttons and three 8px
-                          gaps — on a 582px row. Export and rename are not
-                          frequent enough to each own a permanent target, so
-                          they join the menu that was already there and the
-                          reclaimed width carries what the row could never show:
-                          how big the base is and when it last changed. */}
-                        <span className="shrink-0 font-mono text-supporting tabular-nums text-text-muted">
-                          {base.id}
-                        </span>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              shape="round"
-                              disabled={isBusy}
-                              aria-label={`More actions for ${base.name}`}
-                            >
-                              <MoreHorizontal aria-hidden="true" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onSelect={() => void handleExport(base)}>
-                              <Download aria-hidden="true" />
-                              Export as .brkb
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => startRename(base)}>
-                              <Pencil aria-hidden="true" />
-                              Rename knowledge base
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            {/* A destructive control never sits visible in a hover
-                              cluster (ROWS-3), and stays behind the separator. */}
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onSelect={() => setBaseToDelete(base)}
-                            >
-                              <Trash2 aria-hidden="true" />
-                              Delete knowledge base
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                          of every row before the name column got anything.
+                          Export and rename are not frequent enough to each own
+                          a permanent target, so they join the menu, and so does
+                          the base's id: it used to be printed in mono on every
+                          row, and an id belongs behind "Copy ID" (principle
+                          10).
+
+                          It is `RowActions`, so the ⋯ shows on hover, focus or an
+                          open menu and always without a hover pointer, like every
+                          other list row (V3-09). It sat at full opacity here and
+                          was the one row action in the app that did. The switch
+                          stays drawn: it is state, not an action. A destructive
+                          item stays behind the separator (ROWS-3). */}
+                        <RowActions
+                          menuLabel={`More actions for ${base.name}`}
+                          menu={rowMenu(base, isBusy)}
+                        />
                       </div>
                     </div>
                   );

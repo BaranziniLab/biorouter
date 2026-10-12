@@ -12,21 +12,40 @@
  * new family is picked up and audited automatically.
  */
 
-/** Body of every block whose selector satisfies `test`. */
+/**
+ * The stylesheet with every comment blanked to spaces (newlines kept), so
+ * offsets and line numbers still match the source.
+ *
+ * Comments are prose, and prose in this file names braces and declarations:
+ * the `:root` block's note on `--measure-chat` cites
+ * `components/sessions/{SessionListView,…}.tsx`, and the nested-block strip in
+ * `parseDecls` read that `{…}` as a block and deleted everything from the top of
+ * `:root` to it. Every token declared above that comment (`--border-emphasized`,
+ * the motion ladder, the control geometry) was invisible to the guards, which
+ * reported a token placed there as UNRESOLVED rather than measuring it. A
+ * comment can also spell `--name: value;`, which would have been parsed as a
+ * declaration. Blanking first closes both.
+ */
+export function blankComments(css) {
+  return css.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
+}
+
+/** Body of every block whose selector satisfies `test` (comments blanked). */
 export function blocks(css, test) {
+  const code = blankComments(css);
   const out = [];
   const re = /(^|\n)([^\n{}]+)\{/g;
   let m;
-  while ((m = re.exec(css))) {
+  while ((m = re.exec(code))) {
     const selector = m[2].trim();
     if (!test(selector)) continue;
     let depth = 1;
     let i = re.lastIndex;
-    for (; i < css.length && depth > 0; i++) {
-      if (css[i] === '{') depth++;
-      else if (css[i] === '}') depth--;
+    for (; i < code.length && depth > 0; i++) {
+      if (code[i] === '{') depth++;
+      else if (code[i] === '}') depth--;
     }
-    out.push({ selector, body: css.slice(re.lastIndex, i - 1) });
+    out.push({ selector, body: code.slice(re.lastIndex, i - 1) });
   }
   return out;
 }

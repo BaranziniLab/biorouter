@@ -91,7 +91,9 @@ export default {
       'heat-4': '#a04a27',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#2a2520',
-      'sidebar-icon': '#2a2520',
+      // Nav icons wear the row's resting ink, the muted label ink, so the icon
+      // column is one ink with the labels and the chat glyphs below (V1-R2-5).
+      'sidebar-icon': '#635c54',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -228,14 +230,14 @@ export default {
       ring: '#a5a39d',
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',
-      'heat-0': '#1e1d1b',
-      'heat-1': '#4a3524',
+      'heat-0': '#32312e', // one step up from #1e1d1b: zero days read on the dark card (redesign 2.3)
+      'heat-1': '#573e2a', // was #4a3524: 1.13:1 against the lifted heat-0 (was 1.46 against #1e1d1b); a step above it again
       'heat-2': '#7a4d2e',
       'heat-3': '#b0653a',
       'heat-4': '#e8895f',
       sidebar: '#171716',
       'sidebar-foreground': '#f4f0e6',
-      'sidebar-icon': '#f4f0e6',
+      'sidebar-icon': '#b0a892', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',

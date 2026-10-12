@@ -1,12 +1,12 @@
 // ui/desktop/src/components/knowledge/graph/NodePreview.tsx
 import { useEffect, useMemo, useRef } from 'react';
-import { FileCode2, X } from '../../icons/app-icons';
+import { FileCode2 } from '../../icons/app-icons';
 import type { GraphNode } from '../../../api/types.gen';
 import type { GraphMode } from '../../../styles/graphPalette';
 import MarkdownContent from '../../MarkdownContent';
 import { Badge } from '../../ui/badge';
 import type { BadgeTone } from '../../ui/badge';
-import { Button } from '../../ui/button';
+import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { usePagePreview } from '../hooks/usePagePreview';
 import { CredibilityRing, TIER_LABEL } from './CredibilityRing';
 import { credibilityKey, fillFor, isHollow } from './nodeMark';
@@ -131,7 +131,7 @@ function ExternalToken({ text, href }: { text: string; href: string }) {
 function FrontmatterRowView({ row }: { row: FrontmatterRow }) {
   return (
     <div className="br-inspector-row">
-      <span className="text-caps text-text-muted">{row.label}</span>
+      <span className="text-supporting text-text-muted">{row.label}</span>
       <div className="min-w-0 text-body text-text-default">
         {row.value.kind === 'text' && <span className="break-words">{row.value.text}</span>}
 
@@ -225,68 +225,73 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
       data-testid="knowledge-node-preview"
       className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
-      <div className="flex items-start justify-between gap-2 border-b border-border-subtle bg-background-muted px-4 py-3">
-        <div className="flex min-w-0 items-start gap-2">
-          {/* The SAME mark the canvas paints, from the same functions — fill by
-              `node_type` through `GRAPH_PALETTE`, solid or hollow by family. A
-              swatch that disagrees with the mark it describes is worse than
-              none. */}
+      {/* Crew's pane header (spec 3.12): one 44px line, the node's mark and its
+          name, and the close. The facts that shared the old two-line header
+          lead the body instead. */}
+      <KnowledgePaneHeader
+        leading={
+          // The SAME mark the canvas paints, from the same functions — fill by
+          // `node_type` through `GRAPH_PALETTE`, solid or hollow by family. A
+          // swatch that disagrees with the mark it describes is worse than none.
           <NodeSwatch
             fill={fillFor(node, mode)}
             hollow={isHollow(node, mode)}
             size={12}
-            className="br-swatch-ring mt-1 flex-shrink-0"
+            className="br-swatch-ring flex-shrink-0"
           />
-          <div className="flex min-w-0 flex-col gap-1">
-            <div className="truncate text-label">{nodeTitle(node)}</div>
-            <div className="flex flex-wrap items-center gap-1">
-              {facts.map((fact) =>
-                fact.tone ? (
-                  <Badge
-                    key={fact.key}
-                    tone={fact.tone}
-                    className={fact.strike ? 'line-through' : undefined}
-                  >
-                    {fact.text}
-                  </Badge>
-                ) : (
-                  <span key={fact.key} className="text-supporting text-text-muted">
-                    {fact.text}
-                  </span>
-                )
-              )}
-            </div>
-          </div>
-        </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClose}
-          className="flex-shrink-0"
-          aria-label="Close preview"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
+        }
+        title={<h2 className="min-w-0 truncate text-label">{nodeTitle(node)}</h2>}
+        onClose={onClose}
+        closeLabel="Close preview"
+      />
 
       <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
         <div className="space-y-4">
-          {/* §4.8 item 3. Identity and provenance come off the graph node, which
-              is already in memory, so they paint immediately and do not wait on
-              the page fetch below. */}
-          {showsProvenance && (
-            <section aria-label="Provenance" className="flex flex-wrap items-center gap-2">
-              {ringKey && <CredibilityRing tier={ringKey} mode={mode} />}
-              {node.credibility_tier && (
-                // ⚠ `tone="neutral"` — app ink on an app surface. The tier hue
-                // stays in the ring and NEVER behind these words: the seven ring
-                // colours are solved for a 1.6px arc against the graph ground,
-                // and as a text background they are neither legible nor a
-                // passing pair.
-                <Badge tone="neutral">{TIER_LABEL[node.credibility_tier]}</Badge>
+          {/* The node's facts and its provenance are one group, on one line while they fit and
+              8px apart when they wrap, and the 16px of the body's rhythm is kept for what follows
+              them. Two single-chip lines 16px apart read as two unrelated things. */}
+          {(facts.length > 0 || showsProvenance) && (
+            <div className="flex flex-wrap items-center gap-2">
+              {facts.length > 0 && (
+                <div
+                  data-testid="knowledge-node-facts"
+                  className="flex flex-wrap items-center gap-1"
+                >
+                  {facts.map((fact) =>
+                    fact.tone ? (
+                      <Badge
+                        key={fact.key}
+                        tone={fact.tone}
+                        className={fact.strike ? 'line-through' : undefined}
+                      >
+                        {fact.text}
+                      </Badge>
+                    ) : (
+                      <span key={fact.key} className="text-supporting text-text-muted">
+                        {fact.text}
+                      </span>
+                    )
+                  )}
+                </div>
               )}
-              {node.retracted && <Badge tone="danger">Retracted</Badge>}
-            </section>
+              {/* §4.8 item 3. Identity and provenance come off the graph node, which
+                is already in memory, so they paint immediately and do not wait on
+                the page fetch below. */}
+              {showsProvenance && (
+                <section aria-label="Provenance" className="flex flex-wrap items-center gap-2">
+                  {ringKey && <CredibilityRing tier={ringKey} mode={mode} />}
+                  {node.credibility_tier && (
+                    // ⚠ `tone="neutral"` — app ink on an app surface. The tier hue
+                    // stays in the ring and NEVER behind these words: the seven ring
+                    // colours are solved for a 1.6px arc against the graph ground,
+                    // and as a text background they are neither legible nor a
+                    // passing pair.
+                    <Badge tone="neutral">{TIER_LABEL[node.credibility_tier]}</Badge>
+                  )}
+                  {node.retracted && <Badge tone="danger">Retracted</Badge>}
+                </section>
+              )}
+            </div>
           )}
 
           {loading && <span className="text-text-muted">Loading page…</span>}
@@ -299,15 +304,15 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
                 // raw text when it is not, because frontmatter that fails to
                 // parse is still frontmatter the user may need to SEE to fix.
                 (rows ? (
-                  <div className="overflow-hidden rounded-element bg-background-muted px-3 py-1">
+                  <div className="overflow-hidden rounded-element bg-background-fill px-3 py-1">
                     {rows.map((row) => (
                       <FrontmatterRowView key={row.key} row={row} />
                     ))}
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-element bg-background-muted">
-                    <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
-                      <FileCode2 className="h-3 w-3" />
+                  <div className="overflow-hidden rounded-element bg-background-fill">
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-supporting text-text-muted">
+                      <FileCode2 className="h-icon-chip w-icon-chip" aria-hidden="true" />
                       Unparsed frontmatter
                     </div>
                     <pre className="overflow-x-auto px-3 py-2.5 font-mono text-code whitespace-pre-wrap text-text-muted">
@@ -328,7 +333,7 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
         </div>
       </div>
 
-      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 font-mono text-supporting break-all text-text-muted">
+      <div className="bg-background-fill px-4 py-2 font-mono text-supporting break-all text-text-muted">
         {node.path}
       </div>
     </div>

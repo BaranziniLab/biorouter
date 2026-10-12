@@ -1,134 +1,312 @@
+/**
+ * @vitest-environment jsdom
+ */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { cn } from '../utils';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
+import { MODAL_ANCHOR_TOP_STYLE } from './ModalShell';
+import type Model from './settings/models/modelInterface';
 
 /**
  * The local-model warm-up sheet must fit the window, and the part that overflows
  * must be the DETAIL, never the buttons.
  *
  * The bug: its `DialogContent` had no height ceiling and no scrolling body. The
- * detail block grows with the model — blob path, suitability message, fallback
- * state, context and GPU-memory rows — and a dialog is centred with
+ * detail block grows with the model (blob path, suitability message, fallback
+ * state, context and GPU-memory rows) and a dialog is centred with
  * `top-1/2 -translate-y-1/2`, so once the content exceeded the viewport the
  * sheet grew symmetrically past BOTH edges. Its own footer went off the bottom
  * of the screen, taking "Warm up" and "Keep previous" with it. That is not an
  * ugly dialog, it is an unreachable one: the sheet is modal, so with neither
- * button clickable the only way out is Escape — and the user cannot tell that
- * the choice they were asked to make is still there, below the screen.
+ * button clickable the only way out is Escape.
  *
- * The fix is a ceiling on the content plus the scroll on the BODY:
- * `flex max-h-[calc(100vh-4rem)] flex-col overflow-hidden` on the DialogContent,
- * and `min-h-0 flex-1 … overflow-y-auto` on the detail block. Header and footer
- * are then flex siblings that keep their intrinsic height, so the controls stay
- * pinned in view and it is the detail that scrolls.
+ * It is a `ModalShell` now (vision round 7, V3-R7-1: the last raw dialog in the
+ * models flow), with `scrollBody`: the shell pins the dialog's top edge, caps its
+ * height against the window, scrolls ONE body between the header and footer
+ * rules and keeps the footer in view.
  *
- * ⚠ **This is asserted at the SOURCE, and it has to be.** jsdom has no layout
- * engine: every element reports a zero-sized `getBoundingClientRect()`, no box
- * ever exceeds the viewport, `max-height` clamps nothing, and an overflowing
- * child never scrolls because there is no overflow to detect. A component test
- * that rendered this dialog at a short viewport and asked whether the footer was
- * on-screen would answer the same way with the bug present and with it fixed —
- * it cannot even set a viewport height that means anything. The only thing
- * assertable here is the declaration, so that is what is asserted.
- *
- * ⚠ `ModelAndProviderContext.tsx` is NOT edited by this file; it names this test
- * as its guard in a comment beside the classes below.
+ * ⚠ **The ceiling is asserted on the real DOM and on the source, because jsdom
+ * has no layout engine.** Every box reports zero size, `max-height` clamps
+ * nothing and an overflowing child never scrolls, so a test that rendered this
+ * dialog at a short viewport and asked whether the footer was on screen would
+ * answer the same way with the bug present and with it fixed. What can be pinned
+ * is the construction: the shell's viewport-relative ceiling, the one scroller
+ * with `min-h-0 flex-1` (without `min-h-0` a flex item refuses to shrink below
+ * its content and the scrollbar never appears), and the header and footer being
+ * OUTSIDE it.
  */
 const SOURCE = readFileSync(join(__dirname, 'ModelAndProviderContext.tsx'), 'utf8');
-const DIALOG_PRIMITIVE = readFileSync(join(__dirname, 'ui/dialog.tsx'), 'utf8');
 
-/** The warm-up dialog's own subtree, so nothing outside it can satisfy a match. */
-function warmupDialog(): string {
-  const start = SOURCE.indexOf('<DialogContent');
-  const end = SOURCE.indexOf('</DialogContent>');
-  if (start < 0 || end < 0 || end < start) {
-    throw new Error('ModelAndProviderContext.tsx renders no <DialogContent>…</DialogContent>');
-  }
-  return SOURCE.slice(start, end);
+const mocks = vi.hoisted(() => ({
+  llamacppStatus: vi.fn(),
+  llamacppWarmup: vi.fn(),
+  setConfigProvider: vi.fn(),
+  updateAgentProvider: vi.fn(),
+  read: vi.fn(),
+  getProviders: vi.fn(),
+  refreshConfig: vi.fn(),
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+}));
+
+vi.mock('../api', () => ({
+  llamacppStatus: mocks.llamacppStatus,
+  llamacppWarmup: mocks.llamacppWarmup,
+  setConfigProvider: mocks.setConfigProvider,
+  updateAgentProvider: mocks.updateAgentProvider,
+}));
+
+vi.mock('../toasts', () => ({
+  toastError: mocks.toastError,
+  toastSuccess: mocks.toastSuccess,
+}));
+
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({
+    read: mocks.read,
+    getProviders: mocks.getProviders,
+    refreshConfig: mocks.refreshConfig,
+  }),
+}));
+
+// The model picker is the person's act, and the daemon tells it from a model by this header.
+Object.defineProperty(window, 'electron', {
+  writable: true,
+  value: { getUserActionKey: async () => 'user-action-key-under-test' },
+});
+
+const llamaModel: Model = {
+  name: 'qwen3.6',
+  provider: 'llamacpp',
+  alias: 'Qwen3.6',
+  subtext: 'Llama Server',
+  context_limit: 131072,
+};
+
+const sidecar = {
+  state: 'stopped',
+  model: null,
+  hf_spec: null,
+  ollama_name: null,
+  model_path: null,
+  model_source: null,
+  port: 11543,
+  binary_path: '/opt/homebrew/bin/llama-server',
+  build: 'test',
+  detail: null,
+  context_size: null,
+  warmed: false,
+};
+
+const statusResponse = {
+  data: {
+    sidecar,
+    catalog: [
+      {
+        name: 'qwen3.6',
+        display_name: 'Qwen3.6 35B',
+        ollama_name: 'qwen3.6:latest',
+        hf_spec: 'unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M',
+        download_size: '23 GB',
+        description: 'Large Qwen3.6 MoE model from Ollama library.',
+        min_gpu_memory_gib: 48,
+        recommended_gpu_memory_gib: 64,
+        context_limit: 262144,
+        downloaded: false,
+        download_status: 'not_downloaded',
+        download_source: 'none',
+        fallback_downloaded: false,
+        fallback_download_status: 'not_downloaded',
+        model_path: '/Users/test/.ollama/models/blobs/sha256-0123456789abcdef',
+        suitable: false,
+        suitability_status: 'above_recommendation',
+        suitability_message:
+          'This model recommends 64 GiB of GPU-addressable memory; this machine reports 8 GiB vram.',
+        is_default: true,
+      },
+    ],
+    system: {
+      os: 'windows',
+      total_memory_gib: 32,
+      accelerator_memory_gib: 8,
+      accelerator_memory_kind: 'vram',
+      default_context_size: 32768,
+      model_cache_dir: '/Users/test/.ollama/models',
+      model_cache_layout: 'Ollama manifests/blobs; Hugging Face fallback cache under the same root',
+    },
+  },
+};
+
+function SwitchHarness() {
+  const { changeModel } = useModelAndProvider();
+  return (
+    <button type="button" onClick={() => void changeModel(null, llamaModel)}>
+      Switch to local
+    </button>
+  );
 }
 
-function contentClasses(): string {
-  const match = warmupDialog().match(/<DialogContent[^>]*className="([^"]*)"/);
-  if (!match) throw new Error('the warm-up <DialogContent> carries no literal className');
-  return match[1];
+async function openTheSheet() {
+  render(
+    <ModelAndProviderProvider>
+      <SwitchHarness />
+    </ModelAndProviderProvider>
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Switch to local' }));
+  await screen.findByText('Warm up local model');
+  return screen.getByRole('dialog');
 }
 
-/**
- * The one scrolling region inside the sheet. Required to be unique: a second
- * scroller would mean the header or the footer had been folded into the scrolled
- * area, which is the failure this whole file is about.
- */
-function scrollingBodyClasses(): string {
-  const scrollers = [...warmupDialog().matchAll(/className="([^"]*)"/g)]
-    .map((match) => match[1])
-    .filter((classes) => classes.includes('overflow-y-auto'));
-  if (scrollers.length !== 1) {
-    throw new Error(
-      `expected exactly one scrolling body inside the warm-up dialog, found ${scrollers.length}`
-    );
-  }
-  return scrollers[0];
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.read.mockImplementation(async (key: string) => {
+    if (key === 'BIOROUTER_MODEL') return 'gpt-4o';
+    if (key === 'BIOROUTER_PROVIDER') return 'openai';
+    return null;
+  });
+  mocks.getProviders.mockResolvedValue([]);
+  mocks.llamacppStatus.mockResolvedValue(statusResponse);
+  mocks.llamacppWarmup.mockResolvedValue({
+    data: {
+      output: 'pong',
+      sidecar: { ...sidecar, state: 'ready', model: llamaModel.name, warmed: true },
+    },
+  });
+  mocks.setConfigProvider.mockResolvedValue(undefined);
+  mocks.updateAgentProvider.mockResolvedValue(undefined);
+  mocks.refreshConfig.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('the local-model warm-up dialog fits the window', () => {
-  it('caps the dialog height against the viewport', () => {
-    const classes = contentClasses().split(/\s+/);
-    // A `max-h-*` of any flavour, but it has to be viewport-relative: a ceiling
-    // in `rem` would still exceed a short window, which is the case that broke.
-    const ceiling = classes.find((token) => token.startsWith('max-h-'));
-    expect(ceiling).toBeDefined();
-    expect(ceiling).toMatch(/vh|dvh|svh/);
+  it('is a ModalShell with a scrolling body, and no raw DialogContent is left in the file', () => {
+    expect(SOURCE).toMatch(/<ModalShell\b/);
+    // The bare attribute: `scrollBody={false}` would read as present to a looser match.
+    expect(SOURCE).toMatch(/^\s+scrollBody$/m);
+    expect(SOURCE).not.toMatch(/<DialogContent/);
   });
 
-  /**
-   * The ceiling alone would merely clip the footer instead of pushing it
-   * off-screen — equally unclickable. `flex flex-col` is what makes the header,
-   * the scrolling body and the footer share the capped height, and
-   * `overflow-hidden` keeps the clamp honest by stopping the content painting
-   * outside it.
-   */
-  it('lays the capped sheet out as a column, with the overflow contained', () => {
-    const classes = contentClasses().split(/\s+/);
+  it('pins its top edge and caps its height against the viewport', async () => {
+    const dialog = await openTheSheet();
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    // The cap is applied inline by the shell (the constant is what it spreads), and it is
+    // relative to the window: a ceiling in rem would still exceed a short one.
+    expect(MODAL_ANCHOR_TOP_STYLE.maxHeight).toMatch(/vh/);
+    const classes = dialog.className.split(/\s+/);
     expect(classes).toContain('flex');
     expect(classes).toContain('flex-col');
     expect(classes).toContain('overflow-hidden');
+    expect(classes.find((token) => token.startsWith('max-h-'))).toMatch(/vh/);
   });
 
-  /**
-   * ⚠ The column layout is an OVERRIDE, and a silent one if it ever stops
-   * winning: the shared `DialogContent` primitive is `grid`, and `flex-col` on a
-   * grid container does nothing at all — the body would not flex, `flex-1` would
-   * not claim the leftover height, and the sheet would look fixed while the
-   * footer went back off-screen. What resolves it is `cn()`/tailwind-merge
-   * dropping the base `display` when the call site names another one, so that is
-   * asserted against the real `cn`, not assumed.
-   */
-  it('overrides the dialog primitives grid display rather than sitting beside it', () => {
-    const contentSlice = DIALOG_PRIMITIVE.slice(
-      DIALOG_PRIMITIVE.indexOf('data-slot="dialog-content"')
+  it('scrolls the detail block between the header and the footer, not the sheet', async () => {
+    const dialog = await openTheSheet();
+    const scrollers = [...dialog.querySelectorAll('.overflow-y-auto')];
+    // Exactly one: a second scroller would mean the header or the footer had been folded into
+    // the scrolled area, which is the failure this file is about.
+    expect(scrollers).toHaveLength(1);
+    const scroller = scrollers[0];
+    const scrollerClasses = scroller.className.split(/\s+/);
+    expect(scrollerClasses).toContain('min-h-0');
+    expect(scrollerClasses).toContain('flex-1');
+
+    expect(scroller).toContainElement(screen.getByText('Model store'));
+    expect(scroller).toContainElement(screen.getByText('Recommended GPU memory'));
+
+    // The title, the sentence and both buttons stay outside it, so they stay in view.
+    expect(scroller).not.toContainElement(screen.getByText('Warm up local model'));
+    expect(scroller).not.toContainElement(screen.getByRole('button', { name: 'Warm up model' }));
+    expect(scroller).not.toContainElement(
+      screen.getByRole('button', { name: 'Keep previous model' })
     );
-    expect(contentSlice).toMatch(/(?<![\w-])grid(?![\w-])/);
-
-    const merged = cn('grid', contentClasses()).split(/\s+/);
-    expect(merged).toContain('flex');
-    expect(merged).not.toContain('grid');
+    // A scrolling body gives the footer its own hairline, so the scroll edge is legible.
+    const footer = screen.getByRole('button', { name: 'Warm up model' }).parentElement;
+    expect(footer?.className.split(/\s+/)).toContain('border-t');
   });
 
-  it('scrolls the detail block, not the sheet', () => {
-    expect(scrollingBodyClasses().split(/\s+/)).toContain('overflow-y-auto');
+  it('names the model in the sentence that describes the dialog', async () => {
+    const dialog = await openTheSheet();
+    expect(dialog).toHaveAccessibleName('Warm up local model');
+    expect(dialog).toHaveAccessibleDescription(
+      'Qwen3.6 35B runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.'
+    );
   });
 
-  /**
-   * ⚠ `overflow-y-auto` on its own does not scroll here. A flex item's default
-   * `min-height` is `auto`, so the body refuses to shrink below its content, the
-   * column grows past the ceiling again and the scrollbar never appears —
-   * `min-h-0` is the release valve, and `flex-1` is what hands the body the
-   * height the header and footer did not take. The three only work as a set.
-   */
-  it('lets the body actually shrink, so the scrollbar can appear', () => {
-    const classes = scrollingBodyClasses().split(/\s+/);
-    expect(classes).toContain('min-h-0');
-    expect(classes).toContain('flex-1');
+  it('draws the warnings as a note and the detail as a filled panel, with no outlined box', async () => {
+    const dialog = await openTheSheet();
+    // The 8 GB machine against a 64 GB recommendation, and Windows: two warnings, in one note.
+    const note = within(dialog).getByText(/recommends 64 GB GPU-addressable memory/);
+    expect(note.closest('.br-fill-surface')).not.toBeNull();
+    expect(dialog.querySelector('.biorouter-modal-panel')).not.toBeNull();
+    // Nothing in the body still names the sizes this redesign retired, or the outline it dropped.
+    // (The header and footer rules are the shell's own, and structural.)
+    const body = dialog.querySelector('.overflow-y-auto')?.innerHTML ?? '';
+    expect(body).not.toBe('');
+    expect(body).not.toMatch(
+      /text-\[11px\]|text-xs|text-sm\b|border-border-subtle|bg-background-medium/
+    );
+  });
+});
+
+describe('the warm-up dialog keeps its decline and its work-in-flight rules', () => {
+  it('Escape keeps the previous model', async () => {
+    const user = userEvent.setup();
+    await openTheSheet();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByText('Warm up local model')).not.toBeInTheDocument());
+    expect(mocks.llamacppWarmup).not.toHaveBeenCalled();
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(mocks.updateAgentProvider).not.toHaveBeenCalled();
+  });
+
+  it('the × keeps the previous model', async () => {
+    const user = userEvent.setup();
+    await openTheSheet();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByText('Warm up local model')).not.toBeInTheDocument());
+    expect(mocks.llamacppWarmup).not.toHaveBeenCalled();
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+  });
+
+  it('while the model warms up nothing closes it: no ×, Escape does nothing, Keep is off', async () => {
+    const user = userEvent.setup();
+    let finish: (value: unknown) => void = () => {};
+    mocks.llamacppWarmup.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    const dialog = await openTheSheet();
+
+    await user.click(screen.getByRole('button', { name: 'Warm up model' }));
+
+    // The label says what is happening, and neither button can be pressed.
+    const working = await screen.findByRole('button', { name: 'Warming up…' });
+    expect(working).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Keep previous model' })).toBeDisabled();
+    // The busy line names the wait, with the one spinner.
+    expect(within(dialog).getByText('Waiting for the model to generate…')).toBeInTheDocument();
+    expect(dialog.querySelector('.br-spinner')).not.toBeNull();
+    // The work is in flight: there is no way out but the answer.
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+
+    // The answer arrives: the dialog closes and the switch is made.
+    finish({
+      data: {
+        output: 'pong',
+        sidecar: { ...sidecar, state: 'ready', model: llamaModel.name, warmed: true },
+      },
+    });
+    await waitFor(() => expect(screen.queryByText('Warm up local model')).not.toBeInTheDocument());
+    expect(mocks.setConfigProvider).toHaveBeenCalledTimes(1);
   });
 });

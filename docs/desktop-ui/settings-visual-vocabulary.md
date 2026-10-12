@@ -1,12 +1,13 @@
 # The settings visual vocabulary
 
-> **What this is.** The eleven rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`), the Scheduler (`components/schedule/`) and the four component views Workflows / Extensions / Skills / Built apps — are built, and the primitives they lean on — a living reference for anyone adding or changing a control there.
+> **What this is.** The thirteen rules that govern how the desktop Settings view (Models, Chat, App) — and, since 2026-09-07, the chat-history surfaces (`components/sessions/`), the Scheduler (`components/schedule/`) and the four component views Workflows / Extensions / Skills / Built apps — are built, and the primitives they lean on — a living reference for anyone adding or changing a control there.
 > **Status:** Current.
 > **Audience:** contributors working on the desktop renderer.
 
 Settings is a column of labelled rows. Almost everything in it is a section header over a
-hairline list, a row with a control on its trailing edge, a strip of section-level
-buttons, or an in-place note. Every rule below exists because a call site painted one of
+list of flat rows, a row with one control on its trailing edge, or an in-place note. Since the
+Codex simplicity redesign (2026-10-09, `docs/design/codex-simplicity-redesign/`) a row
+carries no paragraph: its explanation is an InfoTip. Every rule below exists because a call site painted one of
 those four things itself instead of reaching for the shared one, and the drift became
 visible the moment two of them sat on screen together.
 
@@ -16,7 +17,7 @@ repo — [`design.md`](../../design.md) (the Parchment design system),
 (the design of record for the token and primitive layer), and the settings block in
 `ui/desktop/src/styles/main.css` with its own comments.
 
-Six of the rules are enforced at the source by
+Eight of the rules are enforced at the source by
 `ui/desktop/src/components/settings/settingsVocabulary.test.ts`, which walks a
 `ROOTS` list — the settings directory, plus each surface since swept onto the
 vocabulary. Adding a directory to that list is how a surface joins; one root per
@@ -27,14 +28,14 @@ row computes to nothing there and a render test passes whether the class is pres
 not. Two of the rules are worse than invisible to a render test, because the defect only
 appears in the cascade — see rule 1.
 
-## The eleven rules
+## The thirteen rules
 
 ### 1. A row's fill never depends on its state
 
 `.biorouter-settings-row` owns its background, and it owns it for one purpose: the
 hover/`focus-within` wash. A component may not paint a second fill on top to say "this one
 is on" or "this one is selected". The switch, the radio dot or the checkbox states the
-state; a fill restates it in a weaker language and turns a hairline list into a striped
+state; a fill restates it in a weaker language and turns a list of rows into a striped
 one.
 
 > design.md **P3** — "no coloured hover fills, no accent-tinted card backgrounds. Hover is
@@ -54,52 +55,141 @@ the only indicator — no switch, no radio, no checkbox — the wash is the comp
 from the `background` shorthand to `background-color` so that route is possible at all;
 the shorthand reset `background-image`, which is where a tint lives.
 
-### 2. One row
+### 2. One row: a label, an optional InfoTip, one control
+
+Every settings row is `SettingRow` (`components/ui/setting-row.tsx`). Nobody writes the row
+by hand any more.
+
+```tsx
+<SettingRow label="Prevent sleep while running" help="The screen can still lock.">
+  <Switch checked={on} onCheckedChange={setOn} />
+</SettingRow>
+```
 
 ```
-biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default
-  └ <div className="min-w-0 flex-1">
-      <p className="text-label text-text-default">Title</p>
-      <p className="mt-0.5 max-w-md text-supporting text-text-muted">Description</p>
-  └ control (flex-shrink-0)
+biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px, gap 12px)
+  ├ <label htmlFor={controlId}>Label</label>   text-label, truncated
+  ├ InfoTip                                    the label's SIBLING, never inside it
+  ├ status line (optional)                     text-supporting muted, transient state only
+  ├ value (optional)                           text-secondary muted, mono for versions and ids
+  └ ONE control                                trailing edge, shrink-0
 ```
 
-No `min-h-*` — the class already carries `min-height: var(--row-height)` — no `py-2`, no
-`py-3`, no `items-start`, no per-row measure fork.
+- **The label is a real `<label>`**, so a click on the words toggles a switch, and the row
+  hands the control `id`, `aria-labelledby` (the label) and `aria-describedby` (the help and
+  the status line). The control's accessible name is therefore the visible label, word for
+  word: someone driving the app by voice says what they read. No "Toggle …" and no "Enable …"
+  names. A button whose visible words differ from the row label ("Edit…", "Check for updates")
+  names itself with those words (`aria-label="Edit tool permissions"`), so the visible text
+  stays inside the name.
+- **No description paragraph.** The explanation goes in `help`, an InfoTip (rule 12). A
+  visible line under the label is allowed only as `status`, for transient state the person
+  must see without hovering: "Restart to apply" after a change, "Up to date", a field's
+  validation message.
+- **One control per row.** A second control is a second row. Two related buttons (Feedback's
+  "Report a bug" and "Request a feature") sit in one `role="group"` that the row names.
+- **A control that leaves the app says so.** A button or link that opens the default browser
+  ends in the 14px `ExternalLink` glyph (`size-3.5`, muted ink, `aria-hidden`; 4px from the
+  label) and is described "Opens in your browser" (`aria-describedby` a hidden element, so the
+  accessible name stays the visible words). Use `size-3.5`, never `h-3.5 w-3.5`: the button
+  primitive sizes every svg without a `size-` class to 16px, and that selector outranks a plain
+  height and width. Feedback's two buttons are the pattern (`settings/app/FeedbackLinks.tsx`,
+  read in Chromium by `FeedbackLinks.browser.test.tsx`).
+- **A row never arrives late.** What the platform or storage already knows
+  (`window.electron.platform`, a `localStorage` key) is read in the `useState` initializer,
+  inside a `try`, never in an effect: an effect lands a frame after the first paint, so a row
+  (Show in Dock) appears and pushes every row below it down, or a segmented thumb slides
+  across on every visit. What only the daemon can answer (`read`) loads asynchronously, and
+  nothing may state a value nobody chose while it waits: a switch lands without animating
+  (`data-motion-still`), a section shows a Skeleton, and a select or a field is blank,
+  disabled and `aria-busy` until it knows (`SettingSelect value={null}`, `MaxTurnsRow
+  loaded={false}`). Approval mode drawing "Autonomous" first and "Manual" a moment later was the
+  case that made this a rule. The Models tab's Model row is the other case: a value the app
+  already holds is drawn from it in the initializer, not fetched. Its words come from
+  `useModelAndProvider` and `providersList` (`settings/models/defaultModelValue.ts`), so a visit
+  starts on them and the daemon's answer replaces them with the same words; the Skeleton is only
+  for a model or provider the app cannot name yet. `modelsGeometry.browser.test.tsx` reads the
+  first commit and every frame after it in Chromium.
+  Chat and App are the same rule for values only the daemon or the main process holds. Settings
+  mounts just the tab on screen, so each visit is a new mount, and a control that starts from
+  "not read yet" was an empty box for the first frames of every visit (vision rounds 7 and 8,
+  V4-R7-2). Such a control now takes its state from `useLastKnown(key)` (`settings/lastKnown.ts`):
+  the last answer this window heard, written through when the person changes it, replaced by the
+  read that still runs on every mount. A key nothing has read stays `undefined` and the control
+  holds its place as before (`StoredSwitch`, `SettingSelect value={null}`, `MaxTurnsRow
+  loaded={false}`); a placeholder is never a guess. `SettingsView` calls `useWarmSettings()`, so
+  the first visit has an answer too: Settings opens on Models, which shows none of them, and the
+  reads (`warmSettings.ts`) only fill a key nothing has answered, so a switch flipped while one
+  was in flight is not set back. New rows that read a setting from outside the renderer add a
+  `LastKnownKey` and a line in `warmSettings.ts`. `tabSwitchFrames.browser.test.tsx` clicks the
+  real tabs in Chromium with the daemon and the main process 600 ms late and reads every commit
+  and frame. The one App control still held on a visit is the Privacy tiers switch: its
+  panel is frozen privacy UI and reads the daemon on each mount, so it is not seeded from this store.
+- No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
+  row is still 40px, and the padding that makes it so is not `px-3 py-2.5`: that is 10 above, 10
+  below, a 20px line and the 1px transparent edge, which is 41px, and 45px around a 24px
+  checkbox target (measured, vision V4-22). A row that is itself a button (Tool permissions'
+  extension list) takes `br-setting-row` with the `biorouter-settings-row` class: 10, a 20px
+  line, 9 and the edge, 40px exactly, with a name and a chevron and nothing else. A checkbox
+  list row (Reset data) takes `br-reset-option`, which is `8px 12px 7px` around the 24px target,
+  also 40px. `settings/dialogRowsGeometry.browser.test.tsx` measures both in Chromium.
+- **Text that frames a checkbox list starts where the boxes do.** The dialog body is 16px in
+  and the rows start at its content edge, so the box's visible edge is 16px past that edge (12px
+  of row padding, and the 24px target has 4px of air). The count above the list and the
+  permanence line below it take `pl-4`, so the three share one left edge (measured in Chromium,
+  all at 16px from the content edge).
+- **Rows draw no hairline between them, and a hovered row is a fill.** Spacing separates 40px
+  rows, and the pointer's row is washed (owner message 13, R-27). The line is switched off by
+  `.br-rows-flat`, which `main.css` defines once (`@ws WS-PRIMITIVES begin: rows`) and which
+  gives the line back under forced colours, where every fill is gone. The Settings reading column
+  carries it, and so does each list a Settings dialog draws in a portal outside that column
+  (Reset data, the two Tool permissions lists). Settings repeats none of it: a copy of the rule
+  in `settings.css`, which loads after `main.css` at the same specificity, beat the
+  forced-colours half and left every row with no separator. The one thing `settings.css` adds is
+  the hovered row's paint, the card fill `--background-fill` and not the shared wash. On the
+  canvas in dark the wash alone lands a stepped-back control 1.03:1 off its row, so the control
+  loses its box while the pointer is on the row; the fill leaves it 1.10:1.
+  `settings/settingsRowsFlat.browser.test.tsx` measures the line, the forced-colours restore and
+  the control's box in Chromium, light and dark, and fails for each rule removed.
 
-Rows are **direct children** of `.biorouter-settings-list`. This is not tidiness:
-`.biorouter-settings-row:last-child` is relative to a row's own parent, so a per-item
-wrapper breaks the trailing hairline in one of two directions. One row per wrapper makes
-*every* row `:last-child` and suppresses every hairline in the section; several rows in one
-wrapper hides the wrapper's last hairline mid-list. Both had shipped on the Chat tab. A
-section component that has nothing of its own to declare therefore returns a **fragment**
-of rows rather than a box; one that does — `ModeSection` needs `role="radiogroup"` on the
-element containing its radios — owns the list itself.
-
-A disclosure renders its trigger and its panel as sibling rows, not as a row plus a boxed
-panel, for the same reason.
+Rows are **direct children** of `.biorouter-settings-list`. This is not tidiness: the row's
+hairline (where a list keeps it: the default, and forced colours) is drawn by `::after` and
+suppressed on `:last-child`, which is relative to a row's own parent, so a per-item wrapper
+breaks the hairline in one of two directions. One row per wrapper makes *every* row the last
+child and suppresses every hairline in the section; several rows in one wrapper hides the
+wrapper's last hairline mid-list. A component that contributes rows to a section therefore
+returns a **fragment** of rows rather than a box.
 
 ### 3. One section header, one section rhythm
 
+Every section is `SettingSection`:
+
+```tsx
+<SettingSection id={SETTINGS_SECTION_IDS.general} title="General" help?="…" action?={…}>
+  …rows…
+</SettingSection>
 ```
-<div className="biorouter-settings-section">
-  <div className="biorouter-settings-section-header">
-    <h2 className="text-caps text-text-muted">LABEL</h2>       {/* + mb-1 only if a description follows */}
-    <p className="text-supporting text-text-muted">…</p>        {/* optional */}
-  </div>
-  <div className="biorouter-settings-list"> … rows … </div>     {/* or a control strip, rule 5 */}
-</div>
-```
+
+It renders a `text-caps` muted label (12px, the one caps style left in the app), an optional
+InfoTip beside it, an optional action at the header's end inset like the rows, and the rows
+inside `.biorouter-settings-list`. **No `<p>` under the header**: a section's explanation is
+its `help`. A section never exists to hold one row; merge it into a neighbour (the old
+one-row Workspace and Editor sections are rows of General and Display now).
+
+**Deep links scroll to a section `id`.** `components/settings/settingsSections.ts` names every
+section a link can land on (`SETTINGS_SECTION_IDS`) and the keys callers already pass
+(`update`, `models`, `modes`, `styles`, `tools`, `app`, `chat`, `privacy`); `SettingsView`
+selects the tab (a different tab starts at the top of the one scroller), scrolls the section
+into view (smoothly only without reduced motion) and gives the section's first row the
+`.br-highlight` wash, the control the link names; a section that holds no row is washed whole.
+The wash ends with its own `animationend`, with a timer behind it. A section another
+workstream renders puts the id on its own root. Never rename or drop a deep-link key: four files outside Settings pass them.
 
 Sections are **siblings under one tab wrapper**, so
-`.biorouter-settings-section + .biorouter-settings-section { margin-top: 10px }` actually
-fires. Only the tab's outermost wrapper carries the tail `pb-8`. A bare `<div>` between two
-sections breaks that adjacency exactly as a classed one does, so an intermediate wrapper
-must be deleted rather than declassed.
-
-A header may carry a right-hand control. It takes `mr-3` (or a `pr-3` wrapper) so its *box*
-shares the rows' 12px inset while the `text-caps` label stays flush left with every other
-header on the page, and it sits on the default 32px rung.
+`.biorouter-settings-section + .biorouter-settings-section` actually fires. Only the tab's
+outermost wrapper carries the tail `pb-8`. A bare `<div>` between two sections breaks that
+adjacency exactly as a classed one does, so an intermediate wrapper must be deleted rather
+than declassed.
 
 ### 4. One note
 
@@ -140,29 +230,41 @@ is how three line-heights ended up on one 12px role.
 
 | Role | Spelling |
 |---|---|
-| The one committing action of a view | `variant="default"`, default rung |
-| Section action (opens a dialog or panel) | `variant="secondary"`, default rung, **no `className`** |
-| Row-trailing labelled action | `variant="secondary"` or `"outline"`, default or `sm` rung |
-| Row-trailing glyph-only action | `variant="ghost" shape="round"` (32×32) |
-| Quiet destructive row action | `variant="ghost" className="text-text-danger"` |
-| Loud destructive | `variant="destructive"` |
-| Dialog footer | `variant="outline"` dismiss, `default`/`destructive` confirm |
+| The one committing action of a view or dialog | `variant="default"` (coral), default rung; at most one per view |
+| Row-trailing action that opens a dialog | `variant="secondary" size="sm"`, a verb with an ellipsis ("Edit…", "Reset…") |
+| Row-trailing action that does the thing | `variant="secondary" size="sm"`, its own words ("Check for updates") |
+| Row-trailing glyph-only action | `variant="ghost" shape="round"` (32×32) with a Tooltip |
+| Destructive row action (Danger zone) | `variant="destructive" size="sm"`, always behind a confirmation |
+| Quiet secondary links in a row (Feedback) | `variant="ghost" size="sm"` |
+| Dialog footer | `variant="secondary"` dismiss (Cancel), `default` or `destructive` confirm |
 | Inline text link | `variant="link"` on a real `<Button>` |
 
+`secondary` is the one secondary action, on a page and in a dialog footer alike: Crew's dialogs
+and `ui/ConfirmationModal` dismiss with it, and spec 2.6 retires `outline` wherever it stood in
+for a secondary. A footer's confirm keeps its own word ("Reset", "Save changes"), and a
+destructive confirm says "… everything" only when it really is everything. Each tab that
+has destructive work ends in one **Danger zone** section (Crew's wording) holding one
+`destructive sm` button per row, and the consequence is stated in the dialog that opens, at
+the moment of decision, never as a paragraph beside the button. The page never shows two red
+buttons side by side.
+
 `size="xs"` is the 24px compact tier and is for a **glyph-only** control in an already-dense
-cluster — `--control-compact`'s own comment says "a control carrying a label never uses it".
-Nothing in these three tabs is that control.
+cluster; `--control-compact`'s own comment says "a control carrying a label never uses it".
+Nothing in these tabs is that control.
 
 A Button never carries `flex items-center gap-2`: the cva base already emits `inline-flex
 items-center justify-center gap-2`, and a bare `flex` **flips that `inline-flex` through
 tailwind-merge**, which is what rendered one destructive row action as a full-width red bar
-across the reading column. A Button never carries `h-*`/`w-*`/`p-*` geometry, and never a
-`hover:bg-*` — `tint-interactive` owns hover and press.
+across the reading column. A Button never carries `h-*`/`w-*`/`p-*` geometry (a select's
+fixed trigger width is the one exception, so a column of selects lines up), and never a
+`hover:bg-*`: `tint-interactive` owns hover and press.
 
 ### 8. Reuse the primitive, always
 
-`Badge` for a chip. `Skeleton` for a loading placeholder. `CustomRadio`'s ring construction
-for a radio, `Checkbox` for a checkbox. `ConfirmationModal` (or `Dialog`) for a
+`Badge` for a chip. `Skeleton` for a loading placeholder. `SettingRow` and `SettingSection`
+for rows and sections, `InfoTip` for help, `SegmentedControl` and `SettingSelect` for
+choices, `Switch` for on and off, `Checkbox` for picking items, `CustomRadio` for a radio
+inside a dialog. `ConfirmationModal` (or `Dialog`) for a
 confirmation — never `window.confirm`, which is theme-blind, unstyleable, and was the one
 control in Settings that could not be read in dark mode. `MODAL_SIZE` from
 `components/ModalShell.tsx` for a dialog width — never a pixel literal.
@@ -171,11 +273,8 @@ control in Settings that could not be read in dark mode. `MODAL_SIZE` from
 > design.md **P4** — "If a surface needs a variant, the variant lives in the primitive, not
 > in a `className` override at the call site."
 
-⚠ Inlining a primitive's construction rather than mounting it is occasionally right — the
-mode rows own their `role="radio"` semantics, which `CustomRadio`'s `<label>` would
-duplicate — but copy the construction exactly. In particular the `peer` input must stay
-inside the same box as the elements it styles: `peer-checked:` compiles to a sibling
-combinator, so a ring that is a descendant of the peer's sibling silently never fills.
+The two inlined radio constructions that used to live in the Mode and Response styles rows
+are gone with the rows: Approval mode is a select and Tool call details a segmented control.
 
 ### 9. When the words are load-bearing, change the shape only
 
@@ -200,31 +299,22 @@ of it moves for a style change:
 ### 10. One page header
 
 Every top-level view's header is `components/Layout/PageHeader.tsx`, and no view writes its
-own. It renders a full-bleed hairline on a wrapper OUTSIDE the reading column, the title as
-`text-title`, the description in `text-secondary text-text-muted`, and **the view's actions
-on their own line under the description** in a `.biorouter-settings-control-strip` — rule 5's
-strip, so a page's actions and a section's actions are one shape rather than two that nearly
-match. Buttons inside it carry variant and size only (rule 7).
-
-The action placement is the operator's decision of 2026-09-07 and it REVERSES astryx §4.2's
-original "actions right-aligned on the title row"; §4.2 carries the dated amendment. Beyond
-consistency, the argument is that a title row carrying controls has to give the title
-`min-w-0 truncate` so the pair yields in the right order, which makes a page title something
-its own buttons can clip.
+own. Since 2026-10-09 it is a **44px band** (`--chrome-height`, Crew's channel header): a 14px
+`<h1>`, the page's help in an InfoTip (never a paragraph), the actions on the right, and the
+band's own hairline running edge to edge. The band is a window-drag region whose controls are
+`no-drag`. This reverses the 2026-09-07 "actions on their own line" decision; the reversal is
+recorded in astryx §4.2.
 
 Eight views each had their own copy of this header before the primitive existed, and the
-copies had already drifted in four ways, counted across the eight: the hairline full-bleed in
-**seven** and capped at the reading column in Skills; the description `text-body` in **five**
-and `text-secondary` in **three**; the padding `px-8` in **five** and `px-6` in **three**; the
-actions a button strip in **four**, a title-row cluster in **two**, absent in **two**. The
-same five/three split appearing three times over is the tell — this was not eight decisions,
-it was one header copied twice and then edited — which is the whole argument for the rule. `styles/measures.test.ts` asserts **at the source** that each of
-those views imports `PageHeader`, so a ninth view cannot quietly grow a ninth copy.
+copies had already drifted in four ways (hairline, description role, padding, action
+placement). `styles/measures.test.ts` asserts **at the source** that each of those views
+imports `PageHeader`, so a ninth view cannot quietly grow a ninth copy.
 
-Two things are deliberately NOT actions. A **tab strip** switches which rows you are looking
-at, so Settings' stays below the header. A **filter** — Chat history's "Show subagent runs" —
-changes what the page shows rather than doing something, so it is `PageHeader`'s `children`,
-under the strip rather than in it.
+**Settings puts its tabs in the band** (`PageHeader`'s `tabs` slot): Models, Chat and App, text
+only, with the active underline landing on the band's hairline. The tab names are pinned by
+daemon copy ("Settings > Models", "Settings > App > Privacy") and must not change. The body
+under the band is one reading column on the chat measure, and a tab change starts the next
+tab at its top.
 
 **A tab in that strip takes no focus fill (2026-09-08).** D-15 makes focus a surface shift, and
 `ui/desktop/src/components/ui/tabs.tsx` renders a `<button role="tab">` that Radix activates on
@@ -283,6 +373,58 @@ carries the proper-noun allow-list. Adding a name to that allow-list is a claim 
 words are a name — not a preference for how a sentence reads.
 
 See [`design.md` §3.10](../../design.md#310--spelling) for the decision record.
+
+### 12. Help is an InfoTip, never a paragraph
+
+**Added 2026-10-09** (owner, message 5: "hover-and-show helper text instead of showing that
+text verbatim up front"). An explanation, a definition or a hint is `InfoTip`
+(`components/ui/info-tip.tsx`): a visible 14px glyph in subtle ink after the label that opens
+on hover (200ms), on Tab focus and on click, and whose text is always in the accessibility
+tree through `aria-describedby`. `SettingRow help` and `SettingSection help` mount it for you.
+
+- **These stay visible**, always: errors, refusals, privacy disclosures (the DR-17 statement,
+  the privacy-off strip and the disable confirmation, rule 9), the consequence of a
+  destructive action at the moment of decision (in its dialog), and empty-state one-liners.
+- Plain text, at most two sentences, no links, no buttons, no bold. Anything longer belongs
+  in a dialog or a `Disclosure`.
+- Never `title=`: `AppTooltipLayer` copies a title into the control's name.
+- **A daemon's description of a thing is data, not copy.** An extension's description arrives
+  with em dashes, "BioRouter", whole sentences and a cut-off tail, and twelve of them drew a
+  two-line column in Tool permissions (V4-09). A row shows the name; the description lives on
+  the page that is about that thing (Extensions), not in a list that only needs to say which
+  one opens.
+- **A path is behind an action, not on a line.** The Project hints dialog says "New
+  .biorouterhints file" in one family and offers Copy path, with the whole path in the
+  button's tooltip (V4-23); a path in mono inside a sans sentence is two families in one line.
+- **A status line says a difference.** "Restart to apply" is true only while the switch
+  differs from what the window started with, so turning Spellcheck off and on again clears it
+  (V4-21).
+
+Enforced by **V9** in `settingsVocabulary.test.ts` (no `max-w-md text-supporting` description
+paragraph in a row).
+
+### 13. One control per job, one look per control
+
+**Added 2026-10-09.**
+
+| Job | Control | Never |
+|---|---|---|
+| On or off, applies now | `Switch`, trailing edge, named by the row label | a checkbox, a two-option segmented control |
+| One of 2 to 4 short options | `SegmentedControl` (Theme, Color palette, Text size, Tool call details) | radio rows on a page, toggle-button strips, native radios |
+| One of 4 or more, or options that need a line each | `SettingSelect` (Approval mode, tool rules) | radio rows with paragraphs |
+| Pick several | `Checkbox` on the left of its label, inside a dialog (Reset data) | checkboxes on the page |
+| A number | `Input type="number"`, `w-20` | a disclosure hiding one field |
+| Open an editor | `secondary sm` button, "Edit…" | an icon-tile card |
+
+A select's trigger is a filled button with no outline at rest. Under forced colours the fill
+is repainted as Canvas and the shared `[data-slot='button']` edge in `main.css` draws the
+system edge. A `Button` slotted into a `DropdownMenuTrigger` keeps its own `data-slot` (it is
+written after the props the trigger hands down), so the select needs no rule of its own
+(V4-24).
+
+The segmented thumb and the select's check are neutral; coral marks only a switch's on
+state, a checked checkbox and the one committing button. Enforced by **V10** (no native
+radio).
 
 ## The two primitives
 
@@ -353,11 +495,11 @@ bare "No extensions available" line for an empty state, a hand-rolled centred bl
 Retry button for another, `text-caps … uppercase` group headers where `text-caps` already
 uppercases, and an accent-filled Run button living inside a workflow row.
 
-⚠ **`components/settings/extensions/` is still out of scope**, and its exclusion is not a
-sibling of these roots. That directory holds the extension ROWS, which `components/extensions/`
-merely lays out; it stays in the settings root's own out-of-scope list for the reason the
-original scope note gives — sweeping it triples the diff. The chat-measure pass touched it for
-`min-w-0` / `truncate` only. Deleting its name from that list is how the work gets finished.
+⚠ **`components/settings/extensions/` is governed through the settings root, not through this
+one.** That directory holds the extension ROWS, which `components/extensions/` merely lays out,
+so the two are different trees with different roots. Its name left the settings root's
+out-of-scope list on 2026-10-10, once the rows sat on the shared row anatomy; losing either
+root, or putting the name back, is caught by the test that names one file in each tree.
 
 **The Scheduler** (`components/schedule/`) was swept onto it on 2026-09-07 as well. Two of its
 constructions are worth naming because they are what the vocabulary looks like on a surface
@@ -377,17 +519,24 @@ that is not Settings:
 
 ## What this does not cover
 
-Extensions, the provider-configuration page, the permission modals, dictation, the tunnel
-and session sharing share these primitives and will inherit the rules, but were not swept
-when the vocabulary landed. They are named in the per-root `outOfScope` lists in
-`settingsVocabulary.test.ts`; deleting a name from one of those lists — or adding a root
-for a directory the walker has never reached — is how the work gets finished.
+Dictation, the tunnel and session sharing (`components/settings/{dictation,tunnel,sessions}/`)
+are the only folders the walker still skips. No route mounts them, so there is no screen to hold
+to the rules, and they are named in the settings root's `outOfScope` list in
+`settingsVocabulary.test.ts`. Do not add a name to a list to get a test green: a folder that is
+mounted belongs under the rules, and a root for a directory the walker has never reached is
+added with a line of its own.
 
-Two files in the chat-history root are excluded for a different reason: `SessionsInsights`
-is the **Home** view and `UsageHeatmap` is its grid, whose `leading-*` values and per-mille
-alphas are fitted cell geometry rather than prose styling. `ui/ConfirmationModal.tsx`'s
-`sm:max-w-[425px]` is likewise left alone — it is a shared primitive, so moving it onto the
-`MODAL_SIZE` ladder changes every confirmation in the app rather than one feature's.
+The 2026-10 redesign's final sweep emptied the rest of those lists on 2026-10-10. The permission
+dialogs, the provider pages (`components/settings/providers/`) and the extension rows
+(`components/settings/extensions/`) sit on `ModalShell`, `SettingRow` and the shared row, and
+their folders are walked by the settings root. Home's usage surfaces (`SessionsInsights`,
+`HomeUsageCard`, `UsageHeatmap`) sit in the chat-history root, and BAAM (`components/baam/`) and
+Knowledge (`components/knowledge/`) are roots of their own. A test names one file in each of
+those trees, so a root that resolves to nothing fails instead of passing vacuously.
+
+`ui/ConfirmationModal.tsx`'s `sm:max-w-[425px]` is left alone: it is a shared primitive, so
+moving it onto the `MODAL_SIZE` ladder changes every confirmation in the app rather than one
+feature's.
 
 Also deliberately outside it: the 40px → 36px row retune (astryx A-03, still a later
 phase), promoting a `ghost-danger` variant into `buttonVariants`, and adding `size` /
@@ -396,6 +545,7 @@ ones.
 
 ## Related documentation
 
+- [Codex simplicity redesign](../design/codex-simplicity-redesign/README.md) — the 2026-10-09 pass that removed row paragraphs, added rules 12 and 13 and moved the Settings tabs into the band (implementation spec §3.13).
 - [`design.md`](../../design.md) — the Parchment design system: tokens, the type ramp, the radius ladder, rows-not-cards, and the calm register these rules serve.
 - [Astryx UI adoption design](../design/astryx-adoption/astryx-ui-adoption-design.md) — the design of record for the token and primitive layer, including the density ladder and the status-wash formula.
 - [Where a generated artifact is displayed](artifact-display-surfaces.md) — the sibling one-rule document for the artifact side panel, enforced the same way.

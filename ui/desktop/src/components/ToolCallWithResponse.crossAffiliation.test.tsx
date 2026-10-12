@@ -125,6 +125,31 @@ describe('the cross-institutional refusal in the transcript', () => {
     expect(await screen.findByText('Recorded for this chat only.')).toBeInTheDocument();
   });
 
+  it('opens onto the accept control when the refusal lands after the row was drawn', async () => {
+    // A call is drawn the moment it starts, running, with nothing to open. The
+    // refusal arrives later on the same row; the row must still open onto the
+    // way out rather than wait for a click nobody knows to make.
+    const props = {
+      sessionId: 'chat_7',
+      isCancelledMessage: false,
+      toolRequest,
+      onOpenArtifact: noopOpenArtifact,
+    };
+    const view = render(<ToolCallWithResponse {...props} turnActive />);
+    expect(acceptControl()).toBeNull();
+    view.rerender(
+      <ToolCallWithResponse
+        {...props}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-xaff',
+          toolResult: { status: 'error', error: grantableRefusal('ucsfomopagent') },
+        }}
+      />
+    );
+    expect(await screen.findByRole('button', { name: /approve this flow/i })).toBeVisible();
+  });
+
   it('reads the connector out of the refusal rather than off the tool name', async () => {
     // `get_client_for_tool` resolves an extension by longest key, so an
     // extension named `ucsf` and one named `ucsf__omop` both prefix
@@ -161,7 +186,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // transcript is an ordinary tool failure — and an accept control on one
     // would be an offer to approve a boundary nobody crossed.
     renderTranscript('The command could not be started');
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();
   });
@@ -172,7 +197,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // Pressing a control there would record a real acceptance and leave the
     // retry refused.
     renderTranscript(bareRefusal);
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();
   });
@@ -202,7 +227,7 @@ describe('the cross-institutional refusal in the transcript', () => {
     // `{isExpanded && <div>{children}</div>}`, so a collapsed call has its body
     // genuinely ABSENT from the DOM rather than merely hidden — which is what
     // lets this assert the default rather than a style.
-    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^Failed/)).toBeInTheDocument());
     expect(screen.queryByText(/Cross-institutional data flow/)).not.toBeInTheDocument();
     expect(acceptControl()).not.toBeInTheDocument();
     expect(mockGrant).not.toHaveBeenCalled();

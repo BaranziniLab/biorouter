@@ -433,7 +433,9 @@ describe('the privacy popover', () => {
     for (const link of [downgrade, more]) {
       // The link variant: no box, no fill, no outline.
       expect(link.className).toContain('underline-offset-4');
-      expect(link.className).not.toMatch(/border-border-emphasized|bg-background-medium/);
+      expect(link.className).not.toMatch(
+        /border-border-emphasized|bg-background-medium|br-fill-rest/
+      );
       // The same ink and size for both: neither is muted into a hint, neither shouts.
       expect(link).not.toHaveClass('text-text-muted');
       expect(link).toHaveClass('text-supporting');

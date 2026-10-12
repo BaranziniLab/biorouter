@@ -40,8 +40,32 @@
  */
 export const TEST_TIMEOUT_MS = 30_000;
 
-/** Same budget for beforeEach/afterEach and friends. */
-export const HOOK_TIMEOUT_MS = 30_000;
+/**
+ * Budget for beforeEach/afterEach/beforeAll/afterAll. NOT the same number as
+ * TEST_TIMEOUT_MS, on purpose, and larger than it.
+ *
+ * About eighty `*.browser.test.*` files each launch their own Chromium in a
+ * `beforeAll` and close it in an `afterAll`. Closing is a handshake with a
+ * multi-process browser, so its time is set by how busy the machine is, not by
+ * anything the test does. In a full run (963 files across up to 15 workers on
+ * 16 cores, load average 115 to 300, measured 2026-10-11) the 30 s that used to
+ * be here was overrun by `await browser?.close()` in 2 to 4 files per run, every
+ * one with all its assertions passed and a different set of files each time:
+ * `Error: Hook timed out in 30000ms` at `afterAll`. Alone, the same files
+ * finish in 2 to 18 s. The failure was the budget, not a test, so the budget is
+ * what moved. 120 s was tried first and was overrun once in the next three
+ * full runs (`tabFocusRing.browser.test.ts`, whose three tests took 1.3 s and
+ * whose close took over 120 s, at a load average of 560), so it is 300 s.
+ *
+ * Raising it costs nothing on a green run (it bounds failures only). What it
+ * does cost is that a hook that really hangs is now reported after 300 s, not
+ * 30. A test body keeps `TEST_TIMEOUT_MS`.
+ *
+ * `src/test/hookTimeout.test.ts` pins this number into every command that runs
+ * vitest, because a `--hookTimeout=` flag on the command line beats the config
+ * and CI carried one at 30000 until this change.
+ */
+export const HOOK_TIMEOUT_MS = 300_000;
 
 /**
  * Single-wait budget. Must stay comfortably under TEST_TIMEOUT_MS so that a

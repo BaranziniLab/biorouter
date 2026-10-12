@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { SELECT_OPTION_CLASS_NAME } from './Select';
 
 /**
  * A menu option row is a 32px FLOOR, not a 32px box.
@@ -79,11 +80,16 @@ function optionRenderer(): string {
   return SELECT.slice(start);
 }
 
-/** The `const base = '…'` class string every option branch is built from. */
+/**
+ * The class string every option branch is built from. The renderer reads it from
+ * `SELECT_OPTION_CLASS_NAME` (the one menu row, spec 2.6), so the guard reads the same export,
+ * after checking at the source that the renderer really does use it.
+ */
 function optionBaseClasses(): string {
-  const match = optionRenderer().match(/const base =\s*(['"])([^'"]*)\1/);
-  if (!match) throw new Error("the option renderer declares no `const base = '…'` class string");
-  return match[2];
+  if (!/const base = SELECT_OPTION_CLASS_NAME;/.test(optionRenderer())) {
+    throw new Error('the option renderer no longer builds its rows from SELECT_OPTION_CLASS_NAME');
+  }
+  return SELECT_OPTION_CLASS_NAME;
 }
 
 describe('the shared Select option row geometry', () => {
@@ -123,6 +129,10 @@ describe('the shared Select option row geometry', () => {
    * the only vertical breathing room a taller row gets.
    */
   it('gives the row vertical padding', () => {
-    expect(optionBaseClasses().split(/\s+/)).toContain('py-1');
+    expect(
+      optionBaseClasses()
+        .split(/\s+/)
+        .some((token) => /^py-/.test(token))
+    ).toBe(true);
   });
 });

@@ -51,6 +51,18 @@ describe('ExternalBackendSection', () => {
     });
   });
 
+  it('draws the restart note’s lead word at 600, not preflight’s 700 (V4-R7-6)', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: { enabled: true, url: 'http://localhost:3000', secret: 's' },
+    });
+
+    render(<ExternalBackendSection />);
+    await screen.findByLabelText('User Action Key');
+    // jsdom runs no cascade, so this pins the class; the weight itself is measured for every other
+    // settings surface in Chromium and a bare `<strong>` there reads 700.
+    expect(screen.getByText('Note:')).toHaveClass('font-semibold');
+  });
+
   it('carries an existing key through a save of some other field', async () => {
     getSettings.mockResolvedValue({
       externalBiorouterd: {

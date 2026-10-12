@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NavigateFunction } from 'react-router-dom';
-import { createNavigationHandler, navigateWithViewTransition } from './navigationUtils';
+import { renderHook } from '@testing-library/react';
+import {
+  createNavigationHandler,
+  navigateToRoute,
+  ROUTE_SURFACE_SELECTOR,
+  useRouteFade,
+} from './navigationUtils';
 
 describe('navigation helpers', () => {
   const navigate = vi.fn() as unknown as NavigateFunction;
@@ -20,7 +26,7 @@ describe('navigation helpers', () => {
       value: startViewTransition,
     });
 
-    navigateWithViewTransition(navigate, '/settings', { section: 'models' });
+    navigateToRoute(navigate, '/settings', { section: 'models' });
 
     expect(startViewTransition).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('/settings', {
@@ -30,9 +36,9 @@ describe('navigation helpers', () => {
   });
 
   it('preserves every rapid navigation intent in order', () => {
-    navigateWithViewTransition(navigate, '/settings');
-    navigateWithViewTransition(navigate, '/workflows');
-    navigateWithViewTransition(navigate, '/knowledge');
+    navigateToRoute(navigate, '/settings');
+    navigateToRoute(navigate, '/workflows');
+    navigateToRoute(navigate, '/knowledge');
 
     expect(navigate).toHaveBeenNthCalledWith(1, '/settings', {
       replace: undefined,
@@ -52,7 +58,7 @@ describe('navigation helpers', () => {
     const setView = createNavigationHandler(navigate);
 
     setView('chat', { disableAnimation: true });
-    navigateWithViewTransition(navigate, '/sessions', undefined, { replace: true });
+    navigateToRoute(navigate, '/sessions', undefined, { replace: true });
 
     expect(navigate).toHaveBeenNthCalledWith(1, '/', {
       replace: undefined,
@@ -62,5 +68,72 @@ describe('navigation helpers', () => {
       replace: true,
       state: undefined,
     });
+  });
+});
+
+/**
+ * Spec 3.16, Routes: the main column fades in once when the path changes, and
+ * nowhere else. jsdom has no WAAPI, so `animate` is a stub on the surface.
+ */
+describe('useRouteFade', () => {
+  let surface: HTMLElement;
+  let animate: ReturnType<typeof vi.fn>;
+  const originalMatchMedia = window.matchMedia;
+
+  beforeEach(() => {
+    surface = document.createElement('main');
+    surface.className = 'route-container biorouter-route-surface';
+    animate = vi.fn();
+    Object.assign(surface, { animate });
+    document.body.appendChild(surface);
+  });
+
+  afterEach(() => {
+    surface.remove();
+    window.matchMedia = originalMatchMedia;
+    document.body.classList.remove('biorouter-window-resizing');
+  });
+
+  it('targets the shell surface', () => {
+    expect(document.querySelector(ROUTE_SURFACE_SELECTOR)).toBe(surface);
+  });
+
+  it('does nothing on the first mount: a reload or a new window appears at rest', () => {
+    renderHook(({ path }) => useRouteFade(path), { initialProps: { path: '/settings' } });
+    expect(animate).not.toHaveBeenCalled();
+  });
+
+  it('fades the column in once, opacity only, when the path changes', () => {
+    const { rerender } = renderHook(({ path }) => useRouteFade(path), {
+      initialProps: { path: '/settings' },
+    });
+    rerender({ path: '/workflows' });
+
+    expect(animate).toHaveBeenCalledTimes(1);
+    expect(animate).toHaveBeenCalledWith([{ opacity: 0 }, { opacity: 1 }], {
+      duration: 125,
+      easing: 'cubic-bezier(0.24, 1, 0.4, 1)',
+    });
+
+    // The same path again (a query-string change, a re-render) fades nothing.
+    rerender({ path: '/workflows' });
+    expect(animate).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays still under reduced motion and while the window is being resized', () => {
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+      }) as MediaQueryList) as typeof window.matchMedia;
+    const { rerender } = renderHook(({ path }) => useRouteFade(path), {
+      initialProps: { path: '/settings' },
+    });
+    rerender({ path: '/skills' });
+    expect(animate).not.toHaveBeenCalled();
+
+    window.matchMedia = originalMatchMedia;
+    document.body.classList.add('biorouter-window-resizing');
+    rerender({ path: '/knowledge' });
+    expect(animate).not.toHaveBeenCalled();
   });
 });

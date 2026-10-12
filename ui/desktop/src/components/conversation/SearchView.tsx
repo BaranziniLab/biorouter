@@ -1,6 +1,19 @@
-import React, { useState, useEffect, PropsWithChildren, useCallback, useRef } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  PropsWithChildren,
+  useCallback,
+  useMemo,
+  useRef,
+} from 'react';
+import { createPortal } from 'react-dom';
 import SearchBar from './SearchBar';
-import { SearchHighlighter } from '../../utils/searchHighlighter';
+import {
+  FindClearance,
+  SearchHighlighter,
+  SEARCH_UI_ATTRIBUTE,
+} from '../../utils/searchHighlighter';
 import '../../styles/search.css';
 
 /**
@@ -34,10 +47,27 @@ interface SearchContainerElement extends HTMLDivElement {
 }
 
 /**
- * SearchView wraps content in a searchable container with a search bar that appears
- * when Cmd/Ctrl+F is pressed. Supports case-sensitive search and result navigation.
- * Features debounced search for better performance with large content.
+ * The transcript cell the find bar floats in: the `ScrollArea` ROOT that both
+ * hosts (`BaseChat`, `SessionHistoryView`) mark `data-preview-transcript`. It is
+ * positioned, and it is OUTSIDE the scrolling viewport.
  */
+export const FIND_OVERLAY_HOST = '[data-preview-transcript]';
+
+/**
+ * Find in chat (spec 3.16): wraps a transcript in a searchable container whose
+ * bar appears on Cmd/Ctrl+F as an overlay at the transcript's top right (see
+ * `SearchBar`), with case-sensitive search and match navigation, debounced for
+ * long chats.
+ *
+ * It is the transcript's find and nothing else: only the live chat
+ * (`BaseChat`) and a saved transcript (`SessionHistoryView`) mount it. A list
+ * of rows filters with the band's `FilterInput` instead
+ * (`styles/searchBarNote.test.ts` holds that line).
+ */
+function mountFindBar(bar: React.ReactElement, host: HTMLElement | null): React.ReactNode {
+  return host ? createPortal(bar, host) : bar;
+}
+
 export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   className = '',
   children,
@@ -60,6 +90,35 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   const highlighterRef = React.useRef<SearchHighlighter | null>(null);
   const highlightTimerRef = React.useRef<number | null>(null);
   const containerRef = React.useRef<SearchContainerElement | null>(null);
+  // Where the bar is mounted (vision V2-02). Rendered in place, inside the
+  // scrolled content, it scrolled away with the conversation: the moment a
+  // search starts, `SearchHighlighter` sets the viewport to `position:
+  // relative` (its match marks are positioned against the scrolled content),
+  // and that made the VIEWPORT the bar's containing block. Typing jumped to the
+  // first match and the bar left the screen with the text. So the bar is
+  // portalled into the transcript cell, which is positioned and does not
+  // scroll. Without such a cell (a bare mount, as in the unit tests) it renders
+  // in place.
+  const [overlayHost, setOverlayHost] = useState<HTMLElement | null>(null);
+  const overlayHostRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const host = containerRef.current?.closest<HTMLElement>(FIND_OVERLAY_HOST) ?? null;
+    overlayHostRef.current = host;
+    setOverlayHost(host);
+  }, []);
+  // The find session's hold on the bar (vision V2-R5-4): where the bar is, so the
+  // match find shows is never left under it, and the room it asked of the
+  // transcript's top, given back when the bar closes. One per mount, shared by
+  // every highlighter a term creates. Only a bar that floats over a transcript
+  // cell has a position worth dodging; one rendered in place scrolls with the
+  // text, so there is none.
+  const clearance = useMemo(
+    () =>
+      new FindClearance(
+        () => overlayHostRef.current?.querySelector(`[${SEARCH_UI_ATTRIBUTE}]`) ?? null
+      ),
+    []
+  );
   const lastSearchRef = React.useRef<{ term: string; caseSensitive: boolean }>({
     term: '',
     caseSensitive: false,
@@ -154,26 +213,30 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         highlighterRef.current.destroy();
       }
 
-      highlighterRef.current = new SearchHighlighter(container, (count) => {
-        // Only update if this is still the latest search
-        if (
-          lastSearchRef.current.term === term &&
-          lastSearchRef.current.caseSensitive === caseSensitive
-        ) {
-          if (count > 0) {
-            setInternalSearchResults({
-              currentIndex: 1,
-              count,
-            });
-          } else {
-            setInternalSearchResults(null);
+      highlighterRef.current = new SearchHighlighter(
+        container,
+        (count) => {
+          // Only update if this is still the latest search
+          if (
+            lastSearchRef.current.term === term &&
+            lastSearchRef.current.caseSensitive === caseSensitive
+          ) {
+            if (count > 0) {
+              setInternalSearchResults({
+                currentIndex: 1,
+                count,
+              });
+            } else {
+              setInternalSearchResults(null);
+            }
           }
-        }
-      });
+        },
+        clearance
+      );
 
       scheduleHighlight(term, caseSensitive, highlighterRef.current);
     },
-    [onSearch, scheduleHighlight]
+    [clearance, onSearch, scheduleHighlight]
   );
 
   /**
@@ -296,10 +359,12 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
       highlighterRef.current.destroy();
       highlighterRef.current = null;
     }
+    // Give back the room find made above the transcript.
+    clearance.release();
 
     // Clear search when closing
     onSearch?.('', false);
-  }, [onSearch]);
+  }, [clearance, onSearch]);
 
   // Clean up highlighter on unmount
   useEffect(() => {
@@ -311,8 +376,9 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         highlighterRef.current.destroy();
         highlighterRef.current = null;
       }
+      clearance.release();
     };
-  }, []);
+  }, [clearance]);
 
   // Listen for keyboard events
   useEffect(() => {
@@ -387,18 +453,20 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
       }}
       className={`search-container ${className}`}
     >
-      {isSearchVisible && (
-        <SearchBar
-          onSearch={handleSearch}
-          onClose={handleCloseSearch}
-          onNavigate={handleNavigate}
-          searchResults={searchResults || internalSearchResults || undefined}
-          inputRef={searchInputRef}
-          initialSearchTerm={initialSearchTerm}
-          placeholder={placeholder}
-          minSearchLength={minSearchLength}
-        />
-      )}
+      {isSearchVisible &&
+        mountFindBar(
+          <SearchBar
+            onSearch={handleSearch}
+            onClose={handleCloseSearch}
+            onNavigate={handleNavigate}
+            searchResults={searchResults || internalSearchResults || undefined}
+            inputRef={searchInputRef}
+            initialSearchTerm={initialSearchTerm}
+            placeholder={placeholder}
+            minSearchLength={minSearchLength}
+          />,
+          overlayHost
+        )}
       {children}
     </div>
   );

@@ -1,18 +1,51 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 import { Button } from '../ui/button';
-import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
+import { Select } from '../ui/Select';
+import {
+  llamacppEnsure,
+  llamacppWarmup,
+  type LlamaCppModel,
+  type LlamaCppStatusResponse,
+} from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
-import { llamaMemoryWarning, windowsVramNote } from '../settings/models/localModelMemory';
-import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { Disclosure } from '../ui/disclosure';
+import { Field } from '../ui/field';
+import { localModelsCopy } from '../settings/models/copy';
+import { factsLine, speedDetail } from '../settings/models/localModelFacts';
+import { InfoTip } from '../ui/info-tip';
+import {
+  fitLine,
+  fitWarning,
+  llamaMemoryWarning,
+  windowsVramNote,
+} from '../settings/models/localModelMemory';
+import { llamaCopy } from './copy';
+import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { Spinner } from '../ui/spinner';
+import { StatusPill } from './StatusPill';
+import { useViewPrimaryVariant } from './viewPrimary';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
-  /** See `OnboardingCardShell`. Defaults to the standalone card. */
-  chrome?: OnboardingCardChrome;
 }
+
+type ModelOption = { value: string; label: string };
+
+/**
+ * The model the panel offers before anyone picks one: the model the server runs, else the
+ * catalog's default, else its first entry. Empty only while there is no status at all.
+ */
+const initialModelFor = (status: LlamaCppStatusResponse | null): string =>
+  status
+    ? status.sidecar.model ||
+      status.catalog.find((m) => m.is_default)?.name ||
+      status.catalog[0]?.name ||
+      ''
+    : '';
 
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
@@ -45,47 +78,70 @@ const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
       ? 'Local model install failed'
       : 'Could not start Llama Server';
 
-const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
+/**
+ * Where the fallback download stands, as a word after its spec: "Downloaded", "Partial", or, while
+ * Ollama's copy may serve, "Only if needed". It used to ride on the label ("Fallback GGUF, may
+ * download"), which then read as a note rather than a name (vision FR-R3-6).
+ */
+const fallbackDownloadState = (model: LlamaCppModel | undefined) => {
   switch (model?.fallback_download_status) {
     case 'downloaded':
-      return 'Fallback ready';
+      return llamaCopy.fallbackDownloaded;
     case 'partial':
-      return 'Fallback partial';
+      return llamaCopy.fallbackPartial;
     case 'not_downloaded':
-      return model?.ollama_name ? 'Fallback may download' : null;
+      return model?.ollama_name ? llamaCopy.fallbackIfNeeded : null;
     default:
       return null;
   }
 };
 
 /**
- * Names the catalog's models rather than promising a "laptop default": the
- * catalog is two dense 27-31B models now, and the copy is read off it so it
- * cannot drift from what the picker below offers.
+ * One row of the Advanced list: a sans label and its value. A machine value (a model id, a Hugging
+ * Face spec, a path) is set in mono at the supporting size, as the Settings info dialog sets them;
+ * everything else is the sans face (principle 3, vision FR-R1-3: the label "Store:" was mono too).
  */
-const cardDescription = (catalog: LlamaCppModel[]) => {
-  const names = catalog.map((m) => m.display_name);
-  const which =
-    names.length === 0
-      ? 'a built-in local model'
-      : names.length === 1
-        ? names[0]
-        : `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
-  return `Run ${which} on this computer. Free, private and offline, with nothing else to install; the first start downloads the model.`;
-};
+function DetailRow({
+  label,
+  machine = false,
+  children,
+}: {
+  label: string;
+  machine?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <dt className="text-supporting text-text-muted">{label}</dt>
+      <dd
+        className={`min-w-0 text-supporting text-text-default ${
+          machine ? 'font-mono [overflow-wrap:anywhere]' : 'break-words'
+        }`}
+      >
+        {children}
+      </dd>
+    </>
+  );
+}
 
-export default function LlamaServerInlineCard({
-  onSuccess,
-  chrome = 'card',
-}: LlamaServerInlineCardProps) {
+export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const { upsert } = useConfig();
   const { status, operation, lastError } = useLlamaServer();
+  // Coral unless another open panel in the tab holds the view's primary (FR-R5-2).
+  const primaryVariant = useViewPrimaryVariant();
   // Skip the "Checking…" state when the shared store already has a status
   // (e.g. remounting while a download started elsewhere is still running).
   const [isChecking, setIsChecking] = useState(
     () => llamaServerStore.getSnapshot().status === null
   );
-  const [selectedModel, setSelectedModel] = useState<string>('');
+  // The pick sticks once made (or once a status first supplies one), and until then the panel reads
+  // the model straight from the status. Seeded only from an effect, it was '' for the first commit
+  // of every remount: "Download and start" mounted disabled and its 125 ms opacity transition faded
+  // it in from half on each tab switch (vision FR-R3-1; principle 9, an async value does not
+  // animate). With the read-through, the primary is drawn enabled in the frame it first appears.
+  const [pickedModel, setSelectedModel] = useState<string>(() =>
+    initialModelFor(llamaServerStore.getSnapshot().status)
+  );
   const [isConnecting, setIsConnecting] = useState(false);
   const [pendingModelStart, setPendingModelStart] = useState<string | null>(null);
   const connectingRef = useRef(false);
@@ -101,6 +157,7 @@ export default function LlamaServerInlineCard({
     };
   }, []);
 
+  const selectedModel = pickedModel || initialModelFor(status);
   const sidecar = status?.sidecar ?? null;
   const catalog = useMemo(() => status?.catalog ?? [], [status]);
   const system = status?.system ?? null;
@@ -137,8 +194,8 @@ export default function LlamaServerInlineCard({
         // card must not toast or drive the onboarding navigation.
         if (!mountedRef.current) return;
         toastService.success({
-          title: 'Local model ready!',
-          msg: `Llama Server is running ${model} on your computer.`,
+          title: llamaCopy.ready,
+          msg: llamaCopy.readyDetail(model),
         });
         onSuccess();
       } catch (error) {
@@ -146,7 +203,7 @@ export default function LlamaServerInlineCard({
         if (mountedRef.current) setIsConnecting(false);
         toastService.error({
           title: 'Connection failed',
-          msg: `Failed to configure Llama Server: ${error instanceof Error ? error.message : String(error)}`,
+          msg: `Failed to configure Llama Server: ${errorMessage(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });
       }
@@ -173,9 +230,7 @@ export default function LlamaServerInlineCard({
 
   useEffect(() => {
     if (!status) return;
-    const defaultModel =
-      status.catalog.find((m) => m.is_default)?.name ?? status.catalog[0]?.name ?? '';
-    setSelectedModel((prev) => prev || status.sidecar.model || defaultModel);
+    setSelectedModel((prev) => prev || initialModelFor(status));
   }, [status]);
 
   // Surface a polled terminal failure (sidecar error / deadline timeout)
@@ -209,7 +264,7 @@ export default function LlamaServerInlineCard({
     }
     toastService.error({
       title,
-      msg: error instanceof Error ? error.message : String(error),
+      msg: errorMessage(error),
       traceback: error instanceof Error ? error.stack || '' : '',
     });
   };
@@ -252,10 +307,18 @@ export default function LlamaServerInlineCard({
   };
 
   const selectedEntry = catalog.find((m) => m.name === selectedModel);
-  // From the daemon's `suitability_status`, not re-derived from the raw
-  // numbers: a 64 GiB Intel Mac clears every memory figure, so the old
-  // `detected >= recommended` check started it without a word while the
-  // daemon rated it CPU-only.
+  const modelOptions = useMemo<ModelOption[]>(
+    () =>
+      catalog.map((m) => ({
+        value: m.name,
+        label: [m.display_name, m.download_size, modelDownloadLabel(m)].filter(Boolean).join(' · '),
+      })),
+    [catalog]
+  );
+  // From the daemon's `suitability_status`, not re-derived from the raw numbers: a 64 GiB Intel
+  // Mac clears every memory figure, so a `detected >= recommended` check started it without a word
+  // while the daemon rated it CPU-only (#393). The sentence is the shared one in
+  // `localModelMemory`, which Settings' Local models asks too.
   const modelMemoryWarning = useMemo(
     () => (selectedEntry && system ? llamaMemoryWarning(selectedEntry, system) : null),
     [selectedEntry, system]
@@ -270,208 +333,205 @@ export default function LlamaServerInlineCard({
     void startModel(model);
   };
 
-  // No "Gemma 4 is the laptop default" line any more: both catalog models
-  // need 32 GiB, so that advice pointed a 16 GB machine at a model that no
-  // longer exists. Such a machine gets the default with an explicit
-  // below-minimum warning instead.
-  const resourceWarnings = useMemo(() => {
-    if (!system || !selectedEntry) return [];
-    return [modelMemoryWarning, windowsVramNote(system)].filter(
-      (warning): warning is string => !!warning
-    );
-  }, [modelMemoryWarning, selectedEntry, system]);
+  /**
+   * What the Advanced list adds about this machine's memory beyond its Memory row. The Memory row
+   * (`fitLine`) says the fit, the memory reported and the memory recommended in one line, so a
+   * shortfall or a reading the daemon could not take is said there once, and the confirmation
+   * before a start says it again at the moment of decision; the separate shortfall sentences this
+   * list used to carry repeated it (vision FR-R2-6). The panel used to add "This model is above the
+   * 16 GB laptop tier" whenever a model recommended more than 16 GB, too (vision FR-R1-4). What is
+   * left is the one thing the Memory row cannot say: on Windows, system RAM does not count. It is
+   * that row's InfoTip (principle 2), not a row of its own labelled "Detected memory". The shared
+   * note leaves it out on a CPU-only machine, where system RAM is exactly what counts.
+   */
+  const windowsNote = system && selectedEntry ? windowsVramNote(system) : null;
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
+  // One verb and the size it will download (FR-S-8). Whether a fallback GGUF may download too is
+  // the Advanced list's to say, not the button's.
   const startButtonLabel = (() => {
-    if (isStarting) return 'Setting up…';
-    if (isRunningForSelected) return 'Warm up model';
-    if (
-      selectedEntry?.download_status === 'downloaded' &&
-      selectedEntry.fallback_download_status === 'not_downloaded'
-    ) {
-      return 'Run & warm up (fallback may download)';
-    }
-    if (selectedEntry?.download_status === 'downloaded') return 'Run & warm up';
+    if (isStarting) return llamaCopy.settingUp;
+    if (isRunningForSelected) return llamaCopy.warmUp;
+    if (selectedEntry?.download_status === 'downloaded') return llamaCopy.start;
     if (selectedEntry?.download_status === 'partial') {
-      return `Resume download & run (${selectedEntry.download_size})`;
+      return llamaCopy.resumeAndStart(selectedEntry.download_size);
     }
-    return `Download & run${selectedEntry ? ` (${selectedEntry.download_size})` : ''}`;
+    return llamaCopy.downloadAndStart(selectedEntry?.download_size);
   })();
 
+  // A status only when it carries news: a server that is running, or one that cannot start. At rest
+  // the row's own description already says the server is built in (FR-S-2).
   const statusPill = (() => {
     if (isChecking || !sidecar) return null;
-    if (binaryMissing) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-          llama-server binary not found
-        </span>
-      );
-    }
-    if (isReadyForSelected) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
-          Running · {sidecar.model} ready
-        </span>
-      );
-    }
+    if (binaryMissing) return <StatusPill tone="warning">{llamaCopy.binaryMissing}</StatusPill>;
+    if (isReadyForSelected) return <StatusPill tone="success">{llamaCopy.running}</StatusPill>;
     if (isRunningForSelected) {
-      return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
-          Running · warm-up needed
-        </span>
-      );
+      return <StatusPill tone="warning">{llamaCopy.warmUpNeeded}</StatusPill>;
     }
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-        <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
-        Built in · no install needed
-      </span>
-    );
+    return null;
   })();
+
+  // The one warning word the summary carries, and only when the daemon says the model does not fit
+  // here: "Large for this Mac", "Below the 32 GB minimum" or "CPU only, slow" (#393), the words a
+  // Settings row says.
+  const summaryWarning = selectedEntry ? fitWarning(selectedEntry, system) : null;
+  const detail = localModelsCopy.detail;
+  const fallbackState = fallbackDownloadState(selectedEntry);
 
   return (
     <>
-      <OnboardingCardShell
-        chrome={chrome}
-        titleId="llamacpp-setup-title"
-        category="local"
-        label="Local · Run on your computer"
-        title="Llama Server"
-        description={cardDescription(catalog)}
-      >
+      <div className="min-w-0">
         {isChecking ? (
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
-            <span>Checking Llama Server…</span>
+          <div className="flex items-center gap-2 text-supporting text-text-muted">
+            <Spinner size={14} />
+            <span>{llamaCopy.checking}</span>
           </div>
         ) : binaryMissing ? (
           <div className="space-y-3">
             <div>{statusPill}</div>
-            <p className="text-xs text-text-muted">
+            <p className="text-supporting text-text-muted">
               The bundled llama-server binary is missing (development build?). Install llama.cpp
               (e.g. <code>brew install llama.cpp</code>) or set <code>BIOROUTER_LLAMACPP_BIN</code>.
             </p>
           </div>
         ) : (
           <div className="space-y-3">
-            <div>{statusPill}</div>
+            {statusPill ? <div>{statusPill}</div> : null}
 
-            <div className="min-w-0">
-              <label
-                htmlFor="llamacpp-model-select"
-                className="mb-1.5 block text-xs font-medium text-text-default"
-              >
-                Model
-              </label>
-              <select
-                id="llamacpp-model-select"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                disabled={isStarting || isConnecting}
-                data-testid="llamacpp-model-select"
-                className="block h-9 w-full min-w-0 max-w-full rounded-md border border-border-subtle bg-background-default px-2 text-sm text-text-default transition-colors duration-150 focus:border-border-strong"
-              >
-                {catalog.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {[m.display_name, m.download_size, modelDownloadLabel(m)]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* The one select (`ui/Select`), not a native <select>: the OS chevron and the OS
+                popup were the only ones in the app (vision round 4, V4-R4-3). react-select names
+                its own input, so the label points at `inputId`, and the test id sits on a wrapper
+                (with its own id, so the Field does not give it the input's) because the library
+                forwards no `data-*` attribute. The menu is portalled so a scrolling page can never
+                clip it. */}
+            <Field id="llamacpp-model-select" label={llamaCopy.model}>
+              <div id="llamacpp-model-field" data-testid="llamacpp-model-select">
+                <Select
+                  inputId="llamacpp-model-select"
+                  options={modelOptions}
+                  value={modelOptions.find((option) => option.value === selectedModel) ?? null}
+                  onChange={(option: unknown) => {
+                    const chosen = option as ModelOption | null;
+                    if (chosen) setSelectedModel(chosen.value);
+                  }}
+                  isDisabled={isStarting || isConnecting}
+                  isSearchable={false}
+                  menuPlacement="auto"
+                  menuPortalTarget={typeof document === 'undefined' ? undefined : document.body}
+                />
+              </div>
+            </Field>
+
+            {/* One facts line, the Settings row's (speed · size · context, and the fit warning
+                only when there is one), as the closed Advanced disclosure's summary; the ids, paths
+                and the fit sentence are behind it (vision FR-R1-3, FR-S-2). It used to be a box
+                of seven lines and a warning, and pushed the panel's only action below the fold.
+                "Advanced" is the first-run path's one disclosure word (FR-R4-5); it read
+                "Details" here alone. */}
             {selectedEntry && (
-              <div className="min-w-0 space-y-1.5 rounded-lg border border-border-subtle bg-background-muted p-3">
-                <p className="break-words text-[11px] text-text-muted">
-                  {selectedEntry.description}
-                </p>
-                <p
-                  className="break-words text-[11px] text-text-muted"
-                  data-testid="llamacpp-size-speed"
-                >
-                  {selectedEntry.download_size} download · {selectedEntry.speed_hint}
-                </p>
-                <p className="break-words text-[11px] text-text-muted">
-                  {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
-                </p>
-                {fallbackDownloadLabel(selectedEntry) && (
-                  <p className="break-all text-[11px] text-text-muted">
-                    Llama Server fallback: {fallbackDownloadLabel(selectedEntry)} ·{' '}
-                    {selectedEntry.hf_spec}
-                  </p>
-                )}
-                <p className="break-all text-[11px] text-text-muted">
-                  {selectedEntry.ollama_name
-                    ? `Ollama model: ${selectedEntry.ollama_name}`
-                    : `Fallback model: ${selectedEntry.hf_spec}`}
-                </p>
-                {selectedEntry.model_path && (
-                  <p className="truncate font-mono text-[11px] text-text-muted">
-                    {selectedEntry.model_path}
-                  </p>
-                )}
-                {system?.model_cache_dir && (
-                  <p className="truncate font-mono text-[11px] text-text-muted">
-                    Store: {system.model_cache_dir}
-                  </p>
-                )}
-                {selectedEntry.suitability_message && (
-                  <p className="break-words text-[11px] text-text-muted">
-                    {selectedEntry.suitability_message}
-                  </p>
-                )}
-              </div>
-            )}
-            {resourceWarnings.length > 0 && (
-              <div className="space-y-1 rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default">
-                {resourceWarnings.map((warning) => (
-                  <p key={warning}>{warning}</p>
-                ))}
-              </div>
+              <Disclosure
+                label={llamaCopy.advanced}
+                summary={
+                  <span data-testid="llamacpp-size-speed">
+                    {/* No size: the option and the button already say it (FR-R2-6). */}
+                    {factsLine(selectedEntry, { size: false })}
+                    {summaryWarning ? (
+                      <>
+                        {' · '}
+                        <span className="text-text-warning">{summaryWarning}</span>
+                      </>
+                    ) : null}
+                  </span>
+                }
+              >
+                <div className="br-llama-details" data-testid="llamacpp-details">
+                  <p className="text-supporting text-text-muted">{selectedEntry.description}</p>
+                  <dl className="br-llama-details-list">
+                    <DetailRow label={llamaCopy.download}>
+                      {modelDownloadNote(selectedEntry)}
+                    </DetailRow>
+                    {/* The hint without its memory clause, which the Memory row says in GB. */}
+                    <DetailRow label={detail.expectedSpeed}>{speedDetail(selectedEntry)}</DetailRow>
+                    {/* The summary's one number, kept when Advanced opens (vision FR-R3-6: the
+                        rows that replaced "Fast · 256k context" never said the window). */}
+                    {localModelsCopy.contextAmount(selectedEntry.context_limit) ? (
+                      <DetailRow label={detail.context}>
+                        {localModelsCopy.contextAmount(selectedEntry.context_limit)}
+                      </DetailRow>
+                    ) : null}
+                    {/* The fit in plain words, with the two numbers it rests on (FR-R2-6). */}
+                    <DetailRow label={detail.memory}>
+                      {fitLine(selectedEntry, system)}
+                      {windowsNote ? (
+                        <InfoTip label={localModelsCopy.windowsVramLabel} help={windowsNote} />
+                      ) : null}
+                    </DetailRow>
+                    {selectedEntry.ollama_name ? (
+                      <DetailRow label={detail.ollamaModel} machine>
+                        {selectedEntry.ollama_name}
+                      </DetailRow>
+                    ) : null}
+                    {/* A name, and the spec it downloads in mono; where the download stands is a
+                        sans word after it, not part of the label. */}
+                    <DetailRow label={detail.fallbackDownload}>
+                      <span className="font-mono [overflow-wrap:anywhere]">
+                        {selectedEntry.hf_spec}
+                      </span>
+                      {fallbackState ? (
+                        <span className="text-text-muted"> · {fallbackState}</span>
+                      ) : null}
+                    </DetailRow>
+                    {selectedEntry.model_path ? (
+                      <DetailRow label={detail.modelBlob} machine>
+                        {selectedEntry.model_path}
+                      </DetailRow>
+                    ) : null}
+                    {system?.model_cache_dir ? (
+                      <DetailRow label={detail.modelStore} machine>
+                        {system.model_cache_dir}
+                      </DetailRow>
+                    ) : null}
+                  </dl>
+                </div>
+              </Disclosure>
             )}
 
             {operation && (
-              <div
-                className="rounded-md border border-border-subtle bg-background-default p-3"
-                data-testid="llamacpp-progress"
-              >
-                <div className="flex items-center gap-2 text-xs text-text-default">
-                  <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              <div className="br-first-run-box br-fill-surface p-3" data-testid="llamacpp-progress">
+                <div className="flex items-center gap-2 text-supporting text-text-default">
+                  <Spinner size={14} />
                   <span>
                     {sidecar?.state === 'ready' && sidecar.model === operation.model
-                      ? `Running warm-up prompt for ${operation.model}...`
+                      ? `Running warm-up prompt for ${operation.model}…`
                       : sidecar?.state === 'starting'
                         ? `Preparing ${operation.model}. Loading or downloading on first use…`
                         : `Starting llama-server…`}
                   </span>
                 </div>
                 {(operation.message ?? sidecar?.detail) && (
-                  <p className="text-[11px] text-text-muted mt-1 font-mono truncate">
+                  <p className="mt-1 truncate text-supporting text-text-muted">
                     {operation.message ?? sidecar?.detail}
                   </p>
                 )}
               </div>
             )}
 
-            <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+            <div className="flex flex-wrap items-center gap-2">
               {isReadyForSelected ? (
                 <Button
+                  variant={primaryVariant}
                   onClick={() => connect(selectedModel)}
                   disabled={isConnecting}
-                  className="h-9 w-full px-4 sm:w-auto"
                   data-testid="llamacpp-connect"
                 >
-                  {isConnecting ? 'Connecting…' : 'Use Llama Server'}
+                  {isConnecting ? llamaCopy.connecting : llamaCopy.use}
                 </Button>
               ) : (
                 <Button
+                  variant={primaryVariant}
                   onClick={() => handleStart(selectedModel)}
                   disabled={isStarting || isConnecting || !selectedModel}
-                  className="h-9 w-full px-4 sm:w-auto"
                   data-testid="llamacpp-start"
                 >
                   {startButtonLabel}
@@ -480,13 +540,13 @@ export default function LlamaServerInlineCard({
             </div>
           </div>
         )}
-      </OnboardingCardShell>
+      </div>
       <ConfirmationModal
         isOpen={pendingModelStart !== null}
-        title={`Load ${selectedEntry?.display_name ?? 'this model'} anyway?`}
-        message={modelMemoryWarning ?? 'This model may exceed the available GPU memory.'}
-        confirmLabel="Load model"
-        cancelLabel="Choose another model"
+        title={llamaCopy.confirmLoadTitle(selectedEntry?.display_name)}
+        message={modelMemoryWarning ?? llamaCopy.confirmLoadFallback}
+        confirmLabel={llamaCopy.confirmLoad}
+        cancelLabel={llamaCopy.chooseAnother}
         onConfirm={() => {
           const model = pendingModelStart;
           setPendingModelStart(null);

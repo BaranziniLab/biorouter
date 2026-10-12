@@ -1,13 +1,16 @@
 import { hasSelectedText } from '../../utils/previewTextSelection';
 import { QuotedTextSelection, useTextSelection, attachSelectedText } from '../QuotedTextSelection';
 import { usePreviewMotion } from './usePreviewMotion';
+import { DUR, prefersReducedMotion } from '../../styles/motion';
 import { UIResourceRenderer } from '@mcp-ui/client';
 import {
   type CSSProperties,
   type PointerEvent,
+  type SyntheticEvent,
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -41,35 +44,62 @@ import {
 } from '../../utils/tabCycle';
 import {
   AlertTriangle,
+  Camera,
+  ChartColumn,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
-  Camera,
   Code,
   Copy,
   ExternalLink,
-  Eye,
   File,
   FileText,
   FileX,
   Folder,
-  Github,
+  GitBranch,
   Globe,
   Image,
   Lock,
-  Maximize2,
+  MoreHorizontal,
+  RefreshCw,
   Search,
+  TextQuote,
   X,
 } from '../icons/app-icons';
-import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
+import {
+  tabEdgeFadeOf,
+  tabRevealScrollLeft,
+  useTabStripOverflow,
+  useTabStripScrolledEdges,
+} from '../Layout/useTabStripOverflow';
 import type { PreviewPanelMode } from '../Layout/yieldLadder';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
+import { Button, buttonVariants } from '../ui/button';
+import { InfoTip } from '../ui/info-tip';
+import { SegmentedControl } from '../ui/segmented-control';
+import { artifactCardKind } from '../MCPUIResourceRenderer';
+import { ARTIFACT_CARD_COPY } from '../toolCallCopy';
+import { PREVIEW_COPY } from './copy';
+import { isCodePath } from './artifactCodePath';
+import {
+  PreviewBar,
+  PreviewBarActions,
+  PreviewBarGate,
+  PreviewBarMeta,
+  PreviewBarScope,
+  PreviewIconButton,
+  PreviewPanelPresence,
+  PreviewSkeleton,
+  PreviewTip,
+} from './PreviewBar';
+import './preview-panel.css';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
 import DelimitedTable from './DelimitedTable';
 import { annotateBrowserReason } from './captureOnBrowser';
@@ -86,18 +116,14 @@ import type {
 } from './artifactTypes';
 import {
   basenameFromPath,
+  dirnameFromPath,
   extensionFromPath,
   imageSourceForPreview,
   isDelimitedPath,
   isMarkdownPath,
   languageForText,
-  languageLabel,
   PAPER_GUTTER_EM,
   parseDelimitedTable,
-  splitPathForStrip,
-  STRIP_IDENT_CLASS,
-  STRIP_LABEL_CLASS,
-  STRIP_META_CLASS,
   withHostTheme,
 } from './artifactUtils';
 
@@ -138,6 +164,15 @@ function stripTrailingNewline(text: string): string {
   return text.replace(/\r?\n$/, '');
 }
 
+/**
+ * An iframe is held transparent until its document has loaded (P0 3), then the
+ * stylesheet fades it in. Written to the DOM rather than kept in state: the
+ * frame is the thing that knows, and a re-render must not reset it.
+ */
+function markFrameLoaded(event: SyntheticEvent<HTMLIFrameElement>) {
+  event.currentTarget.dataset.loaded = 'true';
+}
+
 function countLines(text: string): number {
   const body = stripTrailingNewline(text);
   return body === '' ? 0 : body.split('\n').length;
@@ -146,17 +181,9 @@ function countLines(text: string): number {
 /** The one mono stack (design.md §3.2), shared with chat code blocks and the terminal. */
 const CODE_FONT = CODE_FONT_FAMILY;
 
-// The panel's status-strip typography (STRIP_LABEL/IDENT/META_CLASS) and
-// splitPathForStrip now live in artifactUtils so every preview — including
-// NotebookPreview — shares the one status-strip voice and can never drift.
-
-// Geometry mirrored from BaseChat's HEADER_ACTION_BUTTON_CLASS so the panel's
-// expand/close read as the same control as the chat header's actions. That file
-// is owned elsewhere; these values are kept in sync by hand. The radius is the
-// same 8px under its semantic name (`rounded-element`); the hover is now the
-// shared ink tint, which BaseChat's copy takes when it migrates.
-const HEADER_ACTION_BUTTON_CLASS =
-  'no-drag flex h-8 w-8 items-center justify-center rounded-element p-0 text-text-default/70 transition-colors hover:bg-overlay-hover hover:text-text-default';
+// The header's actions are `PreviewIconButton`s (PreviewBar.tsx): the shared
+// ghost square `Button` at 32px, the same control every 44px band uses, so the
+// panel's actions can no longer drift from the chat header's by hand.
 
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
@@ -232,14 +259,17 @@ export function measurePreviewContentHeight(
   body: HTMLElement,
   frameReport: { source: MessageEvent['source']; height: number } | null
 ): number | null | undefined {
-  if (body.querySelector('[data-preview-loading]')) return undefined;
+  // During a switch the outgoing layer is still in the body for its exit; only
+  // the current layer says anything about the content's height.
+  const content = body.querySelector<HTMLElement>('[data-preview-layer="current"]') ?? body;
+  if (content.querySelector('[data-preview-loading]')) return undefined;
   // A directory tree nests a file preview beside its rail; that preview's height
   // says nothing about the tree's.
-  if (body.querySelector('[data-preview-opaque]')) return null;
+  if (content.querySelector('[data-preview-opaque]')) return null;
   const panelRect = panel.getBoundingClientRect();
   const bodyRect = body.getBoundingClientRect();
   const chrome = panelRect.height - bodyRect.height;
-  const frame = body.querySelector<HTMLIFrameElement>(PREVIEW_FRAME_SELECTOR);
+  const frame = content.querySelector<HTMLIFrameElement>(PREVIEW_FRAME_SELECTOR);
   if (frame) {
     if (!frameReport || !frame.contentWindow || frameReport.source !== frame.contentWindow) {
       return undefined;
@@ -247,7 +277,7 @@ export function measurePreviewContentHeight(
     const height = chrome + (frame.getBoundingClientRect().top - bodyRect.top) + frameReport.height;
     return Number.isFinite(height) && height > 0 ? Math.ceil(height) : null;
   }
-  const marked = body.querySelector<HTMLElement>('[data-preview-intrinsic]');
+  const marked = content.querySelector<HTMLElement>('[data-preview-intrinsic]');
   if (!marked) return null;
   // `="code"`: the highlighter's block is `min-height: 100%` of the scroller, so
   // ITS height follows the sheet and would only ever ratchet up. The `<code>`
@@ -257,7 +287,7 @@ export function measurePreviewContentHeight(
       ? marked.querySelector<HTMLElement>('code')
       : marked;
   if (!target) return null;
-  const scroller = marked.closest<HTMLElement>('[data-preview-scroller]') ?? body;
+  const scroller = marked.closest<HTMLElement>('[data-preview-scroller]') ?? content;
   let below = 0;
   for (let el = target.parentElement; el && el !== scroller; el = el.parentElement) {
     const cs = getComputedStyle(el);
@@ -304,6 +334,48 @@ type PreviewState =
   | McpPreview
   | LoadingPreview
   | ErrorPreview;
+
+const LOADING_PREVIEW: LoadingPreview = { kind: 'loading' };
+
+const DOCUMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'pptx']);
+
+/**
+ * Whether the bar's name sits on the paper's reading column. Text (prose, code,
+ * a table, a notebook) is set in that column; a figure, an image, a document, a
+ * folder or a refusal uses the panel's width, so its bar keeps to the gutter.
+ * Before the content has loaded, the file's extension decides, so the name does
+ * not move when the content arrives.
+ */
+function barOnReadingColumn(artifact: ArtifactSource, preview: PreviewState): boolean {
+  if (artifact.kind !== 'file') return false;
+  if (preview.kind === 'file') {
+    return preview.preview.kind === 'text' || preview.preview.kind === 'html';
+  }
+  if (preview.kind !== 'loading') return false;
+  const extension = extensionFromPath(artifact.path);
+  return !isImageExtension(extension) && !DOCUMENT_EXTENSIONS.has(extension);
+}
+
+/** A live page paints a native view that cannot fade, so it never crossfades. */
+function isLivePagePreview(preview: PreviewState, browsing: boolean) {
+  return preview.kind === 'externalUrl' && (preview.managedApp || browsing);
+}
+
+/**
+ * Whether this engine can run the panel's layer crossfade. jsdom has no Web
+ * Animations API and runs no CSS, so it gets the plain swap: a test then sees
+ * exactly one layer, never one that is fading out.
+ */
+function canCrossfadeLayers() {
+  return (
+    typeof Element !== 'undefined' &&
+    typeof Element.prototype.animate === 'function' &&
+    !prefersReducedMotion()
+  );
+}
+
+/** A layer that is fading out after a switch: what it showed, kept for one exit. */
+type OutgoingLayer = { key: string; preview: PreviewState; artifact: ArtifactSource };
 
 type ArtifactTab = {
   id: string;
@@ -412,19 +484,56 @@ function clampRenderErrorText(value: string) {
     : value;
 }
 
-function iconForArtifact(artifact: ArtifactSource | null) {
+/**
+ * The glyph a preview tab draws (spec 3.3 and 3.8: a glyph stands for the content,
+ * the same way everywhere).
+ *
+ * A file source is only a path, and a path cannot say whether it names a folder, so
+ * `loadedKind` (what the panel last loaded for the tab) outranks the name and the
+ * name decides only until a preview has landed. Code is whatever the code view
+ * highlights as code (`isCodePath`), not a second list of extensions.
+ */
+export function iconForArtifact(
+  artifact: ArtifactSource | null,
+  loadedKind?: ArtifactFilePreview['kind']
+) {
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
   if (artifact.kind === 'file') {
-    const ext = artifact.path.split('.').pop()?.toLowerCase();
+    switch (loadedKind) {
+      case 'gitDirectory':
+        // The branch is what a repository adds to a folder, and the glyph the
+        // preview's own bar and empty state draw for one.
+        return GitBranch;
+      case 'directory':
+        return Folder;
+      case 'image':
+        return Image;
+      case 'html':
+        return Globe;
+      case 'document':
+        return FileText;
+      case 'binary':
+        // The glyph the panel draws for a file it declines to show.
+        return File;
+      default:
+        // `text`, `error`, or nothing loaded yet: the name is the evidence.
+        break;
+    }
+    if (/[\\/]$/.test(artifact.path)) return Folder;
+    const ext = extensionFromPath(artifact.path);
     if (isImageExtension(ext)) return Image;
     if (['html', 'htm'].includes(ext || '')) return Globe;
-    if (['js', 'ts', 'tsx', 'jsx', 'py', 'rs', 'sql', 'json', 'yaml', 'yml'].includes(ext || '')) {
-      return Code;
-    }
+    if (isCodePath(artifact.path)) return Code;
+    // A name with no extension is a folder more often than a file in what agents
+    // hand over (`repo`, `results`), so it draws the folder until the preview says
+    // otherwise. A conventional file name (`Makefile`) is code and returned above.
+    if (!ext) return Folder;
     return FileText;
   }
-  return Globe;
+  // A `ui://` figure or report (Auto Visualiser, an app card): the figure glyph
+  // the tool row that made it draws (icons.md, "Figure").
+  return ChartColumn;
 }
 
 function formatBytes(value?: number) {
@@ -461,11 +570,22 @@ export default function ArtifactViewer({
     artifact,
     createArtifactTabsState
   );
-  const [preview, setPreview] = useState<PreviewState>({ kind: 'loading' });
+  const [preview, setPreview] = useState<PreviewState>(LOADING_PREVIEW);
   const [previewSourceKey, setPreviewSourceKey] = useState<string | null>(null);
+  // The refresh scope (session + source) `preview` was loaded for, as state, so
+  // the render can tell a stale scope's preview from this one's.
+  const [previewScope, setPreviewScope] = useState('');
   const previewRef = useRef(preview);
   previewRef.current = preview;
+  // The refresh scope (session + source) the `preview` state belongs to.
   const loadedScopeRef = useRef('');
+  /**
+   * STALE-WHILE-LOADING (spec 3.8). The last preview each tab showed, keyed by
+   * its refresh scope. Activating a tab renders this at once and refreshes it in
+   * the background, so a tab that has been seen never flashes a loading state
+   * again — the file is re-read, and only a CHANGED revision re-renders.
+   */
+  const previewCacheRef = useRef(new Map<string, PreviewState>());
   const refreshTrackerRef = useRef({ scope: '', revision: refreshRevision });
   const [fileRefresh, setFileRefresh] = useState({ scope: '', revision: 0 });
   const [updateReady, setUpdateReady] = useState(false);
@@ -477,6 +597,9 @@ export default function ArtifactViewer({
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
   const lastRenderErrorKeyRef = useRef<string | null>(null);
   const trustedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  // A fading layer's frame is never the trusted one: render errors come only
+  // from the frame the person is looking at.
+  const outgoingFrameRef = useRef<HTMLIFrameElement | null>(null);
   /**
    * URLs the user has explicitly chosen to browse inside the panel.
    *
@@ -517,6 +640,7 @@ export default function ArtifactViewer({
   // quietly point a second panel's tabs at the first one's preview.
   // `ArtifactViewer.splitPane.test.tsx`.
   const previewContentId = useId();
+  const annotateReasonId = useId();
   const activeSourceKeyRef = useRef<string | null>(null);
   const activeSourceGenerationRef = useRef(0);
 
@@ -539,6 +663,11 @@ export default function ArtifactViewer({
    * when there is no active artifact.
    */
   const showTabOverflowMenu = useTabStripOverflow(tabListRef, tabState.tabs.length);
+  // Which ends of the tab list are scrolled past, for the edge fade. The chat strip
+  // reads the same hook, so the two fades are one rule. The tablist mounts once a
+  // tab is open, after this hook; the hook follows the element the ref holds.
+  const tabListScrolled = useTabStripScrolledEdges(tabListRef);
+  const hasTabs = tabState.tabs.length > 0;
   const activeTab = tabState.tabs.find((tab) => tab.id === tabState.activeTabId) ?? null;
   const activeArtifact = activeTab?.artifact ?? null;
   const quotedRevision =
@@ -833,13 +962,67 @@ export default function ArtifactViewer({
     return () => window.removeEventListener('keydown', handleBrowserTabShortcuts, true);
   }, [closeTab, isOpen, onOpenArtifact, tabState.activeTabId, tabState.tabs]);
 
-  useEffect(() => {
-    activeTabButtonRef.current?.scrollIntoView?.({
-      behavior: 'smooth',
-      block: 'nearest',
-      inline: 'nearest',
+  /**
+   * Keep the active tab whole inside the tab list (P0 1).
+   *
+   * It runs when the active tab or the tab count changes, when the ▾ overflow
+   * button mounts (it narrows the list one render AFTER the overflow is
+   * measured, which is how the active tab used to end up clipped behind it), and
+   * whenever the list itself is resized. It scrolls the LIST, never
+   * `scrollIntoView`, so no ancestor (the split box, the chat column) can be
+   * scrolled along with it. Instant on a resize; smooth on a switch unless the
+   * person asked for less motion.
+   *
+   * "Whole" means clear of the edge fade (`--tab-edge-fade`, 32px), not just inside
+   * the box: an end with tabs scrolled past it fades, and a tab revealed only to 8px
+   * from that end had its close slot and the end of its accent strip under the fade
+   * (V2-R4-4, the chat strip's defect; the panel had the same 8px reveal).
+   * `tabRevealScrollLeft` is the one rule for both strips; it returns null for a
+   * tab that is already shown, so the ResizeObserver can call this freely.
+   */
+  const revealActiveTab = useCallback((behavior: 'auto' | 'smooth') => {
+    const list = tabListRef.current;
+    const tab = activeTabButtonRef.current?.closest<HTMLElement>('.br-tab');
+    if (!list || !tab) return;
+    const listRect = list.getBoundingClientRect();
+    const tabRect = tab.getBoundingClientRect();
+    // Unlaid-out (a hidden group, jsdom): nothing to reveal against.
+    if (listRect.width === 0 || tabRect.width === 0) return;
+    // The tab as LAID OUT, not as painted: a tab that has just become active plays a
+    // 0.97 to 1 settle (`br-tab-select`, a `scale` about its centre), and this runs in
+    // that first frame, when its rect is 3% short. Measured from the rect, the reveal
+    // lands the settled tab 2px inside the fade. The centre does not move under a
+    // centred scale, and `offsetWidth` is the layout width, so the two give the settled
+    // box. (A strip that has no layout width, as in jsdom, falls back to the rect.)
+    const tabWidth = tab.offsetWidth || tabRect.width;
+    const tabCentre = tabRect.left + tabRect.width / 2;
+    const left = tabRevealScrollLeft({
+      tabLeft: tabCentre - tabWidth / 2 - listRect.left - list.clientLeft + list.scrollLeft,
+      tabWidth,
+      scrollLeft: list.scrollLeft,
+      clientWidth: list.clientWidth,
+      scrollWidth: list.scrollWidth,
+      fade: tabEdgeFadeOf(list),
     });
-  }, [tabState.activeTabId, tabState.tabs.length]);
+    if (left === null) return;
+    if (typeof list.scrollTo === 'function') list.scrollTo({ left, behavior });
+    else list.scrollLeft = left;
+  }, []);
+
+  useEffect(() => {
+    revealActiveTab(prefersReducedMotion() ? 'auto' : 'smooth');
+  }, [revealActiveTab, showTabOverflowMenu, tabState.activeTabId, tabState.tabs.length]);
+
+  // Keep the active tab whole when the list is resized. The edge flags are the
+  // hook's (`useTabStripScrolledEdges`); only the reveal is the panel's own.
+  useEffect(() => {
+    const list = tabListRef.current;
+    if (!list || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => revealActiveTab('auto'));
+    observer.observe(list);
+    return () => observer.disconnect();
+    // Re-attached when the list mounts (the panel early-returns with no tab).
+  }, [revealActiveTab, hasTabs]);
 
   useEffect(() => {
     const moveTabPointer = (event: globalThis.PointerEvent) => {
@@ -941,9 +1124,19 @@ export default function ArtifactViewer({
     let cancelled = false;
     const manualRefresh = manualRefreshRef.current;
     manualRefreshRef.current = false;
-    const previous = previewRef.current;
-    const retainPrevious =
-      loadedScopeRef.current === refreshScope && previous.kind === 'file' && previous.preview.found;
+    // What this scope showed last: the live state when it is still this scope's,
+    // otherwise the cache a tab switch left behind.
+    const cached = previewCacheRef.current.get(refreshScope);
+    const previous =
+      loadedScopeRef.current === refreshScope ? previewRef.current : (cached ?? LOADING_PREVIEW);
+    const retainPrevious = previous.kind === 'file' && previous.preview.found;
+
+    /** Show `next` for this scope and remember it for the next activation. */
+    const show = (next: PreviewState) => {
+      previewCacheRef.current.set(refreshScope, next);
+      loadedScopeRef.current = refreshScope;
+      setPreview(next);
+    };
 
     const publishFile = (response: ArtifactFilePreview) => {
       if (cancelled) return;
@@ -981,24 +1174,31 @@ export default function ArtifactViewer({
             response.preparedHtml === previous.preview.preparedHtml))
       )
         return;
-      loadedScopeRef.current = refreshScope;
       htmlDirtyRef.current = false;
-      setPreview({ kind: 'file', preview: response });
+      show({ kind: 'file', preview: response });
     };
 
     async function loadPreview() {
       if (!activeArtifact || !activeSourceKey) return;
       setPreviewSourceKey(activeSourceKey);
-      if (!retainPrevious) setPreview({ kind: 'loading' });
+      setPreviewScope(refreshScope);
+      if (loadedScopeRef.current !== refreshScope) {
+        // A tab that has been seen shows its last preview at once (and never a
+        // loading state); a first visit shows the quiet skeleton.
+        loadedScopeRef.current = refreshScope;
+        setPreview(cached ?? LOADING_PREVIEW);
+      } else if (!retainPrevious && previous.kind !== 'loading' && !cached) {
+        setPreview(LOADING_PREVIEW);
+      }
 
       if (activeArtifact.kind === 'html') {
         try {
           const prepared = await window.electron.prepareArtifactHtml({
             html: activeArtifact.html,
           });
-          if (!cancelled) setPreview({ kind: 'html', html: prepared.html });
+          if (!cancelled) show({ kind: 'html', html: prepared.html });
         } catch {
-          if (!cancelled) setPreview({ kind: 'html', html: activeArtifact.html });
+          if (!cancelled) show({ kind: 'html', html: activeArtifact.html });
         }
         return;
       }
@@ -1012,13 +1212,21 @@ export default function ArtifactViewer({
           managedApp = false;
         }
         if (!cancelled) {
-          setPreview({ kind: 'externalUrl', url: activeArtifact.url, managedApp });
+          const current = previewCacheRef.current.get(refreshScope);
+          // Same answer as last time: keep the object, so nothing re-renders.
+          if (
+            current?.kind !== 'externalUrl' ||
+            current.url !== activeArtifact.url ||
+            current.managedApp !== managedApp
+          ) {
+            show({ kind: 'externalUrl', url: activeArtifact.url, managedApp });
+          }
         }
         return;
       }
 
       if (activeArtifact.kind === 'mcpResource') {
-        setPreview({ kind: 'mcpResource' });
+        show({ kind: 'mcpResource' });
         return;
       }
 
@@ -1056,7 +1264,7 @@ export default function ArtifactViewer({
         if (!cancelled) {
           if (retainPrevious) setRefreshFailed(true);
           else
-            setPreview({
+            show({
               kind: 'error',
               message: error instanceof Error ? error.message : 'Could not open artifact.',
             });
@@ -1069,6 +1277,32 @@ export default function ArtifactViewer({
       cancelled = true;
     };
   }, [activeArtifact, activeSourceKey, fileRefreshRevision, refreshScope]);
+
+  // A closed tab keeps no preview: the cache is for tabs that can still be
+  // switched back to, and a file's bytes (a PDF, a deck) are not small. Scopes are
+  // the same string `refreshScope` builds for each tab.
+  useEffect(() => {
+    const open = new Set(
+      tabState.tabs.map((tab) => JSON.stringify([sessionId, artifactSourceKey(tab.artifact)]))
+    );
+    for (const scope of previewCacheRef.current.keys()) {
+      if (!open.has(scope)) previewCacheRef.current.delete(scope);
+    }
+  }, [sessionId, tabState.tabs]);
+
+  /**
+   * What the panel last loaded for a tab's file, so its glyph follows the content
+   * (a folder, a repository, an image) and not only the name: a path cannot say
+   * whether it is a directory. Read from the same cache stale-while-loading keeps,
+   * which `show()` fills in the same step that sets `preview`, so the render a
+   * landed preview causes is the one that sees it.
+   */
+  const loadedKindOf = (tabArtifact: ArtifactSource) => {
+    const cached = previewCacheRef.current.get(
+      JSON.stringify([sessionId, artifactSourceKey(tabArtifact)])
+    );
+    return cached?.kind === 'file' ? cached.preview.kind : undefined;
+  };
 
   useEffect(() => {
     if (activeArtifact?.kind !== 'file') return;
@@ -1157,8 +1391,66 @@ export default function ArtifactViewer({
     return () => window.removeEventListener('message', handleMessage);
   }, [activeArtifact, onRenderError]);
 
-  const visiblePreview: PreviewState =
-    activeSourceKey && previewSourceKey === activeSourceKey ? preview : { kind: 'loading' };
+  // The preview for the ACTIVE tab: the live state when it was loaded for this
+  // scope, else what this tab showed last (stale-while-loading), else nothing yet.
+  const visiblePreview: PreviewState = !activeSourceKey
+    ? LOADING_PREVIEW
+    : previewScope === refreshScope && previewSourceKey === activeSourceKey
+      ? preview
+      : (previewCacheRef.current.get(refreshScope) ?? LOADING_PREVIEW);
+
+  /**
+   * THE SWITCH (spec 3.8). Each source renders in its own layer, keyed by that
+   * source, so a switch mounts the incoming tab and keeps the outgoing tab's DOM
+   * — not a re-render of it, its own instance — for one 125ms exit while the
+   * incoming layer rises 8px and fades in over 175ms. Derived during render
+   * (React's "adjust state when a prop changes"), so the outgoing layer is part
+   * of the very commit that switches: there is no frame with neither.
+   *
+   * The first content a panel shows does NOT animate: the body's own entrance
+   * (`usePreviewMotion`) already brings it in. A live page never crossfades — its
+   * native view cannot fade — and nothing crossfades without a real engine or
+   * under reduced motion.
+   */
+  const shownLayerRef = useRef<OutgoingLayer | null>(null);
+  const contentShownRef = useRef(false);
+  const [layers, setLayers] = useState<{
+    key: string | null;
+    animate: boolean;
+    outgoing: OutgoingLayer | null;
+  }>(() => ({ key: activeSourceKey, animate: false, outgoing: null }));
+  if (layers.key !== activeSourceKey) {
+    const shown = shownLayerRef.current;
+    const outgoing =
+      shown &&
+      shown.key === layers.key &&
+      shown.preview.kind !== 'loading' &&
+      !isLivePagePreview(
+        shown.preview,
+        shown.preview.kind === 'externalUrl' && browsingUrls.has(shown.preview.url)
+      ) &&
+      canCrossfadeLayers()
+        ? shown
+        : null;
+    setLayers({ key: activeSourceKey, animate: contentShownRef.current, outgoing });
+  }
+  useLayoutEffect(() => {
+    if (!activeSourceKey || !activeArtifact) return;
+    shownLayerRef.current = {
+      key: activeSourceKey,
+      preview: visiblePreview,
+      artifact: activeArtifact,
+    };
+    if (visiblePreview.kind !== 'loading') contentShownRef.current = true;
+  });
+  useEffect(() => {
+    if (!layers.outgoing) return;
+    const timer = window.setTimeout(
+      () => setLayers((current) => (current.outgoing ? { ...current, outgoing: null } : current)),
+      DUR.fast
+    );
+    return () => window.clearTimeout(timer);
+  }, [layers.outgoing]);
 
   // Tell the host how tall this panel's content needs it to be. Measured on
   // CONTENT change only — the content's DOM changing (a file finishing loading, a
@@ -1179,7 +1471,8 @@ export default function ArtifactViewer({
     const resizeObserver =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => schedule());
     const observeIntrinsic = () => {
-      const marked = body.querySelector('[data-preview-intrinsic]');
+      const content = body.querySelector('[data-preview-layer="current"]') ?? body;
+      const marked = content.querySelector('[data-preview-intrinsic]');
       const element =
         marked?.getAttribute('data-preview-intrinsic') === 'code'
           ? marked.querySelector('code')
@@ -1273,8 +1566,75 @@ export default function ArtifactViewer({
     }
   };
 
+  const isBrowsingActive =
+    activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url);
+  // A live page brings its own 32px toolbar (address, back, reload); it stands in
+  // for the bar rather than stacking a second row above it.
+  const livePage = isLivePagePreview(visiblePreview, isBrowsingActive);
+  const revealLabel =
+    window.electron?.platform === 'darwin'
+      ? PREVIEW_COPY.revealInFinder
+      : PREVIEW_COPY.showInFolder;
+  const annotateUnavailable = annotateBrowserReason();
+  const canQuote = Boolean(sessionId) && hasSelectedText(quotedSelection);
+  const quoteSelectionToChat = () =>
+    attachSelectedText(quoteSource, quotedSelection, previewBodyRef.current ?? undefined);
+  // A menu of one is the control with a click in front of it. A figure, a report
+  // or a page has nothing for ⋯ to hold but "Send a region to the chat", so that
+  // action stands in the header as an icon, where the menu would be. It keeps the
+  // menu only where the menu has a second item (a file also reveals itself), and
+  // where the action is off and the menu's visible reason is what says why
+  // (a `biorouter serve` browser, principle 2).
+  const annotateInline =
+    Boolean(sessionId) && activeArtifact.kind !== 'file' && annotateUnavailable === null;
+  const showMoreMenu = !annotateInline && (Boolean(sessionId) || activeArtifact.kind === 'file');
+
+  const renderLayer = (
+    key: string,
+    role: 'current' | 'outgoing',
+    layerPreview: PreviewState,
+    layerArtifact: ArtifactSource,
+    animate: boolean
+  ) => {
+    const body = (
+      <ArtifactPreviewBody
+        preview={layerPreview}
+        artifact={layerArtifact}
+        resolvedTheme={resolvedTheme}
+        isResizing={isResizing}
+        trustedFrameRef={role === 'current' ? trustedFrameRef : outgoingFrameRef}
+        onOpenArtifactInTab={openArtifactInTab}
+        isBrowsingUrl={layerArtifact.kind === 'externalUrl' && browsingUrls.has(layerArtifact.url)}
+        onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
+        onLiveBrowserViewChange={role === 'current' ? handleLiveBrowserViewChange : undefined}
+        onLiveBrowserShareChange={role === 'current' ? onLiveBrowserShareChange : undefined}
+        isAnnotating={role === 'current' && isAnnotating}
+        annotationSnapshotDataUrl={
+          role === 'current' ? (annotationSnapshot?.dataUrl ?? null) : null
+        }
+        refreshRevision={refreshRevision}
+      />
+    );
+    return (
+      <div
+        key={key}
+        className="br-preview-layer"
+        data-preview-layer={role}
+        data-enter={role === 'current' && animate ? '' : undefined}
+        aria-hidden={role === 'outgoing' ? true : undefined}
+        // `inert` keeps a fading layer out of the tab order and the pointer's way.
+        {...(role === 'outgoing' ? { inert: true } : {})}
+      >
+        {/* The bar is the incoming tab's: a fading layer puts nothing into it. The
+            gate wraps BOTH roles, so a layer going out is not remounted. */}
+        <PreviewBarGate detached={role === 'outgoing'}>{body}</PreviewBarGate>
+      </div>
+    );
+  };
+
   return (
-    <>
+    // `isOpen` is false for the exit: every control's tooltip stays shut for it (PreviewTip).
+    <PreviewPanelPresence value={isOpen}>
       {onResizeStart && (
         // THE RESIZE EDGE IS THE PANEL'S SIBLING, NOT ITS CHILD. The panel clips
         // its own paint (`contain: paint`, `overflow: hidden`), so an edge inside
@@ -1287,7 +1647,7 @@ export default function ArtifactViewer({
         <div
           role="separator"
           aria-orientation={layout === 'stack' ? 'horizontal' : 'vertical'}
-          aria-label="Resize artifact panel"
+          aria-label={PREVIEW_COPY.resizePanel}
           onPointerDown={onResizeStart}
           className="br-preview-resize-handle"
         />
@@ -1300,21 +1660,25 @@ export default function ArtifactViewer({
         // Deliberately not the testid above — behaviour must not hang off a
         // promise we only made to tests.
         {...{ [ARTIFACT_PANEL_ATTR]: '' }}
+        // The strip and the bar fade with the body (preview-panel.css), keyed on
+        // the same open state the body's motion follows, so no part of the panel
+        // appears or vanishes in a single frame.
+        data-panel-open={isOpen ? 'true' : 'false'}
         style={{
           ...style,
           contain: 'layout paint',
         }}
+        // Paper for every kind (spec 3.8): the strip keeps the band's ground and
+        // everything under it is the page, so a switch never changes the ground.
         className={cn(
-          'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
+          'br-preview-panel no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden',
           className
         )}
       >
         {/* The tab strip is `br-tabstrip` (shared, styles/main.css): its ground is the
           sidebar colour, so the window's whole 44px top edge is one continuous
-          surface. Height is set here; the paint belongs to the class. */}
-        {/* `h-chrome` (44px), not the `h-[52px]` literal: the third of the three
-          bands that drop together, so this strip stays level with the chat header
-          it sits beside. */}
+          surface. `h-chrome` (44px): the third of the three bands that drop
+          together, so this strip stays level with the chat header beside it. */}
         <div
           className="br-tabstrip no-drag relative z-50 h-chrome flex-shrink-0"
           // A folded sheet is only its strip, so the strip's bare ground is the
@@ -1327,40 +1691,36 @@ export default function ArtifactViewer({
           }}
         >
           {/* The tablist nests inside the strip for a11y, so it repeats the strip's
-            own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
-            only lands in the gap if the tabs are spaced the way the class expects. */}
+            own 3px gap. The tabs are fills now (R-27) and carry no divider between
+            them: the gap is what spaces one fill from the next, and where the drop
+            hairline (`.br-tab[data-dropbefore]::after`, at -2px) lands. */}
           <div
             ref={tabListRef}
             role="tablist"
-            aria-label="Open artifact previews"
+            aria-label={PREVIEW_COPY.tabList}
             aria-keyshortcuts="Meta+W Control+W Control+Tab Control+Shift+Tab"
             // Rung 3 of the yield ladder (D-32): shrink to the floor, then SCROLL,
-            // then collapse into a ▾ — never wrap. This was `overflow-hidden`, so
-            // the panel's tabs did neither: past the floor they were clipped and
-            // simply unreachable, which is the failure the rung exists to prevent
-            // and which the panel feels first — it is the narrowest strip in the
-            // window, and rung 2 makes it narrower still.
+            // then collapse into a ▾ — never wrap. The edge that has tabs scrolled
+            // past it fades (preview-panel.css), so a cut-off tab reads as more.
+            data-scrolled-start={tabListScrolled.start ? '' : undefined}
+            data-scrolled-end={tabListScrolled.end ? '' : undefined}
             className="br-tabstrip__scroll flex min-w-0 flex-1 items-center gap-[3px] overflow-x-auto"
           >
             {tabState.tabs.map((tab) => {
-              const TabIcon = iconForArtifact(tab.artifact);
+              const TabIcon = iconForArtifact(tab.artifact, loadedKindOf(tab.artifact));
               const isActive = tab.id === tabState.activeTabId;
               return (
-                // `br-tab` (shared) paints the Safari tab: only the active one is a
-                // filled pill, none carry a border, and the divider between two tabs
-                // is drawn by `.br-tab + .br-tab::before` — never added here.
+                // `br-tab` (shared) paints the tab, and its drag rules do the
+                // feedback: `data-dragging` dims the tab being carried and
+                // `data-dropbefore` draws the insertion hairline on the tab it will
+                // land on — the same two attributes ChatTabStrip writes.
                 <div
                   key={tab.id}
                   data-artifact-tab-id={tab.id}
                   data-active={isActive ? 'true' : undefined}
                   data-dragging={draggedTabId === tab.id ? 'true' : undefined}
-                  data-dragover={dragOverTabId === tab.id ? 'true' : undefined}
-                  className={cn(
-                    'br-tab group',
-                    // Drag affordances only — state feedback, not base styling.
-                    draggedTabId === tab.id && 'opacity-50',
-                    dragOverTabId === tab.id && 'bg-background-medium'
-                  )}
+                  data-dropbefore={dragOverTabId === tab.id ? 'true' : undefined}
+                  className="br-tab group"
                 >
                   <button
                     ref={isActive ? activeTabButtonRef : undefined}
@@ -1370,10 +1730,14 @@ export default function ArtifactViewer({
                     aria-controls={previewContentId}
                     onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
                     onClick={() => activateTabFromPointer(tab)}
+                    // The path is the tooltip (`title`), and the app's tooltip layer
+                    // would copy a `title` into the aria-label of a control that has
+                    // none, naming every tab by its full path. The name is the file.
+                    aria-label={tab.artifact.title}
                     title={artifactHoverTitle(tab.artifact)}
                     className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                   >
-                    <TabIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className="br-tab__label min-w-0 flex-1 truncate">
                       {tab.artifact.title}
                     </span>
@@ -1381,16 +1745,18 @@ export default function ArtifactViewer({
                   <button
                     type="button"
                     onClick={() => closeTab(tab.id)}
-                    aria-label={`Close ${tab.artifact.title}`}
-                    title={`Close ${tab.artifact.title}`}
+                    aria-label={PREVIEW_COPY.closeTab(tab.artifact.title)}
+                    title={PREVIEW_COPY.closeTab(tab.artifact.title)}
                     className={cn(
+                      // A 14px glyph in a 20px hit area: the close yields to the
+                      // label rather than matching the kind icon's weight.
                       'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-inner text-text-subtle transition-[background-color,color,opacity] hover:bg-overlay-hover hover:text-text-default',
                       isActive
                         ? 'opacity-100'
                         : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
                     )}
                   >
-                    <X className="h-4 w-4" aria-hidden="true" />
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
                 </div>
               );
@@ -1404,7 +1770,7 @@ export default function ArtifactViewer({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label="Show all previews"
+                  aria-label={PREVIEW_COPY.overflow}
                   data-testid="artifact-tab-overflow-trigger"
                   className="br-tabstrip__overflow"
                 >
@@ -1413,185 +1779,252 @@ export default function ArtifactViewer({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
                 {tabState.tabs.map((tab) => {
-                  const TabIcon = iconForArtifact(tab.artifact);
+                  const TabIcon = iconForArtifact(tab.artifact, loadedKindOf(tab.artifact));
+                  const isCurrent = tab.id === tabState.activeTabId;
                   return (
                     <DropdownMenuItem
                       key={tab.id}
                       data-testid={`artifact-tab-overflow-item-${tab.id}`}
+                      aria-current={isCurrent ? 'true' : undefined}
                       onSelect={() => activateTab(tab)}
-                      className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                      className="gap-2"
                     >
                       <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
                       <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                      {isCurrent && (
+                        // The menus' one selection mark is a trailing check (spec 2.6);
+                        // a heavier weight is not one, because Arial draws 500 as 400.
+                        <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+                          <Check
+                            role="img"
+                            className="size-4 text-text-default"
+                            aria-label={PREVIEW_COPY.currentTab}
+                          />
+                        </span>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {(updateReady || refreshFailed) && activeArtifact.kind === 'file' && (
-            <button
-              type="button"
-              disabled={isAnnotating || isResizing}
-              title={
-                refreshFailed
-                  ? 'Could not read the update. The previous version is still displayed.'
-                  : 'Refresh after finishing your interaction.'
-              }
-              onClick={() => {
-                refreshTrackerRef.current.revision = refreshRevision;
-                deferredRefreshRef.current = false;
-                manualRefreshRef.current = true;
-                setUpdateReady(false);
-                setFileRefresh((previous) => ({
-                  scope: refreshScope,
-                  revision: previous.revision + 1,
-                }));
-              }}
-              className="shrink-0 rounded-element px-2 py-1 text-supporting text-text-muted hover:bg-overlay-hover"
-            >
-              {refreshFailed ? 'Retry update' : 'Update ready'}
-            </button>
-          )}
-          {sessionId && (
-            <button
-              type="button"
-              disabled={!hasSelectedText(quotedSelection)}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() =>
-                attachSelectedText(
-                  quoteSource,
-                  quotedSelection,
-                  previewBodyRef.current ?? undefined
-                )
-              }
-              className={cn(HEADER_ACTION_BUTTON_CLASS, 'shrink-0 disabled:opacity-50')}
-              aria-label="Quote selected text"
-              title="Select text in the preview, then quote it in this chat"
-            >
-              <span aria-hidden="true">“</span>
-            </button>
-          )}
-          {sessionId && (
-            // Annotation is available on EVERY preview kind, not just one. Codex
-            // shipped commenting in its browser but not its document pane, and
-            // the open issue against that names our exact case: a researcher
-            // reads a generated report and cannot point at anything in it. For
-            // this audience the report IS the artifact.
-            <button
-              type="button"
-              data-testid="artifact-annotate"
-              aria-pressed={isAnnotating}
-              disabled={annotateBrowserReason() !== null}
-              onClick={() => void toggleAnnotation()}
-              className={cn(
-                HEADER_ACTION_BUTTON_CLASS,
-                'relative z-50 ml-0.5 shrink-0 disabled:cursor-not-allowed disabled:opacity-50',
-                isAnnotating && 'bg-background-accent text-text-on-accent'
-              )}
-              aria-label={isAnnotating ? 'Cancel region selection' : 'Send a region to the chat'}
-              title={
-                annotateBrowserReason() ??
-                (isAnnotating ? 'Cancel region selection' : 'Send a region to the chat')
-              }
-            >
-              <Camera className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
-          {activeArtifact.kind !== 'mcpResource' && (
-            <button
-              type="button"
-              onClick={openStandalone}
-              className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 ml-0.5 shrink-0')}
-              aria-label="Open active artifact outside preview"
-              title="Open active artifact outside preview"
-            >
-              {activeArtifact.kind === 'html' ? (
-                <Maximize2 className="h-4 w-4" aria-hidden="true" />
-              ) : (
+          {/* Two actions always, the rest when wanted (spec 3.8): Open externally
+              and Close; Quote while text is selected; the pressed region tool
+              while a region is being picked; the refresh dot while an update
+              waits; everything else in ⋯. */}
+          <div className="br-preview-actions">
+            {canQuote && (
+              <PreviewIconButton
+                label={PREVIEW_COPY.quoteSelection}
+                data-testid="artifact-quote"
+                // Keep the selection: a press on a button would collapse it first.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={quoteSelectionToChat}
+              >
+                <TextQuote className="h-4 w-4" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            {isAnnotating && !annotateInline && (
+              <PreviewIconButton
+                label={PREVIEW_COPY.cancelAnnotate}
+                data-testid="artifact-annotate-cancel"
+                aria-pressed={true}
+                onClick={() => void toggleAnnotation()}
+                className="br-preview-icon-button--pressed"
+              >
+                <Camera className="h-4 w-4" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            {(updateReady || refreshFailed) && activeArtifact.kind === 'file' && (
+              <PreviewIconButton
+                label={refreshFailed ? PREVIEW_COPY.retryUpdate : PREVIEW_COPY.updateReady}
+                hint={refreshFailed ? PREVIEW_COPY.retryUpdateHint : PREVIEW_COPY.updateReadyHint}
+                data-testid="artifact-update"
+                disabled={isAnnotating || isResizing}
+                onClick={() => {
+                  refreshTrackerRef.current.revision = refreshRevision;
+                  deferredRefreshRef.current = false;
+                  manualRefreshRef.current = true;
+                  setUpdateReady(false);
+                  setFileRefresh((previous) => ({
+                    scope: refreshScope,
+                    revision: previous.revision + 1,
+                  }));
+                }}
+                className="relative"
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                <span className="br-preview-update-dot" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            {activeArtifact.kind !== 'mcpResource' && (
+              <PreviewIconButton label={PREVIEW_COPY.openExternally} onClick={openStandalone}>
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              )}
-            </button>
-          )}
-          {onToggleFold && (
-            // Rendered in both layouts and hidden beside the conversation by
-            // main.css (`.br-preview-fold-toggle`): a side column has nothing to
-            // fold, and a crossing must not mount or unmount a control.
-            <button
-              type="button"
-              data-testid="artifact-fold-toggle"
-              onClick={onToggleFold}
-              aria-expanded={!folded}
-              aria-controls={previewContentId}
-              className={cn(
-                HEADER_ACTION_BUTTON_CLASS,
-                'br-preview-fold-toggle relative z-50 shrink-0'
-              )}
-              aria-label={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
-              title={folded ? 'Show the preview' : 'Fold the preview to its tabs'}
-            >
-              {/* One glyph, turned by main.css when folded: swapping two icons
-                  would mount and unmount an element on every fold. */}
-              <ChevronUp className="h-4 w-4" aria-hidden="true" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 shrink-0')}
-            aria-label="Close preview panel"
-            title="Close preview panel"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
+              </PreviewIconButton>
+            )}
+            {annotateInline && (
+              // One control for both states, in the one place: while a region is
+              // being picked it is the pressed tool, and pressing it again cancels.
+              <PreviewIconButton
+                label={isAnnotating ? PREVIEW_COPY.cancelAnnotate : PREVIEW_COPY.annotate}
+                data-testid={isAnnotating ? 'artifact-annotate-cancel' : 'artifact-annotate'}
+                aria-pressed={isAnnotating ? true : undefined}
+                onClick={() => void toggleAnnotation()}
+                className={isAnnotating ? 'br-preview-icon-button--pressed' : undefined}
+              >
+                <Camera className="h-4 w-4" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            {showMoreMenu && (
+              <DropdownMenu>
+                <PreviewTip content={PREVIEW_COPY.moreActions}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={PREVIEW_COPY.moreActions}
+                      data-testid="artifact-more-actions"
+                      className={cn(
+                        buttonVariants({ variant: 'ghost', shape: 'round' }),
+                        'br-preview-icon-button no-drag'
+                      )}
+                    >
+                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </PreviewTip>
+                <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
+                  {canQuote && (
+                    // The same action as the header's Quote icon, kept in the menu
+                    // for a reader who reaches the selection from the keyboard. Only
+                    // while a selection exists: an item that can do nothing is noise.
+                    <DropdownMenuItem
+                      data-testid="artifact-quote-menu-item"
+                      onSelect={quoteSelectionToChat}
+                    >
+                      {PREVIEW_COPY.quoteSelection}
+                    </DropdownMenuItem>
+                  )}
+                  {sessionId && (
+                    // Annotation is available on EVERY preview kind, not just one:
+                    // a researcher reads a generated report and needs to point at
+                    // something in it. For this audience the report IS the artifact.
+                    <DropdownMenuItem
+                      data-testid="artifact-annotate"
+                      disabled={annotateUnavailable !== null}
+                      onSelect={() => void toggleAnnotation()}
+                      // The name stays the action; the reason it is off is the
+                      // item's description, and it stays visible (principle 2:
+                      // a refusal says why before the item is ever pressed).
+                      aria-label={PREVIEW_COPY.annotate}
+                      aria-describedby={annotateUnavailable ? annotateReasonId : undefined}
+                      className="flex-col items-start gap-0.5"
+                    >
+                      <span>{PREVIEW_COPY.annotate}</span>
+                      {annotateUnavailable && (
+                        <span id={annotateReasonId} className="text-supporting text-text-muted">
+                          {annotateUnavailable}
+                        </span>
+                      )}
+                    </DropdownMenuItem>
+                  )}
+                  {activeArtifact.kind === 'file' && (
+                    <DropdownMenuItem
+                      data-testid="artifact-reveal"
+                      onSelect={() =>
+                        void window.electron.openDirectoryInExplorer(
+                          dirnameFromPath(activeArtifact.path)
+                        )
+                      }
+                    >
+                      {revealLabel}
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {onToggleFold && (
+              // Rendered in both layouts and hidden beside the conversation by
+              // main.css (`.br-preview-fold-toggle`): a side column has nothing to
+              // fold, and a crossing must not mount or unmount a control.
+              <PreviewIconButton
+                data-testid="artifact-fold-toggle"
+                onClick={onToggleFold}
+                aria-expanded={!folded}
+                aria-controls={previewContentId}
+                className="br-preview-fold-toggle"
+                label={folded ? PREVIEW_COPY.unfoldPreview : PREVIEW_COPY.foldPreview}
+              >
+                {/* One glyph, turned by main.css when folded: swapping two icons
+                    would mount and unmount an element on every fold. */}
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              </PreviewIconButton>
+            )}
+            <PreviewIconButton label={PREVIEW_COPY.closePanel} onClick={onClose}>
+              <X className="h-4 w-4" aria-hidden="true" />
+            </PreviewIconButton>
+          </div>
         </div>
 
-        {/* De-boxed (design spec H): no gutter, no card, no border, no shadow. The
-          preview sits directly on the panel ground — panel → strip → content. */}
-        <QuotedTextSelection source={quoteSource} selection={sessionId ? quotedSelection : ''}>
-          <div
-            id={previewContentId}
-            data-testid="artifact-preview-content"
-            data-preview-open={isOpen ? 'true' : 'false'}
-            ref={previewBodyRef}
-            className="relative z-0 min-h-0 flex-1 overflow-hidden"
-          >
-            {isResizing && (
-              <div
-                data-testid="artifact-resize-shield"
-                aria-hidden="true"
-                className="absolute inset-0 z-50 cursor-col-resize"
-              />
-            )}
-            {isAnnotating && (
-              <AnnotationOverlay
-                onCancel={finishAnnotation}
-                onSelect={(region) => {
-                  void captureAnnotation(region);
-                }}
-              />
-            )}
-            <ArtifactPreviewBody
-              preview={visiblePreview}
-              artifact={activeArtifact}
-              resolvedTheme={resolvedTheme}
-              isResizing={isResizing}
-              trustedFrameRef={trustedFrameRef}
-              onOpenArtifactInTab={openArtifactInTab}
-              isBrowsingUrl={
-                activeArtifact.kind === 'externalUrl' && browsingUrls.has(activeArtifact.url)
+        <PreviewBarScope>
+          {/* The one bar (spec 3.8), from the artifact's own name before its
+              content loads, so a switch never takes it away. Over text it starts
+              on the reading column's left edge, the edge the prose, the code and
+              a table share; over a figure, an image, a document or a folder,
+              which use the panel's whole width, it keeps to the gutter. */}
+          {!livePage && (
+            <PreviewBar
+              name={activeArtifact.title}
+              path={artifactHoverTitle(activeArtifact)}
+              className={
+                barOnReadingColumn(activeArtifact, visiblePreview)
+                  ? 'br-preview-measure-strip'
+                  : 'br-preview-bar--gutter'
               }
-              onStartBrowsing={(url) => setBrowsingUrls((current) => new Set(current).add(url))}
-              onLiveBrowserViewChange={handleLiveBrowserViewChange}
-              onLiveBrowserShareChange={onLiveBrowserShareChange}
-              isAnnotating={isAnnotating}
-              annotationSnapshotDataUrl={annotationSnapshot?.dataUrl ?? null}
-              refreshRevision={refreshRevision}
             />
-          </div>
-        </QuotedTextSelection>
+          )}
+          <QuotedTextSelection source={quoteSource} selection={sessionId ? quotedSelection : ''}>
+            <div
+              id={previewContentId}
+              data-testid="artifact-preview-content"
+              data-preview-open={isOpen ? 'true' : 'false'}
+              ref={previewBodyRef}
+              className="br-preview-body relative z-0 min-h-0 flex-1 overflow-hidden"
+            >
+              {isResizing && (
+                <div
+                  data-testid="artifact-resize-shield"
+                  aria-hidden="true"
+                  className="absolute inset-0 z-50 cursor-col-resize"
+                />
+              )}
+              {isAnnotating && (
+                <AnnotationOverlay
+                  onCancel={finishAnnotation}
+                  onSelect={(region) => {
+                    void captureAnnotation(region);
+                  }}
+                />
+              )}
+              {layers.outgoing &&
+                renderLayer(
+                  layers.outgoing.key,
+                  'outgoing',
+                  layers.outgoing.preview,
+                  layers.outgoing.artifact,
+                  false
+                )}
+              {renderLayer(
+                activeSourceKey ?? activeTab.id,
+                'current',
+                visiblePreview,
+                activeArtifact,
+                layers.animate
+              )}
+            </div>
+          </QuotedTextSelection>
+        </PreviewBarScope>
       </aside>
-    </>
+    </PreviewPanelPresence>
   );
 }
 
@@ -1612,17 +2045,39 @@ function ArtifactErrorState({
   code?: string;
 }) {
   const Icon = code === 'EACCES' || code === 'EPERM' ? Lock : FileX;
+  // An error stays visible (principle 2): the icon, the title and the daemon's
+  // own sentence. The path is a machine string, so it is the title's tooltip.
   return (
-    <div data-testid="artifact-error-state" className="flex h-full items-center justify-center p-6">
-      <div className="w-full max-w-sm text-center">
-        <Icon className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-        <div className="text-label text-text-default">File not available</div>
-        {/* `leading-relaxed` deliberately overrides text-body's 20px: this is a
-            wrapped explanatory paragraph, not a single-line row. */}
-        <p className="mt-1 text-body leading-relaxed text-text-muted">{message}</p>
-        {path && <div className="mt-2 break-all text-supporting text-text-muted/70">{path}</div>}
+    <div data-testid="artifact-error-state" className="br-preview-state">
+      <Icon className="h-5 w-5 text-text-muted" aria-hidden="true" />
+      <div className="text-label text-text-default" title={path}>
+        {PREVIEW_COPY.fileNotAvailable}
       </div>
+      <p className="br-preview-state__line text-body text-text-muted">{message}</p>
     </div>
+  );
+}
+
+/**
+ * What a `ui://` artifact is, in the word its transcript card uses (Figure,
+ * Report, App), as the bar's meta. Without it the bar only repeated the tab's
+ * title under the tab (principle 2: no repeated labels), and a figure has no
+ * line count, row count or page count to say instead. One classifier, the
+ * card's own (`artifactCardKind`), so the two never name a thing differently.
+ */
+function ArtifactKindMeta({ artifact }: { artifact: ArtifactSource }) {
+  const uri =
+    artifact.kind === 'mcpResource'
+      ? artifact.resource.uri
+      : artifact.kind === 'html'
+        ? artifact.sourceUri
+        : undefined;
+  return (
+    <PreviewBarMeta>
+      <span data-testid="artifact-kind-meta">
+        {ARTIFACT_CARD_COPY.kind[artifactCardKind(artifact, uri)]}
+      </span>
+    </PreviewBarMeta>
   );
 }
 
@@ -1657,14 +2112,11 @@ function ArtifactPreviewBody({
   refreshRevision?: number;
 }) {
   if (preview.kind === 'loading') {
-    return (
-      <div
-        data-preview-loading=""
-        className="flex h-full items-center justify-center text-body text-text-muted"
-      >
-        Loading
-      </div>
-    );
+    // A first visit only (a tab that has been seen shows its last preview). It
+    // shows nothing for 200ms — most reads land sooner — then three quiet lines
+    // on the paper (preview-panel.css). No word: the bar above already names
+    // what is coming.
+    return <PreviewSkeleton />;
   }
 
   if (preview.kind === 'error') {
@@ -1676,19 +2128,30 @@ function ArtifactPreviewBody({
     // `data:` URL, which the main window's open handler turns into a real
     // BrowserWindow that inherits the preload IPC bridge.
     return (
-      <iframe
-        name="biorouter-artifact-preview"
-        key={preview.html}
-        ref={trustedFrameRef}
-        aria-label={artifact.title}
-        // Inject the app theme so this preview matches the expanded/opened view,
-        // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
-        srcDoc={injectArtifactBrowserCsp(
-          withPreviewSizeReporting(withHostTheme(preview.html, resolvedTheme))
-        )}
-        sandbox="allow-scripts allow-downloads"
-        className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
-      />
+      <>
+        <ArtifactKindMeta artifact={artifact} />
+        <iframe
+          name="biorouter-artifact-preview"
+          key={preview.html}
+          ref={trustedFrameRef}
+          aria-label={artifact.title}
+          // Inject the app theme so this preview matches the expanded/opened view,
+          // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
+          srcDoc={injectArtifactBrowserCsp(
+            withPreviewSizeReporting(withHostTheme(preview.html, resolvedTheme))
+          )}
+          sandbox="allow-scripts allow-downloads"
+          // Held transparent until its document has painted, then faded in
+          // (preview-panel.css): the white page ground stays, but it never
+          // flashes over a dark panel before the figure is drawn.
+          data-loaded="false"
+          onLoad={markFrameLoaded}
+          className={cn(
+            'br-preview-frame h-full w-full bg-white',
+            isResizing && 'pointer-events-none'
+          )}
+        />
+      </>
     );
   }
 
@@ -1722,33 +2185,33 @@ function ArtifactPreviewBody({
       );
     }
 
+    // On the paper, no card and no shadow (spec 3.8): the URL and two choices.
     return (
-      <div className="flex h-full items-center justify-center bg-background-medium p-6">
-        <div className="w-full max-w-lg rounded-container border border-border-subtle bg-background-default p-5 text-center shadow-popover">
-          <Globe className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-          <div className="text-label text-text-default">External page</div>
-          <div className="mt-1 break-all text-supporting text-text-muted">{preview.url}</div>
-          {/* Buttons inside the card: one step down the ladder from its
-              `rounded-container` host. */}
-          <div className="mt-4 flex items-center justify-center gap-2">
-            <button
-              type="button"
-              data-testid="artifact-open-here"
-              onClick={() => onStartBrowsing?.(preview.url)}
-              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
-            >
-              <Globe className="h-3.5 w-3.5" aria-hidden="true" />
-              Open here
-            </button>
-            <button
-              type="button"
-              onClick={() => void openInBrowser(preview.url)}
-              className="inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
-            >
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              Open in default browser
-            </button>
-          </div>
+      <div data-testid="artifact-external-page" className="br-preview-state">
+        <Globe className="h-5 w-5 text-text-muted" aria-hidden="true" />
+        <div className="br-preview-state__line break-all text-body text-text-default">
+          {preview.url}
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            data-testid="artifact-open-here"
+            onClick={() => onStartBrowsing?.(preview.url)}
+          >
+            <Globe className="h-4 w-4" aria-hidden="true" />
+            {PREVIEW_COPY.openHere}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void openInBrowser(preview.url)}
+          >
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            {PREVIEW_COPY.openInBrowser}
+          </Button>
         </div>
       </div>
     );
@@ -1756,15 +2219,18 @@ function ArtifactPreviewBody({
 
   if (preview.kind === 'mcpResource' && artifact.kind === 'mcpResource') {
     return (
-      <UIResourceRenderer
-        resource={artifact.resource}
-        supportedContentTypes={['rawHtml']}
-        htmlProps={{
-          autoResizeIframe: { height: false, width: false },
-          style: { width: '100%', height: '100%', minHeight: '100%', border: 'none' },
-          iframeRenderData: { host: 'biorouter', theme: resolvedTheme },
-        }}
-      />
+      <>
+        <ArtifactKindMeta artifact={artifact} />
+        <UIResourceRenderer
+          resource={artifact.resource}
+          supportedContentTypes={['rawHtml']}
+          htmlProps={{
+            autoResizeIframe: { height: false, width: false },
+            style: { width: '100%', height: '100%', minHeight: '100%', border: 'none' },
+            iframeRenderData: { host: 'biorouter', theme: resolvedTheme },
+          }}
+        />
+      </>
     );
   }
 
@@ -1820,32 +2286,37 @@ function ArtifactPreviewBody({
     // tell whether their file is broken, the app is broken, or the format was
     // never supported.
     const unsupported = describeUnsupportedFormat(extensionFromPath(file.path));
+    const name = basenameFromPath(file.path);
+    // The name, `DOC · 24 KB` and one button (spec 3.8). Why it is not shown,
+    // and what to do instead, is the InfoTip beside the format: one hover, one
+    // Tab, and read aloud with the format line.
+    const reason = [
+      unsupported ? unsupported.reason : PREVIEW_COPY.binaryFallbackReason,
+      unsupported?.suggestion,
+    ]
+      .filter(Boolean)
+      .join(' ');
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-body text-text-muted">
-        <File className="h-8 w-8" aria-hidden="true" />
-        <div className="text-label text-text-default">{basenameFromPath(file.path)}</div>
-        <div>
-          {unsupported ? `${unsupported.label} · ` : `${file.mimeType} · `}
-          {formatBytes(file.size)}
+      <div data-testid="artifact-binary-file" className="br-preview-state">
+        <File className="h-5 w-5 text-text-muted" aria-hidden="true" />
+        <div className="text-label text-text-default">{name}</div>
+        <div className="flex items-center gap-1 text-supporting text-text-muted">
+          <span className="tabular-nums">
+            {unsupported ? `${unsupported.label} · ` : `${file.mimeType} · `}
+            {formatBytes(file.size)}
+          </span>
+          <InfoTip label={name} help={reason} />
         </div>
-        {/* `leading-relaxed` deliberately overrides the inherited text-body
-            line-height for this wrapped paragraph. */}
-        <p className="max-w-xs leading-relaxed">
-          {unsupported
-            ? unsupported.reason
-            : 'This file can’t be previewed here. Open it in the app your system uses for this file type.'}
-        </p>
-        {unsupported?.suggestion && (
-          <p className="max-w-xs leading-relaxed text-text-subtle">{unsupported.suggestion}</p>
-        )}
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="sm"
+          className="mt-2"
           onClick={() => window.electron.openDirectoryInExplorer(file.path)}
-          className="inline-flex items-center gap-1.5 rounded-element border border-border-strong bg-transparent px-3 py-1.5 text-label text-text-default transition-[background-color,color,transform,scale] active:scale-[0.97] hover:bg-overlay-hover"
         >
-          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          Open the file
-        </button>
+          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          {PREVIEW_COPY.openFile}
+        </Button>
       </div>
     );
   }
@@ -1867,39 +2338,16 @@ function ArtifactPreviewBody({
   return null;
 }
 
-const gitStatusPresentation: Record<
-  ArtifactGitStatus,
-  { label: string; textClass: string; dotClass: string }
-> = {
-  untracked: {
-    label: 'Untracked',
-    textClass: 'text-text-info',
-    dotClass: 'bg-background-info',
-  },
-  modified: {
-    label: 'Modified',
-    textClass: 'text-text-warning',
-    dotClass: 'bg-background-warning',
-  },
-  staged: {
-    label: 'Staged',
-    textClass: 'text-text-success',
-    dotClass: 'bg-background-success',
-  },
-  committed: {
-    label: 'Committed',
-    // ⚠ NOT the danger hue. A committed file is the settled, wanted state,
-    // and the app's error colour said something had gone wrong with the file
-    // the user had just finished with. Muted ink puts it where "nothing to
-    // do here" belongs, beside `pushed`.
-    textClass: 'text-text-muted',
-    dotClass: 'bg-text-muted',
-  },
-  pushed: {
-    label: 'Pushed',
-    textClass: 'text-text-muted',
-    dotClass: 'bg-text-muted',
-  },
+const gitStatusPresentation: Record<ArtifactGitStatus, { label: string; dotClass: string }> = {
+  untracked: { label: 'Untracked', dotClass: 'bg-background-info' },
+  modified: { label: 'Modified', dotClass: 'bg-background-warning' },
+  staged: { label: 'Staged', dotClass: 'bg-background-success' },
+  // ⚠ NOT the danger hue. A committed file is the settled, wanted state, and
+  // the app's error colour said something had gone wrong with the file the user
+  // had just finished with. Muted ink puts it where "nothing to do here"
+  // belongs, beside `pushed`.
+  committed: { label: 'Committed', dotClass: 'bg-text-muted' },
+  pushed: { label: 'Pushed', dotClass: 'bg-text-muted' },
 };
 
 type ArtifactTreeDirectory = Extract<ArtifactFilePreview, { kind: 'directory' | 'gitDirectory' }>;
@@ -2016,42 +2464,36 @@ function DirectoryTreePreview({
 
   return (
     // The rail is real structure, so it keeps its hairline — but not a second
-    // ground: both halves sit on the panel's, divided by the one border.
+    // ground: both halves sit on the panel's, divided by the one border. The
+    // directory's name is the bar's; its branch is the bar's meta.
     <div className="flex h-full min-h-0" data-preview-opaque="">
-      <div className="flex w-[42%] min-w-[205px] max-w-[280px] shrink-0 flex-col border-r border-border-subtle">
-        <div className="border-b border-border-subtle px-2.5 py-2">
-          <div className="flex min-w-0 items-center gap-2 px-1 pb-2">
-            {isGitRepository ? (
-              <Github className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
-            ) : (
-              <Folder className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
-            )}
-            {/* `font-semibold` deliberately overrides text-supporting's 400: the
-                rail's title outranks the rows beneath it, which share its size. */}
-            <span className="min-w-0 flex-1 truncate text-supporting font-semibold text-text-default">
-              {directory.title}
-            </span>
-            {directory.kind === 'gitDirectory' && (
-              // A chip inside the rail header: the bottom rung of the ladder.
-              <span
-                className={cn(STRIP_IDENT_CLASS, 'max-w-24 truncate rounded-inner px-1.5 py-0.5')}
-              >
-                {directory.branch}
-              </span>
-            )}
-          </div>
-          <label className="flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-2 focus-within:border-border-focus">
-            <Search className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
-            <input
-              type="search"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              placeholder="Filter files…"
-              aria-label={isGitRepository ? 'Filter repository files' : 'Filter folder files'}
-              className="min-w-0 flex-1 bg-transparent text-supporting text-text-default outline-none placeholder:text-text-subtle"
-            />
-          </label>
-        </div>
+      {directory.kind === 'gitDirectory' && (
+        <PreviewBarMeta>
+          <span
+            data-testid="artifact-directory-branch"
+            className="br-preview-bar__ident"
+            title={directory.branch}
+          >
+            {directory.branch}
+          </span>
+        </PreviewBarMeta>
+      )}
+      <div className="br-preview-rail">
+        {/* The rail's header is the filter, one 32px row (the bar's height), so
+            the two hairlines either side of the seam line up. The field in it is
+            the app's filled field (`.br-field`: a fill at rest, the strong step
+            under the pointer, an edge only while focused; R-27), 24px tall. */}
+        <label className="br-preview-rail__filter">
+          <Search className="br-preview-rail__glyph" aria-hidden="true" />
+          <input
+            type="search"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder={PREVIEW_COPY.filterFiles}
+            aria-label={isGitRepository ? PREVIEW_COPY.filterRepository : PREVIEW_COPY.filterFolder}
+            className="br-field br-preview-rail__input border"
+          />
+        </label>
         <div
           role="tree"
           aria-label={`${directory.title} ${isGitRepository ? 'repository' : 'folder'} files`}
@@ -2064,6 +2506,15 @@ function DirectoryTreePreview({
               : null;
             const selected = selectedEntry?.relativePath === entry.relativePath;
             const expanded = filter.trim() !== '' || expandedDirectories.has(entry.relativePath);
+            // Git status is said ONCE on the row: a coloured dot, with the word in
+            // the row's name and tooltip (no coloured name, no legend).
+            const name = [
+              entry.name,
+              status?.label,
+              selected ? PREVIEW_COPY.currentlyViewing : null,
+            ]
+              .filter(Boolean)
+              .join(', ');
             return (
               <button
                 type="button"
@@ -2071,7 +2522,7 @@ function DirectoryTreePreview({
                 aria-expanded={entry.isDirectory ? expanded : undefined}
                 aria-selected={selected}
                 aria-current={selected ? 'true' : undefined}
-                aria-label={selected ? `${entry.name}, currently viewing` : entry.name}
+                aria-label={name}
                 key={entry.relativePath}
                 title={status ? `${entry.relativePath} · ${status.label}` : entry.relativePath}
                 onClick={(event) => {
@@ -2097,110 +2548,82 @@ function DirectoryTreePreview({
                 }}
                 className={cn(
                   // A row in a list, not a card: selection is a fill, never a lift.
-                  // `font-medium` on the selected row deliberately overrides
-                  // text-supporting's 400 — it is state emphasis, not a size.
-                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-element px-1.5 text-left text-secondary transition-colors',
-                  selected ? 'bg-overlay-selected font-medium' : 'hover:bg-overlay-hover'
+                  'group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-element px-1.5 text-left text-secondary text-text-default transition-colors',
+                  selected ? 'bg-overlay-selected' : 'hover:bg-overlay-hover'
                 )}
-                style={{ paddingLeft: `${6 + depth * 13}px` }}
+                style={{ paddingLeft: `${6 + depth * 12}px` }}
               >
                 {entry.isDirectory ? (
                   expanded ? (
-                    <ChevronDown className="h-3 w-3 shrink-0 text-text-subtle" aria-hidden="true" />
+                    <ChevronDown
+                      className="h-3.5 w-3.5 shrink-0 text-text-subtle"
+                      aria-hidden="true"
+                    />
                   ) : (
                     <ChevronRight
-                      className="h-3 w-3 shrink-0 text-text-subtle"
+                      className="h-3.5 w-3.5 shrink-0 text-text-subtle"
                       aria-hidden="true"
                     />
                   )
                 ) : (
-                  <span
-                    className={cn(
-                      'shrink-0',
-                      status ? `h-1.5 w-1.5 rounded-full ${status.dotClass}` : 'h-3 w-3'
-                    )}
-                  />
+                  <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    {status && <span className={cn('h-1.5 w-1.5 rounded-full', status.dotClass)} />}
+                  </span>
                 )}
                 {entry.isDirectory ? (
-                  <Folder
-                    className={cn('h-3.5 w-3.5 shrink-0', status?.textClass ?? 'text-text-muted')}
-                    aria-hidden="true"
-                  />
+                  <Folder className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 ) : (
-                  <FileText
-                    className={cn('h-3.5 w-3.5 shrink-0', status?.textClass ?? 'text-text-muted')}
-                    aria-hidden="true"
-                  />
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
                 )}
-                <span
-                  className={cn(
-                    'min-w-0 flex-1 truncate',
-                    status?.textClass ?? 'text-text-default'
-                  )}
-                >
-                  {entry.name}
-                </span>
-                {selected && (
-                  <>
-                    <Eye className="h-3.5 w-3.5 shrink-0 text-text-default" aria-hidden="true" />
-                    <span className="sr-only">Currently viewing</span>
-                  </>
-                )}
+                <span className="min-w-0 flex-1 truncate">{entry.name}</span>
               </button>
             );
           })}
           {visibleEntries.length === 0 && (
             <div className="px-2 py-6 text-center text-supporting text-text-muted">
-              {filter.trim() ? 'No matching files' : 'This folder is empty'}
+              {filter.trim() ? PREVIEW_COPY.noMatchingFiles : PREVIEW_COPY.emptyFolder}
             </div>
           )}
         </div>
-        {isGitRepository && (
-          <div className="grid grid-cols-2 gap-x-2 gap-y-1 border-t border-border-subtle px-3 py-2">
-            {(Object.keys(gitStatusPresentation) as ArtifactGitStatus[]).map((statusKey) => {
-              const status = gitStatusPresentation[statusKey];
-              return (
-                <span key={statusKey} className={cn(STRIP_META_CLASS, 'flex items-center gap-1.5')}>
-                  <span className={cn('h-1.5 w-1.5 rounded-full', status.dotClass)} />
-                  {status.label}
-                </span>
-              );
-            })}
-          </div>
-        )}
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
         {selectedEntry ? (
-          <ArtifactPreviewBody
-            preview={
-              selectedPreview ? { kind: 'file', preview: selectedPreview } : { kind: 'loading' }
-            }
-            artifact={{ kind: 'file', title: selectedEntry.name, path: selectedEntry.path }}
-            resolvedTheme={resolvedTheme}
-            isResizing={isResizing}
-            trustedFrameRef={selectedFrameRef}
-            onOpenArtifactInTab={onOpenArtifactInTab}
-            // A directory tree only ever selects files, never URLs, so there is
-            // no live page to be browsing here.
-            isBrowsingUrl={false}
-          />
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-            {isGitRepository ? (
-              <Github className="h-6 w-6 text-text-subtle" aria-hidden="true" />
-            ) : (
-              <Folder className="h-6 w-6 text-text-subtle" aria-hidden="true" />
-            )}
-            <div className="text-label text-text-default">
-              {isGitRepository ? 'Select a repository file' : 'Select a file'}
+          // The selected file gets its own 32px bar beside the rail's filter, so
+          // the two hairlines meet at the seam and the file's count, Copy and
+          // view switch sit over the file, not under the folder's name.
+          <PreviewBarScope>
+            <PreviewBar
+              name={selectedEntry.name}
+              path={selectedEntry.path}
+              className="br-preview-bar--pane"
+            />
+            <div className="relative min-h-0 flex-1">
+              <ArtifactPreviewBody
+                preview={
+                  selectedPreview ? { kind: 'file', preview: selectedPreview } : LOADING_PREVIEW
+                }
+                artifact={{ kind: 'file', title: selectedEntry.name, path: selectedEntry.path }}
+                resolvedTheme={resolvedTheme}
+                isResizing={isResizing}
+                trustedFrameRef={selectedFrameRef}
+                onOpenArtifactInTab={onOpenArtifactInTab}
+                // A directory tree only ever selects files, never URLs, so there
+                // is no live page to be browsing here.
+                isBrowsingUrl={false}
+              />
             </div>
-            {/* `leading-relaxed` deliberately overrides text-supporting's 16px:
-                this is a wrapped explanatory paragraph, not a metadata line. */}
-            <p className="max-w-xs text-supporting leading-relaxed text-text-muted">
-              {isGitRepository
-                ? `This tree is locked to ${directory.title}. Git colors show each file’s current state.`
-                : `This tree is locked to ${directory.title}. Expand folders to browse without leaving this root.`}
-            </p>
+          </PreviewBarScope>
+        ) : (
+          // One line, no paragraph (spec 3.8): the tree beside it explains itself.
+          // A git folder is not a GitHub one, so it never wears GitHub's mark (a
+          // third-party brand): the branch glyph, the thing the bar above names.
+          <div className="br-preview-state">
+            {isGitRepository ? (
+              <GitBranch className="h-5 w-5 text-text-subtle" aria-hidden="true" />
+            ) : (
+              <Folder className="h-5 w-5 text-text-subtle" aria-hidden="true" />
+            )}
+            <div className="text-body text-text-muted">{PREVIEW_COPY.selectFile}</div>
           </div>
         )}
       </div>
@@ -2219,6 +2642,8 @@ function ImageFilePreview({
   // the last.
   const [src, setSrc] = useState('');
   const [failed, setFailed] = useState(false);
+  const [fit, setFit] = useState<'fit' | 'actual'>('fit');
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     setFailed(false);
@@ -2290,25 +2715,59 @@ function ImageFilePreview({
         // By the time this renders the format was one we claim to handle —
         // natively, or through the TIFF decoder, or through the OS. So the
         // honest reading is a bad file, not a missing feature.
-        message="This image could not be decoded. It may be truncated or corrupt."
+        message={PREVIEW_COPY.imageUndecodable}
         path={preview.path}
       />
     );
   }
 
-  // The image is the content, so it sits on the panel ground with a gutter —
-  // no tinted well behind it, no radius pretending it is a card.
+  const meta = [
+    natural ? `${natural.width}×${natural.height}` : null,
+    preview.size !== undefined ? formatBytes(preview.size) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  // The image is the content, so it sits on the paper with a gutter — no tinted
+  // well behind it, no radius pretending it is a card. Fit shows it whole; 1:1
+  // shows its real pixels and scrolls. It fades in once decoded, never pops.
   return (
-    <div className="flex h-full items-center justify-center overflow-auto p-4">
-      {src ? (
-        <img
-          src={src}
-          alt={preview.title}
-          onError={() => setFailed(true)}
-          className="max-h-full max-w-full object-contain"
+    <>
+      <PreviewBarMeta>
+        {meta && (
+          <span data-testid="artifact-strip-count" className="tabular-nums">
+            {meta}
+          </span>
+        )}
+      </PreviewBarMeta>
+      <PreviewBarActions>
+        <ViewSwitch
+          value={fit}
+          options={[
+            { value: 'fit' as const, label: PREVIEW_COPY.fit },
+            { value: 'actual' as const, label: PREVIEW_COPY.actualSize },
+          ]}
+          onChange={setFit}
         />
-      ) : null}
-    </div>
+      </PreviewBarActions>
+      <div className="br-preview-image" data-fit={fit}>
+        {src ? (
+          <img
+            src={src}
+            alt={preview.title}
+            data-loaded="false"
+            onLoad={(event) => {
+              const image = event.currentTarget;
+              image.dataset.loaded = 'true';
+              if (image.naturalWidth > 0) {
+                setNatural({ width: image.naturalWidth, height: image.naturalHeight });
+              }
+            }}
+            onError={() => setFailed(true)}
+          />
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -2404,9 +2863,11 @@ function CodeBlock({
           // The inline edges come from the paper CSS variables (main.css,
           // `.br-paper`): unnumbered code starts on the column edge; numbered code
           // starts at the scroller's edge because each line carries the margin.
+          // 16px under the bar and 32px of run-out (spec 3.8): the bar already
+          // separates the code from the strip, so it needs no deep top margin.
           padding: numbered
-            ? '28px var(--paper-gutter) 48px 0'
-            : '28px var(--paper-gutter) 48px var(--paper-inset)',
+            ? '16px var(--paper-gutter) 32px 0'
+            : '16px var(--paper-gutter) 32px var(--paper-inset)',
           minHeight: '100%',
           width: 'max-content',
           minWidth: '100%',
@@ -2434,54 +2895,73 @@ function CodeBlock({
 function CopyButton({ text }: { text: string }) {
   // `failed` is shown, never swallowed: a refused write used to leave the label
   // alone, so a Copy that copied nothing looked exactly like one that worked.
+  // Icon-only now (spec 3.8): Copy, then Check; a failure turns the glyph into a
+  // warning and its tooltip says what to do. The outcome is also announced.
   const [outcome, markOutcome] = useTransientValue<'copied' | 'failed'>(1600);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const failed = outcome === 'failed';
 
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      onClick={async () => {
-        // The shared path (utils/clipboard.ts): retried, then copied through the
-        // document's own selection, whose hidden textarea goes in the strip.
-        const copied = await copyToClipboard(text, buttonRef.current?.parentElement ?? null);
-        markOutcome(copied ? 'copied' : 'failed');
-      }}
-      title={
-        failed
-          ? 'Biorouter could not write to the clipboard. Select the text and copy it with your keyboard.'
-          : undefined
-      }
-      // A control inside the status strip: bottom rung of the radius ladder,
-      // and the sanctioned dense-control size. `text-label` (14px) does not fit
-      // a 34px strip, but `text-supporting` (12px) would render it at metadata
-      // size and it would stop looking pressable — so `text-secondary`. The 12px
-      // icon is the one a fenced block's Copy carries (MarkdownContent), so the
-      // two Copy controls in the panel read as the same control.
-      className={cn(
-        'inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary transition-colors hover:bg-overlay-hover',
-        failed
-          ? 'text-text-warning hover:text-text-warning'
-          : 'text-text-muted hover:text-text-default'
-      )}
-    >
-      {outcome === 'copied' ? (
-        <Check className="h-3 w-3" aria-hidden="true" />
-      ) : failed ? (
-        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-      ) : (
-        <Copy className="h-3 w-3" aria-hidden="true" />
-      )}
-      <span>{outcome === 'copied' ? 'Copied' : failed ? 'Copy failed' : 'Copy'}</span>
-    </button>
+    <>
+      <PreviewIconButton
+        ref={buttonRef}
+        compact
+        label={PREVIEW_COPY.copy}
+        hint={failed ? PREVIEW_COPY.copyFailed : undefined}
+        data-testid="artifact-copy"
+        data-outcome={outcome ?? undefined}
+        onClick={async () => {
+          // The shared path (utils/clipboard.ts): retried, then copied through the
+          // document's own selection, whose hidden textarea goes in the bar.
+          const copied = await copyToClipboard(text, buttonRef.current?.parentElement ?? null);
+          markOutcome(copied ? 'copied' : 'failed');
+        }}
+        className={cn(failed ? 'text-text-warning' : 'text-text-muted')}
+      >
+        {outcome === 'copied' ? (
+          <Check className="h-3.5 w-3.5" aria-hidden="true" />
+        ) : failed ? (
+          <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+        ) : (
+          <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
+      </PreviewIconButton>
+      <span role="status" data-testid="artifact-copy-status" className="sr-only">
+        {outcome === 'copied' ? PREVIEW_COPY.copied : failed ? PREVIEW_COPY.copyFailedShort : ''}
+      </span>
+    </>
+  );
+}
+
+/**
+ * The view switch every renderable kind shares (spec 2.6, 3.8): the one
+ * `SegmentedControl`, never a bespoke bordered pair.
+ */
+function ViewSwitch<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <SegmentedControl
+      aria-label={PREVIEW_COPY.viewLabel}
+      data-testid="artifact-view-switch"
+      value={value}
+      onValueChange={onChange}
+      options={options}
+      className="br-preview-view-switch"
+    />
   );
 }
 
 // A written `.md` report and a written `.csv` table are the agent's output, not
 // its source code — showing raw markup would make the user read the syntax to
 // find the content. Both stay one click from the raw text. Everything else is a
-// script, and gets highlighted, line-numbered and labelled.
+// script, and gets highlighted and line-numbered.
 //
 // PAPER. Every branch below sits on `.br-paper` — the page ground
 // (`--background-default`), which is byte-for-byte the ground an Auto
@@ -2489,7 +2969,8 @@ function CopyButton({ text }: { text: string }) {
 // family of surface. The scroller is a size container and the content column is
 // the chat measure (760px) centred in it; content that is naturally wider (a
 // wide table, a long code line) keeps the column's LEFT edge and runs on to the
-// right, so every kind shares one left edge at any panel width.
+// right, so every kind shares one left edge at any panel width. The bar above
+// (PreviewBar) starts on that same edge.
 function TextFilePreview({
   file,
   resolvedTheme,
@@ -2509,10 +2990,25 @@ function TextFilePreview({
   useEffect(() => {
     if (sourceLine !== undefined) setShowRaw(true);
   }, [sourceLine]);
+  // Each view keeps its own scroll position: switching back lands where you were.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const scrollByViewRef = useRef<{ raw: number; rendered: number }>({ raw: 0, rendered: 0 });
+  const viewSwitchedRef = useRef(false);
+  const switchView = (raw: boolean) => {
+    if (raw === showRaw) return;
+    viewSwitchedRef.current = true;
+    const scroller = scrollerRef.current;
+    if (scroller) scrollByViewRef.current[showRaw ? 'raw' : 'rendered'] = scroller.scrollTop;
+    setShowRaw(raw);
+  };
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (scroller) scroller.scrollTop = scrollByViewRef.current[showRaw ? 'raw' : 'rendered'];
+  }, [showRaw]);
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
   const showingCode = showRaw || !renderable;
-  // Parsed once: the table renders these rows and the strip states their shape.
+  // Parsed once: the table renders these rows and the bar states their count.
   const tableRows = useMemo(
     () =>
       delimited
@@ -2530,114 +3026,106 @@ function TextFilePreview({
     />
   );
 
-  const { directory, name } = splitPathForStrip(file.path);
-  const tableShape =
-    tableRows && tableRows.length > 0
-      ? { rows: tableRows.length - 1, columns: tableRows[0].length }
-      : null;
+  const totalRows = tableRows && tableRows.length > 0 ? tableRows.length - 1 : null;
+  const hiddenRows = totalRows !== null ? Math.max(0, totalRows - MAX_TABLE_ROWS) : 0;
   const countText = showingCode
     ? `${lineCount.toLocaleString()} line${lineCount === 1 ? '' : 's'}`
-    : tableShape
-      ? `${tableShape.rows.toLocaleString()} row${tableShape.rows === 1 ? '' : 's'} · ${tableShape.columns.toLocaleString()} column${tableShape.columns === 1 ? '' : 's'}`
+    : totalRows !== null
+      ? hiddenRows > 0
+        ? PREVIEW_COPY.rowsShown(MAX_TABLE_ROWS, totalRows)
+        : `${totalRows.toLocaleString()} row${totalRows === 1 ? '' : 's'}`
       : null;
+  const lineNotice =
+    showingCode &&
+    sourceLine !== undefined &&
+    (sourceLine > lineCount || lineCount > MAX_LINE_NUMBERED_LINES)
+      ? sourceLine > lineCount
+        ? PREVIEW_COPY.lineOutsideFile
+        : PREVIEW_COPY.lineTooLarge
+      : null;
+  const viewOptions = [
+    { value: 'rendered' as const, label: delimited ? PREVIEW_COPY.table : PREVIEW_COPY.preview },
+    { value: 'raw' as const, label: PREVIEW_COPY.raw },
+  ];
 
   return (
     <div className="br-paper flex h-full min-h-0 flex-col">
-      {/* The one status strip (design spec H): 34px, a bottom hairline, and the
-          content below it sits on the paper — no sub-header, no card. */}
-      <div
-        data-testid="artifact-status-strip"
-        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5 br-preview-measure-strip"
-      >
-        <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>
-          {languageLabel(file.path, file.mimeType)}
-        </span>
-        <span className={cn(STRIP_IDENT_CLASS, 'min-w-0 truncate')} title={file.path}>
-          <span className="text-text-subtle">{directory}</span>
-          <span className="text-text-default">{name}</span>
-        </span>
-        {/* The count yields first, and whole: never pushes the name or the
-            controls out of the strip (main.css, `.br-paper-strip-count`). */}
+      <PreviewBarMeta>
+        {/* The count yields first, and whole: it never pushes the name or the
+            controls out of the bar (main.css, `.br-paper-strip-count`). */}
         {countText && (
-          <span
-            data-testid="artifact-strip-count"
-            className={cn(STRIP_IDENT_CLASS, 'br-paper-strip-count tabular-nums')}
-          >
+          <span data-testid="artifact-strip-count" className="br-paper-strip-count tabular-nums">
             <span>{countText}</span>
           </span>
         )}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          <CopyButton text={file.text} />
-          {renderable && (
-            <div className="inline-flex overflow-hidden rounded-element border border-border-subtle">
-              {[
-                { label: delimited ? 'Table' : 'Preview', raw: false },
-                { label: 'Raw', raw: true },
-              ].map((option) => (
-                <button
-                  key={option.label}
-                  type="button"
-                  onClick={() => setShowRaw(option.raw)}
-                  aria-pressed={showRaw === option.raw}
-                  className={cn(
-                    // Same sanctioned dense-control size as CopyButton above.
-                    'px-2 py-0.5 text-secondary transition-colors',
-                    showRaw === option.raw
-                      ? 'bg-overlay-selected text-text-default'
-                      : 'text-text-muted hover:text-text-default'
-                  )}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+        {hiddenRows > 0 && !showingCode && (
+          <InfoTip
+            label={countText ?? PREVIEW_COPY.table}
+            help={PREVIEW_COPY.rowsCapHint(hiddenRows)}
+          />
+        )}
+        {lineNotice && (
+          <span role="status" className="br-preview-bar__notice">
+            {lineNotice}
+          </span>
+        )}
+      </PreviewBarMeta>
+      <PreviewBarActions>
+        <CopyButton text={file.text} />
+        {renderable && (
+          <ViewSwitch
+            value={showRaw ? 'raw' : 'rendered'}
+            options={viewOptions}
+            onChange={(next) => switchView(next === 'raw')}
+          />
+        )}
+      </PreviewBarActions>
       {/* One ground for every view. The code view used to switch to
           --background-code here; on paper it does not need to, because every
           family's syntax palette is ALSO measured against --background-default
           (scripts/generate-themes.mjs, "paper ground"), and in light that ground
           only raises the ratios. */}
       <div
+        ref={scrollerRef}
         data-preview-scroller=""
         className="br-paper-scroll min-h-0 flex-1 overflow-auto"
         data-view={showingCode ? 'code' : markdown ? 'prose' : html ? 'html' : 'table'}
       >
-        {showingCode &&
-          sourceLine !== undefined &&
-          (sourceLine > lineCount || lineCount > MAX_LINE_NUMBERED_LINES) && (
-            <p role="status" className="px-4 py-2 text-supporting text-text-muted">
-              {sourceLine > lineCount
-                ? 'The requested source line is outside this file.'
-                : 'Source-line highlighting is unavailable for this large file.'}
-            </p>
-          )}
-        {showingCode ? (
-          code
-        ) : markdown ? (
-          <MarkdownDocument text={file.text} path={file.path} onOpenArtifact={onOpenArtifact} />
-        ) : html ? (
-          // Same sandbox + theme injection as the figure preview above. `allow-popups`
-          // is withheld so the framed HTML can't window.open() into a real BrowserWindow
-          // that would inherit the preload IPC bridge.
-          <iframe
-            name="biorouter-artifact-preview"
-            key={file.preparedHtml ?? file.text}
-            aria-label={file.title}
-            srcDoc={injectArtifactBrowserCsp(
-              withPreviewSizeReporting(
-                withPreviewActivityTracking(
-                  withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+        {/* Keyed by view, so Preview ↔ Raw is a short fade of the incoming view
+            (preview-panel.css) rather than a hard swap. */}
+        <div
+          key={showingCode ? 'raw' : 'rendered'}
+          className="br-preview-view"
+          data-enter={viewSwitchedRef.current ? '' : undefined}
+        >
+          {showingCode ? (
+            code
+          ) : markdown ? (
+            <MarkdownDocument text={file.text} path={file.path} onOpenArtifact={onOpenArtifact} />
+          ) : html ? (
+            // Same sandbox + theme injection as the figure preview above. `allow-popups`
+            // is withheld so the framed HTML can't window.open() into a real BrowserWindow
+            // that would inherit the preload IPC bridge.
+            <iframe
+              name="biorouter-artifact-preview"
+              key={file.preparedHtml ?? file.text}
+              aria-label={file.title}
+              srcDoc={injectArtifactBrowserCsp(
+                withPreviewSizeReporting(
+                  withPreviewActivityTracking(
+                    withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)
+                  )
                 )
-              )
-            )}
-            sandbox="allow-scripts allow-downloads"
-            className="h-full w-full bg-white"
-          />
-        ) : (
-          <DelimitedTable rows={tableRows ?? []} maxRows={MAX_TABLE_ROWS} />
-        )}
+              )}
+              sandbox="allow-scripts allow-downloads"
+              data-loaded="false"
+              onLoad={markFrameLoaded}
+              className="br-preview-frame h-full w-full bg-white"
+            />
+          ) : (
+            <DelimitedTable rows={tableRows ?? []} maxRows={MAX_TABLE_ROWS} />
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { chatIconFor, chatKindOf, chatPrivacyMark } from './chatKind';
+import { ENTITY_ICONS } from '../icons/entity-icons';
+import { chatIconFor, chatKindOf, chatPrivacyMark, isCrewTask, type ChatKind } from './chatKind';
+
+const ALL_KINDS: ChatKind[] = [
+  'chat',
+  'crew',
+  'branch',
+  'subagent',
+  'app',
+  'scheduled',
+  'workflow',
+  'terminal',
+];
+const NON_CHAT_KINDS = ALL_KINDS.filter((k) => k !== 'chat');
 
 describe('chatKindOf', () => {
   it('reads the durable lineage fields, not the title', () => {
@@ -56,7 +69,7 @@ describe('chatKindOf', () => {
 
 describe('chatIconFor', () => {
   /**
-   * ⚠ **Privacy is a SHAPE difference for a plain chat, not a hue.** The dense
+   * ⚠ **Privacy is a SHAPE difference, not a hue** (the lock badge). The dense
    * dot it replaced was a separate mark; folding the tier into a colour alone
    * would have made a safety-relevant marking invisible to anyone who cannot
    * separate the two inks.
@@ -70,7 +83,7 @@ describe('chatIconFor', () => {
   });
 
   it('says the word "private" for every kind, not just plain chats', () => {
-    for (const kind of ['branch', 'subagent', 'app', 'scheduled', 'terminal'] as const) {
+    for (const kind of NON_CHAT_KINDS) {
       expect(chatIconFor(kind, 'private').label).toMatch(/private/i);
       expect(chatIconFor(kind, 'public').label).not.toMatch(/private/i);
     }
@@ -85,7 +98,7 @@ describe('chatIconFor', () => {
     expect(chatIconFor('chat', 'unknown').Icon).toBe(chatIconFor('chat', 'public').Icon);
     expect(chatIconFor('chat', 'unknown').Icon).not.toBe(chatIconFor('chat', 'private').Icon);
     expect(chatIconFor('chat', 'unknown').label).toBe('Chat, privacy not yet known');
-    for (const kind of ['branch', 'subagent', 'app', 'scheduled', 'terminal'] as const) {
+    for (const kind of NON_CHAT_KINDS) {
       expect(chatIconFor(kind, 'unknown').label).toMatch(/not yet known/);
       expect(chatIconFor(kind, 'unknown').label).not.toMatch(/private/i);
     }
@@ -96,11 +109,111 @@ describe('chatIconFor', () => {
     expect(chatIconFor('subagent', 'off').label).toBe('Sub-agent');
   });
 
-  it('gives every kind a distinct glyph', () => {
-    const icons = (['chat', 'branch', 'subagent', 'app', 'scheduled', 'terminal'] as const).map(
-      (k) => chatIconFor(k, 'public').Icon
+  it('gives every kind a distinct glyph, public and private', () => {
+    for (const mark of ['public', 'private'] as const) {
+      const icons = ALL_KINDS.map((k) => chatIconFor(k, mark).Icon);
+      expect(new Set(icons).size).toBe(icons.length);
+    }
+  });
+
+  it('gives every kind a glyph, a private glyph and a name', () => {
+    for (const kind of ALL_KINDS) {
+      const pub = chatIconFor(kind, 'public');
+      const priv = chatIconFor(kind, 'private');
+      expect(pub.Icon, kind).toBeTruthy();
+      expect(priv.Icon, kind).toBeTruthy();
+      expect(pub.label.length, kind).toBeGreaterThan(0);
+      // Privacy is a shape on EVERY kind now, not only on a plain chat.
+      expect(priv.Icon, kind).not.toBe(pub.Icon);
+      expect(chatIconFor(kind, 'unknown').Icon, kind).toBe(pub.Icon);
+      expect(chatIconFor(kind, 'off').Icon, kind).toBe(pub.Icon);
+    }
+  });
+
+  it('names the two new kinds', () => {
+    expect(chatIconFor('crew', 'public').label).toBe('Crew task');
+    expect(chatIconFor('crew', 'private').label).toBe('Crew task, private');
+    expect(chatIconFor('workflow', 'unknown').label).toBe('Workflow run, privacy not yet known');
+  });
+
+  /** One glyph, one meaning: a kind that is an entity draws the entity glyph. */
+  it('draws the entity glyph for a kind that is an entity', () => {
+    expect(chatIconFor('chat', 'public').Icon).toBe(ENTITY_ICONS.chat);
+    expect(chatIconFor('subagent', 'public').Icon).toBe(ENTITY_ICONS.agent);
+    expect(chatIconFor('app', 'public').Icon).toBe(ENTITY_ICONS.application);
+    expect(chatIconFor('scheduled', 'public').Icon).toBe(ENTITY_ICONS.schedule);
+    expect(chatIconFor('workflow', 'public').Icon).toBe(ENTITY_ICONS.workflow);
+  });
+});
+
+describe('Crew task chats', () => {
+  it('reads the folder every Crew task runs in, so a renamed task stays Crew', () => {
+    expect(
+      chatKindOf({
+        name: 'Statin cohort',
+        working_dir: '/Users/a/.local/share/biorouter/crew/tasks',
+      })
+    ).toBe('crew');
+    expect(chatKindOf({ name: 'Statin cohort', working_dir: '/x/crew/tasks/' })).toBe('crew');
+    expect(isCrewTask({ working_dir: 'C:\\Users\\a\\AppData\\Biorouter\\crew\\tasks' })).toBe(true);
+  });
+
+  it('takes the daemon origin when it is there', () => {
+    expect(chatKindOf({ name: 'Anything', origin: 'crew' })).toBe('crew');
+  });
+
+  it('falls back to the title the daemon writes', () => {
+    expect(chatKindOf({ name: 'Crew · #methods · Summarize the counts' })).toBe('crew');
+    expect(chatKindOf({ name: 'Crew · #methods' })).toBe('crew');
+    expect(chatKindOf({ name: 'Crew task' })).toBe('crew');
+  });
+
+  it('does not mistake a chat about crews for a Crew task', () => {
+    expect(chatKindOf({ name: 'Crew planning notes' })).toBe('chat');
+    expect(chatKindOf({ name: 'Crew tasks for Monday' })).toBe('chat');
+    expect(chatKindOf({ name: 'crew · lowercase' })).toBe('chat');
+    expect(chatKindOf({ name: 'Notes', working_dir: '/Users/a/crew/tasks-archive' })).toBe('chat');
+  });
+
+  /** A fork of a Crew task is the person's own chat; it no longer posts to the channel. */
+  it('lets a fork of a Crew task read as a branch', () => {
+    expect(
+      chatKindOf({
+        name: 'Crew · #methods · Plot (branch 1)',
+        working_dir: '/x/crew/tasks',
+        diverged_from: 's1',
+      })
+    ).toBe('branch');
+  });
+
+  it('keeps a Crew sub-agent a sub-agent', () => {
+    expect(
+      chatKindOf({
+        name: 'Crew · #methods · x',
+        session_type: 'sub_agent',
+        working_dir: '/x/crew/tasks',
+      })
+    ).toBe('subagent');
+  });
+});
+
+/**
+ * The workflow kind ships dormant: `SessionSummary` carries no `origin` until
+ * the daemon field lands (owner decision 6.10), so no real row reaches it yet.
+ */
+describe('workflow runs', () => {
+  it('reads the daemon origin', () => {
+    expect(chatKindOf({ name: 'Weekly cohort refresh', origin: 'workflow' })).toBe('workflow');
+  });
+
+  it('reads as a plain chat without it', () => {
+    expect(chatKindOf({ name: 'Weekly cohort refresh' })).toBe('chat');
+  });
+
+  it('lets the scheduler own a scheduled workflow run', () => {
+    expect(chatKindOf({ name: 'Nightly', origin: 'workflow', session_type: 'scheduled' })).toBe(
+      'scheduled'
     );
-    expect(new Set(icons).size).toBe(icons.length);
   });
 });
 

@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BottomMenuExtensionSelection } from '../../bottom_menu/BottomMenuExtensionSelection';
+import {
+  ExtensionsPanel,
+  useExtensionPicker,
+} from '../../bottom_menu/BottomMenuExtensionSelection';
 import { useChatCrewAccess } from './chatCrewAccess';
 import { accessCopy } from './copy';
 import { connection, grantRow } from './testing';
@@ -39,7 +42,6 @@ vi.mock('../../ConfigContext', () => ({
   }),
 }));
 vi.mock('../../settings/extensions/subcomponents/ExtensionList', () => ({
-  formatExtensionName: (name: string) => name,
   isBuiltInExtension: () => false,
 }));
 vi.mock('../../../api', () => ({ getSessionExtensions: mocks.getSessionExtensions }));
@@ -55,10 +57,12 @@ vi.mock('../../../toasts', () => ({ toastService: { success: vi.fn(), error: vi.
 function ChatWithMenu({ grant }: { grant: boolean }) {
   // What BaseChat does: the chat looks its grant up; the menu only reads the answer.
   const access = useChatCrewAccess(grant ? 'chat-1' : null);
+  // The Tools popover's extensions list, as ToolsChip holds it (spec 3.7).
+  const picker = useExtensionPicker('chat-1', { open: true });
   return (
     <>
       <p data-testid="state">{access.state}</p>
-      <BottomMenuExtensionSelection sessionId="chat-1" />
+      <ExtensionsPanel picker={picker} />
     </>
   );
 }
@@ -77,8 +81,7 @@ function renderMenu(grants: unknown[], lookUp = true) {
 }
 
 async function openMenu() {
-  fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), { button: 0, ctrlKey: false });
-  return screen.findByRole('menuitemcheckbox', { name: /crew/ });
+  return screen.findByRole('option', { name: /^Crew/ });
 }
 
 describe('the Crew row of a chat’s extension menu', () => {
@@ -98,7 +101,7 @@ describe('the Crew row of a chat’s extension menu', () => {
     renderMenu([grantRow({ session_id: 'chat-1' })]);
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('active'));
     const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
     expect(crew).toHaveAttribute('aria-disabled', 'true');
     expect(crew).toHaveTextContent(accessCopy.extensionLocked);
 
@@ -115,7 +118,7 @@ describe('the Crew row of a chat’s extension menu', () => {
     renderMenu([grantRow({ session_id: 'chat-1', expired: true })]);
     await waitFor(() => expect(screen.getByTestId('state')).toHaveTextContent('revoked'));
     const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
     expect(crew).not.toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(crew);
     await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledWith('crew', 'chat-1', true));
@@ -124,7 +127,7 @@ describe('the Crew row of a chat’s extension menu', () => {
   it('toggles as before in a chat that never looked anything up', async () => {
     renderMenu([grantRow({ session_id: 'chat-1' })], false);
     const crew = await openMenu();
-    await waitFor(() => expect(crew).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(crew).toHaveAttribute('aria-selected', 'true'));
     expect(crew).not.toHaveAttribute('aria-disabled', 'true');
     expect(mocks.crewHttp).not.toHaveBeenCalled();
   });

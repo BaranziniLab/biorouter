@@ -125,12 +125,14 @@
   /* Composer block. Toolbar order mirrors ChatInput.tsx:
      DirSwitcher (FolderDot), Attach, Extensions (Puzzle), Skills (Layers),
      Knowledge (BookOpen), Cost (DollarSign), Model (Brain), mode label. */
-  function composer(stop) {
+  /* The placeholder follows composer/copy.ts: Home invites a first question,
+     a chat with messages asks for a follow-up. */
+  function composer(stop, placeholder) {
     var right = stop
       ? '<span class="bw-stop"><i></i></span>'
       : '<span class="bw-send">' + svgI('send') + 'Send</span>';
     return '<div class="bw-composer">' +
-      '<div class="ph">⌘↑ / ⌘↓ to navigate messages<span class="caret"></span></div>' +
+      '<div class="ph">' + placeholder + '<span class="caret"></span></div>' +
       '<div class="bw-toolbar">' +
       '<span class="chip">' + svgI('folderDot') + 'Users/wgu/Desktop/</span>' +
       '<span class="chip">' + svgI('attach') + '10</span>' +
@@ -148,7 +150,7 @@
      mode) behind a chevron. */
   function composerCompact() {
     return '<div class="bw-composer">' +
-      '<div class="ph">⌘↑ / ⌘↓ to navigate messages<span class="caret"></span></div>' +
+      '<div class="ph">Ask a follow-up<span class="caret"></span></div>' +
       '<div class="bw-toolbar">' +
       '<span class="chip">' + svgI('folderDot') + 'Users/wgu/Desktop/</span>' +
       '<span class="chip">' + svgI('attach') + '10</span>' +
@@ -182,7 +184,7 @@
       row('Remove codegraph indices folder', '06/03/2026') +
       row('New Session', '06/03/2026') +
       row('New Session', '06/03/2026') +
-      '</div>' + composer(false);
+      '</div>' + composer(false, 'Ask Biorouter anything…');
     return win('home', {}, main);
   };
 
@@ -209,7 +211,7 @@
       '<div class="bw-bubble">How many patients with type 2 diabetes are currently receiving statin therapy?</div>' +
       '<div class="bw-bubble-time">4:52 PM</div>' + rows +
       '<div class="bw-working"><span class="code">&lt;/&gt;</span> <span class="shim">biorouter is working on it…</span></div>' +
-      '</div>' + composer(true);
+      '</div>' + composer(true, 'Ask a follow-up');
     return win('chat', {}, main);
   };
 
@@ -372,7 +374,7 @@
       '<div class="bw-sched"><div class="body">' +
       '<div class="top"><span class="nm">Daily Meditation</span>' +
       '<span class="badge" title="Built into Biorouter.">Built-in</span></div>' +
-      '<div class="cron">At 03:00 AM — digests recent sessions into the Soul knowledge base</div>' +
+      '<div class="cron">Every day at 3:00 AM, digests recent sessions into the Soul knowledge base</div>' +
       '<div class="last">Last run: Jun 20, 2026, 3:00 AM</div></div>' +
       '<div class="acts"><span class="a">' + svg(I.edit) + '</span>' +
       '<span class="a">' + svg(I.pause) + '</span>' +

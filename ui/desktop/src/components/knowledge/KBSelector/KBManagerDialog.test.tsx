@@ -1,7 +1,8 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBManagerDialog } from './KBManagerDialog';
+import { knowledgeCopy } from '../copy';
 
 /**
  * The list-and-search half of the old `KBSelectorPalette.test.tsx`, ported when
@@ -92,14 +93,121 @@ describe('KBManagerDialog', () => {
     expect(mocks.refresh).toHaveBeenCalled();
   });
 
+  /**
+   * V3-R2-4. The manager is unmounted while the format chooser stands in for it, so what comes back
+   * is a new dialog, and Radix put its first focus on the header's InfoTip (ringed after a
+   * keyboard close) instead of the "Create knowledge base" button the person was on. The manager's
+   * `onOpenAutoFocus` sends it back there, once, and only when it is returning from the chooser.
+   */
+  describe('focus when the format chooser closes', () => {
+    it('returns to "Create knowledge base" on Escape', async () => {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      expect(screen.getByRole('dialog', { name: 'Create knowledge base' })).toBeInTheDocument();
+      expect(screen.queryByTestId('knowledge-kb-create')).toBeNull();
+
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+      // Not the InfoTip that sits first in the header.
+      expect(
+        screen.getByRole('button', { name: `About ${knowledgeCopy.manager.infoLabel}` })
+      ).not.toHaveFocus();
+    });
+
+    it('returns to it on Cancel too', async () => {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      await user.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+    });
+
+    it('returns to it when the chooser was the first thing opened (the picker row)', async () => {
+      const user = userEvent.setup();
+      render(<KBManagerDialog open startInCreate onOpenChange={mocks.onOpenChange} />);
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+    });
+
+    it('leaves a plain open on Radix first stop, and does not carry the return over to a reopen', async () => {
+      const user = userEvent.setup();
+      const { rerender } = open();
+      expect(screen.getByTestId('knowledge-kb-create')).not.toHaveFocus();
+
+      await user.click(screen.getByTestId('knowledge-kb-create'));
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.getByTestId('knowledge-kb-create')).toHaveFocus());
+
+      // Close the manager, open it again: a fresh open, not a return from the chooser.
+      rerender(<KBManagerDialog open={false} onOpenChange={mocks.onOpenChange} />);
+      expect(screen.queryByTestId('knowledge-kb-create')).toBeNull();
+      rerender(<KBManagerDialog open onOpenChange={mocks.onOpenChange} />);
+      expect(await screen.findByTestId('knowledge-kb-create')).not.toHaveFocus();
+    });
+  });
+
   // Two states per row, never three. Under the merged model membership and the
   // primary are the only two things a base can be, and the row body is the
   // "make primary" affordance.
+  //
+  // Spec 2.6: a switch is named by its row's visible label, the base's name, so
+  // the name never depends on state and never reads "Toggle …" or "Include …".
   it('offers exactly one membership switch per row', () => {
     open();
-    expect(screen.getByLabelText('Include Alpha in this chat')).toBeInTheDocument();
-    expect(screen.getByLabelText('Include Beta in this chat')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Beta' })).toBeInTheDocument();
     expect(screen.getAllByRole('switch')).toHaveLength(2);
+  });
+
+  // Spec 3.12: one sentence under the title (it is the dialog's description),
+  // the rest in an InfoTip, no footer Tip, and no mono id on any row: the id is
+  // behind "Copy ID" in the row's menu.
+  it('says one sentence, keeps ids off the rows, and copies an id from the menu', async () => {
+    open();
+    const dialog = screen.getByRole('dialog', { name: knowledgeCopy.manager.title });
+    expect(dialog).toHaveAccessibleDescription(
+      expect.stringContaining(knowledgeCopy.manager.subtitle)
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${knowledgeCopy.manager.infoLabel}` })
+    ).toHaveAccessibleDescription(knowledgeCopy.manager.info);
+    expect(screen.queryByText(/^Tip:/)).toBeNull();
+
+    const row = screen.getByRole('option', { name: /Alpha/ }).closest('.biorouter-list-row')!;
+    expect(within(row as HTMLElement).queryByText('alpha')).toBeNull();
+
+    await userEvent.click(screen.getByLabelText('More actions for Alpha'));
+    expect(
+      await screen.findByRole('menuitem', { name: knowledgeCopy.manager.copyId })
+    ).toBeInTheDocument();
+  });
+
+  // V3-09: the row's ⋯ is a RowActions cluster, so it rests hidden and shows on hover, focus or an
+  // open menu like every other list row (the rule is `.br-row-actions` in main.css; jsdom draws no
+  // CSS, so this pins the markup the rule hangs on). The switch is state and stays drawn.
+  it('draws the row ⋯ as a RowActions cluster, with the switch outside it', () => {
+    open();
+    const row = screen.getByRole('option', { name: /Alpha/ }).closest('.biorouter-list-row')!;
+    const more = within(row as HTMLElement).getByLabelText('More actions for Alpha');
+    expect(more.closest('[data-slot="row-actions"]')).not.toBeNull();
+    expect(more.closest('.br-row-actions')).not.toBeNull();
+    expect(
+      within(row as HTMLElement)
+        .getByRole('switch')
+        .closest('.br-row-actions')
+    ).toBeNull();
+  });
+
+  // V3-21: an item that opens a dialog or asks first takes the ellipsis, as Skills' Delete… does.
+  it('marks the items that open a dialog with an ellipsis', async () => {
+    open();
+    await userEvent.click(screen.getByLabelText('More actions for Alpha'));
+    expect(await screen.findByRole('menuitem', { name: 'Export as .brkb…' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Delete knowledge base…' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: knowledgeCopy.manager.rename })
+    ).toBeInTheDocument();
   });
 
   // Picking a primary used to close the palette, which made the selector feel
@@ -176,5 +284,65 @@ describe('KBManagerDialog', () => {
     const primary = screen.getByRole('option', { selected: true }).closest('.biorouter-list-row')!;
     expect(within(primary as HTMLElement).getByText(/Primary/i)).toBeInTheDocument();
     expect((primary as HTMLElement).className).not.toContain('tint-selected');
+  });
+
+  /**
+   * V3-R4-3, the rename card. "Enter a name." was a bare 14px line under the strip with no danger
+   * edge and no `aria-invalid`, and focus stayed on Save. It is the field's own error now.
+   */
+  describe('renaming with an empty name', () => {
+    async function startRename() {
+      const user = userEvent.setup();
+      open();
+      await user.click(screen.getByLabelText('More actions for Alpha'));
+      await user.click(await screen.findByRole('menuitem', { name: knowledgeCopy.manager.rename }));
+      const input = await screen.findByTestId('knowledge-kb-name-input');
+      return { user, input };
+    }
+
+    it('says so on the field, marks it invalid, and puts the caret in it', async () => {
+      const { user, input } = await startRename();
+      await user.clear(input);
+      await user.click(screen.getByTestId('knowledge-kb-submit'));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(knowledgeCopy.format.nameRequired);
+      expect(alert.closest('[data-slot="field-error"]')!.className).toMatch(/\btext-supporting\b/);
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(input).toHaveAccessibleDescription(knowledgeCopy.format.nameRequired);
+      expect(input).toHaveFocus();
+      // The card is named by its label, which points at the input.
+      expect(input).toHaveAccessibleName('Rename "Alpha"');
+    });
+
+    // Ruling 22 (FR-R3-3), the sibling of V3-R9-4: Save is coral while it can act, neutral and
+    // still pressable once the name is emptied (its click only names the missing field).
+    it('draws Save coral while the name can be saved and neutral once it is emptied', async () => {
+      const { user, input } = await startRename();
+      const save = screen.getByTestId('knowledge-kb-submit');
+      expect(save.classList.contains('bg-background-accent')).toBe(true);
+      expect(save.classList.contains('br-fill-rest')).toBe(false);
+
+      await user.clear(input);
+      expect(save.classList.contains('br-fill-rest')).toBe(true);
+      expect(save.classList.contains('bg-background-accent')).toBe(false);
+      expect(save).toBeEnabled();
+      await user.click(save);
+      expect(await screen.findByRole('alert')).toHaveTextContent(knowledgeCopy.format.nameRequired);
+
+      await user.type(input, 'A');
+      expect(save.classList.contains('bg-background-accent')).toBe(true);
+    });
+
+    it('clears the message when the person types, and Enter asks the same way', async () => {
+      const { user, input } = await startRename();
+      await user.clear(input);
+      await user.type(input, '{Enter}');
+      expect(await screen.findByRole('alert')).toHaveTextContent(knowledgeCopy.format.nameRequired);
+
+      await user.type(input, 'A');
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(input).not.toHaveAttribute('aria-invalid');
+    });
   });
 });

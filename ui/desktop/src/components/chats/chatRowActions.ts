@@ -1,7 +1,5 @@
-import type { ComponentType } from 'react';
-
-import { Copy, MessageSquare, NewWindow } from '../icons/app-icons';
 import { toastError, toastSuccess } from '../../toasts';
+import { chatRowCopy } from './copy';
 
 /**
  * The three actions every chat row offers, in one place.
@@ -16,13 +14,16 @@ import { toastError, toastSuccess } from '../../toasts';
  * component trying to be both menus at once.
  *
  * The order is fixed by the issue and is not arbitrary: the two openers first,
- * because they are what a row is usually right-clicked for, then the copy.
+ * because they are what a row is usually right-clicked for, then the copy. A tab
+ * has no "open in new tab" (it is one), so its list starts at the window.
+ *
+ * The descriptors carry no icon: chat-row menus are text only (spec 2.6, Crew's
+ * `ChannelRow` menus), so an icon here would only name a glyph nothing draws.
  */
 export type ChatRowAction = {
   /** Stable key for tests and React keys — never shown. */
   key: 'open-tab' | 'open-window' | 'copy-id';
   label: string;
-  icon: ComponentType<{ className?: string }>;
   run: () => void;
 };
 
@@ -40,10 +41,15 @@ export type ChatRowActionTarget = {
    * Open the conversation in a tab. **Supplied by the surface**, because each
    * one already has a working path for it and the issue is explicit that this
    * must reuse them rather than add a second lifecycle: History passes the same
-   * `onSelectSession` its row click calls, Recents the same `onOpen`, the tab
-   * strip its own `onSelect`.
+   * `onSelectSession` its row click calls, Recents the same `onOpen`.
+   *
+   * `null` is the tab strip's answer, and it is stated rather than left out so
+   * a surface cannot forget the opener by accident: a tab IS the open tab, so
+   * there is nothing to open, and the menu leaves the item out. It used to map
+   * to the strip's own `onSelect`, which only selected the tab the person was
+   * already pointing at and read as an action that did nothing (vision V2-R6-3).
    */
-  openInNewTab: () => void;
+  openInNewTab: (() => void) | null;
 };
 
 /**
@@ -68,7 +74,7 @@ export async function copyConversationId(sessionId: string): Promise<boolean> {
       await navigator.clipboard.writeText(sessionId);
     }
     toastSuccess({
-      title: 'Conversation ID copied',
+      title: chatRowCopy.copyId.copied,
       msg: sessionId,
       toastOptions: { autoClose: 2000 },
     });
@@ -76,31 +82,27 @@ export async function copyConversationId(sessionId: string): Promise<boolean> {
   } catch (error) {
     console.error('Failed to copy conversation ID:', error);
     toastError({
-      title: 'Could not copy the conversation ID',
-      msg: `Copy it by hand: ${sessionId}`,
+      title: chatRowCopy.copyId.failed,
+      msg: chatRowCopy.copyId.failedDetail(sessionId),
     });
     return false;
   }
 }
 
 export function chatRowActions(target: ChatRowActionTarget): ChatRowAction[] {
+  const { openInNewTab } = target;
   return [
-    {
-      key: 'open-tab',
-      label: 'Open in new tab',
-      icon: MessageSquare,
-      run: target.openInNewTab,
-    },
+    ...(openInNewTab
+      ? [{ key: 'open-tab' as const, label: chatRowCopy.menu.openInNewTab, run: openInNewTab }]
+      : []),
     {
       key: 'open-window',
-      label: 'Open in new window',
-      icon: NewWindow,
+      label: chatRowCopy.menu.openInNewWindow,
       run: () => openChatInNewWindow(target.sessionId, target.workingDir),
     },
     {
       key: 'copy-id',
-      label: 'Copy conversation ID',
-      icon: Copy,
+      label: chatRowCopy.menu.copyId,
       run: () => void copyConversationId(target.sessionId),
     },
   ];

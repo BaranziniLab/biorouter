@@ -12,6 +12,39 @@ interface BackButtonProps extends VariantProps<typeof buttonVariants> {
   shape?: 'pill' | 'round';
 }
 
+/**
+ * The mouse's "back" key (and the OS's browser-backward command) leaves the page it is on. The main
+ * process forwards the command as `mouse-back-button-clicked`, and a raw `mouseup` of button 3 or 4
+ * covers a mouse the OS does not report it for. Only inside Electron: a browser has its own Back.
+ *
+ * `BackButton` calls this itself; a page whose Back is another control (a `PageHeader`'s `onBack`,
+ * which is only a button) calls it with the same handler, so the key does the same thing as the
+ * click. Pass a stable function (`useCallback`) or the listeners are re-attached on every render;
+ * `undefined` listens to nothing, so a page whose Back is optional can call it unconditionally.
+ * One page, one caller: two hooks mounted together both leave.
+ */
+export function useMouseBackButton(onBack: (() => void) | undefined): void {
+  useEffect(() => {
+    if (!onBack || !window.electron) return undefined;
+
+    // Wrapped, so the IPC event the main process passes along never reaches the caller's handler.
+    const disposeCommand = window.electron.on('mouse-back-button-clicked', () => onBack());
+    const onMouseUp = (event: MouseEvent) => {
+      // Buttons 3 and 4 are the mouse's back and forward keys.
+      if (event.button === 3 || event.button === 4) {
+        onBack();
+        event.preventDefault();
+      }
+    };
+    document.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      disposeCommand?.();
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [onBack]);
+}
+
 const BackButton: React.FC<BackButtonProps> = ({
   onClick,
   className = '',
@@ -31,34 +64,7 @@ const BackButton: React.FC<BackButtonProps> = ({
     }
   }, [onClick]);
 
-  // Set up mouse back button event listener.
-  useEffect(() => {
-    const handleMouseBack = () => {
-      handleExit();
-    };
-
-    if (window.electron) {
-      const mouseBackHandler = (e: MouseEvent) => {
-        // MouseButton 3 or 4 is typically back button.
-        if (e.button === 3 || e.button === 4) {
-          handleExit();
-          e.preventDefault();
-        }
-      };
-
-      const disposeMouseBack = window.electron.on('mouse-back-button-clicked', handleMouseBack);
-
-      // Also listen for mouseup events directly, for better OS compatibility.
-      document.addEventListener('mouseup', mouseBackHandler);
-
-      return () => {
-        disposeMouseBack?.();
-        document.removeEventListener('mouseup', mouseBackHandler);
-      };
-    }
-
-    return undefined;
-  }, [handleExit]);
+  useMouseBackButton(handleExit);
 
   return (
     <Button

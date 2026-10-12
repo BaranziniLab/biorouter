@@ -376,4 +376,4 @@ review cite as `state-awareness.md gap #N`; the numbering below is that scheme a
 - [Compaction and context management](compaction-and-context-management.md) — why todos stored in `extension_data` survive a compaction that discards the message history.
 - [Shadow git checkpoints design](../../../agent-loop/designs/shadow-git-checkpoints.md) — the BR-43 design that answers gap #2, this review's "single biggest gap".
 - [Cross-session memory design](../../../agent-loop/designs/cross-session-memory.md) — the BR-17 design that answers the disjoint-memory gaps #5 and #6.
-- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how BioRouter's memory stack measures against nine other coding agents.
+- [Compaction and memory compared with other agents](../competitive-comparison/compaction-and-memory.md) — how BioRouter's memory stack measures against eight other coding agents.

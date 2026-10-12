@@ -818,6 +818,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // start" has four answers and only one of them is obvious.
     let workflow_provider = workflow_settings.and_then(|s| s.biorouter_provider.clone());
     let global_provider = config.get_biorouter_provider().ok();
+    // R-30: whether the person typed a model for this run. Taken before the
+    // match below moves both flags.
+    let person_named_a_model = session_config.provider.is_some() || session_config.model.is_some();
     // A workflow's model belongs to the provider it pins, else to the configured one.
     let workflow_model_owner = workflow_provider
         .clone()
@@ -1035,7 +1038,21 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session_config.session_id.unwrap()
     };
 
-    if let Err(e) = agent.update_provider(new_provider, &session_id).await {
+    // R-30: binding the model a chat runs on while opening (or creating) it is
+    // setup, not activity in it, so it must not move the chat in `session list`
+    // or the desktop's lists. The one exception is a resume where the person
+    // typed a model the chat does not record: that is a model switch, and it
+    // moves the chat exactly as the desktop's model picker does. This runs
+    // before the missing-extensions prompt, so a resume the person then cancels
+    // used to move the chat as well.
+    let switches_model = session_config.resume && person_named_a_model && !restore_saved_provider;
+    let bound = if switches_model {
+        agent.update_provider(new_provider, &session_id).await
+    } else {
+        biorouter::session::activity::opening(agent.update_provider(new_provider, &session_id))
+            .await
+    };
+    if let Err(e) = bound {
         output::render_error(&format!("Failed to initialize agent: {}", e));
         close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
         process::exit(1);
@@ -1204,10 +1221,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session.hold_ephemeral_store_dir(dir);
     }
 
-    if let Err(e) = session
-        .agent
-        .persist_extension_state(&session_id.clone())
-        .await
+    // R-30: recording the roster this chat was opened with is setup, not
+    // activity in it. Resuming must not move the chat to the top of
+    // `session list`.
+    if let Err(e) = biorouter::session::activity::opening(
+        session.agent.persist_extension_state(&session_id.clone()),
+    )
+    .await
     {
         tracing::warn!("Failed to save extension state: {}", e);
     }

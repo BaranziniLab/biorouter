@@ -9,6 +9,7 @@ vi.mock('../../toasts', async (original) => ({
 
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { toastError } from '../../toasts';
+import { OPEN_IN_BROWSER_COPY } from '../../utils/openInBrowser';
 import ArtifactViewer from './ArtifactViewer';
 
 /**
@@ -53,7 +54,7 @@ describe('opening a live app’s link in the browser from the panel', () => {
     await userEvent.click(await screen.findByRole('button', { name: /open in default browser/i }));
     expect(openExternal).toHaveBeenCalledWith(appLink);
     expect(toastError).toHaveBeenCalledWith({
-      title: 'Could not open the app',
+      title: OPEN_IN_BROWSER_COPY.failedTitle,
       msg: 'This app no longer exists.',
     });
   });

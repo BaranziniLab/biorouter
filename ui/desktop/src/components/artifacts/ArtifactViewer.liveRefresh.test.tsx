@@ -143,7 +143,8 @@ describe('completed coding changes refresh the existing artifact', () => {
     rerender(view(1));
     await waitFor(() => expect(readArtifactFile).toHaveBeenCalledTimes(2));
     expect(screen.getByText('left')).toBeInTheDocument();
-    expect(screen.queryByText('Loading')).not.toBeInTheDocument();
+    // A refresh keeps what is on screen: no loading state at all, word or skeleton.
+    expect(document.querySelector('[data-preview-loading]')).toBeNull();
     readArtifactFile.mockResolvedValueOnce({
       kind: 'text',
       path: artifact.path,
@@ -391,7 +392,11 @@ describe('completed coding changes refresh the existing artifact', () => {
       </ThemeProvider>
     );
     const { rerender } = render(view(0));
-    const frame = (await screen.findByLabelText('form.html')) as HTMLIFrameElement;
+    // The tab is named `form.html` too, so the frame is asked for as the frame it is.
+    const frameElement = () =>
+      document.querySelector<HTMLIFrameElement>('iframe[aria-label="form.html"]');
+    await waitFor(() => expect(frameElement()).not.toBeNull());
+    const frame = frameElement() as HTMLIFrameElement;
     expect(frame.srcdoc).toContain('biorouter.preview.activity.v1');
     act(() =>
       window.dispatchEvent(
@@ -419,9 +424,7 @@ describe('completed coding changes refresh the existing artifact', () => {
     expect(frame.isConnected).toBe(true);
     fireEvent.click(update);
     await waitFor(() =>
-      expect((screen.getByLabelText('form.html') as HTMLIFrameElement).srcdoc).toContain(
-        'Updated form'
-      )
+      expect((frameElement() as HTMLIFrameElement).srcdoc).toContain('Updated form')
     );
     expect(frame.isConnected).toBe(false);
     expect(readArtifactFile).toHaveBeenCalledTimes(3);

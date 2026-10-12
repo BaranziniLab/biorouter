@@ -1,44 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button } from '../../ui/button';
-import { Check } from '../../icons/app-icons';
-import { useTransientFlag } from '../../../hooks/useTransientFlag';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
-
-const HelpText = () => (
-  <div className="text-xs text-text-muted leading-relaxed p-3 rounded-element bg-background-muted border border-border-subtle">
-    <span className="font-medium text-text-default">.biorouterhints</span> gives Biorouter
-    additional context about your project. The{' '}
-    <span className="font-medium text-text-default">Developer</span> extension must be enabled
-    (Extensions page), and chats must be restarted for changes to take effect.
-  </div>
-);
-
-const ErrorDisplay = ({ error }: { error: Error }) => (
-  <div className="text-xs text-text-danger p-3 rounded-element bg-background-danger/10 border border-border-danger/40">
-    Error reading .biorouterhints: {error.message}
-  </div>
-);
-
-const FileInfo = ({ filePath, found }: { filePath: string; found: boolean }) => (
-  <div className="flex items-center gap-1.5 text-xs mb-2">
-    {found ? (
-      <span className="flex items-center gap-1 text-text-success font-medium flex-shrink-0">
-        <Check className="w-3 h-3" />
-        Found
-      </span>
-    ) : (
-      <span className="text-text-muted flex-shrink-0">New file</span>
-    )}
-    <span className="text-text-muted font-mono truncate">{filePath}</span>
-  </div>
-);
+import { Field } from '../../ui/field';
+import { Note } from '../../ui/note';
+import { Textarea } from '../../ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { ModalShell } from '../../ModalShell';
+import { useTransientFlag, useTransientValue } from '../../../hooks/useTransientFlag';
+import { copyToClipboard } from '../../../utils/clipboard';
+import { hintsDialogCopy } from './copy';
 
 const getBioRouterHintsFile = async (filePath: string) => await window.electron.readFile(filePath);
 
@@ -47,6 +16,11 @@ interface BioRouterHintsModalProps {
   setIsBioRouterHintsModalOpen: (isOpen: boolean) => void;
 }
 
+/**
+ * Settings > Chat > Project > Project hints > Edit…: the project's `.biorouterhints` file in one
+ * field. `ModalShell` `lg` (spec §3.13); the requirement that makes it take effect is the
+ * field's one helper line, not a boxed paragraph.
+ */
 export const BioRouterHintsModal = ({
   directory,
   setIsBioRouterHintsModalOpen,
@@ -57,6 +31,12 @@ export const BioRouterHintsModal = ({
   const [biorouterHintsFileReadError, setBioRouterHintsFileReadError] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, markSaved, clearSaved] = useTransientFlag(3000);
+  const [copyResult, noteCopyResult, clearCopyResult] = useTransientValue<'copied' | 'failed'>(
+    3000
+  );
+  // The footer's own box, where the clipboard's last-resort fallback may put its hidden field:
+  // inside the dialog, because its focus trap pulls focus back out of anything on <body>.
+  const footerStartRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const fetchBioRouterHintsFile = async () => {
@@ -67,7 +47,7 @@ export const BioRouterHintsModal = ({
         setBioRouterHintsFileReadError(found && error ? error : '');
       } catch (error) {
         console.error('Error fetching .biorouterhints file:', error);
-        setBioRouterHintsFileReadError('Failed to access .biorouterhints file');
+        setBioRouterHintsFileReadError(hintsDialogCopy.accessFailed);
       }
     };
     if (directory) fetchBioRouterHintsFile();
@@ -83,56 +63,84 @@ export const BioRouterHintsModal = ({
       setBioRouterHintsFileFound(true);
     } catch (error) {
       console.error('Error writing .biorouterhints file:', error);
-      setBioRouterHintsFileReadError('Failed to save .biorouterhints file');
+      setBioRouterHintsFileReadError(hintsDialogCopy.saveFailed);
     } finally {
       setIsSaving(false);
     }
   };
 
+  const copyPath = async () => {
+    clearCopyResult();
+    const landed = await copyToClipboard(biorouterHintsFilePath, footerStartRef.current);
+    noteCopyResult(landed ? 'copied' : 'failed');
+  };
+
   return (
-    <Dialog open={true} onOpenChange={(open) => setIsBioRouterHintsModalOpen(open)}>
-      <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>Project hints</DialogTitle>
-          <DialogDescription>
-            Configure <code className="font-mono text-xs">.biorouterhints</code> to give Biorouter
-            additional context about your project
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex-1 overflow-y-auto space-y-3 py-2">
-          <HelpText />
-
-          {biorouterHintsFileReadError ? (
-            <ErrorDisplay error={new Error(biorouterHintsFileReadError)} />
-          ) : (
-            <div>
-              <FileInfo filePath={biorouterHintsFilePath} found={biorouterHintsFileFound} />
-              <textarea
-                value={biorouterHintsFile}
-                className="w-full h-72 border border-border-subtle rounded-element p-3 text-sm font-mono resize-none bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
-                onChange={(event) => setBioRouterHintsFile(event.target.value)}
-                placeholder="# Project context for Biorouter&#10;# e.g. language, frameworks, coding style, important files..."
-              />
-            </div>
-          )}
-        </div>
-
-        <DialogFooter className="border-t border-border-subtle pt-4 mt-1">
-          {saveSuccess && (
-            <span className="text-text-success text-xs flex items-center gap-1 mr-auto font-medium">
-              <Check className="w-3.5 h-3.5" />
-              Saved
-            </span>
-          )}
-          <Button variant="ghost" size="sm" onClick={() => setIsBioRouterHintsModalOpen(false)}>
-            Close
+    <ModalShell
+      open
+      onOpenChange={(open) => setIsBioRouterHintsModalOpen(open)}
+      size="lg"
+      purpose="form"
+      title={hintsDialogCopy.title}
+      subtitle={biorouterHintsFileFound ? hintsDialogCopy.found : hintsDialogCopy.newFile}
+      footer={
+        <>
+          {/* The path is behind an action, not on a line (principle 10): Copy path, with the
+              whole path in its tooltip so the person can see which file before it is copied. */}
+          <div ref={footerStartRef} className="mr-auto flex min-w-0 items-center gap-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="sm" onClick={copyPath}>
+                  {hintsDialogCopy.copyPath}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <span className="font-mono">{biorouterHintsFilePath}</span>
+              </TooltipContent>
+            </Tooltip>
+            {saveSuccess ? (
+              <span className="text-supporting text-text-success" role="status">
+                {hintsDialogCopy.saved}
+              </span>
+            ) : copyResult === 'copied' ? (
+              <span className="text-supporting text-text-success" role="status">
+                {hintsDialogCopy.pathCopied}
+              </span>
+            ) : copyResult === 'failed' ? (
+              <span className="text-supporting text-text-danger" role="alert">
+                {hintsDialogCopy.copyFailed}
+              </span>
+            ) : null}
+          </div>
+          <Button variant="secondary" onClick={() => setIsBioRouterHintsModalOpen(false)}>
+            {hintsDialogCopy.close}
           </Button>
-          <Button size="sm" onClick={writeFile} disabled={isSaving}>
-            {isSaving ? 'Saving…' : 'Save'}
+          <Button onClick={writeFile} disabled={isSaving}>
+            {isSaving ? hintsDialogCopy.saving : hintsDialogCopy.save}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      {biorouterHintsFileReadError ? (
+        <Note tone="danger" role="alert">
+          {hintsDialogCopy.readError(biorouterHintsFileReadError)}
+        </Note>
+      ) : (
+        <Field
+          id="project-hints-contents"
+          label={hintsDialogCopy.field}
+          helper={hintsDialogCopy.helper}
+        >
+          <Textarea
+            id="project-hints-contents"
+            rows={12}
+            value={biorouterHintsFile}
+            onChange={(event) => setBioRouterHintsFile(event.target.value)}
+            placeholder={hintsDialogCopy.placeholder}
+            className="resize-none"
+          />
+        </Field>
+      )}
+    </ModalShell>
   );
 };

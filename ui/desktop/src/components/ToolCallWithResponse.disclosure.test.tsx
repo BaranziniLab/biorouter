@@ -33,7 +33,8 @@ function show(
     />
   );
   const toggle = view.container.querySelector('button.br-tool-disclosure')!;
-  fireEvent.click(toggle);
+  // A call with nothing to show is a static line with no toggle.
+  if (toggle) fireEvent.click(toggle);
   return { ...view, toggle, onOpenArtifact };
 }
 
@@ -96,8 +97,27 @@ describe('one tool disclosure', () => {
 
   it('pulses running text without a status-dot overlay', () => {
     const { container } = show({}, undefined, 'developer__exec_command', true);
-    expect(container.querySelector('.br-tool-running')).not.toBeNull();
+    // The row breathes (authored CSS on `[data-running]`, one period for every
+    // working loop in the transcript); the glyph carries no dot.
+    expect(container.querySelector('.br-transcript-row[data-running]')).not.toBeNull();
     expect(screen.getByLabelText('Tool status: loading')).toHaveClass('sr-only');
     expect(container.querySelector('.animate-pulse')).toBeNull();
+  });
+
+  it('opens into one well with labelled sections and no rules between them', () => {
+    const { container } = show({ cmd: 'printf hello' }, 'hello');
+    const wells = container.querySelectorAll('.br-transcript-row-well');
+    expect(wells).toHaveLength(1);
+    const labels = [...wells[0].querySelectorAll('.br-transcript-row-section-label')].map(
+      (node) => node.textContent
+    );
+    expect(labels).toEqual(['Input', 'Output']);
+    expect(container.querySelector('.border-t')).toBeNull();
+  });
+
+  it('draws a call with nothing to show as a static line', () => {
+    const { container } = show({}, undefined, 'developer__exec_command', true);
+    expect(container.querySelector('button.br-tool-disclosure')).toBeNull();
+    expect(container.querySelector('.br-transcript-row-chevron')).toBeNull();
   });
 });

@@ -1,4 +1,6 @@
 import { Input } from '../../../ui/input';
+import { Field } from '../../../ui/field';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 
 interface ExtensionTimeoutFieldProps {
   timeout: number;
@@ -6,6 +8,13 @@ interface ExtensionTimeoutFieldProps {
   submitAttempted: boolean;
 }
 
+/**
+ * How long a call to the extension may run, in seconds.
+ *
+ * ⚠ This field's error used to read "Timeout " (a sentence cut off at its first word), was
+ * `absolute` so it floated over whatever came next, and the label gave no unit. The unit is in
+ * the label now and the sentence is whole, in the field's own flow.
+ */
 export default function ExtensionTimeoutField({
   timeout,
   onChange,
@@ -25,22 +34,18 @@ export default function ExtensionTimeoutField({
   };
 
   return (
-    <div className="flex flex-col gap-4 mb-6">
-      {/* Row with Timeout and timeout input side by side */}
-      <div className="flex flex-col">
-        <div className="flex-1">
-          <label className="text-sm font-medium mb-2 block text-text-default">Timeout</label>
-        </div>
-
-        <Input
-          value={timeout}
-          onChange={(e) => onChange('timeout', e.target.value)}
-          className={`${!submitAttempted || isTimeoutValid() ? 'border-border-subtle' : 'border-border-danger'} text-text-default focus:border-border-subtle`}
-        />
-        {submitAttempted && !isTimeoutValid() && (
-          <div className="absolute text-xs text-text-danger mt-1">Timeout </div>
-        )}
-      </div>
-    </div>
+    <Field
+      id="extension-timeout"
+      label={COPY.timeoutLabel}
+      error={submitAttempted && !isTimeoutValid() ? COPY.timeoutRequired : undefined}
+    >
+      <Input
+        value={timeout}
+        inputMode="numeric"
+        // A number of seconds is a short field; its message is not, and stays whole beside it.
+        className="br-ext-timeout-input"
+        onChange={(e) => onChange('timeout', e.target.value)}
+      />
+    </Field>
   );
 }

@@ -21,6 +21,9 @@
 //! sequential test in its own integration binary rather than several parallel
 //! ones.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::path::PathBuf;
 
 use biorouter_mcp::developer::rmcp_developer::TextEditorParams;

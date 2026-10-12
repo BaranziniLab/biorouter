@@ -1,9 +1,11 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useMemo, useState } from 'react';
-import { AlertCircle, LoaderCircle, Sparkles } from '../../icons/app-icons';
+import { AlertCircle, Sparkles } from '../../icons/app-icons';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
+import { Spinner } from '../../ui/spinner';
+import { knowledgeCopy } from '../copy';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
 import { GraphFacetStrip } from './GraphFacetStrip';
@@ -49,6 +51,10 @@ interface Props {
  * Refresh button's icon spins and nothing else changes. Blanking a graph the
  * user is reading, in order to redraw the same graph, is a regression disguised
  * as feedback.
+ *
+ * ⚠ **A flush column, not a card** (spec 3.12). The pane used to be a bordered,
+ * rounded box beside the Sources card; the workspace now fills edge to edge
+ * under the band and the columns divide by Crew's inset hairline.
  */
 export function KnowledgeGraphPanel({
   kbId,
@@ -80,9 +86,9 @@ export function KnowledgeGraphPanel({
   const active = facetsActive(facets);
 
   return (
-    <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default">
+    <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden bg-background-default">
       {previewSha && (
-        <div className="flex flex-none items-center justify-between gap-2 border-b border-border-subtle bg-wash-warning px-3 py-2 text-supporting text-text-warning">
+        <div className="flex flex-none items-center justify-between gap-2 bg-wash-warning px-3 py-2 text-supporting text-text-warning">
           <span>Previewing commit {previewSha.slice(0, 7)}: read-only</span>
           <Button variant="ghost" size="sm" onClick={onClearPreview}>
             Exit preview
@@ -105,7 +111,7 @@ export function KnowledgeGraphPanel({
       {/* canvas + detail rail. The rail only exists at the widest step; below
           it the same legend renders as the dismissible card inside the canvas. */}
       <div className="flex min-h-0 flex-1">
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
+        <div className="br-ground-recessed relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background-muted">
           {/* Two absolutely-stacked opacity layers, never a swap: loading out at
             `--dur-fast`, content in at `--dur-med`. */}
           <div
@@ -116,10 +122,7 @@ export function KnowledgeGraphPanel({
           >
             {firstLoad && (
               <>
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="h-icon-row w-icon-row animate-spin text-text-muted"
-                />
+                <Spinner className="text-text-muted" />
                 <span className="text-secondary text-text-muted">Loading graph</span>
               </>
             )}
@@ -140,6 +143,10 @@ export function KnowledgeGraphPanel({
                 title="Could not load the graph"
                 description={error}
                 actions={
+                  // The canvas ground is `--background-muted`, the very value the resting fill
+                  // has (1.00:1), so a filled control here rests on the strong step and hovers one
+                  // fill deeper: the shared `.br-ground-recessed` on the canvas sets both for every filled
+                  // control on it (R-27, design.md 9.11), so the button carries no ground of its own.
                   <Button variant="secondary" onClick={onRefresh}>
                     Try again
                   </Button>
@@ -149,8 +156,8 @@ export function KnowledgeGraphPanel({
               <EmptyState
                 className="m-auto"
                 icon={Sparkles}
-                title="Nothing digested yet"
-                description="Stage a source in the Sources rail and press Digest."
+                title={knowledgeCopy.graph.emptyTitle}
+                description={knowledgeCopy.graph.emptyHint}
               />
             ) : hasNodes && model ? (
               <ForceGraphCanvas

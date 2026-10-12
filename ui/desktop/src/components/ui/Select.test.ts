@@ -28,7 +28,34 @@ const SELECT = readFileSync(join(__dirname, 'Select.tsx'), 'utf8');
 describe('the shared Select', () => {
   it('stands react-selects 38px min-height floor down', () => {
     // Whitespace-tolerant: prettier may reflow the arrow body.
-    expect(SELECT).toMatch(/control:\s*\(base\)\s*=>\s*\(\{\s*\.\.\.base,\s*minHeight:\s*0\s*\}\)/);
+    expect(SELECT).toMatch(
+      /control:\s*\(base, state\)\s*=>\s*\(\{\s*\.\.\.base,\s*minHeight:\s*0,/
+    );
+  });
+
+  /**
+   * R-27 (design.md 9.11): the trigger is Input's filled field. It rests on the control ground
+   * (`--background-fill`, or the page ground inside a filled box) with a TRANSPARENT edge (forced
+   * colours still paint it), steps to `--background-fill-strong` under the pointer unless focused
+   * or disabled, and firms to `--border-focus` while focused. Emotion writes all of it unlayered,
+   * so no utility can put a resting line back.
+   */
+  it('rests filled with no outline and firms an edge on focus', () => {
+    const stylesBlock = SELECT.match(/styles=\{\{([\s\S]*?)\n {6}\}\}/)?.[1] ?? '';
+    expect(stylesBlock).toMatch(
+      /borderColor:\s*state\.isFocused\s*\?\s*'var\(--border-focus\)'\s*:\s*'transparent'/
+    );
+    expect(stylesBlock).toMatch(
+      /backgroundColor:\s*'var\(--br-control-ground, var\(--background-fill\)\)'/
+    );
+    expect(stylesBlock).toMatch(
+      /state\.isFocused \|\| state\.isDisabled\s*\?\s*\{\}\s*:\s*\{ '&:hover': \{ backgroundColor: 'var\(--background-fill-strong\)' \} \}/
+    );
+    const control = SELECT.match(/control: \(\{ isDisabled \}\) =>([\s\S]*?)\.join/)?.[1];
+    expect(control).toMatch(/'flex h-control-md w-full items-center rounded-element border px-2'/);
+    // No resting line, no inset-ring whisper, no ground utility to fight the styles above.
+    expect(control).not.toMatch(/inset-ring|bg-background-/);
+    expect(SELECT).not.toMatch(/'border-border-emphasized'|var\(--border-control\)/);
   });
 
   /**
@@ -42,8 +69,45 @@ describe('the shared Select', () => {
     expect(stylesBlock).toContain('minHeight: 0');
   });
 
+  /**
+   * Spec 2.6 / principle 9: every menu opens the same way. The react-select menu has no Radix
+   * `data-state`, so it carries `.br-select-menu`, an authored keyframe on the same values
+   * (opacity, scale .97, 4px toward the side it hangs from, `--dur-fast-max`, `--ease-out`).
+   */
+  it('opens the menu with the shared entrance, from the side it hangs from', () => {
+    expect(SELECT).toMatch(/menu:\s*\(\{ placement \}\)/);
+    expect(SELECT).toContain('br-select-menu');
+    expect(SELECT).toContain("placement === 'top'");
+    expect(SELECT).toContain('br-select-menu--top');
+    const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+    const rule = css.match(/\n\.br-select-menu \{([^}]*)\}/)?.[1] ?? '';
+    expect(rule).toMatch(/animation:\s*br-select-menu-in var\(--dur-fast-max\) var\(--ease-out\)/);
+    const keyframes = css.match(/@keyframes br-select-menu-in \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(keyframes).toMatch(/opacity:\s*0/);
+    expect(keyframes).toMatch(/scale\(0\.97\)/);
+    expect(css).toMatch(/\.br-select-menu--top \{[^}]*--br-select-menu-from:\s*4px/);
+  });
+
   /** The rung itself still lives on the class, as the one source of truth. */
   it('keeps the 32px rung on the control class', () => {
     expect(SELECT).toMatch(/'flex h-control-md w-full items-center/);
+  });
+
+  // V4-11: Emotion's unlayered `fontSize: inherit` on every option beats the row's own
+  // `text-secondary`, so the option takes the MENU's size. The menu carries the menu row's role,
+  // so a select's options are 13px like every DropdownMenu row beside them, not 14px.
+  it('sizes its menu as every menu row: text-secondary, not text-body', () => {
+    const menu = SELECT.match(/menu: \(\{ placement \}\) =>\s*`([^`]*)`/);
+    expect(menu, 'the menu classNames entry').toBeTruthy();
+    expect(menu![1]).toMatch(/\btext-secondary\b/);
+    expect(menu![1]).not.toMatch(/\btext-body\b/);
+    expect(SELECT).toMatch(/noOptionsMessage: \(\) => '[^']*\btext-secondary\b/);
+  });
+
+  it('marks the chosen option with the check and the wash, never with weight', () => {
+    const selected = SELECT.match(/if \(isSelected\) \{[\s\S]*?return `([^`]*)`/);
+    expect(selected).toBeTruthy();
+    expect(selected![1]).toMatch(/tint-selected/);
+    expect(selected![1]).not.toMatch(/font-(medium|semibold|bold)/);
   });
 });

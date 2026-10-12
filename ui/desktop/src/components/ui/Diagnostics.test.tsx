@@ -50,6 +50,94 @@ describe('DiagnosticsModal', () => {
     >);
   });
 
+  /**
+   * Principle 2: a visible line is a label, a value or a state word; the explanation of the other
+   * way to report sits behind an InfoTip. What leaves the machine (the list, the sensitive-data
+   * warning, the private-chat warning) stays in the page.
+   */
+  it('keeps what leaves the machine visible and puts the tips behind an InfoTip', () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    expect(dialog).toHaveTextContent('A diagnostics report contains the following:');
+    expect(dialog).toHaveTextContent('Your current chat messages');
+    expect(dialog).toHaveTextContent('do not share the diagnostics file publicly');
+    expect(dialog).not.toHaveTextContent('consider attaching');
+
+    const tip = screen.getByTestId('diagnostics-agent-hint');
+    expect(tip).toHaveAccessibleName('About Report a problem');
+    expect(tip).toHaveAccessibleDescription(
+      /report a bug.*removes paths and credentials.*exact text before anything is published/
+    );
+    expect(tip.closest('p')).toBeNull();
+  });
+
+  /**
+   * V4-R4-2: the one dialog recipe. It was a raw, centred DialogContent with a warning tile before
+   * the title and 28px footer buttons; geometry is measured in `diagnosticsDialog.browser.test.tsx`.
+   */
+  it('is the shared dialog: ModalShell md at the top, the header rule, no tile, a word-only footer', () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    expect(dialog).toHaveAttribute('data-size', 'md');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+
+    const heading = screen.getByRole('heading', { name: 'Report a problem' });
+    expect(heading).toHaveTextContent(/^Report a problem$/);
+    const header = heading.closest('.border-b')!;
+    expect(header).not.toBeNull();
+    // The title row holds the title and its InfoTip, and nothing painted before them.
+    expect(header.querySelectorAll('svg')).toHaveLength(1);
+    expect(screen.getByTestId('diagnostics-agent-hint')).toContainElement(
+      header.querySelector('svg')
+    );
+    expect(header.querySelector('[class*="bg-"]')).toBeNull();
+
+    // What leaves the machine is the dialog's description, in body text.
+    expect(dialog).toHaveAccessibleDescription(
+      /A diagnostics report contains the following:.*Your current chat messages.*do not share the diagnostics file publicly/
+    );
+
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((button) => button.textContent && button.textContent !== 'Close')
+      .filter((button) => !button.classList.contains('br-info-tip'));
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Cancel',
+      'Generate diagnostics',
+      'File a bug on GitHub',
+    ]);
+    for (const button of buttons) {
+      expect(button).toHaveClass('h-control-md');
+      expect(button).not.toHaveClass('h-control-sm');
+      expect(button.querySelector('svg')).toBeNull();
+    }
+    // The dismiss and the second action are secondary; the one coral button files the bug.
+    expect(buttons.filter((button) => button.classList.contains('bg-background-accent'))).toEqual([
+      buttons[2],
+    ]);
+  });
+
+  it('opens with focus on the dialog box, not on the title’s InfoTip', async () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(screen.getByTestId('diagnostics-agent-hint')).not.toHaveFocus();
+  });
+
+  it('must be answered while the bundle is being made: no close button, Escape ignored', async () => {
+    const onClose = vi.fn();
+    saveDiagnosticsBundle.mockImplementation(() => new Promise(() => {}));
+    render(<DiagnosticsModal isOpen onClose={onClose} sessionId="20260716_27" />);
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Preparing diagnostics bundle');
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: 'Report a problem' })).toBeVisible();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('generates and saves the archive through the native diagnostics IPC', async () => {
     const onClose = vi.fn();
     saveDiagnosticsBundle.mockResolvedValue({
@@ -91,7 +179,7 @@ describe('DiagnosticsModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
 
     expect(await screen.findByRole('status')).toHaveTextContent('Preparing diagnostics bundle');
-    expect(screen.getByRole('button', { name: 'Generating...' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeDisabled();
 
     finishSave?.({ canceled: true });
 
@@ -200,6 +288,21 @@ describe('DiagnosticsModal', () => {
     error.mockRestore();
   });
 
+  /**
+   * V4-R7-6: a bare `<strong>` computes to `bolder`, 700, and the type system draws only 400 and
+   * 600. Both warning leads wear `font-semibold`; `diagnosticsDialog.browser.test.tsx` measures the
+   * computed weight.
+   */
+  it('sets both warning leads at the strong weight, 600', () => {
+    render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="private" />
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    const leads = [...dialog.querySelectorAll('strong')];
+    expect(leads.map((el) => el.textContent)).toEqual(['Warning:', 'This chat is private.']);
+    for (const el of leads) expect(el).toHaveClass('font-semibold');
+  });
+
   it('does not warn on a chat that is not private', () => {
     const { rerender } = render(
       <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="public" />
@@ -215,10 +318,10 @@ describe('DiagnosticsModal', () => {
   it('points at the in-chat reporter, by its slash command and in words', () => {
     render(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
 
+    // The hint is the title's InfoTip: its words are the glyph's description, not its text.
     const hint = screen.getByTestId('diagnostics-agent-hint');
-    expect(hint).toHaveTextContent('/bug');
-    expect(hint).toHaveTextContent('report a bug');
-    expect(hint.textContent).not.toMatch(/[—–]/);
+    expect(hint).toHaveAccessibleDescription(/\/bug.*report a bug/);
+    expect(hint).not.toHaveAccessibleDescription(/[—–]/);
   });
 
   // The body is a hand copy of `.github/ISSUE_TEMPLATE/bug_report.md`, so a
@@ -239,7 +342,7 @@ describe('DiagnosticsModal', () => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
 
     render(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
-    fireEvent.click(screen.getByRole('button', { name: 'File Bug on GitHub' }));
+    fireEvent.click(screen.getByRole('button', { name: 'File a bug on GitHub' }));
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
 
     const body = new URL(String(open.mock.calls[0][0])).searchParams.get('body') ?? '';

@@ -1,20 +1,25 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Input } from '../../ui/input';
 import { Button } from '../../ui/button';
+import { SettingRow, SettingSection } from '../../ui/setting-row';
+import { Spinner } from '../../ui/spinner';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { useConfig } from '../../ConfigContext';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { cn } from '../../../utils';
-import { Save, RotateCcw, FileText, Loader2, Settings } from '../../icons/app-icons';
+import { Save } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
-import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
+import { providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
-import {
-  HOST_MANAGED_DESTINATION_REASON,
-  HOST_MANAGED_MODEL_REASON,
-} from '../../privacy/hostManagedModelCopy';
 import { HostManagedModelNote, type HostManagedTopic } from '../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../destinationConfigKeys';
-import { MODAL_SIZE } from '../../ModalShell';
+import { ModalShell } from '../../ModalShell';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { configCopy } from './copy';
+import { configFieldLabel } from './configLabels';
+import { machineStringProps } from './machineString';
+import './config.css';
+import type { ProviderDetails } from '../../../api';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
   PRIVACY_TIERS_KEY,
@@ -57,47 +62,49 @@ function refusalText(error: unknown): string | null {
   return text && text.trim() ? text.trim() : null;
 }
 
+/**
+ * The order of the editor's rows: by the label a person reads, ignoring case, then by key.
+ *
+ * The file's own key order is not a stable thing to show: it follows whatever wrote the file last,
+ * so the same eight rows came back in a different order after an unrelated setting (the approval
+ * mode) was saved. A name a person looks for should stay where it was.
+ */
+function compareConfigKeys(a: string, b: string): number {
+  const byLabel = configFieldLabel(a).localeCompare(configFieldLabel(b), 'en', {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  return byLabel !== 0 ? byLabel : a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** A value this editor can show and save as text: a string, number or boolean. */
 function isEditableValue(value: ConfigValue | undefined): boolean {
   return value === undefined || value === null || typeof value !== 'object';
 }
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '../../ui/dialog';
-
 export default function ConfigSettings() {
-  const { config, upsert, refreshConfig } = useConfig();
+  const { config, upsert, refreshConfig, getProviders } = useConfig();
   const { currentProvider: liveProvider, refreshCurrentModelAndProvider } = useModelAndProvider();
   const typedConfig = config as ConfigData;
   const [configValues, setConfigValues] = useState<ConfigData>({});
   const [modifiedKeys, setModifiedKeys] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [originalKeyOrder, setOriginalKeyOrder] = useState<string[]>([]);
+  // The editor opens from state, with no Dialog.Trigger, so Radix would leave focus on <body> when
+  // it closes. The Edit button takes it back.
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  // The keys this editor has seen, in no particular order: the rows are sorted by label when they
+  // are drawn. The set only grows while the editor is mounted, so a key a write briefly drops from
+  // the cached config does not make its row vanish and come back.
+  const [knownKeys, setKnownKeys] = useState<string[]>([]);
 
   useEffect(() => {
     setConfigValues(typedConfig);
     setModifiedKeys(new Set());
 
-    // Capture the original key order only on first load or when new keys are added
     const currentKeys = Object.keys(typedConfig);
-    setOriginalKeyOrder((prevOrder) => {
-      if (prevOrder.length === 0) {
-        // First load - capture the initial order
-        return currentKeys;
-      } else if (currentKeys.length > prevOrder.length) {
-        // New keys have been added - add them to the end while preserving existing order
-        const newKeys = currentKeys.filter((key) => !prevOrder.includes(key));
-        return [...prevOrder, ...newKeys];
-      }
-      // Don't reorder when keys are just updated/saved - preserve the original order
-      return prevOrder;
+    setKnownKeys((previous) => {
+      const added = currentKeys.filter((key) => !previous.includes(key));
+      return added.length > 0 ? [...previous, ...added] : previous;
     });
   }, [typedConfig]);
 
@@ -145,8 +152,8 @@ export default function ConfigSettings() {
     try {
       await upsert(key, configValues[key], false);
       toastSuccess({
-        title: 'Configuration updated',
-        msg: `Saved "${getUiNames(key)}"`,
+        title: configCopy.savedTitle,
+        msg: configCopy.saved(configFieldLabel(key)),
       });
 
       // Remove this key from modified keys since it's now saved
@@ -161,10 +168,10 @@ export default function ConfigSettings() {
       // body. It used to sit only behind "Copy error".
       const reason = refusalText(error);
       toastError({
-        title: 'Save failed',
+        title: configCopy.saveFailedTitle,
         msg: reason
-          ? `"${getUiNames(key)}" was not saved. ${reason}`
-          : `Failed to save "${getUiNames(key)}"`,
+          ? configCopy.notSaved(configFieldLabel(key), reason)
+          : configCopy.saveFailed(configFieldLabel(key)),
         traceback: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -176,8 +183,8 @@ export default function ConfigSettings() {
     setConfigValues(typedConfig);
     setModifiedKeys(new Set());
     toastSuccess({
-      title: 'Configuration reset',
-      msg: 'All changes have been reverted',
+      title: configCopy.resetTitle,
+      msg: configCopy.reset,
     });
   };
 
@@ -199,6 +206,30 @@ export default function ConfigSettings() {
   // cached config value is only the fallback for the first paint, before the
   // live value has loaded.
   const currentProvider = liveProvider || typedConfig.BIOROUTER_PROVIDER || '';
+
+  // The row names the provider the way the Models tab does ("Versa API Azure"), not by the id the
+  // config file keeps (`versa_azure`, which is still the Provider field in the editor). `null` is
+  // "not looked up yet": the row shows no value for that instant rather than flashing the id.
+  const [providerList, setProviderList] = useState<ProviderDetails[] | null>(null);
+  // Read once, when the section mounts. `getProviders` changes identity whenever the cached list
+  // does, and a lookup that re-ran on that would ask again for an answer it already has.
+  const getProvidersRef = useRef(getProviders);
+  getProvidersRef.current = getProviders;
+  useEffect(() => {
+    let live = true;
+    void Promise.resolve(getProvidersRef.current(false))
+      .then((list) => live && setProviderList(list))
+      .catch(() => live && setProviderList([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const providerName =
+    providerList === null
+      ? undefined
+      : providerList.find((provider) => provider.name === currentProvider)?.metadata.display_name ||
+        currentProvider ||
+        undefined;
 
   // Opening Settings re-reads the provider from the backing config, so the
   // label is also correct after a change made outside this renderer session.
@@ -225,7 +256,7 @@ export default function ConfigSettings() {
     const currentProviderPrefixes = providerPrefixes[currentProvider] || [];
     const allProviderPrefixes = Object.values(providerPrefixes).flat();
 
-    return originalKeyOrder
+    return knownKeys
       .filter((key) => {
         // skip secrets and internal/hidden keys
         if (
@@ -252,162 +283,179 @@ export default function ConfigSettings() {
 
         return true;
       })
-      .map((key) => [key, configValues[key]]);
-  }, [originalKeyOrder, configValues, currentProvider]);
+      .map((key): [string, ConfigValue] => [key, configValues[key]])
+      .sort(([a], [b]) => compareConfigKeys(a, b));
+  }, [knownKeys, configValues, currentProvider]);
 
   return (
-    <div className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header">
-        <h2 className="text-caps text-text-muted mb-1">Configuration</h2>
-        <p className="text-supporting text-text-muted">
-          Edit your Biorouter configuration settings
-          {currentProvider && ` (current settings for ${currentProvider})`}
-        </p>
-      </div>
-      <div className="biorouter-settings-control-strip">
-        <Dialog open={isModalOpen} onOpenChange={handleModalClose}>
-          <DialogTrigger asChild>
-            <Button variant="secondary">
-              <Settings className="h-4 w-4" />
-              Edit configuration
-            </Button>
-          </DialogTrigger>
-          {/* `MODAL_SIZE.lg`, not `max-w-4xl` — which additionally carried no
-              `sm:` prefix and so ate the primitive's small-window gutter. */}
-          <DialogContent className={`${MODAL_SIZE.lg} max-h-[80vh]`}>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                {/* `text-iconStandard` is not a token: it had no definition and
-                    no effect. */}
-                <FileText size={20} />
-                Configuration editor
-              </DialogTitle>
-              <DialogDescription>
-                Edit your biorouter configuration settings
-                {currentProvider && ` (current settings for ${currentProvider})`}
-              </DialogDescription>
-            </DialogHeader>
+    <SettingSection id={SETTINGS_SECTION_IDS.configuration} title={configCopy.section}>
+      <SettingRow
+        label={configCopy.row}
+        help={configCopy.help}
+        value={providerName}
+        controlId="configuration-edit"
+        data-testid="config-settings-row"
+      >
+        <Button
+          ref={editButtonRef}
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-label={configCopy.editName}
+          onClick={() => setIsModalOpen(true)}
+        >
+          {configCopy.edit}
+        </Button>
+      </SettingRow>
 
-            <div className="flex-1 max-h-[60vh] overflow-auto pr-4">
-              <PrivacyConfigSummary
-                config={typedConfig}
-                onOpen={() => {
-                  setIsModalOpen(false);
-                  document
-                    .querySelector('[data-privacy-panel]')
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }}
-              />
-              <div className="space-y-4">
-                {configEntries.length === 0 ? (
-                  <p className="text-text-muted">No configuration settings found.</p>
-                ) : (
-                  configEntries.map(([key, _value]) => {
-                    const topic = hostTopic(key);
-                    const fixedByHost = topic !== null;
-                    return (
-                      <div
-                        key={key}
-                        className="grid grid-cols-[minmax(0,200px)_1fr_auto] items-center gap-3"
-                      >
-                        <label className="text-label text-text-default" title={key}>
-                          {getUiNames(key)}
-                        </label>
-                        <div className="min-w-0">
-                          {/* A structured value is a report, not a setting this
-                              field can round-trip: `String()` of it read
-                              `[object Object]` (W2-PRV-8). */}
-                          {!isEditableValue(configValues[key]) ? (
-                            <code
-                              data-testid={`config-readonly-${key}`}
-                              className="block whitespace-pre-wrap break-all rounded-element bg-background-muted px-2 py-1.5 text-xs text-text-muted"
-                            >
-                              {JSON.stringify(configValues[key], null, 2)}
-                            </code>
-                          ) : (
-                            <Input
-                              value={String(configValues[key] || '')}
-                              onChange={(e) => handleChange(key, e.target.value)}
-                              disabled={fixedByHost}
-                              // ⚠ Only the modified-key marker survives. The three
-                              // deleted overrides each fought the primitive:
-                              // `border-border-subtle` replaced the input's own
-                              // `--border-emphasized` with the divider hairline,
-                              // `hover:border-border-subtle` pinned hover to the
-                              // resting colour while the primitive's inset ring
-                              // still fired, and `transition-colors` REPLACED the
-                              // input's transition list, dropping `box-shadow`
-                              // from it.
-                              className={cn(modifiedKeys.has(key) && 'border-border-info')}
-                              placeholder={`Enter ${getUiNames(key)}`}
-                            />
-                          )}
-                          {/* The `topic &&` guard is load-bearing and stays: it
-                              carries the per-key half (`isHostManagedConfigKey`
-                              or `isDestinationConfigKey`), which the note itself
-                              cannot know. What went is the hand-copied paragraph
-                              inside it — a seventh implementation of the one
-                              sentence `hostManagedModelCopy.ts` exists to keep
-                              in one place. */}
-                          {topic && (
-                            <HostManagedModelNote
-                              short
-                              topic={topic}
-                              testId={`host-managed-config-${key}`}
-                              className="mt-1"
-                            />
-                          )}
-                        </div>
-                        {/* Icon-only at both states, so it takes the 32×32 round
-                            rung and an `aria-label` rather than a `min-w-[60px]`
-                            box sized to hold a word it only sometimes shows. */}
-                        <Button
-                          onClick={() => handleSave(key)}
-                          disabled={
-                            fixedByHost ||
-                            !isEditableValue(configValues[key]) ||
-                            !modifiedKeys.has(key) ||
-                            saving === key
-                          }
-                          title={
-                            topic === 'model'
-                              ? HOST_MANAGED_MODEL_REASON
-                              : topic === 'destination'
-                                ? HOST_MANAGED_DESTINATION_REASON
-                                : undefined
-                          }
-                          variant="ghost"
-                          shape="round"
-                          aria-label={`Save ${getUiNames(key)}`}
-                        >
-                          {saving === key ? <Loader2 className="animate-spin" /> : <Save />}
-                        </Button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* Footer roles, per the button table: the dismiss is `outline` and
-                the quiet secondary action is `ghost`. ⚠ Do NOT touch either
-                `onClick` — `setIsModalOpen(false)` deliberately differs from
-                `handleModalClose` in whether unsaved edits are discarded. */}
-            <DialogFooter className="gap-2">
-              {modifiedKeys.size > 0 && (
-                <Button onClick={handleReset} variant="ghost">
-                  <RotateCcw />
-                  Reset changes
-                </Button>
-              )}
-              <Button onClick={() => setIsModalOpen(false)} variant="outline">
-                Done
+      <ModalShell
+        open={isModalOpen}
+        onOpenChange={handleModalClose}
+        size="lg"
+        scrollBody
+        // A form: Escape and the × leave, a stray click on the backdrop does not (it would throw
+        // away edits that are typed but not yet saved).
+        purpose="form"
+        title={configCopy.dialogTitle}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          editButtonRef.current?.focus();
+        }}
+        // Footer roles: the dismiss is `secondary` and the quiet action is `ghost`.
+        // ⚠ Do NOT touch either `onClick` — `setIsModalOpen(false)` deliberately differs from
+        // `handleModalClose` in whether unsaved edits are discarded.
+        footer={
+          <>
+            {modifiedKeys.size > 0 && (
+              <Button onClick={handleReset} variant="ghost">
+                {configCopy.resetChanges}
               </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
-    </div>
+            )}
+            <Button onClick={() => setIsModalOpen(false)} variant="secondary">
+              {configCopy.done}
+            </Button>
+          </>
+        }
+      >
+        {/* The shell's header and footer own the body's top and bottom gutters only when the body
+            is bare text; this body starts with a list and ends with a field, so it pads itself. */}
+        <div className="br-config-body">
+          <PrivacyConfigSummary
+            config={typedConfig}
+            onOpen={() => {
+              setIsModalOpen(false);
+              document
+                .querySelector('[data-privacy-panel]')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          />
+          <div className="space-y-4">
+            {configEntries.length === 0 ? (
+              <p className="text-body text-text-muted">{configCopy.empty}</p>
+            ) : (
+              configEntries.map(([key, _value]) => {
+                const topic = hostTopic(key);
+                const fixedByHost = topic !== null;
+                const fieldId = `config-field-${key}`;
+                const uiName = configFieldLabel(key);
+                // ⚠ Exactly one button per row, and the row is this `div.grid`: two browser-surface
+                // tests find a row with `closest('.grid')` and take its only button. No InfoTip here.
+                return (
+                  <div key={key} className="br-config-row grid items-center gap-3">
+                    {/* The key itself is the label's tooltip, in the mono face: it is the name a
+                      person looks for in the file. It was a native `title`, which opens on no
+                      keyboard and looks like the OS. */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <label
+                          htmlFor={fieldId}
+                          className="min-w-0 break-words text-label text-text-default"
+                        >
+                          {uiName}
+                        </label>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <span className="font-mono">{key}</span>
+                      </TooltipContent>
+                    </Tooltip>
+                    <div className="min-w-0">
+                      {/* A structured value is a report, not a setting this
+                        field can round-trip: `String()` of it read
+                        `[object Object]` (W2-PRV-8). */}
+                      {!isEditableValue(configValues[key]) ? (
+                        <code
+                          data-testid={`config-readonly-${key}`}
+                          className="block whitespace-pre-wrap break-all rounded-element border border-transparent bg-background-fill px-2 py-1.5 font-mono text-supporting text-text-muted"
+                        >
+                          {JSON.stringify(configValues[key], null, 2)}
+                        </code>
+                      ) : (
+                        <Input
+                          id={fieldId}
+                          value={String(configValues[key] || '')}
+                          onChange={(e) => handleChange(key, e.target.value)}
+                          disabled={fixedByHost}
+                          // Every value here is a machine string (`versa_azure`, `auto`, a model id,
+                          // an endpoint), so the browser does not spellcheck it (V4-R7-5).
+                          {...machineStringProps}
+                          // ⚠ Only the modified-key marker survives, and it is a FILL. An edit
+                          // that is not saved yet washes the field in the info tone; it used to
+                          // draw a blue 1px outline (`border-border-info`), which is a line on a
+                          // page that has none (R-27) and, being a utility, beat the field's
+                          // layered focus edge, so a modified field looked the same focused or
+                          // not (checklist 10, measured). The Save button beside it turns from
+                          // dimmed to active as well, so the cue is not colour alone.
+                          // The overrides deleted earlier each fought the primitive:
+                          // `border-border-subtle` replaced the input's own edge with the divider
+                          // hairline, `hover:border-border-subtle` pinned hover to the resting
+                          // colour, and `transition-colors` REPLACED the input's transition list,
+                          // dropping `box-shadow` from it. The placeholder went too: the label
+                          // names the field.
+                          className={cn(modifiedKeys.has(key) && 'bg-wash-info')}
+                        />
+                      )}
+                      {/* The `topic &&` guard is load-bearing and stays: it
+                        carries the per-key half (`isHostManagedConfigKey`
+                        or `isDestinationConfigKey`), which the note itself
+                        cannot know. What went is the hand-copied paragraph
+                        inside it — a seventh implementation of the one
+                        sentence `hostManagedModelCopy.ts` exists to keep
+                        in one place. It is also why the Save button below
+                        has no `title`: this note, visible, is the reason. */}
+                      {topic && (
+                        <HostManagedModelNote
+                          short
+                          topic={topic}
+                          testId={`host-managed-config-${key}`}
+                          className="mt-1"
+                        />
+                      )}
+                    </div>
+                    {/* Icon-only at both states, so it takes the 32×32 round
+                      rung and an `aria-label` rather than a `min-w-[60px]`
+                      box sized to hold a word it only sometimes shows. */}
+                    <Button
+                      onClick={() => handleSave(key)}
+                      disabled={
+                        fixedByHost ||
+                        !isEditableValue(configValues[key]) ||
+                        !modifiedKeys.has(key) ||
+                        saving === key
+                      }
+                      variant="ghost"
+                      shape="round"
+                      aria-label={configCopy.saveLabel(uiName)}
+                    >
+                      {saving === key ? <Spinner /> : <Save />}
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </ModalShell>
+    </SettingSection>
   );
 }
 
@@ -436,15 +484,16 @@ function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: 
       : []),
   ];
   return (
-    <div
-      data-testid="config-privacy-summary"
-      className="mb-4 rounded-container border border-border-subtle px-3 py-2.5"
-    >
-      <dl className="grid grid-cols-[minmax(0,200px)_1fr] gap-x-3 gap-y-1 text-sm">
+    <div data-testid="config-privacy-summary" className="br-config-summary">
+      {/* Plain rows on the editor's own label column, so a value starts exactly where the inputs
+          below it do. It was a bordered box inside the dialog (a box in a box). */}
+      <dl className="br-config-summary-list">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
-            <dt className="text-text-muted">{label}</dt>
-            <dd className="min-w-0 text-text-default [overflow-wrap:anywhere]">{value}</dd>
+            <dt className="text-label text-text-default">{label}</dt>
+            <dd className="min-w-0 text-secondary text-text-muted [overflow-wrap:anywhere]">
+              {value}
+            </dd>
           </div>
         ))}
       </dl>
@@ -453,7 +502,7 @@ function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: 
         <button
           type="button"
           onClick={onOpen}
-          className="text-text-default underline underline-offset-2"
+          className="rounded-inner text-text-default underline underline-offset-2"
         >
           Go to Privacy
         </button>

@@ -9,8 +9,20 @@ import { useThemeFamily, type ThemeFamily } from '../../contexts/ThemeContext';
 import { cn } from '../../utils';
 import type { ArtifactFilePreview } from './artifactTypes';
 import { DOCUMENT_FIDELITY_NOTES } from '../../utils/formatSupport';
+import { ChevronDown } from '../icons/app-icons';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
+import { InfoTip } from '../ui/info-tip';
 import { sandboxedSurface } from './artifactUtils';
 import { createPdfWorker } from '../../utils/pdfCompat';
+import { PREVIEW_COPY } from './copy';
+import { PreviewBarActions, PreviewBarMeta, PreviewSkeleton } from './PreviewBar';
+import { xlsxSheetNames } from './xlsxSheetNames';
 
 type DocumentFile = Extract<ArtifactFilePreview, { kind: 'document' }>;
 
@@ -20,10 +32,24 @@ type DocumentPreviewProps = {
   isResizing: boolean;
 };
 
+/** A renderer's failure, on the paper over whatever it left behind. Errors stay visible. */
 function PreviewStatus({ message }: { message: string }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-background-default text-body text-text-muted">
-      {message}
+    <div className="br-preview-state absolute inset-0 bg-background-default">
+      <p className="br-preview-state__line text-body text-text-muted">{message}</p>
+    </div>
+  );
+}
+
+/**
+ * A renderer still working: the panel's one loading look (nothing for 200ms,
+ * then three quiet lines), laid over the renderer's own box so it can keep
+ * laying out underneath. It replaced "Rendering PDF" and its siblings.
+ */
+function PreviewRendering() {
+  return (
+    <div className="absolute inset-0 bg-background-default">
+      <PreviewSkeleton />
     </div>
   );
 }
@@ -155,10 +181,12 @@ function PdfPageCanvas({
       <canvas
         ref={canvasRef}
         data-rendered={rendered ? 'true' : 'false'}
-        className={cn('bg-white shadow-md', renderError && 'hidden')}
+        // A page is a white sheet on the paper with a hairline edge (no shadow:
+        // principle 8), faded in once pdf.js has drawn it (preview-panel.css).
+        className={cn('br-preview-page bg-white', renderError && 'hidden')}
       />
       {renderError && (
-        <div className="flex min-h-48 w-full flex-col items-center justify-center gap-1 bg-background-default px-6 text-center text-body text-text-muted shadow-md">
+        <div className="br-preview-page flex min-h-48 w-full flex-col items-center justify-center gap-1 bg-background-default px-6 text-center text-body text-text-muted">
           <span>Could not render page {pageNumber}</span>
           <span className="text-supporting text-text-subtle">{renderError}</span>
         </div>
@@ -273,16 +301,21 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
   }, [file.data, file.path]);
 
   if (error) return <PreviewStatus message={error} />;
-  if (!document) return <PreviewStatus message="Rendering PDF" />;
+  if (!document) return <PreviewRendering />;
 
   return (
     <div
       aria-label={`${file.title} PDF preview`}
       className={cn(
-        'artifact-document-scroll h-full overflow-y-auto bg-background-medium',
+        'artifact-document-scroll h-full overflow-y-auto',
         isResizing && 'pointer-events-none'
       )}
     >
+      <PreviewBarMeta>
+        <span data-testid="artifact-strip-count" className="tabular-nums">
+          {PREVIEW_COPY.pages(document.numPages)}
+        </span>
+      </PreviewBarMeta>
       <div className="mx-auto flex w-full max-w-5xl flex-col items-center gap-4 p-4">
         {Array.from({ length: document.numPages }, (_, index) => (
           <PdfPageCanvas
@@ -365,9 +398,13 @@ function WordPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
   }, [file.data, file.path]);
 
   return (
-    <div className="artifact-document-scroll relative h-full overflow-auto bg-background-medium">
-      <div ref={containerRef} className="artifact-docx-preview min-h-full" />
-      {!rendered && !error && <PreviewStatus message="Rendering Word document" />}
+    <div className="artifact-document-scroll relative h-full overflow-auto">
+      <div
+        ref={containerRef}
+        data-rendered={rendered ? 'true' : 'false'}
+        className="artifact-docx-preview min-h-full"
+      />
+      {!rendered && !error && <PreviewRendering />}
       {error && <PreviewStatus message={error} />}
     </div>
   );
@@ -433,10 +470,26 @@ function prepareSpreadsheetHtml(
       margin: 0;
       color: ${surface.foreground};
       background: ${surface.background};
-      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      /* The app's body stack (--font-body, the website's Arial-first stack),
+         resolved: a sandboxed document cannot read the custom property. */
+      font-family: Arial, "Helvetica Neue", Helvetica, ui-sans-serif, -apple-system,
+        BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     table { background: ${surface.card}; }
     td { min-width: 4rem; }
+    /* The renderer paints its row and column labels a fixed light blue and its
+       grid #f0f0f0, which is a bright slab on a dark ground and a second palette
+       on a light one. They take the panel's own scales instead: a quiet ground,
+       12px muted ink, the family's hairline. The selectors out-rank the
+       renderer's class rules (its styles come later in the document); a cell the
+       WORKBOOK styled keeps its inline colour, border and font. */
+    body table[class] tbody[class] { border-color: ${surface.border}; }
+    body table[class] tbody[class] td { border-color: ${surface.border}; }
+    body table[class] tbody[class] td.order {
+      background: color-mix(in srgb, ${surface.foreground} 5%, ${surface.card});
+      color: ${surface.muted};
+      font-size: 12px;
+    }
   `;
   document.head.append(style);
   return `<!doctype html>${document.documentElement.outerHTML}`;
@@ -449,8 +502,23 @@ function SpreadsheetPreview({
 }: Pick<DocumentPreviewProps, 'file' | 'resolvedTheme' | 'isResizing'>) {
   const themeFamily = useThemeFamily();
   const [sheets, setSheets] = useState<string[]>([]);
+  const [sheetNames, setSheetNames] = useState<string[] | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  // The workbook's own sheet names, read from its index (xlsx-preview returns
+  // the sheets without them). Until they arrive, or if they cannot be read, the
+  // picker says "Sheet 1", "Sheet 2".
+  useEffect(() => {
+    let cancelled = false;
+    setSheetNames(null);
+    void xlsxSheetNames(file.data).then((names) => {
+      if (!cancelled) setSheetNames(names);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file.data]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,45 +562,56 @@ function SpreadsheetPreview({
   }, [file.data, file.path, resolvedTheme, themeFamily]);
 
   if (error) return <PreviewStatus message={error} />;
-  if (sheets.length === 0) return <PreviewStatus message="Rendering workbook" />;
+  if (sheets.length === 0) return <PreviewRendering />;
+
+  const sheetLabel = (index: number) =>
+    sheetNames?.[index]?.trim() || PREVIEW_COPY.sheet(index + 1);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background-default">
+    <div className="flex h-full min-h-0 flex-col">
+      {sheets.length > 1 && (
+        // The sheet picker lives in the panel's bar, named by the workbook's own
+        // sheet names: one select, whatever the count.
+        <PreviewBarActions>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={`${PREVIEW_COPY.sheetPicker}: ${sheetLabel(activeSheet)}`}
+                data-testid="artifact-sheet-picker"
+                className="br-preview-select"
+              >
+                <span className="min-w-0 truncate">{sheetLabel(activeSheet)}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-[60vh] overflow-y-auto">
+              <DropdownMenuRadioGroup
+                value={String(activeSheet)}
+                onValueChange={(value) => setActiveSheet(Number(value))}
+              >
+                {sheets.map((_, index) => (
+                  <DropdownMenuRadioItem key={index} value={String(index)}>
+                    {sheetLabel(index)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </PreviewBarActions>
+      )}
       <iframe
         key={activeSheet}
         name="biorouter-spreadsheet-preview"
         srcDoc={sheets[activeSheet]}
         sandbox=""
         referrerPolicy="no-referrer"
-        aria-label={`${file.title}, sheet ${activeSheet + 1}`}
+        aria-label={`${file.title}, ${sheetLabel(activeSheet)}`}
         // The sheet document paints the family ground itself; this only shows
         // before it loads, so it must agree rather than flash white on a dark
         // theme.
         className={cn('min-h-0 flex-1 bg-background-default', isResizing && 'pointer-events-none')}
       />
-      {sheets.length > 1 && (
-        <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-t border-border-subtle bg-background-muted px-2">
-          {sheets.map((_, index) => (
-            <button
-              key={index}
-              type="button"
-              onClick={() => setActiveSheet(index)}
-              aria-pressed={activeSheet === index}
-              className={cn(
-                // A tab in the sheet bar: `rounded-element`, and the active one
-                // is a FILL, not a lift — which is why the raised card look
-                // (bg-background-default + shadow-sm) becomes the selected tint.
-                'h-7 shrink-0 rounded-element px-2.5 text-supporting transition-colors',
-                activeSheet === index
-                  ? 'bg-overlay-selected text-text-default'
-                  : 'text-text-muted hover:bg-overlay-hover hover:text-text-default'
-              )}
-            >
-              Sheet {index + 1}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -604,7 +683,7 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
   }, [file.data, file.path]);
 
   return (
-    <div className="relative h-full bg-background-medium">
+    <div className="relative h-full">
       <div
         ref={scrollRef}
         className="artifact-document-scroll artifact-pptx-scroll h-full overflow-auto"
@@ -615,7 +694,7 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
           className="artifact-pptx-preview"
         />
       </div>
-      {!rendered && !error && <PreviewStatus message="Rendering PowerPoint" />}
+      {!rendered && !error && <PreviewRendering />}
       {error && <PreviewStatus message={error} />}
     </div>
   );
@@ -634,22 +713,25 @@ export default function DocumentPreview({ file, resolvedTheme, isResizing }: Doc
     );
 
   // Every non-commercial renderer for these formats has the same blind spots.
-  // Naming them in the UI is cheaper than a researcher concluding the file is
-  // corrupt because a deck's animations or a document's table of contents did
-  // not survive. It is one muted line, not a banner — the document is the point.
+  // Naming them is cheaper than a researcher concluding the file is corrupt
+  // because a deck's animations or a document's table of contents did not
+  // survive. It is the format's InfoTip in the bar (spec 3.8): one glyph, the
+  // sentence on hover, on Tab and read aloud — the document is the point.
   const fidelity = DOCUMENT_FIDELITY_NOTES[file.format];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1">{body}</div>
       {fidelity && file.format !== 'pdf' && (
-        <p
-          data-testid="document-fidelity-note"
-          className="flex-none border-t border-border-subtle bg-background-default px-3 py-1.5 text-supporting text-text-subtle"
-        >
-          {fidelity}
-        </p>
+        <PreviewBarMeta>
+          <span>{PREVIEW_COPY.documentFormat[file.format]}</span>
+          <InfoTip
+            label={PREVIEW_COPY.documentFormat[file.format]}
+            help={fidelity}
+            data-testid="document-fidelity-note"
+          />
+        </PreviewBarMeta>
       )}
+      <div className="min-h-0 flex-1">{body}</div>
     </div>
   );
 }

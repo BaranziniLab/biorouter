@@ -1,5 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { knowledgeCopy } from '../copy';
 import { ChangeLogDrawer } from './ChangeLogDrawer';
 
 vi.mock('../KnowledgeContext', () => ({
@@ -53,5 +55,34 @@ describe('ChangeLogDrawer — the description contract', () => {
     expect(warn.mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))).toBe(
       false
     );
+  });
+});
+
+/**
+ * Spec 3.12: the drawer's header is Crew's pane header, so its close is the same ghost round
+ * button a preview has, named for what it closes, in the 44px band with the title.
+ */
+describe('ChangeLogDrawer — the pane header', () => {
+  it('closes through a named close drawn in the header band, beside the title', async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(
+      <ChangeLogDrawer
+        open
+        onOpenChange={onOpenChange}
+        onPreview={() => undefined}
+        onRestored={() => undefined}
+      />
+    );
+
+    const close = screen.getByRole('button', { name: knowledgeCopy.drawers.closeChangeLog });
+    const header = close.closest('.br-knowledge-pane-header');
+    expect(header).not.toBeNull();
+    expect(header).toContainElement(
+      screen.getByRole('heading', { name: knowledgeCopy.drawers.changeLog })
+    );
+
+    await user.click(close);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });

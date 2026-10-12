@@ -1,10 +1,13 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MessageQueue, canSteerMessage } from './MessageQueue';
 import { refTag } from '../utils/resourceRefs';
-import { getSteerShortcutText } from '../utils/keyboardShortcuts';
+import { getSteerAriaKeyShortcuts } from '../utils/keyboardShortcuts';
+import { COMPOSER_COPY } from './composer/copy';
+
+const COPY = COMPOSER_COPY.queue;
 
 const queuedMessage = {
   id: 'message-1',
@@ -35,17 +38,14 @@ describe('MessageQueue actions', () => {
     const user = userEvent.setup();
     const { onSteerMessage, onStopAndSend } = renderQueue();
 
-    const addNow = screen.getByRole('button', {
-      name: 'Add this message to the current turn',
-    });
-    const stopAndSend = screen.getByRole('button', {
-      name: 'Stop the current turn and send this message as a new turn',
-    });
+    const addNow = screen.getByRole('button', { name: COPY.addNowLabel });
+    const stopAndSend = screen.getByRole('button', { name: COPY.stopAndSendLabel });
 
-    expect(addNow).toHaveTextContent('Add now');
+    // Icon buttons: the name carries the words, the tooltip repeats them.
     expect(addNow.querySelector('.lucide-message-square-plus')).not.toBeNull();
-    expect(stopAndSend).toHaveTextContent('→Stop & send');
-    expect(stopAndSend.querySelectorAll('svg')).toHaveLength(2);
+    expect(stopAndSend.querySelector('.lucide-arrow-up')).not.toBeNull();
+    expect(addNow).not.toHaveAttribute('title');
+    expect(stopAndSend).not.toHaveAttribute('title');
 
     await user.click(addNow);
     await user.click(stopAndSend);
@@ -54,20 +54,21 @@ describe('MessageQueue actions', () => {
     expect(onStopAndSend).toHaveBeenCalledWith(queuedMessage.id);
   });
 
+  it("reads as Codex's queue: a count, then the message after an arrow", () => {
+    renderQueue();
+    expect(screen.getByText(`${COPY.header} · 1`)).toBeInTheDocument();
+    expect(screen.getByText('and add better comments')).toBeInTheDocument();
+  });
+
   it('uses the same explicit actions in the expanded queue', async () => {
     const user = userEvent.setup();
     renderQueue();
 
     await user.click(screen.getByRole('button', { name: '1 message queued. Expand queue.' }));
 
-    expect(
-      screen.getByRole('button', { name: 'Add this message to the current turn' })
-    ).toHaveTextContent('Add now');
-    expect(
-      screen.getByRole('button', {
-        name: 'Stop the current turn and send this message as a new turn',
-      })
-    ).toHaveTextContent('Stop & send');
+    expect(screen.getByRole('button', { name: COPY.addNowLabel })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: COPY.stopAndSendLabel })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: COPY.remove })).toBeInTheDocument();
   });
 
   it('keeps attachment messages out of the text-only add-now path', () => {
@@ -80,13 +81,15 @@ describe('MessageQueue actions', () => {
       ],
     });
 
-    expect(
-      screen.queryByRole('button', { name: 'Add this message to the current turn' })
-    ).toBeNull();
-    const stopAndSend = screen.getByRole('button', {
-      name: 'Stop the current turn and send this message as a new turn',
-    });
-    expect(within(stopAndSend).getByText('Stop & send')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: COPY.addNowLabel })).toBeNull();
+    expect(screen.getByRole('button', { name: COPY.stopAndSendLabel })).toBeInTheDocument();
+    expect(screen.getByText(/1 attachment/)).toBeInTheDocument();
+  });
+
+  it('uses no off-scale sizes and no native titles', () => {
+    renderQueue();
+    expect(document.body.innerHTML).not.toMatch(/text-\[1[01]px\]/);
+    expect(document.querySelector('[title]')).toBeNull();
   });
 });
 
@@ -108,31 +111,30 @@ describe('MessageQueue steer eligibility', () => {
 
 /**
  * The chord steers the FRONT of the queue and only the front, so it is
- * advertised on that row alone. Naming it on row two would name a key that does
- * something else — it would take row one.
+ * announced on that row alone. Naming it on row two would name a key that does
+ * something else: it would take row one.
  */
 describe('MessageQueue shortcut hint', () => {
   const second = { id: 'message-2', content: 'and rerun the fit', timestamp: Date.now() };
 
-  it('teaches the chord on the next message, in the collapsed bar', () => {
+  it('announces the chord on the next message, in the collapsed bar', () => {
     renderQueue({ queuedMessages: [queuedMessage, second] });
 
-    expect(
-      screen.getByRole('button', { name: 'Add this message to the current turn' })
-    ).toHaveAttribute('title', expect.stringContaining(getSteerShortcutText()));
+    expect(screen.getByRole('button', { name: COPY.addNowLabel })).toHaveAttribute(
+      'aria-keyshortcuts',
+      getSteerAriaKeyShortcuts()
+    );
   });
 
-  it('teaches it on the first expanded row and no other', async () => {
+  it('announces it on the first expanded row and no other', async () => {
     const user = userEvent.setup();
     renderQueue({ queuedMessages: [queuedMessage, second] });
 
     await user.click(screen.getByRole('button', { name: /queued\. Expand queue\./i }));
-    const [first, rest] = screen.getAllByRole('button', {
-      name: 'Add this message to the current turn',
-    });
+    const [first, rest] = screen.getAllByRole('button', { name: COPY.addNowLabel });
 
-    expect(first).toHaveAttribute('title', expect.stringContaining(getSteerShortcutText()));
-    expect(rest).toHaveAttribute('title', 'Add to current turn without stopping');
+    expect(first).toHaveAttribute('aria-keyshortcuts', getSteerAriaKeyShortcuts());
+    expect(rest).not.toHaveAttribute('aria-keyshortcuts');
   });
 });
 

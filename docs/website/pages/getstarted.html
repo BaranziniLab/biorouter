@@ -13,7 +13,7 @@
 <pre><code>sudo dnf install ./Biorouter-*.rpm</code></pre></li>
   <li><strong>Linux server.</strong> The <code>biorouter-cli</code> packages, one <code>.deb</code> and one <code>.rpm</code>, install the command line, the background service and the browser interface with no desktop app. Install one the same way. See <a href="#cli">Command line</a>.</li>
 </ul>
-<p>The app checks for new releases and tells you when one is ready. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Updates</strong> shows where it stands.</p>
+<p>The app checks for new releases and tells you when one is ready. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;About</strong> shows the version and where an update stands.</p>
 <div class="note"><p>When it starts, the app checks for Git, Python, uv and npm, which some extensions use, and offers to install any that are missing. The app itself runs without them. Local models on Linux need Debian 12, Ubuntu 22.04 or newer.</p></div>
 
 <h2 id="getstarted-cli">Install the command line</h2>
@@ -24,9 +24,9 @@
 <p>After an update, the app offers to update the command when the copy on your PATH is older. The Linux server packages install <code>biorouter</code> to <code>/usr/bin</code> and need no setup.</p>
 
 <h2 id="getstarted-model">Connect a model</h2>
-<p>Biorouter asks you to choose a model the first time it opens. To add or change one later, open <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Configure providers</strong>. Providers sit on three tabs.</p>
+<p>Biorouter asks you to choose a model the first time it opens. To add or change one later, open <strong>Settings&nbsp;→&nbsp;Models</strong> and choose <strong>Manage…</strong> beside Providers. Providers sit on three tabs.</p>
 <ul>
-  <li><strong>Local.</strong> Llama Server needs nothing installed. The first time Biorouter opens, its row lists models: pick one and choose <strong>Download &amp; run</strong>. The model downloads once; after that it runs on this computer, so your messages never go to a model host. Later, <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Local Model Inventory</strong> downloads more. Ollama needs <a href="https://ollama.com">Ollama</a> running on this computer with a model pulled.</li>
+  <li><strong>Local.</strong> Llama Server needs nothing installed. The first time Biorouter opens, its row lists models: pick one and choose <strong>Download &amp; run</strong>. The model downloads once; after that it runs on this computer, so your messages never go to a model host. Later, <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Local models</strong> installs more. Ollama needs <a href="https://ollama.com">Ollama</a> running on this computer with a model pulled.</li>
   <li><strong>Institutional.</strong> For UCSF. Versa API Azure asks for your Versa API key. Versa API Bedrock asks for your Versa access key ID and secret access key. The endpoints are set for you.</li>
   <li><strong>Public.</strong> Claude Code and Codex use the vendor's command line tool, installed and signed in to your own plan; Biorouter never sees the credential. Anthropic, OpenAI and Google Gemini need an API key from that provider. The others ask for that provider's own key or account credentials.</li>
 </ul>
@@ -37,7 +37,7 @@
 <h2 id="getstarted-first-chat">Start a chat</h2>
 <ol class="steps">
   <li><strong>Open a new chat</strong> Choose <strong>New chat</strong> in the sidebar, or press <kbd>Cmd+T</kbd> (<kbd>Ctrl+T</kbd> on Windows and Linux).</li>
-  <li><strong>Pick a working folder</strong> The folder chip above the text box is where the agent reads and writes files. Choose it to switch folders before you send the first message. After that the chat keeps it.</li>
+  <li><strong>Pick a working folder</strong> The folder under the text box is where the agent reads and writes files. Choose it to switch folders before you send the first message. After that the chat keeps it.</li>
   <li><strong>Ask</strong> Type a request in plain language and press <kbd>Enter</kbd>, for example “List the files in this folder and summarize the README.” The agent answers and shows each tool it runs as one line.</li>
 </ol>
 <p>From a terminal, <code>biorouter session</code> opens an interactive chat, and <code>biorouter run -t "Summarize ./notes.md"</code> sends one request and exits.</p>
@@ -49,7 +49,7 @@
   <li><strong>Chats.</strong> <code>sessions.db</code> in <code>~/.local/share/biorouter/sessions/</code></li>
   <li><strong>Logs.</strong> <code>~/.local/state/biorouter/logs/</code></li>
 </ul>
-<p>On Windows they sit under <code>%APPDATA%\Block\biorouter\</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
+<p>On Windows they sit under <code>%APPDATA%\UCSF\biorouter</code>. Run <code>biorouter info</code> to print the paths on your computer. <a href="#config">Configuration</a> lists every file.</p>
 
 <h2 id="getstarted-next">Next steps</h2>
 <ul>

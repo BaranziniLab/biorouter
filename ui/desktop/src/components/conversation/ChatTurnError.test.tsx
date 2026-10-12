@@ -1,8 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ChatTurnError, hasVisibleTurnErrorMessage, presentChatTurnError } from './ChatTurnError';
+import {
+  ChatTurnError,
+  hasVisibleTurnErrorMessage,
+  presentChatTurnError,
+  presentStoredTurnError,
+} from './ChatTurnError';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
+import { transcriptCopy } from '../transcript/copy';
 
 const QUOTA_ERROR =
   'Stream error: provider_failure: Request failed: Stream decode error: Responses API error: Object {"type": String("insufficient_quota"), "code": String("insufficient_quota"), "message": String("You exceeded your current quota, please check your plan and billing details."), "param": Null}';
@@ -64,14 +70,20 @@ describe('ChatTurnError', () => {
       />
     );
 
-    const disclosure = screen.getByText('Technical details').closest('details');
-    expect(disclosure).not.toHaveAttribute('open');
-    fireEvent.click(screen.getByText('Technical details'));
-    expect(disclosure).toHaveAttribute('open');
+    // The shared Disclosure, labelled "Details": closed, the payload is not
+    // mounted at all; opened, it wraps however long the payload is.
+    const trigger = screen.getByRole('button', { name: transcriptCopy.turn.details });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(details)).toBeNull();
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
 
     const detailBody = screen.getByText(details);
     expect(detailBody).toHaveClass('break-words');
     expect(detailBody).toHaveClass('[overflow-wrap:anywhere]');
+    // One well, as a tool call's expanded body is (R-27: a fill, no frame).
+    expect(detailBody).toHaveClass('rounded-element', 'bg-background-well', 'p-3');
+    expect(detailBody.className).not.toMatch(/\bborder\b/);
   });
 
   it('labels a transient backend-unreachable failure distinctly from a provider failure', () => {
@@ -115,8 +127,26 @@ describe('ChatTurnError', () => {
     );
 
     const retry = screen.getByTestId('chat-turn-error-retry');
+    expect(retry).toHaveAccessibleName(transcriptCopy.turn.retry);
     fireEvent.click(retry);
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a transcript row: a warning glyph, a title and a muted message, no toast surface', () => {
+    const { container } = render(
+      <ChatTurnError
+        error={error({ message: 'boom', scope: 'internal', retryable: true })}
+        onRetry={vi.fn()}
+      />
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveAttribute('data-testid', 'chat-turn-error');
+    expect(alert.querySelector('svg.text-text-danger')).not.toBeNull();
+    expect(screen.getByText('Model turn ended unexpectedly')).toHaveClass('text-label');
+    expect(screen.getByText('boom')).toHaveClass('text-secondary', 'text-text-muted');
+    // The one secondary button, not a hand-rolled 13px link.
+    expect(screen.getByTestId('chat-turn-error-retry').className).not.toMatch(/text-\[13px\]/);
+    expect(container.querySelector('[data-testid="notification-surface"]')).toBeNull();
   });
 
   it('omits the Retry action when the error is not retryable', () => {
@@ -261,7 +291,7 @@ describe('ChatTurnError', () => {
       expect(alert).toHaveTextContent(SETTINGS);
       expect(alert).not.toHaveTextContent('Model request failed');
       expect(alert).not.toHaveTextContent(/grant_expired|\{|"code"/);
-      expect(screen.queryByText('Technical details')).toBeNull();
+      expect(screen.queryByRole('button', { name: transcriptCopy.turn.details })).toBeNull();
       // Retrying would be refused the same way: the chat's Crew bar is the way on.
       expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
     });
@@ -308,5 +338,64 @@ describe('ChatTurnError', () => {
 
     expect(hasVisibleTurnErrorMessage(turnError, messages)).toBe(true);
     expect(hasVisibleTurnErrorMessage(error({ message: 'Failed to fetch' }), messages)).toBe(false);
+  });
+
+  // Vision V2-07: the daemon's stored notice ("Ran into this error: …", from
+  // `stop_notice` in agents/mistakes.rs) is the same failure the live row draws,
+  // so it is presented the same way, with the raw response under Details.
+  describe('the stored turn-ending notice', () => {
+    const AUTH_ADVICE =
+      'Retrying will not help until the key or sign-in is fixed. Once it is, send your message again: this chat reads the new credentials with its next message.';
+
+    it('names an authentication failure and keeps the raw response under Details', () => {
+      const raw =
+        'Authentication error: Authentication failed. Status: 401 Unauthorized. Response: {"error":"Invalid client id or secret"}.';
+      expect(presentStoredTurnError(`Ran into this error: ${raw}\n\n${AUTH_ADVICE}`)).toEqual({
+        title: 'Model authentication failed',
+        message: `Authentication failed. Status: 401 Unauthorized. ${AUTH_ADVICE}`,
+        details: raw,
+      });
+    });
+
+    it('keeps a bare status with its kind, and needs no Details when nothing was hidden', () => {
+      expect(
+        presentStoredTurnError(
+          'Ran into this error: Server error: 502.\n\nPlease retry if you think this is a transient or recoverable error. Biorouter already retried it 2 times.'
+        )
+      ).toEqual({
+        title: 'Model provider unavailable',
+        message:
+          'Server error: 502. Please retry if you think this is a transient or recoverable error. Biorouter already retried it 2 times.',
+        details: undefined,
+      });
+    });
+
+    it('keeps an actionable vendor sentence in view', () => {
+      const presentation = presentStoredTurnError(
+        "Ran into this error: Request failed: The 'gpt-6-astra' model requires a newer version of Codex.\n\nRetrying will not help: this one returns the same way until its cause changes."
+      );
+      expect(presentation?.title).toBe('Model request failed');
+      expect(presentation?.message).toBe(
+        "The 'gpt-6-astra' model requires a newer version of Codex. Retrying will not help: this one returns the same way until its cause changes."
+      );
+    });
+
+    it('names a failed compaction as such', () => {
+      expect(
+        presentStoredTurnError(
+          'Ran into this error trying to compact: Context length exceeded: too long.\n\nPlease try again or create a new chat'
+        )
+      ).toEqual({
+        title: 'Could not compact this chat',
+        message: 'Too long. Please try again or create a new chat.',
+        details: undefined,
+      });
+    });
+
+    it('leaves every other answer to markdown', () => {
+      expect(presentStoredTurnError('Here is the answer.')).toBeNull();
+      expect(presentStoredTurnError('I ran into this error: nothing.')).toBeNull();
+      expect(presentStoredTurnError('Ran into this error: \n\nadvice')).toBeNull();
+    });
   });
 });

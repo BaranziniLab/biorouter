@@ -1,10 +1,10 @@
 # Docs consolidation design
 
-> **What this is.** The design for merging BioRouter's two competing documentation trees — the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site — into a single plain-markdown `docs/` folder, dropping the Docusaurus tooling, purging Goose/Block branding, and renaming `recipe` → `workflow` throughout.
+> **What this is.** The design for merging BioRouter's two competing documentation trees — the hand-written `documentation/` folder and the Docusaurus-generated `docs/` site — into a single plain-markdown `docs/` folder, dropping the Docusaurus tooling, replacing the old pages' product names and company references with BioRouter's own, and renaming `recipe` → `workflow` throughout.
 > **Status:** Historical record — approved 2026-05-07 and executed. `documentation/` no longer exists and the target tree (`docs/getting-started/`, `docs/guides/`, `docs/extensions/`, `docs/troubleshooting/`) was built as specified. The companion task-by-task plan is [docusaurus-to-markdown-plan.md](docusaurus-to-markdown-plan.md).
 > **Audience:** maintainers, and anyone tracing why a documentation page lives where it does.
 
-Three terms this document assumes. **Goose** is the open source agent project whose design influenced BioRouter most; **Block** is the company that publishes Goose. Both appear throughout the old pages as branding that had to be replaced. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree — its output mixes JSX components into Markdown (MDX) and ships generated HTML, CSS, feeds and media alongside the source, none of which belongs in a plain documentation folder.
+One term this document assumes. **Docusaurus** is the React-based static-site generator that produced the old `docs/` tree — its output mixes JSX components into Markdown (MDX) and ships generated HTML, CSS, feeds and media alongside the source, none of which belongs in a plain documentation folder.
 
 Despite the `-design` filename, the body below is a migration checklist: file-by-file move tables, a deletion list, the text transformations to apply, and the verification commands. The executable step-by-step version is the companion plan linked above.
 
@@ -12,11 +12,11 @@ Despite the `-design` filename, the body below is a migration checklist: file-by
 
 ## Migration goal
 
-Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` folder. Drop the Docusaurus infrastructure entirely. Purge all Goose/Block branding. Rename `recipe` → `workflow` throughout. Keep only built-in BioRouter extensions; discard all third-party MCP pages.
+Merge `documentation/` and `docs/` into a single, clean, plain-markdown `docs/` folder. Drop the Docusaurus infrastructure entirely. Replace every product name and company reference in the old pages with BioRouter's own. Rename `recipe` → `workflow` throughout. Keep only built-in BioRouter extensions; discard all third-party MCP pages.
 
 ## Source inventory
 
-### `documentation/` — 7 authoritative plain-markdown files (zero Goose references)
+### `documentation/` — 7 authoritative plain-markdown files
 
 | File | Target |
 | --- | --- |
@@ -149,15 +149,14 @@ Remove all React component syntax and Docusaurus-specific markup:
 
 Replace card grids with plain markdown link lists. Drop embedded videos entirely (link to external resource in text if essential).
 
-### Replace Goose and Block branding
+### Replace the old branding
 
 | Find (case-insensitive) | Replace with |
 | --- | --- |
-| `goose` / `Goose` / `GOOSE` | `BioRouter` |
-| `geese` / `Geese` / `GEESE` | `BioRouter` |
-| `block.xyz`, `block.github.io` | `https://github.com/BaranziniLab/biorouter` |
-| `sq.github.io/goose` | `https://github.com/BaranziniLab/biorouter` |
-| "Block" as a company name | remove sentence or rewrite without company attribution |
+| The old pages' product name, in every casing | `BioRouter` |
+| The plural form of that name, in every casing | `BioRouter` |
+| The old product's website and documentation addresses | `https://github.com/BaranziniLab/biorouter` |
+| A company named as the publisher | remove the sentence or rewrite it without company attribution |
 
 ### Rename recipe to workflow
 
@@ -192,7 +191,7 @@ These were written before the migration ran, as the checks it had to satisfy aft
 
 1. `find docs/ -name "*.html"` → zero results
 2. `find docs/ -name "*.mp4" -o -name "*.mp3"` → zero results
-3. `grep -ri "goose\|geese" docs/ --include="*.md"` → zero results (outside `superpowers/`)
+3. A case-insensitive search of `docs/*.md` for the old product name and its plural → zero results (outside `superpowers/`)
 4. `grep -ri "recipe" docs/ --include="*.md"` → zero results (outside `superpowers/`)
 5. `ls docs/docs/mcp/` → directory does not exist
 6. `ls documentation/` → directory does not exist

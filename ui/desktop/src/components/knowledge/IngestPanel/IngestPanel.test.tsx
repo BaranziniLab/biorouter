@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
+import { knowledgeCopy } from '../copy';
 
 const mocks = vi.hoisted(() => ({
   knowledge: {
@@ -97,7 +99,7 @@ vi.mock('../../../toasts', () => ({
 
 function stageSomeText() {
   fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-  fireEvent.change(screen.getByPlaceholderText(/Paste knowledge/i), {
+  fireEvent.change(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder), {
     target: { value: 'some knowledge' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Stage' }));
@@ -133,7 +135,11 @@ describe('IngestPanel model selection', () => {
     render(<IngestPanel />);
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      )
+    );
     expect(trigger.textContent).not.toMatch(/anthropic|claude/i);
   });
 
@@ -163,7 +169,11 @@ describe('IngestPanel model selection', () => {
     render(<IngestPanel />);
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+      )
+    );
   });
 
   it('says so and blocks digestion when no model can be resolved', async () => {
@@ -203,6 +213,54 @@ describe('IngestPanel model selection', () => {
 
     const digest = screen.getByTestId('knowledge-digest-button');
     expect(digest).not.toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+/**
+ * Spec 3.12: one visible line under Digest, and only when the person must act.
+ * The resting reason and the model check are not problems, so they ride on the
+ * button (its Tooltip and its accessible description) rather than on a line
+ * that is there every time the rail is empty. K-04 holds either way: the
+ * button stays full-opacity and says why it does nothing.
+ */
+describe('IngestPanel digest explanation', () => {
+  it('explains a resting Digest on the button, with no line under it', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).toHaveAttribute('aria-disabled', 'true');
+    expect(digest).toHaveAccessibleDescription(knowledgeCopy.ingest.stageAFile);
+    expect(screen.queryByTestId('knowledge-digest-reason')).toBeNull();
+  });
+
+  it('keeps the line when there is something to fix', async () => {
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(screen.getByTestId('knowledge-digest-reason')).toHaveTextContent(
+      /no model is configured/i
+    );
+    expect(screen.getByTestId('knowledge-digest-button')).not.toHaveAccessibleDescription();
+  });
+
+  it('describes nothing once a source is staged and a model is set', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    render(<IngestPanel />);
+    stageSomeText();
+    await screen.findByTestId('knowledge-model-picker-trigger');
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).not.toHaveAttribute('aria-disabled');
+    expect(digest).not.toHaveAccessibleDescription();
+    expect(screen.queryByTestId('knowledge-digest-reason')).toBeNull();
+  });
+
+  it('offers Paste text inside the dropzone, not as a slab under it', () => {
+    render(<IngestPanel />);
+    const paste = screen.getByTestId('knowledge-ingest-paste-text');
+    expect(screen.getByTestId('knowledge-ingest-dropzone')).toContainElement(paste);
   });
 });
 
@@ -249,7 +307,9 @@ describe('IngestPanel model loading state', () => {
     stageSomeText();
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    expect(trigger).toHaveTextContent('ollama / qwen3.8:27b');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+    );
 
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
     await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
@@ -273,6 +333,7 @@ describe('IngestPanel model loading state', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     expect(trigger).toHaveTextContent(/loading/i);
     expect(trigger.textContent).not.toContain('versa_azure');
+    expect(trigger).toHaveAccessibleName(knowledgeCopy.ingest.modelName);
   });
 });
 
@@ -288,7 +349,11 @@ describe('IngestPanel model freshness', () => {
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+      )
+    );
 
     mocks.pickerValues.length = 0;
     mocks.knowledge.primaryKbId = 'kb-2';
@@ -298,7 +363,9 @@ describe('IngestPanel model freshness', () => {
     // Not "settles on the right model eventually" — the base that is no longer
     // primary must never be named once the switch has been committed.
     expect(modelLabels()).not.toContain('ollama / qwen3.8:27b');
-    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+    );
   });
 
   it('does not carry a model chosen for one base over to another', async () => {
@@ -307,7 +374,11 @@ describe('IngestPanel model freshness', () => {
 
     const { rerender } = render(<IngestPanel />);
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
-    await waitFor(() => expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      )
+    );
 
     // Pick a per-base model for kb-1. Neither base has a `default_model` in this
     // fixture, so nothing the resolver reads changes when the base does — the
@@ -315,13 +386,19 @@ describe('IngestPanel model freshness', () => {
     await act(async () => {
       mocks.pickModel?.({ provider: 'ollama', model: 'qwen3.8:27b' });
     });
-    await waitFor(() => expect(trigger).toHaveTextContent('ollama / qwen3.8:27b'));
+    await waitFor(() =>
+      expect(trigger).toHaveAccessibleName(
+        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+      )
+    );
 
     mocks.knowledge.primaryKbId = 'kb-2';
     mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };
     rerender(<IngestPanel />);
 
-    expect(trigger).toHaveTextContent('versa_azure / gpt-5.5-2026-04-24');
+    expect(trigger).toHaveAccessibleName(
+      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+    );
 
     stageSomeText();
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
@@ -357,6 +434,7 @@ describe('IngestPanel with an unresolvable knowledge base', () => {
     // named for a base whose own default is unknown, on any commit.
     expect(modelLabels()).not.toContain('versa_azure / gpt-5.5-2026-04-24');
     expect(trigger.textContent).not.toContain('versa_azure');
+    expect(trigger).toHaveAccessibleName(knowledgeCopy.ingest.modelName);
     expect(trigger).toHaveTextContent(/unavailable/i);
   });
 
@@ -484,7 +562,7 @@ describe('IngestPanel paste box visibility', () => {
   it('puts the caret in the textarea without scrolling it back under the footer', () => {
     render(<IngestPanel />);
     fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
-    expect(screen.getByPlaceholderText(/Paste knowledge/i)).toHaveFocus();
+    expect(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toHaveFocus();
   });
 });
 
@@ -546,5 +624,271 @@ describe('IngestPanel digest log lifetime', () => {
     // The check is a network round-trip; a log cleared only when the first
     // stream opens leaves the last run's verdict under a live progress bar.
     expect(resetsAtCheck).toBeGreaterThan(before);
+  });
+});
+
+// V3-R2-1 (from WS-VIEWS-A, WS-VIEWS-A-3): the person has just pressed Stop, and a button that turns
+// `disabled` under a keyboard user hands focus to <body> in Chromium (jsdom keeps it, so this pins
+// the markup that cannot lose it: still enabled, `aria-busy`, the press ignored).
+describe('IngestPanel stopping', () => {
+  it('stays enabled, focused and busy while stopping, and ignores a second press', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    mocks.start.mockReturnValue(new Promise(() => undefined));
+
+    render(<IngestPanel />);
+    stageSomeText();
+    const button = screen.getByTestId('knowledge-digest-button');
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Stop'));
+    expect(button).not.toHaveAttribute('aria-busy');
+
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveTextContent('Stopping…'));
+    expect(mocks.abort).toHaveBeenCalledTimes(1);
+    expect(button).toBeEnabled();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(button).toHaveFocus();
+
+    fireEvent.click(button);
+    expect(mocks.abort).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('IngestPanel held-file state', () => {
+  it('tells the rail as well as the box while a file is held anywhere on it', () => {
+    render(<IngestPanel />);
+    const rail = screen.getByTestId('knowledge-ingest-rail');
+    const box = screen.getByTestId('knowledge-ingest-dropzone');
+    const digest = screen.getByTestId('knowledge-digest-button');
+    const transfer = { dataTransfer: { files: [], getData: () => '', types: ['Files'] } };
+    expect(rail).not.toHaveAttribute('data-dragging');
+
+    // Held over the footer, far from the box: the rail answers (`.br-knowledge-rail` draws its
+    // edge, measured in `sourcesRail.browser.test.tsx`), and so does the box.
+    fireEvent.dragEnter(digest, transfer);
+    expect(rail).toHaveAttribute('data-dragging', 'true');
+    expect(box).toHaveAttribute('data-dragging', 'true');
+
+    fireEvent.dragLeave(digest, transfer);
+    expect(rail).not.toHaveAttribute('data-dragging');
+    expect(box).not.toHaveAttribute('data-dragging');
+  });
+});
+
+/**
+ * V3-R6-1: a keyboard user keeps their place in the rail.
+ *
+ * Stage, Cancel, a row's Remove, Clear, a warning's Dismiss and Retry failed each UNMOUNT the button
+ * the person just pressed, and a removed focused element hands focus to `<body>` (jsdom and
+ * Chromium alike), so the person was back at the top of the Tab order every time. Each case presses
+ * the control from the keyboard and asserts where focus is, never only that it is not `<body>`:
+ * the target is the rule (`railFocus.ts`), and a focus that landed somewhere arbitrary would pass
+ * a bare "not body" check. The layout half (the ring a keyboard arrival draws, and none after a
+ * click) is measured in Chromium in `sourcesRail.browser.test.tsx`.
+ */
+describe('IngestPanel keeps keyboard focus when a control leaves (V3-R6-1)', () => {
+  const pasteButton = () => screen.getByTestId('knowledge-ingest-paste-text');
+  const rows = () => screen.queryAllByTestId('knowledge-staged-item');
+  const removeOf = (row: HTMLElement) =>
+    row.querySelector<HTMLElement>('[data-testid="knowledge-staged-remove"]')!;
+
+  /** Paste text > type > Tab to Stage > Enter, with the keyboard only. Returns the user. */
+  async function stageFromKeyboard(
+    user: ReturnType<typeof userEvent.setup>,
+    text: string,
+    title?: string
+  ) {
+    pasteButton().focus();
+    await user.keyboard('{Enter}');
+    const textarea = screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder);
+    expect(textarea).toHaveFocus();
+    if (title)
+      fireEvent.change(screen.getByLabelText('Title for the pasted source'), {
+        target: { value: title },
+      });
+    await user.keyboard(text);
+    // Cancel is next (after a chip for each URL the text listed), then Stage.
+    const stage = screen.getByRole('button', { name: 'Stage' });
+    for (let i = 0; i < 6 && document.activeElement !== stage; i++) await user.tab();
+    expect(stage).toHaveFocus();
+    await user.keyboard('{Enter}');
+  }
+
+  it('Stage puts focus on the staged row, and Tab goes on to its Remove', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'some knowledge');
+
+    const [row] = rows();
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(row).toHaveFocus();
+    // Announced by what it holds, and never a tab stop of its own.
+    expect(row).toHaveAccessibleName('Pasted knowledge');
+    expect(row).toHaveAttribute('tabindex', '-1');
+    await user.tab();
+    expect(removeOf(row)).toHaveFocus();
+  });
+
+  it('Stage lands on the pasted text, not on a URL it listed', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'see https://example.org/a for more', 'Notes');
+
+    expect(rows()).toHaveLength(2);
+    expect(rows()[0]).toHaveAttribute('data-label', 'Notes');
+    expect(rows()[0]).toHaveFocus();
+  });
+
+  it('Cancel returns to Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    pasteButton().focus();
+    await user.keyboard('{Enter}');
+    await user.tab(); // from the textarea to Cancel
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await user.keyboard('{Enter}');
+
+    expect(screen.queryByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toBeNull();
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('Remove goes to the next row’s Remove, else the previous, else Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    for (const title of ['One', 'Two', 'Three']) {
+      await stageFromKeyboard(user, `text ${title}`, title);
+    }
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One', 'Two', 'Three']);
+
+    // The middle row goes: the one that takes its place is the next.
+    removeOf(rows()[1]).focus();
+    await user.keyboard('{Enter}');
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One', 'Three']);
+    expect(removeOf(rows()[1])).toHaveFocus();
+
+    // The last row goes: nothing is below it, so the one above.
+    await user.keyboard('{Enter}');
+    expect(rows().map((row) => row.dataset.label)).toEqual(['One']);
+    expect(removeOf(rows()[0])).toHaveFocus();
+
+    // The only row goes: the rail's first control.
+    await user.keyboard('{Enter}');
+    expect(rows()).toHaveLength(0);
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('Clear returns to Paste text', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    await stageFromKeyboard(user, 'one', 'One');
+    await stageFromKeyboard(user, 'two', 'Two');
+
+    screen.getByRole('button', { name: 'Clear' }).focus();
+    await user.keyboard('{Enter}');
+    expect(rows()).toHaveLength(0);
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('a click moves focus the same way', async () => {
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    stageSomeText();
+    expect(rows()[0]).toHaveFocus();
+    await user.click(removeOf(rows()[0]));
+    expect(pasteButton()).toHaveFocus();
+  });
+
+  it('leaves focus alone when nothing was pressed', async () => {
+    // A queued target is consumed by the commit it was queued for, never by a later render.
+    const user = userEvent.setup();
+    render(<IngestPanel />);
+    stageSomeText();
+    const digest = screen.getByTestId('knowledge-digest-button');
+    digest.focus();
+    fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
+    await user.keyboard('x');
+    expect(screen.getByPlaceholderText(knowledgeCopy.ingest.pastePlaceholder)).toHaveFocus();
+  });
+
+  describe('warnings', () => {
+    /** Drop two files the rail sets aside, which makes two warnings. */
+    async function dropTwoUnsuitableFiles() {
+      const rail = screen.getByTestId('knowledge-ingest-rail');
+      const files = [new File(['x'], 'a.exe'), new File(['x'], 'b.dmg')];
+      fireEvent.drop(rail, { dataTransfer: { files, getData: () => '', types: ['Files'] } });
+      await screen.findByText(/2 warnings/);
+      fireEvent.click(screen.getByText(/2 warnings/));
+      return screen.findAllByRole('button', { name: /^Dismiss / });
+    }
+
+    it('Dismiss goes to the next warning’s Dismiss, else the previous, else Paste text', async () => {
+      const user = userEvent.setup();
+      render(<IngestPanel />);
+      const [first] = await dropTwoUnsuitableFiles();
+
+      first.focus();
+      await user.keyboard('{Enter}');
+      const rest = screen.getAllByRole('button', { name: /^Dismiss / });
+      expect(rest).toHaveLength(1);
+      expect(rest[0]).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+      expect(screen.queryAllByRole('button', { name: /^Dismiss / })).toHaveLength(0);
+      expect(pasteButton()).toHaveFocus();
+    });
+
+    it('Clear returns to Paste text', async () => {
+      const user = userEvent.setup();
+      render(<IngestPanel />);
+      await dropTwoUnsuitableFiles();
+
+      // The warnings' own Clear is the first of the rail's Clear buttons (the staged list has none
+      // while it is empty).
+      screen.getByRole('button', { name: 'Clear' }).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.queryByText(/2 warnings/)).toBeNull();
+      expect(pasteButton()).toHaveFocus();
+    });
+  });
+
+  describe('a failed digest', () => {
+    async function failOneSource() {
+      mocks.modelAndProvider.currentProvider = 'versa_azure';
+      mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+      mocks.start.mockResolvedValueOnce({ status: 'error', error: 'boom' });
+      render(<IngestPanel />);
+      stageSomeText();
+      fireEvent.click(screen.getByTestId('knowledge-digest-button'));
+      return screen.findByRole('button', { name: 'Retry failed' });
+    }
+
+    it('Retry failed hands focus to the Digest button, now Stop', async () => {
+      const user = userEvent.setup();
+      mocks.start.mockReturnValue(new Promise(() => undefined));
+      const retry = await failOneSource();
+      mocks.start.mockReturnValue(new Promise(() => undefined));
+
+      retry.focus();
+      await user.keyboard('{Enter}');
+      const digest = screen.getByTestId('knowledge-digest-button');
+      await waitFor(() => expect(digest).toHaveTextContent('Stop'));
+      expect(screen.queryByRole('button', { name: 'Retry failed' })).toBeNull();
+      expect(digest).toHaveFocus();
+    });
+
+    it('Clear failed returns to Paste text', async () => {
+      const user = userEvent.setup();
+      const retry = await failOneSource();
+      expect(retry).toBeInTheDocument();
+
+      screen.getByRole('button', { name: 'Clear failed' }).focus();
+      await user.keyboard('{Enter}');
+      expect(screen.queryByRole('button', { name: 'Clear failed' })).toBeNull();
+      expect(pasteButton()).toHaveFocus();
+    });
   });
 });

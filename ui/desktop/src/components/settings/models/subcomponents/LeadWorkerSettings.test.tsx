@@ -109,18 +109,37 @@ describe('LeadWorkerSettings', () => {
     expect(leadInput.value).toBe('my-custom-lead');
     expect(workerInput.value).toBe('my-custom-worker');
 
-    // Save settings
+    // Save waits for a change: the saved pair as it was is nothing to write.
     const saveBtn = screen.getByRole('button', { name: 'Save settings' });
+    expect(saveBtn).toBeDisabled();
+    fireEvent.change(leadInput, { target: { value: 'my-custom-lead-2' } });
     expect(saveBtn).toBeEnabled();
     fireEvent.click(saveBtn);
 
     // Assert upserts for models (providers are optional but present in this setup)
     await waitFor(() => {
-      expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', 'my-custom-lead', false);
+      expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', 'my-custom-lead-2', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_MODEL', 'my-custom-worker', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_LEAD_PROVIDER', 'anthropic', false);
       expect(mockUpsert).toHaveBeenCalledWith('BIOROUTER_PROVIDER', 'openai', false);
     });
+  });
+
+  // Vision V4-R7-5: a model id is a machine string. Chromium drew its red dotted misspelling line
+  // under `my-custom-lead` on a correct value, and the platform may "correct" or capitalise it.
+  // The number fields beside them are numbers and take nothing.
+  it('leaves the two custom model fields unspellchecked, uncorrected and uncapitalised', async () => {
+    setupHappyPathMocks();
+    const { container } = render(<LeadWorkerSettings isOpen={true} onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByText('Back to model list')).toHaveLength(2));
+
+    for (const id of ['lead-model', 'worker-model']) {
+      const field = container.ownerDocument.getElementById(id);
+      expect(field, id).not.toBeNull();
+      expect(field, `${id} spellcheck`).toHaveAttribute('spellcheck', 'false');
+      expect(field, `${id} autocorrect`).toHaveAttribute('autocorrect', 'off');
+      expect(field, `${id} autocapitalize`).toHaveAttribute('autocapitalize', 'off');
+    }
   });
 
   it('disables lead/worker and removes config when toggled off', async () => {

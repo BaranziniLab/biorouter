@@ -664,10 +664,13 @@ real engine showed it. Fixed: measure once on mount + on `fonts.ready`. **This
 is the fourth time on this branch a renderer "passed" while being wrong until
 someone looked** (logo mask, ⌃Tab, traffic-light reserve, now this).
 
-The old wrappers (`BioRouterLogo`, `WelcomeBioRouterLogo`, `BioRouterIcon`, the
-`BioRouter` glyph mask) are unrendered by any live site — kept as dead code for
-this pass rather than deleted; `glyph.svg` is itself now the BR mark, so even an
-overlooked mask render shows BR, not the old circle.
+The old wrappers (`BioRouterLogo`, `WelcomeBioRouterLogo`, `BioRouterIcon`) were
+unrendered by any live site and were kept as dead code for this pass. They have
+since been removed as unused (R-29 of the Codex simplicity redesign). The
+`BioRouter` glyph mask (`icons/BioRouter.tsx`) remains, because
+`scripts/check-brand-consistency.sh` asserts it references `glyph.svg`; `glyph.svg`
+is itself now the BR mark, so even an overlooked mask render shows BR, not the old
+circle.
 
 ### Follow-on UI and terminal fixes (2026-07-17, on user review)
 

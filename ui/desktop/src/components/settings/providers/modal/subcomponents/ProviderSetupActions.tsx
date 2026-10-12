@@ -1,7 +1,9 @@
 import { SyntheticEvent } from 'react';
 import { Button } from '../../../../ui/button';
-import { Trash2, AlertTriangle } from '../../../../icons/app-icons';
+import { Note } from '../../../../ui/note';
+import { AlertTriangle } from '../../../../icons/app-icons';
 import { ConfigKey } from '../../../../../api';
+import { providerSetupCopy } from '../../copy';
 
 interface ProviderSetupActionsProps {
   onCancel: () => void;
@@ -15,8 +17,18 @@ interface ProviderSetupActionsProps {
   requiredParameters?: ConfigKey[];
   isActiveProvider?: boolean;
   isSubmitting?: boolean;
+  /**
+   * Every required field has a value. Save is the coral primary only then, and secondary before
+   * (vision FR-R3-3); it stays clickable either way, so a click can say what is missing.
+   */
+  ready?: boolean;
 }
 
+/**
+ * The configure dialog's footer. Three states, one row each: Remove on the left with Cancel and
+ * Save on the right; the inline "delete this configuration?" confirmation, which names its
+ * consequence at the moment of decision; and the refusal to remove the provider in use.
+ */
 export default function ProviderSetupActions({
   onCancel,
   onSubmit,
@@ -29,37 +41,35 @@ export default function ProviderSetupActions({
   requiredParameters,
   isActiveProvider = false,
   isSubmitting = false,
+  ready = true,
 }: ProviderSetupActionsProps) {
   if (showDeleteConfirmation) {
     if (isActiveProvider) {
       return (
-        <div className="flex items-start gap-3 w-full">
-          <div className="flex-1 flex items-start gap-2 text-sm text-text-warning bg-background-warning/10 border border-border-warning/40 rounded-element px-3 py-2.5">
-            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-            <span>
-              Switch to a different model before removing <strong>{providerName}</strong>.
-            </span>
-          </div>
-          <Button variant="ghost" size="sm" onClick={onCancelDelete}>
-            OK
+        <div className="flex w-full items-start gap-3">
+          <Note tone="warning" role="status" icon={AlertTriangle} className="flex-1">
+            Switch to a different model before removing{' '}
+            <strong className="font-semibold">{providerName}</strong>.
+          </Note>
+          <Button variant="secondary" onClick={onCancelDelete}>
+            {providerSetupCopy.ok}
           </Button>
         </div>
       );
     }
 
     return (
-      <div className="flex items-center justify-between w-full gap-3">
-        <p className="flex-1 text-sm text-text-muted">
-          Delete <strong className="text-text-default">{providerName}</strong> configuration? This
-          cannot be undone.
+      <div className="flex w-full items-center justify-between gap-3">
+        <p className="flex-1 text-secondary text-text-muted">
+          Delete <strong className="font-semibold text-text-default">{providerName}</strong>{' '}
+          configuration? This cannot be undone.
         </p>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <Button variant="ghost" size="sm" onClick={onCancelDelete}>
-            Cancel
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <Button variant="secondary" onClick={onCancelDelete}>
+            {providerSetupCopy.cancel}
           </Button>
-          <Button size="sm" variant="destructive" onClick={onConfirmDelete}>
-            <Trash2 className="w-3.5 h-3.5" />
-            Delete
+          <Button variant="destructive" onClick={onConfirmDelete}>
+            {providerSetupCopy.delete}
           </Button>
         </div>
       </div>
@@ -67,32 +77,30 @@ export default function ProviderSetupActions({
   }
 
   return (
-    <div className="flex items-center w-full">
+    <div className="flex w-full items-center">
       {/* Left: destructive delete */}
       {canDelete && onDelete && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={onDelete}
-          className="text-text-danger hover:bg-background-danger/10 mr-auto"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-          Remove
+        <Button type="button" variant="destructive" onClick={onDelete} className="mr-auto">
+          {providerSetupCopy.remove}
         </Button>
       )}
 
       {/* Right: cancel + primary action */}
       <div className={`flex items-center gap-2 ${!canDelete || !onDelete ? 'ml-auto' : ''}`}>
-        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          {providerSetupCopy.cancel}
         </Button>
-        <Button type="submit" size="sm" onClick={onSubmit} disabled={isSubmitting}>
+        <Button
+          type="submit"
+          variant={ready ? 'default' : 'secondary'}
+          onClick={onSubmit}
+          disabled={isSubmitting}
+        >
           {isSubmitting
-            ? 'Checking…'
+            ? providerSetupCopy.checking
             : requiredParameters && requiredParameters.length > 0
-              ? 'Save'
-              : 'Enable'}
+              ? providerSetupCopy.save
+              : providerSetupCopy.enable}
         </Button>
       </div>
     </div>

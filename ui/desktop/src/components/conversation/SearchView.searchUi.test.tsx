@@ -19,6 +19,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SearchView } from './SearchView';
+import { findInChatCopy } from './searchCopy';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 
 class ResizeObserverStub {
@@ -29,7 +30,7 @@ class ResizeObserverStub {
 /** The bar's debounce (200 ms) plus SearchView's highlight delay (150 ms), with room. */
 const SEARCH_SETTLE_MS = 400;
 
-const counter = () => screen.queryByText(/^\d+\/\d+$/);
+const counter = () => screen.queryByText(/^\d+ of \d+$/);
 
 function openSearch(content: React.ReactNode) {
   render(<SearchView>{content}</SearchView>);
@@ -37,7 +38,9 @@ function openSearch(content: React.ReactNode) {
 }
 
 function search(term: string) {
-  fireEvent.change(screen.getByPlaceholderText('Search chat...'), { target: { value: term } });
+  fireEvent.change(screen.getByPlaceholderText(findInChatCopy.placeholder), {
+    target: { value: term },
+  });
   act(() => vi.advanceTimersByTime(SEARCH_SETTLE_MS));
 }
 
@@ -72,16 +75,16 @@ describe('SearchView — the search bar is not something it finds', () => {
     search('aa');
 
     // The label is on screen and matches `aa` case-insensitively. Before the
-    // fix this read "1/2", and match 1 was the label.
+    // fix this read "1/2" (now spelled "1 of 2"), and match 1 was the label.
     expect(screen.getByText('Aa')).toBeInTheDocument();
-    expect(counter()).toHaveTextContent(/^1\/1$/);
+    expect(counter()).toHaveTextContent(/^1 of 1$/);
   });
 
   it('finds nothing when only the bar holds the term', () => {
     openSearch(<p>alpha beta</p>);
 
     search('al');
-    expect(counter()).toHaveTextContent(/^1\/1$/);
+    expect(counter()).toHaveTextContent(/^1 of 1$/);
 
     search('aa');
     expect(counter()).toBeNull();
@@ -92,7 +95,7 @@ describe('SearchView — the search bar is not something it finds', () => {
     openSearch(<p id="content">alpha beta</p>);
 
     search('al');
-    expect(counter()).toHaveTextContent(/^1\/1$/);
+    expect(counter()).toHaveTextContent(/^1 of 1$/);
     const passes = highlight.mock.calls.length;
     expect(passes).toBeGreaterThan(0);
 
@@ -109,6 +112,6 @@ describe('SearchView — the search bar is not something it finds', () => {
     await act(async () => {});
     act(() => vi.advanceTimersByTime(500));
     expect(highlight.mock.calls.length).toBeGreaterThan(passes);
-    expect(counter()).toHaveTextContent(/^1\/2$/);
+    expect(counter()).toHaveTextContent(/^1 of 2$/);
   });
 });

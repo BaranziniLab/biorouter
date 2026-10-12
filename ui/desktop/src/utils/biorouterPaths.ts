@@ -19,12 +19,16 @@
  * 1. **`BIOROUTER_PATH_ROOT`** — the sandbox seam. `<root>/config`, the shape
  *    `main.ts` already used for `config.yaml`.
  * 2. Otherwise the **platform** directory, via `etcetera`'s
- *    `choose_app_strategy` with `{author: "Block", app_name: "biorouter"}`.
+ *    `choose_app_strategy` with the workspace's one `AppStrategyArgs`
+ *    (`biorouter-mcp`'s `APP_STRATEGY`, author `UCSF`, app `biorouter`).
  *    That is the **Xdg** strategy on macOS as well as Linux (verified in
  *    etcetera 0.11's `app_strategy.rs`: `create_strategies!(Apple, Xdg)` puts
  *    Xdg in the `choose_app_strategy` slot), and the **Windows** strategy on
- *    Windows. It is NOT `~/.config/biorouter` on either count: a non-default
- *    `XDG_CONFIG_HOME` moves it, and Windows has never used that layout.
+ *    Windows, where the folder is the one `./appFolder.ts` resolves: the
+ *    current one, or the folder earlier releases used until the daemon has
+ *    moved it. It is NOT
+ *    `~/.config/biorouter` on either count: a non-default `XDG_CONFIG_HOME`
+ *    moves it, and Windows has never used that layout.
  *    `crates/biorouter-server/src/routes/shell.rs` fixed and documented the
  *    same defect on the Rust side.
  *
@@ -59,40 +63,62 @@
 
 import * as os from 'os';
 import * as path from 'path';
+import { APP_NAME, appRootUnder, resolveAppRoot, windowsBases, type Presence } from './appFolder';
 
-/** `{author: "Block", app_name: "biorouter"}` in `paths.rs`'s AppStrategyArgs. */
-const APP_STRATEGY_AUTHOR = 'Block';
-const APP_STRATEGY_APP_NAME = 'biorouter';
+const APP_STRATEGY_APP_NAME = APP_NAME;
+
+/** What the platform half of the resolver reads; `process` and `os` in the app. */
+export interface PlatformInputs {
+  platform: typeof process.platform;
+  env: Record<string, string | undefined>;
+  homedir: string;
+  /** `path.win32` lets the suite run the Windows branch on every OS. */
+  pathImpl?: Pick<typeof path, 'join' | 'isAbsolute'>;
+  presence?: (target: string) => Presence;
+}
 
 /**
  * The platform config directory — what `choose_app_strategy(...).config_dir()`
- * returns when no sandbox root is set.
+ * returns when no sandbox root is set. Exported for the suite only, which runs
+ * the Windows branch on every OS; the app calls it through
+ * `biorouterConfigDir`.
  *
- * Windows: `%APPDATA%\Block\biorouter\config`. ⚠ etcetera's ladder has a rung
- * this cannot reproduce — an unset `APPDATA` sends it to the known-folder API
- * before it falls back to `<home>\AppData\Roaming` — so this skips the middle
- * rung and joins the home dir directly. On a normal profile the two name the
- * same directory, and `APPDATA` is set in every Electron process we ship.
+ * Windows: `%APPDATA%\UCSF\biorouter\config`, or the same folder under the
+ * legacy author while the daemon has not moved it yet (see `./appFolder.ts`;
+ * this process never moves it). ⚠
+ * etcetera's ladder has a rung this cannot reproduce — an unset `APPDATA`
+ * sends it to the known-folder API before it falls back to
+ * `<home>\AppData\Roaming` — so this skips the middle rung and joins the home
+ * dir directly. On a normal profile the two name the same directory, and
+ * `APPDATA` is set in every Electron process we ship.
  *
  * Elsewhere (macOS included): `$XDG_CONFIG_HOME/biorouter`, or
  * `~/.config/biorouter` when that variable is unset or **not absolute** — the
  * XDG spec says a relative value is ignored, and etcetera implements exactly
  * that (`env_var_or_none` returns `None` unless `path.is_absolute()`).
  */
-function platformConfigDir(): string {
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA;
-    const roaming =
-      appData && appData.length > 0 ? appData : path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(roaming, APP_STRATEGY_AUTHOR, APP_STRATEGY_APP_NAME, 'config');
+export function platformConfigDirFor(inputs: PlatformInputs): string {
+  const p = inputs.pathImpl ?? path;
+  if (inputs.platform === 'win32') {
+    const { roaming } = windowsBases(inputs.env, inputs.homedir, p.join);
+    const root = appRootUnder(roaming, p.join);
+    return p.join(resolveAppRoot(root, inputs.presence), 'config');
   }
 
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+  const xdgConfigHome = inputs.env.XDG_CONFIG_HOME;
   const base =
-    xdgConfigHome && path.isAbsolute(xdgConfigHome)
+    xdgConfigHome && p.isAbsolute(xdgConfigHome)
       ? xdgConfigHome
-      : path.join(os.homedir(), '.config');
-  return path.join(base, APP_STRATEGY_APP_NAME);
+      : p.join(inputs.homedir, '.config');
+  return p.join(base, APP_STRATEGY_APP_NAME);
+}
+
+function platformConfigDir(): string {
+  return platformConfigDirFor({
+    platform: process.platform,
+    env: process.env,
+    homedir: os.homedir(),
+  });
 }
 
 /**
@@ -108,9 +134,15 @@ function platformConfigDir(): string {
  * the very thing the sandbox root exists to prevent.
  */
 export function unsandboxedConfigDirCandidates(): string[] {
-  const platform = platformConfigDir();
-  const homeJoin = path.join(os.homedir(), '.config', APP_STRATEGY_APP_NAME);
-  return platform === homeJoin ? [platform] : [platform, homeJoin];
+  const candidates = [platformConfigDir()];
+  if (process.platform === 'win32') {
+    // Both Windows folders are real, whichever one is in use: a path naming
+    // the other must be redirected into the sandbox too.
+    const root = appRootUnder(windowsBases(process.env, os.homedir()).roaming);
+    candidates.push(path.join(root.current, 'config'), path.join(root.legacy, 'config'));
+  }
+  candidates.push(path.join(os.homedir(), '.config', APP_STRATEGY_APP_NAME));
+  return [...new Set(candidates)];
 }
 
 /**

@@ -124,8 +124,8 @@ Crew is one route (`/crew`) inside `SidebarInset`. The app sidebar (216 to 360px
   are `h-chrome` (44px) bands on `bg-sidebar` with a bottom `border-border-subtle` hairline that meets the app
   sidebar's titlebar hairline at y=44, exactly as the chat header does.
 - **Drag region (issue #74).** No Crew band declares `-webkit-app-region: drag`. Every band control carries
-  `no-drag`. `AppLayout.tsx`'s `isChatRoute` predicate gains `/crew`, so the 32px drag strip stops taking pointer
-  events on this route. When the app sidebar is collapsed (the default at a 1048px window), the workspace switcher
+  `no-drag`. `AppLayout.tsx`'s `isChatRoute` predicate (since renamed `routeOwnsTopBand`) gains `/crew`, so the
+  32px drag strip stops taking pointer events on this route. When the app sidebar is collapsed (the default at a 1048px window), the workspace switcher
   reserves `var(--biorouter-titlebar-control-reserve)` as a **margin-left**, never padding: a padded reserve stays
   inside the band's box and would re-cover the floating titlebar controls. Verify in the real app with the
   sidebar open and collapsed; jsdom cannot see drag rects.
@@ -1144,7 +1144,7 @@ ui/desktop/src/components/
   ui/
     copy-field.tsx     status-dot.tsx     disclosure.tsx     avatar.tsx      (+ tests)
   icons/app-icons.tsx                    + Hash UserPlus Paperclip KeyRound Server LogOut PanelRight Fingerprint
-  Layout/AppLayout.tsx                   isChatRoute also matches /crew
+  Layout/AppLayout.tsx                   routeOwnsTopBand (was isChatRoute) also matches /crew
   crew/
     CrewView.tsx          thin root: controller + context + injected layout (default: legacy)
     CrewApp.tsx           new entry: <CrewView layout={CrewLayout} controllerOptions=…/>

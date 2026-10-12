@@ -49,23 +49,36 @@ describe('Note', () => {
   });
 
   /**
-   * `neutral` has no hue to wash, so it takes a real surface step plus a
-   * hairline — the same exception `badge.tsx` documents for its own neutral.
+   * `neutral` has no hue to wash, so it takes the subtle solid fill (owner message 13, R-27):
+   * no outline, the 1px border kept transparent so forced colours still draw the box.
    */
-  it('gives neutral a surface step and a hairline instead', () => {
+  it('gives neutral the subtle fill and no outline', () => {
     render(
       <Note tone="neutral" testId="note">
         body
       </Note>
     );
-    expect(box()).toHaveClass('border', 'border-border-subtle', 'bg-background-muted');
-    expect(box().className).not.toContain('bg-wash-');
+    expect(box()).toHaveClass('border', 'border-transparent', 'bg-background-fill');
+    expect(box().className).not.toMatch(/border-border-|bg-background-muted|bg-wash-/);
   });
 
   it('defaults to neutral', () => {
     render(<Note testId="note">body</Note>);
-    expect(box()).toHaveClass('bg-background-muted');
+    expect(box()).toHaveClass('bg-background-fill');
   });
+
+  /** A fill never sits on a fill: the action a note holds steps back to the page ground. */
+  it.each(['neutral', ...STATUS_TONES] as const)(
+    'makes the %s note a fill surface for the controls it holds',
+    (tone) => {
+      render(
+        <Note tone={tone} testId="note">
+          body
+        </Note>
+      );
+      expect(box()).toHaveClass('br-fill-surface');
+    }
+  );
 
   it('passes role and testId through, and merges a layout className', () => {
     render(
@@ -98,7 +111,11 @@ describe('Note', () => {
         body
       </Note>
     );
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    // Centred on the note's first line by `.br-note-action` (main.css; measured in Chromium by
+    // filledPrimitives.browser.test.tsx).
+    expect(screen.getByRole('button', { name: 'Retry' }).parentElement).toHaveClass(
+      'br-note-action'
+    );
   });
 
   /**
@@ -107,7 +124,7 @@ describe('Note', () => {
    * could fail to generate.
    */
   it.each([
-    ['neutral', 'var(--background-muted)'],
+    ['neutral', 'var(--background-fill)'],
     ['warning', 'var(--wash-solid-warning)'],
   ] as const)('hands the clamp %s’s own fade ground', (tone, expected) => {
     render(

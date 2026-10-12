@@ -1,7 +1,7 @@
 import './tool-call.css';
 import { ToolContentPreview } from './ToolContentPreview';
-import { ToolIconWithStatus, ToolCallStatus } from './ToolCallStatusIndicator';
-import { getToolCallIcon } from '../utils/toolIconMapping';
+import { ToolCallStatus } from './ToolCallStatusIndicator';
+import { toolGlyphFor } from '../utils/toolGlyph';
 import React from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
@@ -18,18 +18,35 @@ import {
   ToolResponseMessageContent,
   NotificationEvent,
 } from '../types/message';
-import { cn, toolIdentifierToTitleCase } from '../utils';
+import { toolIdentifierToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
-import { ChevronRight } from './icons/app-icons';
+import { Progress as ProgressBarPrimitive } from './ui/progress';
+import { AlertTriangle } from './icons/app-icons';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
-import { NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { stripHiddenCharacters } from '../utils/untrustedText';
+import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
+import { InfoTip } from './ui/info-tip';
+import {
+  FIGURE_COPY,
+  FIGURE_NAMES,
+  TOOL_ROW_COPY,
+  inSentence,
+  sentenceStart,
+  spellServerName,
+  toolActionPhrase,
+  toolCallNameWords,
+  toolNamePhrase,
+  toolNameWords,
+  toolRowLabel,
+  toolServerName,
+  type ToolRowState,
+} from './toolCallCopy';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -215,7 +232,6 @@ export type ProviderExecution = 'bridged' | 'child';
 /**
  * Read the mirror marker off a request/response pair.
  *
- * Both halves are stamped, so a row read on its own carries its own provenance;
  * Both halves are stamped, so a row read on its own carries its own provenance.
  * An unrecognised value is `null` — the same fail-safe direction the backend
  * takes: we only claim a provenance we positively recognise.
@@ -240,15 +256,6 @@ export function providerExecutionOf(
   return seen;
 }
 
-/**
- * The full sentence behind the row's short label. Kept out of the visible row
- * because D-17 says a tool call is a LINE, not a card — the row states the fact,
- * the tooltip explains it.
- */
-const CHILD_EXECUTED_TITLE =
-  "This tool ran inside the coding agent's own sandbox. Biorouter's inspectors, " +
-  'permission mode, .biorouterignore and privacy gates did not apply to it.';
-
 function normalizedToolResultValue(toolResult: unknown): Record<string, unknown> | null {
   const result = recordOf(toolResult);
   if (!result) return null;
@@ -263,7 +270,7 @@ function getToolResultContent(toolResult: unknown): Content[] {
     return [];
   }
 
-  return (
+  return collapseRepeatedUnaddressedText(
     value.content
       .filter((item): item is Content => {
         if (!recordOf(item)) return false;
@@ -280,6 +287,38 @@ function getToolResultContent(toolResult: unknown): Content[] {
       // function.
       .map(unwrapGuardrailFrameInContent)
   );
+}
+
+/** A plain text block's text when it names no audience, else null. */
+function unaddressedText(content: Content): string | null {
+  const record = content as Record<string, unknown>;
+  if (typeof record.text !== 'string' || 'data' in record || 'resource' in record) return null;
+  const annotations = recordOf(record.annotations);
+  return annotations?.audience ? null : record.text;
+}
+
+/**
+ * Folds a text block that repeats the block just before it, when neither names
+ * an audience, so a person reads one output once (V2-R7-5).
+ *
+ * The developer shell answers twice, once addressed to the model and once to
+ * the person, and the audience filter above keeps only the second. A bridged
+ * coding-agent call whose child's echo is stored in place of Biorouter's own
+ * result (`stored_bridged_result` in `coding_agent/mirror.rs` falls back to it)
+ * keeps both texts and drops both labels, so the well drew two identical
+ * "Output" sections. Only an unlabelled repeat folds: blocks a tool addressed
+ * on purpose, blocks that differ, and anything that is not plain text stay as
+ * the tool sent them.
+ */
+function collapseRepeatedUnaddressedText(contents: Content[]): Content[] {
+  const kept: Content[] = [];
+  for (const content of contents) {
+    const text = unaddressedText(content);
+    const previous = kept.length > 0 ? unaddressedText(kept[kept.length - 1]) : null;
+    if (text !== null && previous !== null && text.trim() === previous.trim()) continue;
+    kept.push(content);
+  }
+  return kept;
 }
 
 function displayError(error: unknown): string {
@@ -320,6 +359,17 @@ function getToolResultError(toolResult: unknown): string | null {
   return 'The tool reported that it could not complete the request.';
 }
 
+/** Text content that holds nothing to read, and nothing else beside it. */
+function isBlankTextResult(content: Content): boolean {
+  const record = content as Record<string, unknown>;
+  return (
+    typeof record.text === 'string' &&
+    record.text.trim() === '' &&
+    !('data' in record) &&
+    !('resource' in record)
+  );
+}
+
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
   return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
 }
@@ -348,22 +398,23 @@ class ToolCallRenderBoundary extends React.Component<
   render() {
     if (!this.state.error) return this.props.children;
 
+    // An error row, not a toast surface in the transcript: the line says what
+    // failed and that the chat goes on; the technical text waits in the well.
     return (
-      <NotificationSurface
-        status="error"
-        role="alert"
-        title="Tool details unavailable"
-        message="This tool returned an unexpected response. The chat can continue."
-      >
-        <details className="mt-2.5 text-xs text-text-muted">
-          <summary className="w-fit cursor-pointer select-none font-medium text-text-default">
-            Technical details
-          </summary>
-          <div className="mt-2 whitespace-pre-wrap break-words font-mono [overflow-wrap:anywhere]">
-            {this.state.error.message}
-          </div>
-        </details>
-      </NotificationSurface>
+      <div role="alert" className="w-full min-w-0">
+        <TranscriptRow
+          icon={AlertTriangle}
+          tone="danger"
+          label={TOOL_ROW_COPY.renderFailed}
+          meta={`· ${TOOL_ROW_COPY.renderFailedMessage}`}
+        >
+          <TranscriptRowSection label={TOOL_ROW_COPY.details}>
+            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+              {this.state.error.message}
+            </pre>
+          </TranscriptRowSection>
+        </TranscriptRow>
+      </div>
     );
   }
 }
@@ -374,6 +425,56 @@ export default function ToolCallWithResponse(props: ToolCallWithResponseProps) {
       <ToolCallWithResponseContent {...props} />
     </ToolCallRenderBoundary>
   );
+}
+
+/**
+ * The call a request carries. The server serializes `ToolResult<T>` as
+ * `{ status: "success", value: T }` or `{ status: "error", error }`, and older
+ * producers send the call unwrapped, so both shapes are read.
+ */
+function toolCallOf(
+  toolRequest: ToolRequestMessageContent
+): { name: string; arguments: Record<string, unknown> } | null {
+  const toolCallData = toolRequest.toolCall as Record<string, unknown>;
+  const toolCall =
+    toolCallData?.status === 'success'
+      ? (toolCallData.value as { name: string; arguments: Record<string, unknown> })
+      : (toolCallData as { name: string; arguments: Record<string, unknown> });
+  return toolCall && toolCall.name ? toolCall : null;
+}
+
+/** A call that only looked around: read a file, listed a folder, searched. */
+export type ExploreKind = 'read' | 'list' | 'search';
+
+/**
+ * Whether this call may fold into an "Explored" row with its neighbours (D18),
+ * and as what. `null` keeps the call on its own line, and these always do:
+ *
+ * - anything that is not a built-in read, list or search (the WS-ICONS ladder
+ *   decides, so an external `acme__read_file` draws the Puzzle and stays out);
+ * - a failed call, and one the turn stopped before it answered: a failure is
+ *   a state the person must see without opening anything (principle 2);
+ * - a call a coding agent ran in its own sandbox: its "not gated by Biorouter"
+ *   marker is a security fact and stays on the row;
+ * - a call whose result is an artifact, whose card must stay in view.
+ */
+export function exploreStepOf(
+  toolRequest: ToolRequestMessageContent,
+  toolResponse: ToolResponseMessageContent | undefined,
+  turnActive: boolean
+): { kind: ExploreKind; running: boolean } | null {
+  const toolCall = toolCallOf(toolRequest);
+  if (!toolCall) return null;
+  const kind = toolGlyphFor(toolCall.name, toolCall.arguments).kind;
+  if (kind !== 'read' && kind !== 'list' && kind !== 'search') return null;
+  if (providerExecutionOf(toolRequest, toolResponse) === 'child') return null;
+  if (!toolResponse) return turnActive ? { kind, running: true } : null;
+  if (getToolResultError(toolResponse.toolResult)) return null;
+  const carriesArtifact = getToolResultContent(toolResponse.toolResult).some(
+    (content) =>
+      isEmbeddedResource(content) && isUIResource({ ...content, type: 'resource' as const })
+  );
+  return carriesArtifact ? null : { kind, running: false };
 }
 
 function ToolCallWithResponseContent({
@@ -387,21 +488,16 @@ function ToolCallWithResponseContent({
   onOpenArtifact,
   workingDir,
 }: ToolCallWithResponseProps) {
-  // Handle both the wrapped ToolResult format and the unwrapped format
-  // The server serializes ToolResult<T> as { status: "success", value: T } or { status: "error", error: string }
-  const toolCallData = toolRequest.toolCall as Record<string, unknown>;
-  const toolCall =
-    toolCallData?.status === 'success'
-      ? (toolCallData.value as { name: string; arguments: Record<string, unknown> })
-      : (toolCallData as { name: string; arguments: Record<string, unknown> });
-
-  if (!toolCall || !toolCall.name) {
+  const toolCall = toolCallOf(toolRequest);
+  if (!toolCall) {
     return null;
   }
 
   return (
     <>
-      <div className="w-full overflow-hidden rounded-md text-sm font-sans">
+      {/* No `overflow-hidden` here: it clipped the row's focus edge. Overflow
+          is handled inside the well, where long output scrolls. */}
+      <div className="w-full min-w-0">
         <ToolCallView
           {...{
             isCancelledMessage,
@@ -428,7 +524,7 @@ function ToolCallWithResponseContent({
             : null;
           if (resourceContent && isUIResource(resourceContent)) {
             return (
-              <div key={index} className="mt-3">
+              <div key={index} className="mt-2">
                 <MCPUIResourceRenderer content={resourceContent} onOpenArtifact={onOpenArtifact} />
               </div>
             );
@@ -437,81 +533,6 @@ function ToolCallWithResponseContent({
           }
         })}
     </>
-  );
-}
-
-/**
- * ONE inset grid for everything a tool call opens into.
- *
- * Six met inside this one component — `pr-4 pl-6 pb-2`, `px-4 py-2`, `pl-4 pr-4
- * pb-2`, `pl-6 pr-2 pb-2`, `pl-4 pr-4 py-4` and `p-4` — so expanding two
- * different tool rows in the same transcript stepped the content in by two
- * different amounts, and nesting a disclosure inside a disclosure compounded the
- * disagreement. 12px on the sides and the bottom, 4px on top because the
- * disclosure row above has already opened the gap.
- */
-const TOOL_INTERIOR_CLASS = 'px-3 pt-1 pb-3';
-
-/**
- * ONE label recipe for a nested disclosure row. Was `pl-2 font-sans text-sm
- * text-text-muted` in four places and `pl-2 py-1 font-sans text-sm …` in two
- * more — the same sentence with a different vertical rhythm depending on which
- * one you opened.
- */
-const TOOL_DISCLOSURE_LABEL_CLASS = 'pl-2 text-secondary text-text-muted';
-
-interface ToolCallExpandableProps {
-  label: string | React.ReactNode;
-  isStartExpanded?: boolean;
-  isForceExpand?: boolean;
-  children: React.ReactNode;
-  className?: string;
-}
-
-function ToolCallExpandable({
-  label,
-  isStartExpanded = false,
-  isForceExpand,
-  children,
-  className = '',
-}: ToolCallExpandableProps) {
-  const contentId = React.useId();
-  const [isExpandedState, setIsExpanded] = React.useState<boolean | null>(null);
-  const isExpanded = isExpandedState === null ? isStartExpanded : isExpandedState;
-  const toggleExpand = () => setIsExpanded(!isExpanded);
-  React.useEffect(() => {
-    if (isForceExpand) setIsExpanded(true);
-  }, [isForceExpand]);
-
-  return (
-    <div className={className}>
-      <button
-        type="button"
-        aria-expanded={isExpanded}
-        aria-controls={contentId}
-        onClick={toggleExpand}
-        className="br-tool-disclosure group inline-flex items-center h-6 min-h-0 max-w-full justify-start !px-0 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
-      >
-        <span className="flex min-w-0 max-w-full items-center overflow-hidden font-sans text-sm leading-6">
-          {label}
-        </span>
-        {/* VISIBLE AT REST. It used to be `opacity-0` until hover, so nothing on
-            a freshly loaded transcript said these rows open at all — a first-run
-            user had to discover the whole tool detail view by accidentally
-            hovering it. It is now muted-but-present, brightening on hover and on
-            keyboard focus, and it takes the row's 16px icon size rather than
-            14px so it does not sit in a cluster with a 16px tool glyph at a
-            different scale (§3.8b: never two sizes in one cluster). */}
-        <ChevronRight
-          className={cn(
-            'ml-1.5 size-4 shrink-0 opacity-60',
-            'transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100',
-            isExpanded && 'rotate-90 opacity-100'
-          )}
-        />
-      </button>
-      {isExpanded && <div id={contentId}>{children}</div>}
-    </div>
   );
 }
 
@@ -561,6 +582,11 @@ export type ToolCallSummaryInput = {
 
 const MAX_SUMMARY_VALUE_LENGTH = 96;
 
+/**
+ * Title Case, for the one place a row names something by its own name: an
+ * extension or a skill ("Installing Spoke Agent v0.4.1"). A tool's action never
+ * reads this way; it goes through `toolActionPhrase` and `toolNamePhrase`.
+ */
 const humanize = toolIdentifierToTitleCase;
 
 const stringifySummaryValue = (value: unknown): string => {
@@ -570,11 +596,39 @@ const stringifySummaryValue = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+/**
+ * A name (a path, an id, a file) bounded by keeping both ends. Counted and cut
+ * by character, not UTF-16 unit, so an emoji is never split into a lone half.
+ */
 const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): string => {
   const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
-  if (text.length <= maxLength) return text;
+  const characters = Array.from(text);
+  if (characters.length <= maxLength) return text;
   const keep = Math.max(12, Math.floor((maxLength - 1) / 2));
-  return `${text.slice(0, keep)}…${text.slice(-keep)}`;
+  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
+};
+
+/** Longest query or command a row carries; past it the text is cut at its end. */
+const MAX_LINE_VALUE_LENGTH = 160;
+
+/**
+ * Words a row reads left to right: a query, a command, a to-do item. It is cut
+ * once, at its end, and only past a length no row shows, so the row's own CSS
+ * ellipsis is the one a person sees. Cutting its middle as well put two
+ * ellipses on one line ("COUNT(*) AS…BY sample_type ORDER BY n …", V2-R2-5),
+ * and cut a to-do item at 96 characters in a row with room for the rest
+ * (V2-R3-2). A single token (a path, a name) keeps both ends, as
+ * {@link compactValue} does.
+ */
+const lineValue = (value: unknown): string => {
+  const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
+  if (!/\s/.test(text)) return compactValue(text);
+  const characters = Array.from(text);
+  if (characters.length <= MAX_LINE_VALUE_LENGTH) return text;
+  return `${characters
+    .slice(0, MAX_LINE_VALUE_LENGTH - 1)
+    .join('')
+    .trimEnd()}…`;
 };
 
 const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
@@ -584,26 +638,50 @@ const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
     /^(?:tool(?: call)?|step|update|updating|task|operation)(?:\s+(?:tool(?: call)?|step|update|updating|task|operation))?\s*(?:(?:number|no\.?)\s*)?#?\s*\d+(?:\s+of\s+\d+)?[.!]?$/i.test(
       text
     );
-  return placeholder
-    ? humanize(tool.replace(/(?:__|[/\\])/g, '_'))
-        .replace(/\s+/g, ' ')
-        .trim()
-    : text;
+  return placeholder ? sentenceStart(toolNamePhrase(tool)) : text;
 };
 
+/** The verb a script's row carries, so the state reads "Ran …", "Failed to run …". */
+const RUN_SCRIPT = 'Running ';
+
+/**
+ * A coordinated script as the work its plan names, its first and last steps
+ * in the model's own words after the verb: "Running list KBs → active KB",
+ * "Ran …" once done (V2-R2-4). Without the verb the line was the bare
+ * description, lowercase, the one row in a turn with no state on it.
+ */
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
-  const descriptions = graph.map(toolGraphNodeLabel);
+  // Each step follows the verb, so it opens in lowercase unless it starts with a name.
+  const descriptions = graph.map((node) => inSentence(toolGraphNodeLabel(node)));
   const actions = [...new Set(descriptions)];
   const shorten = (text: string, limit: number): string => {
     const characters = Array.from(text);
     return characters.length <= limit ? text : `${characters.slice(0, limit - 1).join('')}…`;
   };
-  if (actions.length === 1) return shorten(actions[0], MAX_SUMMARY_VALUE_LENGTH);
-  const actionLimit = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 3) / 2);
-  return `${shorten(actions[0], actionLimit)} → ${shorten(actions[actions.length - 1], actionLimit)}`;
+  const planLimit = MAX_SUMMARY_VALUE_LENGTH - RUN_SCRIPT.length;
+  if (actions.length === 1) return `${RUN_SCRIPT}${shorten(actions[0], planLimit)}`;
+  const actionLimit = Math.floor((planLimit - 3) / 2);
+  return `${RUN_SCRIPT}${shorten(actions[0], actionLimit)} → ${shorten(
+    actions[actions.length - 1],
+    actionLimit
+  )}`;
+};
+
+/** A web address as a row names it: the host and the path ("ucsf.edu/people"). */
+const urlLabel = (text: string): string | null => {
+  if (!/^https?:\/\//i.test(text)) return null;
+  try {
+    const url = new URL(text);
+    const path = url.pathname.replace(/\/+$/, '');
+    return compactValue(`${url.host.replace(/^www\./, '')}${path}`, 48);
+  } catch {
+    return null;
+  }
 };
 
 const basename = (value: unknown): string => {
+  const url = typeof value === 'string' ? urlLabel(value.trim()) : null;
+  if (url) return url;
   const text = compactValue(value);
   const parts = text.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || text;
@@ -655,7 +733,7 @@ const summarizeDelegation = (args: Record<string, unknown>): string => {
 
 const summarizeSearchQuery = (value: unknown): string | null => {
   if (!value) return null;
-  if (typeof value === 'string') return compactValue(value);
+  if (typeof value === 'string') return lineValue(value);
   if (Array.isArray(value)) {
     // A plain list of terms (e.g. search_modules' `terms: ["fetch", "http"]`)
     // reads best joined, not JSON-stringified.
@@ -663,21 +741,22 @@ const summarizeSearchQuery = (value: unknown): string | null => {
       value.length > 0 &&
       value.every((item) => typeof item === 'string' || typeof item === 'number')
     ) {
-      return compactValue(value.join(', '));
+      return lineValue(value.join(', '));
     }
     const first = value[0] as Record<string, unknown> | undefined;
-    return first ? compactValue(first.q ?? first.query ?? first.search_query ?? value) : null;
+    return first ? lineValue(first.q ?? first.query ?? first.search_query ?? value) : null;
   }
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    return compactValue(record.q ?? record.query ?? record.search_query ?? value);
+    return lineValue(record.q ?? record.query ?? record.search_query ?? value);
   }
-  return compactValue(value);
+  return lineValue(value);
 };
 
+/** An argument as a row shows it: words cut at their end, a single token at its middle. */
 const namedArgument = (args: Record<string, unknown>, keys: string[]): string | null => {
   const value = firstPresent(args, keys);
-  return value === undefined ? null : compactValue(value);
+  return value === undefined ? null : lineValue(value);
 };
 
 const namedEntity = (args: Record<string, unknown>, keys: string[]): string | null => {
@@ -705,20 +784,13 @@ const todoTaskTitle = (args: Record<string, unknown>, toolResult: unknown): stri
     try {
       const task = recordOf(recordOf(JSON.parse(item.text))?.task);
       if (task?.id === id && typeof task.text === 'string' && task.text.trim()) {
-        return compactValue(task.text);
+        return lineValue(task.text);
       }
     } catch {
       // Older transcripts contain a plain-text acknowledgement, without task details.
     }
   }
   return null;
-};
-
-const compactExecutedTaskTitle = (title: string): string => {
-  const characters = Array.from(title.replace(/\s+/g, ' ').trim());
-  if (characters.length <= MAX_SUMMARY_VALUE_LENGTH) return characters.join('');
-  const keep = Math.floor((MAX_SUMMARY_VALUE_LENGTH - 1) / 2);
-  return `${characters.slice(0, keep).join('')}…${characters.slice(-keep).join('')}`;
 };
 
 const summarizeTodoCall = (
@@ -747,10 +819,12 @@ const summarizeTodoCall = (
   const title = executedTitle ?? todoTaskTitle(args, toolResult);
   const task = title ? `“${title}”` : id ? `task ${id.startsWith('#') ? id : `#${id}`}` : 'a task';
   const status = namedArgument(args, ['status']);
-  if (status === 'completed') return `Marking ${task} complete`;
+  // The outcome is the verb, ahead of the item: a long item runs to the row's
+  // end ellipsis, which would take a trailing "complete" or "blocked" with it.
+  if (status === 'completed') return `Completing ${task}`;
   if (status === 'in_progress') return `Starting ${task}`;
   if (status === 'pending') return `Returning ${task} to pending`;
-  if (status === 'blocked') return `Marking ${task} blocked`;
+  if (status === 'blocked') return `Blocking ${task}`;
   if (namedArgument(args, ['text'])) return `Renaming ${task}`;
   return `Updating ${task}`;
 };
@@ -981,32 +1055,99 @@ const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
   return 'Managing browser tabs';
 };
 
-const summarizeSafeArguments = (args: Record<string, unknown>): string | null => {
-  const hidden = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
-  const parts = Object.entries(args)
-    .filter(
-      ([key, value]) => !hidden.test(key) && ['string', 'number', 'boolean'].includes(typeof value)
-    )
-    .slice(0, 2)
-    .map(([key, value]) => `${humanize(key)}: ${compactValue(value, 40)}`);
-  return parts.length > 0 ? parts.join(' · ') : null;
+/** Arguments a collapsed row never shows: free text and anything secret-like. */
+const HIDDEN_ARGUMENT = /(?:content|text|body|password|secret|token|credential|api[_-]?key)/i;
+/** Machine IDs live in the well's Input section, not on the row (principle 10). */
+const ID_ARGUMENT = /(?:^|[_-])(?:ids?|uuid)$|^ids?$/i;
+const ID_ARGUMENT_CAMEL = /[a-z0-9](?:Ids?|Uuid|UUID)$/;
+const MACHINE_VALUE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,})$/i;
+const MAX_ARGUMENT_VALUE_LENGTH = 40;
+
+/**
+ * The one argument VALUE a collapsed row may carry after its action ("Managing
+ * schedule · sessions"), or null. Never a key: "Action: sessions · Limit: 50"
+ * was the identifier leaking onto the line. Only a string that says something
+ * qualifies; a number, a flag, a wildcard or an ID means nothing without its
+ * key, and the well's Input section shows every argument with its key.
+ */
+const collapsedArgumentValue = (args: Record<string, unknown>): string | null => {
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== 'string') continue;
+    if (HIDDEN_ARGUMENT.test(key) || ID_ARGUMENT.test(key) || ID_ARGUMENT_CAMEL.test(key)) {
+      continue;
+    }
+    const text = value.replace(/\s+/g, ' ').trim();
+    if (!/[\p{L}\p{N}]/u.test(text) || MACHINE_VALUE.test(text)) continue;
+    // Prose keeps its opening words; a path or a command keeps both ends.
+    if (!/\s/.test(text)) return compactValue(basename(text), MAX_ARGUMENT_VALUE_LENGTH);
+    const characters = Array.from(text);
+    return characters.length <= MAX_ARGUMENT_VALUE_LENGTH
+      ? text
+      : `${characters
+          .slice(0, MAX_ARGUMENT_VALUE_LENGTH - 1)
+          .join('')
+          .trimEnd()}…`;
+  }
+  return null;
 };
 
-const withSafeArguments = (label: string, args: Record<string, unknown>): string => {
-  const details = summarizeSafeArguments(args);
-  return details ? `${label} · ${details}` : label;
+const withArgumentValue = (label: string, args: Record<string, unknown>): string => {
+  const value = collapsedArgumentValue(args);
+  return value ? `${label} · ${value}` : label;
 };
 
+/** "Rendering volcano plot" for a figure kind slug or a legacy per-kind tool name. */
+const figureName = (identifier: string): string => {
+  const words = toolNameWords(identifier);
+  const kind = (words[0] === 'render' || words[0] === 'show' ? words.slice(1) : words).join('_');
+  return FIGURE_NAMES[kind] ?? toolNamePhrase(kind);
+};
+
+/** An Auto Visualiser call as the figure it draws, or null for one this does not know. */
+const summarizeFigureCall = (toolName: string, args: Record<string, unknown>): string | null => {
+  const kind = typeof args.kind === 'string' && args.kind.trim() ? args.kind.trim() : null;
+  if (toolName === 'render_figure') {
+    return kind ? FIGURE_COPY.render(figureName(kind)) : FIGURE_COPY.renderAny;
+  }
+  if (toolName === 'describe_figure') {
+    return kind ? FIGURE_COPY.describe(figureName(kind)) : FIGURE_COPY.describeAll;
+  }
+  if (toolName === 'render_dashboard') {
+    return withArgumentValue(FIGURE_COPY.render(FIGURE_NAMES.dashboard), args);
+  }
+  if (/^(?:render|show)_/.test(toolName)) return FIGURE_COPY.render(figureName(toolName));
+  return null;
+};
+
+/**
+ * The words on a tool's row while it runs ("Reading package.json"); the row's
+ * state conjugates the verb (`toolRowLabel`). A server that prefixes its tools
+ * with its own name keeps that name's spelling ("Listing MedCP clinical
+ * tables", V2-R2-5).
+ */
 export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
+  return spellServerName(describeToolCall(toolCall, toolResult), toolServerName(toolCall.name));
+}
+
+function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown): string {
   const args = toolCall.arguments ?? {};
   const toolName = getToolName(toolCall.name);
-  const displayName = humanize(toolName);
-  const toolWords = toolName
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .toLowerCase()
-    .split(/[_-]/)
-    .filter(Boolean);
+  const toolWords = toolCallNameWords(toolCall.name);
   const hasToolWord = (...words: string[]) => words.some((word) => toolWords.includes(word));
+  /**
+   * The tool's name without the verb a branch matched, as words that read in a
+   * sentence: `msagent_list_tables` under "list" is "msagent tables", so the
+   * row says "Listing msagent tables", never "Listing Msagent List Tables".
+   */
+  const nameWithout = (...verbs: string[]): string => {
+    const index = toolWords.findIndex((word) => verbs.includes(word));
+    return toolNamePhrase(toolWords.filter((_, position) => position !== index));
+  };
+  const action = (gerund: string, ...verbs: string[]): string => {
+    const subject = nameWithout(...verbs);
+    return subject ? `${gerund} ${subject}` : gerund;
+  };
   const target = firstPresent(args, [
     'path',
     'file',
@@ -1040,23 +1181,39 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     : null;
   if (skillsSummary) return skillsSummary;
 
+  const baseId = toolCall.name.startsWith('knowledge__') ? namedArgument(args, ['kb_id']) : null;
+  const base = baseId === 'soul' ? 'Soul' : baseId;
   if (toolCall.name.startsWith('knowledge__')) {
-    const baseId = namedArgument(args, ['kb_id']);
-    const base = baseId === 'soul' ? 'Soul' : baseId;
     if (toolName === 'kb_get_active') return 'Checking the primary knowledge base';
     if (toolName === 'kb_list_bases') return 'Listing knowledge bases';
+    // V2-R4-3: a create and a delete used to fall through to the generic
+    // "Removing" chain and read "Removed KB base", which names no base. Every
+    // other knowledge row names its base by `kb_id`; a create carries the id it
+    // is about to give the base, so the three rows about one base spell it alike.
+    if (toolName === 'kb_create_base') {
+      const created = namedArgument(args, ['id', 'name']);
+      return created ? `Creating knowledge base ${created}` : 'Creating a knowledge base';
+    }
+    if (toolName === 'kb_delete_base') {
+      return base ? `Deleting knowledge base ${base}` : 'Deleting a knowledge base';
+    }
     if (toolName === 'kb_list_pages')
       return `Listing pages in ${base ?? 'the primary knowledge base'}`;
     if (toolName === 'kb_read_page') {
       return `Reading ${targetName ?? 'a knowledge page'}${base ? ` in ${base}` : ''}`;
     }
     if (toolName === 'kb_search') {
-      const query = namedArgument(args, ['query']);
+      const query = summarizeSearchQuery(args.query);
       return `Searching ${base ?? 'knowledge bases'}${query ? ` for ${query}` : ''}`;
     }
   }
 
   if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
+
+  const figureSummary = toolCall.name.startsWith('autovisualiser__')
+    ? summarizeFigureCall(toolName, args)
+    : null;
+  if (figureSummary) return figureSummary;
 
   // Matched on the FULL prefixed name, so another extension's `request` keeps its own label.
   if (toolCall.name.startsWith('crew__')) return summarizeCrewCall(toolName, args, toolResult);
@@ -1089,7 +1246,7 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   }
 
   if (toolName === 'shell' || toolName === 'exec_command' || hasToolWord('command')) {
-    return command ? `Running ${compactValue(command)}` : `Running a command`;
+    return command ? `Running ${lineValue(command)}` : `Running a command`;
   }
 
   if (toolName === 'apply_patch') return `Applying a code patch`;
@@ -1101,42 +1258,45 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   if (hasToolWord('read')) {
     return targetName
       ? `Reading ${targetName}`
-      : withSafeArguments(`Reading ${displayName.replace(/^Read /, '')}`, args);
+      : withArgumentValue(action('Reading', 'read'), args);
   }
 
   if (hasToolWord('open')) {
-    const subject = displayName.replace(/^Open /, '').replace(/^In /, 'in ');
-    return targetName ? `Opening ${targetName}` : withSafeArguments(`Opening ${subject}`, args);
+    return targetName
+      ? `Opening ${targetName}`
+      : withArgumentValue(action('Opening', 'open'), args);
   }
 
-  if (hasToolWord('fetch')) {
+  // `web_scrape` fetches a page; "Web Scrape for people" named neither the
+  // action nor the page.
+  if (hasToolWord('fetch', 'scrape')) {
     return targetName
       ? `Fetching ${targetName}`
-      : withSafeArguments(`Fetching ${displayName.replace(/^Fetch /, '')}`, args);
+      : withArgumentValue(action('Fetching', 'fetch', 'scrape'), args);
   }
 
   if (hasToolWord('write', 'update', 'edit')) {
     return targetName
       ? `Updating ${targetName}`
-      : withSafeArguments(`Updating ${displayName.replace(/^(Write|Update|Edit) /, '')}`, args);
+      : withArgumentValue(action('Updating', 'write', 'update', 'edit'), args);
   }
 
   if (hasToolWord('create')) {
     return targetName
       ? `Creating ${targetName}`
-      : withSafeArguments(`Creating ${displayName.replace(/^Create /, '')}`, args);
+      : withArgumentValue(action('Creating', 'create'), args);
   }
 
   if (hasToolWord('delete', 'remove')) {
     return targetName
       ? `Removing ${targetName}`
-      : withSafeArguments(`Removing ${displayName.replace(/^(Delete|Remove) /, '')}`, args);
+      : withArgumentValue(action('Removing', 'delete', 'remove'), args);
   }
 
   if (hasToolWord('list')) {
     return targetName
       ? `Listing ${targetName}`
-      : withSafeArguments(`Listing ${displayName.replace(/^List /, '')}`, args);
+      : withArgumentValue(action('Listing', 'list'), args);
   }
 
   if (hasToolWord('search', 'query')) {
@@ -1145,29 +1305,34 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     );
     return query
       ? `Searching for ${query}`
-      : withSafeArguments(`Searching ${displayName.replace(/^(Search|Query) /, '')}`, args);
+      : withArgumentValue(action('Searching', 'search', 'query'), args);
   }
 
   if (hasToolWord('download')) {
     return targetName
       ? `Downloading ${targetName}`
-      : withSafeArguments(`Downloading ${displayName.replace(/^Download /, '')}`, args);
+      : withArgumentValue(action('Downloading', 'download'), args);
   }
 
   if (hasToolWord('send', 'post')) {
-    return targetName ? `Sending to ${targetName}` : `${displayName}`;
+    if (targetName) return `Sending to ${targetName}`;
+    return withArgumentValue(
+      hasToolWord('post') ? action('Posting', 'post') : action('Sending', 'send'),
+      args
+    );
   }
 
-  if (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet')) {
-    return operation
-      ? `${humanize(compactValue(operation))} in a spreadsheet`
-      : withSafeArguments(displayName, args);
+  // The operation names the action ("add_sheet" → "Adding sheet in a
+  // spreadsheet"); without one, the generic action below names the tool.
+  if (operation && (toolName === 'sheets_tool' || hasToolWord('sheet', 'sheets', 'spreadsheet'))) {
+    return `${toolActionPhrase(toolNameWords(compactValue(operation)))} in a spreadsheet`;
   }
 
-  if (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents')) {
-    return operation
-      ? `${humanize(compactValue(operation))} in a document`
-      : withSafeArguments(displayName, args);
+  if (
+    operation &&
+    (toolName === 'docs_tool' || hasToolWord('doc', 'docs', 'document', 'documents'))
+  ) {
+    return `${toolActionPhrase(toolNameWords(compactValue(operation)))} in a document`;
   }
 
   if (toolName === 'execute_code') {
@@ -1176,12 +1341,13 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
     return `Executing code`;
   }
 
-  if (targetName) return `${displayName} for ${targetName}`;
-
-  const safeArguments = summarizeSafeArguments(args);
-  if (safeArguments) return `${displayName} · ${safeArguments}`;
-
-  return displayName;
+  // Every other tool: its own name as an action, so the verb can carry the
+  // state ("Ingesting conversation", "Ingested conversation"; a name with no
+  // verb "Running x", "Ran x"), then one value at most. Never Title Case and
+  // never an argument key (V2-04).
+  const generic = `${toolActionPhrase(toolWords)}${base ? ` in ${base}` : ''}`;
+  if (targetName) return `${generic} · ${targetName}`;
+  return withArgumentValue(generic, args);
 }
 
 export const logToString = (logMessage: NotificationEvent) => {
@@ -1267,6 +1433,11 @@ function ToolCallView({
   // rather than only inside the card is what stops the two from drifting into
   // "expanded for a control that does not render".
   const acceptOffer = sessionId ? crossAffiliationOffer(toolError) : null;
+  // Open until the person says otherwise: `null` means "never toggled", which
+  // follows the offer, so a refusal that lands AFTER the row mounted (the row
+  // was running) still opens onto its accept control.
+  const [openChoice, setOpenChoice] = React.useState<boolean | null>(null);
+  const isOpen = openChoice ?? acceptOffer !== null;
 
   // Executed sub-call telemetry (#28): what a coordinated execute_code step
   // actually ran, with exact inputs and per-call status. Shown alongside the
@@ -1340,135 +1511,104 @@ function ToolCallView({
       case 'loading':
         return 'loading';
       default:
-        return 'pending';
+        // The turn ended with no answer: the verb says "Stopped", so the
+        // spoken status must not say "pending".
+        return 'stopped';
     }
   };
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
   const toolSummary = summarizeToolCall(toolCall, toolResponse?.toolResult);
+  // The verb carries the state ("Running ls", "Ran ls", "Failed to run ls",
+  // "Stopped running ls"), so the row needs no suffix. The one exception is a
+  // real progress message from a tool that is still working: issue #72's shell
+  // heartbeat is how a quiet, slow command tells a person it is not hung.
+  const rowState: ToolRowState =
+    loadingStatus === 'loading'
+      ? 'running'
+      : loadingStatus === 'error'
+        ? 'failed'
+        : loadingStatus === 'interrupted'
+          ? 'stopped'
+          : 'done';
   const latestProgress = progressEntries[0]?.message;
   const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : undefined;
   const liveDetail =
-    loadingStatus === 'loading'
-      ? compactValue(latestProgress || latestLog || 'Working through the tool call')
-      : loadingStatus === 'error'
-        ? 'Tool call failed'
-        : loadingStatus === 'interrupted'
-          ? 'No result'
-          : toolResults.length > 0
-            ? `${toolResults.length} result${toolResults.length === 1 ? '' : 's'} ready`
-            : null;
+    loadingStatus === 'loading' && (latestProgress || latestLog)
+      ? compactValue(latestProgress || latestLog, MAX_LIVE_DETAIL_LENGTH)
+      : null;
 
-  const toolLabel = (
-    <span className="flex items-center gap-2 min-w-0 text-left leading-6">
-      <ToolIconWithStatus
-        ToolIcon={getToolCallIcon(toolCall.name)}
-        status={toolCallStatus}
-        className="mt-px"
-      />
-      {/* The summary truncates; the status suffix does not.
-          Both used to live inside ONE `truncate` span, so a single ellipsis
-          budget covered them and the SUFFIX was what got eaten — consecutive
-          rows read "· 1 …", "· 1 result rea…", and where the command was
-          longest, nothing at all while the chevron survived. The suffix is the
-          shorter and more valuable of the two (it says whether there is
-          anything to open), so it is the part that must never be cut. Making
-          this a flex row with a `min-w-0` truncating summary and a `shrink-0`
-          suffix is the fix; a wider clipper would only move the threshold. */}
-      <span
-        className={cn(
-          'flex min-w-0 flex-1 items-baseline',
-          loadingStatus === 'loading' && 'br-tool-running'
-        )}
-      >
-        <span className="min-w-0 truncate">
-          {loadingStatus === 'loading'
-            ? 'Working on'
-            : loadingStatus === 'error'
-              ? 'Problem with'
-              : loadingStatus === 'interrupted'
-                ? 'Stopped'
-                : 'Ran'}{' '}
-          <span>{toolSummary}</span>
-        </span>
-        {liveDetail && (
-          <span className={cn('shrink-0 whitespace-nowrap pl-1')}>· {liveDetail}</span>
-        )}
-        {/* The ONE deliberate visual difference in the whole mirror feature. A
-            `child` call ran in the coding agent's own sandbox and passed none of
-            Biorouter's gates, and a person reading a command row is entitled to
-            know that. Quiet by design — muted text in the row's own type, no
-            badge, no colour, no outline (D-17: a tool call is a line, not a
-            card) — because it states a provenance, not a failure. `bridged`
-            passed every gate an API provider's call passes, so it renders with
-            nothing here at all. */}
-        {providerExecution === 'child' && (
-          <span className="shrink-0 whitespace-nowrap pl-1" title={CHILD_EXECUTED_TITLE}>
-            · not gated by Biorouter
-          </span>
-        )}
-      </span>
-    </span>
-  );
-  return (
-    // ⚠ A grantable cross-institutional refusal starts EXPANDED (issue #56, Task
-    // 57). A failed tool call is otherwise a collapsed line, and a way out that
-    // only exists behind a disclosure most people never open is the hard block
-    // this task exists to remove, one click further away. Every other failure
-    // keeps the quiet default — including this same refusal replayed in a saved
-    // transcript, where `acceptOffer` is null because there is no chat to accept
-    // against and the disclosure would open onto nothing.
-    <ToolCallExpandable
-      isStartExpanded={acceptOffer !== null}
-      isForceExpand={false}
-      label={toolLabel}
-    >
-      {(() => {
-        const toolName = toolCall.name.substring(toolCall.name.lastIndexOf('__') + 2);
-        const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
-        const code = toolCall.arguments?.code as unknown as string | undefined;
-        const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
+  // One answer to "which glyph": the full name first, then the arguments
+  // (`text_editor` view vs write), then the extension's family (WS-ICONS).
+  const glyph = toolGlyphFor(toolCall.name, toolCall.arguments);
+  const toolName = getToolName(toolCall.name);
+  const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
+  const code = toolCall.arguments?.code as unknown as string | undefined;
+  const hasToolGraph = toolName === 'execute_code' && toolGraph.length > 0;
+  const listedResults = isCancelledMessage
+    ? []
+    : toolResults.filter(
+        (result) =>
+          !(
+            toolError &&
+            'text' in result &&
+            typeof result.text === 'string' &&
+            result.text.trim() === toolError.trim()
+          )
+      );
+  // A command that printed nothing answers with blank text. Drawn as is, that
+  // was an "Output" label over nothing (V2-19); it says "No output" instead.
+  const visibleResults = listedResults.filter((result) => !isBlankTextResult(result));
+  const outputWasBlank = listedResults.length > 0 && visibleResults.length === 0;
+  const showProgress = toolResults.length === 0 && progressEntries.length > 0;
+  const hasBody =
+    hasToolGraph ||
+    Boolean(isToolDetails) ||
+    executedCalls.length > 0 ||
+    droppedExecutedCalls > 0 ||
+    Boolean(toolError) ||
+    (logs?.length ?? 0) > 0 ||
+    showProgress ||
+    visibleResults.length > 0 ||
+    outputWasBlank;
 
-        if (hasToolGraph) {
-          return (
-            <div className="border-t border-border-subtle">
-              <ToolGraphView
-                toolGraph={toolGraph}
-                code={typeof code === 'string' ? code : undefined}
-              />
-              <ToolDetailsView
-                toolCall={{
-                  arguments: Object.fromEntries(
-                    Object.entries(toolCall.arguments).filter(
-                      ([key]) => key !== 'tool_graph' && key !== 'code'
-                    )
-                  ),
-                }}
-              />
-            </div>
-          );
-        }
+  // The ONE deliberate visual difference in the whole mirror feature. A `child`
+  // call ran in the coding agent's own sandbox and passed none of Biorouter's
+  // gates, and a person reading a command row is entitled to know that. Quiet
+  // by design: muted text in the row's own type, no badge, no colour (D-17).
+  // `bridged` passed every gate an API provider's call passes, so it renders
+  // with nothing here at all. The explanation sits in an InfoTip beside the
+  // row, never in `title=`, so a keyboard reaches it.
+  const metaParts = [liveDetail, providerExecution === 'child' ? TOOL_ROW_COPY.notGated : null]
+    .filter((part): part is string => Boolean(part))
+    .map((part) => `· ${part}`);
 
-        if (isToolDetails) {
-          return (
-            <div className="border-t border-border-subtle">
-              <ToolDetailsView toolCall={toolCall} />
-            </div>
-          );
-        }
-
-        return null;
-      })()}
+  const body = hasBody ? (
+    <>
+      {hasToolGraph ? (
+        <>
+          <ToolGraphView toolGraph={toolGraph} code={typeof code === 'string' ? code : undefined} />
+          <ToolDetailsView
+            toolCall={{
+              arguments: Object.fromEntries(
+                Object.entries(toolCall.arguments).filter(
+                  ([key]) => key !== 'tool_graph' && key !== 'code'
+                )
+              ),
+            }}
+          />
+        </>
+      ) : isToolDetails ? (
+        <ToolDetailsView toolCall={toolCall} />
+      ) : null}
 
       {(executedCalls.length > 0 || droppedExecutedCalls > 0) && (
-        <div className="border-t border-border-subtle">
-          <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
-        </div>
+        <ExecutedCallsView calls={executedCalls} dropped={droppedExecutedCalls} />
       )}
 
       {toolError && (
-        <div className="border-t border-border-subtle p-3">
-          <ToolFailureNotice title="Tool call failed" message={toolError} />
+        <div className="flex min-w-0 flex-col gap-2">
+          <ToolFailureNotice title={TOOL_ROW_COPY.error} message={toolError} />
           {/*
             Issue #56, DR-26 / Task 57 — the accept control, on the surface the
             refusal lands on and directly under the daemon's own words. DR-26
@@ -1483,75 +1623,95 @@ function ToolCallView({
       )}
 
       {logs && logs.length > 0 && (
-        <div className="border-t border-border-subtle">
-          <ToolLogsView logs={logs} working={loadingStatus === 'loading'} />
-        </div>
+        <ToolLogsView logs={logs} working={loadingStatus === 'loading'} />
       )}
 
-      {toolResults.length === 0 &&
-        progressEntries.length > 0 &&
-        progressEntries.map((entry, index) => (
-          <div className="p-3 border-t border-border-subtle" key={index}>
-            <ProgressBar progress={entry.progress} total={entry.total} message={entry.message} />
-          </div>
-        ))}
-
-      {/* Tool Output */}
-      {!isCancelledMessage && (
-        <>
-          {toolResults
-            .filter(
-              (result) =>
-                !(
-                  toolError &&
-                  'text' in result &&
-                  typeof result.text === 'string' &&
-                  result.text.trim() === toolError.trim()
-                )
-            )
-            .map((result, index) => (
-              <div key={index} className={cn('border-t border-border-subtle')}>
-                <ToolResultView
-                  result={result}
-                  onOpenArtifact={onOpenArtifact}
-                  workingDir={workingDir}
-                />
-              </div>
-            ))}
-        </>
+      {showProgress && (
+        <TranscriptRowSection label={TOOL_ROW_COPY.progress}>
+          {progressEntries.map((entry, index) => (
+            <ToolProgress
+              key={index}
+              progress={entry.progress}
+              total={entry.total}
+              message={entry.message}
+            />
+          ))}
+        </TranscriptRowSection>
       )}
-    </ToolCallExpandable>
+
+      {outputWasBlank && (
+        <TranscriptRowSection label={TOOL_ROW_COPY.output}>
+          <div className="text-supporting text-text-muted">{TOOL_ROW_COPY.noOutput}</div>
+        </TranscriptRowSection>
+      )}
+
+      {visibleResults.map((result, index) => (
+        <ToolResultView
+          key={index}
+          result={result}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        />
+      ))}
+    </>
+  ) : null;
+
+  return (
+    // ⚠ A grantable cross-institutional refusal starts EXPANDED (issue #56, Task
+    // 57). A failed tool call is otherwise a collapsed line, and a way out that
+    // only exists behind a disclosure most people never open is the hard block
+    // this task exists to remove, one click further away. Every other failure
+    // keeps the quiet default — including this same refusal replayed in a saved
+    // transcript, where `acceptOffer` is null because there is no chat to accept
+    // against and the disclosure would open onto nothing.
+    <TranscriptRow
+      icon={glyph.Icon}
+      glyph={glyph.kind}
+      label={toolRowLabel(toolSummary, rowState)}
+      meta={metaParts.length > 0 ? metaParts.join(' ') : undefined}
+      running={loadingStatus === 'loading'}
+      // A failed call says so before it is opened: the verb ("Failed to …")
+      // and the line's ink, not only the well's "Tool call failed" (V2-11).
+      tone={rowState === 'failed' ? 'danger' : 'muted'}
+      statusLabel={TOOL_ROW_COPY.statusLabel(toolCallStatus)}
+      open={isOpen}
+      onOpenChange={setOpenChoice}
+      triggerClassName="br-tool-disclosure"
+      trailing={
+        providerExecution === 'child' ? (
+          <InfoTip label={TOOL_ROW_COPY.notGatedName} help={TOOL_ROW_COPY.notGatedHelp} />
+        ) : undefined
+      }
+    >
+      {body}
+    </TranscriptRow>
   );
 }
 
-function ToolFailureNotice({ title, message }: { title: string; message: string }) {
+/** Longest live progress line the collapsed row carries before it is elided. */
+const MAX_LIVE_DETAIL_LENGTH = 64;
+
+function ToolFailureNotice({ title, message }: { title?: string; message: string }) {
   return (
-    <div role="alert" className="text-text-muted">
-      <div className="text-sm font-medium">{title}</div>
+    <div role="alert" className="min-w-0">
+      {title && <div className="text-secondary text-text-danger">{title}</div>}
       <ToolContentPreview text={message}>
-        {(text) => <div className="mt-1 whitespace-pre-wrap break-words text-sm">{text}</div>}
+        {(text) => (
+          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-code text-text-default [overflow-wrap:anywhere]">
+            {text}
+          </pre>
+        )}
       </ToolContentPreview>
     </div>
-  );
-}
-
-function ToolSection({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section>
-      <div className="px-3 pt-2 text-xs text-text-muted">{label}</div>
-      {children}
-    </section>
   );
 }
 
 function ToolDetailsView({ toolCall }: { toolCall: { arguments: Record<string, unknown> } }) {
   if (Object.keys(toolCall.arguments).length === 0) return null;
   return (
-    <ToolSection label="Input">
-      <div className={TOOL_INTERIOR_CLASS}>
-        <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
-      </div>
-    </ToolSection>
+    <TranscriptRowSection label={TOOL_ROW_COPY.input}>
+      <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
+    </TranscriptRowSection>
   );
 }
 
@@ -1567,61 +1727,62 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
   const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
 
   return (
-    <div className={TOOL_INTERIOR_CLASS}>
-      <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
-        {toolGraph.map((node, index) => {
-          const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
-          return (
-            <li key={index} title={`Tool: ${node.tool}`}>
-              {index + 1}. {toolGraphNodeLabel(node)}
-              {dependencies && ` (uses ${dependencies})`}
-            </li>
-          );
-        })}
-      </ol>
+    <>
+      <TranscriptRowSection label={TOOL_ROW_COPY.steps}>
+        <ol className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
+          {toolGraph.map((node, index) => {
+            const dependencies = node.depends_on.map((dependency) => dependency + 1).join(', ');
+            return (
+              <li key={index} title={TOOL_ROW_COPY.stepTool(node.tool)}>
+                {index + 1}. {toolGraphNodeLabel(node)}
+                {dependencies && TOOL_ROW_COPY.stepUses(dependencies)}
+              </li>
+            );
+          })}
+        </ol>
+      </TranscriptRowSection>
       {code && (
-        <div className="-mx-3 mt-2 border-t border-border-subtle">
-          <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Code</span>}>
-            {/* bg-background-code: the ground the syntax palette is verified
-                against (see MarkdownContent's CodeBlock). No line numbers, so
-                long lines may wrap (never combine wrapping with line numbers
-                in react-syntax-highlighter). */}
-            <div className="w-full overflow-x-auto bg-background-code">
-              <ToolContentPreview text={code}>
-                {(text) => (
-                  <SyntaxHighlighter
-                    style={codeStyle}
-                    language="javascript"
-                    PreTag="div"
-                    customStyle={{
-                      margin: 0,
-                      padding: 'calc(12px * var(--app-font-scale, 1))',
-                      background: 'transparent',
-                      width: '100%',
-                      maxWidth: '100%',
-                    }}
-                    codeTagProps={{
-                      style: {
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        overflowWrap: 'break-word',
-                        fontFamily: CODE_FONT_FAMILY,
-                        fontSize: CODE_FONT_SIZE,
-                        lineHeight: CODE_LINE_HEIGHT,
-                      },
-                    }}
-                    showLineNumbers={false}
-                    wrapLines={false}
-                  >
-                    {text}
-                  </SyntaxHighlighter>
-                )}
-              </ToolContentPreview>
-            </div>
-          </ToolSection>
-        </div>
+        <TranscriptRowSection label={TOOL_ROW_COPY.code}>
+          {/* Straight on the well's fill (one unit off `--background-well`,
+              the ground the syntax palettes are measured on, in light; equal
+              in dark): a second box inside the well would be a box in a box.
+              No line numbers, so long lines may wrap (never combine wrapping
+              with line numbers in react-syntax-highlighter). */}
+          <div className="w-full overflow-x-auto">
+            <ToolContentPreview text={code}>
+              {(text) => (
+                <SyntaxHighlighter
+                  style={codeStyle}
+                  language="javascript"
+                  PreTag="div"
+                  customStyle={{
+                    margin: 0,
+                    padding: 0,
+                    background: 'transparent',
+                    width: '100%',
+                    maxWidth: '100%',
+                  }}
+                  codeTagProps={{
+                    style: {
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'break-word',
+                      fontFamily: CODE_FONT_FAMILY,
+                      fontSize: CODE_FONT_SIZE,
+                      lineHeight: CODE_LINE_HEIGHT,
+                    },
+                  }}
+                  showLineNumbers={false}
+                  wrapLines={false}
+                >
+                  {text}
+                </SyntaxHighlighter>
+              )}
+            </ToolContentPreview>
+          </div>
+        </TranscriptRowSection>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1645,59 +1806,49 @@ function parsedCallArguments(args?: string): Record<string, ToolCallArgumentValu
 function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; dropped: number }) {
   const total = calls.length + dropped;
   return (
-    <ToolSection
+    <TranscriptRowSection
       label={
-        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>
-          {dropped > 0
-            ? `Recorded calls (${calls.length} of ${total} executed)`
-            : `Executed calls (${calls.length})`}
-        </span>
+        dropped > 0
+          ? TOOL_ROW_COPY.recordedCalls(calls.length, total)
+          : TOOL_ROW_COPY.executedCalls(calls.length)
       }
     >
-      <div className={TOOL_INTERIOR_CLASS}>
+      <div className="flex min-w-0 flex-col gap-2">
         {calls.map((call, index) => (
           <ExecutedCallRow key={index} call={call} />
         ))}
         {dropped > 0 && (
-          <div className="py-1 text-supporting text-text-muted">
-            {dropped} executed call{dropped === 1 ? ' was' : 's were'} not recorded, so{' '}
-            {dropped === 1 ? 'its' : 'their'} details are unavailable.
+          <div className="flex items-center gap-1 text-supporting text-text-muted">
+            <span>{TOOL_ROW_COPY.notRecorded(dropped)}</span>
+            <InfoTip
+              label={TOOL_ROW_COPY.notRecorded(dropped)}
+              help={TOOL_ROW_COPY.notRecordedHelp(dropped)}
+            />
           </div>
         )}
       </div>
-    </ToolSection>
+    </TranscriptRowSection>
   );
 }
 
 function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
   const parsedArgs = parsedCallArguments(call.args);
   const taskSummary = call.todoTask
-    ? summarizeTodoCall(
-        'todo_update',
-        parsedArgs ?? {},
-        undefined,
-        compactExecutedTaskTitle(call.todoTask.title)
-      )
+    ? summarizeTodoCall('todo_update', parsedArgs ?? {}, undefined, lineValue(call.todoTask.title))
     : null;
   const summary =
     taskSummary ?? summarizeToolCall({ name: call.tool, arguments: parsedArgs ?? {} });
+  const glyph = toolGlyphFor(call.tool, parsedArgs);
   return (
-    <ToolSection
-      label={
-        <span className="flex min-w-0 items-center gap-2 text-left leading-6">
-          <ToolIconWithStatus
-            ToolIcon={getToolCallIcon(call.tool)}
-            status={call.status === 'error' ? 'error' : 'success'}
-            className="mt-px"
-          />
-          <span className="min-w-0 flex-1 truncate text-text-muted">
-            <span className="text-text-default">{summary}</span>
-            {call.status === 'error' && ' · failed'}
-          </span>
-        </span>
-      }
-    >
-      <div className={TOOL_INTERIOR_CLASS}>
+    <div className="min-w-0">
+      <TranscriptRow
+        icon={glyph.Icon}
+        glyph={glyph.kind}
+        label={toolRowLabel(summary, call.status === 'error' ? 'failed' : 'done')}
+        tone={call.status === 'error' ? 'danger' : 'muted'}
+        statusLabel={TOOL_ROW_COPY.statusLabel(call.status === 'error' ? 'error' : 'success')}
+      />
+      <div className="flex min-w-0 flex-col gap-2 pl-6">
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
           <ToolCallArguments args={parsedArgs} />
         ) : call.args ? (
@@ -1710,15 +1861,11 @@ function ExecutedCallRow({ call }: { call: ExecutedToolCall }) {
             )}
           </ToolContentPreview>
         ) : (
-          <div className="text-supporting text-text-muted">No arguments recorded.</div>
+          <div className="text-supporting text-text-muted">{TOOL_ROW_COPY.noArguments}</div>
         )}
-        {call.error && (
-          <div className="mt-2">
-            <ToolFailureNotice title={`${summary} failed`} message={call.error} />
-          </div>
-        )}
+        {call.error && <ToolFailureNotice message={call.error} />}
       </div>
-    </ToolSection>
+    </div>
   );
 }
 
@@ -1741,57 +1888,59 @@ function ToolResultView({ result, onOpenArtifact, workingDir }: ToolResultViewPr
   const hasResource = (c: Content): c is Content & { resource: unknown } => 'resource' in c;
 
   return (
-    <ToolSection label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>Output</span>}>
-      <div className={TOOL_INTERIOR_CLASS}>
-        {hasText(result) && (
-          <ToolContentPreview text={result.text}>
-            {(text, truncated) =>
-              truncated ? (
-                <pre className="whitespace-pre-wrap break-words font-mono text-code [overflow-wrap:anywhere]">
-                  {text}
-                </pre>
-              ) : (
-                <MarkdownContent
-                  content={text}
-                  className="whitespace-pre-wrap max-w-full overflow-x-auto"
-                  onOpenArtifact={onOpenArtifact}
-                  workingDir={workingDir}
-                />
-              )
-            }
-          </ToolContentPreview>
-        )}
-        {hasImage(result) && (
-          <img
-            src={`data:${result.mimeType};base64,${result.data}`}
-            alt="Tool result"
-            className="max-w-full h-auto rounded-md my-2"
-            onError={(e) => {
-              console.error('Failed to load image');
-              e.currentTarget.style.display = 'none';
-            }}
-          />
-        )}
-        {hasResource(result) && (
-          // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
-          // — the same value class the other two raw dumps in this file render
-          // in `font-mono text-code` (ExecutedCallArguments above, and the
-          // malformed-args fallback beside it). All three are disclosures of
-          // ONE tool call, so expanding "Output" and "Executed calls"
-          // put pretty-printed JSON on screen in two typefaces at once.
-          // A proportional face also defeats the point of the <pre>: the
-          // two-space indent `stringify` emits only reads as structure when the
-          // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
-          <ToolContentPreview text={JSON.stringify(result, null, 2)}>
-            {(text) => (
-              <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+    <TranscriptRowSection label={TOOL_ROW_COPY.output}>
+      {hasText(result) && (
+        <ToolContentPreview text={result.text}>
+          {(text, truncated) =>
+            truncated ? (
+              <pre className="whitespace-pre-wrap break-words font-mono text-code [overflow-wrap:anywhere]">
                 {text}
               </pre>
-            )}
-          </ToolContentPreview>
-        )}
-      </div>
-    </ToolSection>
+            ) : (
+              // Not `whitespace-pre-wrap` on the root: chat markdown already
+              // turns each newline into a <br>, so pre-wrap drew every break
+              // twice and a blank line between blocks. The well keeps a
+              // paragraph's spaces itself (transcript-row.css).
+              <MarkdownContent
+                content={text}
+                className="max-w-full overflow-x-auto"
+                onOpenArtifact={onOpenArtifact}
+                workingDir={workingDir}
+              />
+            )
+          }
+        </ToolContentPreview>
+      )}
+      {hasImage(result) && (
+        <img
+          src={`data:${result.mimeType};base64,${result.data}`}
+          alt={TOOL_ROW_COPY.imageAlt}
+          className="h-auto max-w-full rounded-element"
+          onError={(e) => {
+            console.error('Failed to load image');
+            e.currentTarget.style.display = 'none';
+          }}
+        />
+      )}
+      {hasResource(result) && (
+        // ⚠ NOT `font-sans`. This is `JSON.stringify(…, null, 2)` in a <pre>
+        // — the same value class the other two raw dumps in this file render
+        // in `font-mono text-code` (ExecutedCallArguments above, and the
+        // malformed-args fallback beside it). All three are disclosures of
+        // ONE tool call, so expanding "Output" and "Executed calls"
+        // put pretty-printed JSON on screen in two typefaces at once.
+        // A proportional face also defeats the point of the <pre>: the
+        // two-space indent `stringify` emits only reads as structure when the
+        // glyphs are fixed-width. D-31 in styles/main.css: mono earns code.
+        <ToolContentPreview text={JSON.stringify(result, null, 2)}>
+          {(text) => (
+            <pre className="font-mono text-code whitespace-pre-wrap break-all overflow-x-auto max-w-full">
+              {text}
+            </pre>
+          )}
+        </ToolContentPreview>
+      )}
+    </TranscriptRowSection>
   );
 }
 
@@ -1816,40 +1965,33 @@ function ToolLogsView({ logs, working }: { logs: string[]; working: boolean }) {
   }, [logs.length]);
 
   return (
-    <ToolSection label={working ? 'Live logs' : 'Logs'}>
-      <div className={TOOL_INTERIOR_CLASS}>
-        <ToolContentPreview text={logs.join('\n')} tail>
-          {(text) => (
-            <div ref={boxRef} className="max-h-80 overflow-y-auto" data-testid="tool-logs-box">
-              <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
-                {text}
-              </pre>
-            </div>
-          )}
-        </ToolContentPreview>
-      </div>
-    </ToolSection>
+    <TranscriptRowSection label={working ? TOOL_ROW_COPY.liveLogs : TOOL_ROW_COPY.logs}>
+      <ToolContentPreview text={logs.join('\n')} tail>
+        {(text) => (
+          <div ref={boxRef} className="max-h-80 overflow-y-auto" data-testid="tool-logs-box">
+            <pre className="whitespace-pre-wrap break-words font-mono text-code text-text-muted">
+              {text}
+            </pre>
+          </div>
+        )}
+      </ToolContentPreview>
+    </TranscriptRowSection>
   );
 }
 
-const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken'>) => {
-  const isDeterminate = typeof total === 'number';
-  const percent = isDeterminate ? Math.min((progress / total!) * 100, 100) : 0;
-
+/** The shared `Progress` bar, thin, with the tool's own message above it. */
+const ToolProgress = ({ progress, total, message }: Omit<Progress, 'progressToken'>) => {
+  const isDeterminate = typeof total === 'number' && total > 0;
   return (
-    <div className="w-full space-y-2">
-      {message && <div className="font-sans text-sm text-text-muted">{message}</div>}
-
-      <div className="w-full bg-background-muted rounded-md h-4 overflow-hidden relative">
-        {isDeterminate ? (
-          <div
-            className="bg-background-accent h-full w-full origin-left transition-transform duration-[var(--motion-base)] ease-[var(--ease-out)]"
-            style={{ transform: `scaleX(${Math.min(Math.max(percent / 100, 0), 1)})` }}
-          />
-        ) : (
-          <div className="absolute inset-0 animate-pulse bg-background-accent" />
-        )}
-      </div>
+    <div className="flex w-full min-w-0 flex-col gap-1">
+      {message && <div className="text-supporting text-text-muted">{message}</div>}
+      <ProgressBarPrimitive
+        size="thin"
+        value={isDeterminate ? progress : 0}
+        max={isDeterminate ? total : 100}
+        indeterminate={!isDeterminate}
+        label={message || TOOL_ROW_COPY.progressLabel}
+      />
     </div>
   );
 };

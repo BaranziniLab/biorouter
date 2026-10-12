@@ -3,11 +3,16 @@ import { Input } from '../../../../../ui/input';
 import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
+import { Disclosure } from '../../../../../ui/disclosure';
+import { Field } from '../../../../../ui/field';
 import { configLabels } from '../../../../../../utils/configUtils';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
+import { sentenceCase } from '../../../../config/configLabels';
+import { machineStringProps } from '../../../../config/machineString';
+import { providerSetupCopy } from '../../../copy';
+import { useHandFocusOnReady } from '../../../../models/dialogFocus';
 
 type ValidationErrors = Record<string, string>;
 
@@ -63,6 +68,18 @@ const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
   },
 };
 
+/**
+ * The value a field starts with when nothing is saved for it: the key's declared default, else the
+ * table above. `null` when the field starts empty. The form fills fields with it, and the Configure
+ * dialog reads it to know, before the saved values arrive, whether Save can act (FR-R3-3).
+ */
+export function providerKeyDefault(
+  providerName: string,
+  parameter: { name: string; default?: string | null }
+): string | null {
+  return parameter.default ?? (PROVIDER_KEY_DEFAULTS[providerName] ?? {})[parameter.name] ?? null;
+}
+
 /** The note every host-owned field points its `aria-describedby` at. */
 const HOST_OWNED_NOTE_ID = 'provider-config-host-owned-note';
 
@@ -71,6 +88,8 @@ const envToPrettyName = (envVar: string) => {
     Api: 'API',
     Aws: 'AWS',
     Gcp: 'GCP',
+    Id: 'ID',
+    Url: 'URL',
   };
 
   return envVar
@@ -85,12 +104,23 @@ const envToPrettyName = (envVar: string) => {
 /**
  * A config key's name in words, for its label, its placeholder and its
  * "is required" error: the curated label in `configUtils` when there is one
- * ("Llama Server External Host"), else the key's role, else the key itself
+ * ("Llama Server external host"), else the key's role, else the key itself
  * without the provider's prefix. The modal's required error used to print the
  * raw env var ("VERSA_BEDROCK_ACCESS_KEY_ID is required") and the placeholder
  * fallback was the env var with spaces (W2-PRV-13).
+ *
+ * Sentence case, like every other label in the app (V4-R3-2): the curated labels
+ * are Title Case ("Anthropic API Key"), so the name goes through the one
+ * `sentenceCase` the Configuration editor uses, which keeps acronyms and product
+ * names ("Anthropic API key", "Azure OpenAI deployment name"). That is also what
+ * makes the required error read "Anthropic API key is required", beside the custom
+ * provider form's "API key is required".
  */
 export function providerFieldName(providerName: string, parameterName: string): string {
+  return sentenceCase(titleCaseFieldName(providerName, parameterName));
+}
+
+function titleCaseFieldName(providerName: string, parameterName: string): string {
   if (configLabels[parameterName]) return configLabels[parameterName];
   const name = parameterName.toLowerCase();
   if (name.includes('api_key')) return 'API Key';
@@ -134,8 +164,6 @@ export default function DefaultProviderSetupForm({
     try {
       const values: { [k: string]: ConfigInput } = {};
 
-      const frontendDefaults = PROVIDER_KEY_DEFAULTS[provider.name] ?? {};
-
       for (const parameter of parameters) {
         const configKey = `${parameter.name}`;
         const configValue = (await read(configKey, parameter.secret || false)) as ConfigValue;
@@ -143,7 +171,7 @@ export default function DefaultProviderSetupForm({
         if (configValue) {
           values[parameter.name] = { serverValue: configValue };
         } else {
-          const defaultValue = parameter.default ?? frontendDefaults[parameter.name] ?? null;
+          const defaultValue = providerKeyDefault(provider.name, parameter);
           if (defaultValue !== null) {
             values[parameter.name] = { value: defaultValue };
           }
@@ -164,6 +192,14 @@ export default function DefaultProviderSetupForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The fields exist only once the saved values are in, and the dialog around them is already open
+  // by then, so Radix could not put focus on one: the Configure dialog rests it on its box and
+  // this hands it to the first enabled field (see `models/dialogFocus.ts`).
+  const fieldsRef = useHandFocusOnReady<HTMLDivElement>(
+    !isLoading,
+    'input:not([disabled]):not([type="hidden"])'
+  );
+
   const getPlaceholder = (parameter: ConfigKey): string => {
     if (parameter.secret) {
       const serverValue = configValues[parameter.name]?.serverValue;
@@ -177,8 +213,7 @@ export default function DefaultProviderSetupForm({
       return hint;
     }
 
-    const defaultValue =
-      parameter.default ?? (PROVIDER_KEY_DEFAULTS[provider.name] ?? {})[parameter.name] ?? null;
+    const defaultValue = providerKeyDefault(provider.name, parameter);
     if (defaultValue !== null) {
       return defaultValue;
     }
@@ -195,19 +230,12 @@ export default function DefaultProviderSetupForm({
   const getFieldName = (parameter: ConfigKey): string =>
     providerFieldName(provider.name, parameter.name);
 
-  // Every field names the config key it writes, the same way: some did and
-  // some did not (a Versa Azure key had no chip, its Bedrock sibling did).
-  const getFieldLabel = (parameter: ConfigKey) => {
-    return (
-      <span>
-        <span>{getFieldName(parameter)}</span>
-        <span className="text-xs text-text-muted font-normal ml-1.5">({parameter.name})</span>
-      </span>
-    );
-  };
-
   if (isLoading) {
-    return <div className="text-center py-4">Loading configuration values...</div>;
+    return (
+      <div className="py-4 text-center text-secondary text-text-muted">
+        {providerSetupCopy.loadingValues}
+      </div>
+    );
   }
 
   function getRenderValue(parameter: ConfigKey): string | undefined {
@@ -224,7 +252,6 @@ export default function DefaultProviderSetupForm({
       const fieldId = `provider-config-${parameter.name}`;
       const hostOwned = isHostOwnedProviderField(parameter);
       const fieldProps = {
-        id: fieldId,
         value: getRenderValue(parameter),
         onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
           setConfigValues((prev) => {
@@ -236,22 +263,25 @@ export default function DefaultProviderSetupForm({
           });
         },
         placeholder: getPlaceholder(parameter),
-        className: `w-full h-9 px-3 rounded-element shadow-none text-sm ${
-          validationErrors[parameter.name]
-            ? 'border-2 border-border-danger'
-            : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
-        } bg-background-default placeholder:text-text-muted text-text-default`,
         required: parameter.required,
         disabled: hostOwned,
         'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
+        // Every parameter is a machine string (a command, an endpoint, a region, a profile name),
+        // so none of them is spellchecked: Configure Claude Code opened with `claude` underlined
+        // (V4-R7-5).
+        ...machineStringProps,
       };
 
       return (
-        <div key={parameter.name}>
-          <label htmlFor={fieldId} className="block text-sm font-medium text-text-default mb-1">
-            {getFieldLabel(parameter)}
-            {parameter.required && <span className="text-text-danger ml-1">*</span>}
-          </label>
+        // The config key a field writes is machine text, so it sits behind the label's InfoTip
+        // rather than beside every label (principle 10); a field names itself in words.
+        <Field
+          key={parameter.name}
+          id={fieldId}
+          label={getFieldName(parameter)}
+          info={`Saved as ${parameter.name}.`}
+          error={validationErrors[parameter.name]}
+        >
           {/* F5: a secret is masked, exactly as the custom-provider form masks
               its key — the same primitive, so the two cannot diverge again. A
               non-secret parameter (an endpoint, a region) stays readable. */}
@@ -260,10 +290,7 @@ export default function DefaultProviderSetupForm({
           ) : (
             <Input {...fieldProps} type="text" />
           )}
-          {validationErrors[parameter.name] && (
-            <p className="text-text-danger text-sm mt-1">{validationErrors[parameter.name]}</p>
-          )}
-        </div>
+        </Field>
       );
     });
   };
@@ -277,40 +304,39 @@ export default function DefaultProviderSetupForm({
     belowFoldParameters = [];
   }
 
-  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} ${
-    belowFoldParameters.length === 1 ? 'option' : 'options'
-  } `;
+  // The optional fields sit behind "Advanced", with their labels as the closed summary ("Organization
+  // · Project · Custom headers · Timeout"): the one disclosure word and summary shape of the
+  // first-run path, Llama Server's and Versa's included (vision FR-R4-5). It read "Show 4 options"
+  // and "Hide 4 options" here alone.
+  const advancedSummary = providerSetupCopy.advancedSummary(
+    belowFoldParameters.map((parameter) => getFieldName(parameter))
+  );
 
   return (
-    <div className="mt-4 space-y-4">
+    <div ref={fieldsRef} className="flex flex-col gap-4 py-1">
       {hasHostOwnedField && (
         <div id={HOST_OWNED_NOTE_ID}>
           <HostManagedModelNote topic="destination" testId="host-managed-destination-note" />
         </div>
       )}
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
-        <div className="text-center text-sm text-text-muted py-2">
-          No configuration parameters for this provider.
+        <div className="py-2 text-center text-secondary text-text-muted">
+          {providerSetupCopy.noParameters}
         </div>
       ) : (
-        <div>
-          <div className="space-y-3">{renderParametersList(aboveFoldParameters)}</div>
+        <>
+          {renderParametersList(aboveFoldParameters)}
           {belowFoldParameters.length > 0 && (
-            <Collapsible
+            <Disclosure
+              label={providerSetupCopy.advanced}
+              summary={advancedSummary}
               open={optionalExpanded}
               onOpenChange={setOptionalExpanded}
-              className="mt-4 border border-border-subtle rounded-container bg-background-muted"
             >
-              <CollapsibleTrigger className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-text-muted hover:text-text-default transition-colors duration-150">
-                <span>{expandCtaText}</span>
-                <span className="text-xs">{optionalExpanded ? '▲' : '▼'}</span>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="px-4 pb-4 space-y-3">
-                {renderParametersList(belowFoldParameters)}
-              </CollapsibleContent>
-            </Collapsible>
+              <div className="flex flex-col gap-4">{renderParametersList(belowFoldParameters)}</div>
+            </Disclosure>
           )}
-        </div>
+        </>
       )}
     </div>
   );

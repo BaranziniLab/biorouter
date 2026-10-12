@@ -1,11 +1,22 @@
 import { isTabKeyboardFocusPending } from './chatTabKeyboardFocus';
-import { useCallback, useMemo, useState, useEffect, useRef, Fragment, ReactElement } from 'react';
+import {
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+  useRef,
+  Fragment,
+  ReactElement,
+  type AnimationEvent,
+} from 'react';
 import BaseChat from '../BaseChat';
 import InAppTerminalDock from '../InAppTerminalDock';
 import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
 import { useTerminalDock } from '../../contexts/TerminalDockContext';
 import { ChatTabStrip } from './ChatTabStrip';
+import { TAB_NEW_CLASS } from './tabClasses';
+import { forgetTabStripMemories, tabStripMemoryFor, type TabStripMemories } from './tabStripMemory';
 import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
@@ -135,6 +146,39 @@ function useSessionListTypes(): Record<string, SessionType> {
     return subscribeSessionList(read);
   }, []);
   return types;
+}
+
+function readCachedWorkingDirs(): Record<string, string> {
+  const dirs: Record<string, string> = {};
+  for (const session of getCachedSessionList() ?? []) {
+    if (session.working_dir) dirs[session.id] = session.working_dir;
+  }
+  return dirs;
+}
+
+/**
+ * Working folder per listed session id, followed exactly like
+ * `useSessionListTypes`. The strip reads it for one thing only: a Crew task is
+ * recognised by its folder (`chatKind.isCrewTask`), and the folder survives a
+ * rename that the title prefix does not, so a renamed Crew task keeps its glyph
+ * in its tab as it does in the sidebar.
+ */
+function useSessionListWorkingDirs(): Record<string, string> {
+  const [dirs, setDirs] = useState<Record<string, string>>(readCachedWorkingDirs);
+  useEffect(() => {
+    const read = () => {
+      const next = readCachedWorkingDirs();
+      setDirs((prev) => {
+        const ids = Object.keys(prev);
+        const differ =
+          ids.length !== Object.keys(next).length || ids.some((id) => prev[id] !== next[id]);
+        return differ ? next : prev;
+      });
+    };
+    read();
+    return subscribeSessionList(read);
+  }, []);
+  return dirs;
 }
 
 /** `map` without the chats no tab holds; the same object when there are none. */
@@ -344,7 +388,12 @@ function useSessionPrivacyTiers(
  *      synchronously, so there is nothing here for this hook to add, and
  *      skipping makes the snap-back structurally impossible rather than merely
  *      unlikely. (`sessionListCache` guards the other half of that race — a list
- *      response that was issued BEFORE the rename it would undo.)
+ *      response that was issued BEFORE the rename it would undo.) "Every tab"
+ *      includes the tabs of a `/pair` that is not mounted: the app root's
+ *      `useSavedTabTitleSync` writes each rename into the saved tabs, which is
+ *      what the provider mounts from. Before it, a rename made from a sidebar
+ *      row on History came back to `/pair` under the old name, and this rule
+ *      kept it there (V2-R3-1).
  *   2. **Downgrade a named tab to the placeholder.** A row still reading "New
  *      chat" is a lower bound, never a correction, so it is never adopted over a
  *      title that already has a real name.
@@ -802,6 +851,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   // the wrapper object is new per render and is never passed on.
   const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
+  const sessionWorkingDirs = useSessionListWorkingDirs();
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -834,6 +884,10 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     (tabId: string) => dispatch?.({ type: 'closeTab', tabId }),
     [dispatch]
   );
+  const handleCloseOthers = useCallback(
+    (tabId: string) => dispatch?.({ type: 'closeOtherTabs', tabId }),
+    [dispatch]
+  );
   const handleReorder = useCallback(
     (draggedTabId: string, targetTabId: string) =>
       dispatch?.({ type: 'reorderTab', draggedTabId, targetTabId }),
@@ -846,6 +900,18 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     (groupId: ChatGroupId) => dispatch?.({ type: 'openTab', payload: { sessionId: '', groupId } }),
     [dispatch]
   );
+  // One TabStripMemory per group (vision V1-H1). A strip remounts with its chat
+  // on every tab switch (the pane keys BaseChat on the active tab), so what it
+  // compares a new tab list against has to live here, for as long as the shell
+  // is mounted. A group that leaves the layout takes its record with it.
+  const [tabStripMemories] = useState<TabStripMemories>(() => new Map());
+  const layoutForStripMemories = groups?.state.layout;
+  useEffect(() => {
+    if (layoutForStripMemories) {
+      forgetTabStripMemories(tabStripMemories, leafGroupIds(layoutForStripMemories));
+    }
+  }, [layoutForStripMemories, tabStripMemories]);
+
   const handleDropToGroup = useCallback(
     (tabId: string, target: DropTarget) =>
       dispatch?.({
@@ -1287,13 +1353,16 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // loaded by the live store. The strip ORs a `sub_agent` here with
         // `tabAnnotations`, which do not survive leaving `/pair` or a reload.
         sessionTypes={rowSessionTypes}
+        sessionWorkingDirs={sessionWorkingDirs}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret
         // is driven entirely by IPC from main (design D3, Phase 0).
         remoteDropBeforeTabId={remoteDrop?.groupId === groupId ? remoteDrop.beforeTabId : null}
+        memory={tabStripMemoryFor(tabStripMemories, groupId)}
         onSelect={handleSelect}
         onClose={handleClose}
+        onCloseOthers={handleCloseOthers}
         onReorder={handleReorder}
         reserveTitlebar={reserveTitlebarControls && groupId === reservedGroupId}
         isCompactSidebarOverlayOpen={isCompactSidebarOverlayOpen}
@@ -1304,7 +1373,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
             title="New chat"
             data-testid="chat-tab-new"
             onClick={() => handleNewTab(groupId)}
-            className="br-tab-new ml-0.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+            className={TAB_NEW_CLASS}
           >
             <Plus className="h-4 w-4" />
           </button>
@@ -1330,7 +1399,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // always replaced rather than filled: the key above changes when the
         // real tab lands, which unmounts this whole subtree. Drawing a greeting
         // it will throw away made a new window show one heading, drop it, and
-        // unroll a different one.
+        // fade in a different one.
         suppressGreeting={activeTab === undefined}
         sessionId={activeTab?.sessionId ?? ''}
         initialMessage={activeTab?.pendingInitialMessage}
@@ -1508,6 +1577,25 @@ function ChatGroupPane({
     }
   }, [isActiveGroup, sessionId]);
 
+  // Tab content (spec 3.16): after a tab opens or switches, the transcript
+  // fades in once over `--dur-fast` (`chat-tabs.css`). Derived during render
+  // (React's "state from props" pattern), so the attribute lands in the SAME
+  // commit as the new tab's chat and its first frame is already faded out. The
+  // pane's first mount (a reload, a new window, a split) appears at rest, and
+  // the attribute leaves when the fade ends, so a chat that later swaps its
+  // empty state for a transcript does not fade a second time.
+  const [shownTabKey, setShownTabKey] = useState(tabKey);
+  const [tabSwitched, setTabSwitched] = useState(false);
+  if (shownTabKey !== tabKey) {
+    setShownTabKey(tabKey);
+    setTabSwitched(true);
+  }
+  const onTabContentAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
+    if (!tabSwitched) return;
+    const target = event.target as HTMLElement;
+    if (target.hasAttribute('data-preview-transcript')) setTabSwitched(false);
+  };
+
   return (
     <div
       // The drag hit-test looks for exactly this attribute
@@ -1529,7 +1617,11 @@ function ChatGroupPane({
       onPointerDownCapture={() => onFocusGroup(groupId)}
       onFocusCapture={() => onFocusGroup(groupId)}
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div
+        className="flex min-h-0 min-w-0 flex-1"
+        data-tab-content={tabSwitched ? 'switched' : undefined}
+        onAnimationEnd={onTabContentAnimationEnd}
+      >
         <BaseChat
           key={tabKey}
           // Scopes this tab's terminal. Same id as the React key, so the terminal

@@ -9,6 +9,8 @@ import {
   type UpdaterState,
 } from '../../utils/updaterState';
 import { requestUpdateModal } from '../../utils/updateUiEvents';
+import { SidebarMenuItem } from '../ui/sidebar';
+import { sidebarCopy } from './copy';
 
 const PHASE_ORDER: UpdaterState['phase'][] = [
   'idle',
@@ -55,17 +57,22 @@ export default function SidebarUpdateButton() {
 
   const versionLabel = state.latestVersion ? ` to ${state.latestVersion}` : '';
 
+  // A normal rail row, not a filled caps bar (F-14): the download glyph in the
+  // accent is the one spot of colour it needs. The accessible name keeps
+  // "Update Biorouter to …", which tests and assistive technology read.
   return (
-    <button
-      type="button"
-      data-testid="sidebar-update-button"
-      aria-label={`Update Biorouter${versionLabel}`}
-      title={`Update Biorouter${versionLabel}`}
-      onClick={() => requestUpdateModal(state)}
-      className="flex h-8 w-full items-center justify-center gap-2 rounded-lg bg-background-accent px-3 text-[11px] font-semibold tracking-[0.12em] text-text-on-accent transition-colors duration-150 hover:bg-background-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-    >
-      <Download className="size-3.5" />
-      <span>UPDATE</span>
-    </button>
+    <SidebarMenuItem>
+      <button
+        type="button"
+        data-testid="sidebar-update-button"
+        data-tone="update"
+        aria-label={`Update Biorouter${versionLabel}`}
+        onClick={() => requestUpdateModal(state)}
+        className="br-nav-row no-drag"
+      >
+        <Download className="br-nav-row-icon" aria-hidden />
+        <span className="br-nav-row-label">{sidebarCopy.update.row(state.latestVersion)}</span>
+      </button>
+    </SidebarMenuItem>
   );
 }

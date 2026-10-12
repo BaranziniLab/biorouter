@@ -204,21 +204,32 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
   // Serialises mutations so two fast clicks cannot land out of order and leave
   // the switch showing the older of the two answers.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // Only the newest read may answer. A read for the chat this hook served
+  // before (`sessionId` changed while it was out) that lands after the next
+  // chat's would otherwise replace that chat's view and switch states, and end
+  // `loading` while the newer read is still out. The same holds for a rescan
+  // that overtakes the first read of one chat. (The mutation path below is not
+  // a read: it serialises through `queue` and commits the daemon's answer to
+  // the write it made.)
+  const readGeneration = useRef(0);
 
   const reload = useCallback(
     async (rescan = false) => {
+      const issued = ++readGeneration.current;
       setLoading(true);
       try {
         const query = sessionId ? { session_id: sessionId } : {};
         const response = rescan
           ? await refreshSkillCatalog<true>({ query, throwOnError: true })
           : await skillCatalogHandler<true>({ query, throwOnError: true });
+        if (issued !== readGeneration.current) return;
         commit(response.data);
         setError(null);
       } catch (err) {
+        if (issued !== readGeneration.current) return;
         setError(`Could not read the skill catalog: ${errorText(err)}`);
       } finally {
-        setLoading(false);
+        if (issued === readGeneration.current) setLoading(false);
       }
     },
     [commit, sessionId]

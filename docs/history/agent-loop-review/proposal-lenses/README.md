@@ -50,7 +50,7 @@ also raised.
   `BR-1` … `BR-67` programme these three lenses became; the authoritative record of what was
   adopted.
 - [BioRouter agentic loop review](../README.md) — the executive report that frames all ten
-  subsystem reviews, the nine external tool reports and these three lenses.
+  subsystem reviews, the eight external tool reports and these three lenses.
 - [Agent-loop fix campaign](../../agent-loop-campaign/README.md) — how the merged proposals
   were sequenced into waves, gated and landed on `main`.
 - [The agent loop](../../../agent-loop/README.md) — current documentation for the loop as it

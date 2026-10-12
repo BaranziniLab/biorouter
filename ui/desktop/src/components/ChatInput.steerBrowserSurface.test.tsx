@@ -51,18 +51,11 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({ default: () => null }));
-vi.mock('./bottom_menu/BottomMenuExtensionSelection', () => ({
-  BottomMenuExtensionSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuSkillSelection', () => ({ BottomMenuSkillSelection: () => null }));
-vi.mock('./bottom_menu/BottomMenuKnowledgeSelection', () => ({
-  BottomMenuKnowledgeSelection: () => null,
-}));
-vi.mock('./bottom_menu/BottomMenuReasoningEffort', () => ({
-  BottomMenuReasoningEffort: () => null,
-}));
-vi.mock('./bottom_menu/CostTracker', () => ({ CostTracker: () => null }));
+// The pickers and the footer are WS-PICKERS' modules, mocked by path; their
+// insides are tested where they live.
+vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
   MentionPopoverMock.displayName = 'MentionPopoverMock';
@@ -149,7 +142,6 @@ function renderComposer(onSteer: (text: string) => Promise<boolean>) {
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
       messagesLength={2}
-      disableAnimation
       sessionCosts={undefined}
       toolCount={0}
     />
@@ -258,7 +250,6 @@ describe('the queue explains the steer it cannot perform, on a browser surface',
         droppedFiles={[]}
         onFilesProcessed={vi.fn()}
         messagesLength={2}
-        disableAnimation
         sessionCosts={undefined}
         toolCount={0}
       />

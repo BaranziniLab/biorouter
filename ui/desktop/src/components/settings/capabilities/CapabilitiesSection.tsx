@@ -1,10 +1,18 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Switch } from '../../ui/switch';
-import { CopilotSetup } from '../../copilot/CopilotSetup';
+import { Switch, type SwitchProps } from '../../ui/switch';
+import { SettingRow, settingLabelId } from '../../ui/setting-row';
+import {
+  CopilotSetupPanel,
+  CopilotSetupTrigger,
+  useCopilotSetup,
+} from '../../copilot/CopilotSetup';
 import { useConfig, FixedExtensionEntry } from '../../ConfigContext';
 import { nameToKey } from '../extensions/utils';
 import { toggleExtensionDefault } from '../extensions';
 import { CAPABILITIES, CapabilityMeta } from './capabilities';
+
+/** The extension key Biorouter Copilot kept for config compatibility. */
+const COPILOT_KEY = 'computercontroller';
 
 interface CapabilityItemProps {
   meta: CapabilityMeta;
@@ -12,10 +20,25 @@ interface CapabilityItemProps {
   onToggle: (entry: FixedExtensionEntry) => Promise<void>;
 }
 
-function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
-  const [isToggling, setIsToggling] = useState(false);
-  const enabled = entry ? entry.enabled : meta.defaultEnabled;
+/**
+ * A switch with something before it. `SettingRow` hands its one child the id, the label's
+ * `aria-labelledby` and the help's `aria-describedby`; this passes all three to the switch and
+ * leaves the extra control (Copilot's "Check setup") outside that naming.
+ */
+function SwitchWithLead({ lead, ...switchProps }: SwitchProps & { lead: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      {lead}
+      <Switch {...switchProps} />
+    </div>
+  );
+}
 
+function useCapabilityToggle(
+  entry: FixedExtensionEntry | undefined,
+  onToggle: CapabilityItemProps['onToggle']
+) {
+  const [isToggling, setIsToggling] = useState(false);
   const handleToggle = async () => {
     if (!entry || isToggling) return;
     setIsToggling(true);
@@ -25,32 +48,54 @@ function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
       setIsToggling(false);
     }
   };
+  return { isToggling, handleToggle };
+}
 
-  // ⚠ **No state-dependent fill.** This row used to paint
-  // `bg-background-medium/70` while its switch was ON, which turned a hairline
-  // list into a striped one and said the state a second time in a weaker
-  // language. It was also inverted: `.biorouter-settings-row:hover` is
-  // unlayered and beats a `@layer utilities` background, so pointing at an ON
-  // row dropped its fill from 70% to 38% and the row visibly LIGHTENED. The
-  // switch states the state.
+// ⚠ **No state-dependent fill.** A capability row used to paint
+// `bg-background-medium/70` while its switch was ON, which turned a ruled
+// list into a striped one and said the state a second time in a weaker
+// language. It was also inverted: `.biorouter-settings-row:hover` is
+// unlayered and beats a `@layer utilities` background, so pointing at an ON
+// row dropped its fill from 70% to 38% and the row visibly LIGHTENED. The
+// switch states the state.
+//
+// The row is a `SettingRow`: the capability's name, an InfoTip carrying what it
+// does, and the switch, which the row names (`aria-labelledby`) and describes
+// (`aria-describedby`), so the name never reads "Toggle …".
+function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
+  const { isToggling, handleToggle } = useCapabilityToggle(entry, onToggle);
+  const enabled = entry ? entry.enabled : meta.defaultEnabled;
+
   return (
-    <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5 text-text-default">
-      <div className="min-w-0 flex-1">
-        <p className="text-label text-text-default">{meta.label}</p>
-        <p className="mt-0.5 max-w-md text-supporting text-text-muted">{meta.description}</p>
-        {meta.key === 'computercontroller' && <CopilotSetup />}
-      </div>
+    <SettingRow label={meta.label} help={meta.description} controlId={`capability-${meta.key}`}>
+      <Switch checked={enabled} onCheckedChange={handleToggle} disabled={!entry || isToggling} />
+    </SettingRow>
+  );
+}
 
-      <div className="flex flex-shrink-0 items-center">
-        <Switch
+/**
+ * Biorouter Copilot's row. "Check setup" is the row's trailing button and its result is a block
+ * AFTER the row, never inside it: a result of several lines used to swell the row and take its
+ * hover wash, with the switch centred against a paragraph.
+ */
+function CopilotCapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
+  const { isToggling, handleToggle } = useCapabilityToggle(entry, onToggle);
+  const enabled = entry ? entry.enabled : meta.defaultEnabled;
+  const setup = useCopilotSetup();
+  const controlId = `capability-${meta.key}`;
+
+  return (
+    <>
+      <SettingRow label={meta.label} help={meta.description} controlId={controlId}>
+        <SwitchWithLead
+          lead={<CopilotSetupTrigger setup={setup} describedBy={settingLabelId(controlId)} />}
           checked={enabled}
           onCheckedChange={handleToggle}
           disabled={!entry || isToggling}
-          variant="mono"
-          aria-label={`Toggle ${meta.label} capability`}
         />
-      </div>
-    </div>
+      </SettingRow>
+      <CopilotSetupPanel setup={setup} />
+    </>
   );
 }
 
@@ -79,19 +124,23 @@ export const CapabilitiesSection = () => {
   );
 
   // A fragment, not a `space-y-1` wrapper: the rows belong directly to the
-  // `.biorouter-settings-list` this section mounts into, so they abut, the
-  // hairline is their only separator, and `:last-child` selects the real last
-  // row instead of the last row of a nested box.
+  // `.biorouter-settings-list` this section mounts into, so they abut and
+  // `:last-child` selects the real last row instead of the last row of a nested
+  // box. Nothing here draws a line: Settings switches the row's rule off by
+  // scope (R-27), and a row is told apart by its rhythm and its hover fill.
   return (
     <>
-      {CAPABILITIES.map((meta) => (
-        <CapabilityItem
-          key={meta.key}
-          meta={meta}
-          entry={entriesByKey.get(meta.key)}
-          onToggle={handleToggle}
-        />
-      ))}
+      {CAPABILITIES.map((meta) => {
+        const Item = meta.key === COPILOT_KEY ? CopilotCapabilityItem : CapabilityItem;
+        return (
+          <Item
+            key={meta.key}
+            meta={meta}
+            entry={entriesByKey.get(meta.key)}
+            onToggle={handleToggle}
+          />
+        );
+      })}
     </>
   );
 };

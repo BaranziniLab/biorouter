@@ -4,12 +4,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatKindOf } from '../chats/chatKind';
 import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
-import RecentChats, {
-  formatSessionDateLabel,
-  formatTimeSinceLastWorked,
-  groupRecentChatsByDate,
-  sortRecentChats,
-} from './RecentChats';
+import RecentChats, { chatHoverDetail, formatTimeSinceLastWorked } from './RecentChats';
+import { sidebarCopy } from './copy';
+import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const now = Date.parse('2026-07-15T12:00:00.000Z');
 
@@ -63,38 +60,25 @@ function renderRecentChats(props: Partial<ComponentProps<typeof RecentChats>> = 
         onLoadMore={vi.fn()}
         onOpen={vi.fn()}
         onViewAll={vi.fn()}
+        view={DEFAULT_SIDEBAR_CHAT_VIEW}
+        onViewChange={vi.fn()}
         {...props}
       />
     </SidebarProvider>
   );
 }
 
-describe('sortRecentChats', () => {
-  it('orders every loaded chat by most recent activity without a fixed cap', () => {
-    const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index));
-
-    expect(sortRecentChats(sessions).map((session) => session.id)).toEqual(
-      Array.from({ length: 12 }, (_, index) => `session-${index}`)
-    );
-  });
-
-  it('groups the sorted result under human-readable activity dates', () => {
-    const today = makeSession(0);
-    const yesterday = {
-      ...makeSession(1),
-      updated_at: '2026-07-14T12:00:00.000Z',
-    };
-    const earlier = {
-      ...makeSession(2),
-      updated_at: '2026-07-10T12:00:00.000Z',
-    };
-
-    expect(groupRecentChatsByDate([earlier, yesterday, today], now)).toEqual([
-      { label: 'Today', sessions: [today] },
-      { label: 'Yesterday', sessions: [yesterday] },
-      { label: 'Jul 10', sessions: [earlier] },
-    ]);
-    expect(formatSessionDateLabel(today.updated_at, now)).toBe('Today');
+describe('the date buckets', () => {
+  /**
+   * Coarse buckets, never a header per day (spec 3.4, F-07): the arranging
+   * itself is tested in `sidebarChatView.test.ts`; this pins what the list
+   * draws for it.
+   */
+  it('draws one quiet bucket label over the day, not a date per day', () => {
+    renderRecentChats();
+    const today = screen.getByText('Today');
+    expect(today).toHaveClass('br-sidebar-bucket');
+    expect(screen.queryByText(/^[A-Z][a-z]{2} \d{1,2}$/)).toBeNull();
   });
 });
 
@@ -142,51 +126,41 @@ function focusWithTab(element: HTMLElement) {
 describe('RecentChats', () => {
   it('opens individual chats, marks an ongoing chat, and exposes a compact summary on focus', async () => {
     const onOpen = vi.fn();
-    const currentDateLabel = new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }).format(Date.now());
     renderRecentChats({ onOpen, activeSessionId: 'session-0' });
 
     const currentChat = screen.getByTestId('recent-chat-session-0');
     const ongoingChat = screen.getByTestId('recent-chat-session-1');
     expect(ongoingChat).toHaveAccessibleName('Open ongoing chat: Chat 1');
-    expect(ongoingChat).toHaveClass('w-full', 'h-control-md', 'px-3', 'text-sm');
-    expect(ongoingChat.parentElement).toHaveClass('flex', 'flex-col', 'gap-0.5');
-    expect(ongoingChat).not.toHaveClass('font-medium');
-    expect(currentChat).toHaveClass('font-medium');
+    // One authored row recipe (`sidebar.css`): 28px, 13px, muted at rest, the
+    // accent rail on the current row. jsdom runs no CSS, so the class contract
+    // is pinned here and the geometry in `sidebarGeometry.browser.test.ts`.
+    expect(ongoingChat).toHaveClass('br-nav-row', 'br-chat-row');
+    expect(ongoingChat.closest('ul')).toHaveClass('br-nav-list');
     expect(currentChat).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
+    expect(ongoingChat).not.toHaveAttribute('aria-current');
+    expect(screen.getByTestId('running-chat-indicator-session-1')).toHaveClass('br-chat-row-ring');
     expect(ongoingChat).toHaveTextContent('Chat 1');
     expect(ongoingChat).not.toHaveTextContent('1 message');
-    expect(screen.getByText('Recents')).toBeInTheDocument();
-    expect(screen.getByText('Today')).toHaveClass('text-xs', 'font-normal');
-    // The badge is the past-7-day chat count (all 3 fixtures are seconds old),
-    // shown whether the list is expanded or not.
-    expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recents-disclosure')).toHaveTextContent(sidebarCopy.chats.header);
 
     fireEvent.click(currentChat);
-    // One click, one real tab — no preview slot, no options object. Whether the
-    // chat is already open is the reducer's business (it dedupes), not the row's.
-    //
-    // The row hands over the NAME it is already rendering, so the tab opens
-    // titled instead of showing "New chat" until BaseChat has fetched the
-    // session. The row is the only place that knows this without a round-trip.
+    // One click, one real tab. The row hands over the NAME it is already
+    // rendering, so the tab opens titled.
     expect(onOpen).toHaveBeenCalledWith('session-0', 'Chat 0', false);
 
-    // Double click is not a distinct gesture any more: it is two opens of the
-    // same chat, which the reducer collapses to an activate.
+    // Double click is not a distinct gesture: it is two opens of the same chat,
+    // which the reducer collapses to an activate. Never a rename.
     onOpen.mockClear();
     fireEvent.doubleClick(currentChat);
     expect(onOpen.mock.calls.every((call) => call[0] === 'session-0')).toBe(true);
+    expect(screen.queryByRole('textbox')).toBeNull();
 
+    // Two lines at most: the title only when it is cut short (jsdom measures
+    // nothing, so it is not), then `path · time · messages` in one line.
     focusWithTab(currentChat);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
-    expect(summary).toHaveTextContent('Chat 0');
-    expect(summary).toHaveTextContent('/workspace/project-0');
-    expect(summary).toHaveTextContent('Last worked');
-    expect(summary).toHaveTextContent('0 messages');
-    expect(summary).toHaveTextContent(currentDateLabel);
+    expect(summary).toHaveTextContent('/workspace/project-0 · Just now · 0 messages');
+    expect(summary.querySelector('svg')).toBeNull();
   });
 
   it('preserves a user-chosen title that matches the legacy placeholder', () => {
@@ -202,33 +176,54 @@ describe('RecentChats', () => {
   });
 
   it('truncates an overlong row title while preserving the full hover summary', async () => {
-    const longTitle = 'app:ucsf-versa-gpt55-kb-visualizer-smoke-with-an-even-longer-suffix';
-    const longSession = { ...makeSession(0), name: longTitle };
+    const stored = 'app:ucsf-versa-gpt55-kb-visualizer-smoke-with-an-even-longer-suffix';
+    const longSession = { ...makeSession(0), name: stored };
     renderRecentChats({ sessions: [longSession] });
+    // An app's chat reads as the app's name, as in History (`historyRowTitle`, V1-R3-6).
+    const longTitle = 'Ucsf versa gpt55 kb visualizer smoke with an even longer suffix';
 
     const row = screen.getByTestId('recent-chat-session-0');
+    expect(screen.queryByText(stored)).toBeNull();
     const title = screen.getByText(longTitle);
-    expect(row).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-hidden');
-    expect(title).toHaveClass('min-w-0', 'flex-1', 'truncate');
+    expect(row).toHaveClass('br-nav-row');
+    expect(title).toHaveClass('br-nav-row-label');
 
+    // A cut title earns the card's first line.
+    Object.defineProperties(title, {
+      scrollWidth: { configurable: true, value: 400 },
+      clientWidth: { configurable: true, value: 180 },
+    });
     focusWithTab(row);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
     expect(summary).toHaveTextContent(longTitle);
   });
 
-  it('keeps the full chat history one click away from the Recents label', () => {
+  it('keeps the full chat history one click away from the Chats header', () => {
     const onViewAll = vi.fn();
     renderRecentChats({ onViewAll });
 
+    // A 24px icon button named "All chats", in place of the "See all" link.
     const viewAllButton = screen.getByTestId('view-all-chat-history');
-    expect(viewAllButton).toHaveTextContent('See all');
-    expect(viewAllButton).not.toHaveClass('text-text-muted');
+    expect(viewAllButton).toHaveAccessibleName(sidebarCopy.chats.allChats);
+    expect(viewAllButton).not.toHaveTextContent('See all');
+    expect(screen.getByRole('button', { name: sidebarCopy.chats.viewOptions })).toHaveAttribute(
+      'aria-haspopup',
+      'menu'
+    );
 
     fireEvent.click(viewAllButton);
     expect(onViewAll).toHaveBeenCalledOnce();
   });
 
-  it('keeps See all reachable while Recents is retracted, so history is never stranded', () => {
+  it('reads Chats in sentence case, with no caps label and no See all', () => {
+    renderRecentChats();
+    expect(screen.queryByText('Recents')).toBeNull();
+    expect(screen.queryByText('RECENTS')).toBeNull();
+    expect(screen.queryByText('See all')).toBeNull();
+    expect(screen.getByText(sidebarCopy.chats.header)).toBeInTheDocument();
+  });
+
+  it('keeps All chats reachable while the list is retracted, so history is never stranded', () => {
     renderRecentChats();
 
     fireEvent.click(screen.getByTestId('recents-disclosure'));
@@ -236,18 +231,15 @@ describe('RecentChats', () => {
     expect(screen.getByTestId('view-all-chat-history')).toBeVisible();
   });
 
-  it('keeps See all attached to Recents when the list is empty', () => {
+  it('keeps All chats beside the header when the list is empty', () => {
     renderRecentChats({ sessions: [] });
 
-    const scrollContainer = screen.getByTestId('recent-chat-scroll');
-    expect(scrollContainer).toHaveClass('shrink', 'overflow-y-auto');
-    expect(scrollContainer).not.toHaveClass('flex-1');
-    expect(screen.getByText('No recent chats yet')).toBeInTheDocument();
+    expect(screen.getByTestId('recent-chat-scroll')).toHaveClass('br-sidebar-chats-scroll');
+    expect(screen.getByText(sidebarCopy.chats.empty)).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
-    // No chats at all, so there is no past-week count to show.
   });
 
-  it('retracts the history behind the Recents label, keeping the past-week count in both states', () => {
+  it('retracts the history behind the Chats header', () => {
     renderRecentChats();
 
     const disclosure = screen.getByTestId('recents-disclosure');
@@ -262,8 +254,6 @@ describe('RecentChats', () => {
     expect(disclosure).toHaveAttribute('aria-expanded', 'false');
     expect(scrollWell).not.toBeVisible();
     expect(screen.getByTestId('recent-chat-session-0')).not.toBeVisible();
-    // The count is a persistent past-week metric now, not a stand-in for the
-    // hidden rows — it stays put through the collapse.
 
     fireEvent.click(disclosure);
 
@@ -303,21 +293,19 @@ describe('RecentChats', () => {
       'app'
     );
 
-    // 14px, subdued — and the accent only on the row the user is in.
+    // A 16px slot (`.br-chat-kind-icon`), the body muted, default ink on the
+    // row the user is in; the lock badge alone wears the accent (spec 3.3).
     expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveClass(
-      'h-3.5',
-      'w-3.5',
-      'text-text-subtle'
+      'br-chat-kind-icon',
+      'text-text-muted'
     );
-    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveClass('text-accent-bar');
-    expect(screen.getByTestId('recent-chat-glyph-session-1')).not.toHaveClass('text-text-subtle');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveClass('text-text-default');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).not.toHaveClass('text-accent-bar');
     // The icon library pins every glyph to one stroke weight (design.md §3.9).
     expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute(
       'stroke-width',
       '1.5'
     );
-    // Rows stay 32px — the glyph must not change sidebar density (D-12).
-    expect(screen.getByTestId('recent-chat-session-0')).toHaveClass('h-control-md');
   });
 
   it('requests another page when the user scrolls near the end of the loaded chats', () => {
@@ -349,7 +337,7 @@ describe('RecentChats', () => {
     expect(glyph.getAttribute('aria-label')).toBe('Private chat');
   });
 
-  it('leaves public and untiered chats unmarked on this 32px row', () => {
+  it('leaves public and untiered chats unmarked on this 28px row', () => {
     renderRecentChats({
       sessions: [
         { ...makeSession(0), privacy_tier: 'public' },
@@ -382,5 +370,319 @@ describe('RecentChats', () => {
       'data-privacy',
       'private'
     );
+  });
+});
+
+describe('chatHoverDetail', () => {
+  it('writes the folder with ~ for home, the time and the count on one line', () => {
+    const session = { ...makeSession(3), working_dir: '/Users/me/lab/cohort' };
+    expect(chatHoverDetail(session, '/Users/me', now)).toBe('~/lab/cohort · 3m ago · 3 messages');
+  });
+});
+
+/**
+ * R-30. Under Last activity a chat moves only when something happens in it, and opening one is
+ * not that. The list draws the order the daemon gave it and keeps no recency of its own, so
+ * making a chat the open one, or clicking its row, moves no row.
+ */
+describe('opening a chat is not activity', () => {
+  const order = () =>
+    Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((row) =>
+      row.getAttribute('data-row')
+    );
+
+  it('leaves every row where the daemon put it when another chat becomes the open one', () => {
+    const currentTime = Date.now();
+    const sessions = [
+      makeSession(0, currentTime),
+      makeSession(1, currentTime),
+      makeSession(2, currentTime),
+    ];
+    const onOpen = vi.fn();
+    const draw = (activeSessionId: string | null) => (
+      <SidebarProvider>
+        <RecentChats
+          sessions={sessions}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={onOpen}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+          activeSessionId={activeSessionId}
+        />
+      </SidebarProvider>
+    );
+    const { rerender } = render(draw(null));
+    const asDrawn = order();
+    expect(asDrawn).toEqual(['chat:session-0', 'chat:session-1', 'chat:session-2']);
+
+    // The oldest chat is clicked, and the shell makes it the open one.
+    fireEvent.click(screen.getByTestId('recent-chat-session-2'));
+    expect(onOpen).toHaveBeenCalledWith('session-2', 'Chat 2', false);
+    rerender(draw('session-2'));
+    expect(screen.getByTestId('recent-chat-session-2')).toHaveAttribute('aria-current', 'page');
+    expect(order()).toEqual(asDrawn);
+
+    // Switching to another one moves nothing either.
+    rerender(draw('session-1'));
+    expect(order()).toEqual(asDrawn);
+  });
+});
+
+/**
+ * Vision V1-H2, the list's half, V1-R2-3 and V1-R3-3. A non-default view needs the whole list,
+ * and the full read lands all at once, often under the pointer. The view is not drawn from part
+ * of the list: drawn from its first page, a name sort showed the wrong 50 chats in name order and
+ * reordered every one of them 0.2 to 0.4 s later, under a resting pointer. Until the read lands
+ * the list draws the view it drew before, or, on a first load, nothing but "Loading chats…".
+ */
+describe('a full read that lands under the pointer', () => {
+  const named = (index: number, name: string) => ({ ...makeSession(index), name });
+  const order = () =>
+    Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((row) =>
+      row.getAttribute('data-row')
+    );
+  const viewChanged = () =>
+    document.querySelector('.br-sidebar-chat-groups')?.getAttribute('data-view-changed') ?? null;
+  const byName = { groupBy: 'none', sortBy: 'name' } as const;
+  const props = {
+    runningSessionIds: new Set<string>(),
+    onLoadMore: vi.fn(),
+    onOpen: vi.fn(),
+    onViewAll: vi.fn(),
+    view: byName,
+    onViewChange: vi.fn(),
+  };
+  type View = ComponentProps<typeof RecentChats>['view'];
+  const reading = (sessions: SessionSummary[], view: View = byName) => (
+    <SidebarProvider>
+      <RecentChats
+        {...props}
+        view={view}
+        sessions={sessions}
+        hasMore
+        isLoadingMore={false}
+        isLoadingAll
+      />
+    </SidebarProvider>
+  );
+  const read = (sessions: SessionSummary[], view: View = byName) => (
+    <SidebarProvider>
+      <RecentChats
+        {...props}
+        view={view}
+        sessions={sessions}
+        hasMore={false}
+        isLoadingMore={false}
+        isLoadingAll={false}
+      />
+    </SidebarProvider>
+  );
+
+  it('draws no part of a stored view while it is read, then the complete list, held', () => {
+    // A reload with None / Name stored: the first page has landed and the rest is being read.
+    const firstPage = [named(0, 'Cohort'), named(1, 'Dose')];
+    const { rerender } = render(reading(firstPage));
+    expect(order()).toEqual([]);
+    expect(screen.getByRole('status')).toHaveTextContent(sidebarCopy.chats.loading);
+
+    const list = screen.getByTestId('recent-chat-scroll');
+    fireEvent.pointerEnter(list);
+    const renamed = [firstPage[0], named(1, 'Aardvark')];
+    rerender(reading(renamed));
+    expect(order()).toEqual([]);
+
+    // The read lands with the pointer still over the list: the complete arrangement is the
+    // first one drawn, at rest (no view-change fade: nothing was drawn before it).
+    const complete = [...renamed, named(2, 'Atlas'), named(3, 'Biopsy'), named(4, 'Survey')];
+    rerender(read(complete));
+    const arranged = [
+      'chat:session-1',
+      'chat:session-2',
+      'chat:session-3',
+      'chat:session-0',
+      'chat:session-4',
+    ];
+    expect(order()).toEqual(arranged);
+    expect(viewChanged()).toBeNull();
+    // The "Loading chats…" status went with the read: the list on screen is the whole list.
+    expect(screen.queryByRole('status')).toBeNull();
+
+    // From here the complete list is what the pointer holds: a live re-sort waits.
+    rerender(read([...complete.slice(0, 4), named(4, 'Aaa')]));
+    expect(order()).toEqual(arranged);
+
+    fireEvent.pointerLeave(list);
+    expect(order()).toEqual([
+      'chat:session-4',
+      'chat:session-1',
+      'chat:session-2',
+      'chat:session-3',
+      'chat:session-0',
+    ]);
+  });
+
+  it('keeps drawing the previous view after a switch until the read lands, then moves once', () => {
+    // The default view with its first rows paged in, the pointer resting on the list.
+    const currentTime = Date.now();
+    const head = [
+      { ...makeSession(0, currentTime), name: 'Survey' },
+      { ...makeSession(1, currentTime), name: 'Cohort' },
+      { ...makeSession(2, currentTime), name: 'Biopsy' },
+    ];
+    const { rerender } = render(
+      <SidebarProvider>
+        <RecentChats
+          {...props}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          sessions={head}
+          hasMore
+          isLoadingMore={false}
+          isLoadingAll={false}
+        />
+      </SidebarProvider>
+    );
+    const asDrawn = ['chat:session-0', 'chat:session-1', 'chat:session-2'];
+    expect(order()).toEqual(asDrawn);
+    fireEvent.pointerEnter(screen.getByTestId('recent-chat-scroll'));
+
+    // Sort by Name: the rows stay where they are while the rest is read, and the foot says so.
+    rerender(reading(head));
+    expect(order()).toEqual(asDrawn);
+    expect(viewChanged()).toBeNull();
+    expect(screen.getByTestId('recent-chat-loading')).toHaveTextContent(sidebarCopy.chats.loading);
+
+    // The read lands: the complete name order, drawn once, as a view change.
+    const complete = [...head, { ...makeSession(3, currentTime), name: 'Aardvark' }];
+    rerender(read(complete));
+    expect(order()).toEqual([
+      'chat:session-3',
+      'chat:session-2',
+      'chat:session-1',
+      'chat:session-0',
+    ]);
+    expect(viewChanged()).toBe('true');
+    expect(screen.queryByTestId('recent-chat-loading')).toBeNull();
+  });
+
+  it('holds a first load from the rows it draws, not from the empty list before them', () => {
+    const view = DEFAULT_SIDEBAR_CHAT_VIEW;
+    const currentTime = Date.now();
+    const draw = (sessions: SessionSummary[]) => (
+      <SidebarProvider>
+        <RecentChats
+          {...props}
+          view={view}
+          sessions={sessions}
+          hasMore={sessions.length === 0}
+          isLoadingMore={sessions.length === 0}
+        />
+      </SidebarProvider>
+    );
+    // A reload with the pointer resting on the list: nothing has loaded yet.
+    const { rerender } = render(draw([]));
+    fireEvent.pointerEnter(screen.getByTestId('recent-chat-scroll'));
+
+    const firstPage = [makeSession(0, currentTime), makeSession(1, currentTime)];
+    rerender(draw(firstPage));
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    // A turn in the second chat raises it; under the pointer it waits. Held from the empty
+    // list, every row counted as "arriving below nothing" and moved at once.
+    const raised = { ...firstPage[1], updated_at: new Date(currentTime + 60_000).toISOString() };
+    rerender(draw([firstPage[0], raised]));
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    fireEvent.pointerLeave(screen.getByTestId('recent-chat-scroll'));
+    expect(order()).toEqual(['chat:session-1', 'chat:session-0']);
+  });
+});
+
+/**
+ * Vision V1-M9. Collapsing Chats (or closing the sidebar) hides a row without unmounting it, and
+ * no pointer event tells the hover card its anchor went: it stayed open and floated to the
+ * window's top-left over the titlebar controls until the pointer next moved.
+ */
+describe('the hover card goes with its row', () => {
+  it('closes when the Chats list collapses', async () => {
+    renderRecentChats();
+    focusWithTab(screen.getByTestId('recent-chat-session-0'));
+    await screen.findAllByTestId('recent-chat-summary-session-0');
+
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+
+    // Opening the list again does not bring back a card nobody asked for.
+    fireEvent.click(screen.getByTestId('recents-disclosure'));
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+  });
+
+  it('closes when the sidebar closes', async () => {
+    renderRecentChats();
+    focusWithTab(screen.getByTestId('recent-chat-session-0'));
+    await screen.findAllByTestId('recent-chat-summary-session-0');
+
+    fireEvent.keyDown(window, { key: 'b', metaKey: true });
+    expect(screen.queryAllByTestId('recent-chat-summary-session-0')).toEqual([]);
+  });
+});
+
+/**
+ * Vision V1-R3-6 (inbox WS-HISTORY-3). The scheduler names a run's chat `Scheduled job: <job id>`
+ * and the clock glyph already says "scheduled", so the row shows the job id, as History does
+ * (`historyRowTitle`). Display only: the rename starts from the stored name.
+ */
+describe('a scheduled run says its kind once, in the glyph', () => {
+  function renderScheduled() {
+    const at = Date.now();
+    renderRecentChats({
+      sessions: [
+        {
+          ...makeSession(0, at),
+          id: 'run',
+          name: 'Scheduled job: daily-meditation',
+          session_type: 'scheduled',
+        },
+        { ...makeSession(1, at), id: 'person', name: 'Scheduled job: notes', session_type: 'user' },
+      ],
+    });
+  }
+  const label = (id: string) =>
+    screen.getByTestId(`recent-chat-${id}`).querySelector('.br-nav-row-label')?.textContent;
+
+  it('shows the job id, and names it so, while a chat a person titled that way keeps its title', () => {
+    renderScheduled();
+    expect(label('run')).toBe('daily-meditation');
+    expect(screen.getByTestId('recent-chat-run')).toHaveAttribute(
+      'aria-label',
+      sidebarCopy.chats.openChat('daily-meditation')
+    );
+    expect(screen.getByTestId('recent-chat-more-run')).toHaveAttribute(
+      'aria-label',
+      sidebarCopy.chats.moreActions('daily-meditation')
+    );
+    expect(label('person')).toBe('Scheduled job: notes');
+  });
+
+  it('starts a rename from the stored name', async () => {
+    renderScheduled();
+    const row = screen.getByTestId('recent-chat-run');
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F2' });
+    const editor = await screen.findByRole('textbox', { name: 'Rename chat daily-meditation' });
+    expect(editor).toHaveValue('Scheduled job: daily-meditation');
+    fireEvent.keyDown(editor, { key: 'Escape' });
+  });
+
+  it('names the shown title in the delete sentence', async () => {
+    renderScheduled();
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-run'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
+    expect(
+      await screen.findByText(`Delete "daily-meditation"? This can't be undone.`)
+    ).toBeInTheDocument();
   });
 });

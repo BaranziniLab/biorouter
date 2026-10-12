@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '../../../api';
 import UserMessage from '../../UserMessage';
+import { transcriptCopy } from '../../transcript/copy';
 import { useChatCrewAccess } from './chatCrewAccess';
 import { ChatCrewAccessBar } from './ChatCrewAccessBar';
 import { accessCopy } from './copy';
@@ -71,7 +72,11 @@ function renderChat() {
   );
 }
 
-function edit(to: string, save: 'Edit message in place' | 'Diverge with the edited message') {
+/** The edit card's two saves: in place, and as a new chat (the diverge). */
+const SAVE_IN_PLACE = transcriptCopy.edit.save;
+const SAVE_AS_NEW = transcriptCopy.edit.saveAsNew;
+
+function edit(to: string, save: typeof SAVE_IN_PLACE | typeof SAVE_AS_NEW) {
   fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
   fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
     target: { value: to },
@@ -92,7 +97,7 @@ beforeEach(() => {
 });
 
 describe('the Crew hold covers edits and every other re-send (F1)', () => {
-  it.each(['Edit message in place', 'Diverge with the edited message'] as const)(
+  it.each([SAVE_IN_PLACE, SAVE_AS_NEW])(
     'refuses “%s” in a revoked chat before anything is cut, and keeps the words',
     async (save) => {
       grants = [grantRow({ session_id: 'chat-1', expired: true })];
@@ -120,7 +125,7 @@ describe('the Crew hold covers edits and every other re-send (F1)', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: accessCopy.revokeButton })).toBeInTheDocument()
     );
-    edit('summarise #data again', 'Edit message in place');
+    edit('summarise #data again', SAVE_IN_PLACE);
     expect(streamEdit).toHaveBeenCalledWith('message-1', 'summarise #data again', 'edit');
     expect(mocks.toastWarning).not.toHaveBeenCalled();
     expect(screen.queryByRole('textbox', { name: 'Edit message content' })).toBeNull();
@@ -140,7 +145,9 @@ describe('BaseChat routes every re-send through the Crew hold (F1)', () => {
 
   it('hands the transcript, the turn error, the composer and the workflow only held senders', () => {
     expect(source).toMatch(/onMessageUpdate=\{heldMessageUpdate\}/);
-    expect(source).toMatch(/<ChatTurnError error=\{turnError\} onRetry=\{heldRetryTurn\} \/>/);
+    // The row is the turn error itself when the transcript does not already show it
+    // (`turnErrorRow`, pinned in BaseChat.summaryRail.test.ts); its retry is the held one.
+    expect(source).toMatch(/<ChatTurnError error=\{turnErrorRow\} onRetry=\{heldRetryTurn\} \/>/);
     expect(source).toMatch(/onSteer=\{heldSteer\}/);
     expect(source).toMatch(/append=\{\(text: string\) => heldSubmit\(text\)\}/);
     expect(source).toMatch(/submitAndReturnToBottom\(\{ sessionId, submit: heldSubmit \}/);

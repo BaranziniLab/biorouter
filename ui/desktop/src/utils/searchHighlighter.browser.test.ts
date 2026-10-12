@@ -27,7 +27,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /** Launch whichever Chromium build this machine downloaded (full or headless shell). */
 const launchChromium = async (): Promise<Browser | null> => {
-  for (const options of [{}, { channel: 'chromium' }] as const) {
+  for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
     try {
       return await chromium.launch(options);
     } catch {
@@ -83,6 +83,13 @@ const expectInside = (mark: Box, box: Box) => {
 interface PageHighlighter {
   highlight(term: string): HTMLElement[];
   setCurrentMatch(index: number, shouldScroll?: boolean): void;
+  /** Private: read to pin how long the highlighter ignores the scrolls it caused. */
+  isScrollingProgrammatically: boolean;
+}
+
+/** `prefers-reduced-motion` for a page: `no-preference` is what a headless Chromium has by default. */
+interface PageOptions {
+  reducedMotion?: 'reduce' | 'no-preference';
 }
 
 describe('SearchHighlighter in a real layout engine', () => {
@@ -107,8 +114,15 @@ describe('SearchHighlighter in a real layout engine', () => {
     await browser?.close();
   }, 120_000);
 
-  const withPage = async (body: string, run: (page: Page) => Promise<void>) => {
-    const page = await browser!.newPage({ viewport: { width: 800, height: 600 } });
+  const withPage = async (
+    body: string,
+    run: (page: Page) => Promise<void>,
+    options: PageOptions = {}
+  ) => {
+    const page = await browser!.newPage({
+      viewport: { width: 800, height: 600 },
+      reducedMotion: options.reducedMotion,
+    });
     try {
       await page.setContent(
         `<!doctype html><html><head><style>${PAGE_STYLE}</style></head><body>` +
@@ -255,6 +269,11 @@ describe('SearchHighlighter in a real layout engine', () => {
 
   /// The transcript's own scroll container is not a clip. A match below the
   /// fold is one scroll away, counts, and navigation brings it into view.
+  ///
+  /// ⚠ Run under reduced motion on purpose. Without it the scroll is smooth
+  /// (spec 3.16), so `navigate` reads `scrollTop` the moment the scroll has
+  /// started and finds the page where it was. The smooth case is the next test,
+  /// which waits for `scrollend`.
   it('keeps counting a match the transcript has scrolled out of view', async (ctx) => {
     if (!browser) return ctx.skip();
     await withPage(
@@ -271,7 +290,105 @@ describe('SearchHighlighter in a real layout engine', () => {
         expect(after.current!.bottom).toBeLessThanOrEqual(after.host.bottom);
         // Scrolling the transcript neither drops nor adds a match.
         expect(after.marks).toHaveLength(2);
-      }
+      },
+      { reducedMotion: 'reduce' }
+    );
+  });
+
+  /// Spec 3.16: the current match scrolls into view smoothly. It is still
+  /// where it was the moment navigation returns, arrives over more than one
+  /// scroll event, and the highlighter stops ignoring scrolls at `scrollend`
+  /// rather than on a guess at how long the scroll takes.
+  it('scrolls to the match smoothly, and ends its hold on scrollend', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div>okapi at the top</div><div style="height:900px"></div><div>okapi far below</div>`,
+      async (page) => {
+        await search(page, 'okapi');
+        const run = await page.evaluate(
+          () =>
+            new Promise<{
+              timedOut: boolean;
+              startScrollTop: number;
+              heldAtStart: boolean;
+              scrollEvents: number;
+              heldAtEnd: boolean;
+              endScrollTop: number;
+              current: { top: number; bottom: number } | null;
+              host: { top: number; bottom: number };
+              marks: number;
+            }>((resolve) => {
+              const w = window as unknown as { __highlighter: PageHighlighter };
+              const host = document.getElementById('host')!;
+              const hostBox = host.getBoundingClientRect();
+              let scrollEvents = 0;
+              host.addEventListener('scroll', () => (scrollEvents += 1));
+
+              w.__highlighter.setCurrentMatch(1, true);
+              const startScrollTop = host.scrollTop;
+              const heldAtStart = w.__highlighter.isScrollingProgrammatically;
+
+              const net = setTimeout(() => finish(true), 5000);
+              const finish = (timedOut: boolean) => {
+                clearTimeout(net);
+                const current = document.querySelector('.search-highlight.current');
+                const box = current?.getBoundingClientRect();
+                resolve({
+                  timedOut,
+                  startScrollTop,
+                  heldAtStart,
+                  scrollEvents,
+                  // The highlighter's own scrollend listener was added first, so it has run.
+                  heldAtEnd: w.__highlighter.isScrollingProgrammatically,
+                  endScrollTop: host.scrollTop,
+                  current: box ? { top: box.top, bottom: box.bottom } : null,
+                  host: { top: hostBox.top, bottom: hostBox.bottom },
+                  marks: document.querySelectorAll('.search-highlight').length,
+                });
+              };
+              host.addEventListener('scrollend', () => finish(false), { once: true });
+            })
+        );
+
+        expect(run.timedOut).toBe(false);
+        expect(run.startScrollTop).toBe(0);
+        expect(run.heldAtStart).toBe(true);
+        expect(run.scrollEvents).toBeGreaterThan(1);
+        expect(run.heldAtEnd).toBe(false);
+        expect(run.endScrollTop).toBeGreaterThan(0);
+        expect(run.current).not.toBeNull();
+        expect(run.current!.top).toBeGreaterThanOrEqual(run.host.top);
+        expect(run.current!.bottom).toBeLessThanOrEqual(run.host.bottom);
+        expect(run.marks).toBe(2);
+      },
+      { reducedMotion: 'no-preference' }
+    );
+  });
+
+  /// A smooth scroll that has nowhere to go sends no scroll event and no
+  /// scrollend. The first match is already at the top of a page that cannot
+  /// scroll further up, so the highlighter must not sit deaf for the net.
+  it('does not wait out a smooth scroll that has nowhere to go', async (ctx) => {
+    if (!browser) return ctx.skip();
+    await withPage(
+      `<div>okapi at the top</div><div style="height:900px"></div><div>okapi far below</div>`,
+      async (page) => {
+        await search(page, 'okapi');
+        const held = await page.evaluate(async () => {
+          const w = window as unknown as { __highlighter: PageHighlighter };
+          const host = document.getElementById('host')!;
+          w.__highlighter.setCurrentMatch(0, true);
+          const heldAtStart = w.__highlighter.isScrollingProgrammatically;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          return {
+            heldAtStart,
+            heldLater: w.__highlighter.isScrollingProgrammatically,
+            scrollTop: host.scrollTop,
+          };
+        });
+        expect(held).toEqual({ heldAtStart: true, heldLater: false, scrollTop: 0 });
+      },
+      { reducedMotion: 'no-preference' }
     );
   });
 

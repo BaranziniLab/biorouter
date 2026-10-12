@@ -3,14 +3,14 @@
     "content": [
       {
         "type": "text",
-        "text": "successfully downloaded text file (SHA: de9bdde7f260549bf3a083651842f30ab29cf4e9)"
+        "text": "successfully downloaded text file (SHA: 532fcab5b284ca2ca211ed9ce171c11d3d8ec097)"
       },
       {
         "type": "resource",
         "resource": {
-          "uri": "repo://block/biorouter/sha/ab62b863c1666232a67048b6c4e10007a2a5b83c/contents/README.md",
+          "uri": "repo://BaranziniLab/biorouter/sha/30e1f06221dfeb2322af99489722a7860783a2f3/contents/rust-toolchain.toml",
           "mimeType": "text/plain; charset=utf-8",
-          "text": "<div align=\"center\">\n\n# biorouter\n\n_a local, extensible, open source AI agent that automates engineering tasks_\n\n<p align=\"center\">\n  <a href=\"https://opensource.org/licenses/Apache-2.0\">\n    <img src=\"https://img.shields.io/badge/License-Apache_2.0-blue.svg\">\n  </a>\n  <a href=\"https://discord.gg/7GaTvbDwga\">\n    <img src=\"https://img.shields.io/discord/1287729918100246654?logo=discord&logoColor=white&label=Join+Us&color=blueviolet\" alt=\"Discord\">\n  </a>\n  <a href=\"https://github.com/block/biorouter/actions/workflows/ci.yml\">\n     <img src=\"https://img.shields.io/github/actions/workflow/status/block/biorouter/ci.yml?branch=main\" alt=\"CI\">\n  </a>\n</p>\n</div>\n\nbiorouter is your on-machine AI agent, capable of automating complex development tasks from start to finish. More than just code suggestions, biorouter can build entire projects from scratch, write and execute code, debug failures, orchestrate workflows, and interact with external APIs - _autonomously_.\n\nWhether you're prototyping an idea, refining existing code, or managing intricate engineering pipelines, biorouter adapts to your workflow and executes tasks with precision.\n\nDesigned for maximum flexibility, biorouter works with any LLM and supports multi-model configuration to optimize performance and cost, seamlessly integrates with MCP servers, and is available as both a desktop app as well as CLI - making it the ultimate AI assistant for developers who want to move faster and focus on innovation.\n\n[![Watch the video](https://github.com/user-attachments/assets/ddc71240-3928-41b5-8210-626dfb28af7a)](https://youtu.be/D-DpDunrbpo)\n\n# Quick Links\n- [Quickstart](https://block.github.io/biorouter/docs/quickstart)\n- [Installation](https://block.github.io/biorouter/docs/getting-started/installation)\n- [Tutorials](https://block.github.io/biorouter/docs/category/tutorials)\n- [Documentation](https://block.github.io/biorouter/docs/category/getting-started)\n\n\n# a little biorouter humor 🦢\n\n> Why did the developer choose biorouter as their AI agent?\n> \n> Because it always helps them \"migrate\" their code to production! 🚀\n\n# biorouter around with us\n- [Discord](https://discord.gg/block-opensource)\n- [YouTube](https://www.youtube.com/@biorouter-oss)\n- [LinkedIn](https://www.linkedin.com/company/biorouter-oss)\n- [Twitter/X](https://x.com/biorouter_oss)\n- [Bluesky](https://bsky.app/profile/opensource.block.xyz)\n- [Nostr](https://njump.me/opensource@block.xyz)\n"
+          "text": "[toolchain]\nchannel = \"1.92\"\nprofile = \"default\"\n"
         }
       }
     ]

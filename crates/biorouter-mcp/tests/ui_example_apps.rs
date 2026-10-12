@@ -7,6 +7,9 @@
 //! the agent actually emits `ui` command frames) is
 //! `ui/desktop/scripts/appcheck/check-ui-app.mjs`.
 
+#[path = "support/path_sandbox.rs"]
+mod path_sandbox;
+
 use std::path::{Path, PathBuf};
 
 use biorouter_mcp::agent_drafter::bundle::{self, LintLevel};

@@ -6,6 +6,7 @@ import { ThemeProvider } from '../contexts/ThemeContext';
 import type { EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { toastError } from '../toasts';
+import { OPEN_IN_BROWSER_COPY } from '../utils/openInBrowser';
 
 vi.mock('../toasts', () => ({ toastError: vi.fn() }));
 
@@ -183,7 +184,7 @@ describe('MCPUIResourceRenderer', () => {
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
-        title: 'Could not open the app',
+        title: OPEN_IN_BROWSER_COPY.failedTitle,
         msg: 'This app no longer exists.',
       })
     );
@@ -216,5 +217,24 @@ describe('MCPUIResourceRenderer', () => {
         preferredHeight: 640,
       })
     );
+  });
+
+  it.each([
+    ['ui://chart/visualization', 'figure', 'Figure'],
+    ['ui://dashboard/report', 'report', 'Report'],
+    ['ui://agent-drafter/researcher-impact-dashboard', 'app', 'App'],
+  ])('names %s by its kind (%s), never by a MIME type', (uri, kind, label) => {
+    renderSubject(uri);
+    const card = screen.getByRole('button', { name: /^Open / });
+    expect(card).toHaveAttribute('data-artifact-kind', kind);
+    expect(card).toHaveTextContent(label);
+    expect(card).not.toHaveTextContent('text/html');
+  });
+
+  it('draws the card on the page: a hairline, no shadow, the full column', () => {
+    renderSubject();
+    const card = screen.getByRole('button', { name: /^Open / });
+    expect(card).toHaveClass('br-artifact-card');
+    expect(card.className).not.toMatch(/shadow|max-w-xl/);
   });
 });

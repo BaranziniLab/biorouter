@@ -1,6 +1,9 @@
 import { getSession, type Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import type { AppManifest } from './appManagement';
+import { appsCopy } from './copy';
+
+const copy = appsCopy.buildChat;
 
 /**
  * Where "Open the chat where this app was built" leads, decided by asking the
@@ -262,20 +265,18 @@ export function buildChatEnabled(state: BuildChatState): boolean {
 export function buildChatLabel(state: BuildChatState, appTitle: string): string {
   switch (state.kind) {
     case 'available':
-      return state.via === 'subagent'
-        ? `Open the subagent run that built ${appTitle}`
-        : `Open the chat where ${appTitle} was built`;
+      return state.via === 'subagent' ? copy.openSubagentLabel(appTitle) : copy.openLabel(appTitle);
     case 'checking':
     case 'unknown':
-      return `Open the chat where ${appTitle} was built`;
+      return copy.openLabel(appTitle);
     case 'deleted':
-      return `The chat where ${appTitle} was built was deleted`;
+      return copy.deletedLabel(appTitle);
     case 'replaced':
-      return `The chat where ${appTitle} was built no longer exists`;
+      return copy.replacedLabel(appTitle);
     case 'unreachable':
-      return `The chat where ${appTitle} was built can't be opened here`;
+      return copy.unreachableLabel(appTitle);
     case 'none':
-      return `No chat was recorded for ${appTitle}`;
+      return copy.noneLabel(appTitle);
   }
 }
 
@@ -283,13 +284,13 @@ export function buildChatLabel(state: BuildChatState, appTitle: string): string 
 export function buildChatNote(state: BuildChatState): string | undefined {
   switch (state.kind) {
     case 'deleted':
-      return 'Build chat deleted';
+      return copy.deletedNote;
     case 'replaced':
-      return 'Build chat no longer exists';
+      return copy.replacedNote;
     case 'unreachable':
-      return "Build chat can't be opened here";
+      return copy.unreachableNote;
     case 'none':
-      return 'No build chat recorded';
+      return copy.noneNote;
     default:
       return undefined;
   }
@@ -299,16 +300,16 @@ export function buildChatNote(state: BuildChatState): string | undefined {
 export function buildChatRefusal(state: BuildChatState): string | undefined {
   switch (state.kind) {
     case 'deleted':
-      return 'The chat where this app was built has been deleted.';
+      return copy.deletedRefusal;
     case 'replaced':
-      return 'The chat where this app was built no longer exists.';
+      return copy.replacedRefusal;
     case 'unreachable':
-      return "The chat where this app was built can't be opened here.";
+      return copy.unreachableRefusal;
     case 'none':
-      return 'No chat was recorded for this app.';
+      return copy.noneRefusal;
     case 'checking':
     case 'unknown':
-      return "Couldn't reach Biorouter to check that chat. Try again.";
+      return copy.unansweredRefusal;
     case 'available':
       return undefined;
   }

@@ -14,7 +14,7 @@ import { artifactRefreshTarget } from '../utils/artifactRefresh';
 import { imageExtensionAlternation } from '../utils/imageFormats';
 import { useArtifactPanelAccess } from './artifacts/useArtifactPanelAccess';
 import { mostCompleteBilledTokens } from '../utils/usageAccounting';
-import { Message } from '../api';
+import { Message, type Session } from '../api';
 import type { UserAttachment } from '../types/message';
 import {
   getProviderMetadata,
@@ -45,16 +45,29 @@ import { useModelAndProvider, type ChangeModelOptions } from './ModelAndProvider
 import { PendingChatModelContext, useHeldChatModel } from './settings/models/pendingChatModel';
 import type Model from './settings/models/modelInterface';
 import { scanWorkflow } from '../workflow';
-import { useCostTracking } from '../hooks/useCostTracking';
+import { useCostTracking, type ModelCostRow } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
 import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { AlignLeft, Terminal } from './icons/app-icons';
-import { ChatSummary } from './ChatSummary';
+import { AlertCircle, Terminal } from './icons/app-icons';
+import { ChatSummaryRail } from './summary/ChatSummaryRail';
+import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
+import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
+import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
+import { useLoadingChat } from './summary/useLoadingChat';
+import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
+import { FirstSendTranscript } from './summary/FirstSendTranscript';
+import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
+import { useLateRowHold } from './summary/useLateRowHold';
+import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
+import { DUR, EASE_OUT, isWindowResizing, prefersReducedMotion } from '../styles/motion';
+import { Note } from './ui/note';
+import { InfoTip } from './ui/info-tip';
+import { EmptyState } from './ui/empty-state';
+import type { ArtifactPanelPresentedChange } from './artifacts/useArtifactPanel';
 import { createArtifactRenderRepairMessage, getTextContent } from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
@@ -76,14 +89,14 @@ import { runInTerminal } from '../utils/terminalRunChannel';
 import { SessionNamePill } from './SessionNamePill';
 import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
-import { announceSessionName, renameSession } from '../utils/sessionNameSync';
+import { renameSessionOptimistically } from '../utils/sessionNameSync';
 import { toastError, toastWarning } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { startChatFailureNotice } from '../utils/startChatFailure';
 import { restoreComposerText } from '../utils/composerRestore';
 import { composerDraftKeyForTab, existingChatComposerDraftKey } from '../utils/composerDrafts';
 import { Greeting } from './common/Greeting';
-import { navigateWithViewTransition } from '../utils/navigationUtils';
+import { navigateToRoute } from '../utils/navigationUtils';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import { useArtifactPanel } from './artifacts/useArtifactPanel';
@@ -114,7 +127,10 @@ import type {
   RawResource,
   ResourceContents,
 } from '../api';
-import { SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH } from './Layout/yieldLadder';
+import {
+  CHAT_COLUMN_CHROME,
+  SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
+} from './Layout/yieldLadder';
 import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
 import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
@@ -128,8 +144,6 @@ import { useChatGroups } from '../contexts/ChatGroupsContext';
 // from a finished conversation — reopening an old figure, editing an app's code,
 // deleting it — and must not silently resume the chat.
 const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
-const HEADER_ACTION_BUTTON_CLASS =
-  'no-drag flex items-center justify-center text-text-muted transition-colors hover:bg-background-medium hover:text-text-default';
 // The image half of this alternation is generated from `utils/imageFormats`, so
 // adding a format cannot leave prose discovery behind. The non-image half stays
 // a literal: it is a deliberately closed list, not a mirror of another set.
@@ -371,11 +385,10 @@ export function requestScrollToBottom(sessionId: string): void {
 /**
  * The user's own submit ALWAYS returns them to the bottom.
  *
- * `handleRenderingComplete` force-scrolls only on the first render and
- * otherwise defers to `isFollowing`, which scrolling up clears (see
- * ui/scroll-area.tsx). So a user reading back through history who then typed a
- * message was left stranded mid-transcript, with no evidence of where their
- * prompt had landed.
+ * `handleRenderingComplete` (`useTranscriptSettle`) scrolls only while
+ * `isFollowing`, which scrolling up clears (see ui/scroll-area.tsx). So a user
+ * reading back through history who then typed a message was left stranded
+ * mid-transcript, with no evidence of where their prompt had landed.
  *
  * This is scoped to the SUBMIT, not to incoming content, which is the whole
  * point: a user who scrolls up mid-stream must still NOT be yanked down by the
@@ -1066,6 +1079,115 @@ export function formatCompactNumber(value: number) {
 // (BaseChat.artifacts.test.ts precedent).
 export { selectBilledTokens };
 
+/**
+ * The summary's Tokens value, or `null` (an empty value) while it is not known:
+ * the transcript is loading, or this chat's usage ledger has not answered. The
+ * counters used to stand in until the ledger answered, and a ledger row with no
+ * certified total then turned "2.2M" into "N/A" (vision V2-R5-5).
+ */
+export function summaryTokensValue({
+  loading,
+  ledgerSettled,
+  billed,
+}: {
+  loading: boolean;
+  ledgerSettled: boolean;
+  billed: number | null;
+}): string | null {
+  if (loading || !ledgerSettled) return null;
+  return billed === null ? 'N/A' : formatCompactNumber(billed);
+}
+
+/**
+ * The summary's four figures. A figure the chat does not know yet is an empty
+ * value, never a stand-in that is then replaced: nothing while the transcript
+ * loads, and no Tokens until this chat's ledger has answered (V2-R5-5,
+ * V2-R5-6).
+ *
+ * A chat created here for its first message (`newChat`, `useFirstSend`) is new
+ * and empty, so its counts are its zeros from the send on, through its load.
+ * Its Tokens wait for its own ledger, which needs its session: before that the
+ * counters of no chat read "0", and the ledger then said "N/A" (V2-R8-2).
+ */
+export function summaryFigures({
+  loading,
+  newChat,
+  hasSession,
+  ledgerSettled,
+  billed,
+  toolCalls,
+  artifacts,
+  codeDelta,
+}: {
+  loading: boolean;
+  newChat: boolean;
+  hasSession: boolean;
+  ledgerSettled: boolean;
+  billed: number | null;
+  toolCalls: number;
+  artifacts: number;
+  codeDelta: { added: number; removed: number };
+}): {
+  toolCalls: string | null;
+  billedTokens: string | null;
+  artifacts: string | null;
+  codeDelta: { added: number; removed: number } | null;
+} {
+  const countsPending = loading && !newChat;
+  return {
+    toolCalls: countsPending ? null : toolCalls.toLocaleString(),
+    billedTokens: summaryTokensValue({
+      loading: loading || (newChat && !hasSession),
+      ledgerSettled,
+      billed,
+    }),
+    artifacts: countsPending ? null : artifacts.toLocaleString(),
+    codeDelta: countsPending ? null : codeDelta,
+  };
+}
+
+/** The legacy per-model cost map `ChatInput` still takes beside the rows. */
+type FooterSessionCosts = ReturnType<typeof useCostTracking>['sessionCosts'];
+
+/**
+ * What the composer's footer may price. `CostTracker` prices the ledger's rows
+ * or, when there are none, the accumulated counters at the current model's
+ * rate, so handed the counters before this chat's ledger answered it showed
+ * "$11.75" and then withdrew it (vision V2-R5-5). Until the ledger is in, it
+ * gets nothing to price, and draws nothing.
+ */
+export function footerCostInputs({
+  ready,
+  tokenState,
+  session,
+  sessionCosts,
+  modelRows,
+}: {
+  ready: boolean;
+  tokenState?: {
+    accumulatedInputTokens?: number | null;
+    accumulatedOutputTokens?: number | null;
+  } | null;
+  session?: Pick<Session, 'accumulated_input_tokens' | 'accumulated_output_tokens'> | null;
+  sessionCosts: FooterSessionCosts;
+  modelRows: ModelCostRow[];
+}): {
+  accumulatedInputTokens?: number;
+  accumulatedOutputTokens?: number;
+  sessionCosts?: FooterSessionCosts;
+  modelCostRows?: ModelCostRow[];
+} {
+  if (!ready) return {};
+  return {
+    accumulatedInputTokens:
+      tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined,
+    accumulatedOutputTokens:
+      tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined,
+    sessionCosts,
+    modelCostRows: modelRows,
+  };
+}
+
 function metadataRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
@@ -1206,6 +1328,9 @@ function collectCodeDelta(messages: Message[]) {
   return { added, removed };
 }
 
+/** Module-level, so the message list's memoised element keeps one identity. */
+const isUserRow = (m: Message) => m.role === 'user';
+
 interface BaseChatProps {
   setChat: (chat: ChatType) => void;
   onMessageSubmit?: (message: string) => void;
@@ -1227,10 +1352,10 @@ interface BaseChatProps {
    * id, so that landing unmounts the placeholder and mounts a fresh
    * `<Greeting>`, which draws a NEW random sentence by design.
    *
-   * The greeting unrolls over about a second, and the awaited `createSession`
-   * on those paths takes about as long. So the placeholder had time to finish
-   * its unroll before being thrown away, and the user saw a heading arrive,
-   * vanish, and a different one arrive after it. That is the same complaint
+   * The awaited `createSession` on those paths takes about a second, so the
+   * placeholder's greeting was on screen long enough to be read before being
+   * thrown away, and the user saw a heading arrive, vanish, and a different one
+   * arrive after it. That is the same complaint
    * the first-frame fix in `use-text-animator` addressed, arriving by a second
    * route: one is a flash INSIDE a mount, this is a whole extra mount.
    *
@@ -1248,8 +1373,6 @@ interface BaseChatProps {
    * cannot be done by the owner on render.
    */
   onInitialMessageConsumed?: () => void;
-  /** Render messages + input as a single coherent surface (default true). */
-  coherent?: boolean;
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
@@ -1323,7 +1446,6 @@ function BaseChatContent({
   onInitialMessageConsumed,
   suppressEmptyState,
   suppressGreeting = false,
-  coherent = true,
   onRenameSession,
   onSessionUpdate,
   allowWindowResize = true,
@@ -1331,7 +1453,11 @@ function BaseChatContent({
   artifactPanelEnabled = true,
   renderSessionTitle,
   terminalKey,
-}: BaseChatProps) {
+  onRetryLoad,
+}: BaseChatProps & {
+  /** Mount the chat again so the stream reloads a session that failed to load. */
+  onRetryLoad: () => void;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -1351,7 +1477,6 @@ function BaseChatContent({
     string[] | null | undefined
   >(undefined);
 
-  const disableAnimation = location.state?.disableAnimation || false;
   const [hasStartedUsingWorkflow, setHasStartedUsingWorkflow] = React.useState(false);
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
@@ -1469,17 +1594,40 @@ function BaseChatContent({
   // views mount the same panel and must behave identically. What stays here is
   // the part that needs a LIVE conversation: auto-open on a fresh artifact, and
   // feeding a render failure back to the agent.
+  // The conversation glide needs the panel's "before" rects, so the panel tells
+  // it synchronously before an open or a close changes the grid. The handler is
+  // defined below, beside the glide; the panel reads this ref at call time.
+  const presentedChangeRef = useRef<((change: ArtifactPanelPresentedChange) => void) | null>(null);
   const artifactPanel = useArtifactPanel({
     isMobile,
     allowWindowResize,
     enabled: artifactPanelEnabled,
+    onPresentedChange: (change) => presentedChangeRef.current?.(change),
   });
   const {
     splitPaneRef,
     artifact: presentedArtifact,
     openArtifact: handleOpenArtifact,
     reset: resetArtifactPanel,
+    previewMode,
+    sideWidth: previewSideWidth,
   } = artifactPanel;
+  const previewMounted = Boolean(presentedArtifact && artifactPanelEnabled);
+
+  // THE CONVERSATION GLIDE (spec 3.5): when the summary rail or a side preview
+  // takes its column, the grid snaps and the transcript cell and composer bar
+  // FLIP from where they were (hooks/useColumnGlide.ts).
+  const columnGlide = useColumnGlide(splitPaneRef);
+  const scrollAnchorRestoreRef = useRef<(() => void) | null>(null);
+  presentedChangeRef.current = (change) => {
+    // A stacked sheet moves the conversation down, not sideways: nothing to glide.
+    if (change.layout !== 'side') return;
+    columnGlide.capture({ windowGrowing: change.windowGrowing });
+    // Keep the card the person clicked where it was while the column narrows.
+    scrollAnchorRestoreRef.current = change.presented
+      ? captureScrollAnchor(scrollRef.current?.viewportRef.current, document.activeElement)
+      : null;
+  };
   const [liveBrowserShare, setLiveBrowserShare] = useState<LiveBrowserShare | null>(null);
   const [filePreviewRevision, setFilePreviewRevision] = useState<string | null>(null);
   // Publishes this panel to the agent. Chat-only: reading a saved transcript's
@@ -1517,25 +1665,28 @@ function BaseChatContent({
     return () => window.removeEventListener('resize', updateSidebarCompact);
   }, []);
 
-  const contentClassName = cn(
-    // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
-    // scrollbar, but as a right-only inset it made the scroll viewport 4px
-    // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
-    // true centre. Padding the gutter symmetrically costs 4px of width and buys
-    // an actually centred column. Measured in Electron: 198/202 -> 200/200.
-    //
-    // ⚠ NOTHING VERTICAL BELONGS HERE, and `pb-10` is why the rule is written
-    // down. `className` lands on the ScrollArea *Root*, and the Viewport inside
-    // it is `h-full` — so a bottom padding here does not put space after the
-    // last message, it makes the SCROLL VIEWPORT 40px shorter. Measured: root
-    // 646 / viewport 606. That 40px band is empty at every scroll position,
-    // cannot be scrolled into, and is invisible to anyone reading the composer's
-    // own layout. It was the largest of the three separate boxes that were each
-    // declaring part of the distance to the composer (see the composer bar's
-    // `pt-4`, which is now the only one).
-    'px-1',
-    (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
-  );
+  // `px-1`, not `pr-1`: this padding exists to keep the transcript off the
+  // scrollbar, but as a right-only inset it made the scroll viewport 4px
+  // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
+  // true centre. Padding the gutter symmetrically costs 4px of width and buys
+  // an actually centred column. Measured in Electron: 198/202 -> 200/200.
+  //
+  // ⚠ NOTHING VERTICAL BELONGS HERE, and `pb-10` is why the rule is written
+  // down. `className` lands on the ScrollArea *Root*, and the Viewport inside
+  // it is `h-full` — so a bottom padding here does not put space after the
+  // last message, it makes the SCROLL VIEWPORT 40px shorter. Measured: root
+  // 646 / viewport 606. That 40px band is empty at every scroll position,
+  // cannot be scrolled into, and is invisible to anyone reading the composer's
+  // own layout. It was the largest of the three separate boxes that were each
+  // declaring part of the distance to the composer (see the composer bar's
+  // `pt-7`, which is now the only one).
+  //
+  // And no top padding for the titlebar either (V2-13). The 44px header band
+  // above this root always renders, and it is what clears the titlebar
+  // controls (they sit inside it, `top-2`). A `pt-11` here for a compact,
+  // collapsed or phone-width sidebar was a second 44px under the band: a dead
+  // strip that put the transcript at y=88 beside a rail card at y=56.
+  const contentClassName = 'px-1';
 
   // Use shared file drop
   const { droppedFiles, setDroppedFiles, handleDrop, handleDragOver } = useFileDrop();
@@ -1593,6 +1744,16 @@ function BaseChatContent({
     onStreamFinish,
   });
 
+  // A new chat's first message, from the send until the chat's store holds it:
+  // the transcript shows it at once and the rail knows the chat is new (vision
+  // V2-R8-2). See summary/useFirstSend.ts.
+  const firstSend = useFirstSend({
+    sessionId,
+    messageCount: messages.length,
+    failed: !!turnError || !!sessionLoadError,
+  });
+  const endFirstSend = firstSend.end;
+
   // Crew access (ui-redesign-spec, "Revoke"): a chat whose grant was revoked or ran out is refused
   // by the daemon on every turn. Say so above the composer and hold it, instead of letting the next
   // message fail with a model error. Display only — the daemon decides either way. A turn the
@@ -1628,7 +1789,6 @@ function BaseChatContent({
     },
     [heldSubmit]
   );
-  const sessionTodos = useSessionTodos(sessionId, session, messages, reviewOpen);
 
   // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
   // the wire) for an ordinary session.
@@ -1793,9 +1953,12 @@ function BaseChatContent({
         }),
       onConsumed: onInitialMessageConsumed,
       // The composer never held this text, so a refusal has nothing to repair
-      // from. Give the message back through the composer instead of dropping it.
-      onRefused: (message, attachments) =>
-        returnInitialMessageToComposer({ sessionId, message, attachments }),
+      // from. Give the message back through the composer instead of dropping it,
+      // and out of the transcript, where the first send had put it (V2-R8-2).
+      onRefused: (message, attachments) => {
+        endFirstSend();
+        returnInitialMessageToComposer({ sessionId, message, attachments });
+      },
     });
   }, [
     session,
@@ -1807,6 +1970,7 @@ function BaseChatContent({
     navigate,
     location,
     onInitialMessageConsumed,
+    endFirstSend,
   ]);
 
   // Resolve session-scoped vision capability whenever the session's bound
@@ -1879,6 +2043,8 @@ function BaseChatContent({
       // handed back.
       if (!(await heldModelMayBeSent(chosenModel, getProviders))) return false;
       setIsCreatingSession(true);
+      // The message is in the transcript from this commit on (V2-R8-2).
+      firstSend.begin(textValue);
       try {
         // #39 — honour the directory picked in the composer before the
         // session existed; default only when none was chosen.
@@ -1888,6 +2054,7 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        firstSend.created(newSession.id);
         // The chat's own model, through the same per-chat bind a started chat's
         // switch uses (user proof included), BEFORE the first message goes
         // anywhere. A refused or failed bind sends nothing: the message would
@@ -1895,10 +2062,11 @@ function BaseChatContent({
         // already said why; `false` hands the text back.
         if (!(await bindHeldChatModel(newSession.id, chosenModel, changeModel))) {
           setIsCreatingSession(false);
+          firstSend.end();
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
-        navigateWithViewTransition(
+        navigateToRoute(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
           {
@@ -1916,6 +2084,7 @@ function BaseChatContent({
         return true;
       } catch (err) {
         setIsCreatingSession(false);
+        firstSend.end();
         // `false`: the composer hands the message back to this tab's draft.
         return handleCreateSessionError(err);
       }
@@ -1929,7 +2098,44 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
-  const { sessionCosts, modelRows } = useCostTracking({ session });
+  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({ session });
+  // The footer prices this chat's ledger, or its counters when the ledger has no
+  // rows; never the counters while the ledger is still to answer, or the cost
+  // it shows is withdrawn a moment later (vision V2-R5-5).
+  const footerCost = footerCostInputs({
+    ready: !!session && ledgerSettled,
+    tokenState,
+    session,
+    sessionCosts,
+    modelRows,
+  });
+
+  // While a chat's transcript loads there is no `session`, and the chat looked
+  // new: no rail, the empty composer's placeholder, the new-chat model on the
+  // chip and an empty context ring (vision V2-R5-6). Its row, from the listing
+  // or a read of the row alone, says what the load will say. Loading counts
+  // from the commit before the store starts the load, and until the row has
+  // answered the column paints nothing rather than a guess (`pending`; round 7,
+  // the first open after a reload). See summary/useLoadingChat.ts.
+  const loadingChat = useLoadingChat({
+    sessionId,
+    session,
+    hasLoadError: !!sessionLoadError,
+    chatState,
+    messageCount: messages.length,
+    creatingChat: isCreatingSession,
+    startingWithCargo: !!initialMessage || (initialAttachments?.length ?? 0) > 0,
+  });
+  const chatLoading = loadingChat.loading;
+  const loadingChatRow = loadingChat.row;
+  const loadingChatKnownMessages = loadingChat.knownMessages;
+  const chatPending = loadingChat.look === 'pending';
+  // What the column holds (the composer and the subagent line) is painted only
+  // once the chat's look is known. Opacity alone: the composer keeps the focus
+  // it takes on mount and stays reachable by keyboard and screen reader.
+  const chatPendingStyle: React.CSSProperties | undefined = chatPending
+    ? { opacity: 0, pointerEvents: 'none' }
+    : undefined;
 
   const workflow = session?.workflow;
 
@@ -1967,26 +2173,6 @@ function BaseChatContent({
       setView('chat');
     }
   };
-
-  // Track if this is the initial render for session resuming
-  const initialRenderRef = useRef(true);
-
-  // Auto-scroll when messages are loaded (for session resuming)
-  const handleRenderingComplete = React.useCallback(() => {
-    // Only force scroll on the very first render
-    if (initialRenderRef.current && messages.length > 0) {
-      initialRenderRef.current = false;
-      if (scrollRef.current?.scrollToBottom) {
-        // Land instantly on resume — a smooth scroll across a full transcript is
-        // a multi-second animation that makes the session feel slow to open.
-        scrollRef.current.scrollToBottom('auto');
-      }
-    } else if (scrollRef.current?.isFollowing) {
-      if (scrollRef.current?.scrollToBottom) {
-        scrollRef.current.scrollToBottom();
-      }
-    }
-  }, [messages.length]);
 
   // Gated on agentReady: tools do not exist until the extensions do, and this
   // hook has no other reason to refetch.
@@ -2166,34 +2352,14 @@ function BaseChatContent({
       return;
     }
     if (!sessionId) return;
-    // Optimistic announce so the pill, the chat-context display, history, and
-    // any other open window snap to the new name immediately. `renameSession`
-    // will re-announce on API success (idempotent — no-op if name matches).
-    const previous = session;
-    announceSessionName({
+    // One rename path for the title pill, the sidebar row and History:
+    // optimistic announce, save with the user proof, roll back with the
+    // daemon's sentence on a refusal (utils/sessionNameSync.ts).
+    await renameSessionOptimistically(
       sessionId,
-      name: newName,
-      userSetName: true,
-      origin: 'user',
-    });
-    try {
-      await renameSession(sessionId, newName, 'user');
-    } catch (err) {
-      // Roll back to whatever the session held before the click. Using
-      // `sync` as the origin so listeners treat it as authoritative.
-      if (previous?.name) {
-        announceSessionName({
-          sessionId,
-          name: previous.name,
-          userSetName: previous.user_set_name ?? false,
-          origin: 'sync',
-        });
-      }
-      toastError({
-        title: 'Failed to rename chat',
-        msg: errorMessage(err),
-      });
-    }
+      newName,
+      session ? { name: session.name, userSetName: session.user_set_name ?? false } : null
+    );
   };
 
   const handleOpenTerminal = () => {
@@ -2224,13 +2390,190 @@ function BaseChatContent({
   }
 
   const initialPrompt = workflowPrompt;
+  // `!chatLoading`: the commit before a named chat's load starts is `Idle` with
+  // nothing in it, and is not the empty state either (round 7).
   const isCleanConversation =
     !suppressEmptyState &&
     messages.length === 0 &&
     !workflow &&
     !initialPrompt &&
     chatState === ChatState.Idle &&
+    !chatLoading &&
     !isCreatingSession;
+
+  // The newest line stays against the composer when the transcript changes
+  // size while the reader follows it: the subagent's line mounting above it, a
+  // shorter or narrower window (vision V2-R6-1). A reader who scrolled up keeps
+  // their place. See summary/useTranscriptFollow.ts.
+  const transcriptFollow = useTranscriptFollow({
+    scrollRef,
+    isPreviewStacked: artifactPanel.isStacked,
+    transcriptMounted: !isCleanConversation && !sessionLoadError,
+  });
+
+  // When the list settles: back to the end while the reader follows it (the
+  // first settle lands at once), and nowhere once they have scrolled up, the
+  // first settle included: a long chat opens at its end, and a reader who
+  // scrolled up while its older batches loaded keeps their rows. Nor while a
+  // late row is held below the fold (below).
+  const handleRenderingComplete = useTranscriptSettle(
+    scrollRef,
+    messages.length,
+    transcriptFollow.isHolding
+  );
+
+  // The turn error drawn at the end of the transcript, when the transcript
+  // does not already show it as a stored notice.
+  const turnErrorRow =
+    turnError && !hasVisibleTurnErrorMessage(turnError, messages) ? turnError : null;
+
+  // A chat whose model could not be restored learns it from the agent load,
+  // seconds after a long transcript is drawn; that row goes below the fold
+  // instead of moving every card on screen up under the pointer (vision
+  // V2-R9-2). See summary/useLateRowHold.ts.
+  useLateRowHold({
+    sessionId,
+    transcriptShown: !isCleanConversation && !sessionLoadError && messages.length > 0,
+    row: turnErrorRow,
+    turnRunning: isRunningState(chatState),
+    follow: transcriptFollow,
+  });
+
+  // The composer's own FLIP: from the centred empty state to its place above
+  // the transcript, on the first turn. Translate only (a `scaleX` squeezed its
+  // text) and on the motion tokens. Declared BEFORE the summary rail on purpose:
+  // when both move on one commit, the rail's glide finds the composer already
+  // moving and leaves it to this animation, whose end rect includes the rail.
+  useLayoutEffect(() => {
+    if (isCleanConversation) return;
+
+    const from = pendingComposerRectRef.current;
+    const element = composerMotionRef.current;
+    pendingComposerRectRef.current = null;
+
+    if (!from || !element || typeof element.animate !== 'function') return;
+    if (prefersReducedMotion() || isWindowResizing()) return;
+
+    const to = element.getBoundingClientRect();
+    const deltaX = from.left - to.left;
+    const deltaY = from.top - to.top;
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+
+    const animation = element.animate(
+      [
+        { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
+        { transform: 'translate3d(0, 0, 0)' },
+      ],
+      { duration: DUR.med, easing: EASE_OUT }
+    );
+
+    return () => animation.cancel();
+  }, [isCleanConversation]);
+
+  // RUNG 0: THE DOCKED CHAT SUMMARY (spec 3.5). Once a chat has had a turn its
+  // summary docks beside the conversation when the pane can seat both at the
+  // full 760px measure (Layout/yieldLadder.ts, summaryRailFit); otherwise the
+  // header button opens the same content as a popover. Never beside a stacked
+  // preview. The rail is a grid column, so the transcript and the composer move
+  // together, and its column glides rather than tweening its width.
+  //
+  // `isCleanConversation` alone would also count the loading screen and a
+  // workflow's parameter form, then drop the rail when the chat turns out empty.
+  // A new chat's first turn counts from the commit that starts creating it, the
+  // one in which the composer's FLIP above leaves the empty state: the rail is
+  // then already in the grid when the FLIP measures its target, so the composer
+  // moves once and only the transcript glides (V2-08). A chat whose transcript
+  // is loading keeps the rail when its row says it has messages, so the column
+  // does not re-centre for the load and come back (V2-R5-6).
+  const summaryRailChatState = summaryRailChat({
+    clean: isCleanConversation,
+    messageCount: messages.length,
+    loading: chatLoading,
+    running: isRunningState(chatState),
+    creatingChat: isCreatingSession,
+    knownToHaveMessages: loadingChatKnownMessages > 0,
+  });
+  const summaryActive = summaryRailChatState.active;
+  const summaryRail = useSummaryRail({
+    splitPaneRef,
+    active: summaryActive,
+    // A reload, a tab opened from History or a cached transcript also turns the
+    // chat active; only a turn that starts here enters the rail.
+    chatPhase: summaryRailChatState.chatPhase,
+    isMobile,
+    previewMode: previewMounted ? previewMode : null,
+    previewWidth: previewSideWidth,
+    onGlide: (dx, cause) =>
+      columnGlide.glideBy(dx, { duration: cause === 'open' ? DUR.med : DUR.fastMax }),
+  });
+  const summaryRailId = React.useId();
+
+  // The to-do list stays live while someone can see it (the popover or the
+  // rail) and while a turn runs, so the header button's progress dot is current
+  // even when the rail is folded away. Called here, below the rail, because
+  // `summaryActive` needs `isCleanConversation`; still above the early return.
+  // Not while the transcript loads: the row read then would only be read again
+  // when the session lands.
+  const sessionTodos = useSessionTodos(
+    sessionId,
+    session,
+    messages,
+    !chatLoading &&
+      (reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState)))
+  );
+
+  // The window widened under an open popover: the button is the rail's now, in
+  // rail mode it never opens a popover, so a stale one closes.
+  useEffect(() => {
+    if (summaryRail.shown || summaryRail.mode === 'rail') setReviewOpen(false);
+  }, [summaryRail.shown, summaryRail.mode]);
+
+  // A preview open or close captured where the conversation was (the panel's
+  // `onPresentedChange`, above); play the glide against the layout that has
+  // just committed, then put the card the person clicked back in view.
+  useLayoutEffect(() => {
+    columnGlide.playCaptured({ duration: previewMounted ? DUR.med : DUR.fastMax });
+    const restore = scrollAnchorRestoreRef.current;
+    scrollAnchorRestoreRef.current = null;
+    if (restore) {
+      // The clicked card's place wins over the end for this one width change.
+      transcriptFollow.keepPlaceForWidthChange();
+      restore();
+    }
+  }, [previewMounted, columnGlide, transcriptFollow]);
+
+  // A figure the chat does not know yet is an empty value, never a stand-in the
+  // load then replaces (`summaryFigures`: V2-R5-5, V2-R5-6, and a new chat's
+  // first send, V2-R8-2). The to-do list counts as still loading too, so its
+  // rows arrive at rest with the transcript.
+  const summaryProps = {
+    ...summaryFigures({
+      loading: chatLoading,
+      newChat: firstSend.creating,
+      hasSession: !!session,
+      ledgerSettled,
+      billed: totalSessionTokens,
+      toolCalls: sessionToolCallCount,
+      artifacts: sessionArtifacts.length,
+      codeDelta,
+    }),
+    todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
+    hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
+    onWorkflow: handleWorkflowReviewAction,
+    onDiagnostics: handleDiagnosticsReviewAction,
+  };
+
+  // A 6px accent dot on the button while the rail is folded away and a step is
+  // running, so the live list is never out of mind. Its count is in the name.
+  const summaryProgress =
+    !summaryRail.shown &&
+    isRunningState(chatState) &&
+    sessionTodos.items.some((item) => item.status === 'in_progress')
+      ? {
+          done: sessionTodos.items.filter((item) => item.status === 'completed').length,
+          total: sessionTodos.items.length,
+        }
+      : null;
 
   const renderSessionHeaderActions = () => (
     <div
@@ -2243,107 +2586,38 @@ function BaseChatContent({
             type="button"
             onClick={handleOpenTerminal}
             variant="ghost"
-            size="sm"
             shape="round"
             className={cn(
-              HEADER_ACTION_BUTTON_CLASS,
-              isTerminalDockOpen && 'bg-background-medium text-text-default'
+              'no-drag text-text-muted hover:text-text-default',
+              // Pressed while the dock is open: the band's fill step (R-27),
+              // the same as the summary button beside it.
+              isTerminalDockOpen && 'bg-background-fill-strong text-text-default'
             )}
             aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
           >
-            <Terminal className="h-4 w-4" />
+            <Terminal />
           </Button>
         </TooltipTrigger>
         <TooltipContent>{isTerminalDockOpen ? 'Close terminal' : 'Open terminal'}</TooltipContent>
       </Tooltip>
 
-      <Popover open={reviewOpen} onOpenChange={setReviewOpen}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                shape="round"
-                className={cn(
-                  HEADER_ACTION_BUTTON_CLASS,
-                  reviewOpen && 'bg-background-medium text-text-default'
-                )}
-                aria-label="Chat summary"
-              >
-                <AlignLeft className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-          </TooltipTrigger>
-          {/* Not "Chat summary" again: the popover's own first heading already
-              says that, so a tooltip repeating it tells the user nothing they
-              are not about to read. It names the contents instead. */}
-          <TooltipContent>Progress, tool calls, tokens and artifacts</TooltipContent>
-        </Tooltip>
-        <PopoverContent
-          side="bottom"
-          align="end"
-          className="w-[360px] max-w-[calc(100vw-2rem)] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto p-3"
-        >
-          <ChatSummary
-            name={session?.name || 'Current chat'}
-            toolCalls={sessionToolCallCount.toLocaleString()}
-            billedTokens={
-              totalSessionTokens === null ? 'N/A' : formatCompactNumber(totalSessionTokens)
-            }
-            artifacts={sessionArtifacts.length.toLocaleString()}
-            codeDelta={codeDelta}
-            todos={sessionTodos}
-            hasWorkflow={!!workflow}
-            onWorkflow={handleWorkflowReviewAction}
-            onDiagnostics={handleDiagnosticsReviewAction}
-          />
-        </PopoverContent>
-      </Popover>
+      {/* ONE button, two modes (spec 3.5): it shows and hides the docked
+          rail where the rail fits, and opens the same content as a popover
+          where it does not. */}
+      <SummaryHeaderButton
+        mode={summaryRail.mode}
+        railShown={summaryRail.shown}
+        railRendered={summaryRail.rendered}
+        railId={summaryRailId}
+        railStill={summaryRail.still}
+        onToggleRail={summaryRail.toggle}
+        popoverOpen={reviewOpen}
+        onPopoverOpenChange={setReviewOpen}
+        progress={summaryProgress}
+        summary={summaryProps}
+      />
     </div>
   );
-
-  useLayoutEffect(() => {
-    if (isCleanConversation) return;
-
-    const from = pendingComposerRectRef.current;
-    const element = composerMotionRef.current;
-    pendingComposerRectRef.current = null;
-
-    const isReducedMotion =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    if (!from || !element || isReducedMotion) {
-      return;
-    }
-
-    const to = element.getBoundingClientRect();
-    const deltaX = from.left - to.left;
-    const deltaY = from.top - to.top;
-    const scaleX = to.width > 0 ? from.width / to.width : 1;
-
-    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1 && Math.abs(scaleX - 1) < 0.01) {
-      return;
-    }
-
-    const animation = element.animate(
-      [
-        {
-          opacity: 0.96,
-          transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scaleX(${scaleX})`,
-        },
-        { opacity: 1, transform: 'translate3d(0, 0, 0) scaleX(1)' },
-      ],
-      {
-        duration: 420,
-        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
-      }
-    );
-
-    return () => animation.cancel();
-  }, [isCleanConversation]);
 
   /**
    * Issue #56 / F2 — what THIS chat runs on, when the app-wide selection
@@ -2354,17 +2628,91 @@ function BaseChatContent({
    * Free: both facts already ride the `/agent/resume` payload the chat stream
    * holds. See `privacy/usePinnedModel.ts` for the one rule, and for why the
    * override is gated rather than unconditional.
+   *
+   * While the transcript loads, the same rule reads the chat's row instead
+   * (`loadingChatRow`): the chip named the model for NEW chats, padlock and
+   * all, on a public chat bound to another model for as long as the load took
+   * (vision V2-R5-6), and the ring measured against that model's window.
    */
-  const { effectiveModel } = usePinnedModel(session, pinnedModel);
+  const { effectiveModel } = usePinnedModel(session ?? loadingChatRow, pinnedModel);
+
+  // The message list, held as ONE element across the commits that do not change
+  // it (V2-17). No message component is memoised and the list re-renders every
+  // row on each render it gets, so toggling the summary rail, opening or closing
+  // a preview, or the rail's own exit re-rendered a whole long transcript before
+  // the grid could snap and the glide start (200 to 250ms on an 8.5k px chat).
+  // React skips an element it has already rendered, so on those commits only
+  // the grid, the rail and the glide re-render. Every prop the list reads is a
+  // dependency here; the callbacks are stable, and a streamed chunk still
+  // rebuilds it through `messages`.
+  //
+  // `handleOpenArtifact` is the one callback that is NOT stable: the panel
+  // rebuilds it whenever the presented artifact changes, which is exactly the
+  // preview opening or closing. The list gets a wrapper that reads the latest
+  // one at click time instead, so those commits skip the transcript too.
+  const openArtifactRef = useRef(handleOpenArtifact);
+  openArtifactRef.current = handleOpenArtifact;
+  const openArtifactFromTranscript = useCallback(
+    (artifact: Parameters<typeof handleOpenArtifact>[0]) => openArtifactRef.current(artifact),
+    []
+  );
+  const transcriptList = useMemo(
+    () => (
+      <ProgressiveMessageList
+        messages={messages}
+        chat={{ sessionId }}
+        toolCallNotifications={toolCallNotifications}
+        isUserMessage={isUserRow}
+        isStreamingMessage={chatState !== ChatState.Idle}
+        chatState={chatState}
+        turnStartedAt={turnStartedAt}
+        lastMessageAt={lastMessageAt}
+        pendingSteer={pendingSteer}
+        steerRecoveries={steerRecoveries}
+        onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
+        canStopTurn={!subagentTabReadOnly}
+        onRenderingComplete={handleRenderingComplete}
+        onMessageUpdate={heldMessageUpdate}
+        // Finding 5.1 (the PR author's own follow-up).
+        // `ElicitationRequest` resolves a waiting tool
+        // through the daemon's human-action endpoint,
+        // and it lives INSIDE the transcript, so removing
+        // the composer never reached it.
+        // `BioRouterMessage` renders the form only when it
+        // is handed a submit callback, so withholding the
+        // callback withholds the control rather than
+        // leaving a Submit that 403s.
+        submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
+        onOpenArtifact={openArtifactFromTranscript}
+        onRunInTerminal={handleRunInTerminal}
+        workingDir={sessionWorkingDir}
+      />
+    ),
+    [
+      messages,
+      sessionId,
+      toolCallNotifications,
+      chatState,
+      turnStartedAt,
+      lastMessageAt,
+      pendingSteer,
+      steerRecoveries,
+      subagentTabReadOnly,
+      handleSendAgain,
+      handleRenderingComplete,
+      heldMessageUpdate,
+      submitElicitationResponse,
+      openArtifactFromTranscript,
+      handleRunInTerminal,
+      sessionWorkingDir,
+    ]
+  );
 
   const renderChatInput = () => (
     <div
       ref={composerMotionRef}
       data-composer-shell="true"
-      className={cn(
-        'w-full max-w-measure-chat mx-auto biorouter-chat-composer biorouter-composer-motion',
-        'biorouter-composer-view-transition'
-      )}
+      className="w-full max-w-measure-chat mx-auto biorouter-chat-composer biorouter-composer-motion"
     >
       {/*
         H3 (2026-09-10 security test drive) — privacy tiers are OFF, where the
@@ -2378,7 +2726,7 @@ function BaseChatContent({
         of it is too. A subagent's tab in a browser loses its composer, not the
         notice that every gate on this machine is off.
       */}
-      <PrivacyTiersOffNote className="mx-3 mb-2" />
+      <PrivacyTiersOffNote className="mx-3 mb-1" />
       {/*
         SD-8: in a browser, a delegated subagent's chat gets the reason it has
         no composer IN PLACE of everything below — the continuation banner's
@@ -2388,51 +2736,56 @@ function BaseChatContent({
       */}
       <SubagentComposerSlot kind={subagentChatKind}>
         {pendingContinuation && (
-          <div
+          // One line per state; today's full sentence is the help behind it.
+          <Note
+            tone="neutral"
             role="status"
-            className="mx-3 mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/70 px-3 py-2 text-sm"
-          >
-            <span>
-              {pendingContinuation.ownership === 'owned'
-                ? 'A previous Stop & send is ready. Re-enter the message you want to send; Biorouter will not guess or resend lost composer text.'
-                : pendingContinuation.ownership === 'settling'
-                  ? 'A previous Stop & send is still settling. Recover it explicitly or abandon the stopped-turn continuation.'
-                  : 'Another window owns a pending Stop & send. Take it over here or abandon the stopped-turn continuation before sending.'}
-            </span>
-            <div className="flex shrink-0 gap-2">
-              {pendingContinuation.ownership !== 'owned' && (
+            className="mx-3 mb-2"
+            action={
+              <div className="flex gap-2">
+                {pendingContinuation.ownership !== 'owned' && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      void recoverPendingContinuation('take_over').catch((error) => {
+                        toastError({
+                          title: 'Could not recover Stop & send',
+                          msg: errorMessage(error),
+                        });
+                      });
+                    }}
+                  >
+                    {summaryCopy.stopAndSend.takeOver}
+                  </Button>
+                )}
                 <Button
                   type="button"
                   size="sm"
+                  variant="ghost"
                   onClick={() => {
-                    void recoverPendingContinuation('take_over').catch((error) => {
+                    void recoverPendingContinuation('abandon').catch((error) => {
                       toastError({
-                        title: 'Could not recover Stop & send',
+                        title: 'Could not abandon Stop & send',
                         msg: errorMessage(error),
                       });
                     });
                   }}
                 >
-                  Take over
+                  {summaryCopy.stopAndSend.abandon}
                 </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  void recoverPendingContinuation('abandon').catch((error) => {
-                    toastError({
-                      title: 'Could not abandon Stop & send',
-                      msg: errorMessage(error),
-                    });
-                  });
-                }}
-              >
-                Abandon
-              </Button>
-            </div>
-          </div>
+              </div>
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <span>{summaryCopy.stopAndSend[pendingContinuation.ownership]}</span>
+              <InfoTip
+                label={summaryCopy.stopAndSend.helpLabel}
+                help={summaryCopy.stopAndSend.help[pendingContinuation.ownership]}
+              />
+            </span>
+          </Note>
         )}
         {/*
         Issue #56 Gate B. Above the composer, on the composer's own rails, in
@@ -2440,16 +2793,16 @@ function BaseChatContent({
         the control it is about rather than in the transcript, where it would
         scroll away from the chip and gauge it explains.
 
-        ⚠ NOT inside `ChatInput`: that component's three rows (context · card ·
-        controls) are one visually grouped object held together by a 6px gap,
-        and a fourth block inside it would join the group and read as more
-        chrome on the input. `mb-2` puts this outside that grouping.
+        ⚠ NOT inside `ChatInput`: that component is one card and a footer line
+        held together by a 4px gap, and a block inside it would join the group
+        and read as more chrome on the input. The notices stack 4px apart above the
+        card (spec 3.7), so one reads as a quiet line over it, not as part of it.
 
         Mounted unconditionally — it renders nothing when there is nothing to
         say, which is almost always.
       */}
-        <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
-        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-2" />
+        <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-1" />
+        <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-1" />
         {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
         <PendingChatModelContext.Provider value={pendingChatModelScope}>
           <ChatInput
@@ -2480,20 +2833,31 @@ function BaseChatContent({
             draftKey={inputDraftKey}
             reasoningDraftKey={reasoningDraftKey}
             setView={setView}
-            totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
-            accumulatedInputTokens={
-              tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+            // While the transcript loads the stream's counters are zero, and
+            // the ring read "0 of …" before the chat's own figure (V2-R5-6).
+            totalTokens={
+              loadingChatRow
+                ? (loadingChatRow.total_tokens ?? undefined)
+                : (tokenState?.totalTokens ?? session?.total_tokens ?? undefined)
             }
-            accumulatedOutputTokens={
-              tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
-            }
+            // The counters and the ledger feed only the footer's cost, which
+            // waits for this chat's ledger (V2-R5-5).
+            accumulatedInputTokens={footerCost.accumulatedInputTokens}
+            accumulatedOutputTokens={footerCost.accumulatedOutputTokens}
             droppedFiles={droppedFiles}
             onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-            messagesLength={messages.length}
+            // A loading chat is not an empty one (V2-R5-6).
+            messagesLength={messages.length || loadingChatKnownMessages}
+            // "Ask a follow-up" under any message the chat shows, the first
+            // send's row included; the placeholder only (WS-SUMMARY-4).
+            followUp={composerFollowsUp({
+              storedMessages: messages.length,
+              firstSendShown: !!firstSend.message,
+              knownMessages: loadingChatKnownMessages,
+            })}
             workingDirLocked={workingDirLocked}
-            disableAnimation={disableAnimation}
-            sessionCosts={sessionCosts}
-            modelCostRows={modelRows}
+            sessionCosts={footerCost.sessionCosts}
+            modelCostRows={footerCost.modelCostRows}
             workflow={workflow}
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}
@@ -2549,23 +2913,31 @@ function BaseChatContent({
           {...customMainLayoutProps}
         >
           {renderHeader && renderHeader()}
-          <div className="flex flex-col flex-1 mb-0.5 min-h-0 relative">
-            <div className="flex-1 bg-background-default rounded-b-2xl flex items-center justify-center">
-              <div className="flex flex-col items-center justify-center p-8">
-                <div className="text-text-danger bg-background-danger/10 border border-border-danger/40 p-4 rounded-lg mb-4 max-w-md">
-                  <h3 className="font-semibold mb-2">Could not load this chat</h3>
-                  <p className="text-sm">{sessionLoadError}</p>
-                </div>
-                <button
-                  onClick={() => {
-                    setView('chat');
-                  }}
-                  className="px-4 py-2 text-center cursor-pointer text-text-default border border-border-subtle hover:bg-background-medium rounded-lg transition-all duration-150"
-                >
-                  Go home
-                </button>
-              </div>
-            </div>
+          {/* The error stays visible: it is the one thing this screen says. */}
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <EmptyState
+              icon={AlertCircle}
+              title={summaryCopy.loadError.title}
+              // The loader's message often starts with the title itself.
+              description={sessionLoadError.replace(/^Could not load this chat:\s*/, '')}
+              actions={
+                <>
+                  <Button type="button" variant="secondary" size="sm" onClick={onRetryLoad}>
+                    {summaryCopy.loadError.retry}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setView('chat');
+                    }}
+                  >
+                    {summaryCopy.loadError.action}
+                  </Button>
+                </>
+              }
+            />
           </div>
         </MainPanelLayout>
       </div>
@@ -2601,6 +2973,10 @@ function BaseChatContent({
         <div
           ref={splitPaneRef}
           {...artifactPanel.splitPaneProps}
+          {...summaryRail.splitPaneProps}
+          // Both spreads carry a `style`; the second would replace the first, so
+          // the two are merged explicitly after them.
+          style={{ ...artifactPanel.splitPaneProps.style, ...summaryRail.splitPaneProps.style }}
           className="relative flex flex-1 min-h-0 min-w-0"
         >
           <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
@@ -2625,11 +3001,7 @@ function BaseChatContent({
                 a second count.) */}
             <div
               data-preview-area="body"
-              className={
-                coherent
-                  ? 'flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas'
-                  : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
-              }
+              className="flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas"
             >
               <div
                 data-preview-area="header"
@@ -2720,8 +3092,16 @@ function BaseChatContent({
               </div>
               {subagent.isSubagent && subagent.parentSessionId && (
                 // Wrapped so rung 2's grid places the subagent's second header
-                // band as one item under the first.
-                <div data-preview-area="subheader" className="flex-shrink-0">
+                // band as one item under the first. The grids put this cell on
+                // the transcript's track only (never across the rail), and its
+                // `px-1` is the scroll root's: with the header's own `px-6` the
+                // line gets the transcript's 28px a side, so it starts on the
+                // column's left edge at every width (vision V2-R2-3).
+                <div
+                  data-preview-area="subheader"
+                  className="flex-shrink-0 px-1"
+                  style={chatPendingStyle}
+                >
                   <SubagentTabHeader
                     sessionId={sessionId}
                     parentSessionId={subagent.parentSessionId}
@@ -2756,10 +3136,8 @@ function BaseChatContent({
                   data-drop-zone="true"
                 >
                   <div className="biorouter-clean-conversation-content w-full max-w-measure-chat flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
-                    {/* The greeting takes the `title` role (24/600) rather than
-                        spelling it out as `text-2xl font-semibold tracking-tight`
-                        — the same three utilities every page title in the app was
-                        writing by hand before there was a token for it. */}
+                    {/* The greeting takes the `title` role (24/32, regular)
+                        rather than spelling out a size, weight and tracking. */}
                     {!suppressGreeting && (
                       <Greeting
                         key={terminalKey ?? sessionId}
@@ -2773,17 +3151,20 @@ function BaseChatContent({
               ) : (
                 <ScrollArea
                   ref={scrollRef}
-                  className={
-                    coherent
-                      ? `flex-1 min-h-0 relative ${contentClassName}`
-                      : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
-                  }
+                  // `relative`: the transcript cell is the positioned box the
+                  // find-in-chat overlay pins itself to (top right), so the bar
+                  // floats over the conversation instead of pushing it.
+                  className={`flex-1 min-h-0 relative ${contentClassName}`}
                   autoScroll
-                  // A stacked preview opening above the transcript shrinks its
-                  // viewport from the TOP; this keeps the newest message against
-                  // the composer instead of sliding under it. Scoped to a stacked
-                  // sheet: every other chat keeps the scroll behaviour it had.
-                  anchorBottomOnResize={artifactPanel.isStacked}
+                  // Keeps the line against the composer where it is when the
+                  // viewport changes height: under a stacked preview always, and
+                  // otherwise while the reader follows the newest line (V2-R6-1).
+                  anchorBottomOnResize={transcriptFollow.anchorBottomOnResize}
+                  onScrollChange={transcriptFollow.onScrollChange}
+                  // A row the person did not cause, landing after they could be
+                  // reading (a model that failed to restore), is added below the
+                  // fold instead of following it there (useLateRowHold, V2-R9-2).
+                  followGrowth={transcriptFollow.followGrowth}
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
@@ -2794,7 +3175,7 @@ function BaseChatContent({
                 >
                   <div className="biorouter-chat-column mx-auto w-full max-w-measure-chat">
                     {workflow?.title && (
-                      <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2">
+                      <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2 text-secondary">
                         <WorkflowHeader title={workflow.title} />
                       </div>
                     )}
@@ -2812,48 +3193,30 @@ function BaseChatContent({
                       </div>
                     )}
 
-                    {messages.length > 0 || workflow || turnError ? (
+                    {messages.length > 0 || workflow || turnError || firstSend.message ? (
                       <>
                         <SearchView>
                           <>
-                            <ProgressiveMessageList
-                              messages={messages}
-                              chat={{ sessionId }}
-                              toolCallNotifications={toolCallNotifications}
-                              isUserMessage={(m: Message) => m.role === 'user'}
-                              isStreamingMessage={chatState !== ChatState.Idle}
-                              chatState={chatState}
-                              turnStartedAt={turnStartedAt}
-                              lastMessageAt={lastMessageAt}
-                              pendingSteer={pendingSteer}
-                              steerRecoveries={steerRecoveries}
-                              onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
-                              canStopTurn={!subagentTabReadOnly}
-                              onRenderingComplete={handleRenderingComplete}
-                              onMessageUpdate={heldMessageUpdate}
-                              // Finding 5.1 (the PR author's own follow-up).
-                              // `ElicitationRequest` resolves a waiting tool
-                              // through the daemon's human-action endpoint,
-                              // and it lives INSIDE the transcript, so removing
-                              // the composer never reached it.
-                              // `BioRouterMessage` renders the form only when it
-                              // is handed a submit callback, so withholding the
-                              // callback withholds the control rather than
-                              // leaving a Submit that 403s.
-                              submitElicitationResponse={
-                                subagentTabReadOnly ? undefined : submitElicitationResponse
-                              }
-                              onOpenArtifact={handleOpenArtifact}
-                              onRunInTerminal={handleRunInTerminal}
-                              workingDir={sessionWorkingDir}
-                            />
+                            {/* A new chat's first message while the chat is
+                                created and loaded, then the stored row in its
+                                place (summary/useFirstSend.ts, V2-R8-2). */}
+                            {firstSend.message ? (
+                              <FirstSendTranscript
+                                message={firstSend.message}
+                                sessionId={sessionId}
+                                onOpenArtifact={openArtifactFromTranscript}
+                                workingDir={sessionWorkingDir}
+                              />
+                            ) : (
+                              transcriptList
+                            )}
                             {/* §6.1b: skeleton cards for tool calls whose args
                                 are still streaming. They sit at the tail of the
                                 transcript and vanish as each authoritative
                                 request lands (removed by id in the store). */}
                             <PendingToolCallList pending={pendingToolCalls} />
-                            {turnError && !hasVisibleTurnErrorMessage(turnError, messages) && (
-                              <ChatTurnError error={turnError} onRetry={heldRetryTurn} />
+                            {turnErrorRow && (
+                              <ChatTurnError error={turnErrorRow} onRetry={heldRetryTurn} />
                             )}
                             {/* F5: a CONFIRMED Stop's outcome, in the slot a
                                 failed Stop's notice takes. Transient — the
@@ -2867,14 +3230,9 @@ function BaseChatContent({
                             )}
                           </>
                         </SearchView>
-                        {/* No tail spacer. A `block h-8` used to sit here, and
-                            it was the second of three boxes each declaring part
-                            of the distance to the composer — 32px of scroll
-                            CONTENT, so it also moved with the transcript and
-                            vanished the moment the user scrolled up, which is
-                            exactly when a constant margin is wanted. The
-                            composer bar's `pt-4` owns that distance now, once,
-                            and owns it at every scroll position. */}
+                        {/* No tail spacer: the composer bar's `pt-7` owns
+                            the distance to the composer, at every scroll
+                            position. */}
                       </>
                     ) : null}
                   </div>
@@ -2883,55 +3241,47 @@ function BaseChatContent({
             </div>
 
             {!isCleanConversation && (
-              // `pt-7` IS THE WHOLE DISTANCE FROM THE TRANSCRIPT TO THE COMPOSER,
-              // and it is the only box that declares any of it.
+              // `pt-7` is the whole distance from the transcript to the
+              // composer, and the only box that declares any of it (the scroll
+              // root's bottom padding and a tail spacer used to add to it, and
+              // nobody chose the 80px they summed to). It pairs with the
+              // composer's own 4px gap between its card and its footer line:
+              // tight inside, wide outside, so the composer reads as one object
+              // apart from the conversation. On the bar rather than in the
+              // scroll content, because the bar's padding holds at every scroll
+              // position and a spacer inside the transcript scrolls away.
               //
-              // It used to be `pt-2`, and it was the smallest of three
-              // independent contributors: the ScrollArea Root's `pb-10` (40px,
-              // which silently shortened the scroll viewport — see
-              // `contentClassName`), a `block h-8` spacer at the tail of the
-              // transcript (32px of scroll content), and this. None of them knew
-              // about the others, which is how the band above the composer came
-              // to be 80px without anyone ever choosing 80. Measured, pinned to
-              // the bottom: 80px of layout chrome between the last message's ink
-              // and the composer's first row.
-              //
-              // 28px, and the number only makes sense PAIRED with the composer's
-              // own internal gap, which is 6px (`ChatInput`'s shell). Those two
-              // numbers are one decision:
-              //
-              //   6px inside   — the context rail, the input and the control
-              //                  rail bind into ONE object
-              //   28px outside — that object is separated from the conversation
-              //
-              // It went 80 -> 16 -> 28, and the 16 was wrong for an instructive
-              // reason. 16px is the transcript's own inter-turn rhythm (`mt-4`
-              // in `ProgressiveMessageList`), which sounded principled — the
-              // composer as "the next turn". But while the composer's internal
-              // gaps were ALSO ~10-16px, matching the transcript's rhythm meant
-              // the gap between the composer's own rows and the gap between
-              // unrelated blocks were the same distance, and the group read as
-              // three floating strips rather than one object. A group cannot be
-              // separated from its surroundings by the same measure that
-              // separates its own parts. Tighten inside, widen outside.
-              //
-              // It belongs on the BAR rather than in the scroll content because
-              // the bar's padding is constant. A spacer inside the transcript
-              // scrolls away, so mid-scroll the prose ran right up against the
-              // composer's context row — the one moment the separation is doing
-              // real work.
+              // Its side gutters are the transcript's chrome, to the pixel:
+              // half of `CHAT_COLUMN_CHROME` (the scroll root's `px-1` plus the
+              // viewport's `px-6`, 28px a side). Both boxes cap at the 760px
+              // measure, so above an 816px cell any gutter looked right; below
+              // it the bar's old 24px made the composer 8px wider than the
+              // column and 4px left of it (vision V2-R2-1). Inline, from the
+              // constant, so the two cannot drift and no new utility class has
+              // to be generated.
               <div
                 data-preview-area="composer"
-                className={
-                  coherent
-                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas'
-                    : `px-4 sm:px-6 pb-6 pt-7 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
-                }
+                className="biorouter-chat-composer-bar flex-shrink-0 pb-6 pt-7 bg-background-canvas"
+                style={{ paddingInline: CHAT_COLUMN_CHROME / 2, ...chatPendingStyle }}
+                aria-busy={chatPending || undefined}
               >
                 {renderChatInput()}
               </div>
             )}
           </div>
+
+          {/* Rung 0: the docked summary, its own grid column between the
+              conversation and the preview (summary/summaryRail.css). */}
+          {summaryRail.rendered && (
+            <ChatSummaryRail
+              data-preview-area="rail"
+              id={summaryRailId}
+              still={summaryRail.still}
+              state={summaryRail.state}
+              onExited={summaryRail.onExited}
+              {...summaryProps}
+            />
+          )}
 
           {presentedArtifact && artifactPanelEnabled && (
             <ArtifactViewer
@@ -3061,5 +3411,15 @@ function BaseChatContent({
 }
 
 export default function BaseChat(props: BaseChatProps) {
-  return <BaseChatContent {...props} />;
+  // A session that failed to load is retried by mounting the chat again, the
+  // same remount a tab switch makes: the stream's `loadSession` runs on mount,
+  // clears the error and fetches the session afresh.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  return (
+    <BaseChatContent
+      key={loadAttempt}
+      {...props}
+      onRetryLoad={() => setLoadAttempt((attempt) => attempt + 1)}
+    />
+  );
 }

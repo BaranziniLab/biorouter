@@ -2,17 +2,12 @@ import { useMemo } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useThemeFamily, type ThemeFamily } from '../../contexts/ThemeContext';
 import { CODE_FONT_FAMILY, codeThemesByFamily } from '../../styles/codeTheme';
-import { cn } from '../../utils';
 import MarkdownContent from '../MarkdownContent';
+import { InfoTip } from '../ui/info-tip';
 import type { ArtifactFilePreview } from './artifactTypes';
-import {
-  normalizeCodeLanguage,
-  sandboxedSurface,
-  splitPathForStrip,
-  STRIP_IDENT_CLASS,
-  STRIP_LABEL_CLASS,
-  STRIP_META_CLASS,
-} from './artifactUtils';
+import { normalizeCodeLanguage, sandboxedSurface } from './artifactUtils';
+import { PREVIEW_COPY } from './copy';
+import { PreviewBarMeta } from './PreviewBar';
 
 type NotebookFile = Extract<ArtifactFilePreview, { kind: 'text' | 'html' }>;
 
@@ -71,13 +66,24 @@ function joined(value: unknown) {
  * from the ACTIVE FAMILY (see `sandboxedSurface`), not a fixed light/dark pair.
  */
 function safeNotebookHtml(html: string, resolvedTheme: 'light' | 'dark', themeFamily: ThemeFamily) {
-  const { background, foreground, border } = sandboxedSurface(themeFamily, resolvedTheme);
+  const { background, foreground, border, muted } = sandboxedSurface(themeFamily, resolvedTheme);
+  // `--background-fill` is not in the generated surface either, so the table's
+  // ground is mixed the way the token is made: a 4% wash of the ink over the
+  // page, which lands within one level of the token in every family and mode
+  // (`NotebookPreview.test.tsx` measures it against main.css).
+  const fill = `color-mix(in srgb, ${foreground} 4%, ${background})`;
   // Paper, restated for a separate document: the page font stack (--font-body)
-  // and a booktabs table — `border:0` on the table too, because pandas emits
-  // `<table border="1">` and the attribute alone drew a full grid. `::selection`
-  // is restated for the same reason: the renderer-wide Biorouter-orange
-  // selection in main.css cannot reach into this document (SELECTION_TINT).
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/1.5 Arial,"Helvetica Neue",Helvetica,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:12px 0}img,svg{max-width:100%;height:auto}table{border:0;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{border:0;border-bottom:1px solid ${border};padding:5px 16px 5px 0;text-align:right}th{font-weight:600}::selection{background:${SELECTION_TINT[resolvedTheme]}}</style></head><body>${html}</body></html>`;
+  // and the app's ONE table (`.br-md-table`, Crew's recipe; spec section 0) as
+  // the app draws it under R-27 (fills before lines): the subtle fill with no
+  // outline, top rules only BETWEEN rows, a 12px muted header on the same fill,
+  // 8px 12px cells, tabular numbers, no bold index. The 1px border stays but
+  // transparent, so nothing moves and forced colours still draw an edge, and the
+  // fill is clipped to the padding box so it never rings the border. pandas emits
+  // `<table border="1">`, whose attribute alone drew a full grid: the table's
+  // own `border` replaces it, and `border:0` on every cell clears the grid
+  // before the top rule is drawn. `::selection` is restated because the
+  // renderer-wide selection in main.css cannot reach this document.
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"><style>html,body{margin:0;color:${foreground};background:${background};font:13px/18px Arial,"Helvetica Neue",Helvetica,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{padding:8px 0}img,svg{max-width:100%;height:auto}table{border:1px solid transparent;background:${fill};background-clip:padding-box;border-collapse:separate;border-spacing:0;border-radius:8px;overflow:hidden;font-variant-numeric:tabular-nums}td,th{border:0;border-top:1px solid ${border};padding:8px 12px;text-align:right;font-weight:400}thead tr:first-child>*,table>tbody:first-child>tr:first-child>*{border-top:0}thead th{color:${muted};font-size:12px;line-height:16px;font-weight:600}tbody th{color:${muted}}@media (forced-colors:active){table{border-color:CanvasText}}::selection{background:${SELECTION_TINT[resolvedTheme]}}</style></head><body>${html}</body></html>`;
 }
 
 function NotebookOutputView({
@@ -204,8 +210,10 @@ export default function NotebookPreview({
 
   if (!parsed.notebook) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-body text-text-muted">
-        Could not preview this notebook: {parsed.error}
+      <div className="br-preview-state">
+        <p className="br-preview-state__line text-body text-text-muted">
+          {PREVIEW_COPY.notebookUnreadable(parsed.error ?? '')}
+        </p>
       </div>
     );
   }
@@ -217,7 +225,6 @@ export default function NotebookPreview({
     notebook.metadata?.language_info?.name || notebook.metadata?.kernelspec?.language || 'python'
   );
   const kernel = notebook.metadata?.kernelspec?.display_name;
-  const { directory, name } = splitPathForStrip(file.path);
   const cellCount = notebook.cells.length;
 
   return (
@@ -225,27 +232,14 @@ export default function NotebookPreview({
     // A cell is vertical rhythm on the page; a code cell's source sits in the
     // same faint well a fenced block uses, its prompt hanging in the margin.
     <div className="br-paper flex h-full min-h-0 flex-col">
-      {/* The one status strip (design spec H): a 34px row with a bottom
-          hairline — the same strip every other file preview uses, so the
-          notebook reads in the panel's voice instead of its own. */}
-      <div
-        data-testid="artifact-status-strip"
-        className="flex h-[34px] flex-shrink-0 items-center gap-2.5 border-b border-border-subtle px-3.5"
-      >
-        <span className={cn(STRIP_LABEL_CLASS, 'shrink-0')}>Notebook</span>
-        <span className={cn(STRIP_IDENT_CLASS, 'min-w-0 truncate')} title={file.path}>
-          <span className="text-text-subtle">{directory}</span>
-          <span className="text-text-default">{name}</span>
-        </span>
-        <span className={cn(STRIP_IDENT_CLASS, 'shrink-0 tabular-nums')}>
+      {/* The panel's one bar names the file; the notebook adds its cell count,
+          and the kernel is that count's help rather than a second label. */}
+      <PreviewBarMeta>
+        <span data-testid="artifact-strip-count" className="tabular-nums">
           {cellCount.toLocaleString()} cell{cellCount === 1 ? '' : 's'}
         </span>
-        {kernel && (
-          <span className={cn(STRIP_META_CLASS, 'min-w-0 shrink truncate')} title={kernel}>
-            {kernel}
-          </span>
-        )}
-      </div>
+        {kernel && <InfoTip label={PREVIEW_COPY.kernel} help={PREVIEW_COPY.kernelHelp(kernel)} />}
+      </PreviewBarMeta>
       <div className="br-paper-scroll min-h-0 flex-1 overflow-auto">
         <div className="br-preview-measure br-paper-nb">
           {notebook.cells.map((cell, index) => {

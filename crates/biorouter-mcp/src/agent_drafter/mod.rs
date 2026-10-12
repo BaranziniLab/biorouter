@@ -6030,7 +6030,6 @@ br.run("hello", "#missing");
                         return false; // the channel carrying the canary is not the leak
                     }
                     key.starts_with("BIOROUTER_")
-                        || key.starts_with("GOOSE_")
                         || matches!(key, "PATH" | "HOME" | "BR_TEST_USER_VAR")
                         || (!canary.is_empty() && line.contains(&canary))
                 })

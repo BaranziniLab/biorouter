@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import type { ConfigData } from '../../../types/config';
 
 // #50 — Settings → App named a stale provider ("current settings for ollama"
@@ -21,6 +21,11 @@ const modelAndProvider = {
 };
 
 const refreshConfig = vi.fn(async () => {});
+
+/** The providers the daemon lists. `ollama` is deliberately absent, so a provider it cannot name
+ * falls back to its id. */
+let providerList: Array<{ name: string; metadata: { display_name: string } }> = [];
+const getProviders = vi.fn(async () => providerList);
 
 /** Set to make the next `refreshConfig()` reject, as a failed config read does. */
 let refreshConfigRejection: Error | null = null;
@@ -46,6 +51,7 @@ vi.mock('../../ConfigContext', () => ({
     config: configSnapshot,
     upsert: vi.fn(),
     refreshConfig: refreshConfigStub,
+    getProviders,
   }),
 }));
 
@@ -54,32 +60,91 @@ vi.mock('../../ModelAndProviderContext', () => ({
 }));
 
 import ConfigSettings from './ConfigSettings';
+import { configCopy } from './copy';
+
+/** The Configuration row, whose value is the provider the settings belong to. */
+const configRow = () => screen.getByTestId('config-settings-row');
 
 beforeEach(() => {
   vi.clearAllMocks();
   modelAndProvider.currentProvider = 'versa_azure';
   refreshConfigRejection = null;
+  providerList = [
+    { name: 'versa_azure', metadata: { display_name: 'Versa API Azure' } },
+    { name: 'databricks', metadata: { display_name: 'Databricks' } },
+  ];
 });
 
 describe('ConfigSettings provider label (#50)', () => {
-  it('names the live provider, not the one cached in the config context', () => {
+  it('names the live provider, not the one cached in the config context', async () => {
     render(<ConfigSettings />);
 
+    expect(await within(configRow()).findByText('Versa API Azure')).toBeInTheDocument();
+    expect(screen.queryByText('ollama')).not.toBeInTheDocument();
+    // The sentence that used to sit under the header is gone: the row's value says it.
+    expect(screen.queryByText(/current settings for/)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Edit your Biorouter configuration settings \(current settings for/)
-    ).toHaveTextContent('(current settings for versa_azure)');
-    expect(screen.queryByText(/current settings for ollama/)).not.toBeInTheDocument();
+      screen.queryByText(/Edit your Biorouter configuration settings/)
+    ).not.toBeInTheDocument();
   });
 
-  it('updates the label when the active provider changes', () => {
+  it('updates the value when the active provider changes', async () => {
     const { rerender } = render(<ConfigSettings />);
+    await within(configRow()).findByText('Versa API Azure');
 
     modelAndProvider.currentProvider = 'databricks';
     rerender(<ConfigSettings />);
 
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for databricks)'
-    );
+    expect(within(configRow()).getByText('Databricks')).toBeInTheDocument();
+    expect(within(configRow()).queryByText('Versa API Azure')).not.toBeInTheDocument();
+  });
+
+  // V4-12: the row said `versa_azure` in the mono face where the Models tab says "Versa API Azure".
+  it('shows the provider by name in the sans face, never by id', async () => {
+    render(<ConfigSettings />);
+
+    const value = await within(configRow()).findByText('Versa API Azure');
+    expect(value).not.toHaveClass('font-mono');
+    expect(within(configRow()).queryByText('versa_azure')).not.toBeInTheDocument();
+  });
+
+  it('shows no value until the provider list has answered, not the raw id', async () => {
+    render(<ConfigSettings />);
+
+    // Synchronously after the first paint the lookup is still pending.
+    expect(within(configRow()).queryByText('versa_azure')).not.toBeInTheDocument();
+    expect(within(configRow()).queryByText('Versa API Azure')).not.toBeInTheDocument();
+    // Then the name arrives (and the update is awaited, not left to land after the test).
+    expect(await within(configRow()).findByText('Versa API Azure')).toBeInTheDocument();
+  });
+
+  it('falls back to the id for a provider the daemon does not list', async () => {
+    modelAndProvider.currentProvider = 'ollama';
+    render(<ConfigSettings />);
+
+    expect(await within(configRow()).findByText('ollama')).toBeInTheDocument();
+  });
+
+  it('falls back to the id when the provider list cannot be read', async () => {
+    getProviders.mockRejectedValueOnce(new Error('daemon unreachable'));
+    render(<ConfigSettings />);
+
+    expect(await within(configRow()).findByText('versa_azure')).toBeInTheDocument();
+  });
+
+  it('is one row: the word Configuration, the provider, an Edit… button and a tip', async () => {
+    render(<ConfigSettings />);
+
+    const row = configRow();
+    await within(row).findByText('Versa API Azure');
+    expect(within(row).getByText(configCopy.row)).toBeInTheDocument();
+    const edit = within(row).getByRole('button', { name: configCopy.editName });
+    expect(edit).toHaveTextContent(configCopy.edit);
+    // Edit… is the 28px secondary rung, and the tip explains the row without a paragraph.
+    expect(edit).toHaveAccessibleDescription(configCopy.help);
+    expect(
+      within(row).getByRole('button', { name: `About ${configCopy.row}` })
+    ).toBeInTheDocument();
   });
 
   it('re-reads the active provider when the section mounts', async () => {
@@ -100,13 +165,11 @@ describe('ConfigSettings provider label (#50)', () => {
     await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
   });
 
-  it('falls back to the config value while the live provider is still loading', () => {
+  it('falls back to the config value while the live provider is still loading', async () => {
     modelAndProvider.currentProvider = null;
     render(<ConfigSettings />);
 
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for ollama)'
-    );
+    expect(await within(configRow()).findByText('ollama')).toBeInTheDocument();
   });
 
   // `refreshConfig` used to be incapable of rejecting: it called the non-throwing
@@ -145,8 +208,6 @@ describe('ConfigSettings provider label (#50)', () => {
     render(<ConfigSettings />);
 
     await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for versa_azure)'
-    );
+    expect(await within(configRow()).findByText('Versa API Azure')).toBeInTheDocument();
   });
 });

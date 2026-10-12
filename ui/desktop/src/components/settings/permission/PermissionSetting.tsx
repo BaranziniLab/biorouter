@@ -5,12 +5,12 @@ import { FixedExtensionEntry, useConfig } from '../../ConfigContext';
 import { ChevronRight } from '../../icons/app-icons';
 import PermissionModal from './PermissionModal';
 import { Button } from '../../ui/button';
-import { getFriendlyTitle } from '../extensions/subcomponents/ExtensionList';
-import { getConfigurableExtensions } from './PermissionRulesModal';
+import { getConfigurableExtensions, permissionExtensionTitle } from './PermissionRulesModal';
+import { permissionDialogCopy } from '../chat/copy';
 
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const title = getFriendlyTitle(extension);
+  const title = permissionExtensionTitle(extension);
   const description = 'description' in extension ? extension.description || '' : '';
 
   return (
@@ -22,10 +22,10 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
         size="lg"
       >
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold text-text-default break-words [overflow-wrap:anywhere]">
+          <h3 className="text-label text-text-default break-words [overflow-wrap:anywhere]">
             {title}
           </h3>
-          <p className="mt-1 text-xs text-text-muted break-words [overflow-wrap:anywhere]">
+          <p className="mt-1 text-supporting text-text-muted break-words [overflow-wrap:anywhere]">
             {description}
           </p>
         </div>
@@ -45,7 +45,7 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
 function RulesSection({ title, rules }: { title: string; rules: React.ReactNode }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-base font-semibold text-text-default">{title}</h2>
+      <h2 className="text-subheading text-text-default">{title}</h2>
       {rules}
     </div>
   );
@@ -66,7 +66,7 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
   }, []);
 
   return (
-    <div className="bg-background-muted h-screen w-full animate-[appear_200ms_var(--ease-out)_forwards]">
+    <div className="bg-background-muted h-screen w-full">
       <ScrollArea className="h-full w-full">
         <div className="flex flex-col pb-24">
           <div className="px-8 pt-6 pb-4">
@@ -88,10 +88,10 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
               </svg>
             </div>
             <h1 className="text-title text-text-default mt-4">Permission rules</h1>
-            <p className="text-text-muted">
-              Hidden instructions that will be passed to the provider to help direct and add context
-              to your responses.
-            </p>
+            {/* #38: this said "Hidden instructions that will be passed to the provider", which
+                describes project hints, not permission rules. The route is unreachable from the
+                app (spec §3.13 leaves it alone); only its words are corrected. */}
+            <p className="text-text-muted">{permissionDialogCopy.rulesSubtitle}</p>
           </div>
 
           {/* Content Area */}

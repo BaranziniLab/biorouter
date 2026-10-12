@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ChatRowContextMenu } from './ChatRowContextMenu';
+import { ChatRowContextMenu, chatRowMenuEntries } from './ChatRowContextMenu';
 
 const mocks = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
 
@@ -46,7 +46,7 @@ describe('ChatRowContextMenu', () => {
     expect(items.map((item) => item.textContent)).toEqual([
       'Open in new tab',
       'Open in new window',
-      'Copy conversation ID',
+      'Copy chat ID',
     ]);
   });
 
@@ -79,7 +79,7 @@ describe('ChatRowContextMenu', () => {
 
   it('copies the raw conversation id', async () => {
     openMenu();
-    fireEvent.click(await screen.findByText('Copy conversation ID'));
+    fireEvent.click(await screen.findByText('Copy chat ID'));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2'));
     expect(mocks.toastSuccess).toHaveBeenCalled();
   });
@@ -95,5 +95,163 @@ describe('ChatRowContextMenu', () => {
     openMenu();
     const menu = await screen.findByRole('menu');
     expect(menu.className).toContain('no-drag');
+  });
+
+  /**
+   * Owner message 4: Rename and "all the other actions possible there". The
+   * order is fixed (spec 3.4) and text only; the separators are not menu items.
+   */
+  it('lists every action a surface supplies, in the fixed order', async () => {
+    render(
+      <ChatRowContextMenu
+        target={{ sessionId: '20260823_2', openInNewTab: vi.fn() }}
+        onRename={vi.fn()}
+        onDiverge={vi.fn()}
+        onExport={vi.fn()}
+        onDelete={vi.fn()}
+      >
+        <div data-testid="row">Chat</div>
+      </ChatRowContextMenu>
+    );
+    fireEvent.contextMenu(screen.getByTestId('row'));
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.getAttribute('data-chat-row-action'))).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'diverge',
+      'export',
+      'copy-id',
+      'delete',
+    ]);
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toHaveTextContent('F2');
+    expect(screen.getByRole('menuitem', { name: 'Delete chat…' })).toHaveAttribute(
+      'data-variant',
+      'destructive'
+    );
+    expect(screen.getAllByRole('separator')).toHaveLength(3);
+    expect(items.every((item) => item.querySelector('svg') === null)).toBe(true);
+  });
+
+  it('runs the handler of the item that was chosen', async () => {
+    const onRename = vi.fn();
+    const onExport = vi.fn();
+    render(
+      <ChatRowContextMenu
+        target={{ sessionId: '20260823_2', openInNewTab: vi.fn() }}
+        onRename={onRename}
+        onExport={onExport}
+      >
+        <div data-testid="row">Chat</div>
+      </ChatRowContextMenu>
+    );
+    fireEvent.contextMenu(screen.getByTestId('row'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Export…' }));
+    await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+    expect(onRename).not.toHaveBeenCalled();
+  });
+});
+
+describe('chatRowMenuEntries', () => {
+  const target = { sessionId: 's1', openInNewTab: () => {} };
+
+  it('places a surface’s extra items right after Copy chat ID', () => {
+    const entries = chatRowMenuEntries(target, {
+      onDelete: () => {},
+      extraItems: [{ key: 'make-public', label: 'Make this chat public', onSelect: () => {} }],
+    });
+    expect(entries.map((entry) => entry.key)).toEqual([
+      'open-tab',
+      'open-window',
+      'after-open',
+      'copy-id',
+      'make-public',
+      'before-delete',
+      'delete',
+    ]);
+  });
+
+  /**
+   * V2-R6-3. A tab's menu: no opener (it is the open tab), and the two closers in
+   * their own group after the chat's actions. Both are optional handlers, so a
+   * sidebar row, which passes neither, never shows a Close.
+   */
+  it('draws a tab’s closers as their own group, and a surface with none draws no Close', () => {
+    const tab = { sessionId: 's1', openInNewTab: null };
+    expect(
+      chatRowMenuEntries(tab, {
+        onRename: () => {},
+        onCloseTab: () => {},
+        onCloseOtherTabs: () => {},
+      }).map((entry) => entry.key)
+    ).toEqual([
+      'rename',
+      'after-rename',
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+      'close-other-tabs',
+    ]);
+    expect(chatRowMenuEntries(target).map((entry) => entry.key)).not.toContain('before-close');
+    // Close tab alone (a strip with one tab) is not preceded by a stray second hairline.
+    expect(chatRowMenuEntries(tab, { onCloseTab: () => {} }).map((entry) => entry.key)).toEqual([
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+    ]);
+  });
+
+  it('keeps the closers clear of Delete chat when a surface has both', () => {
+    expect(
+      chatRowMenuEntries(target, {
+        onCloseTab: () => {},
+        onDelete: () => {},
+      }).map((entry) => entry.key)
+    ).toEqual([
+      'open-tab',
+      'open-window',
+      'after-open',
+      'copy-id',
+      'before-close',
+      'close-tab',
+      'before-delete',
+      'delete',
+    ]);
+  });
+
+  it('draws an extra item’s note above it, visibly, in the menu', async () => {
+    render(
+      <ChatRowContextMenu
+        target={{ sessionId: 's1', openInNewTab: vi.fn() }}
+        extraItems={[
+          {
+            key: 'make-public',
+            label: 'Make this chat public',
+            onSelect: vi.fn(),
+            disabled: true,
+            note: 'Only the host can make a chat public.',
+            noteTestId: 'declassify-note',
+          },
+        ]}
+      >
+        <div data-testid="row">Chat</div>
+      </ChatRowContextMenu>
+    );
+    fireEvent.contextMenu(screen.getByTestId('row'));
+    const note = await screen.findByTestId('declassify-note');
+    expect(note).toHaveTextContent('Only the host can make a chat public.');
+    const item = screen.getByRole('menuitem', { name: 'Make this chat public' });
+    expect(note.compareDocumentPosition(item)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(item).toHaveAttribute('data-disabled');
+  });
+
+  it('hides the rename hint on a surface without the key', () => {
+    const [rename] = chatRowMenuEntries(target, { onRename: () => {}, renameShortcut: null });
+    expect(rename).toMatchObject({ key: 'rename' });
+    expect(rename).not.toHaveProperty('shortcut');
   });
 });

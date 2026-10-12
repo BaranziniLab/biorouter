@@ -143,7 +143,7 @@ and `foo__.*` both work.
   is skipped and hook resolution is byte-for-byte the previous behavior. Solo users pay
   nothing.
 - **Managed deny works in every mode**, including `Auto`. It rides the existing escalation-only
-  inspection merge, so no later inspector can lower it. A tool the user "Always Allow"-ed
+  inspection merge, so no later inspector can lower it. A tool the user "Always allow"-ed
   silently becomes denied, surfaced as *"Blocked by your organization's managed policy."*
 - **The managed file is read-only** to BioRouter; the agent never writes it. No session,
   `permission.yaml`, or `.biorouter/hooks.yaml` state changes.

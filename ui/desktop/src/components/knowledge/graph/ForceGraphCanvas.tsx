@@ -10,6 +10,7 @@ import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
 import { NODE_RING_ALPHA } from './graphStyle';
 import { graphFitPadding, NODE_REL_SIZE } from './graphFit';
+import { isWindowResizing, motionDuration } from '../../../styles/motion';
 import {
   announce,
   highestDegree,
@@ -173,6 +174,15 @@ function layoutBand(count: number) {
   return { L: 96, strength: 0.12, charge: -200, distanceMax: 380 };
 }
 
+/**
+ * How long a zoom-to-fit glides: the panel tier (`--dur-med`), 0 under reduced motion, and 0
+ * while the window or the sidebar is being resized, because a camera move against a resize is
+ * the jitter principle 9 forbids. It was a literal 500ms here and 400ms on Home.
+ */
+function fitDurationMs(): number {
+  return isWindowResizing() ? 0 : motionDuration('med');
+}
+
 export function ForceGraphCanvas({
   graph,
   model,
@@ -323,7 +333,7 @@ export function ForceGraphCanvas({
     }
 
     const timeout = window.setTimeout(() => {
-      fg.zoomToFit?.(500, graphFitPadding(size.width, size.height, maxRadius));
+      fg.zoomToFit?.(fitDurationMs(), graphFitPadding(size.width, size.height, maxRadius));
     }, 900);
 
     return () => window.clearTimeout(timeout);
@@ -836,7 +846,10 @@ export function ForceGraphCanvas({
           e.preventDefault();
           const top = highestDegree(positioned, degreeOf);
           land(top);
-          fgRef.current?.zoomToFit?.(400, graphFitPadding(size.width, size.height, NODE_REL_SIZE));
+          fgRef.current?.zoomToFit?.(
+            fitDurationMs(),
+            graphFitPadding(size.width, size.height, NODE_REL_SIZE)
+          );
           return;
         }
         case 'Escape': {

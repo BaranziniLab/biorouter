@@ -13,11 +13,23 @@ export const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
   deep: 'Deep',
 };
 
+/**
+ * One line each, read in the effort item's tooltip (spec 3.7), so no trailing
+ * period (copy rules: one-line menu descriptions take none).
+ */
 export const REASONING_EFFORT_DESCRIPTIONS: Record<ReasoningEffort, string> = {
-  quick: 'Fast answers with minimal exploration.',
-  normal: "Use this chat's /effort setting, or the model's default depth.",
-  deep: 'More thinking and exploration.',
+  quick: 'Fast answers, little exploration',
+  normal: "This chat's /effort setting, or the model's default",
+  deep: 'More thinking and exploration',
 };
+
+/**
+ * What the three levels mean, in the InfoTip beside the model menu's Effort slider (R-26): the
+ * descriptions above, as the two sentences an InfoTip holds. The slider's thumb is described by
+ * it, so a screen reader hears it on focus.
+ */
+export const REASONING_EFFORT_HELP =
+  "Quick answers fast with little exploration, and Deep thinks and explores more. Normal uses this chat's /effort setting, or the model's default.";
 
 export function sessionReasoningScope(sessionId: string): string {
   return `session:${sessionId}`;

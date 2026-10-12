@@ -3,11 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 /**
  * How long the Stop control holds its "received" state.
  *
- * Tuned against the motion scale in styles/main.css (--motion-fast 120ms /
- * --motion-base 180ms / --motion-slow 260ms): long enough that the confirmation
- * completes its own transition and is legible as deliberate, short enough that
- * it cannot outlive the stop it is confirming and start lying about a turn that
- * already ended.
+ * Tuned against the motion scale in styles/main.css (`--dur-fast` 125ms,
+ * `--dur-fast-max` 175ms, `--dur-med` 300ms; mirrored as `DUR` in
+ * styles/motion.ts): long enough that the confirmation completes its own
+ * transition and is legible as deliberate, short enough that it cannot outlive
+ * the stop it is confirming and start lying about a turn that already ended.
  */
 export const STOP_ACK_MS = 450;
 

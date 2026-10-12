@@ -18,18 +18,10 @@
   ];
   var SVGNS = 'http://www.w3.org/2000/svg';
 
-  // The BR mark, drawn as the app's boot splash draws it (Inter 800).
-  var MARK = '<svg class="fed-mark" viewBox="0 -74 117 115.1" aria-hidden="true">' +
-    '<text class="b" x="0" y="0" font-size="100">B</text>' +
-    '<text class="r" x="68.14" y="0" font-size="74">R</text>' +
-    '<rect class="b" x="0" y="23.36" width="66.64" height="17.7"/>' +
-    '<rect class="r" x="66.64" y="23.36" width="49.98" height="17.7"/></svg>';
+  // The BR mark: the brand's own file, not letters set in the page.
+  var MARK = '<img class="fed-mark" src="icon-transparent.svg" alt="" width="26" height="26">';
 
-  // The app's model chip: Brain icon, model name, padlock for a private model.
-  var BRAIN = '<svg class="fed-brain" viewBox="0 0 24 24" aria-hidden="true">' +
-    '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>' +
-    '<path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>' +
-    '<path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>';
+  // The app's model chip: the model name and a padlock for a private model (no icon).
 
   var RECORDS = '<svg class="fed-db" viewBox="0 0 18 22" aria-hidden="true">' +
     '<path d="M1.5 4.5v13c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-13"/>' +
@@ -67,7 +59,7 @@
     var sites = SITES.map(function (s) {
       var site = el('div', 'fed-site');
       site.appendChild(el('p', 'fed-head', MARK + '<span>' + s.label + '</span>'));
-      site.appendChild(el('p', 'fed-model', BRAIN + '<span class="fed-mname">' + s.model + '</span><span class="fed-lock"></span>'));
+      site.appendChild(el('p', 'fed-model', '<span class="fed-mname">' + s.model + '</span><span class="fed-lock"></span>'));
       var c = card();
       site.appendChild(c);
       var run = el('div', 'fed-run', '<span class="privacy is-private">Private session</span><span class="fed-bar"><i></i></span>' + CHECK);

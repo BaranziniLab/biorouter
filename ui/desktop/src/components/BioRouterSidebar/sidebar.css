@@ -1,0 +1,607 @@
+/* @ws WS-SIDEBAR begin: the app sidebar (BioRouterSidebar/sidebar.css) */
+/* The app sidebar: Codex density in Crew's recipe (spec 3.4, owner messages
+   1, 3, 4 and 12).
+
+   Every row is 28px (`--row-height-nav`) with a 2px gap, so the pitch is 30px;
+   13px text (`--text-secondary`); a 16px icon at x=16 and the label at x=40 at
+   any sidebar width (8px list inset + 8px row padding, then 16 + 8). Muted ink
+   at rest, default ink on hover and on the current row, which also carries the
+   2px accent rail: Biorouter's one moment of colour in the column.
+
+   Authored rather than utilities at the call sites, as Crew's sidebar is: a
+   newly written Tailwind class can silently fail to generate under
+   `BIOROUTER_NO_HMR`, and several of these need a pseudo-element (the rail), a
+   descendant state (hover-revealed actions) or a rest under reduced motion.
+   These rules are unlayered, so they beat the Tailwind utilities the sidebar
+   primitive still carries (`SidebarMenuButton`'s cva string).
+
+   ⚠ Focus: a background set here beats the D-15 focus fill in `@layer base`,
+   so every rule that paints a row restates the focus fill and the 2px
+   `--border-focus` edge for `:focus-visible` (Crew's T-16). */
+
+/* ── Brand row: 8px above and 4px below a 32px row, 44px in all ─────────── */
+.br-sidebar-brand {
+  flex: none;
+  padding: 8px 8px 4px;
+}
+
+.br-sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-md);
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+.br-sidebar-wordmark {
+  flex: none;
+  width: auto;
+  height: calc(20px * var(--app-font-scale, 1));
+}
+
+/* ── Nav lists: one rhythm for destinations and chats ───────────────────── */
+.br-nav-group {
+  flex: none;
+  padding-inline: 8px;
+}
+
+.br-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-nav-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--row-height-nav);
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: start;
+  background-color: transparent;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-nav-row:hover {
+  background-color: var(--sidebar-hover);
+  color: var(--text-default);
+}
+
+.br-nav-row[data-active='true'],
+.br-nav-row[aria-current='page'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+}
+
+/* The rail: 2px of accent at the leading edge, inset 7px top and bottom. */
+.br-nav-row[data-active='true']::before,
+.br-nav-row[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--accent-bar);
+}
+
+.br-nav-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-nav-row-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+}
+
+.br-nav-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The New chat row's shortcut: shown only while the row is hovered or focused. */
+.br-nav-row-hint {
+  flex: none;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-nav-row:hover .br-nav-row-hint,
+.br-nav-row:focus-visible .br-nav-row-hint {
+  opacity: 1;
+}
+
+/* Crew's unread count: the neutral badge, whose fill is the strong step. That
+   reads on the sidebar at rest, but a lit row IS the strong step (the current
+   row's `--sidebar-active` equals it in light and sits 1.01:1 off it in dark),
+   so on the Crew row while Crew is open the count vanished. On a lit row the
+   badge steps back to the page ground instead: a fill never sits on a fill
+   (R-27 rule 3). Unlayered, so it beats the badge's layered fill
+   (`.br-badge-neutral` in main.css's `@layer components`). */
+.br-nav-row:is(:hover, :focus-visible, [data-active='true'], [aria-current='page'])
+  .br-nav-row-badge {
+  background-color: var(--background-default);
+}
+
+/* The icon is the row's ink (WS-TOKENS-10, vision V1-R2-5): `--sidebar-icon`,
+   the muted label ink, at rest, and the label's own ink when the row is
+   hovered, focused or current, so a lit row never shows two inks. The folder
+   and Chats headers follow the same rule. Before the Update rule below: the
+   two weigh the same (0,3,0), and the Update glyph keeps its accent on hover. */
+.br-nav-row:is(:hover, :focus-visible, [data-active='true'], [aria-current='page'])
+  :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-folder-toggle:is(:hover, :focus-visible) :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-folder[data-menu-open] .br-sidebar-folder-toggle :is(.br-nav-row-icon, .br-nav-chevron),
+.br-sidebar-chats-toggle:is(:hover, :focus-visible) > .br-nav-chevron {
+  color: currentColor;
+}
+
+/* The Update row's download glyph is the accent (principle 7). */
+.br-nav-row[data-tone='update'] .br-nav-row-icon {
+  color: var(--accent-bar);
+}
+
+/* ── Chevrons: a group's turns 90°; only the chevron moves (Crew's rule) ── */
+.br-nav-chevron {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[aria-expanded='true'] > .br-nav-chevron {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+/* ── The Chats section ──────────────────────────────────────────────────── */
+.br-sidebar-chats {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin-block-start: 8px;
+}
+
+.br-sidebar-chats[data-expanded='true'] {
+  flex: 1 1 auto;
+}
+
+.br-sidebar-chats[data-expanded='false'] {
+  flex: none;
+}
+
+/* A 28px header: "Chats" on the left, two 24px icon buttons on the right. */
+.br-sidebar-chats-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: var(--row-height-nav);
+  min-width: 0;
+  margin-inline: 8px;
+  padding-inline-end: 2px;
+}
+
+.br-sidebar-chats-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: start;
+  transition: color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-chats-toggle:hover {
+  color: var(--text-default);
+}
+
+.br-sidebar-chats-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The label takes its own width, so the chevron sits right after "Chats" and not
+   at the far end beside the two buttons, where it would read as theirs. The
+   button still spans the whole space, so a click anywhere on it toggles. */
+.br-sidebar-chats-toggle > .br-nav-row-label {
+  flex: 0 1 auto;
+}
+
+/* The header's chevron shows on hover or focus, and always while collapsed. */
+.br-sidebar-chats-toggle > .br-nav-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-chats-toggle:hover > .br-nav-chevron,
+.br-sidebar-chats-toggle:focus-visible > .br-nav-chevron,
+.br-sidebar-chats-toggle[aria-expanded='false'] > .br-nav-chevron {
+  opacity: 1;
+}
+
+.br-sidebar-chats-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* "View options" stays pressed while its menu is open, so the menu reads as
+   coming from it once the pointer has moved into the menu (the ghost's hover
+   tint goes with the pointer). Pressed is the strong fill: on the sidebar, a
+   recessed ground, that is the step every fill takes (R-27 rule 2). A row or
+   a folder header whose menu is open is lit instead (`data-menu-open`, below),
+   so its ⋯ needs no state of its own. Read by `aria-expanded`: the tooltip
+   around the trigger overwrites its `data-state` (see the folder actions). */
+.br-sidebar-chats-actions [aria-haspopup='menu'][aria-expanded='true'] {
+  background-color: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+/* The scrolling list: an 8px inset on both sides and a 10px fade at the
+   bottom edge, so the last row never clips mid-glyph against the footer
+   (F-30). `scroll-padding` keeps a row the keyboard brings into view clear of
+   both fades (the browser's focus scroll and `scrollRowIntoView` read it). */
+.br-sidebar-chats-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 8px 10px;
+  scroll-padding-block: var(--scroll-fade-top) 10px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+}
+
+/* Scrolled off its top (`data-scrolled`, set by `RecentChats` from
+   `scrollTop > 0`), the list fades its top edge as well (vision V1-R4-2), so a
+   date label or a row cut by the Chats header fades out instead of being
+   sliced through. It is the app's scroll-edge fade (`--scroll-fade-clear`
+   fully clear, then up to `--scroll-fade-top`, as in Settings): two clear
+   pixels leave no sliver of a lit row's fill at the cut. At rest the top is not
+   faded: the first label has nothing above it to hide. */
+.br-sidebar-chats-scroll[data-scrolled='true'] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - 10px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent var(--scroll-fade-clear),
+    #000 var(--scroll-fade-top),
+    #000 calc(100% - 10px),
+    transparent
+  );
+}
+
+/* While a row's menu is open (the right-click menu or a ⋯; neither is modal,
+   R-28) the list is modal itself (vision V1-R5-2): its rows take no pointer, so
+   no other row lights or opens its hover card over the menu, and the press that
+   closes the menu lands on the list box, so the click it makes opens no chat.
+   The row the menu is about stays lit by `data-menu-open`, and its ⋯ stays by
+   `aria-expanded`. Scoped to the list's own subtree (about 40 drawn rows), not
+   to <body>, which is the restyle the non-modal menu exists to avoid. The list
+   also stops scrolling (`RecentChats`). */
+.br-sidebar-chats-scroll[data-row-menu-open] .br-sidebar-chat-groups {
+  pointer-events: none;
+}
+
+/* A view change re-renders the list at rest and fades it from 0.6; rows never FLIP. */
+.br-sidebar-chat-groups[data-view-changed='true'] {
+  animation: br-sidebar-list-settle var(--dur-fast-max) var(--ease-out);
+}
+
+@keyframes br-sidebar-list-settle {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.br-sidebar-group + .br-sidebar-group {
+  margin-block-start: 4px;
+}
+
+/* Date buckets: a quiet 12px label, 12px above and 4px below. */
+.br-sidebar-bucket {
+  margin: 0;
+  padding: 12px 8px 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-subtle);
+}
+
+.br-sidebar-group:first-child > .br-sidebar-bucket {
+  padding-top: 4px;
+}
+
+/* A folder group's header: Crew's team header at the sidebar's pitch. The
+   hover ground covers the whole header, its + and ⋯ included. */
+.br-sidebar-folder {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--row-height-nav);
+  margin-block-end: 2px;
+  padding-inline-end: 2px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-folder:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.br-sidebar-folder-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-muted);
+  text-align: start;
+}
+
+.br-sidebar-folder-toggle:hover {
+  color: var(--text-default);
+}
+
+.br-sidebar-folder-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* While a row's menu is open the pointer is over the menu, not the row, so the
+   row would lose its hover ground and stop reading as the thing the menu is
+   about. It keeps the hover ground until the menu closes (the current row
+   keeps its own, stronger one). `data-menu-open` is set by the row/header that
+   owns the menu. */
+.br-chat-row-item[data-menu-open] > .br-chat-row:not([aria-current='page']),
+.br-sidebar-folder[data-menu-open] {
+  background-color: var(--sidebar-hover);
+}
+
+.br-chat-row-item[data-menu-open] > .br-chat-row,
+.br-sidebar-folder[data-menu-open] .br-sidebar-folder-toggle {
+  color: var(--text-default);
+}
+
+/* ── Hover-revealed actions: opacity only, so they stay in the a11y tree ── */
+.br-sidebar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* An open menu keeps its trigger on screen. The trigger is read by
+   `aria-expanded`, not `data-state`: each ⋯ sits inside a TooltipTrigger, and
+   the tooltip's `data-state` ('closed') overwrites the menu's on the same
+   element, so a `[data-state='open']` rule never matched and the ⋯ vanished
+   under its own open menu (measured in Chromium). */
+.br-sidebar-folder:hover .br-sidebar-actions,
+.br-sidebar-folder:focus-within .br-sidebar-actions,
+.br-sidebar-actions:has([aria-haspopup='menu'][aria-expanded='true']) {
+  opacity: 1;
+}
+
+/* ── A chat row ─────────────────────────────────────────────────────────── */
+.br-chat-row-item {
+  position: relative;
+  min-width: 0;
+}
+
+/* Rows the list holds but does not draw, far from the viewport (R-28): one
+   box exactly the height of the `--br-gap-lines` lines it stands for, each a
+   `--row-height-nav` row (a chat, an editor or "Show more") with the 2px
+   `.br-nav-list` puts between rows, so the scroll height and every drawn
+   row's place are the same as with real rows. The Text size preference
+   scales the row token and that 2px gap (`vite-plugins/fontScale.mjs`), but
+   not a `height`, so the 2px here says its scale itself: under Larger text a
+   line is 34.5px, and an unscaled 2px drifted 0.3px a line. */
+.br-chat-row-gap {
+  flex: none;
+  height: calc(
+    var(--br-gap-lines, 1) * (var(--row-height-nav) + 2px * var(--app-font-scale, 1)) - 2px *
+      var(--app-font-scale, 1)
+  );
+}
+
+/* The kind glyph keeps its 16px slot however long the title is; the glyph's
+   own `flex-none` is a Tailwind class, and this column must not depend on one
+   having been generated. */
+.br-chat-row .br-chat-kind-icon {
+  flex: none;
+}
+
+/* The 16px trailing slot: the running ring at rest, the ⋯ on hover or focus. */
+.br-chat-row-trailing {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* The ⋯ sits over the trailing slot: 24px, centred on it (row padding 8 −
+   (24 − 16) / 2 = 4px from the row's end), vertically centred in 28px. */
+.br-chat-row-more {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-end: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* `aria-expanded`, not `data-state`: see the folder actions above. */
+.br-chat-row-item:hover .br-chat-row-more,
+.br-chat-row-item:focus-within .br-chat-row-more,
+.br-chat-row-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+.br-chat-row-item:hover .br-chat-row-trailing,
+.br-chat-row-item:focus-within .br-chat-row-trailing,
+.br-chat-row-item:has(.br-chat-row-more[aria-expanded='true']) .br-chat-row-trailing {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .br-sidebar-actions,
+  .br-chat-row-more {
+    opacity: 1;
+  }
+
+  .br-chat-row-trailing {
+    opacity: 0;
+  }
+}
+
+/* The running ring: one keyframe on a 12px element, paused while it is off
+   screen or the window is hidden (Codex's sidebar spinner held the GPU at
+   70%). A still ring under reduced motion (the global reset). */
+.br-chat-row-ring {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: br-chat-row-spin calc(var(--dur-slow) * 2) linear infinite;
+}
+
+.br-chat-row-ring[data-offscreen='true'],
+[data-document-hidden='true'] .br-chat-row-ring {
+  animation-play-state: paused;
+}
+
+@keyframes br-chat-row-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Rename in place: the row keeps its 28px box; the input is 24px. */
+.br-chat-row[data-editing='true'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+}
+
+/* The editor is a focused field (R-27, design.md 9.11): it rests on the page
+   ground because its row is already the strong fill (a fill never sits on a
+   fill), and its edge is a real 1px BORDER in `--border-focus`, the field's own
+   focus edge, not a box-shadow ring: forced colours strip a shadow and keep a
+   border, so the editor stays outlined there. The border takes 1px of the
+   padding (3 + 1 = 4), so the typed text still starts on the label column. */
+.br-chat-row-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  margin-inline-start: -4px;
+  padding: 0 3px;
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius-inner);
+  background-color: var(--background-default);
+  font: inherit;
+  color: var(--text-default);
+  outline: none;
+}
+
+/* "Show more" under a folder's first five chats, and the list's foot. */
+.br-sidebar-quiet-row {
+  color: var(--text-subtle);
+  /* "Show more" belongs to the chats above it, so its label sits in the label
+     column (x=40: 8 row padding + a 16px glyph slot + the 8px gap), not under
+     the glyphs. */
+  padding-inline-start: calc(8px + var(--icon-row) + 8px);
+}
+
+.br-sidebar-foot {
+  margin: 0;
+  padding: 8px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-subtle);
+}
+
+/* ── Footer: a full-bleed hairline, then Update and Settings ────────────── */
+.br-sidebar-footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-block-start: 1px solid var(--sidebar-border);
+}
+
+@media (forced-colors: active) {
+  .br-nav-row[data-active='true']::before,
+  .br-nav-row[aria-current='page']::before {
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
+}
+/* @ws WS-SIDEBAR end: the app sidebar */

@@ -65,7 +65,7 @@ export function PrivacyTiersOffNote({
         </Button>
       }
     >
-      <strong>{copy.headline}</strong> {copy.how && <>{copy.how} </>}
+      <strong className="font-semibold">{copy.headline}</strong> {copy.how && <>{copy.how} </>}
       {PRIVACY_TIERS_OFF_CONSEQUENCE}
       <RecordedIn path={copy.path} />
     </Note>
