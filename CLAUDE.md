@@ -745,7 +745,10 @@ prompt both catalog models made structured tool calls reliably.
   sticky per instance, text held until the size check passes.
 - **Every request streams**, blocking ones collected, so `OLLAMA_TIMEOUT`
   (600 s) bounds silence, never a whole generation; a timeout is never retried
-  (`TimeoutRetry::GiveUp`), a connection failure still is. An unpinned turn gets
+  (`TimeoutRetry::GiveUp`), a connection failure still is. One before the reply
+  begins is `ProviderError::IdleTimeout`, naming the seconds, the prompt's rough
+  size and the setting, and the agent does not re-send it either (it used to,
+  as a network blip: diagnostics 20261006_2). An unpinned turn gets
   `num_predict` 16384, or 32768 when the model may think.
 - **Thinking:** `think` only to models whose `/api/show` capabilities include
   `thinking` (others answer `think:true` with a 400). Quick sends `false`;
@@ -856,14 +859,22 @@ prompt both catalog models made structured tool calls reliably.
     beyond a ceiling for the reasoning (characters/2 + 16 tokens) plus 8, else
     "returned reasoning only (N output tokens)"; a reply cut at `length`, or
     one with no reasoning and at most 8 tokens, fails at once; (3) a WHOLE reply
-    that is a call recovery declined (`text_tool_calls::attempted_call`: a name
+    that is a call recovery declined (`text_tool_calls::attempted_calls`: a name
     without its `extension__` prefix, arguments that do not fit, the
-    `<tool_response>` tag), whose name stands for an offered tool. That one
+    `<tool_response>` tag; several objects or an array, each one naming an
+    offered tool), whose name stands for an offered tool. That one
     asks rather than orders, is skipped when the call echoes the conversation
     (made by an earlier turn, or quoted in a tool result or earlier assistant
     reply; `echoes_conversation`), and is best-effort: if it cannot be sent,
     fails or comes back empty, the turn ends with the reply already shown. A
     retry after shown text starts a new paragraph.
+  - **A reply of calls nothing ran is SAID, never run** (diagnostics
+    20261006_2): when a turn that offered tools ends on a reply made only of
+    call objects written as text (`whole_reply_call_names`), `agents::reply_parts`
+    adds one user-only inline notice after it ("Nothing ran: ..."), for every
+    provider. It is stored, so a reload shows it, and every wire format drops it
+    because it is not agent-visible. Calls Code Execution hides (`shell`,
+    `text_editor`) still get no retry: the provider cannot see them.
   - **Tool roster for templates that hide tools** (R8): when `/api/show`'s
     template shows tools only next to the last user message (llama3.1,
     mistral-small3.2, mistral-nemo; `ModelFacts::tools_only_near_last_user`),
