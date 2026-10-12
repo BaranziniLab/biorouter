@@ -56,6 +56,16 @@ interface CustomProviderFormProps {
   actionsHost?: HTMLElement | null;
 }
 
+/** The form's engine choice for a saved definition's engine. */
+const engineFor = (initialData: UpdateCustomProviderRequest | null): string => {
+  const engineMap: Record<string, string> = {
+    openai: 'openai_compatible',
+    anthropic: 'anthropic_compatible',
+    ollama: 'ollama_compatible',
+  };
+  return (initialData && engineMap[initialData.engine]) || 'openai_compatible';
+};
+
 export default function CustomProviderForm({
   onSubmit,
   onCancel,
@@ -76,25 +86,25 @@ export default function CustomProviderForm({
    * person asked. Typing the key again replaces it, and that is allowed.
    */
   const urlNeedsTypedKey = keepsSavedKey && isBrowserSurface();
-  const [engine, setEngine] = useState('openai_compatible');
-  const [displayName, setDisplayName] = useState('');
-  const [apiUrl, setApiUrl] = useState('');
+  // An edit starts from its definition in the first frame, not one effect later, so the submit
+  // button below is drawn in its final colour at once (principle 9). The effect still follows a
+  // definition that changes while the form is open.
+  const [engine, setEngine] = useState(() => engineFor(initialData));
+  const [displayName, setDisplayName] = useState(() => initialData?.display_name ?? '');
+  const [apiUrl, setApiUrl] = useState(() => initialData?.api_url ?? '');
   const [apiKey, setApiKey] = useState('');
-  const [models, setModels] = useState('');
+  const [models, setModels] = useState(() => initialData?.models.join(', ') ?? '');
   const [isLocalModel, setIsLocalModel] = useState(false);
-  const [supportsStreaming, setSupportsStreaming] = useState(true);
+  const [supportsStreaming, setSupportsStreaming] = useState(
+    () => initialData?.supports_streaming ?? true
+  );
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (initialData) {
-      const engineMap: Record<string, string> = {
-        openai: 'openai_compatible',
-        anthropic: 'anthropic_compatible',
-        ollama: 'ollama_compatible',
-      };
-      setEngine(engineMap[initialData.engine] || 'openai_compatible');
+      setEngine(engineFor(initialData));
       setDisplayName(initialData.display_name);
       setApiUrl(initialData.api_url);
       setModels(initialData.models.join(', '));
@@ -167,12 +177,27 @@ export default function CustomProviderForm({
         ? 'Anthropic compatible'
         : 'Ollama compatible';
 
+  /**
+   * Every field the submit would ask for has a value: the button is the coral primary only then,
+   * secondary before, the rule the Configure dialog's Save, "Detect provider" and Versa's "Connect"
+   * follow on the same path (vision FR-R3-3). It stays clickable, so a click names what is missing.
+   */
+  const ready =
+    Boolean(displayName && apiUrl && models.trim()) &&
+    (isLocalModel || Boolean(apiKey) || keepsSavedKey) &&
+    !(urlNeedsTypedKey && !apiKey && apiUrl !== initialData?.api_url);
+
   const actions = (
     <>
       <Button type="button" variant="secondary" onClick={onCancel}>
         {customProviderCopy.cancel}
       </Button>
-      <Button type="submit" form={formId} disabled={saving}>
+      <Button
+        type="submit"
+        form={formId}
+        variant={ready ? 'default' : 'secondary'}
+        disabled={saving}
+      >
         {initialData
           ? keepsSavedKey
             ? customProviderCopy.update

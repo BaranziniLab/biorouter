@@ -369,6 +369,72 @@ describe('CustomProviderForm for a provider with no key saved', () => {
 });
 
 /**
+ * Vision FR-R3-3, on the same path: Add provider's "Create provider" was coral with nothing typed,
+ * beside a Configure dialog whose Save is now secondary until its key is in. The submit follows the
+ * one rule: secondary until every field it would ask for has a value, coral once it can act.
+ */
+describe('CustomProviderForm submit is coral only once it can act', () => {
+  const coral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
+
+  it('stays secondary on an empty form and turns coral once every field is in', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    const create = screen.getByRole('button', { name: customProviderCopy.create });
+    expect(coral(create)).toBe(false);
+    expect(create).toHaveClass('br-fill-rest');
+    const type = (selector: string, value: string) =>
+      fireEvent.change(container.querySelector(selector) as HTMLInputElement, {
+        target: { value },
+      });
+    type('#display-name', 'Lab gateway');
+    type('#api-url', 'https://gateway.example.org/v1');
+    type('#available-models', 'model-a');
+    expect(coral(create), 'still no key').toBe(false);
+    type('#api-key', 'sk-test');
+    expect(coral(create)).toBe(true);
+  });
+
+  it('counts a local model as needing no key', () => {
+    const { container } = render(
+      <CustomProviderForm onSubmit={vi.fn()} onCancel={vi.fn()} initialData={null} isEditable />
+    );
+    for (const [selector, value] of [
+      ['#display-name', 'Local'],
+      ['#api-url', 'http://127.0.0.1:8080/v1'],
+      ['#available-models', 'm'],
+    ]) {
+      fireEvent.change(container.querySelector(selector) as HTMLInputElement, {
+        target: { value },
+      });
+    }
+    fireEvent.click(container.querySelector('#local-model') as HTMLInputElement);
+    expect(coral(screen.getByRole('button', { name: customProviderCopy.create }))).toBe(true);
+  });
+
+  it('draws an edit with a saved key coral, from its definition', () => {
+    render(
+      <CustomProviderForm
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        initialData={{
+          engine: 'openai',
+          display_name: 'DeepSeek',
+          api_url: 'https://api.deepseek.com',
+          api_key: '',
+          models: ['deepseek-chat'],
+          supports_streaming: true,
+        }}
+        isEditable
+        hasSavedKey
+      />
+    );
+    expect(coral(screen.getByRole('button', { name: customProviderCopy.update }))).toBe(true);
+    expect(screen.getByDisplayValue('DeepSeek')).toBeInTheDocument();
+  });
+});
+
+/**
  * W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
  * decides where a provider sends its requests and key cannot be changed: the
  * daemon asks for a proof of a person a browser can never send. The field is
