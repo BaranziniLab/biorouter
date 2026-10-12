@@ -125,6 +125,79 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
+/** sRGB channels on 0..255 (gamma encoded, not rounded) and alpha on 0..1. */
+type Rgba = [number, number, number, number];
+
+/** OKLab to gamma-encoded sRGB on 0..255 (Ottosson's matrices, the sRGB transfer curve). */
+const oklabToSrgb = (L: number, a: number, b: number): [number, number, number] => {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const linear = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+  return linear.map((v) => {
+    const c = Math.min(1, Math.max(0, v));
+    return 255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+  }) as [number, number, number];
+};
+
+/**
+ * A computed colour as the engine serialises it: `rgb()`/`rgba()` for a plain colour, and
+ * `oklab(L a b / α)` for the row's wash, `--overlay-hover`, a `color-mix(in oklab, …)`. Any other
+ * shape throws, so a token that starts computing to a new syntax fails here by name instead of
+ * measuring nonsense.
+ */
+const parseColour = (value: string): Rgba => {
+  const num = (s: string, percentOf = 1) =>
+    s.endsWith('%') ? (parseFloat(s) / 100) * percentOf : s === 'none' ? 0 : parseFloat(s);
+  const rgb = /^rgba?\(([^)]+)\)$/.exec(value);
+  if (rgb) {
+    const [r, g, b, a = '1'] = rgb[1].split(/[\s,/]+/).filter(Boolean);
+    return [num(r, 255), num(g, 255), num(b, 255), num(a)];
+  }
+  const oklab = /^oklab\(([^)]+)\)$/.exec(value);
+  if (oklab) {
+    const [L, a, b, alpha = '1'] = oklab[1].split(/[\s/]+/).filter(Boolean);
+    return [...oklabToSrgb(num(L), num(a, 0.4), num(b, 0.4)), num(alpha)];
+  }
+  throw new Error(`groundsAndRows: no parser for the computed colour ${JSON.stringify(value)}`);
+};
+
+/** `top` over `under` (source-over), in float in gamma-encoded sRGB, the space browsers blend in. */
+const over = ([tr, tg, tb, ta]: Rgba, [ur, ug, ub, ua]: Rgba): Rgba => {
+  const alpha = ta + ua * (1 - ta);
+  if (alpha === 0) return [0, 0, 0, 0];
+  const mix = (t: number, u: number) => (t * ta + u * ua * (1 - ta)) / alpha;
+  return [mix(tr, ur), mix(tg, ug), mix(tb, ub), alpha];
+};
+
+/**
+ * What an element's own background paints, composited exactly: its computed background colour
+ * over each ancestor's, down to the first opaque one. Every layer must be a plain colour (no
+ * `background-image`), and some layer must be opaque, or this throws rather than guess.
+ */
+const exactGround = async (tab: Page, selector: string): Promise<Rgba> => {
+  const layers = await tab.evaluate((s) => {
+    const out: { color: string; image: string }[] = [];
+    for (let el: Element | null = document.querySelector(s); el; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      out.push({ color: style.backgroundColor, image: style.backgroundImage });
+    }
+    return out;
+  }, selector);
+  const parsed = layers.map((layer) => ({ ...layer, rgba: parseColour(layer.color) }));
+  const floor = parsed.findIndex((layer) => layer.rgba[3] === 1);
+  if (floor < 0) throw new Error(`groundsAndRows: nothing opaque under ${selector}`);
+  const stack = parsed.slice(0, floor + 1);
+  const imaged = stack.find((layer) => layer.image !== 'none');
+  if (imaged)
+    throw new Error(`groundsAndRows: a background image under ${selector}: ${imaged.image}`);
+  return stack.reduceRight<Rgba>((under, layer) => over(layer.rgba, under), [0, 0, 0, 0]);
+};
+
 describe('the grounds and the rows, said once', () => {
   let browser: Browser | null = null;
   let script = '';
@@ -352,7 +425,18 @@ describe('the grounds and the rows, said once', () => {
     }
   });
 
-  /** WCAG relative luminance of a pixel, and the contrast ratio of two. */
+  /** Every finite animation and transition on the page has finished (a hover's ease included). */
+  const settle = (tab: Page) =>
+    tab.evaluate(() =>
+      Promise.all(
+        document
+          .getAnimations()
+          .filter((a) => Number.isFinite(a.effect?.getComputedTiming().endTime))
+          .map((a) => a.finished.catch(() => undefined))
+      ).then(() => undefined)
+    );
+
+  /** WCAG relative luminance of a colour (sRGB on 0..255), and the contrast ratio of two. */
   const ratio = (a: number[], b: number[]) => {
     const lum = ([r, g, bl]: number[]) => {
       const c = [r, g, bl].map((v) => {
@@ -383,7 +467,8 @@ describe('the grounds and the rows, said once', () => {
           const row = document.querySelector('#lined [data-row="2"]')!;
           row.insertBefore(probe, row.children[1]);
         });
-        // The pixels: the wash (the row's left gutter), the badge's padding, the probe.
+        await settle(tab);
+        // The pixels of the two opaque colours: the badge's padding and the probe.
         const at = async (x: number, y: number) => {
           const shot = await tab.screenshot({ clip: { x, y, width: 1, height: 1 } });
           const png = await tab.evaluate(async (b64) => {
@@ -400,14 +485,38 @@ describe('the grounds and the rows, said once', () => {
         };
         const badgeBox = (await (await tab.$('#lined [data-row="2"] .row-badge'))!.boundingBox())!;
         const probeBox = (await (await tab.$('#strong-probe'))!.boundingBox())!;
-        const wash = await at(box.x + 2, box.y + box.height / 2);
         const badge = await at(badgeBox.x + 2, badgeBox.y + badgeBox.height / 2);
         const strong = await at(probeBox.x + 6, probeBox.y + 6);
+        // The wash is the one translucent colour here: `--overlay-hover`, 5% of the ink, over the
+        // page ground. An 8-bit screen rounds it by raster backend, so it is composited exactly
+        // from the computed colours instead, and the screen (the row's left gutter) is held to
+        // within one 8-bit step of that. The badge and the probe are opaque and read exactly on
+        // every backend.
+        const washed = '#lined [data-row="2"]';
+        expect(await ground(tab, washed), `${mode}: the row holds the settled wash`).toBe(
+          await paint(tab, 'var(--overlay-hover)', washed)
+        );
+        const wash = await exactGround(tab, washed);
+        const screen = await at(box.x + 2, box.y + box.height / 2);
+        for (const c of [0, 1, 2])
+          expect(
+            Math.abs(screen[c] - wash[c]),
+            `${mode}: the screen's wash ${JSON.stringify(screen)} is the exact ${JSON.stringify(wash)}`
+          ).toBeLessThanOrEqual(1);
         const now = ratio(badge, wash);
         const before = ratio(strong, wash);
-        // Measured 2026-10-11: the wash is #f4f4f4 light, #262623 dark; the strong step stood
-        // 1.10:1 and 1.08:1 off it, the page ground stands 1.10:1 and 1.14:1 off it, lighter than
-        // the wash in light and darker in dark, as the row's button does.
+        // Measured 2026-10-12 in Chrome 155. The badge rests on the page ground, #ffffff light and
+        // #1b1b19 dark; the strong step is #eaeae6 and #2c2c29. The wash is exactly
+        // [244.35,244.10,243.85] light and [37.85,37.65,35.25] dark; the strong step stands
+        // 1.0980:1 and 1.0871:1 off it, the page ground 1.0986:1 and 1.1329:1 (lighter than the
+        // wash in light and darker in dark, as the row's button does), so dark grows by 0.0458.
+        // The screen rounds the dark wash to [38,38,35] with GPU raster (macOS: 1.0834 to 1.1368,
+        // +0.0534) and to [37,37,35] with the CPU raster of CI's GPU-less Linux runner (1.0964 to
+        // 1.1233, +0.0269, which failed the 0.04 bound when the wash was read off the screen): one
+        // 8-bit step at #25/#26 moves the delta by 0.027, more than the claim's 0.006 margin, so
+        // the claim is measured on the colour the tokens define. On a CPU-rastered screen the dark
+        // step a person sees really is that 0.027; holding the claim there is a token change, not
+        // a test change. Light is backend-independent here (the screen reads [244,244,244] on both).
         expect(before, `${mode}: the strong step on the wash (the defect)`).toBeLessThan(1.1);
         expect(
           now,
