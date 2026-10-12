@@ -292,3 +292,31 @@ describe('dialog motion', () => {
     );
   });
 });
+
+/**
+ * Spec 2.6, V3-R7-1: once the last raw content moved onto `ModalShell` (the non-private model
+ * disclosure, ruling 23), the primitive's `p-6 gap-4 sm:max-w-lg` defaults went, so a raw content
+ * cannot drift into a near-miss dialog (24px insets, 512 wide). `rawDialogContent.sourceGuard`
+ * holds the call sites; this holds the primitive.
+ */
+describe('DialogContent carries no inset, gap or width default', () => {
+  it('renders a raw content with none of the three, and keeps the small-screen clamp', async () => {
+    const user = userEvent.setup();
+    render(<ControlledDialog />);
+    await user.click(screen.getByRole('button', { name: 'Open dialog' }));
+    const classes = Array.from(screen.getByRole('dialog').classList);
+    expect(classes.filter((c) => /^(sm:)?(p|px|py|pt|pb|gap)-\d/.test(c))).toEqual([]);
+    expect(classes.filter((c) => c.includes('max-w'))).toEqual(['max-w-[calc(100%-2rem)]']);
+  });
+
+  it('still takes a caller’s own inset, gap and width', async () => {
+    render(
+      <Dialog open>
+        <DialogContent aria-describedby={undefined} className="gap-3 p-4 sm:max-w-[400px]">
+          <DialogTitle>Sized by its caller</DialogTitle>
+        </DialogContent>
+      </Dialog>
+    );
+    expect(screen.getByRole('dialog')).toHaveClass('gap-3', 'p-4', 'sm:max-w-[400px]');
+  });
+});

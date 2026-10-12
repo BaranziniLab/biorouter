@@ -347,7 +347,12 @@ function DialogContent({
           // Motion (spec 2.6) is `.br-dialog-motion` in main.css: opacity and scale(.98) to 1
           // over `--dur-med-min` in, back to .98 over `--dur-fast` out, `--ease-out`; the
           // tw-animate utilities are only its carriers.
-          'biorouter-modal-surface br-dialog-motion bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 p-6 sm:max-w-lg',
+          // No inset, gap or width default either (spec 2.6, V3-R7-1): every dialog is a
+          // `ModalShell`, which owns the size scale and the 16px section insets. The old
+          // `p-6 gap-4 sm:max-w-lg` was the shape a raw content drifted to (24px insets, 512 wide,
+          // centred) while the shell overrode all three, so a new raw `DialogContent` now renders
+          // with no insets and is caught on sight rather than passing as a near-miss dialog.
+          'biorouter-modal-surface br-dialog-motion bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%]',
           className
         )}
         onEscapeKeyDown={(event) => {
