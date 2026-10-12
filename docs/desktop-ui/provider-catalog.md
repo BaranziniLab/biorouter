@@ -99,7 +99,8 @@ Three details keep one list reading as one list (V4-26):
   ended with one). A description of several sentences keeps its punctuation. The line's tooltip, which opens only
   while the line is cut off, is the same face.
 - **A row whose daemon description is not a line gets a renderer summary** (`providerRowSummary`): the two Versa
-  rows ("UCSF · GPT models · API key", "UCSF · Claude models · access key and secret"; the daemon's read
+  rows ("GPT models · API key", "Claude models · access key and secret": no "UCSF ·" prefix, since the rows sit
+  under the UCSF section label and the prefix said it three times in a row, FR-R4-5; the daemon's read
   "API Key only; endpoint and deployment are pre-configured" and "Access key + secret only"), GitHub Copilot
   ("Your GitHub Copilot subscription · token"; the daemon's told a person to run `biorouter configure`, while its
   Configure dialog asks for a token) and Xiaomi MiMo (the daemon's named `XIAOMI_MIMO_HOST`). The daemon's
@@ -218,20 +219,28 @@ the enum branch of `components/ui/JsonSchemaForm.tsx`, are not this card's and w
 
 Under the select the panel says one line, the Settings row's facts line (`settings/models/localModelFacts.ts`,
 read by both surfaces: speed, context window, and "Large for this Mac" only when the daemon reports the
-model above this machine's recommendation), as the closed summary of a "Details" disclosure. The panel's line
+model above this machine's recommendation), as the closed summary of an "Advanced" disclosure. The panel's line
 leaves out the size (`factsLine(model, { size: false })`), because the option and the button already say it;
-three copies of "7.6 GB" in three lines was FR-R2-6. Details holds the model's description, the download note,
-the speed hint, the context window ("Context: 256k", `localModelsCopy.contextAmount`: opening Details used to drop
+three copies of "7.6 GB" in three lines was FR-R2-6. Advanced holds the model's description, the download note,
+the speed hint, the context window ("Context: 256k", `localModelsCopy.contextAmount`: opening the disclosure used to drop
 the summary's one number, FR-R3-6), a Memory row that says the fit in words with the two numbers it rests on ("Fits this Mac (128
-GiB unified memory, 32 GiB recommended)", `fitLine`, from the daemon's `suitability_status`; the daemon's own
+GB unified memory, 32 GB recommended)", `fitLine`, from the daemon's `suitability_status`; the daemon's own
 sentence repeated its label and printed `apple_unified`), the Windows RAM caveat on Windows, the Ollama tag,
 the fallback download (the label "Fallback download", shared with the Settings info dialog, then the spec in mono
 and where it stands as a muted word: "Downloaded", "Partial", "Only if needed"; the label used to read "Fallback
 GGUF, may download"), the model file and the model store, as sans labels over values, the machine values in mono at
 12px; no box. Then the one action on the 32px rung: "Start", "Download and start (9.6 GB)" or "Resume and start".
 A status shows only with news (running, warm-up needed, binary missing). It used to be a box of seven lines and an
-unconditional "above the 16 GB laptop tier" warning that fired on the model the app recommends for a 128 GiB
+unconditional "above the 16 GB laptop tier" warning that fired on the model the app recommends for a 128 GB
 machine, and it pushed the only action below the fold (first-run vision FR-R1-3, FR-R1-4, FR-S-2).
+
+Every disclosure on the first-run path says the same word, "Advanced", with a summary joined by "·" beside it
+while it is closed (FR-R4-5): this panel's facts line, Versa's "Endpoint · API version" and "Endpoint · Region",
+and the Configure dialogs' optional fields, summarised by their labels ("Organization · Project · Custom headers ·
+Timeout"). They used to read "Details", "Advanced" with a comma list, and "Show 4 options". Memory is written in GB,
+the unit of the download sizes beside it (`localModelsCopy.gigabytes`, used by the Memory row, the Settings info
+dialog and Switch models): the panel said "7.6 GB" in its button and "128 GiB" a line below. The Configure
+dialog's title InfoTip is named for the provider, "About Amazon Bedrock", not "About Configure Amazon Bedrock".
 
 The panel opens on a model at once: until a person picks one, it reads the model straight from the status (the
 running model, else the catalog's default, else its first entry), and the pick starts from the store's status. It
