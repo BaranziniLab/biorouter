@@ -93,12 +93,50 @@ Three details keep one list reading as one list (V4-26):
   pill ("Ready · signed in on your subscription") would be the same news twice. Every state that needs
   attention keeps its pill, and so does a ready agent that is not set up yet, because the pill is what
   invites the "Use" in its panel.
-- **The daemon's backticks are drawn as inline code** (`InlineCodeText`): a description it serves as
-  ``…installed `claude` command-line app`` shows `claude` in mono, not with the marks. Only a closed pair on
-  one line counts, and nothing is interpreted as markup.
+- **A description is one line in one face** (`providerRowLine` in `copy.ts`, first-run vision FR-R3-4): the
+  daemon's backticks are dropped rather than drawn as a mono run (``Run `biorouter configure` …`` mixed two
+  families in one line), and a one-sentence line drops its closing period, as a label does (6 of 22 public lines
+  ended with one). A description of several sentences keeps its punctuation. The line's tooltip, which opens only
+  while the line is cut off, is the same face.
+- **A row whose daemon description is not a line gets a renderer summary** (`providerRowSummary`): the two Versa
+  rows ("UCSF · GPT models · API key", "UCSF · Claude models · access key and secret"; the daemon's read
+  "API Key only; endpoint and deployment are pre-configured" and "Access key + secret only"), GitHub Copilot
+  ("Your GitHub Copilot subscription · token"; the daemon's told a person to run `biorouter configure`, while its
+  Configure dialog asks for a token) and Xiaomi MiMo (the daemon's named `XIAOMI_MIMO_HOST`). The daemon's
+  sentence stays the row control's accessible description, as for the coding agents. Daemon strings are unchanged.
 
-An open agent's panel keeps its buttons at the `sm` size and shows the CLI's version as a line; where the
-CLI lives is a path, so it is the line's tooltip (principle 10), not a mono line on the row.
+An open agent's panel keeps its buttons at the `sm` size and shows one line in one shape for both vendors
+(FR-R3-6): "Version 2.1.283 · Max plan · ada@example.edu" and "Version 0.157.1". `agentVersionNumber` takes the
+number out of the CLI's raw `--version` line ("2.1.283 (Claude Code)", "codex-cli 0.157.1"), the number is mono at
+the line's 12px (a version is a machine string) and the rest is the line's sans face. Where the CLI lives is a
+path, so it is the line's tooltip (principle 10), not a mono line on the row.
+
+## The catalog's dialogs have one anatomy
+
+Configure (every built-in provider), Add provider and a custom or declarative provider's edit are one dialog
+(first-run vision FR-R3-2, ruling 7): the title over the header rule, the fields in a body that scrolls, and the
+actions in ModalShell's footer under its rule.
+
+- **Add provider's actions are in the footer.** `CustomProviderDialog` (`CustomProviderForm.tsx`) opens the form in
+  ModalShell and hands the footer to the form as `actionsHost`; the form keeps its own state and buttons and
+  portals them there, and the submit button names the form with `form=` because it is no longer inside it. The
+  form still lives in the dialog's content, so it unmounts with the dialog and opens empty the next time. With no
+  host (the form alone, in a test) the buttons stay at the form's end. At 1048x700 the body scrolls and the
+  buttons do not move (`customProviderForm.browser.test.tsx`).
+- **No subtitle paragraph.** Why a form has no key field ("Amazon Bedrock needs no API key. Adjust how Biorouter
+  reaches it.", and a coding agent's "No API key is needed here") is the title's InfoTip (`titleInfo`). The delete
+  states keep their visible line, because a destructive consequence is said at the moment of decision.
+- **InfoTips where a name is not enough.** Configure's labels carry the config key they write; Add provider's
+  carry what Provider type, API URL, Available models and its two checkboxes mean. A checkbox's InfoTip is the
+  label's sibling (a click on it must not toggle the box) and describes the box. The two checkbox squares start
+  on the fields' edge (`.br-provider-check-row`, -4px, vision V4-R4-5).
+- **The primary is coral only once it can act** (FR-R3-3), the rule Detect provider and Versa's Connect follow:
+  Save is secondary until every required field has a value, and so is Create provider until the name, URL, models
+  and a key (or "This is a local model") are in. Both stay clickable, so a click names what is missing (and a
+  browser still hears the host-managed refusal). Before the saved values load, a configured provider's keys and a
+  field's starting default count as present (`providerKeyDefault`), so Save is drawn in its final colour from the
+  first frame and never fades to coral as an async value lands; Amazon Bedrock, whose profile and region start on
+  defaults, is coral at once.
 
 An accordion row (the coding agents, and the local providers on first run) and its panel are two
 siblings in the list, never one wrapper: the shared rows block reads `:last-child`, and a wrapper made
@@ -180,14 +218,24 @@ read by both surfaces: speed, context window, and "Large for this Mac" only when
 model above this machine's recommendation), as the closed summary of a "Details" disclosure. The panel's line
 leaves out the size (`factsLine(model, { size: false })`), because the option and the button already say it;
 three copies of "7.6 GB" in three lines was FR-R2-6. Details holds the model's description, the download note,
-the speed hint, a Memory row that says the fit in words with the two numbers it rests on ("Fits this Mac (128
+the speed hint, the context window ("Context: 256k", `localModelsCopy.contextAmount`: opening Details used to drop
+the summary's one number, FR-R3-6), a Memory row that says the fit in words with the two numbers it rests on ("Fits this Mac (128
 GiB unified memory, 32 GiB recommended)", `fitLine`, from the daemon's `suitability_status`; the daemon's own
 sentence repeated its label and printed `apple_unified`), the Windows RAM caveat on Windows, the Ollama tag,
-the fallback GGUF, the model file and the model store, as sans labels over values, the machine values in mono at
+the fallback download (the label "Fallback download", shared with the Settings info dialog, then the spec in mono
+and where it stands as a muted word: "Downloaded", "Partial", "Only if needed"; the label used to read "Fallback
+GGUF, may download"), the model file and the model store, as sans labels over values, the machine values in mono at
 12px; no box. Then the one action on the 32px rung: "Start", "Download and start (9.6 GB)" or "Resume and start".
 A status shows only with news (running, warm-up needed, binary missing). It used to be a box of seven lines and an
 unconditional "above the 16 GB laptop tier" warning that fired on the model the app recommends for a 128 GiB
 machine, and it pushed the only action below the fold (first-run vision FR-R1-3, FR-R1-4, FR-S-2).
+
+The panel opens on a model at once: until a person picks one, it reads the model straight from the status (the
+running model, else the catalog's default, else its first entry), and the pick starts from the store's status. It
+used to start as '' and be set in an effect, so on every remount (a switch back to Local) "Download and start"
+mounted disabled for one commit and its opacity transition faded it in from half (FR-R3-1).
+`LlamaServerInlineCard.mount.browser.test.tsx` watches the button from before the mount in Chromium: enabled when
+first seen, its `disabled` attribute never changes and its opacity never drops below 1.
 
 ## How the Configure dialog names a field
 
@@ -502,8 +550,8 @@ renders normally.
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
 | `crates/biorouter/src/providers/base.rs` | `ProviderMetadata::institutions`, `with_institution` |
 
-Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `firstRunFill.browser.test.tsx` and
-`providerBand.browser.test.tsx` (Chromium),
+Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `copy.test.ts`, `firstRunFill.browser.test.tsx`,
+`customProviderForm.browser.test.tsx` and `providerBand.browser.test.tsx` (Chromium),
 `ProviderCatalog.browserSurface.test.tsx`, `providerOrdering.test.ts`,
 `ProviderGuard.test.tsx`, `ProviderGuard.browserSurface.test.tsx`,
 `composerNoProvider.test.ts`, `ChatInput.noProvider.test.tsx`,
