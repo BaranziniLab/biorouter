@@ -80,7 +80,6 @@ import {
   DropdownMenuTrigger,
   MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Button, buttonVariants } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
@@ -95,7 +94,9 @@ import {
   PreviewBarMeta,
   PreviewBarScope,
   PreviewIconButton,
+  PreviewPanelPresence,
   PreviewSkeleton,
+  PreviewTip,
 } from './PreviewBar';
 import './preview-panel.css';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
@@ -1630,7 +1631,8 @@ export default function ArtifactViewer({
   };
 
   return (
-    <>
+    // `isOpen` is false for the exit: every control's tooltip stays shut for it (PreviewTip).
+    <PreviewPanelPresence value={isOpen}>
       {onResizeStart && (
         // THE RESIZE EDGE IS THE PANEL'S SIBLING, NOT ITS CHILD. The panel clips
         // its own paint (`contain: paint`, `overflow: hidden`), so an edge inside
@@ -1873,24 +1875,21 @@ export default function ArtifactViewer({
             )}
             {showMoreMenu && (
               <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={PREVIEW_COPY.moreActions}
-                        data-testid="artifact-more-actions"
-                        className={cn(
-                          buttonVariants({ variant: 'ghost', shape: 'round' }),
-                          'br-preview-icon-button no-drag'
-                        )}
-                      >
-                        <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">{PREVIEW_COPY.moreActions}</TooltipContent>
-                </Tooltip>
+                <PreviewTip content={PREVIEW_COPY.moreActions}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={PREVIEW_COPY.moreActions}
+                      data-testid="artifact-more-actions"
+                      className={cn(
+                        buttonVariants({ variant: 'ghost', shape: 'round' }),
+                        'br-preview-icon-button no-drag'
+                      )}
+                    >
+                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </PreviewTip>
                 <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
                   {canQuote && (
                     // The same action as the header's Quote icon, kept in the menu
@@ -2023,7 +2022,7 @@ export default function ArtifactViewer({
           </QuotedTextSelection>
         </PreviewBarScope>
       </aside>
-    </>
+    </PreviewPanelPresence>
   );
 }
 

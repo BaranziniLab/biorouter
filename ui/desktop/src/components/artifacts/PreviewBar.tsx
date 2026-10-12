@@ -4,14 +4,17 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ComponentProps,
+  type ReactElement,
   type ReactNode,
+  type SyntheticEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
 import { Button } from '../ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger, isFocusFromTabKey } from '../ui/Tooltip';
 
 /**
  * THE PREVIEW BAR (spec 3.8): one 32px row under the tab strip, the same for
@@ -128,6 +131,76 @@ export function PreviewBar({
 }
 
 /**
+ * Whether the panel is open. `ArtifactViewer` provides its `isOpen`, which turns false the moment
+ * Close is pressed and stays false for the exit before the panel unmounts. Every control's
+ * tooltip (`PreviewTip`) reads it. True by default, so a control mounted outside a panel (a test)
+ * is always present.
+ */
+const PreviewPanelPresenceContext = createContext(true);
+export const PreviewPanelPresence = PreviewPanelPresenceContext.Provider;
+
+/**
+ * THE PANEL'S TOOLTIP (V2-R8-4). A label tooltip names a control BEFORE it is used, so it opens
+ * for neither of the two moments after:
+ *
+ *   - The control was pressed. Radix keeps a per-control flag, "a move opened my tooltip", and
+ *     the flag is what stops the tooltip coming back after a press until the pointer has left and
+ *     returned. It is left unset when the control's earlier moves were ignored (Radix ignores a
+ *     move while the pointer is "in transit" to a neighbour's tooltip, which is where a pointer
+ *     crossing a header's tooltips arrives), and the shared provider then opens the next move's
+ *     tooltip at once for 300ms after a neighbour's tooltip closed. Measured in the panel
+ *     harness: Close's tooltip `instant-open` 15ms after the click, while the panel was
+ *     leaving, alone at the top right over the space the panel had just left. Here a press
+ *     holds the tooltip shut until the pointer leaves the control or the keyboard reaches it.
+ *   - The panel is leaving (`PreviewPanelPresence` false). Nothing in it is worth naming now:
+ *     a tooltip open when the exit starts closes, and none opens until the panel is open again.
+ *
+ * An open is refused at the trigger (`preventDefault` on the move or the focus, which Radix
+ * honours), so the shared provider is never told a tooltip opened that did not: its skip-delay
+ * flag would otherwise stay set and open the next tooltip anywhere with no delay.
+ *
+ * Takes one trigger element; the tooltip says `content`.
+ */
+export function PreviewTip({ content, children }: { content: ReactNode; children: ReactElement }) {
+  const present = useContext(PreviewPanelPresenceContext);
+  const presentRef = useRef(present);
+  presentRef.current = present;
+  const pressed = useRef(false);
+  const [open, setOpen] = useState(false);
+  // The exit closes what is open for good, so a panel opened again in the same mount does
+  // not bring the label back with it.
+  if (!present && open) setOpen(false);
+
+  const refuse = (event: SyntheticEvent) => {
+    if (pressed.current || !presentRef.current) event.preventDefault();
+  };
+
+  return (
+    <Tooltip open={open} onOpenChange={(next) => setOpen(next && presentRef.current)}>
+      <TooltipTrigger
+        asChild
+        onPointerDown={() => {
+          pressed.current = true;
+        }}
+        onPointerMove={refuse}
+        onPointerLeave={() => {
+          pressed.current = false;
+        }}
+        onFocus={(event) => {
+          // Tab is the person's keyboard reaching the control: a press still held no
+          // longer speaks for it.
+          if (isFocusFromTabKey()) pressed.current = false;
+          if (!presentRef.current) event.preventDefault();
+        }}
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{content}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
  * One icon control for the panel: a ghost square `Button` with an app tooltip
  * carrying its name. 32px in the 44px header band (the size of every band's
  * actions), 24px inside the 32px bar.
@@ -156,12 +229,7 @@ export const PreviewIconButton = forwardRef<
   // A disabled button takes no pointer events, so a tooltip on it never opens;
   // the name is still read aloud.
   if (props.disabled) return button;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent side="bottom">{hint ?? label}</TooltipContent>
-    </Tooltip>
-  );
+  return <PreviewTip content={hint ?? label}>{button}</PreviewTip>;
 });
 
 /**

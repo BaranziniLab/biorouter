@@ -13,6 +13,7 @@ import {
   useArtifactPanel,
   type ArtifactPanelPresentedChange,
 } from '../src/components/artifacts/useArtifactPanel';
+import { AppTooltipProvider } from '../src/components/ui/Tooltip';
 import { ThemeProvider } from '../src/contexts/ThemeContext';
 import { useColumnGlide } from '../src/hooks/useColumnGlide';
 import { DUR } from '../src/styles/motion';
@@ -553,16 +554,23 @@ function Harness() {
 // mode exists to show.
 const panelMode = new URLSearchParams(window.location.search).get('mode') === 'panel';
 
+// The app's one tooltip provider sits above every panel (`ui/sidebar.tsx`), so the harness
+// mounts it too: without it each tooltip brings its own provider and the 300 ms skip-delay
+// between neighbours, which decides when a label tooltip opens, never runs.
 createRoot(document.getElementById('root')!).render(
   panelMode ? (
-    <ThemeProvider>
-      <PanelHarness />
-    </ThemeProvider>
+    <AppTooltipProvider>
+      <ThemeProvider>
+        <PanelHarness />
+      </ThemeProvider>
+    </AppTooltipProvider>
   ) : (
     <StrictMode>
-      <ThemeProvider>
-        <Harness />
-      </ThemeProvider>
+      <AppTooltipProvider>
+        <ThemeProvider>
+          <Harness />
+        </ThemeProvider>
+      </AppTooltipProvider>
     </StrictMode>
   )
 );
