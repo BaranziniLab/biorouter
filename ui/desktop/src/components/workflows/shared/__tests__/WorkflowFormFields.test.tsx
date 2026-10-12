@@ -126,6 +126,51 @@ describe('WorkflowFormFields', () => {
     });
   });
 
+  /**
+   * V4-R7-5 (`<Input machine />`): a parameter key, a provider and a model name are machine
+   * strings, so Chromium must not underline a correct `gpt-5.5` or `anthropic` or capitalise
+   * the first letter of a key. The title and the description are the person's own words and
+   * keep their spellcheck. jsdom has no spellchecker; what is pinned is the markup the engine
+   * reads (`ui/input.test.tsx` pins the primitive).
+   */
+  describe('Machine strings and words', () => {
+    const machineAttributes = (field: HTMLElement) => ({
+      spellcheck: field.getAttribute('spellcheck'),
+      autocorrect: field.getAttribute('autocorrect'),
+      autocapitalize: field.getAttribute('autocapitalize'),
+    });
+
+    it('turns spellcheck, auto-correct and auto-capitalise off on the parameter name, provider and model name', async () => {
+      const user = userEvent.setup();
+      render(<TestWrapper />);
+      await expandAdvancedSection(user);
+
+      for (const field of [
+        screen.getByRole('textbox', { name: copy.parameterPlaceholder }),
+        screen.getByRole('textbox', { name: copy.provider }),
+        screen.getByRole('textbox', { name: copy.modelName }),
+      ]) {
+        expect(machineAttributes(field)).toEqual({
+          spellcheck: 'false',
+          autocorrect: 'off',
+          autocapitalize: 'off',
+        });
+      }
+    });
+
+    it('leaves the title and the description with their spellcheck', () => {
+      render(<TestWrapper />);
+
+      for (const name of [copy.title, copy.description]) {
+        expect(machineAttributes(screen.getByRole('textbox', { name }))).toEqual({
+          spellcheck: null,
+          autocorrect: null,
+          autocapitalize: null,
+        });
+      }
+    });
+  });
+
   describe('Form Interactions', () => {
     it('allows typing in text fields', async () => {
       const user = userEvent.setup();

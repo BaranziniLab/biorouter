@@ -235,6 +235,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
             >
               <div id="workflowSource-modal-row" className="flex items-center gap-2">
                 <Input
+                  machine
                   type="text"
                   id="workflowSource-modal"
                   aria-describedby={workflowError ? fieldHelpId('workflowSource-modal') : undefined}

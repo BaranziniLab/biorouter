@@ -664,6 +664,7 @@ export default function WorkflowsView() {
                 /
               </span>
               <Input
+                machine
                 id="workflow-slash-command"
                 type="text"
                 value={slashCommand}

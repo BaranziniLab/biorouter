@@ -231,3 +231,25 @@ describe('ScheduleModal primary button colour', () => {
     expect(save).toBeEnabled();
   });
 });
+
+/**
+ * V4-R7-5 (`<Input machine />`): the workflow file is a path, a machine string, so Chromium must
+ * not underline a correct `/Users/me/daily.yaml` or capitalise its first letter. The schedule's
+ * Name above it is the person's own label and keeps its spellcheck. jsdom has no spellchecker;
+ * what is pinned is the markup the engine reads (`ui/input.test.tsx` pins the primitive).
+ */
+describe('ScheduleModal machine strings', () => {
+  it('turns spellcheck, auto-correct and auto-capitalise off on the workflow file, and not on the name', () => {
+    renderModal();
+
+    const workflowFile = screen.getByLabelText('Workflow file');
+    expect(workflowFile).toHaveAttribute('spellcheck', 'false');
+    expect(workflowFile).toHaveAttribute('autocorrect', 'off');
+    expect(workflowFile).toHaveAttribute('autocapitalize', 'off');
+
+    const name = screen.getByLabelText('Name');
+    expect(name).not.toHaveAttribute('spellcheck');
+    expect(name).not.toHaveAttribute('autocorrect');
+    expect(name).not.toHaveAttribute('autocapitalize');
+  });
+});

@@ -521,6 +521,7 @@ export function WorkflowFormFields({
                   />
                   <div className="flex gap-2">
                     <Input
+                      machine
                       type="text"
                       value={newParameterName}
                       onChange={(e) => setNewParameterName(e.target.value)}
@@ -642,6 +643,7 @@ export function WorkflowFormFields({
                 {(field: FormFieldApi<string | undefined>) => (
                   <Field id="workflow-provider" label={copy.provider}>
                     <Input
+                      machine
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
@@ -654,6 +656,7 @@ export function WorkflowFormFields({
                 {(field: FormFieldApi<string | undefined>) => (
                   <Field id="workflow-model" label={copy.modelName}>
                     <Input
+                      machine
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}

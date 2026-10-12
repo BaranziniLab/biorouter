@@ -296,6 +296,21 @@ describe('WorkflowsView dialogs and rows after vision round 1', () => {
     expect(field.parentElement?.querySelectorAll(':scope > span')).toHaveLength(0);
   });
 
+  it('keeps the spellchecker and the keyboard out of the command name (V4-R7-5)', async () => {
+    mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
+    renderView();
+
+    await chooseFromRowMenu('Cohort Review', copy.slashCommandItem);
+    const dialog = await screen.findByRole('dialog');
+    const input = within(dialog).getByPlaceholderText(copy.slash.placeholder);
+
+    // A command name is a machine string: no red line under `cohort-review`, no capital on the
+    // first letter of a touch keyboard. (jsdom has no spellchecker; this is the markup it reads.)
+    expect(input).toHaveAttribute('spellcheck', 'false');
+    expect(input).toHaveAttribute('autocorrect', 'off');
+    expect(input).toHaveAttribute('autocapitalize', 'off');
+  });
+
   it('draws Cancel as the filled secondary in the slash and schedule dialogs (V3-06)', async () => {
     mocks.listSavedWorkflows.mockResolvedValue([PLAIN]);
     renderView();
