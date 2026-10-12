@@ -75,6 +75,19 @@ const SELECT_CONTROL_TRANSITION = ['color', 'background-color', 'border-color']
   .join(', ');
 const SELECT_INDICATOR_TRANSITION = 'color var(--dur-fast) var(--ease-out)';
 
+/**
+ * A pick leaves focus on the Select (vision round 8, V3-R8-2), as a Radix control returns focus to
+ * its trigger. This wrapper used to force react-select's `blurInputOnSelect` ON for every caller
+ * (the library's own default is ON only on a touch device), so a pick blurred the field: inside a
+ * dialog, Radix's focus trap then caught the escaping focus and parked it on the dialog box, which
+ * shows no ring by design (a quiet open, `.biorouter-modal-surface:focus`). In New schedule,
+ * ArrowDown and Enter on "AM or PM" picked AM and left focus nowhere a person could see; the next
+ * Tab restarted at Name at the top of the form instead of reaching Cancel. A mouse pick did the
+ * same. So the blur is OFF unless a caller asks for it with `blurInputOnSelect`, and no caller does.
+ * The field keeps its focus edge after the pick and Tab goes on to the next control.
+ */
+const SELECT_BLUR_INPUT_ON_SELECT = false;
+
 /** The hook on every shared Select's container, for the Escape claim below. */
 const SELECT_CONTAINER_CLASS_NAME = 'br-select';
 
@@ -192,7 +205,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
       unstyled
       isSearchable={props.isSearchable !== false}
       closeMenuOnSelect={props.closeMenuOnSelect !== false}
-      blurInputOnSelect={props.blurInputOnSelect !== false}
+      blurInputOnSelect={props.blurInputOnSelect ?? SELECT_BLUR_INPUT_ON_SELECT}
       classNames={{
         container: () => `${SELECT_CONTAINER_CLASS_NAME} w-full cursor-pointer relative`,
         indicatorSeparator: () => 'h-0',
