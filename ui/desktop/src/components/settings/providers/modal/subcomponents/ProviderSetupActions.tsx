@@ -48,7 +48,8 @@ export default function ProviderSetupActions({
       return (
         <div className="flex w-full items-start gap-3">
           <Note tone="warning" role="status" icon={AlertTriangle} className="flex-1">
-            Switch to a different model before removing <strong>{providerName}</strong>.
+            Switch to a different model before removing{' '}
+            <strong className="font-semibold">{providerName}</strong>.
           </Note>
           <Button variant="secondary" onClick={onCancelDelete}>
             {providerSetupCopy.ok}
@@ -60,8 +61,8 @@ export default function ProviderSetupActions({
     return (
       <div className="flex w-full items-center justify-between gap-3">
         <p className="flex-1 text-secondary text-text-muted">
-          Delete <strong className="text-text-default">{providerName}</strong> configuration? This
-          cannot be undone.
+          Delete <strong className="font-semibold text-text-default">{providerName}</strong>{' '}
+          configuration? This cannot be undone.
         </p>
         <div className="flex flex-shrink-0 items-center gap-2">
           <Button variant="secondary" onClick={onCancelDelete}>
