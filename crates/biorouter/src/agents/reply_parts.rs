@@ -1114,6 +1114,10 @@ impl Agent {
         if let Some(id) = response.id.clone() {
             filtered_message = filtered_message.with_id(id);
         }
+        // And who the message is for: this copy is the one the client is
+        // shown live, and a user-only notice (`UnrunCallWatch`) streamed as
+        // visible to the model while its stored row said otherwise.
+        filtered_message.metadata = response.metadata.clone();
 
         // Categorize tool requests
         let mut frontend_requests = Vec::new();

@@ -728,6 +728,11 @@ async fn the_agent_tells_the_person_nothing_ran_and_keeps_it_from_the_model() {
         "{}",
         note.msg
     );
+    assert!(
+        notices[0].is_user_visible() && !notices[0].is_agent_visible(),
+        "the live copy says who the notice is for, as the stored row does: {:?}",
+        notices[0].metadata
+    );
     assert!(shown
         .iter()
         .any(|message| message.as_concat_text() == reply(7)));
