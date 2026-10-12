@@ -1,18 +1,14 @@
-import { userActionHeaders } from '../../../utils/userAction';
 import { useEffect, useState } from 'react';
-import {
-  getUsageReport,
-  getUsageSummary,
-  UsageReportRow,
-  UsageSummaryResponse,
-} from '../../../api';
+import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
 import { settingsUsageCopy as copy } from '../../usage/copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
-import { fillCalendarDays, UsagePanel } from './UsagePanel';
+import { loadUsage } from './loadUsage';
+import { UsagePanel } from './UsagePanel';
+import { readUsageSnapshot } from './usageSnapshot';
 
 /**
  * Settings > App > Usage: fetches the month-to-date summary and the matching
@@ -24,11 +20,19 @@ import { fillCalendarDays, UsagePanel } from './UsagePanel';
  * `showCosts` (Settings > App > Show costs) drops the dollar figures and keeps the tokens and
  * turns, in the same row; the section never unmounts on that switch, so nothing below it moves
  * under the pointer (vision V4-02).
+ *
+ * The App tab unmounts on a tab switch, so the section seeds itself from the last read of this
+ * month (`usageSnapshot.ts`) and draws the row in its first frame; the daemon is still asked, and
+ * its answer replaces the seed in place without a status line, because the words are the same
+ * and a line that appeared for 100 ms would move everything below it. The skeleton is only for
+ * the first read in a process, and `warmUsageSnapshot` (asked while Settings opens) usually has
+ * even that one waiting (vision V4-R7-3, principle 9).
  */
 export default function UsageSection({ showCosts = true }: { showCosts?: boolean }) {
-  const [summary, setSummary] = useState<UsageSummaryResponse | null>(null);
-  const [dayRows, setDayRows] = useState<UsageReportRow[]>([]);
-  const [modelRows, setModelRows] = useState<UsageReportRow[]>([]);
+  const [seed] = useState(readUsageSnapshot);
+  const [summary, setSummary] = useState<UsageSummaryResponse | null>(seed?.summary ?? null);
+  const [dayRows, setDayRows] = useState<UsageReportRow[]>(seed?.dayRows ?? []);
+  const [modelRows, setModelRows] = useState<UsageReportRow[]>(seed?.modelRows ?? []);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryVersion, setRetryVersion] = useState(0);
@@ -39,29 +43,11 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
       setLoading(true);
       setLoadError(null);
       try {
-        const currentTime = new Date();
-        const now = Math.floor(currentTime.getTime() / 1000);
-        const from = Math.floor(
-          new Date(currentTime.getFullYear(), currentTime.getMonth(), 1).getTime() / 1000
-        );
-        const headers = await userActionHeaders();
-        const [summaryRes, dayRes, modelRes] = await Promise.all([
-          getUsageSummary<true>({ headers, throwOnError: true }),
-          getUsageReport<true>({
-            headers,
-            query: { from, to: now, group: 'day' },
-            throwOnError: true,
-          }),
-          getUsageReport<true>({
-            headers,
-            query: { from, to: now, group: 'model' },
-            throwOnError: true,
-          }),
-        ]);
+        const read = await loadUsage();
         if (cancelled) return;
-        setSummary(summaryRes.data);
-        setDayRows(fillCalendarDays(dayRes.data.rows, currentTime));
-        setModelRows(modelRes.data.rows);
+        setSummary(read.summary);
+        setDayRows(read.dayRows);
+        setModelRows(read.modelRows);
       } catch (error) {
         if (cancelled) return;
         console.error('Failed to load usage:', error);
@@ -114,7 +100,8 @@ export default function UsageSection({ showCosts = true }: { showCosts?: boolean
           showCosts={showCosts}
         />
       ) : null}
-      {loading && summary && (
+      {/* Only a retry the person asked for says it is working; the seeded read stays silent. */}
+      {loading && summary && retryVersion > 0 && (
         <p className="px-3 text-supporting text-text-muted" role="status">
           {copy.refreshing}
         </p>
