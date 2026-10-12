@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import { createRef } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBSelectorTrigger } from './KBSelectorTrigger';
 import { knowledgeCopy } from '../copy';
@@ -61,5 +62,15 @@ describe('KBSelectorTrigger', () => {
     state.visibleBases = [base('alpha')];
     render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
     expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+  });
+
+  // The view that owns the dialogs the picker opens gives focus back to this button when one
+  // closes (`useSelectorFocusReturn`), and can only do that if it can reach the element.
+  it('hands its button to the view through triggerRef', () => {
+    state.primaryKb = base('alpha');
+    state.visibleBases = [base('alpha')];
+    const triggerRef = createRef<HTMLButtonElement>();
+    render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} triggerRef={triggerRef} />);
+    expect(triggerRef.current).toBe(screen.getByTestId('knowledge-kb-selector-trigger'));
   });
 });

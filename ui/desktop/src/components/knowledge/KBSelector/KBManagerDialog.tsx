@@ -37,6 +37,12 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   /** Open with the create flow already started (the picker's "Create…" row). */
   startInCreate?: boolean;
+  /**
+   * Radix's close-focus hook for the manager, for a caller that opens it from a control which is
+   * gone by the time it closes (the picker's row): call `event.preventDefault()` and place focus.
+   * The chooser needs none, because it always ends in the manager.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -64,7 +70,12 @@ type DraftMode = { kind: 'rename'; base: KbListEntry } | null;
  * — is untinted. A 1px box drawn around a panel's quietest actions was the
  * heaviest line in it.
  */
-export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: Props) {
+export function KBManagerDialog({
+  open,
+  onOpenChange,
+  startInCreate = false,
+  onCloseAutoFocus,
+}: Props) {
   const { bases, loading, primaryKbId, hiddenKbIds, refresh, setPrimaryKbId, toggleKbHidden } =
     useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
@@ -324,6 +335,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           purpose={busyId !== null ? 'required' : 'form'}
           scrollBody
           onOpenAutoFocus={placeFocus}
+          onCloseAutoFocus={onCloseAutoFocus}
           title={knowledgeCopy.manager.title}
           // ONE sentence, because ModalShell makes the subtitle the dialog's
           // `aria-describedby` (ModalShell.test.tsx names this dialog). The rest

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type Ref } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
@@ -29,6 +29,12 @@ interface Props {
    * on hover, so the row reads as an identity that happens to be actionable.
    */
   variant?: 'field' | 'subject';
+  /**
+   * The trigger button, for the view that owns the dialogs the picker opens: it gives keyboard
+   * focus back here when one closes (`useSelectorFocusReturn`), because the picker's own row is
+   * gone by then.
+   */
+  triggerRef?: Ref<HTMLButtonElement>;
 }
 
 /**
@@ -59,6 +65,7 @@ export function KBSelectorTrigger({
   onManage,
   onCreate,
   variant = 'field',
+  triggerRef,
 }: Props) {
   const { primaryKb, visibleBases } = useKnowledge();
   const [openInternal, setOpenInternal] = useState(false);
@@ -79,6 +86,7 @@ export function KBSelectorTrigger({
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
             <button
+              ref={triggerRef}
               type="button"
               data-testid="knowledge-kb-selector-trigger"
               aria-label={knowledgeCopy.selector.name(

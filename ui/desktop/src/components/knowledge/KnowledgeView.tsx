@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Badge } from '../ui/badge';
 import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 import { KBManagerDialog } from './KBSelector/KBManagerDialog';
+import { useSelectorFocusReturn } from './KBSelector/useSelectorFocusReturn';
 import { KbTierPanel } from './KbTierControl';
 import { SourcesRail } from './SourcesRail';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
@@ -85,6 +86,9 @@ function KnowledgeViewInner() {
   const { refresh, bases, primaryKb, primaryKbId, registerGraphRefresh } = useKnowledge();
   const { graph, loading, error, refresh: refreshGraph } = useKnowledgeGraph(primaryKbId);
   const { exportArchive, remove } = useKnowledgeBases();
+  // The picker's row that opens the manager is gone when the manager closes, so the view hands
+  // keyboard focus back to the selector itself (V3-R7-3).
+  const selectorFocus = useSelectorFocusReturn();
 
   // The KnowledgeProvider only fetches the base list once at app start, so a
   // knowledge base created elsewhere (e.g. via chat / the knowledge MCP tools)
@@ -115,8 +119,14 @@ function KnowledgeViewInner() {
   }, []);
 
   function openManager(inCreate: boolean) {
+    selectorFocus.opened();
     setManagerStartsInCreate(inCreate);
     setManagerOpen(true);
+  }
+
+  function changeManagerOpen(next: boolean) {
+    if (!next) selectorFocus.closed();
+    setManagerOpen(next);
   }
 
   async function openKbFolder() {
@@ -230,6 +240,7 @@ function KnowledgeViewInner() {
                       onOpenChange={setPickerOpen}
                       onManage={() => openManager(false)}
                       onCreate={() => openManager(true)}
+                      triggerRef={selectorFocus.triggerRef}
                     />
                     {/* `schema_version` is folded in, not just `format`: the
                         field is `serde(default)` on the daemon so a legacy
@@ -391,8 +402,9 @@ function KnowledgeViewInner() {
 
         <KBManagerDialog
           open={managerOpen}
-          onOpenChange={setManagerOpen}
+          onOpenChange={changeManagerOpen}
           startInCreate={managerStartsInCreate}
+          onCloseAutoFocus={selectorFocus.onCloseAutoFocus}
         />
 
         <LintDrawer open={lintOpen} onOpenChange={setLintOpen} />
