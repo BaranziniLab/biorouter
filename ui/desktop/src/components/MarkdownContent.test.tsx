@@ -1326,12 +1326,53 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
         expect(region).toHaveAttribute('tabindex', '0');
       });
 
+      // The fade is never wider than what is still out of view (`--br-overflow-fade`,
+      // read by the mask in main.css). Final check, 2026-10-12: a table 475px wide
+      // in a 465px box had 10px past its edge and a 40px fade, which dimmed a
+      // right-aligned last column ("Value", "ls -la", "2") nearly to nothing.
+      const fadeOf = (region: HTMLElement) => region.style.getPropertyValue('--br-overflow-fade');
+
+      it('sizes the fade to the 10px a nearly fitting table has left, shrinking as it scrolls', () => {
+        vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(475);
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(465);
+        render(
+          <MarkdownContent
+            variant="document"
+            content={
+              '| Finding | Value |\n|---|---:|\n| Shell command used | `ls -la` |\n| Entries listed | 2 |'
+            }
+          />
+        );
+        const region = screen.getByRole('region', { name: transcriptCopy.code.tableRegion });
+        expect(region).toHaveAttribute('data-overflow', 'true');
+        expect(fadeOf(region)).toBe('10px');
+        region.scrollLeft = 4;
+        fireEvent.scroll(region);
+        expect(fadeOf(region)).toBe('6px');
+        region.scrollLeft = 10;
+        fireEvent.scroll(region);
+        expect(region).not.toHaveAttribute('data-overflow');
+        expect(fadeOf(region)).toBe('');
+      });
+
+      it('caps the fade at 40px while more than that lies past the edge', () => {
+        layoutWidths(true);
+        render(<MarkdownContent content={'| A | B |\n|---|---|\n| 1 | 2 |'} />);
+        const region = screen.getByRole('region', { name: transcriptCopy.code.tableRegion });
+        expect(fadeOf(region)).toBe('40px');
+        // 900 wide in 400: at 480 there are 20px left, so the fade is 20px.
+        region.scrollLeft = 480;
+        fireEvent.scroll(region);
+        expect(fadeOf(region)).toBe('20px');
+      });
+
       it('does the same for a fenced block that scrolls', async () => {
         layoutWidths(true);
         render(<MarkdownContent variant="document" content={'```r\nsum(x)\n```'} />);
         const region = await screen.findByRole('region', { name: transcriptCopy.code.region });
         expect(region).toHaveClass('br-md-code-body');
         expect(region).toHaveAttribute('data-overflow', 'true');
+        expect(fadeOf(region)).toBe('40px');
       });
 
       it('leaves a block that fits as a plain box', async () => {

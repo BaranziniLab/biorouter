@@ -7320,10 +7320,20 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
    scroll end, so the last column is never dimmed. A mask paints nothing
    (`black` is alpha), so the fade is right on any ground. On a table it fades
    the fill too, so the box's open right side is the sign that it continues;
-   the closing hairline Crew draws there is a line R-27 retires. */
+   the closing hairline Crew draws there is a line R-27 retires.
+   The fade is as wide as what is still past the edge, at most 40px:
+   `useOverflowsSideways` writes `--br-overflow-fade` beside `data-overflow`. A
+   fixed 40px over a table only 10px too wide dimmed a right-aligned last column
+   almost to nothing (final check, 2026-10-12); sized to the rest, it never
+   covers more of the view than is hidden, and it narrows away as the box
+   scrolls to its end. Here the mask departs from Crew's fixed 40px. */
 .br-md-code-body[data-overflow='true'],
 .br-md-table-scroll[data-overflow='true'] {
-  mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - var(--br-overflow-fade, 40px)),
+    transparent
+  );
 }
 
 /* Focused from the keyboard, the box drops its fade: the mask would fade the
