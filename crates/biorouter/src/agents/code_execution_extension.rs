@@ -1570,11 +1570,41 @@ impl ModuleLoader for ToolModuleLoader {
     }
 }
 
+/// A tool's result as the script receives it: parsed when it is JSON, the text
+/// itself otherwise.
+///
+/// ⚠ Except a bare integer that a JavaScript number cannot hold exactly.
+/// Measured (F13 rerun, GLM 4.7 Flash, 2026-10-12): `python3 factorial.py 20`
+/// printed `2432902008176640000`, which is valid JSON, so the script was handed
+/// the double 2.43290200817664e18 and reported 20! as `2.43290200817664e+18` —
+/// the right script and the right call, with Biorouter rounding the answer.
+/// Such a result is a tool's TEXT that happens to be digits, so it stays text
+/// and keeps every digit. Integers a double holds exactly (up to 2^53), and
+/// every object or array, are parsed as before.
 fn parse_result_to_js(result: &str, ctx: &mut Context) -> JsValue {
-    serde_json::from_str::<serde_json::Value>(result)
-        .ok()
-        .and_then(|v| JsValue::from_json(&v, ctx).ok())
-        .unwrap_or_else(|| JsValue::from(js_string!(result)))
+    match serde_json::from_str::<serde_json::Value>(result) {
+        Ok(serde_json::Value::Number(_)) if !fits_js_number(result) => {
+            JsValue::from(js_string!(result))
+        }
+        Ok(value) => {
+            JsValue::from_json(&value, ctx).unwrap_or_else(|_| JsValue::from(js_string!(result)))
+        }
+        Err(_) => JsValue::from(js_string!(result)),
+    }
+}
+
+/// Whether the JSON number `text` survives as a JavaScript number: every
+/// integer up to 2^53 in magnitude, and every number written with a fraction
+/// or an exponent (an approximation in JSON already). Read from the text, not
+/// from the parsed value, because an integer too long for a `u64` has already
+/// been rounded to a double by the time it is parsed.
+fn fits_js_number(text: &str) -> bool {
+    let text = text.trim();
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    digits.parse::<u64>().is_ok_and(|value| value <= 1 << 53)
 }
 
 fn js_string_exceeds_limit(value: &JsValue, limit: usize) -> bool {
@@ -5825,6 +5855,49 @@ record_result([out.trim(), out.length, out.split("\n").length]);"#,
             &BTreeSet::from(["developer__shell".to_string()]),
         )
         .is_empty());
+    }
+
+    /// F13 rerun (GLM 4.7 Flash, 2026-10-12): the model's script was right —
+    /// `record_result({ result5, result20 })` — and Biorouter rounded 20!,
+    /// because `2432902008176640000` is valid JSON and became a double. An
+    /// integer a JavaScript number cannot hold stays the tool's text; one it
+    /// can hold is still a number.
+    #[test]
+    fn a_tool_result_too_large_for_a_javascript_number_keeps_every_digit() {
+        let tools = one_tool("developer", "shell");
+        let out = run_js_module(
+            r#"import { shell } from "developer";
+const result20 = shell({ command: "python3 factorial.py 20" });
+record_result({ result20 });"#,
+            &tools,
+            answer_tool_calls_with("2432902008176640000\n"),
+        )
+        .unwrap();
+        assert!(out.contains("2432902008176640000"), "{out}");
+        assert!(!out.contains("e+18"), "{out}");
+
+        // Longer than a u64 too: 30!.
+        let out = run_js_module(
+            r#"import { shell } from "developer"; record_result(shell({}));"#,
+            &tools,
+            answer_tool_calls_with("265252859812191058636308480000000\n"),
+        )
+        .unwrap();
+        assert!(out.contains("265252859812191058636308480000000"), "{out}");
+
+        let out = run_js_module(
+            r#"import { shell } from "developer"; record_result(shell({}) + 1);"#,
+            &tools,
+            answer_tool_calls_with("120\n"),
+        )
+        .unwrap();
+        assert_eq!(out, "121", "a small integer is still a number");
+
+        assert!(fits_js_number("9007199254740992"));
+        assert!(!fits_js_number("9007199254740993"));
+        assert!(!fits_js_number("-9007199254740993"));
+        assert!(fits_js_number("2.43290200817664e18"));
+        assert!(fits_js_number("0.1"));
     }
 
     /// F07 (live 2026-10-12, ministral-3:8b): Python's triple quotes in
