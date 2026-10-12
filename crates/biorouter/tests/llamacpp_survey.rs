@@ -222,14 +222,14 @@ async fn run_battery(report: &mut ModelReport) {
     }
 
     // 3b. Bootstrap-sized prompt: the model must still make a STRUCTURED call
-    //     from the end of a ~30k-token prompt (a truncated prompt is what made
-    //     models write tool calls as JSON text), and this times its prefill.
+    //     from the end of a large prompt (a truncated prompt is what made
+    //     models write tool calls as JSON text), and this times the full completion.
     let system = format!(
         "You are an AI agent. Always use the provided tools to answer questions.\n\n{}",
         "The clinic's supply tracker records each delivery with a batch number, the \
          receiving nurse, the storage room and the expiry date. Items below their reorder \
          threshold are flagged in the weekly summary. "
-            .repeat(560)
+            .repeat(1000)
     );
     let msgs = vec![Message::user()
         .with_text("What is the weather in Paris? Use the get_weather tool to find out.")];
@@ -244,7 +244,7 @@ async fn run_battery(report: &mut ModelReport) {
                 ))
             } else if has_paris_weather_request(&message) {
                 Check::ok(format!(
-                    "{input} prompt tokens in {secs:.1}s (~{:.0} tok/s prefill)",
+                    "{input} prompt tokens in {secs:.1}s (~{:.0} prompt tok/s end-to-end)",
                     input as f64 / secs
                 ))
             } else {
