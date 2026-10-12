@@ -739,11 +739,11 @@ maps each round to its commit).
 | F07 | ministral-3:8b factorial | Model, plus opaque errors: Python triple quotes in JavaScript, six times, each answered only with "unterminated string literal" | `359f0323` (triple quotes named), `0e38ef20` (a failed call's output reaches the script), `21fd6649` (an unimported tool names its import), `35954e31` (a script that returned nothing says its calls succeeded) | Still FAIL. At `4010c2f9` the file was written and runs, but `shell({command: "run", args: [...]})` failed three times while the script saw only "exited with status 127", never "command not found: run". At `21fd6649` the model kept its triple quotes through three explained errors, then wrote a tool call whose JSON Ollama could not parse (a backslash before a backtick, an invalid escape), which ended the turn with that error |
 | F08 | granite4:tiny-h factorial | Model: wrong `todo_write` arguments repeated until the loop guard stopped the turn | None | Not rerun |
 | F09 | phi4-mini:3.8b factorial | Model: answered from memory without a tool call | None | Not rerun |
-| F10 | lfm2:24b factorial | Biorouter: Biorouter's prompt and tools overflow a 32,768-token window. The turn ended as an ordinary `stop` with the reason neither printed by `session send` nor stored | `f28ca994`: an unrecoverable overflow ends the turn as a stored, typed `context_length` failure; `session send`, `watch` and `attach` print inline notices | Task FAIL as expected, now with the sentence on screen and in the chat: 7.0 s, and 6.5 s at the final head |
-| F11 | deepseek-r1:8b factorial | Biorouter: Ollama lists `tools`, but neither of the model's templates renders them, so the model never saw a tool definition (19,094 prompt tokens where phi4-mini read the same request as 29,997) | `5b879a69`: such a model is refused before it loads, with a sentence naming the template | Refused before the model loaded: 0.16 s, and 0.13 s at the final head; task FAIL by design. Each pair's cleanup check counted the previous model's Ollama runner, still exiting, as a sidecar; the owned daemon was gone |
+| F10 | lfm2:24b factorial | Biorouter: Biorouter's prompt and tools overflow a 32,768-token window. The turn ended as an ordinary `stop` with the reason neither printed by `session send` nor stored | `f28ca994`: an unrecoverable overflow ends the turn as a stored, typed `context_length` failure; `session send`, `watch` and `attach` print inline notices | Task FAIL as expected, now with the sentence on screen and in the chat: 7.0 s, and 6.5 s at the final head. The chat-title call that followed the refused turn sent the model a second request; see the review of the rerun below (`8e186442`) |
+| F11 | deepseek-r1:8b factorial | Biorouter: Ollama lists `tools`, but neither of the model's templates renders them, so the model never saw a tool definition (19,094 prompt tokens where phi4-mini read the same request as 29,997) | `5b879a69`: such a model is refused before it loads, with a sentence naming the template | The turn was refused before the model loaded: 0.16 s, and 0.13 s at the final head; task FAIL by design. Biorouter's chat-title call then loaded the refused model, and that runner is what each pair's cleanup check found; the owned daemon was gone. Corrected by the review of the rerun below and fixed in `8e186442` |
 | F12 | command-r7b:7b factorial | Biorouter: as F10, with an 8,192-token window | `f28ca994` | Task FAIL as expected, sentence shown and stored: 5.5 s, and 5.1 s at the final head |
 | F13 | glm-4.7-flash factorial | Biorouter: the script's four calls succeeded, then it read `.stdout` off the string `shell` returns. The error named nothing and never said the calls had worked, and the model destroyed its correct file | `359f0323`, `d281bd6b`, `4010c2f9` | **PASS** at `4010c2f9` (402 s) and again at the final head (463 s): 120 and 2432902008176640000. See below |
-| F14 | gemma3:4b factorial (planned negative) | Expected refusal. The case's remaining checks counted Ollama's own runner as a Biorouter sidecar and expected a loaded model that a correct refusal never loads | None | Not rerun |
+| F14 | gemma3:4b factorial (planned negative) | Expected refusal. The runner the case's cleanup checks found was this model, loaded by Biorouter's chat-title call after the refusal; the case also expects a loaded model that a correct refusal never loads | `8e186442` (from the review of the rerun) | Not rerun at this point; see the review of the rerun below |
 
 F13 took three rounds, each finding a further defect in how Code Execution reports back:
 
@@ -814,6 +814,10 @@ tests, `cargo clippy -p biorouter --all-targets -D warnings` and `cargo fmt --ch
 every CI check on `acbefe5a` passes (cross-build-nightly is skipped by design). In rounds 2 and 3
 ministral did not repeat that script, so the fix is covered by those tests, not by a live run.
 
+The review of this rerun found the note false in two shapes and its premise false for numeric
+output: "`shell` hands a script its output as one string" held for `5! = 120`, but a script was
+handed `120\n` as the number 120. Both are fixed in `8f905764`; see the review of the rerun below.
+
 ### Protocol attempts
 
 Each cell is the task verdict, the task's wall time in seconds and what happened. A FAIL that
@@ -827,14 +831,14 @@ cannot run the task.
 | F04 | qwen2.5-coder:7b factorial | FAIL, 91.3: one checklist call, then imitated tool results; the corrective retry fired | FAIL, 75.9: one checklist call, then code and outputs written as prose | Not run | Model limitation; the retry fires when the reply is a whole imitation |
 | F05 | qwen2.5-coder:7b urine | FAIL, 44.2: one checklist call, then imitated results; the retry fired | FAIL, 44.6: a checklist call written as text; the text-call retry fired, and the next reply repeated the call inside prose | Not run | Model limitation |
 | F06 | gpt-oss:20b factorial | FAIL, 33.3: the checklist's arguments written as text, no tool ran | **PASS**, 134.0: 17 calls, 3 recovered errors | **PASS**, 72.5: 6 calls, no errors | Flaky model: two of three runs pass. The failed run made no tool call, so the build difference does not explain it |
-| F07 | ministral-3:8b factorial | FAIL, 1,803 (time limit): the `Result: {}` defect above | FAIL, 1,125.9: correct file, then scripts that never passed a value to `record_result` despite the note saying so, until the repetition guard stopped the turn | FAIL, 912.8: Python triple quotes in JavaScript five times despite the hint, then a direct call to `developer__text_editor`, which this chat does not offer; the turn ended on that clear error | Model limitation, with a Biorouter defect in round 1 now fixed |
+| F07 | ministral-3:8b factorial | FAIL, 1,803 (time limit): the `Result: {}` defect above | FAIL, 1,125.9: correct file, then scripts that never passed a value to `record_result` despite the note saying so, until the repetition guard stopped the turn | FAIL, 912.8: first six `todo_write` calls; five wrote `-  [  ]` or `-   [ ]`, parsed as 0 items and were answered as successes until the loop guard fired (a Biorouter defect the review found, fixed in `65be50c5`). Then Python triple quotes in JavaScript five times despite the hint, then a direct call to `developer__text_editor`, which this chat does not offer; the turn ended on that clear error | Model limitation, with Biorouter defects in rounds 1 and 3 now fixed |
 | F08 | granite4:tiny-h factorial | FAIL, 27.7: seven `todo_write` calls without `content`, ended by the loop guard | FAIL, 25.0: six, ended by the repetition guard | Not run | Model limitation, unchanged |
 | F09 | phi4-mini:3.8b factorial | FAIL, 48.9: a prose answer with the right numbers, no tool call | FAIL, 45.0: the same | Not run | Model limitation, unchanged |
-| F10 | lfm2:24b factorial | FAIL as expected, 9.9: the context sentence (32,768-token window, about 32,253 for instructions and tools) printed by `session send` and stored | FAIL as expected, 9.2: the same | Not run | Fix confirmed twice |
-| F11 | deepseek-r1:8b factorial | FAIL as expected, 0.16: refused before loading, naming the template that never shows tools | FAIL as expected, 0.12: the same | Not run | Fix confirmed twice |
-| F12 | command-r7b:7b factorial | FAIL as expected, 3.5: the context sentence (8,192-token window, about 31,473 for instructions and tools), printed and stored | FAIL as expected, 3.0: the same | Not run | Fix confirmed twice |
+| F10 | lfm2:24b factorial | FAIL as expected, 9.9: the context sentence (32,768-token window, about 32,253 for instructions and tools) printed by `session send` and stored; the chat-title call then sent the model a second request | FAIL as expected, 9.2: the same | Not run | Fix confirmed twice; the title call is fixed in `8e186442` |
+| F11 | deepseek-r1:8b factorial | FAIL as expected, 0.16: the turn refused before loading, naming the template that never shows tools; the chat-title call then loaded the model | FAIL as expected, 0.12: the same | Not run | Refusal confirmed twice; the title-call load is fixed in `8e186442` |
+| F12 | command-r7b:7b factorial | FAIL as expected, 3.5: the context sentence (8,192-token window, about 31,473 for instructions and tools), printed and stored; the chat-title call then sent the model a second request | FAIL as expected, 3.0: the same | Not run | Fix confirmed twice; the title call is fixed in `8e186442` |
 | F13 | glm-4.7-flash factorial | **PASS**, 354.1: 11 calls, 2 recovered errors | **PASS**, 358.1: 13 calls, 1 recovered error | **PASS**, 292.2: 8 calls, 2 recovered errors | Fix confirmed three times: 120 and 2432902008176640000 |
-| F14 | gemma3:4b factorial (planned negative) | FAIL as expected, 0.82: refused, Ollama reports no tool support | FAIL as expected, 0.75: the same | Not run | Expected refusal, unchanged |
+| F14 | gemma3:4b factorial (planned negative) | FAIL as expected, 0.82: refused, Ollama reports no tool support; the chat-title call then loaded the model | FAIL as expected, 0.75: the same | Not run | Expected refusal; the title-call load is fixed in `8e186442` |
 
 F01, the Gemma survey, is a formal case and is reported below. Every passing pair also passed
 the harness's pair checks (owned cleanup, exact unload, daemon gone, empty serving state).
@@ -871,19 +875,70 @@ the user's Ollama on 11434 reported no loaded model.
 
 ### Harness observations
 
-- **The refusal cases fail the pair's own cleanup checks, not Biorouter's.** For F11 and F14 every
-  pair records harness errors: serving provenance cannot prove a loaded model, because a correct
-  refusal never loads one, and the pair's cleanup census fails on one process: an Ollama runner
-  (`/Applications/Ollama.app/Contents/Resources/llama-server`), alive at the census although the
-  model was never loaded for Biorouter, most likely started by the harness's own `ollama stop`
-  for that never-loaded model. The census counts it as a sidecar. Biorouter's daemon and its
-  children were gone each time (`remaining_owned_children` is empty in every receipt), and the
-  next pair waited for the runner to exit; none remained after the 180-second wait.
+- **The refusal cases' cleanup failures were caused by Biorouter.** For F11 and F14 every pair
+  records harness errors: serving provenance cannot prove a loaded model, because a correct
+  refusal never loads one, and the pair's cleanup census fails on one process, an Ollama runner
+  (`/Applications/Ollama.app/Contents/Resources/llama-server`). This section first blamed the
+  harness's own `ollama stop`. The isolated Ollama's `serve.log` shows otherwise: about a second
+  after each refusal, Ollama began loading the refused model's blob for a `POST /api/chat`
+  (logged as 499 when the pair stopped the daemon), and the harness sends no `/api/chat`. It was
+  Biorouter's chat-title call, which runs after every reply loop and carries no tools, so it
+  passed the refusal. In F10 and F12 the same call sent the model a second request after the
+  turn's own request had overflowed. Biorouter's daemon and its children
+  were gone each time (`remaining_owned_children` is empty in every receipt). See the review of
+  the rerun below for the fix and the rerun.
 - **`session send` prints a streamed reply one chunk per line.** Each streamed chunk of a reply
   becomes its own `[assistant]` line (for example, ministral's sentences arrive a word or
   character at a time). The original campaign's stdout shows the same, and the PR changes only
   how notices are printed, so this is pre-existing behaviour of `session send`, outside these
   attempts.
+
+## Review of the rerun (2026-10-12)
+
+Independent reviewers then read the rerun's evidence and the code it ran. Two reviews confirmed
+the claims above: each refusal and context fix, the F04/F05 retry, every protocol PASS against
+its raw `session.json`, the formal verdicts, and green CI on `67402886`. Four findings were
+Biorouter defects or wrong claims in this report. Each was reproduced, fixed with tests that fail
+without the fix, and the attempts it touched were run again (below). Three commits on top of
+`67402886` carry the fixes; the corrections to the sections above are made in place.
+
+| Finding | What was wrong | Change |
+| --- | --- | --- |
+| A correct script was told its values were undefined | `acbefe5a` decided that a variable held a string from a per-run set of the tools that had ever returned one, and added that note to scripts that ran to their end. When one tool returned a JSON object on one call and text on the next, `info.name`, a real property of the object, was reported undefined. After `lines = lines.split("\n")`, `lines.filter` was reported as a member a string lacks. Both scripts recorded correct results and were told otherwise, which invites the model to redo correct work | `8f905764`: the hint is made only about a tool whose every result in the run was text, and only about a variable assigned once. A script that ran to its end gets the note only when the value it passed to `record_result` really held undefined values, and the note names them |
+| A number a command printed reached the script as a number | A tool's text that parsed as a JSON number was handed over as a number, so `120\n` became 120 while 20! stayed text (`4010c2f9`). The hint "use `result5.trim()`" was then false and its fix threw, and two numeric outputs gave a bare `Result: {}`. The live F13 passes worked partly because 20! is above 2^53 | `8f905764`: only a JSON object or array is parsed; any other result is the tool's text, so one tool's results are one kind and every digit survives |
+| The chat-title call reached a refused model (F10, F11, F12, F14) | `maybe_rename_session` runs after every reply loop and asks the model for a title with no tools, so it passed the R19 refusal. It loaded deepseek-r1:8b and gemma3:4b about a second after their turns were refused before loading, and sent lfm2:24b and command-r7b:7b a second request after their turns overflowed. That runner is what the F11 and F14 cleanup checks found; this report had blamed the harness | `8e186442`: after a turn that ends on a provider failure, the chat is titled from its first message without calling the model. A title a model wrote on an earlier turn is kept |
+| `todo_write` reported success for a checklist it could not read (F07 round 3) | `-  [  ] Create…` and `-   [ ] Create…` matched nothing. Five writes were answered "Todo list set: 0 item(s)" as successes, each replacing the checklist with nothing, until the loop guard fired | `65be50c5`: spacing around and inside the brackets is ignored, and a write with text that names no item is refused with the expected format, leaving the existing checklist in place |
+
+Verification of the three commits: eight new tests and one extended test cover the reviewer
+probes. With the fixes undone, the eight that check a fix fail; the ninth checks that a complete
+result gets no note and passes either way. With the fixes, all 4,969 `biorouter` library tests, the
+`code_execution_integration` (42), `chatrecall_code_execution` (25),
+`code_execution_module_invariants` (1) and `session_naming_tests` (3) binaries,
+`cargo clippy -p biorouter --all-targets -- -D warnings` and `cargo fmt` pass.
+
+### Live rerun of the affected attempts
+
+The attempts the fixes touch were run again on a fresh debug build of `65be50c5` (build C), made
+in a separate worktree on branch `pr393-work-7` with source identity `d9476b3b` over the
+campaign's 22 compile-input paths, with the same harness and task prompts and a new owned
+one-slot Ollama 0.40.3 on port 11445, one model at a time. F06 was added because its earlier
+scripts were shown `out5: 120`. Evidence, with every executable hashed in `binary_receipt.json`,
+is in `~/biorouter-runs/pr393-review-fix-reruns-2026-10-12/` under the new tags
+`pr393fix-r{1,2,3}-20261012-protocol-NN`; the Ollama request counts are from that run's own
+`serve.log`.
+
+| Attempt | Model and task | Result at build C | What it shows |
+| --- | --- | --- | --- |
+| F10 | lfm2:24b factorial | FAIL as expected, 9.4 s: the context sentence printed and stored. Ollama received one `/api/chat`, the turn's own, answered 400; no title request followed | The title fix |
+| F12 | command-r7b:7b factorial | FAIL as expected, 3.3 s: the same, one `/api/chat` | The title fix |
+| F11 | deepseek-r1:8b factorial | FAIL as expected, 0.16 s: refused, naming the template. Ollama received no `/api/chat` and loaded no model, and the pair's `owned_cleanup_succeeded` and `post_cleanup_empty_state_proven` checks, which failed in every earlier round, pass. Only `serving_provenance_captured` still fails, because a correct refusal loads no model for it to prove | The title fix, and the corrected cause of the cleanup failures |
+| F14 | gemma3:4b factorial (planned negative) | FAIL as expected, 0.78 s: refused, no tool support. The same as F11: no `/api/chat`, no load, both cleanup checks pass | The same |
+| F13 | glm-4.7-flash factorial | **PASS**, 361.1 s: 14 calls, 1 recovered error. Its scripts were handed `"120\n"` and `"2432902008176640000\n"`, both text | The scalar change keeps F13 passing |
+| F06 | gpt-oss:20b factorial | **PASS**, 65.8 s: 6 calls, 1 recovered error, and `out5: "120\n"` beside `out20: "2432902008176640000\n"`, where rounds 2 and 3 showed `out5: 120` | The scalar change |
+| F07 | ministral-3:8b factorial | FAIL, 596.2 s: the checklist was written correctly the first time (4 items), then Python triple quotes in JavaScript five times despite the hint, then a direct call to `developer__text_editor`, which this chat does not offer | Model limitation, unchanged. The checklist defect did not recur because the model used standard spacing, so its fix is covered by tests |
+
+At the end the isolated Ollama on 11445 was stopped by its owned identity, no `llama-server`
+remained, and the user's Ollama on 11434 reported no loaded model.
 
 ## Limits to preserve in the final result
 
