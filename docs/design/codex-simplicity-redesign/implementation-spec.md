@@ -507,7 +507,15 @@ workstream and by Crew-like rows elsewhere):
   - `dialog.tsx`: the overlay fades over 250ms, and the panel goes from opacity 0 and scale 0.98 to
     1 over 250ms with `--ease-out`. Exit is opacity plus scale 0.98 over 125ms.
   - `ModalShell` gains an `xl` 800px size. The 34 raw `DialogContent` call sites migrate,
-    each by its own owner.
+    each by its own owner. Done, except `privacy/NonPrivateModelDisclosure.tsx` and the unmounted
+    `settings/tunnel/TunnelSection.tsx`. The disclosure's swap was approved on 2026-10-12 (ruling
+    23: `size="lg"`, `purpose="required"`, `testId="non-private-model-disclosure"`, `scrollBody`,
+    focus on the prose) and is a privacy-UI presentation change on the PR's human-review list. The
+    tunnel section is frozen and left. `ModalShell` also gained a `testId` prop (the `data-testid`
+    goes on the `role="dialog"` node, `26c5520b4`), so a dialog that a test or an e2e suite finds
+    by id keeps it on the shell. Deleting the `p-6`, `gap-4` and `sm:max-w-lg` defaults from
+    `ui/dialog.tsx`'s `DialogContent` follows the disclosure's swap, because until then the
+    disclosure would lose its insets.
   - Delete the `p-6` default so raw content cannot drift.
   - P2, decided by the coordinator after a visual check: make Crew's `anchor:'top'` and
     `headerRule` the default outside Crew too.
@@ -564,13 +572,31 @@ workstream and by Crew-like rows elsewhere):
   - unmounted Settings folders: `settings/{dictation,tunnel,sessions}/**`;
   - other areas outside this redesign: `context_management/**` (except the class-only pass on
     `SystemNotificationInline.tsx` below), `LauncherView.tsx`, `Pair.tsx`, `ConfigContext.tsx`,
-    `ModelAndProviderContext.tsx`, and `index.html` (except the regions the generator writes).
+    `ModelAndProviderContext.tsx`, and `index.html` (except the regions the generator writes and
+    the boot splash's own markup, style and script, `#br-boot`, which FR-R1-7 redrew as the
+    wordmark at rest; `scripts/generate-themes.mjs` now derives the splash ground from
+    `--background-canvas` and gives every family the base family's mark inks).
+  - **Presentation-only edits made inside frozen files, with the coordinator's approval**, recorded
+    so a later reader does not take them for breaches. Neither touched privacy logic:
+    - `sessions/DeclassifySessionDialog.tsx`: the undo window became a `ModalShell` (`21026e401`).
+      This is ruling 15's standard, and the dismissal rule is unchanged and pinned by tests.
+    - `ModelAndProviderContext.tsx`: only the Llama Server warm-up dialog's JSX and the five
+      strings it prints (`61317a1d2`). The list above freezes the file, but 2.6 says the raw
+      `DialogContent` call sites migrate, and that dialog was one of them.
   - **Class-only, not frozen** (message 5 asks for "all kinds of different components"): the
     user-facing dialogs `DependencySetupModal.tsx` (18 legacy size classes),
     `UpdateAvailableModal.tsx` (10), `DependencyErrorBanner.tsx` (2), `AnnouncementModal.tsx` and
     `ErrorBoundary.tsx` (4) take type roles, button variants and ModalShell sizes from
     WS-PRIMITIVES (P2). No logic, no copy except copy-rule fixes, and nothing that adds main-thread
     work at startup (`docs/desktop-ui/startup-freeze-and-main-thread-blocking.md`).
+    One exception, approved 2026-10-11 (FR-S-7): `DependencySetupModal.tsx` stops offering an
+    Install button on a row whose install command is empty or a shell comment (`hasInstaller`, the
+    predicate "Install all" already used). A row with neither an installer nor a Download link
+    prints the existing "Install {name} via your system package manager" sentence. No other logic
+    in these five files changes. The `#` comment fallback is what `buildInstallInfo` writes on
+    Linux with an unknown distro (git, python, npm), not on macOS, where
+    `crates/biorouter/src/system.rs` `install_info` gives every dependency a real command (Rust
+    included); the usual no-installer shape from `biorouter doctor` is an empty command.
     `context_management/SystemNotificationInline.tsx` renders in the transcript, so WS-TRANSCRIPT
     gives it the transcript row recipe, class-only.
 - **Keep every `data-testid` and every state attribute a test reads.** The e2e suites read, among
@@ -1517,7 +1543,9 @@ footer line.
   (/)", each with a muted shortcut hint.
 - **The Tools chip:**
   - It is a ghost `sm` chip in `text-secondary`, labelled "Tools", followed by the sum of
-    extensions, skills and knowledge bases.
+    extensions, skills and knowledge bases. The number shows once all three lists have answered
+    for the chat; until then the chip reads "Tools" alone (V2-R7-3). A chat keeps its last settled
+    number while one list re-asks.
   - It opens **one popover** with a `SegmentedControl` (Extensions · Skills · Knowledge) above the
     existing three lists.
   - **One picker shell** serves all three lists: an `h-8` search ("Search extensions…"), then a
@@ -1545,7 +1573,9 @@ footer line.
 - **The footer line:**
   - On the left, the folder **basename** in sans, with the full path (mono) in the tooltip. It is
     still the `DirSwitcher`. Drop the mono path, the alpha inks, the lone `•` and the signal-bars
-    glyph.
+    glyph. The folder is the chat's own (its row, else the session listing's row); an existing
+    chat never shows the app default, and the folder is left out until it is known (V2-R7-3).
+    Home and a new tab name the default or the picked folder.
   - On the right, a 14px context ring. Its text "N% left" appears **only below 50%**, and its
     tooltip is one line, "72% context left · 92k of 128k".
   - Cost appears **only when it is above $0 and inside a chat**, in sans `tabular-nums`.
@@ -2738,7 +2768,9 @@ coupling.
 - `searchBarNote.test.ts` (the max-height ceiling becomes an overlay).
 - `conversation/SearchBar.test.tsx:19-22`.
 - `toasts*.test.tsx`.
-- `boot-splash.test.ts` (unchanged).
+- `boot-splash.test.ts` (rewritten for the wordmark splash: the cascade, blur-unit and
+  reduced-motion-settled cases are replaced by at-rest, font-wait and ink pins) and
+  `bootSplash.browser.test.ts` (new, Chromium).
 
 **Acceptance** (60fps recordings, reviewed frame by frame):
 - A new tab grows in from its left edge, and a restored tab does not.
@@ -2760,7 +2792,7 @@ coupling.
 | `components/ui/**` (except `sidebar.tsx`, `sidebarWidth.ts`), `components/ModalShell.tsx`, `components/crew/**` (fix list only), `styles/{settingsRowHover,settingsScrollFade,tabFocus,crewParity}.test.ts`; class-only: `{DependencySetupModal,DependencyErrorBanner,UpdateAvailableModal,AnnouncementModal,ErrorBoundary}.tsx` | WS-PRIMITIVES |
 | `components/icons/**`, `components/chats/{chatKind.ts,ChatKindIcon.tsx}`, `utils/{toolIconMapping.tsx,toolGlyph.ts}`, `components/ItemIcon.tsx`, `components/AnimatedIcons.tsx` (delete) | WS-ICONS |
 | `components/BioRouterSidebar/**` (except `ThemeSelector`, `ThemeFamilySelector`), `components/ui/{sidebar.tsx,sidebarWidth.ts}`, `Layout/TitlebarControls.tsx`, `chats/{ChatRowContextMenu.tsx,chatRowActions.ts,ChatRowRenameInput.tsx}`, `utils/{sessionNameSync,deleteConversation,exportConversation,dateUtils,chatDateBuckets}.ts`, `sessions/**` (except `SessionsInsights`, `UsageHeatmap`, `HomeUsageCard`, `DeclassifySessionDialog`, `declassifyOnBrowser`), `ui/desktop/tests/e2e/helpers/sidebar.ts` | WS-SIDEBAR |
-| `components/BaseChat.tsx`, `ChatSummary.tsx`, `components/summary/**`, `hooks/{useSummaryRail,useColumnGlide,useSessionTodos}.ts`, `Layout/{yieldLadder,summaryRailPreference}.ts`, `styles/summaryRail.test.ts`, docs listed in section 3.5 | WS-SUMMARY |
+| `components/BaseChat.tsx`, `ChatSummary.tsx`, `components/summary/**`, `hooks/{useSummaryRail,useColumnGlide,useSessionTodos,useCostTracking}.ts`, `Layout/{yieldLadder,summaryRailPreference}.ts`, `styles/summaryRail.test.ts`, docs listed in section 3.5 | WS-SUMMARY |
 | Message, markdown, tool-call, card, activity and error files (section 3.6), `subagent/**`, `workflows/WorkflowActivities.tsx`, `utils/trailingActivity.ts`, `styles/chatSurfaceType.test.ts`; class-only: `context_management/SystemNotificationInline.tsx`; `ui/desktop/tests/e2e/{user-message-layout.spec.ts,user-message-layout.fixture.*,bioroffice-install.spec.ts,bioroffice-verify.spec.ts}` | WS-TRANSCRIPT |
 | `ChatInput.tsx`, `MessageQueue.tsx`, `MentionPopover.tsx`, `Hub.tsx`, `ContextWindowIndicator.tsx`, `bottom_menu/**`, `settings/models/bottom_bar/ModelsBottomBar.tsx`, `store/reasoningEffort.ts`, `utils/keyboardShortcuts.ts`, `composerNoProvider.ts`, `copilot/CopilotControl.tsx`, `Quoted*`, `ResourceRefChip`, `WaveformVisualizer`, `extensionReferenceItems.ts`, `styles/{composerFocus,composerWorkingEdge,dirChipPath,popupType}.test.ts` | WS-COMPOSER |
 | `artifacts/**`, `styles/prismGrammars.ts`, `styles/artifactPaper.test.ts`, `ui/desktop/.artifact-harness/**`, `ui/desktop/scripts/preview-panel-e2e.mjs` | WS-PREVIEW |
@@ -2788,7 +2820,7 @@ largest rows into parallel sub-owners, and its partition is the one copied into 
 | `.biorouter-modal-*` (2224-2249), PROGRESS `.br-progress*` (2250-2320), `.biorouter-popover-surface` (3117-3143), `.biorouter-list-shell` and `-row` (3144-3185), `.br-swatch-ring`, `.biorouter-note-clamp`, `.biorouter-scroll-fade-top` (3605-3623), `.biorouter-settings-*` (3624-3695), shared primitives `.biorouter-copy-field*`, `.biorouter-status-dot*`, `.biorouter-disclosure*`, `.biorouter-avatar*` (5617-6256), the new `.br-info-tip` and `.br-segmented` | WS-PRIMITIVES |
 | `.biorouter-composer-card*`, the composer focus edge (2457-2484), `.biorouter-dir-chip-*` (2485-2533), the working edge (2534-2667) | WS-COMPOSER |
 | `.biorouter-composer-motion` (4635) | WS-SUMMARY |
-| `.biorouter-message-tool`, `biorouter-tool-enter` (2034, 2184), `.biorouter-markdown*` (4287-4507), `.user-message`, `.assistant…` (4508-4520), `.virtualized-list*`, `biorouter-icon-entrance`, `.prose .katex*` | WS-TRANSCRIPT |
+| `.biorouter-message-tool`, `biorouter-tool-enter` (2034, 2184), `.biorouter-markdown*` (4287-4507), `.user-message`, `.assistant…` (4508-4520), `.virtualized-list*`, `.prose .katex*` | WS-TRANSCRIPT |
 | `.br-knowledge-*`, `.br-graph-*`, `.br-facet*`, `@container br-knowledge-pane` (about 3186-3524, excluding `.br-swatch-ring` and `.biorouter-note-clamp`) | WS-KNOWLEDGE |
 | `.biorouter-home-*` and `@container biorouter-home-content` (3525-3604), `.biorouter-heatmap-*` (5541-5612) | WS-USAGE |
 | `.biorouter-sidebar-*`, `.biorouter-sidebar-resize-handle`, `.titlebar-drag-region`, `body.biorouter-sidebar-compact*` (3696-3936), `.session-item`, `.session-skeleton`, `.biorouter-history-loading-cell` | WS-SIDEBAR |
