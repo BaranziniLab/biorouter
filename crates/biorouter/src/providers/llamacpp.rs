@@ -127,7 +127,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         official_url: "https://ollama.com/library/gemma4:12b",
         hf_spec: "google/gemma-4-12B-it-qat-q4_0-gguf:Q4_0",
         download_size: "7.6 GB",
-        description: "Mid-size Gemma 4 model with a larger advertised context window; recommended for machines above the laptop tier",
+        description: "Mid-size Gemma 4 model with a larger context window, for machines with 32 GB or more of GPU memory",
         min_gpu_memory_gib: 24,
         recommended_gpu_memory_gib: 32,
         context_limit: 262_144,
@@ -893,6 +893,28 @@ mod tests {
         assert!(
             qwen.description.starts_with("Large, opt-in"),
             "qwen3.6 should be described as a large, opt-in model"
+        );
+    }
+
+    #[test]
+    fn gemma4_12b_description_names_its_memory_not_a_tier() {
+        // Ruling 26 (FR-R3-6): the Llama Server panel's Memory row states the fit in GB, and a
+        // description that said "above the laptop tier" half contradicted it on a large machine.
+        // The description names the same number the catalog recommends.
+        let entry = MODEL_CATALOG
+            .iter()
+            .find(|e| e.name == "gemma4-12b")
+            .expect("gemma4-12b stays in the catalog");
+        assert!(
+            !entry.description.contains("tier"),
+            "gemma4-12b's description should state memory, not a tier: {}",
+            entry.description
+        );
+        let memory = format!("{} GB", entry.recommended_gpu_memory_gib);
+        assert!(
+            entry.description.contains(&memory),
+            "gemma4-12b's description should name {memory}: {}",
+            entry.description
         );
     }
 
