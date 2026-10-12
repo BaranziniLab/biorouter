@@ -197,26 +197,43 @@ describe('closing the knowledge-base manager (Chromium)', () => {
     await page.keyboard.press('Enter');
   }
 
-  const settled = async (page: Page, count: number) => {
-    await page.waitForFunction(
-      (expected) => document.querySelectorAll('[role="dialog"]').length === expected,
-      count
-    );
-    // The close motion and the focus scope's own deferred return have both played.
-    await page.waitForTimeout(400);
-  };
+  /** The dialog has mounted and taken focus into itself. */
+  const dialogHasFocus = (page: Page) =>
+    page.waitForFunction(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      return Boolean(dialog && dialog.contains(document.activeElement));
+    });
+
+  /** Every dialog has finished closing (the exit motion has played and the content is gone). */
+  const dialogsGone = (page: Page) =>
+    page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 0);
+
+  /**
+   * Focus arrives on the control with `testId`, polled rather than slept on: the dialog's exit
+   * motion and the focus scope's deferred return both take a beat that a loaded machine stretches.
+   * A miss reports what DID hold focus, which is the useful half of the failure.
+   */
+  async function landsOn(page: Page, testId: string) {
+    await page
+      .waitForFunction(
+        (id) => (document.activeElement as HTMLElement | null)?.getAttribute('data-testid') === id,
+        testId,
+        { timeout: 5000 }
+      )
+      .catch(() => undefined);
+    expect(await focused(page)).toBe(testId);
+  }
 
   it('gives focus back to the selector after a keyboard pick on Manage bases and Escape', async (ctx) => {
     if (!browser) return ctx.skip();
     const page = await open();
     try {
       await keyboardPick(page, MANAGE);
-      await settled(page, 1);
-      expect(await focused(page)).not.toBe('BODY');
+      await dialogHasFocus(page);
 
       await page.keyboard.press('Escape');
-      await settled(page, 0);
-      expect(await focused(page)).toBe('knowledge-kb-selector-trigger');
+      await dialogsGone(page);
+      await landsOn(page, 'knowledge-kb-selector-trigger');
     } finally {
       await page.close();
     }
@@ -227,18 +244,14 @@ describe('closing the knowledge-base manager (Chromium)', () => {
     const page = await open();
     try {
       await keyboardPick(page, CREATE);
-      await settled(page, 1);
-      expect(
-        await page.evaluate(() => document.querySelector('[role="dialog"]')?.textContent)
-      ).toContain('Create knowledge base');
+      await landsOn(page, 'knowledge-format-name');
 
       await page.keyboard.press('Escape');
-      await settled(page, 1);
-      expect(await focused(page)).toBe('knowledge-kb-create');
+      await landsOn(page, 'knowledge-kb-create');
 
       await page.keyboard.press('Escape');
-      await settled(page, 0);
-      expect(await focused(page)).toBe('knowledge-kb-selector-trigger');
+      await dialogsGone(page);
+      await landsOn(page, 'knowledge-kb-selector-trigger');
     } finally {
       await page.close();
     }
@@ -250,10 +263,12 @@ describe('closing the knowledge-base manager (Chromium)', () => {
     try {
       await page.click(TRIGGER);
       await page.click(MANAGE);
-      await settled(page, 1);
+      await dialogHasFocus(page);
 
       await page.keyboard.press('Escape');
-      await settled(page, 0);
+      await dialogsGone(page);
+      // Absence cannot be polled for: give the focus scope's deferred return time to have run.
+      await page.waitForTimeout(600);
       expect(await focused(page)).not.toBe('knowledge-kb-selector-trigger');
       expect(await dialogCount(page)).toBe(0);
     } finally {
