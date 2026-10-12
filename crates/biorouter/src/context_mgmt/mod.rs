@@ -803,8 +803,8 @@ pub fn overflow_beyond_compaction(
     Some(format!(
         "This model's context window is {window} tokens, and Biorouter's instructions and tool \
          descriptions alone take about {fixed_tokens} of them, so compacting the conversation \
-         cannot make room. Turn off some extensions, or raise the model's context window, then \
-         try again."
+         cannot make room. Turn off some extensions, raise the model's context window if the \
+         model supports a larger one, or choose a model with a larger window, then try again."
     ))
 }
 

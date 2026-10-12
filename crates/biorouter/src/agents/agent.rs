@@ -2534,6 +2534,31 @@ fn assistant_text<S: Into<String>>(text: S) -> Message {
     Message::assistant().with_text(text)
 }
 
+/// A context overflow the turn cannot recover from, as a turn VERDICT: the
+/// stored row that says why, and the typed abort that ends the turn with it.
+///
+/// Both overflow stops in the reply loop used to yield an inline notice and
+/// `break`, which ended the turn as an ordinary `stop`. The notice was never
+/// stored and `biorouter session send` printed only `[finished] stop` and
+/// exited 0, so a model whose window cannot hold Biorouter's instructions
+/// (lfm2:24b at 32,768 tokens, command-r7b at 8,192, live 2026-10-12) failed
+/// with nothing on screen to say why, and nothing in the chat on reload. Built
+/// the way the provider-error stop is: an assistant row, persisted with the
+/// iteration, and a `context_length` provider failure that every surface
+/// already renders (the desktop's "Model context limit exceeded" card, the
+/// CLI's `[error:provider_failure]` line and exit code).
+fn context_overflow_stop(notice: String) -> (Message, (TurnAbortCode, String)) {
+    (
+        named(assistant_text(&notice)),
+        (
+            TurnAbortCode::ProviderFailure {
+                kind: crate::providers::errors::ProviderErrorKind::ContextLength,
+            },
+            notice,
+        ),
+    )
+}
+
 /// A user-role row the model sees but the transcript does not show.
 fn model_only_user_text<S: Into<String>>(text: S) -> Message {
     Message::user().with_text(text).with_visibility(false, true)
@@ -12393,7 +12418,10 @@ impl Agent {
                                     "Context overflow caused by the system prompt and tools alone; \
                                      not compacting"
                                 );
-                                yield AgentEvent::Message(inline_notice(notice));
+                                let (message, abort) = context_overflow_stop(notice);
+                                yield AgentEvent::Message(message.clone());
+                                messages_to_add.push(message);
+                                pending_turn_abort = Some(abort);
                                 break;
                             }
                             compaction_attempts += 1;
@@ -12409,9 +12437,12 @@ impl Agent {
                             // and THEN overflows does not.
                             let Some(recovery) = overflow_recovery_for_attempt(compaction_attempts) else {
                                 error!("Context limit exceeded after progressive compaction fallbacks - prompt too large");
-                                yield AgentEvent::Message(
-                                    inline_notice("Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new chat.")
+                                let (message, abort) = context_overflow_stop(
+                                    "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new chat.".to_string(),
                                 );
+                                yield AgentEvent::Message(message.clone());
+                                messages_to_add.push(message);
+                                pending_turn_abort = Some(abort);
                                 break;
                             };
 
@@ -24494,15 +24525,22 @@ mod fixed_prompt_compaction_tests {
         // Text and notices alike: the turn's notices are system notifications,
         // which `as_concat_text` leaves out.
         let mut said = Vec::new();
+        let mut aborted = None;
         while let Some(event) = stream.next().await {
-            if let Ok(AgentEvent::Message(message)) = event {
-                for content in &message.content {
-                    match content {
-                        MessageContent::Text(text) => said.push(text.text.clone()),
-                        MessageContent::SystemNotification(notice) => said.push(notice.msg.clone()),
-                        _ => {}
+            match event {
+                Ok(AgentEvent::Message(message)) => {
+                    for content in &message.content {
+                        match content {
+                            MessageContent::Text(text) => said.push(text.text.clone()),
+                            MessageContent::SystemNotification(notice) => {
+                                said.push(notice.msg.clone())
+                            }
+                            _ => {}
+                        }
                     }
                 }
+                Ok(AgentEvent::TurnAborted { code, message }) => aborted = Some((code, message)),
+                _ => {}
             }
         }
         drop(stream);
@@ -24524,6 +24562,37 @@ mod fixed_prompt_compaction_tests {
         assert!(
             !said.iter().any(|text| text.contains("shorter message")),
             "{said:?}"
+        );
+
+        // F10/F12 (live 2026-10-12, lfm2:24b and command-r7b:7b): the turn
+        // used to end as an ordinary `stop` with the sentence only yielded,
+        // so `biorouter session send` printed `[finished] stop`, exited 0, and
+        // the stored chat held nothing but the user's message. The verdict is
+        // a typed context-length failure carrying the same sentence…
+        let (code, message) = aborted.unwrap_or_else(|| panic!("no TurnAborted: {said:?}"));
+        assert_eq!(
+            code,
+            TurnAbortCode::ProviderFailure {
+                kind: crate::providers::errors::ProviderErrorKind::ContextLength,
+            }
+        );
+        assert!(message.contains("4096 tokens"), "{message}");
+        // …and it is in the chat on reload, not only on the live stream.
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            stored
+                .messages()
+                .iter()
+                .any(|m| m.as_concat_text().contains("4096 tokens")),
+            "the verdict must be stored: {:?}",
+            stored.messages()
         );
     }
 
@@ -24866,15 +24935,22 @@ mod fixed_prompt_compaction_tests {
             .await
             .unwrap();
         let mut said = Vec::new();
+        let mut aborted = None;
         while let Some(event) = stream.next().await {
-            if let Ok(AgentEvent::Message(message)) = event {
-                for content in &message.content {
-                    match content {
-                        MessageContent::Text(text) => said.push(text.text.clone()),
-                        MessageContent::SystemNotification(notice) => said.push(notice.msg.clone()),
-                        _ => {}
+            match event {
+                Ok(AgentEvent::Message(message)) => {
+                    for content in &message.content {
+                        match content {
+                            MessageContent::Text(text) => said.push(text.text.clone()),
+                            MessageContent::SystemNotification(notice) => {
+                                said.push(notice.msg.clone())
+                            }
+                            _ => {}
+                        }
                     }
                 }
+                Ok(AgentEvent::TurnAborted { code, .. }) => aborted = Some(code),
+                _ => {}
             }
         }
         drop(stream);
@@ -24890,5 +24966,30 @@ mod fixed_prompt_compaction_tests {
             "{said:?}"
         );
         assert!(!said.iter().any(|text| text == "Five."), "{said:?}");
+        // The spent ladder is a verdict too: a typed context-length failure,
+        // and a stored row, rather than an unexplained ordinary stop.
+        assert_eq!(
+            aborted,
+            Some(TurnAbortCode::ProviderFailure {
+                kind: crate::providers::errors::ProviderErrorKind::ContextLength,
+            }),
+            "{said:?}"
+        );
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            stored
+                .messages()
+                .iter()
+                .any(|m| m.as_concat_text().contains("Context limit still exceeded")),
+            "the verdict must be stored: {:?}",
+            stored.messages()
+        );
     }
 }

@@ -537,6 +537,35 @@ fn absorb(pending: &mut Vec<u8>, buffer: &mut String, chunk: &[u8]) -> Vec<serde
     frames
 }
 
+/// The `[notice]` line for a message whose only content is inline notices,
+/// or `None`.
+///
+/// An inline notice carries its sentence in `msg`, not `text`, so
+/// [`render_frame`]'s text line is empty for it. It is the only output a turn
+/// has when it ends on a verdict the loop narrates rather than says ("the
+/// checklist still has 2 unfinished items", "Context limit reached.
+/// Compacting…"), and `send`, `watch` and `attach` printed nothing for it while
+/// the interactive renderer (`session/output.rs`) showed it in yellow (live
+/// 2026-10-12: `session send` against lfm2:24b printed only `[finished]
+/// stop`). Thinking notices stay silent: they are a spinner's label, not
+/// something that happened.
+fn inline_notice_line(message: &serde_json::Value) -> Option<String> {
+    let notices: Vec<&str> = message
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|c| {
+            c.get("type").and_then(serde_json::Value::as_str) == Some("systemNotification")
+                && c.get("notificationType")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("inlineMessage")
+        })
+        .filter_map(|c| c.get("msg").and_then(serde_json::Value::as_str))
+        .filter(|msg| !msg.trim().is_empty())
+        .collect();
+    (!notices.is_empty()).then(|| format!("[notice] {}", notices.join(" ")))
+}
+
 /// One line of human output for a frame, or `None` for frames a human does not
 /// need to see (heartbeats, token bookkeeping).
 pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
@@ -625,7 +654,7 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
                 })
                 .unwrap_or_default();
             if text.trim().is_empty() && tools.is_empty() {
-                return None;
+                return inline_notice_line(message);
             }
             let mut line = format!("[{role}]{provenance} {text}");
             if !tools.is_empty() {
@@ -2464,6 +2493,40 @@ mod tests {
         }))
         .unwrap();
         assert!(err.contains("provider_forbidden"));
+    }
+
+    /// F10/F12 (live 2026-10-12): an inline notice's sentence lives in `msg`,
+    /// and `send`/`watch`/`attach` dropped it, so a turn that ended on one
+    /// printed nothing but `[finished] stop`. The frame is built from the real
+    /// `Message` serialisation, so a renamed wire field fails here.
+    #[test]
+    fn an_inline_notice_is_printed_and_a_thinking_notice_is_not() {
+        use biorouter::conversation::message::{Message, SystemNotificationType};
+        let notice = Message::assistant().with_system_notification(
+            SystemNotificationType::InlineMessage,
+            "This model's context window is 32768 tokens.",
+        );
+        let notice = serde_json::to_value(&notice).unwrap();
+        assert_eq!(
+            render_frame(&serde_json::json!({ "type": "Message", "message": notice })).as_deref(),
+            Some("[notice] This model's context window is 32768 tokens.")
+        );
+        // A stored notice replays in an `attach` join exactly as it streamed.
+        assert_eq!(
+            render_join_snapshot(&serde_json::json!({
+                "type": "UpdateConversation",
+                "conversation": [notice],
+            })),
+            vec!["[notice] This model's context window is 32768 tokens.".to_string()]
+        );
+
+        let thinking = Message::assistant()
+            .with_system_notification(SystemNotificationType::ThinkingMessage, "Compacting…");
+        let thinking = serde_json::to_value(&thinking).unwrap();
+        assert_eq!(
+            render_frame(&serde_json::json!({ "type": "Message", "message": thinking })),
+            None
+        );
     }
 
     // ── the guardrail's untrusted-data frame is machinery, not transcript ──
