@@ -265,6 +265,19 @@ describe('ApplicationItem', () => {
     expect(
       screen.getByText('manifest.json: expected value at line 1 column 1')
     ).toBeInTheDocument();
+    // Two lines, like every row: the badge says the state and carries what it means as its
+    // help; the second line is the parser's reason. No third line of prose.
+    const badge = screen.getByText(appsCopy.broken.badge);
+    expect(badge).toHaveAccessibleDescription(appsCopy.broken.message);
+    expect(screen.getByText(appsCopy.broken.message)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
+    const row = screen.getByTestId('app-row');
+    expect(row.querySelectorAll('p')).toHaveLength(1);
+    expect(screen.getByTestId('app-broken-reason')).toHaveTextContent(
+      'manifest.json: expected value at line 1 column 1'
+    );
     expect(screen.queryByRole('button', { name: /Launch/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /More actions/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Export/ })).toBeNull();

@@ -6,6 +6,7 @@ import { ThemeProvider } from '../contexts/ThemeContext';
 import type { EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { toastError } from '../toasts';
+import { OPEN_IN_BROWSER_COPY } from '../utils/openInBrowser';
 
 vi.mock('../toasts', () => ({ toastError: vi.fn() }));
 
@@ -183,7 +184,7 @@ describe('MCPUIResourceRenderer', () => {
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith({
-        title: 'Could not open the app',
+        title: OPEN_IN_BROWSER_COPY.failedTitle,
         msg: 'This app no longer exists.',
       })
     );

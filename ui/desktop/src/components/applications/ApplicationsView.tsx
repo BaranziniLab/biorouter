@@ -21,6 +21,7 @@ import {
   configuredBaseUrl,
   deleteAgentDrafterApp,
   exportedMessage,
+  exportNotesMessage,
   requireOk,
   secretHeader,
 } from './appManagement';
@@ -193,12 +194,8 @@ export default function ApplicationsView() {
     } catch (err) {
       console.error('Failed to open app:', err);
       // The main process says why (the app is gone, the daemon is down, no
-      // browser opened); Electron wraps its sentence in an IPC preamble.
-      const reason =
-        err instanceof Error
-          ? err.message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
-          : '';
-      toastError({ title: app.title, msg: reason || copy.couldNotOpen });
+      // browser opened); `failureSentence` takes off Electron's IPC preamble.
+      toastError({ title: app.title, msg: failureSentence(err, copy.couldNotOpen) });
     } finally {
       setLaunchingAppId((current) => (current === app.id ? null : current));
     }
@@ -286,13 +283,11 @@ export default function ApplicationsView() {
       if (result.status === 'exported') {
         toastSuccess({ title: app.title, msg: exportedMessage(result) });
         // What was left out, and why: a private knowledge base this caller could not open, a
-        // skill that is not installed, an older background service. Never folded into success.
-        if (result.summary.notes.length > 0) {
-          toastWarning({
-            title: app.title,
-            msg: result.summary.notes.join(' '),
-            clampMessage: false,
-          });
+        // skill that is not installed, an older background service. Never folded into success,
+        // and never clamped: a note cut at three lines would hide which item was left out.
+        const notes = exportNotesMessage(result.summary.notes);
+        if (notes) {
+          toastWarning({ title: app.title, msg: notes, clampMessage: false });
         }
       } else if (result.status === 'failed') {
         toastError({ title: app.title, msg: result.message });
@@ -621,6 +616,11 @@ export function ApplicationItem({
  * need the manifest, so they are left out rather than offered and failing; Delete needs only the
  * id, and is the one way out, so it is the row's one action. The daemon used to drop such an app
  * from the list, which left it on disk with no way to see or remove it from the app.
+ *
+ * Two lines, like every row (principle 4): the title with a danger "Can’t be read" badge, then
+ * the parser's own reason. What that means for the app (it can be neither launched nor exported)
+ * is the badge's help, the way a kind badge carries its surface: the state is said at rest by
+ * the badge and the reason, and the row's one action already shows what is left.
  */
 function BrokenApplicationItem({
   app,
@@ -638,15 +638,20 @@ function BrokenApplicationItem({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <h3 className="min-w-0 truncate text-label text-text-default">{app.title}</h3>
-            <Badge tone="danger">{copy.broken.badge}</Badge>
+            <InfoTip label={copy.broken.badge} help={copy.broken.message} asChild>
+              <Badge tone="danger">{copy.broken.badge}</Badge>
+            </InfoTip>
           </div>
-          <p className="min-w-0 break-words text-supporting text-text-danger">
-            {copy.broken.message}
-          </p>
           {/* `break-all`: the reason is usually a path or a parser message with no break
-              opportunity, which would otherwise push past the row. */}
+              opportunity, which would otherwise push past the row. Mono: it is the parser's
+              machine string, not a sentence written for the row. */}
           {reason && (
-            <p className="min-w-0 break-all font-mono text-supporting text-text-muted">{reason}</p>
+            <p
+              className="min-w-0 break-all font-mono text-supporting text-text-muted"
+              data-testid="app-broken-reason"
+            >
+              {reason}
+            </p>
           )}
         </div>
         <RowActions

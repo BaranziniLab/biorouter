@@ -162,6 +162,99 @@ describe('ExportAppDialog', () => {
     });
   });
 
+  describe('the app check’s face', () => {
+    const findings = Array.from(
+      { length: 11 },
+      (_, n) => `finding ${n + 1}: #part-${n} is not in the page`
+    );
+    const lintAnswer = (list = findings): AppExportResult => ({
+      status: 'lint',
+      message: 'harness ERRORs block export',
+      findings: list,
+      retry: 'token-1',
+    });
+
+    it('lists every finding in one warning Note, and nothing scrolls inside the body', async () => {
+      const { user } = renderDialog(vi.fn(async () => lintAnswer()));
+      await user.click(screen.getByRole('button', { name: copy.export }));
+
+      const list = await screen.findByRole('list', { name: copy.problemsFound });
+      // All eleven, none dropped behind a count: the Note's own ceiling folds a long list.
+      expect(within(list).getAllByRole('listitem')).toHaveLength(11);
+      expect(within(list).getByText(findings[10])).toBeInTheDocument();
+      const note = screen.getByTestId('export-lint-findings');
+      expect(note).toContainElement(list);
+      expect(note.className).toContain('bg-wash-warning');
+      expect(list.className).not.toMatch(/overflow|max-h/);
+    });
+
+    it('keeps the consequence visible and puts the advice behind the title’s InfoTip', async () => {
+      const { user } = renderDialog(vi.fn(async () => lintAnswer()));
+      await user.click(screen.getByRole('button', { name: copy.export }));
+      const dialog = await screen.findByRole('dialog', { name: copy.lintTitle(app.title) });
+
+      expect(dialog).toHaveAccessibleDescription(copy.lintSubtitle);
+      const tip = within(dialog).getByRole('button', { name: `About ${copy.problemsFound}` });
+      expect(tip).toHaveAccessibleDescription(copy.lintHelp);
+      // The advice's only node is the InfoTip's hidden description, not a paragraph.
+      expect(within(dialog).getByText(copy.lintHelp)).toHaveAttribute(
+        'data-slot',
+        'info-tip-description'
+      );
+    });
+
+    it('moves focus to the findings when they arrive', async () => {
+      const { user } = renderDialog(vi.fn(async () => lintAnswer()));
+      await user.click(screen.getByRole('button', { name: copy.export }));
+      const list = await screen.findByRole('list', { name: copy.problemsFound });
+      await waitFor(() => expect(list).toHaveFocus());
+    });
+
+    it('stays on the findings while Export anyway runs, and says it is working', async () => {
+      let answer: (result: AppExportResult) => void = () => {};
+      const onExport = vi
+        .fn()
+        .mockResolvedValueOnce(lintAnswer(['inline script is blocked']))
+        .mockImplementationOnce(
+          () => new Promise<AppExportResult>((resolve) => (answer = resolve))
+        );
+      const { user, onClose } = renderDialog(onExport);
+      await user.click(screen.getByRole('button', { name: copy.export }));
+      await user.click(await screen.findByRole('button', { name: copy.exportAnyway }));
+
+      // Still the findings, not the mode choice it started from.
+      expect(screen.getByRole('list', { name: copy.problemsFound })).toBeInTheDocument();
+      expect(screen.queryByRole('radiogroup', { name: copy.mode })).toBeNull();
+      expect(screen.getByRole('button', { name: copy.exporting })).toBeDisabled();
+
+      answer(exported());
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    });
+  });
+
+  it('holds the mode choice while an export runs', async () => {
+    let answer: (result: AppExportResult) => void = () => {};
+    const { user, onClose } = renderDialog(
+      vi.fn(() => new Promise<AppExportResult>((resolve) => (answer = resolve)))
+    );
+    await user.click(screen.getByRole('button', { name: copy.export }));
+    expect(screen.getByRole('radio', { name: /^Launcher/ })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: /^Full/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: copy.exporting })).toBeDisabled();
+    answer(exported());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('says an app with nothing to include in a neutral Note', async () => {
+    const user = userEvent.setup();
+    const bare = { ...app, agent: { model: { provider: 'p', model: 'm' } } } as AppManifest;
+    render(<ExportAppDialog app={bare} onExport={vi.fn()} onClose={vi.fn()} />);
+    await user.click(screen.getByRole('radio', { name: /^Full/ }));
+    const note = screen.getByTestId('export-nothing-to-include');
+    expect(note).toHaveTextContent(copy.nothingToInclude);
+    expect(note.className).toContain('bg-background-fill');
+  });
+
   it('cancel sends nothing', async () => {
     const { user, onExport, onClose } = renderDialog();
     await user.click(screen.getByRole('button', { name: copy.cancel }));
@@ -256,9 +349,31 @@ describe('ApplicationsView export', () => {
     }
     exportApp.mockResolvedValue(result);
     await exportFromView();
+    // The daemon's clause, as a sentence: its own words, opened with a capital and stopped.
     expect(toastWarning).toHaveBeenCalledWith(
-      expect.objectContaining({ msg: "skipped knowledge base 'ms-cohort': it is private" })
+      expect.objectContaining({ msg: "Skipped knowledge base 'ms-cohort': it is private." })
     );
+  });
+
+  it('says each thing left out as its own sentence, unclamped, under the app’s name', async () => {
+    const result = exported();
+    if (result.status === 'exported') {
+      result.summary.notes = [
+        "skipped knowledge base 'ms-cohort': it is private",
+        "skill 'ggplot-visualization' not installed; skipped",
+        'The folder it replaced could not be moved to the Trash; it is at /tmp/x.',
+      ];
+    }
+    exportApp.mockResolvedValue(result);
+    await exportFromView();
+    expect(toastWarning).toHaveBeenCalledWith({
+      title: 'Cohort Explorer',
+      msg:
+        "Skipped knowledge base 'ms-cohort': it is private. " +
+        "Skill 'ggplot-visualization' not installed; skipped. " +
+        'The folder it replaced could not be moved to the Trash; it is at /tmp/x.',
+      clampMessage: false,
+    });
   });
 
   it('says why an export failed', async () => {

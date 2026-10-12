@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
 import CustomRadio from '../ui/CustomRadio';
 import { InfoTip } from '../ui/info-tip';
+import { Note } from '../ui/note';
 import { ModalShell } from '../ModalShell';
 import {
   exportableExtensions,
@@ -85,14 +87,11 @@ function IncludeGroup({
   );
 }
 
-/** The dialog's three faces: the choice, the export running, and the harness's findings. */
-type Phase =
-  | { kind: 'choose' }
-  | { kind: 'running' }
-  | { kind: 'lint'; message: string; findings: string[]; request: AppExportRequest };
-
-/** How many findings are listed before "N more". */
-const SHOWN_FINDINGS = 8;
+/**
+ * What the harness lint answered: its findings, and the request that exports anyway (the same
+ * choice, `allowLintErrors` set, and the folder the first attempt already picked).
+ */
+type LintAnswer = { message: string; findings: string[]; request: AppExportRequest };
 
 /**
  * The Built apps export dialog (Apps SDK v2, design §3.9): launcher or full export, with every
@@ -103,12 +102,17 @@ const SHOWN_FINDINGS = 8;
  * "none": a list with nothing checked used to be dropped, and the daemon read a missing list as
  * "everything the app references", so a knowledge base the person had unchecked shipped anyway.
  *
- * When the harness lint blocks the export, the findings are shown here and the person may export
- * anyway. That is the only way `allowLintErrors` is ever set.
+ * When the harness lint blocks the export, the dialog turns to a second face that shows the
+ * findings and lets the person export anyway. That is the only way `allowLintErrors` is ever set.
+ * The face stays while "Export anyway" runs: it used to fall back to the first face, so the
+ * findings the person had just answered were swapped for the mode choice under the pointer.
  *
- * `ModalShell size="md"` (the forms rung). Radio rows appear here because a dialog is the one
- * place principle 5 allows them, each with one consequence line. "Credentials are never
- * included." stays visible: a safety fact is never hidden behind help.
+ * `ModalShell size="md"` (the forms rung), both faces with a scrolling body: a full export of an
+ * app that reaches four knowledge bases, a skill and an extension is taller than the body a
+ * 600px window leaves, and a body that does not scroll is clipped (the shell hides its overflow),
+ * so the last items and the "Include Biorouter" row could not be reached. Radio rows appear here
+ * because a dialog is the one place principle 5 allows them, each with one consequence line.
+ * "Credentials are never included." stays visible: a safety fact is never hidden behind help.
  */
 export default function ExportAppDialog({
   app,
@@ -131,7 +135,8 @@ export default function ExportAppDialog({
   const [selectedExtensions, setSelectedExtensions] = useState<ReadonlySet<string>>(
     () => new Set(extensions)
   );
-  const [phase, setPhase] = useState<Phase>({ kind: 'choose' });
+  const [running, setRunning] = useState(false);
+  const [lint, setLint] = useState<LintAnswer | null>(null);
   const mounted = useRef(true);
   useEffect(
     () => () => {
@@ -139,6 +144,16 @@ export default function ExportAppDialog({
     },
     []
   );
+
+  // The findings take focus when they arrive. The button that asked turned disabled while the
+  // export ran, which drops focus to <body> in Chromium, so a keyboard or screen reader user would
+  // otherwise land nowhere, and hear nothing of what the check found. The list is named, so
+  // reaching it reads "Problems found" and its length (the non-private model disclosure's
+  // pattern: focus the words, not the button that acts on them).
+  const findingsRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (lint) findingsRef.current?.focus();
+  }, [lint]);
 
   const toggle = (set: ReadonlySet<string>, item: string, checked: boolean): Set<string> => {
     const next = new Set(set);
@@ -148,7 +163,7 @@ export default function ExportAppDialog({
   };
 
   const run = async (request: AppExportRequest) => {
-    setPhase({ kind: 'running' });
+    setRunning(true);
     let result: AppExportResult;
     try {
       result = await onExport(request);
@@ -156,9 +171,9 @@ export default function ExportAppDialog({
       result = { status: 'failed', message: appsCopy.couldNotExport };
     }
     if (!mounted.current) return;
+    setRunning(false);
     if (result.status === 'lint') {
-      setPhase({
-        kind: 'lint',
+      setLint({
         message: result.message,
         findings: result.findings,
         request: { ...request, allowLintErrors: true, retry: result.retry || undefined },
@@ -186,47 +201,53 @@ export default function ExportAppDialog({
     });
   };
 
-  const running = phase.kind === 'running';
   const handleOpenChange = (open: boolean) => {
     if (!open) onClose();
   };
 
-  if (phase.kind === 'lint') {
-    const findings = phase.findings.length > 0 ? phase.findings : [phase.message];
+  if (lint) {
+    const findings = lint.findings.length > 0 ? lint.findings : [lint.message];
     return (
       <ModalShell
         open
         onOpenChange={handleOpenChange}
         size="md"
         purpose="form"
+        scrollBody
         title={copy.lintTitle(app.title)}
+        // The consequence is the subtitle, visible at the moment of decision (principle 2); what
+        // to do about it is advice, so it waits behind the glyph.
+        titleInfo={<InfoTip label={copy.problemsFound} help={copy.lintHelp} />}
         subtitle={copy.lintSubtitle}
         footer={
           <>
             <Button variant="secondary" onClick={onClose}>
               {copy.cancel}
             </Button>
-            <Button onClick={() => void run(phase.request)}>{copy.exportAnyway}</Button>
+            <Button onClick={() => void run(lint.request)} disabled={running}>
+              {running ? copy.exporting : copy.exportAnyway}
+            </Button>
           </>
         }
       >
-        <div className="flex flex-col gap-3 py-1">
-          <p className="text-body text-text-default">{copy.lintHelp}</p>
-          <ul
-            aria-label={copy.problemsFound}
-            className="flex max-h-60 flex-col gap-1 overflow-y-auto"
-          >
-            {findings.slice(0, SHOWN_FINDINGS).map((finding, index) => (
-              <li key={index} className="break-words text-supporting text-text-default">
-                {finding}
-              </li>
-            ))}
-            {findings.length > SHOWN_FINDINGS && (
-              <li className="text-supporting text-text-muted">
-                {copy.moreProblems(findings.length - SHOWN_FINDINGS)}
-              </li>
-            )}
-          </ul>
+        {/* One warning Note holds the list. Its own ceiling (eight lines, then "Show more")
+            replaces the hand-rolled "N more" that left the rest of the findings unreadable, and
+            the shell's body is the one scroller: no box scrolls inside the dialog. */}
+        <div className="py-4">
+          <Note tone="warning" icon={AlertTriangle} testId="export-lint-findings">
+            <ul
+              ref={findingsRef}
+              tabIndex={-1}
+              aria-label={copy.problemsFound}
+              className="flex flex-col gap-1 outline-none"
+            >
+              {findings.map((finding, index) => (
+                <li key={index} className="break-words">
+                  {finding}
+                </li>
+              ))}
+            </ul>
+          </Note>
         </div>
       </ModalShell>
     );
@@ -238,6 +259,7 @@ export default function ExportAppDialog({
       onOpenChange={handleOpenChange}
       size="md"
       purpose="form"
+      scrollBody
       title={copy.title(app.title)}
       subtitle={browser ? copy.browserSubtitle : copy.credentials}
       footer={
@@ -251,13 +273,14 @@ export default function ExportAppDialog({
         </>
       }
     >
-      <div className="flex flex-col gap-4 py-1">
+      <div className="flex flex-col gap-4 py-4">
         <div role="radiogroup" aria-label={copy.mode} className="flex flex-col">
           <CustomRadio
             id="export-mode-launcher"
             name="export-mode"
             value="launcher"
             checked={mode === 'launcher'}
+            disabled={running}
             onChange={() => setMode('launcher')}
             label={copy.launcher}
             secondaryLabel={copy.launcherHint}
@@ -267,6 +290,7 @@ export default function ExportAppDialog({
             name="export-mode"
             value="full"
             checked={mode === 'full'}
+            disabled={running}
             onChange={() => setMode('full')}
             label={copy.full}
             secondaryLabel={copy.fullHint}
@@ -324,8 +348,9 @@ export default function ExportAppDialog({
                 ))}
               </IncludeGroup>
             )}
+            {/* An empty-store line: the in-place prose block, as Settings' are. */}
             {knowledgeBases.length === 0 && skills.length === 0 && extensions.length === 0 && (
-              <p className="text-supporting text-text-muted">{copy.nothingToInclude}</p>
+              <Note testId="export-nothing-to-include">{copy.nothingToInclude}</Note>
             )}
             {/* Not offered in a browser: the daemon there was built for the server, not for
                 whoever downloads the zip. */}

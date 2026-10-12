@@ -53,6 +53,11 @@ export const appsCopy = {
   couldNotExport: 'Couldn’t export the app.',
   couldNotDelete: (reason?: string) =>
     reason ? `Couldn’t delete the app: ${reason}` : 'Couldn’t delete the app.',
+  // An export's success toast: where it went, and what a full export carries.
+  exportedTo: (target: string) => `Exported to ${target}.`,
+  downloaded: (file: string) => `Downloaded ${file}.`,
+  exportCarries: (kbs: number, skills: number) =>
+    `It carries ${plural(kbs, 'knowledge base')} and ${plural(skills, 'skill')}.`,
 
   /**
    * Where the chat an app was built in leads (`buildChat.ts`, which decides the state). The
@@ -64,19 +69,19 @@ export const appsCopy = {
     openSubagentLabel: (title: string) => `Open the subagent run that built ${title}`,
     deletedLabel: (title: string) => `The chat where ${title} was built was deleted`,
     replacedLabel: (title: string) => `The chat where ${title} was built no longer exists`,
-    unreachableLabel: (title: string) => `The chat where ${title} was built can't be opened here`,
+    unreachableLabel: (title: string) => `The chat where ${title} was built can’t be opened here`,
     noneLabel: (title: string) => `No chat was recorded for ${title}`,
     deletedNote: 'Build chat deleted',
     replacedNote: 'Build chat no longer exists',
-    unreachableNote: "Build chat can't be opened here",
+    unreachableNote: 'Build chat can’t be opened here',
     noneNote: 'No build chat recorded',
     deletedRefusal: 'The chat where this app was built has been deleted.',
     replacedRefusal: 'The chat where this app was built no longer exists.',
-    unreachableRefusal: "The chat where this app was built can't be opened here.",
+    unreachableRefusal: 'The chat where this app was built can’t be opened here.',
     noneRefusal: 'No chat was recorded for this app.',
-    unansweredRefusal: "Couldn't reach Biorouter to check that chat. Try again.",
+    unansweredRefusal: 'Couldn’t reach Biorouter to check that chat. Try again.',
     stillChecking: 'Biorouter was still checking that chat. Try again.',
-    couldNotOpen: "Couldn't open the chat where this app was built.",
+    couldNotOpen: 'Couldn’t open the chat where this app was built.',
   },
 
   /**
@@ -84,8 +89,9 @@ export const appsCopy = {
    * seen and deleted, and Delete is its only action.
    */
   broken: {
-    badge: "Can't be read",
-    message: "Biorouter can't read this app's manifest, so it can't be launched or exported.",
+    badge: 'Can’t be read',
+    // The badge's help: the badge and the parser's reason are what the row shows at rest.
+    message: 'Biorouter can’t read this app’s manifest, so it can’t be launched or exported.',
     deleteNamed: (title: string) => `Delete ${title}`,
   },
 
@@ -116,12 +122,12 @@ export const appsCopy = {
     export: 'Export',
     exporting: 'Exporting…',
 
-    // The app check (harness lint) found errors: say so and offer to export anyway.
+    // The app check (harness lint) found errors: the consequence stays visible as the subtitle,
+    // the advice sits behind the title's InfoTip, and the findings are a warning Note.
     lintTitle: (title: string) => `Export ${title} anyway?`,
     lintSubtitle: 'The app check found problems that can keep the exported app from working.',
     lintHelp: 'Fix them in the chat that built the app, or export it as it is.',
     problemsFound: 'Problems found',
-    moreProblems: (count: number) => `${count} more`,
     exportAnyway: 'Export anyway',
   },
 } as const;

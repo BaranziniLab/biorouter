@@ -10,6 +10,19 @@ import { localAppLinkId } from './managedAppPreviewPolicy';
 export type OpenExternalResult = { ok: true } | { ok: false; message: string } | void;
 
 /**
+ * The failure toast's words, shared by the three surfaces that open a link in the browser (the
+ * transcript's artifact card, the preview panel's header and external-page card, a live page's
+ * toolbar). They are the words Built apps' Launch uses for the same failure, so an app that will
+ * not open reads the same wherever it was clicked. The title is the one line; the main process's
+ * own sentence, when it gave one, is the message.
+ */
+export const OPEN_IN_BROWSER_COPY = {
+  failedTitle: 'Couldn’t open the app',
+  failed: 'Couldn’t open the app in your browser.',
+  bridgeFailed: 'Biorouter couldn’t open that link.',
+} as const;
+
+/**
  * Open `url` in the person's browser from a control they clicked, and say why when an app could
  * not be opened. A failure used to end in the main process's log, so "Open in browser" on a live
  * app did nothing at all.
@@ -19,16 +32,13 @@ export async function openInBrowser(url: string): Promise<void> {
   try {
     result = await window.electron.openExternal(url);
   } catch {
-    result = { ok: false, message: 'Biorouter could not open that link.' };
+    result = { ok: false, message: OPEN_IN_BROWSER_COPY.bridgeFailed };
   }
   if (!result || typeof result !== 'object' || (result as { ok?: unknown }).ok !== false) return;
   const message = (result as { message?: unknown }).message;
   toastError({
-    title: 'Could not open the app',
-    msg:
-      typeof message === 'string' && message.trim()
-        ? message
-        : 'Could not open the app in your browser.',
+    title: OPEN_IN_BROWSER_COPY.failedTitle,
+    msg: typeof message === 'string' && message.trim() ? message : OPEN_IN_BROWSER_COPY.failed,
   });
 }
 

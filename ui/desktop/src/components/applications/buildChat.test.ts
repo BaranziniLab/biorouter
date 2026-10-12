@@ -243,8 +243,8 @@ describe('the control a state renders', () => {
     [
       { kind: 'unreachable' },
       false,
-      "The chat where Atlas was built can't be opened here",
-      "Build chat can't be opened here",
+      'The chat where Atlas was built can’t be opened here',
+      'Build chat can’t be opened here',
     ],
     [{ kind: 'none' }, false, 'No chat was recorded for Atlas', 'No build chat recorded'],
   ];
@@ -260,7 +260,7 @@ describe('the control a state renders', () => {
   // A daemon that did not answer must never be reported as a deleted chat.
   it('never calls an unanswered check a deletion', () => {
     expect(buildChatRefusal({ kind: 'unknown' })).toBe(
-      "Couldn't reach Biorouter to check that chat. Try again."
+      'Couldn’t reach Biorouter to check that chat. Try again.'
     );
   });
 });
