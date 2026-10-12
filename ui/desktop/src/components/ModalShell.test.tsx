@@ -60,6 +60,17 @@ describe('ModalShell — the size scale', () => {
   });
 });
 
+describe('ModalShell — a test id on the surface (V3-R7-1)', () => {
+  it('puts testId on the dialog node, and no attribute without one', () => {
+    const { rerender } = render(
+      <ModalShell open onOpenChange={() => {}} title="Disclosure" testId="the-disclosure" />
+    );
+    expect(screen.getByRole('dialog')).toHaveAttribute('data-testid', 'the-disclosure');
+    rerender(<ModalShell open onOpenChange={() => {}} title="Disclosure" />);
+    expect(screen.getByRole('dialog')).not.toHaveAttribute('data-testid');
+  });
+});
+
 describe('ModalShell — xl', () => {
   // Spec 2.6: an 800px size for editors. Named on the surface so main.css can author the width,
   // since a newly written arbitrary utility can fail to generate under BIOROUTER_NO_HMR.

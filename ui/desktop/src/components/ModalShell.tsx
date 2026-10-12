@@ -162,6 +162,12 @@ export interface ModalShellProps {
    * `ModalShellDefaultsContext` says otherwise.
    */
   headerRule?: boolean;
+  /**
+   * `data-testid` on the dialog surface (the `role="dialog"` node), for a dialog a test or an e2e
+   * suite finds by id: a raw `DialogContent` that carried one keeps it when it moves onto the
+   * shell (spec 2.6, V3-R7-1).
+   */
+  testId?: string;
 }
 
 export function ModalShell({
@@ -183,6 +189,7 @@ export function ModalShell({
   onOpenAutoFocus,
   describedBy,
   headerRule,
+  testId,
 }: ModalShellProps) {
   const dismissible = purpose !== 'required';
   const defaults = React.useContext(ModalShellDefaultsContext);
@@ -211,6 +218,7 @@ export function ModalShell({
         {...(onOpenAutoFocus ? { onOpenAutoFocus } : {})}
         data-anchor={placement === 'top' ? 'top' : undefined}
         data-size={size}
+        data-testid={testId}
         style={placement === 'top' ? MODAL_ANCHOR_TOP_STYLE : undefined}
         className={cn(
           'flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0',
