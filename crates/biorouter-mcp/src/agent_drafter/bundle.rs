@@ -3347,6 +3347,54 @@ mod tests {
         );
     }
 
+    /// Issue #386, the input that was reported. Without esbuild the stripper
+    /// turned `{ omop_rules: OMOP_RULES, required_outputs: Object.keys(patient) }`
+    /// into `{ omop_rules , required_outputs , … }`, and dropped the local
+    /// modules `./prevent` and `./preventData` without a word. The literal on
+    /// one line now keeps its values and builds; the same literal across lines
+    /// and the local modules are refused, by line, with nothing written.
+    #[test]
+    fn the_reported_literal_keeps_its_values_and_local_modules_are_refused() {
+        let literal =
+            "const req = { omop_rules: OMOP_RULES, required_outputs: Object.keys(patient) };";
+        assert_eq!(strip_colon_types(literal), literal);
+        let call = "  br.agent.send({ omop_rules: OMOP_RULES, required_outputs: Object.keys(p) });";
+        assert_eq!(strip_colon_types(call), call);
+
+        let sdk = "export function createApp(x: unknown) { globalThis.req = x; }\n";
+        let main = format!(
+            "import {{ createApp }} from \"./sdk\";\nconst OMOP_RULES = [\"r1\"];\n\
+             const patient = {{ age: 1 }};\n{literal}\ncreateApp(req);\n"
+        );
+        let dir = project(Some(sdk), &main);
+        let report = fallback_of(&dir);
+        assert!(report.ok, "{}", report.log);
+        let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
+        assert!(js.contains(literal), "{js}");
+        if let Some(parsed) = node_parses(&js) {
+            parsed.expect("the fallback bundle parses");
+        }
+
+        for (main, expect) in [
+            (
+                "import { createApp } from \"./sdk\";\nimport { risk } from \"./prevent\";\n\
+                 import { OMOP_RULES } from \"./preventData\";\ncreateApp(risk(OMOP_RULES));\n",
+                "./prevent\"",
+            ),
+            (
+                "import { createApp } from \"./sdk\";\nconst req = {\n  omop_rules: OMOP_RULES,\n  \
+                 required_outputs: Object.keys(patient),\n};\ncreateApp(req);\n",
+                "line 3",
+            ),
+        ] {
+            let dir = project(Some(sdk), main);
+            let report = fallback_of(&dir);
+            assert!(!report.ok, "refused: {main}");
+            assert!(report.log.contains(expect), "{main}\n---\n{}", report.log);
+            assert!(!dir.path().join("dist/app.js").exists(), "{main}");
+        }
+    }
+
     /// The banner is the bundle's own record of what built it, read back from
     /// the file; a bundle from before banners is recognised as a fallback only
     /// by the marker the stripper used to write.
