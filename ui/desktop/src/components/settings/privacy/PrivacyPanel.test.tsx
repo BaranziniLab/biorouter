@@ -143,6 +143,44 @@ describe('Settings > Privacy', () => {
   });
 
   /**
+   * Vision round 8, V4-R7-6. A bare `<strong>` takes preflight's `bolder`, which computes to 700, and
+   * the type system draws only 400 and 600. jsdom runs no cascade, so this pins the class on each of
+   * the four runs; `privacyPanelEmphasisWeight.browser.test.tsx` reads the computed weight in
+   * Chromium. Presentation only: the words and the test ids are the ones the cases above assert.
+   */
+  describe('emphasis weight', () => {
+    const strongs = (root: HTMLElement) => [...root.querySelectorAll('strong')];
+
+    it('draws the strip headline and the not-stopped line at 600 while enforcement is off', async () => {
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+      const strip = await screen.findByTestId('privacy-enforcement-off-strip');
+      const panel = strip.closest<HTMLElement>('[data-privacy-panel]')!;
+      expect(strongs(strip)).toHaveLength(1);
+      expect(strongs(panel).map((el) => el.textContent?.trim())).toContain(
+        'Those three are not being stopped right now. Privacy tiers are off on this machine.'
+      );
+      for (const el of strongs(panel))
+        expect(el, el.textContent ?? '').toHaveClass('font-semibold');
+    });
+
+    it('draws "every" and the second consequence at 600 in the turn-off confirmation', async () => {
+      const user = userEvent.setup();
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      const confirm = screen.getByTestId('privacy-disable-confirm');
+      expect(strongs(confirm).map((el) => el.textContent?.trim())).toEqual([
+        'every',
+        'While it is off, Biorouter stops recording which chats touched private material.',
+      ]);
+      for (const el of strongs(confirm))
+        expect(el, el.textContent ?? '').toHaveClass('font-semibold');
+    });
+  });
+
+  /**
    * Vision round 2, V4-R2-1. The loading branch used to be a 64px skeleton that the loaded section
    * (header, the served statement, the switch row: about 250px) replaced when the daemon answered,
    * so every row below it moved on each open of the App tab. The section is now the same tree from

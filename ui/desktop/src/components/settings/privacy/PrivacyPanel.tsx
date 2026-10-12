@@ -181,7 +181,8 @@ export default function PrivacyPanel() {
             testId="privacy-enforcement-off-strip"
             className="min-w-0"
           >
-            <strong>{offCopy.headline}</strong> {offCopy.how && <>{offCopy.how} </>}
+            <strong className="font-semibold">{offCopy.headline}</strong>{' '}
+            {offCopy.how && <>{offCopy.how} </>}
             Nothing on this machine is separating private chats, extensions or knowledge bases from
             public models, and Biorouter is not recording which chats touch private material. Every
             badge in the app reads <em>enforcement off</em> while this is the case.
@@ -245,7 +246,7 @@ export default function PrivacyPanel() {
               // paragraph unqualified would be a false statement on the very
               // screen the user turned it off from.
               <p className="min-w-0 text-text-muted">
-                <strong>
+                <strong className="font-semibold">
                   Those three are not being stopped right now. Privacy tiers are off on this
                   machine.
                 </strong>{' '}
@@ -344,7 +345,8 @@ export default function PrivacyPanel() {
           className="br-fill-surface mt-3 space-y-2 rounded-element border border-transparent bg-background-fill px-3 py-2.5"
         >
           <p className="text-label text-text-default">
-            This turns off <strong>every</strong> privacy guardrail on this machine, for every chat.
+            This turns off <strong className="font-semibold">every</strong> privacy guardrail on
+            this machine, for every chat.
           </p>
           {/* The three consequences, word for word, as a list so they scan (spec §3.13; the
               words are locked, vocabulary rule 9). ⚠ The shell clause stays OUT of this list,
@@ -359,7 +361,7 @@ export default function PrivacyPanel() {
               and read and write your knowledge bases.
             </li>
             <li>
-              <strong>
+              <strong className="font-semibold">
                 While it is off, Biorouter stops recording which chats touched private material.
               </strong>
             </li>

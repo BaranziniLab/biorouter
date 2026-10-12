@@ -212,8 +212,8 @@ export default function ExternalBackendSection() {
           </div>
 
           <Note tone="warning">
-            <strong>Note:</strong> Changes require restarting Biorouter to take effect. New chat
-            windows will connect to the external server.
+            <strong className="font-semibold">Note:</strong> Changes require restarting Biorouter to
+            take effect. New chat windows will connect to the external server.
           </Note>
         </div>
       )}
