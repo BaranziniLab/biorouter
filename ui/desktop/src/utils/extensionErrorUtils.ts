@@ -58,8 +58,8 @@ let focusedChatSessionId: string | null = null;
 /** True while the extension toast currently on screen is reporting a failure. */
 let extensionToastIsFailure = false;
 
-/** The single-failure toast last raised here, so the standing notice can take it down. */
-let singleFailureToastId: string | number | null = null;
+/** Single-failure reports from every chat, so the standing notice can take them all down. */
+const singleFailureToastIds = new Set<string | number>();
 
 /**
  * Called by the chat shell as the active group changes. Readiness is only news
@@ -73,7 +73,7 @@ export function setFocusedChatSession(sessionId: string | null): void {
 export function resetExtensionToastState(): void {
   focusedChatSessionId = null;
   extensionToastIsFailure = false;
-  singleFailureToastId = null;
+  singleFailureToastIds.clear();
 }
 
 /**
@@ -84,10 +84,8 @@ export function resetExtensionToastState(): void {
  * clean-run report is not a failure report, and is left alone.
  */
 export function withdrawExtensionFailureToasts(): void {
-  if (singleFailureToastId !== null) {
-    toastService.dismiss(singleFailureToastId);
-    singleFailureToastId = null;
-  }
+  for (const id of singleFailureToastIds) toastService.dismiss(id);
+  singleFailureToastIds.clear();
   if (extensionToastIsFailure) {
     toastService.dismissExtensionFailureReport();
     // Nothing on screen reports a failure now, so rule 2 has nothing left to protect.
@@ -217,13 +215,13 @@ export function showExtensionLoadResults(
     const recoverHints = createExtensionRecoverHints(errorMsg);
     const displayMsg = formatExtensionErrorMessage(errorMsg, 'Failed to load extension');
 
-    singleFailureToastId =
-      toastService.error({
-        title: failed.name,
-        msg: displayMsg,
-        traceback: errorMsg,
-        recoverHints,
-      }) ?? null;
+    const id = toastService.error({
+      title: failed.name,
+      msg: displayMsg,
+      traceback: errorMsg,
+      recoverHints,
+    });
+    if (id !== undefined) singleFailureToastIds.add(id);
     // Only now — a failure that was never rendered has not been announced, and
     // must keep its one announcement for the load that does render it.
     markExtensionLoadFailuresAnnounced([failed.name]);

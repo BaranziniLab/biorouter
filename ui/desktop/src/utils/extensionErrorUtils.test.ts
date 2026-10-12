@@ -345,6 +345,23 @@ describe("the Extensions page announces a failure in the toast's place", () => {
     expect(toastService.dismiss).not.toHaveBeenCalled();
   });
 
+  it('withdraws every distinct single-extension failure across chats', () => {
+    vi.mocked(toastService.error)
+      .mockReturnValueOnce('chat-a-failure')
+      .mockReturnValueOnce('chat-b-failure');
+    showExtensionLoadResults([bad('notion-mcp')], 'chat-a');
+    showExtensionLoadResults([bad('cdwagent')], 'chat-b');
+
+    withdrawExtensionFailureToasts();
+
+    expect(vi.mocked(toastService.dismiss).mock.calls).toEqual([
+      ['chat-a-failure'],
+      ['chat-b-failure'],
+    ]);
+    withdrawExtensionFailureToasts();
+    expect(toastService.dismiss).toHaveBeenCalledTimes(2);
+  });
+
   it('leaves a progress or clean-run report alone', () => {
     setFocusedChatSession('chat-a');
     showExtensionLoadResults([ok('medcp'), ok('cdwagent')], 'chat-a');
