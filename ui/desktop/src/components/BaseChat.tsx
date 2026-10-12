@@ -58,7 +58,7 @@ import { summaryCopy } from './summary/copy';
 import { useSessionTodos } from '../hooks/useSessionTodos';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
-import { useFirstSend } from './summary/useFirstSend';
+import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
 import { FirstSendTranscript } from './summary/FirstSendTranscript';
 import { useTranscriptFollow, useTranscriptSettle } from './summary/useTranscriptFollow';
 import { captureScrollAnchor, useColumnGlide } from '../hooks/useColumnGlide';
@@ -2823,8 +2823,15 @@ function BaseChatContent({
             accumulatedOutputTokens={footerCost.accumulatedOutputTokens}
             droppedFiles={droppedFiles}
             onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-            // A loading chat is not an empty one: "Ask a follow-up" (V2-R5-6).
+            // A loading chat is not an empty one (V2-R5-6).
             messagesLength={messages.length || loadingChatKnownMessages}
+            // "Ask a follow-up" under any message the chat shows, the first
+            // send's row included; the placeholder only (WS-SUMMARY-4).
+            followUp={composerFollowsUp({
+              storedMessages: messages.length,
+              firstSendShown: !!firstSend.message,
+              knownMessages: loadingChatKnownMessages,
+            })}
             workingDirLocked={workingDirLocked}
             sessionCosts={footerCost.sessionCosts}
             modelCostRows={footerCost.modelCostRows}

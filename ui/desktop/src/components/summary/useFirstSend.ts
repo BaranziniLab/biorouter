@@ -72,6 +72,33 @@ export function firstSendMessage(text: string, created = Math.floor(Date.now() /
   };
 }
 
+export interface ComposerFollowUpInputs {
+  /** How many messages the chat's store holds. */
+  storedMessages: number;
+  /** The first send's row is drawn (`FirstSend.message`). */
+  firstSendShown: boolean;
+  /** A loading chat's row count (`useLoadingChat`'s `knownMessages`). */
+  knownMessages: number;
+}
+
+/**
+ * Whether the composer says "Ask a follow-up" rather than "Ask Biorouter
+ * anything…": the chat shows a message, or is about to. The store may hold it,
+ * the first send may have drawn it before the store does (above; until it, the
+ * placeholder asked the open question under the drawn message for 0.7s), or a
+ * loading chat's row may say it has some (V2-R5-6). This is ChatInput's
+ * `followUp`, which words the placeholder and nothing else: the first send's
+ * row never reaches `messagesLength`, which arms the turn tier probe and is the
+ * working directory lock's fallback.
+ */
+export function composerFollowsUp({
+  storedMessages,
+  firstSendShown,
+  knownMessages,
+}: ComposerFollowUpInputs): boolean {
+  return storedMessages > 0 || firstSendShown || knownMessages > 0;
+}
+
 export function useFirstSend({ sessionId, messageCount, failed }: FirstSendInputs): FirstSend {
   const [send, setSend] = useState<FirstSendState | null>(null);
   // The store holds the chat's messages: the send has landed. Adjusted during

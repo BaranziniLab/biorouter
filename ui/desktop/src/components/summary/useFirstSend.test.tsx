@@ -6,9 +6,15 @@ import { ChatState } from '../../types/chatState';
 import { summaryFigures, summaryTokensValue } from '../BaseChat';
 import { ChatSummary } from '../ChatSummary';
 import ProgressiveMessageList from '../ProgressiveMessageList';
+import { COMPOSER_COPY } from '../composer/copy';
 import { summaryCopy } from './copy';
 import { FirstSendTranscript } from './FirstSendTranscript';
-import { FIRST_SEND_ROW_ID, firstSendMessage, useFirstSend } from './useFirstSend';
+import {
+  composerFollowsUp,
+  FIRST_SEND_ROW_ID,
+  firstSendMessage,
+  useFirstSend,
+} from './useFirstSend';
 
 /**
  * Vision V2-R8-2: one send in a new chat at 1440, timed from Enter. At 81 ms the
@@ -24,6 +30,11 @@ import { FIRST_SEND_ROW_ID, firstSendMessage, useFirstSend } from './useFirstSen
  * 500 ms, the load takes 280 ms, the ledger answers 50 ms after the session.
  * The first case is the instrument: the wiring before the fix, given the same
  * steps, shows the gap and the "0".
+ *
+ * WS-SUMMARY-4: with the row drawn, the composer's placeholder still followed
+ * the store's count, so it asked "Ask Biorouter anything…" under the drawn
+ * message until the store took it. The harness words it the way ChatInput does
+ * (`followUp ?? messagesLength > 0`); `placeholderFromStore` is that wiring.
  */
 
 const SEND = 'List 5 tiny to-do items for watering a plant.';
@@ -34,6 +45,7 @@ interface Snapshot {
   transcript: string;
   tokens: string;
   toolCalls: string;
+  placeholder: string;
 }
 
 function tokensValue(container: HTMLElement): string {
@@ -61,11 +73,13 @@ interface HarnessApi {
  */
 function Harness({
   legacy,
+  placeholderFromStore = false,
   api,
   log,
   startedAt,
 }: {
   legacy: boolean;
+  placeholderFromStore?: boolean;
   api: { current: HarnessApi | null };
   log: Snapshot[];
   startedAt: { current: number };
@@ -101,6 +115,21 @@ function Harness({
         artifacts: 0,
         codeDelta: { added: 0, removed: 0 },
       });
+
+  // ChatInput's placeholder, `followUp ?? messagesLength > 0`. A new chat's row
+  // knows no messages, so `messagesLength` is the store's count.
+  const followUp =
+    legacy || placeholderFromStore
+      ? undefined
+      : composerFollowsUp({
+          storedMessages: messages.length,
+          firstSendShown: !!firstSend.message,
+          knownMessages: 0,
+        });
+  const placeholder =
+    (followUp ?? messages.length > 0)
+      ? COMPOSER_COPY.placeholderFollowUp
+      : COMPOSER_COPY.placeholderEmpty;
 
   api.current = {
     // handleFormSubmit's pre-session branch, then the route change.
@@ -145,6 +174,7 @@ function Harness({
       transcript: transcript?.textContent ?? '',
       tokens: tokensValue(container),
       toolCalls: toolCallsValue(container),
+      placeholder: container.querySelector('textarea')?.placeholder ?? '',
     });
   });
 
@@ -175,6 +205,7 @@ function Harness({
             transcriptList
           ))}
       </div>
+      <textarea aria-label="Message" placeholder={placeholder} readOnly />
       <ChatSummary
         {...figures}
         todos={{ items: [], loading: false, error: false, refresh: () => undefined }}
@@ -186,11 +217,19 @@ function Harness({
   );
 }
 
-async function playFirstSend(legacy: boolean) {
+async function playFirstSend(legacy: boolean, placeholderFromStore = false) {
   const api: { current: HarnessApi | null } = { current: null };
   const log: Snapshot[] = [];
   const startedAt = { current: Date.now() };
-  const view = render(<Harness legacy={legacy} api={api} log={log} startedAt={startedAt} />);
+  const view = render(
+    <Harness
+      legacy={legacy}
+      placeholderFromStore={placeholderFromStore}
+      api={api}
+      log={log}
+      startedAt={startedAt}
+    />
+  );
   const before = log.length;
   startedAt.current = Date.now();
   await act(async () => {
@@ -198,7 +237,13 @@ async function playFirstSend(legacy: boolean) {
   });
   const afterSend = log.length;
   await playFrames(1200);
-  return { view, log, sinceSend: log.slice(before), firstAfterSend: log[afterSend - 1] };
+  return {
+    view,
+    log,
+    beforeSend: log[before - 1],
+    sinceSend: log.slice(before),
+    firstAfterSend: log[afterSend - 1],
+  };
 }
 
 /** Time passes a frame at a time, each frame its own commit, as in the app. */
@@ -246,6 +291,26 @@ describe('a new chat’s first send (V2-R8-2)', () => {
     expect(changes(sinceSend.map((snapshot) => snapshot.tokens))).toEqual(['', 'N/A']);
     // The counts of a chat that is new and empty are its zeros, held through the load.
     expect(changes(sinceSend.map((snapshot) => snapshot.toolCalls))).toEqual(['0']);
+  });
+
+  it('instrument: a placeholder that follows the store asks the open question under the drawn message', async () => {
+    const { sinceSend } = await playFirstSend(false, true);
+    const contradicted = sinceSend.filter(
+      (snapshot) =>
+        snapshot.transcript.includes(SEND) &&
+        snapshot.placeholder === COMPOSER_COPY.placeholderEmpty
+    );
+    expect(contradicted.length).toBeGreaterThan(0);
+    expect(contradicted[contradicted.length - 1].at).toBeGreaterThanOrEqual(500);
+  });
+
+  it('says "Ask a follow-up" from the commit that draws the message, and in every commit after it', async () => {
+    const { beforeSend, sinceSend, firstAfterSend } = await playFirstSend(false);
+    expect(beforeSend.placeholder).toBe(COMPOSER_COPY.placeholderEmpty);
+    expect(firstAfterSend.transcript).toContain(SEND);
+    expect(changes(sinceSend.map((snapshot) => snapshot.placeholder))).toEqual([
+      COMPOSER_COPY.placeholderFollowUp,
+    ]);
   });
 
   it('puts the stored row exactly where the first-send row was, at rest', async () => {
@@ -337,6 +402,17 @@ describe('useFirstSend', () => {
       content: [{ type: 'text', text: 'hello' }],
       metadata: { userVisible: true, agentVisible: true },
     });
+  });
+});
+
+describe('composerFollowsUp', () => {
+  const none = { storedMessages: 0, firstSendShown: false, knownMessages: 0 };
+
+  it('asks the open question only when the chat shows no message and expects none', () => {
+    expect(composerFollowsUp(none)).toBe(false);
+    expect(composerFollowsUp({ ...none, storedMessages: 1 })).toBe(true);
+    expect(composerFollowsUp({ ...none, firstSendShown: true })).toBe(true);
+    expect(composerFollowsUp({ ...none, knownMessages: 12 })).toBe(true);
   });
 });
 

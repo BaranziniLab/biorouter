@@ -283,6 +283,14 @@ describe('BaseChat: a chat that is still loading looks like itself (V2-R5-6)', (
   it('gives the composer the follow-up placeholder and the ring the chat’s own figure', () => {
     const element = chatInputElement();
     expect(element).toContain('messagesLength={messages.length || loadingChatKnownMessages}');
+    // The placeholder follows every message on screen, the first send's row
+    // included (summary/useFirstSend.test.tsx), through ChatInput's
+    // placeholder-only prop; the row never reaches messagesLength.
+    expect(element).toMatch(
+      /followUp=\{composerFollowsUp\(\{\s*storedMessages: messages\.length,\s*firstSendShown: !!firstSend\.message,\s*knownMessages: loadingChatKnownMessages,\s*\}\)\}/
+    );
+    expect(element).not.toMatch(/messagesLength=\{[^}]*firstSend/);
+    expect(element.match(/followUp=/g) ?? []).toHaveLength(1);
     expect(element).toMatch(
       /totalTokens=\{\s*loadingChatRow\s*\?\s*\(loadingChatRow\.total_tokens \?\? undefined\)\s*:\s*\(tokenState\?\.totalTokens \?\? session\?\.total_tokens \?\? undefined\)\s*\}/
     );

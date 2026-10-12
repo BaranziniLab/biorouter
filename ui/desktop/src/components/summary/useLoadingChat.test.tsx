@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../../api';
 import { ChatState } from '../../types/chatState';
 import { summaryRailChat } from '../../hooks/useSummaryRail';
+import { COMPOSER_COPY } from '../composer/copy';
+import { composerFollowsUp } from './useFirstSend';
 import { awaitingFirstRead, loadingChatLook, useLoadingChat } from './useLoadingChat';
 
 /**
@@ -120,8 +122,14 @@ function OpenedChat({
     creatingChat: false,
     knownToHaveMessages: loadingChat.knownMessages > 0,
   });
-  const messagesLength = store.messageCount || loadingChat.knownMessages;
-  const placeholder = messagesLength > 0 ? 'Ask a follow-up' : 'Ask Biorouter anything…';
+  // BaseChat's followUp, which words ChatInput's placeholder.
+  const placeholder = composerFollowsUp({
+    storedMessages: store.messageCount,
+    firstSendShown: false,
+    knownMessages: loadingChat.knownMessages,
+  })
+    ? COMPOSER_COPY.placeholderFollowUp
+    : COMPOSER_COPY.placeholderEmpty;
   // usePinnedModel(session ?? loadingChatRow): the row's model, else the default.
   const binding = store.session ?? loadingChat.row;
   const chip = binding?.model_config?.model_name ?? 'gpt-5.5 (new-chat default)';
