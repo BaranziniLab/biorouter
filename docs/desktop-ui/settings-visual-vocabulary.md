@@ -104,7 +104,12 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   (`data-motion-still`), a section shows a Skeleton, and a select or a field is blank,
   disabled and `aria-busy` until it knows (`SettingSelect value={null}`, `MaxTurnsRow
   loaded={false}`). Approval mode drawing "Autonomous" first and "Manual" a moment later was the
-  case that made this a rule.
+  case that made this a rule. The Models tab's Model row is the other case: a value the app
+  already holds is drawn from it in the initializer, not fetched. Its words come from
+  `useModelAndProvider` and `providersList` (`settings/models/defaultModelValue.ts`), so a visit
+  starts on them and the daemon's answer replaces them with the same words; the Skeleton is only
+  for a model or provider the app cannot name yet. `modelsGeometry.browser.test.tsx` reads the
+  first commit and every frame after it in Chromium.
 - No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
   row is still 40px, and the padding that makes it so is not `px-3 py-2.5`: that is 10 above, 10
   below, a 20px line and the 1px transparent edge, which is 41px, and 45px around a 24px
