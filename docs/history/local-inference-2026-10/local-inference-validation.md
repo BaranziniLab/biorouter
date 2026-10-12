@@ -764,6 +764,127 @@ decision. And Biorouter's fixed prompt is about 29,000 to 32,000 tokens, which n
 32,768-token window or less can run; that is a product decision about a smaller tool set for
 small windows.
 
+## Rerun of the failed attempts and the formal cases (2026-10-12)
+
+After the follow-up above, every failed attempt that was not purely environmental was rerun at
+least twice, and all 29 formal live cases were rerun, with the PR's own live harness. The first
+round found one more defect in the Code Execution reporting path (below); it is fixed in
+`acbefe5a`, and the later rounds and every formal case ran on that build.
+
+How the reruns were made:
+
+- **Builds.** Build A is the pushed head `46d20424` (its code is `35954e31`; the head adds only
+  the follow-up's documentation). Build B is `acbefe5a`, which adds only the fix below. Both are
+  fresh debug builds of the CLI, the daemon and the three live-test executables, made in a
+  separate worktree on branch `pr393-rerun`, with source identities `70aae2fd` (A) and `dd425f04`
+  (B) over the campaign's own 22 compile-input paths. Every executable is hashed in the
+  harness's `binary_receipt.json`; build A's receipt and executables are archived beside it.
+- **Harness.** A copy of the campaign harness (`campaign_pair.py`, `formal_run.py`,
+  `isolated_ollama.py`, `run_task.py`, `verify.py`, the fixtures and the task prompts), changed
+  only to point at the rerun worktree, its branch and its evidence folder.
+- **Serving.** The protocol tasks and the five Ollama formal cases ran against a new owned
+  one-slot Ollama 0.40.3 on port 11445 with a 4,096-token default context, as in the original
+  campaign; it was stopped by its exact owned identity afterwards. The Llama Server cases ran
+  on the managed sidecar (build 11429) with the cached GGUFs. One model was
+  loaded at a time, and the user's own Ollama on 11434 was only observed (empty), never used.
+  No remote provider was involved.
+- **Evidence.** `~/biorouter-runs/local-inference-resume-2026-10-11-delivery-rerun/`: the
+  harness copy with `runs/`, `summaries/`, `daemons/` (each daemon's log), `formal/`,
+  `analysis/` (`protocol-analysis.json`, `formal-analysis.json`) and `../logs/`. Protocol tags
+  are `pr393rerun-r1-20261012-protocol-NN` (round 1, build A) and `pr393rerun-r2-…`/`r3-…`
+  (build B); formal tags are `pr393rerun-20261012-…`. Every tag is new.
+
+### The defect the first round found (F07)
+
+In round 1, ministral-3:8b wrote a correct `factorial.py` and ran it for N=5 and N=20; both
+`shell` calls returned their output (9 and 26 bytes). Its script then recorded
+`{ outputN5: result5.output, outputN20: result20.output }`. `shell` hands a script its output as
+one string, so both properties were `undefined`, `record_result` left them out, and the model
+was shown `Result: {}` ten times with nothing saying why, until the task reached its
+1,800-second limit. The F13 fix explains a read like this only when it throws (`.stdout.trim()`);
+read and recorded directly, nothing throws.
+
+`acbefe5a` carries the same explanation out of a script that runs to its end: the result now says
+the calls completed, names each property that was undefined because the tool returned a string,
+and shows how to read the string itself. A script that records the string, or whose tool
+returned a JSON object, is shown only its result. Two new tests (the verbatim ministral script
+through the engine, and a recorded property of a string result through the real handler) fail
+without the change; all 138 Code Execution library tests, the 42 `code_execution_integration`
+tests, `cargo clippy -p biorouter --all-targets -D warnings` and `cargo fmt --check` pass, and
+every CI check on `acbefe5a` passes (cross-build-nightly is skipped by design). In rounds 2 and 3
+ministral did not repeat that script, so the fix is covered by those tests, not by a live run.
+
+### Protocol attempts
+
+Each cell is the task verdict, the task's wall time in seconds and what happened. A FAIL that
+the table marks as expected is the outcome the fixes are meant to produce for a model that
+cannot run the task.
+
+| Attempt | Model and task | Round 1 (build A) | Round 2 (build B) | Round 3 (build B) | Result |
+| --- | --- | --- | --- | --- | --- |
+| F02 | llama3.1:8b factorial | FAIL, 99.9: steps and code as prose, no tool call | FAIL, 99.6: the same | Not run | Model limitation, unchanged |
+| F03 | llama3.1:8b urine | FAIL, 59.7: a preface, then a JSON "call" naming an unrelated tool, never run | FAIL, 55.8: the same | Not run | Model limitation, unchanged |
+| F04 | qwen2.5-coder:7b factorial | FAIL, 91.3: one checklist call, then imitated tool results; the corrective retry fired | FAIL, 75.9: one checklist call, then code and outputs written as prose | Not run | Model limitation; the retry fires when the reply is a whole imitation |
+| F05 | qwen2.5-coder:7b urine | FAIL, 44.2: one checklist call, then imitated results; the retry fired | FAIL, 44.6: a checklist call written as text; the text-call retry fired, and the next reply repeated the call inside prose | Not run | Model limitation |
+| F06 | gpt-oss:20b factorial | FAIL, 33.3: the checklist's arguments written as text, no tool ran | **PASS**, 134.0: 17 calls, 3 recovered errors | **PASS**, 72.5: 6 calls, no errors | Flaky model: two of three runs pass. The failed run made no tool call, so the build difference does not explain it |
+| F07 | ministral-3:8b factorial | FAIL, 1,803 (time limit): the `Result: {}` defect above | FAIL, 1,125.9: correct file, then scripts that never passed a value to `record_result` despite the note saying so, until the repetition guard stopped the turn | FAIL, 912.8: Python triple quotes in JavaScript five times despite the hint, then a direct call to `developer__text_editor`, which this chat does not offer; the turn ended on that clear error | Model limitation, with a Biorouter defect in round 1 now fixed |
+| F08 | granite4:tiny-h factorial | FAIL, 27.7: seven `todo_write` calls without `content`, ended by the loop guard | FAIL, 25.0: six, ended by the repetition guard | Not run | Model limitation, unchanged |
+| F09 | phi4-mini:3.8b factorial | FAIL, 48.9: a prose answer with the right numbers, no tool call | FAIL, 45.0: the same | Not run | Model limitation, unchanged |
+| F10 | lfm2:24b factorial | FAIL as expected, 9.9: the context sentence (32,768-token window, about 32,253 for instructions and tools) printed by `session send` and stored | FAIL as expected, 9.2: the same | Not run | Fix confirmed twice |
+| F11 | deepseek-r1:8b factorial | FAIL as expected, 0.16: refused before loading, naming the template that never shows tools | FAIL as expected, 0.12: the same | Not run | Fix confirmed twice |
+| F12 | command-r7b:7b factorial | FAIL as expected, 3.5: the context sentence (8,192-token window, about 31,473 for instructions and tools), printed and stored | FAIL as expected, 3.0: the same | Not run | Fix confirmed twice |
+| F13 | glm-4.7-flash factorial | **PASS**, 354.1: 11 calls, 2 recovered errors | **PASS**, 358.1: 13 calls, 1 recovered error | **PASS**, 292.2: 8 calls, 2 recovered errors | Fix confirmed three times: 120 and 2432902008176640000 |
+| F14 | gemma3:4b factorial (planned negative) | FAIL as expected, 0.82: refused, Ollama reports no tool support | FAIL as expected, 0.75: the same | Not run | Expected refusal, unchanged |
+
+F01, the Gemma survey, is a formal case and is reported below. Every passing pair also passed
+the harness's pair checks (owned cleanup, exact unload, daemon gone, empty serving state).
+Build B changes only the text shown for a Code Execution script that ran to its end, so rounds 1
+and 2 exercise the same code for every attempt whose model ran no such script. The three whose
+models did (F06, F07, F13) had a third run, so each has two on build B.
+
+`biorouter session send` still exits 0 in every refused or failed turn above; the error is
+printed as an `[error:…]` line and stored, and the exit status remains the CLI contract decision
+noted in the follow-up.
+
+### Formal cases
+
+All 29 formal cases ran on build B, one exact test and one model per process: 35 invocations,
+30 with a passing verdict, and every one of the 29 cases has at least one. The five failed
+verdicts are all harness observation failures; in each, the product test itself reported
+`1 passed`, and a retry with a new tag passed every check.
+
+| Cases | Invocations | Result |
+| --- | --- | --- |
+| Ollama (`ollama_live`): the configure probe and the blocking completion on Qwen3.8 27B and Gemma 4 31B, and the reporter model's call written as text | 5 | All PASS, 2.6 to 8.8 seconds |
+| Llama Server integration, Qwen3.8 27B: 11 cases | 14 | All 11 PASS. `an_over_window_prompt_is_a_context_error` failed its first verdict only on `no_guard`: the test process exited while the harness was proving its identity. `switching_models_restarts_sidecar` failed two verdicts only on `serving_provenance_captured`: the sidecar was stopped before it answered the harness's authenticated `/health` and `/props` reads |
+| Llama Server integration, Gemma 4 31B: 11 cases | 13 | All 11 PASS. `an_over_window_prompt_is_a_context_error` failed two verdicts only on `no_guard`: the harness could not read the exiting test process's working directory |
+| Survey, Qwen3.8 27B | 1 | PASS: 37,303 prompt tokens and a valid tool call from them |
+| Survey, Gemma 4 31B (F01) | 2 | PASS twice: 39,096 prompt tokens and a valid tool call from them, 332 and 322 seconds |
+
+F01 is therefore confirmed twice: the enlarged fixture from `dfd0db50` gives Gemma 39,096 prompt
+tokens, above the 25,000-token threshold, and the tool call from that prompt is judged and passes.
+Times are end-to-end under shared host load, not benchmarks.
+
+Every pair and formal process was stopped by its owned identity. At the end no `llama-server`
+process remained, the isolated Ollama on 11445 was stopped with its owner record removed, and
+the user's Ollama on 11434 reported no loaded model.
+
+### Harness observations
+
+- **The refusal cases fail the pair's own cleanup checks, not Biorouter's.** For F11 and F14 every
+  pair records harness errors: serving provenance cannot prove a loaded model, because a correct
+  refusal never loads one, and the pair's cleanup census fails on one process: an Ollama runner
+  (`/Applications/Ollama.app/Contents/Resources/llama-server`), alive at the census although the
+  model was never loaded for Biorouter, most likely started by the harness's own `ollama stop`
+  for that never-loaded model. The census counts it as a sidecar. Biorouter's daemon and its
+  children were gone each time (`remaining_owned_children` is empty in every receipt), and the
+  next pair waited for the runner to exit; none remained after the 180-second wait.
+- **`session send` prints a streamed reply one chunk per line.** Each streamed chunk of a reply
+  becomes its own `[assistant]` line (for example, ministral's sentences arrive a word or
+  character at a time). The original campaign's stdout shows the same, and the PR changes only
+  how notices are printed, so this is pre-existing behaviour of `session send`, outside these
+  attempts.
+
 ## Limits to preserve in the final result
 
 - The automatic memory reduction happens after a native reply starts. A load that fails before
