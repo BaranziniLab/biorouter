@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ModelsBottomBar from './ModelsBottomBar';
+import ModelsBottomBar, { joinSentences } from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
 import {
@@ -140,6 +140,38 @@ describe('the model and effort chip', () => {
     setReasoningEffort(SCOPE, 'deep');
     await waitFor(() => expect(chip).toHaveTextContent('gpt-5.6-sol · Deep'));
     expect(chip).toHaveAccessibleName(/Effort: Deep$/);
+  });
+
+  it('reads its name as sentences with one period each, never two (V2-R8-5)', async () => {
+    renderChip();
+    const chip = await screen.findByTestId('model-chip');
+    await waitFor(() => expect(chip).toHaveAccessibleName(/Private model/));
+    // The chat's tier sentence ends with its own period; the effort follows it
+    // after one, not after a second one the join used to add.
+    expect(chip).toHaveAccessibleName(
+      'Current model: gpt-5.6-sol-2026-07-09 (Private model). Private chat. Biorouter only lets a private model open it. Effort: Normal'
+    );
+    expect(chip.getAttribute('aria-label')).not.toContain('..');
+  });
+
+  it('ends each part of the name once, and leaves the parts as written (V2-R8-5)', () => {
+    expect(
+      joinSentences([
+        'Current model: m (Private model)',
+        'Private chat. Biorouter only lets a private model open it.',
+        'Effort: Normal',
+      ])
+    ).toBe(
+      'Current model: m (Private model). Private chat. Biorouter only lets a private model open it. Effort: Normal'
+    );
+    expect(joinSentences(['Current model: m', 'Public chat', 'Effort: Deep'])).toBe(
+      'Current model: m. Public chat. Effort: Deep'
+    );
+    // Parts left out leave no stray period; the last part is not given one.
+    expect(joinSentences(['Current model: m', null, false, ''])).toBe('Current model: m');
+    expect(joinSentences(['Current model: m', 'Private chat. It ends here.'])).toBe(
+      'Current model: m. Private chat. It ends here.'
+    );
   });
 
   it('chooses the effort with one three-stop slider in the model menu (R-26)', async () => {

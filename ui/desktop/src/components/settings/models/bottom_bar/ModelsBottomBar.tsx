@@ -95,6 +95,22 @@ interface ProviderSample {
 const NO_CATALOG_SAMPLES: ReadonlyMap<string, ProviderSample> = new Map();
 
 /**
+ * V2-R8-5. The chip's accessible name is several sentences: the model, the
+ * chat's tier, the effort. Joined with ". ", a part that already ends its own
+ * sentence ("…only lets a private model open it.") was read out with a double
+ * period. Each part is ended with exactly one period, never a second, and the
+ * parts themselves (the chat's tier sentence among them) are left as written.
+ */
+export function joinSentences(parts: ReadonlyArray<string | null | undefined | false>): string {
+  return parts
+    .filter((part): part is string => typeof part === 'string' && part.length > 0)
+    .map((part, index, kept) =>
+      index < kept.length - 1 && !/[.!?]$/.test(part) ? `${part}.` : part
+    )
+    .join(' ');
+}
+
+/**
  * A provider the catalog does not list, or a read that failed. Fail-safe on the
  * disclosure means saying more; on the affiliation and the tier it means saying
  * nothing, because each of those is a claim (whose agreements cover a
@@ -627,9 +643,11 @@ export default function ModelsBottomBar({
               // period belongs to the CHAT. The old label put the chat's tier
               // between the model's name and the model's affiliation, where the
               // only subject in reach was the model.
-              aria-label={`Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}${
-                privacyLine ? `. ${privacyLine}` : ''
-              }${effort !== null ? `. Effort: ${REASONING_EFFORT_LABELS[effort]}` : ''}`}
+              aria-label={joinSentences([
+                `Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
+                privacyLine,
+                effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
+              ])}
               data-testid="model-chip"
               data-kind="model"
               className="br-picker-chip"
