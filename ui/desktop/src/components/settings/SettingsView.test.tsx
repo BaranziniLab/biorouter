@@ -55,6 +55,16 @@ vi.mock('../privacy/disclosureCopy', async (importOriginal) => {
   };
 });
 
+// The Usage row's read is asked for when Settings opens too (V4-R7-3). It goes through the API
+// client, which this file does not stub, so the warm-up is a spy: this file asserts that Settings
+// asks, `warmSettings.test.ts` and `loadUsage.test.tsx` cover what happens next.
+const usageWarmups = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./usage/loadUsage', () => ({
+  warmUsageSnapshot: () => {
+    usageWarmups.count += 1;
+  },
+}));
+
 const renderSettings = (viewOptions = {}) =>
   render(<SettingsView onClose={() => {}} setView={() => {}} viewOptions={viewOptions} />);
 
@@ -107,6 +117,18 @@ describe('SettingsView', () => {
     expect(recall('approvalMode')).toBe('auto');
     expect(recall('maxTurns')).toBeNull();
     expect(recall('announceOnly')).toBe(false);
+  });
+
+  /**
+   * Vision round 8, V4-R7-3. The Usage row seeds from the last month-to-date read, and the first
+   * visit to the App tab in a process has none, so Settings asks for it while it opens too.
+   */
+  it('asks for this month’s usage once on open, before the App tab is visited', async () => {
+    usageWarmups.count = 0;
+    renderSettings();
+    expect(screen.queryByTestId('section-app')).toBeNull();
+    await act(async () => {});
+    expect(usageWarmups.count).toBe(1);
   });
 
   /**

@@ -2,6 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { recall, remember } from './lastKnown';
 import { warmSettings } from './warmSettings';
 
+// The Usage read goes through the API client; this file measures what Settings asks for, not what
+// the daemon answers, so the warm-up is a spy.
+const usage = vi.hoisted(() => ({ warmUsageSnapshot: vi.fn(), costTracking: { enabled: true } }));
+vi.mock('./usage/loadUsage', () => ({ warmUsageSnapshot: usage.warmUsageSnapshot }));
+vi.mock('../../updates', () => ({
+  get COST_TRACKING_ENABLED() {
+    return usage.costTracking.enabled;
+  },
+}));
+
 /**
  * Settings asks for what the Chat and App tabs show while it opens, so the first visit to either
  * has an answer to start from (vision round 8, V4-R7-2).
@@ -33,7 +43,29 @@ describe('warmSettings', () => {
   beforeEach(() => {
     read.mockReset();
     read.mockImplementation(async (key: string) => configValues[key]);
+    usage.warmUsageSnapshot.mockReset();
+    usage.costTracking.enabled = true;
     bridge();
+  });
+
+  it("warms the Usage row's read once, for the first App visit (V4-R7-3)", async () => {
+    warmSettings(read);
+    await flush();
+    expect(usage.warmUsageSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warm Usage where the App tab has no Usage row', async () => {
+    usage.costTracking.enabled = false;
+    warmSettings(read);
+    await flush();
+    expect(usage.warmUsageSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('still warms Usage when the main-process bridge is not there at all', async () => {
+    Object.assign(window, { electron: undefined });
+    warmSettings(read);
+    await flush();
+    expect(usage.warmUsageSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('reads every Chat and App setting and keeps each answer the way the tabs would read it', async () => {

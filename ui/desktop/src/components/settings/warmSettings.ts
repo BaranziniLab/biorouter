@@ -8,6 +8,8 @@ import {
   maxTurnsFromConfig,
 } from './mode/storedSettings';
 import { ANNOUNCE_ONLY_KEY } from './app/WorkspaceSettingsSection';
+import { COST_TRACKING_ENABLED } from '../../updates';
+import { warmUsageSnapshot } from './usage/loadUsage';
 
 type ReadConfig = (key: string, isSecret: boolean) => Promise<unknown>;
 
@@ -24,6 +26,9 @@ type ReadConfig = (key: string, isSecret: boolean) => Promise<unknown>;
  * Read-only, and never louder than the tabs themselves: a failed read is dropped (the tab reads
  * again and says what it always said), and an answer is kept only if nothing newer has landed, so
  * a switch the person flipped while one was in flight is not set back.
+ *
+ * The App tab's Usage row is warmed the same way (V4-R7-3): `warmUsageSnapshot` reads this month's
+ * three payloads once and remembers them, so the first visit in a process draws the row at rest too.
  */
 export function warmSettings(read: ReadConfig): void {
   const ask = (key: LastKnownKey, get: () => Promise<unknown>) => {
@@ -48,6 +53,9 @@ export function warmSettings(read: ReadConfig): void {
     if (window.electron.platform !== 'darwin') return undefined;
     return window.electron.getDockIconState();
   });
+  // The Usage row on the App tab (V4-R7-3): the same three reads the tab makes, kept for its
+  // mount. It is on the tab only when cost tracking is, and does nothing once this month is known.
+  if (COST_TRACKING_ENABLED) warmUsageSnapshot();
 }
 
 /** Run {@link warmSettings} once when Settings mounts. */
