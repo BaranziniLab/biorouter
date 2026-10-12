@@ -85,6 +85,7 @@ import { Button, buttonVariants } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
 import { artifactCardKind } from '../MCPUIResourceRenderer';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { ARTIFACT_CARD_COPY } from '../toolCallCopy';
 import { PREVIEW_COPY } from './copy';
 import { isCodePath } from './artifactCodePath';
@@ -531,9 +532,22 @@ export function iconForArtifact(
     if (!ext) return Folder;
     return FileText;
   }
-  // A `ui://` figure or report (Auto Visualiser, an app card): the figure glyph
-  // the tool row that made it draws (icons.md, "Figure").
+  // A `ui://` resource. An Agent Drafter app is the application entity, so it
+  // draws the registry's glyph, the one its transcript card draws (one entity,
+  // one glyph; the card's own classifier decides). A figure or report (Auto
+  // Visualiser) draws the figure glyph the tool row that made it draws (icons.md,
+  // "Figure").
+  if (artifactCardKind(artifact, artifactResourceUri(artifact)) === 'app') {
+    return ENTITY_ICONS.application;
+  }
   return ChartColumn;
+}
+
+/** The `ui://` address a resource artifact was delivered under, when it has one. */
+function artifactResourceUri(artifact: ArtifactSource): string | undefined {
+  if (artifact.kind === 'mcpResource') return artifact.resource.uri;
+  if (artifact.kind === 'html') return artifact.sourceUri;
+  return undefined;
 }
 
 function formatBytes(value?: number) {
@@ -2066,16 +2080,10 @@ function ArtifactErrorState({
  * card's own (`artifactCardKind`), so the two never name a thing differently.
  */
 function ArtifactKindMeta({ artifact }: { artifact: ArtifactSource }) {
-  const uri =
-    artifact.kind === 'mcpResource'
-      ? artifact.resource.uri
-      : artifact.kind === 'html'
-        ? artifact.sourceUri
-        : undefined;
   return (
     <PreviewBarMeta>
       <span data-testid="artifact-kind-meta">
-        {ARTIFACT_CARD_COPY.kind[artifactCardKind(artifact, uri)]}
+        {ARTIFACT_CARD_COPY.kind[artifactCardKind(artifact, artifactResourceUri(artifact))]}
       </span>
     </PreviewBarMeta>
   );
