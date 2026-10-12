@@ -3895,10 +3895,11 @@ pub struct Agent {
     /// shows tools; gemma3:4b, which has no tool support) was followed within
     /// a second by the chat-title request, which carries no tools, so it
     /// passed the refusal and loaded the refused model anyway (a `/api/chat`
-    /// the harness then cut off as 499). lfm2:24b's only request in an
-    /// overflow-refused turn was that title call. A second call to a provider
-    /// that just failed, only for a title, repeats the failure or does the
-    /// very load the refusal existed to avoid.
+    /// the harness then cut off as 499). After lfm2:24b's and command-r7b's
+    /// turns overflowed (Ollama answered the turn's one request with a 400),
+    /// the title call was a second request to the model. A second call to a
+    /// provider that just failed, only for a title, repeats the failure or
+    /// does the very load the refusal existed to avoid.
     pub(super) provider_failed_last_turn: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
@@ -24632,10 +24633,10 @@ mod fixed_prompt_compaction_tests {
             stored.messages()
         );
 
-        // F10 (PR #393 rerun review, isolated Ollama's log): lfm2:24b's only
-        // request in this refused turn was the chat-title call that followed
-        // it, which loaded the model the turn never sent anything to. After a
-        // provider failure the title comes from the first message.
+        // F10 (PR #393 rerun review, isolated Ollama's log): after lfm2:24b's
+        // overflowed turn, the chat-title call sent the model a second
+        // request. After a provider failure the title comes from the first
+        // message, with no further call.
         let before = calls.load(Ordering::SeqCst);
         agent.maybe_rename_session(&session.id).await;
         assert_eq!(
