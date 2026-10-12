@@ -743,3 +743,106 @@ describe('declassifyToastSubject', () => {
     expect(b).toContain('20260809_25');
   });
 });
+
+/**
+ * The undo window is a `ModalShell` (vision round 7, V3-R7-1: the typed confirmation of this flow
+ * was already one, so the flow jumped from a top-anchored box to a centred one). Presentation
+ * only, and these pin what must NOT have moved with it: every way out of the window is the Undo.
+ * The shell's purpose is the default (`info`), so Escape, the × and a backdrop press all return
+ * to the confirmation, and none of them sends anything or reports the chat public. A shell given
+ * `purpose="required"` would trap the person in a countdown with only the Undo button to leave,
+ * and a refactor that did that would read as a harmless prop.
+ */
+describe('the undo window dismisses as Undo', () => {
+  const turnOnly = { ...s, privacy_reason: 'turn:versa_azure' };
+
+  async function openUndoWindow() {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onDeclassified = vi.fn();
+    render(
+      <DeclassifySessionDialog
+        session={turnOnly}
+        onClose={onClose}
+        onDeclassified={onDeclassified}
+        undoMs={60_000}
+      />
+    );
+    await user.click(screen.getByRole('button', { name: /Make public/ }));
+    await screen.findByRole('button', { name: 'Undo' });
+    return { user, onClose, onDeclassified };
+  }
+
+  /** Back on the confirmation, with nothing sent and nothing reported. */
+  function expectBackOnTheConfirmation(spies: {
+    onClose: ReturnType<typeof vi.fn>;
+    onDeclassified: ReturnType<typeof vi.fn>;
+  }) {
+    expect(screen.getByRole('button', { name: /Make public/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(mocks.declassifySession).not.toHaveBeenCalled();
+    expect(spies.onClose).not.toHaveBeenCalled();
+    expect(spies.onDeclassified).not.toHaveBeenCalled();
+  }
+
+  it('is a top-anchored shell dialog whose description is its sentence', async () => {
+    await openUndoWindow();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    expect(dialog).toHaveAttribute('data-size', 'md');
+    expect(dialog).toHaveAccessibleName('Marking this chat public…');
+    expect(dialog).toHaveAccessibleDescription(
+      'Nothing has been sent yet. This chat becomes public in 60 seconds unless you undo.'
+    );
+    // The Undo is the one action, in the shell's footer.
+    expect(screen.getByRole('button', { name: 'Undo' }).closest('[role="dialog"]')).toBe(dialog);
+  });
+
+  it('Escape is the Undo', async () => {
+    const { user, ...spies } = await openUndoWindow();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
+    expectBackOnTheConfirmation(spies);
+  });
+
+  it('the × is the Undo', async () => {
+    const { user, ...spies } = await openUndoWindow();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
+    expectBackOnTheConfirmation(spies);
+  });
+
+  it('a press on the backdrop is the Undo', async () => {
+    const { user: _user, ...spies } = await openUndoWindow();
+    // A modal dialog turns pointer events off on the page, so a real click cannot reach it in
+    // jsdom; Radix listens for the press itself.
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
+    expectBackOnTheConfirmation(spies);
+  });
+
+  it('an Undo made by Escape cancels the pending send for good', async () => {
+    vi.useFakeTimers();
+    const onDeclassified = vi.fn();
+    render(
+      <DeclassifySessionDialog
+        session={turnOnly}
+        onClose={vi.fn()}
+        onDeclassified={onDeclassified}
+        undoMs={5000}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mocks.declassifySession).not.toHaveBeenCalled();
+    expect(onDeclassified).not.toHaveBeenCalled();
+  });
+});
