@@ -39,12 +39,21 @@
 //! argument object must validate against that tool's schema, and one failing
 //! call rejects the whole payload. Anything else stays text, unchanged.
 //!
-//! Formats that never reached BioRouter as text on the wire are deliberately
-//! not parsed: `[TOOL_CALLS]`, Harmony channels, pythonic `[f(a="x")]`,
-//! Qwen3-Coder XML, and a Hermes `<tool_call>` tag anywhere but around the
-//! WHOLE message. Ollama either parses those itself or swallows them (an empty
-//! reply, handled by the provider), so a parser for them would only ever see
-//! text a model was QUOTING.
+//! Formats that did not reach BioRouter as text in the protocol matrix are
+//! deliberately not parsed: `[TOOL_CALLS]`, Harmony channels, pythonic
+//! `[f(a="x")]`, Qwen3-Coder XML, and a Hermes `<tool_call>` tag anywhere but
+//! around the WHOLE message. Ollama either parses those itself or swallows
+//! them (an empty reply, handled by the provider).
+//!
+//! ⚠ "Never reaches BioRouter as text" is not true of Harmony in full-agent
+//! use. Live (F06, gpt-oss:20b on Ollama 0.40.2, 2026-10-12), a reply whose
+//! thinking planned an `execute_code` call put a MALFORMED Harmony header in
+//! its content — ```` ```commentary to=functions.code_execution__execute_code
+//! <|constrain|>json<|message|>{…} ```` — after a markdown checklist, so
+//! Ollama's Harmony parser left it as text. It is still not recovered: it sat
+//! inside prose, where a quote and an intent cannot be told apart (see
+//! [`attempted_call`]), and its arguments did not fit the tool. The intent
+//! was real; the exclusion is a choice, not a premise.
 //!
 //! ## Where it runs
 //!
