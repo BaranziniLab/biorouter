@@ -90,25 +90,70 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
+/** sRGB channels on 0..255 (gamma encoded, not rounded) and alpha on 0..1. */
 type Rgba = [number, number, number, number];
+
+/** OKLab to gamma-encoded sRGB on 0..255 (Ottosson's matrices, the sRGB transfer curve). */
+const oklabToSrgb = (L: number, a: number, b: number): [number, number, number] => {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  const linear = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+  return linear.map((v) => {
+    const c = Math.min(1, Math.max(0, v));
+    return 255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+  }) as [number, number, number];
+};
+
 /**
- * `top` composited over `under`, as sRGB bytes. Painted on a canvas because the
- * hover ink is a `color-mix(in oklab, …)`, which computes to an oklab colour that
- * no rgb() parser reads.
+ * A computed colour as the engine serialises it: `rgb()`/`rgba()` for a plain colour,
+ * `oklab(L a b / α)` for the hover ink, a `color-mix(in oklab, …)`, and `color(srgb …)` for the
+ * engine's own conversion of that ink (the check in the hover test). Any other shape throws, so
+ * a token that starts computing to a new syntax fails here by name instead of measuring nonsense.
  */
-const over = (page: Page, top: string, under: string): Promise<Rgba> =>
-  page.evaluate(
-    ([t, u]) => {
-      const ctx = document.createElement('canvas').getContext('2d')!;
-      ctx.fillStyle = u;
-      ctx.fillRect(0, 0, 1, 1);
-      ctx.fillStyle = t;
-      ctx.fillRect(0, 0, 1, 1);
-      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-      return [r, g, b, 1] as [number, number, number, number];
-    },
-    [top, under] as const
-  );
+const parseColour = (value: string): Rgba => {
+  const num = (s: string, percentOf = 1) =>
+    s.endsWith('%') ? (parseFloat(s) / 100) * percentOf : s === 'none' ? 0 : parseFloat(s);
+  const rgb = /^rgba?\(([^)]+)\)$/.exec(value);
+  if (rgb) {
+    const [r, g, b, a = '1'] = rgb[1].split(/[\s,/]+/).filter(Boolean);
+    return [num(r, 255), num(g, 255), num(b, 255), num(a)];
+  }
+  const srgb = /^color\(srgb ([^)]+)\)$/.exec(value);
+  if (srgb) {
+    const [r, g, b, a = '1'] = srgb[1].split(/[\s/]+/).filter(Boolean);
+    return [255 * num(r), 255 * num(g), 255 * num(b), num(a)];
+  }
+  const oklab = /^oklab\(([^)]+)\)$/.exec(value);
+  if (oklab) {
+    const [L, a, b, alpha = '1'] = oklab[1].split(/[\s/]+/).filter(Boolean);
+    return [...oklabToSrgb(num(L), num(a, 0.4), num(b, 0.4)), num(alpha)];
+  }
+  throw new Error(`tabFill: no parser for the computed colour ${JSON.stringify(value)}`);
+};
+
+/**
+ * `top` composited over `under` (source-over), computed in float in gamma-encoded sRGB, the
+ * space browsers blend in. Computed rather than painted on a canvas and read back, because
+ * 8-bit raster rounding depends on the canvas backend, and the light hover-to-selected bound
+ * sits inside one 8-bit step. Measured in Chrome 155 for the 5% hover ink over the light band
+ * #f7f7f5: the GPU canvas read back [237,236,234] (1.0217:1 against the selected #eaeae6), the
+ * CPU canvas of CI's GPU-less Linux runner [236,236,234] (1.0197:1, failing 1.02), and the
+ * blend itself is [236.75,236.5,234.35] (1.0247:1). The bounds are claims about the tokens, so
+ * they are measured against the colour the tokens define, which is the same on every runner.
+ */
+const over = (top: string, under: string): Rgba => {
+  const [tr, tg, tb, ta] = parseColour(top);
+  const [ur, ug, ub, ua] = parseColour(under);
+  const alpha = ta + ua * (1 - ta);
+  if (alpha === 0) return [0, 0, 0, 0];
+  const mix = (t: number, u: number) => (t * ta + u * ua * (1 - ta)) / alpha;
+  return [mix(tr, ur), mix(tg, ug), mix(tb, ub), alpha];
+};
 const luminance = ([r, g, b]: Rgba) => {
   const lin = (c: number) => {
     const s = c / 255;
@@ -260,7 +305,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
           expect(active.image, `${mode} ${strip}: the accent strip`).toMatch(/linear-gradient/);
           expect(active.weight).toBe('600');
           expect(
-            ratio(await over(page, active.ground, ground), await over(page, ground, ground)),
+            ratio(over(active.ground, ground), over(ground, ground)),
             `${mode} ${strip}: the selected fill can be seen on its band`
           ).toBeGreaterThanOrEqual(1.08);
         }
@@ -277,6 +322,17 @@ describe('the document tabs are fills, not lines (R-27)', () => {
       try {
         const hover = await paint(page, 'var(--overlay-hover)');
         const selected = await paint(page, 'var(--background-fill-strong)');
+        // over() converts the hover ink itself, so it must agree with the engine's own
+        // conversion of it to sRGB (a computed value, so no raster rounding enters).
+        const engine = parseColour(
+          await paint(page, 'color-mix(in srgb, var(--overlay-hover) 100%, transparent 0%)')
+        );
+        parseColour(hover).forEach((c, i) =>
+          expect(
+            Math.abs(c - engine[i]),
+            `${mode}: the hover ink, channel ${i}, as the engine converts it`
+          ).toBeLessThan(i < 3 ? 0.5 : 0.001)
+        );
         for (const strip of STRIPS) {
           await page.hover(`#${strip}-idle`);
           await settle(page);
@@ -284,11 +340,11 @@ describe('the document tabs are fills, not lines (R-27)', () => {
           const ground = await band(page, strip);
           expect(t.ground, `${mode} ${strip}: the ghost hover`).toBe(hover);
           expect(
-            ratio(await over(page, t.ground, ground), await over(page, ground, ground)),
+            ratio(over(t.ground, ground), over(ground, ground)),
             `${mode} ${strip}: the hover is visible on the band (the old ladder was 1.02:1 in dark)`
           ).toBeGreaterThanOrEqual(1.04);
           expect(
-            ratio(await over(page, t.ground, ground), await over(page, selected, ground)),
+            ratio(over(t.ground, ground), over(selected, ground)),
             `${mode} ${strip}: a hovered tab does not read as the selected one`
           ).toBeGreaterThanOrEqual(1.02);
           // The close control shows on hover and is a further step on the hovered tab.
@@ -306,7 +362,7 @@ describe('the document tabs are fills, not lines (R-27)', () => {
         const strong = await paint(page, 'var(--background-fill-strong)');
         const x = await look(page, '#chat-active-close');
         expect(
-          ratio(await over(page, x.ground, strong), await over(page, strong, strong)),
+          ratio(over(x.ground, strong), over(strong, strong)),
           `${mode}: the close hover on the selected fill`
         ).toBeGreaterThanOrEqual(1.04);
       } finally {
