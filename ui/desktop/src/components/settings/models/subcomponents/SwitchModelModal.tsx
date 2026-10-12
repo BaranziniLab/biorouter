@@ -1285,6 +1285,7 @@ export const SwitchModelModal = ({
                       </Button>
                     </div>
                     <Input
+                      machine
                       id={customModelInputId}
                       placeholder={switchModelCopy.customPlaceholder}
                       onChange={(event) => setModel(event.target.value)}

@@ -231,3 +231,33 @@ describe('InstitutionalSetupCard', () => {
     await waitFor(() => expect(mockUpsert).toHaveBeenCalled());
   });
 });
+
+// Vision V4-R7-5: the Advanced fields hold an endpoint URL, an API version and a region, which are
+// machine strings. On the first-run path Chromium drew a red dotted misspelling line under a
+// correct `https://unified-api.ucsf.edu/general`, and the platform could "correct" or capitalise
+// what a person typed. The key fields are passwords and are not spellchecked anyway.
+describe('InstitutionalSetupCard: machine strings are not spellchecked (V4-R7-5)', () => {
+  const MACHINE_ATTRIBUTES = { spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' };
+
+  function expectEveryAdvancedFieldIsMachine(container: HTMLElement, expected: number) {
+    const fields = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="text"]'));
+    expect(fields).toHaveLength(expected);
+    for (const field of fields) {
+      for (const [attribute, value] of Object.entries(MACHINE_ATTRIBUTES)) {
+        expect(field, `${field.id} ${attribute}`).toHaveAttribute(attribute, value);
+      }
+    }
+  }
+
+  it('leaves the Azure endpoint and API version alone', () => {
+    const { container } = render(<InstitutionalSetupCard flavor="azure" onSuccess={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expectEveryAdvancedFieldIsMachine(container, 2);
+  });
+
+  it('leaves the Bedrock endpoint and region alone', () => {
+    const { container } = render(<InstitutionalSetupCard flavor="bedrock" onSuccess={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
+    expectEveryAdvancedFieldIsMachine(container, 2);
+  });
+});

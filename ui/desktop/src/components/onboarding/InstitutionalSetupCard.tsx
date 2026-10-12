@@ -198,6 +198,7 @@ export default function InstitutionalSetupCard({
                 info={institutionalCopy.savedAs('VERSA_AZURE_ENDPOINT')}
               >
                 <Input
+                  machine
                   type="text"
                   value={azureEndpoint}
                   onChange={(e) => setAzureEndpoint(e.target.value)}
@@ -210,6 +211,7 @@ export default function InstitutionalSetupCard({
                 info={institutionalCopy.savedAs('VERSA_AZURE_API_VERSION')}
               >
                 <Input
+                  machine
                   type="text"
                   value={azureApiVersion}
                   onChange={(e) => setAzureApiVersion(e.target.value)}
@@ -225,6 +227,7 @@ export default function InstitutionalSetupCard({
                 info={institutionalCopy.savedAs('VERSA_BEDROCK_ENDPOINT')}
               >
                 <Input
+                  machine
                   type="text"
                   value={bedrockEndpoint}
                   onChange={(e) => setBedrockEndpoint(e.target.value)}
@@ -237,6 +240,7 @@ export default function InstitutionalSetupCard({
                 info={institutionalCopy.savedAs('VERSA_BEDROCK_REGION')}
               >
                 <Input
+                  machine
                   type="text"
                   value={bedrockRegion}
                   onChange={(e) => setBedrockRegion(e.target.value)}

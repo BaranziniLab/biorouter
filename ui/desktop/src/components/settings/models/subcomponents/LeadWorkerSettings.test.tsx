@@ -125,6 +125,23 @@ describe('LeadWorkerSettings', () => {
     });
   });
 
+  // Vision V4-R7-5: a model id is a machine string. Chromium drew its red dotted misspelling line
+  // under `my-custom-lead` on a correct value, and the platform may "correct" or capitalise it.
+  // The number fields beside them are numbers and take nothing.
+  it('leaves the two custom model fields unspellchecked, uncorrected and uncapitalised', async () => {
+    setupHappyPathMocks();
+    const { container } = render(<LeadWorkerSettings isOpen={true} onClose={vi.fn()} />);
+    await waitFor(() => expect(screen.getAllByText('Back to model list')).toHaveLength(2));
+
+    for (const id of ['lead-model', 'worker-model']) {
+      const field = container.ownerDocument.getElementById(id);
+      expect(field, id).not.toBeNull();
+      expect(field, `${id} spellcheck`).toHaveAttribute('spellcheck', 'false');
+      expect(field, `${id} autocorrect`).toHaveAttribute('autocorrect', 'off');
+      expect(field, `${id} autocapitalize`).toHaveAttribute('autocapitalize', 'off');
+    }
+  });
+
   it('disables lead/worker and removes config when toggled off', async () => {
     setupHappyPathMocks();
 

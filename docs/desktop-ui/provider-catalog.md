@@ -301,8 +301,11 @@ The tests read the property the engine reads, not the markup alone: `customProvi
 `capabilities/settingsBFill.browser.test.tsx` check `input.spellcheck` in Chromium against a bare input that
 reports `true`, and the jsdom suites (`DefaultProviderSetupForm.test.tsx`, `ConfigSettings.privacy.test.tsx`)
 check all three attributes on every field. Take the spread off any of the three components and a case fails.
-Other forms that hold machine strings (the extension dialogs, First run's Institutional card, Lead/worker, the Add
-skill and New schedule dialogs) take the same `<Input machine />` in their own files.
+The same `<Input machine />` is on First run's Institutional card (the endpoint, API version and region fields behind
+Advanced; its three key fields are passwords), on the Switch models dialog's custom model id and on Lead/worker's two
+custom model ids (their tests: `InstitutionalSetupCard.test.tsx`, `SwitchModelModal.machineString.test.tsx`,
+`LeadWorkerSettings.test.tsx`; take one `machine` off and a case fails). The Public card's only field is a password and
+needs nothing. The extension dialogs and the Add skill and New schedule dialogs take it in their own files.
 
 ## The page band
 

@@ -464,6 +464,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
               />
             ) : (
               <Input
+                machine
                 id="lead-model"
                 placeholder={leadWorkerCopy.customPlaceholder}
                 onChange={(event) => setLeadModel(event.target.value)}
@@ -534,6 +535,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
               />
             ) : (
               <Input
+                machine
                 id="worker-model"
                 placeholder={leadWorkerCopy.customPlaceholder}
                 onChange={(event) => setWorkerModel(event.target.value)}
