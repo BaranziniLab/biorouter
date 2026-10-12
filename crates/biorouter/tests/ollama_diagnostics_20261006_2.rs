@@ -567,6 +567,115 @@ async fn a_first_prompt_slower_than_the_idle_bound_names_the_bound_and_is_sent_o
     assert_eq!(chat_requests(&server).await.len(), 1, "sent once");
 }
 
+#[tokio::test]
+async fn a_body_timeout_after_headers_names_the_bound_and_is_sent_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = requests.clone();
+    let server = tokio::spawn(async move {
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let counted = counted.clone();
+            clients.spawn(async move {
+                let mut request = Vec::new();
+                let mut buf = [0_u8; 4096];
+                let header_end = loop {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                while request.len() < header_end + content_length {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                }
+                let route = headers.split_whitespace().nth(1).unwrap();
+                let body = match route {
+                    "/api/show" => show(131_072, None).to_string(),
+                    "/api/version" => json!({"version": "0.40.2"}).to_string(),
+                    "/api/ps" => json!({"models": []}).to_string(),
+                    "/api/chat" => {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        text_body("hello", 37_000, 0)
+                    }
+                    _ => panic!("unexpected route {route}"),
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                if route == "/api/chat" {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                let _ = socket.write_all(body.as_bytes()).await;
+            });
+        }
+    });
+    let provider = OllamaProvider::from_custom_config(
+        ModelConfig::new_or_fail(&format!("llama3.1:8b-{}", uuid::Uuid::new_v4().simple())),
+        DeclarativeProviderConfig {
+            name: "ollama-body-timeout".to_string(),
+            engine: ProviderEngine::Ollama,
+            display_name: "Ollama body timeout".to_string(),
+            description: None,
+            api_key_env: "NOT_USED".to_string(),
+            base_url: format!("http://{address}"),
+            models: vec![],
+            headers: None,
+            timeout_seconds: Some(1),
+            supports_streaming: Some(true),
+        },
+    )
+    .unwrap();
+    let turn = turn(
+        &provider,
+        &"s".repeat(160_000),
+        "hello",
+        &code_execution_roster(),
+    )
+    .await;
+    server.abort();
+    let error = turn
+        .error
+        .expect("headers alone do not satisfy the idle bound");
+    assert!(matches!(error, ProviderError::IdleTimeout(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("Raise timeout_seconds"),
+        "{error}"
+    );
+    assert_eq!(error.kind(), ProviderErrorKind::Network);
+    assert!(!biorouter::agents::mistakes::is_recoverable(&error));
+    assert_eq!(requests.load(Ordering::SeqCst), 1, "sent once");
+}
+
 // ---------------------------------------------------------------------------
 // Through the agent: what the person reads, and what the model is sent next.
 // ---------------------------------------------------------------------------

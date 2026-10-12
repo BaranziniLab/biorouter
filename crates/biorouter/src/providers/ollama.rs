@@ -1425,7 +1425,24 @@ async fn collect_reply(
 
 /// An error out of the format module: the [`ProviderError`] it carries, or a
 /// decode failure.
-fn provider_error(error: anyhow::Error) -> ProviderError {
+fn provider_error(
+    error: anyhow::Error,
+    idle: Duration,
+    timeout_setting: &str,
+    text_bytes: usize,
+) -> ProviderError {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    }) {
+        return waited_too_long(
+            ProviderError::RequestFailed("response body read timed out".to_string()),
+            idle,
+            timeout_setting,
+            text_bytes,
+        );
+    }
     error.downcast::<ProviderError>().unwrap_or_else(|error| {
         ProviderError::RequestFailed(format!("Stream decode error: {error}"))
     })
@@ -1524,6 +1541,9 @@ fn decode_native(
     mut log: RequestLog,
     options: DecodeOptions,
     unknown_tool: Arc<Mutex<Option<UnknownToolCalled>>>,
+    idle: Duration,
+    timeout_setting: &'static str,
+    text_bytes: usize,
 ) -> MessageStream {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     Box::pin(try_stream! {
@@ -1541,7 +1561,7 @@ fn decode_native(
                         }
                         mapped
                     }
-                    Err(error) => provider_error(error),
+                    Err(error) => provider_error(error, idle, timeout_setting, text_bytes),
                 };
                 let _ = log.provider_error(&error);
                 error
@@ -1560,6 +1580,8 @@ struct NativeTurn {
     model_config: ModelConfig,
     check: TurnCheck,
     window_setting: &'static str,
+    idle: Duration,
+    timeout_setting: &'static str,
     /// Every item of the turn, retry included, carries this id, so the agent
     /// folds them into one assistant message.
     message_id: String,
@@ -1595,6 +1617,8 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
             model_config,
             mut check,
             window_setting,
+            idle,
+            timeout_setting,
             message_id,
             tools,
             mut retried,
@@ -1631,6 +1655,9 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                     message_id: Some(message_id.clone()),
                 },
                 unknown_tool.clone(),
+                idle,
+                timeout_setting,
+                check.text_bytes,
             );
             let mut recovered = recover_leaked_tool_calls(
                 decoded,
@@ -2440,6 +2467,8 @@ impl OllamaProvider {
             model_config: model_config.clone(),
             check,
             window_setting: self.window_setting,
+            idle: self.idle,
+            timeout_setting: self.timeout_setting,
             message_id: format!("ollama_{}", uuid::Uuid::new_v4().simple()),
             tools: tools.to_vec(),
             retried: false,
@@ -2615,7 +2644,13 @@ impl OllamaProvider {
                 let _ = log.provider_error(e);
             })?;
         let decoded = recover_leaked_tool_calls(
-            stream_openai_compat_checked(response, log),
+            stream_openai_compat_checked(
+                response,
+                log,
+                self.idle,
+                self.timeout_setting,
+                check.text_bytes,
+            ),
             RecoveryContext {
                 tools: tools.to_vec(),
                 provider: "ollama",
@@ -2696,7 +2731,13 @@ fn v1_capability_error(error: ProviderError, model: &str) -> ProviderError {
 /// Measured on Ollama 0.40.2: when ministral-3:8b called an undeclared tool
 /// after streaming text, `/v1` silently dropped the error and just ended the
 /// body, which the generic decoder handed on as a complete, successful reply.
-fn stream_openai_compat_checked(response: Response, mut log: RequestLog) -> MessageStream {
+fn stream_openai_compat_checked(
+    response: Response,
+    mut log: RequestLog,
+    idle: Duration,
+    timeout_setting: &'static str,
+    text_bytes: usize,
+) -> MessageStream {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     Box::pin(try_stream! {
         let ended = Arc::new(AtomicBool::new(false));
@@ -2719,7 +2760,7 @@ fn stream_openai_compat_checked(response: Response, mut log: RequestLog) -> Mess
         tokio::pin!(decoded);
         while let Some(item) = decoded.next().await {
             let item = item.map_err(|error| {
-                let error = provider_error(error);
+                let error = provider_error(error, idle, timeout_setting, text_bytes);
                 let _ = log.provider_error(&error);
                 error
             })?;
@@ -5507,5 +5548,20 @@ mod tests {
                 unchanged
             );
         }
+    }
+
+    #[test]
+    fn a_decode_error_that_mentions_timeout_keeps_its_original_classification() {
+        let error = provider_error(
+            anyhow::anyhow!("invalid JSON in a reply about a timeout"),
+            Duration::from_secs(600),
+            BUILTIN_TIMEOUT_SETTING,
+            160_000,
+        );
+        assert!(matches!(error, ProviderError::RequestFailed(_)));
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Stream decode error: invalid JSON in a reply about a timeout"
+        );
     }
 }
