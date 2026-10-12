@@ -497,3 +497,29 @@ describe('BaseChat: a new chat’s first message is on screen from the send (V2-
     expect(element).toContain('onOpenArtifact={openArtifactFromTranscript}');
   });
 });
+
+describe('BaseChat: the composer keeps one identity through a new chat’s first send (WS-COMPOSER-8)', () => {
+  // The first send leaves the empty state in the commit that starts creating the
+  // chat, so `renderChatInput()` moves from the centred slot to the bar and React
+  // mounts a new ChatInput. `composer/composerHandOff.ts` carries the chips'
+  // settled state across that remount under `reasoningDraftKey`, so the key must
+  // not change on the null to id step.
+  it('derives reasoningDraftKey from the tab alone, never from the chat id', () => {
+    expect(code).toMatch(
+      /const composerDraftKey = terminalKey \? composerDraftKeyForTab\(terminalKey\) : undefined;/
+    );
+    expect(code).toMatch(
+      /const \[anonymousReasoningDraftKey\] = useState\(\(\) => crypto\.randomUUID\(\)\);/
+    );
+    expect(code).toMatch(
+      /const reasoningDraftKey = composerDraftKey \?\? anonymousReasoningDraftKey;/
+    );
+  });
+
+  it('hands that key to the composer it renders', () => {
+    const start = code.indexOf('<ChatInput', code.indexOf('const renderChatInput = () => ('));
+    const element = code.slice(start, code.indexOf('/>', start));
+    expect(code.match(/<ChatInput\b/g) ?? []).toHaveLength(1);
+    expect(element).toContain('reasoningDraftKey={reasoningDraftKey}');
+  });
+});
