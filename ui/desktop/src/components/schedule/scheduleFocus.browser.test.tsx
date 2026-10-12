@@ -115,7 +115,7 @@ const STUBS: Array<[RegExp, string]> = [
   [/^\.\.\/\.\.\/api$/, `export const getSession = async () => ({ data: null });`],
   [
     /^\.\.\/\.\.\/toasts$/,
-    `export const toastError = () => {}; export const toastSuccess = () => {};`,
+    `export const toastError = () => {}; export const toastSuccess = () => {}; export const toastWarning = () => {};`,
   ],
   [/^\.\.\/\.\.\/utils\/userAction$/, `export const userActionHeaders = async () => ({});`],
 ];
