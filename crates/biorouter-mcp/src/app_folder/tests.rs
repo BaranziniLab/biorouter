@@ -1507,7 +1507,7 @@ fn only_the_daemon_moves_the_folder() {
                 let arm = lines[index.saturating_sub(12)..index]
                     .iter()
                     .any(|above| above.contains("Commands::Agent"));
-                callers.push((path.display().to_string(), arm));
+                callers.push((path.clone(), arm));
             }
         }
     }
@@ -1517,6 +1517,9 @@ fn only_the_daemon_moves_the_folder() {
         "the move has callers besides the daemon: {callers:?}"
     );
     let (file, in_agent_arm) = &callers[0];
+    // `Path::ends_with` compares components, so this holds on Windows too,
+    // where the path is spelled with backslashes and a string suffix with
+    // `/` never matches.
     assert!(
         file.ends_with("biorouter-server/src/main.rs") && *in_agent_arm,
         "the one caller must be `biorouterd agent`, found {callers:?}"
