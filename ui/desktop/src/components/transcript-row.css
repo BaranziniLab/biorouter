@@ -207,6 +207,56 @@ button.br-transcript-row-head:focus-visible .br-transcript-row-chevron,
   display: none;
 }
 
+/* A list's markers hang in a gutter counted in the well's own mono advance.
+   An outside marker is as wide as its characters, and in mono "1. " is three
+   whole advances (23.4px at 13px), wider than the prose list's 1.5em gutter
+   (19.5px, plus the item's 2px). The marker hung past the markdown root, whose
+   `overflow-x` cut its first digit: "1." read "l." and "10." read ").", in any
+   tool output with a numbered list (merge-verify #391, screen 20).
+   So the gutter is `ch`: three for a one-digit marker, four once a list's
+   numbers reach 10, five at 100. A list that starts past 1 (CommonMark ends a
+   list at an unindented code block and numbers the rest from where it was)
+   keeps three while its numbers stay one digit, so its text lines up with the
+   half above it. A bullet takes the same three, so bulleted and numbered
+   items share one text edge. The one case left is a list that STARTS at 100 or
+   more: selectors cannot compare numbers, and it gets four.
+   Measured, with the instrument, in `toolOutputListMarkers.browser.test.tsx`. */
+.br-transcript-row-well .biorouter-markdown.prose :where(ul, ol) {
+  padding-inline-start: 3ch;
+}
+
+.br-transcript-row-well
+  .biorouter-markdown.prose
+  ol:where(
+    :has(> li:nth-child(10)),
+    [start]:not(
+      [start='0'],
+      [start='2'],
+      [start='3'],
+      [start='4'],
+      [start='5'],
+      [start='6'],
+      [start='7'],
+      [start='8'],
+      [start='9']
+    ),
+    [start='0']:has(> li:nth-child(11)),
+    [start='2']:has(> li:nth-child(9)),
+    [start='3']:has(> li:nth-child(8)),
+    [start='4']:has(> li:nth-child(7)),
+    [start='5']:has(> li:nth-child(6)),
+    [start='6']:has(> li:nth-child(5)),
+    [start='7']:has(> li:nth-child(4)),
+    [start='8']:has(> li:nth-child(3)),
+    [start='9']:has(> li:nth-child(2))
+  ) {
+  padding-inline-start: 4ch;
+}
+
+.br-transcript-row-well .biorouter-markdown.prose ol:where(:has(> li:nth-child(100))) {
+  padding-inline-start: 5ch;
+}
+
 /* A code block or a table in the output steps back to the page ground: the
    well is already the fill, and a fill never sits on a fill. */
 .br-transcript-row-well :is(.br-md-code, .br-md-table) {
