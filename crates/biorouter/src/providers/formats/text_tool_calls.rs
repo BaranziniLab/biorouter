@@ -314,13 +314,14 @@ fn fence_body(text: &str) -> Option<&str> {
     Some(body)
 }
 
-/// `callseq | callarray`: every element a valid call (G7), or `None`.
-fn payload(text: &str, tools: &[Tool]) -> Option<(Vec<RecoveredCall>, bool)> {
-    let objects: Vec<Value> = if text.starts_with('[') {
+/// The JSON values of `callseq | callarray`, unchecked: one non-empty array,
+/// or one or more values separated only by whitespace, and nothing else.
+fn payload_values(text: &str) -> Option<Vec<Value>> {
+    if text.starts_with('[') {
         // One array, and nothing after it (serde rejects trailing characters).
         match serde_json::from_str::<Value>(text).ok()? {
-            Value::Array(items) if !items.is_empty() => items,
-            _ => return None,
+            Value::Array(items) if !items.is_empty() => Some(items),
+            _ => None,
         }
     } else if text.starts_with('{') {
         // One object, or several separated only by whitespace (llama3.1's raw
@@ -333,10 +334,15 @@ fn payload(text: &str, tools: &[Tool]) -> Option<(Vec<RecoveredCall>, bool)> {
         if objects.is_empty() || values.byte_offset() != text.len() {
             return None;
         }
-        objects
+        Some(objects)
     } else {
-        return None;
-    };
+        None
+    }
+}
+
+/// `callseq | callarray`: every element a valid call (G7), or `None`.
+fn payload(text: &str, tools: &[Tool]) -> Option<(Vec<RecoveredCall>, bool)> {
+    let objects = payload_values(text)?;
     let mut calls = Vec::with_capacity(objects.len());
     let mut phi4 = false;
     for object in &objects {
@@ -479,14 +485,40 @@ pub struct AttemptedCall {
 /// a quote becomes an execution. Measured, it did not even help: llama3.1:8b,
 /// asked once after "I will use the following tool call: {..}", repeated
 /// itself.
+///
+/// The one-call case of [`attempted_calls`].
 pub fn attempted_call(text: &str, tools: &[Tool]) -> Option<AttemptedCall> {
+    let mut calls = attempted_calls(text, tools)?;
+    (calls.len() == 1).then(|| calls.remove(0))
+}
+
+/// [`attempted_call`] for a whole reply of one or more call objects, in the
+/// shapes recovery reads (L2): objects separated only by whitespace, or one
+/// array, optionally fenced or tag-wrapped as one block. Every object must be
+/// a call whose name stands for an advertised tool, or nothing is an attempt,
+/// just as one bad call rejects a whole recovery.
+///
+/// Diagnostics 20261006_2: llama3.1:8b answered "find the blasts in these
+/// notes" with two objects, `workspace_read_conversation` then
+/// `workspace_read_panel`, each a real workspace tool without its prefix.
+/// Read as one value, the pair was neither a call nor an attempt, so the turn
+/// ended on the JSON with nothing asked or run, while either object alone
+/// drew the corrective question.
+pub fn attempted_calls(text: &str, tools: &[Tool]) -> Option<Vec<AttemptedCall>> {
     if tools.is_empty() {
         return None;
     }
     let trimmed = text.trim();
     let inner = unwrap_tags(trimmed, ATTEMPT_TAGS).unwrap_or(trimmed).trim();
     let inner = fence_body(inner).map(str::trim).unwrap_or(inner);
-    let value = serde_json::from_str::<Value>(inner).ok()?;
+    payload_values(inner)?
+        .iter()
+        .map(|value| attempted_object(value, tools))
+        .collect()
+}
+
+/// One call object of an attempt: its name must stand for an advertised tool.
+fn attempted_object(value: &Value, tools: &[Tool]) -> Option<AttemptedCall> {
     let object = value.as_object()?;
     let (name, arguments) = match flat_call(object, true) {
         Some(call) => call,
@@ -606,6 +638,76 @@ pub fn forged_tool_result(text: &str, tools: &[Tool]) -> Option<ForgedResult> {
         body: body.trim().to_string(),
         meant,
     })
+}
+
+/// The names of the calls a WHOLE reply writes as text, as written, or `None`.
+///
+/// Every block of the reply must be a call object, a whitespace-separated run
+/// of them or an array of them, bare or in a ```` ```json ```` fence; the
+/// whole may sit in a call or result tag. A name need not be a tool: this
+/// answers "is this reply nothing but calls?", not "which tool was meant?".
+/// Any prose, any other JSON, or one object that is not call-shaped, and it
+/// is `None`.
+///
+/// Detection only, for the notice the agent puts under such a reply
+/// (`agents::reply_parts`): the reply is shown as it is, and the person is
+/// told that nothing ran. Diagnostics 20261006_2: llama3.1:8b in a Code
+/// Execution chat answered with `text_editor`, `shell` and `agent_drafter`
+/// calls written as JSON, none of them a tool that chat offered, so nothing
+/// recovered or asked about them, and the person read raw JSON as the answer
+/// with no word that nothing had happened. Several blocks are read because a
+/// corrective retry that repeats the call joins a second block to the first.
+pub fn whole_reply_call_names(text: &str) -> Option<Vec<String>> {
+    let trimmed = text.trim();
+    let mut rest = unwrap_tags(trimmed, ATTEMPT_TAGS).unwrap_or(trimmed).trim();
+    let mut names = Vec::new();
+    while !rest.is_empty() {
+        let values = if let Some(after_open) = rest.strip_prefix("```") {
+            let after_tag = after_open
+                .strip_prefix("json")
+                .or_else(|| after_open.strip_prefix("JSON"))
+                .unwrap_or(after_open);
+            let (tag, body) = after_tag.split_once('\n')?;
+            if !tag.trim().is_empty() {
+                // ```python and the like: code, not a call.
+                return None;
+            }
+            let (inner, after_fence) = body.split_once("```")?;
+            rest = after_fence.trim_start();
+            payload_values(inner.trim())?
+        } else {
+            // One JSON value, then whitespace, another block, or the end.
+            let mut values = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+            let value = values.next()?.ok()?;
+            rest = rest.get(values.byte_offset()..)?.trim_start();
+            match value {
+                Value::Array(items) if !items.is_empty() => items,
+                Value::Object(_) => vec![value],
+                _ => return None,
+            }
+        };
+        for value in &values {
+            names.push(written_call_name(value)?);
+        }
+    }
+    (!names.is_empty()).then_some(names)
+}
+
+/// The name of one call object as written (S1-S3), or `None` when the object
+/// is not call-shaped or names nothing.
+fn written_call_name(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let (name, _) = match flat_call(object, true) {
+        Some(call) => call,
+        None if has_exactly(object, &["type", "function"])
+            && object.get("type").and_then(Value::as_str) == Some("function") =>
+        {
+            flat_call(object.get("function")?.as_object()?, false)?
+        }
+        None => return None,
+    };
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1850,5 +1952,214 @@ mod tests {
             assert_eq!(forged_tool_result(text, &code_mode), None, "{text}");
         }
         assert_eq!(forged_tool_result(cases[0].0, &[]), None);
+    }
+
+    /// Diagnostics 20261006_2: every assistant reply of the reporter's chat,
+    /// verbatim (`tests/fixtures/ollama/diagnostics_20261006_2/replies.json`).
+    fn reporter_reply(index: u64) -> String {
+        let doc: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/ollama/diagnostics_20261006_2/replies.json"
+        ))
+        .unwrap();
+        doc["replies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|reply| reply["index"] == index)
+            .and_then(|reply| reply["reply"].as_str())
+            .unwrap_or_else(|| panic!("no reply {index} in the fixture"))
+            .to_string()
+    }
+
+    /// What the reporter's Code Execution chat offered the model directly:
+    /// Code Execution's three tools (schemas mirroring its parameter structs),
+    /// a todo tool, and the real workspace tools. Developer and Agent Drafter
+    /// were reachable only from a script.
+    fn reporter_code_execution_roster() -> Vec<Tool> {
+        let mut tools = vec![
+            tool(
+                "code_execution__execute_code",
+                json!({"type": "object", "properties": {
+                    "code": {"type": "string"},
+                    "tool_graph": {"type": "array"}
+                }, "required": ["code"]}),
+            ),
+            tool(
+                "code_execution__read_module",
+                json!({"type": "object", "properties": {"module_path": {"type": "string"}}, "required": ["module_path"]}),
+            ),
+            tool(
+                "code_execution__search_modules",
+                json!({"type": "object", "properties": {
+                    "terms": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                    "regex": {"type": "boolean"}
+                }, "required": ["terms"]}),
+            ),
+            tool(
+                "todo__todo_write",
+                json!({"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}),
+            ),
+        ];
+        for mut workspace in crate::agents::workspace_extension::WorkspaceClient::get_tools() {
+            workspace.name = format!("workspace__{}", workspace.name).into();
+            tools.push(workspace);
+        }
+        tools
+    }
+
+    /// The same chat with Code Execution off: Developer offered directly.
+    fn reporter_direct_roster() -> Vec<Tool> {
+        let mut tools: Vec<Tool> = reporter_code_execution_roster()
+            .into_iter()
+            .filter(|tool| !tool.name.starts_with("code_execution__"))
+            .collect();
+        tools.push(tool(
+            "developer__shell",
+            json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
+        ));
+        tools.push(tool(
+            "developer__text_editor",
+            json!({"type": "object", "properties": {
+                "command": {"type": "string"}, "path": {"type": "string"}, "file_text": {"type": "string"}
+            }, "required": ["command", "path"]}),
+        ));
+        tools
+    }
+
+    fn attempt_names(text: &str, tools: &[Tool]) -> Option<Vec<String>> {
+        attempted_calls(text, tools).map(|calls| {
+            calls
+                .into_iter()
+                .flat_map(|call| call.meant)
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// Diagnostics 20261006_2, reply by reply: what Biorouter makes of each of
+    /// the reporter's exact assistant replies. llama3.1:8b on Ollama, in a chat
+    /// with Code Execution on; the reporter saw raw JSON as the answer to every
+    /// request that needed a tool.
+    ///
+    /// - Nothing is RUN from text: no reply names an offered tool byte for byte
+    ///   with arguments that fit (G5, G6).
+    /// - A whole reply naming an offered tool without its prefix is ASKED for
+    ///   once (`attempted_calls`): reply 9, and since this report reply 11,
+    ///   whose two objects each name a workspace tool.
+    /// - A whole reply of calls that cannot be asked for (a tool Code Execution
+    ///   hides, an extension's name) is shown with a notice that nothing ran
+    ///   (`whole_reply_call_names`): replies 1, 7 and 15, and the same three of
+    ///   9 and 11 if their retry fails.
+    /// - Prose, code for the person to run, and the JSON answer the person asked
+    ///   for (reply 13) are answers: never asked about, never noticed.
+    #[test]
+    fn the_replies_in_diagnostics_20261006_2_are_classified() {
+        let code = reporter_code_execution_roster();
+        let direct = reporter_direct_roster();
+        for index in [1, 3, 5, 7, 9, 11, 13, 15, 17, 19] {
+            let text = reporter_reply(index);
+            for roster in [&code, &direct] {
+                assert_eq!(
+                    recover(&text, roster, Tiers::WholeMessage),
+                    None,
+                    "reply {index} must not run from text"
+                );
+                assert_eq!(forged_tool_result(&text, roster), None, "reply {index}");
+            }
+        }
+
+        let asked = |index: u64, roster: &[Tool]| attempt_names(&reporter_reply(index), roster);
+        assert_eq!(
+            asked(9, &code),
+            Some(vec!["code_execution__search_modules".to_string()])
+        );
+        assert_eq!(
+            asked(11, &code),
+            Some(vec![
+                "workspace__workspace_read_conversation".to_string(),
+                "workspace__workspace_read_panel".to_string(),
+            ]),
+            "each of reply 11's two objects names a workspace tool without its prefix"
+        );
+        // `text_editor` and `shell` are Developer's, which Code Execution
+        // offers only from a script: nothing to ask the model to call there.
+        // Offered directly, they are asked for.
+        assert_eq!(asked(1, &code), None);
+        assert_eq!(asked(7, &code), None);
+        assert_eq!(
+            asked(1, &direct),
+            Some(vec!["developer__text_editor".to_string()])
+        );
+        assert_eq!(
+            asked(7, &direct),
+            Some(vec!["developer__shell".to_string()])
+        );
+        // An extension's name is not a tool's.
+        assert_eq!(asked(15, &code), None);
+        for answer in [3, 5, 13, 17, 19] {
+            assert_eq!(asked(answer, &code), None, "reply {answer}");
+            assert_eq!(asked(answer, &direct), None, "reply {answer}");
+        }
+
+        let noticed = |index: u64| whole_reply_call_names(&reporter_reply(index));
+        assert_eq!(noticed(1), Some(vec!["text_editor".to_string()]));
+        assert_eq!(noticed(7), Some(vec!["shell".to_string()]));
+        assert_eq!(noticed(9), Some(vec!["search_modules".to_string()]));
+        assert_eq!(
+            noticed(11),
+            Some(vec![
+                "workspace_read_conversation".to_string(),
+                "workspace_read_panel".to_string(),
+            ])
+        );
+        assert_eq!(noticed(15), Some(vec!["agent_drafter".to_string()]));
+        for answer in [3, 5, 13, 17, 19] {
+            assert_eq!(noticed(answer), None, "reply {answer} is an answer");
+        }
+    }
+
+    /// The shapes `whole_reply_call_names` reads, beyond the reporter's: a
+    /// retry that repeats the call joins a second block to the first, and an
+    /// array or tag-wrapped payload is still only calls.
+    #[test]
+    fn a_whole_reply_of_calls_is_named_and_anything_else_is_not() {
+        let fenced = "```json\n{\"name\": \"shell\", \"arguments\": {\"commands\": [\"ls\"]}}\n```";
+        for (text, names) in [
+            (
+                format!("{fenced}\n\n{fenced}"),
+                vec!["shell", "shell"],
+            ),
+            (
+                "[{\"name\": \"a\", \"arguments\": {}}, {\"name\": \"b\", \"parameters\": {}}]"
+                    .to_string(),
+                vec!["a", "b"],
+            ),
+            (
+                "<tool_call>\n{\"type\": \"function\", \"function\": {\"name\": \"read\", \"arguments\": \"{}\"}}\n</tool_call>"
+                    .to_string(),
+                vec!["read"],
+            ),
+        ] {
+            assert_eq!(
+                whole_reply_call_names(&text),
+                Some(names.iter().map(|name| name.to_string()).collect()),
+                "{text}"
+            );
+        }
+        for text in [
+            "",
+            "42",
+            "[]",
+            r#"{"sum": 42}"#,
+            r#"{"name": "", "arguments": {}}"#,
+            r#"{"name": "shell", "arguments": {}, "note": "extra key"}"#,
+            // A call followed or preceded by prose is never noticed.
+            "{\"name\": \"shell\", \"arguments\": {}}\nThat lists the folder.",
+            "I will run {\"name\": \"shell\", \"arguments\": {}}",
+            "```python\nprint(1)\n```",
+            // One call and one non-call: not a reply of calls.
+            "{\"name\": \"shell\", \"arguments\": {}}\n{\"total\": 3}",
+        ] {
+            assert_eq!(whole_reply_call_names(text), None, "{text}");
+        }
     }
 }

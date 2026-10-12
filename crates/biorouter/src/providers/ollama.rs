@@ -1234,31 +1234,56 @@ fn echoes_conversation(
 /// tells the model to run anything, and it never claims what did or did not
 /// run before — only that text is not a call.
 fn attempted_call_nudge(
-    call: &super::formats::text_tool_calls::AttemptedCall,
+    calls: &[super::formats::text_tool_calls::AttemptedCall],
     tools: &[Tool],
 ) -> String {
-    let meant = call
-        .meant
+    let quoted = |names: &[String], joiner: &str| {
+        names
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(joiner)
+    };
+    let written = quoted(
+        &calls
+            .iter()
+            .map(|call| call.name.clone())
+            .collect::<Vec<_>>(),
+        " and ",
+    );
+    let meant = calls
         .iter()
-        .map(|name| format!("'{name}'"))
+        .map(|call| quoted(&call.meant, " or "))
         .collect::<Vec<_>>()
-        .join(" or ");
-    if call.meant.len() == 1 && call.meant[0] == call.name {
-        format!(
-            "Your last reply was a call to '{}' written as text, and text in a reply is never \
-             run as a tool call. If you intended to call {meant}, make it as a tool call with \
-             arguments that match its parameters; otherwise answer in text.",
-            call.name
-        )
-    } else {
-        format!(
-            "Your last reply was a call to '{}' written as text, and text in a reply is never \
-             run as a tool call; there is also no tool with that name. If you intended to call \
-             {meant}, make it as a tool call; otherwise answer in text. The tools you can call \
-             are: {}.",
-            call.name,
+        .join(" and ");
+    let exact = calls
+        .iter()
+        .all(|call| call.meant.len() == 1 && call.meant[0] == call.name);
+    match (calls.len(), exact) {
+        (1, true) => format!(
+            "Your last reply was a call to {written} written as text, and text in a reply is \
+             never run as a tool call. If you intended to call {meant}, make it as a tool call \
+             with arguments that match its parameters; otherwise answer in text."
+        ),
+        (1, false) => format!(
+            "Your last reply was a call to {written} written as text, and text in a reply is \
+             never run as a tool call; there is also no tool with that name. If you intended to \
+             call {meant}, make it as a tool call; otherwise answer in text. The tools you can \
+             call are: {}.",
             correction_tool_names(tools)
-        )
+        ),
+        (_, true) => format!(
+            "Your last reply was calls to {written} written as text, and text in a reply is \
+             never run as a tool call. If you intended to call {meant}, make them as tool calls \
+             with arguments that match their parameters; otherwise answer in text."
+        ),
+        (_, false) => format!(
+            "Your last reply was calls to {written} written as text, and text in a reply is \
+             never run as a tool call; not every one of those names is a tool. If you intended \
+             to call {meant}, make them as tool calls; otherwise answer in text. The tools you \
+             can call are: {}.",
+            correction_tool_names(tools)
+        ),
     }
 }
 
@@ -1704,11 +1729,13 @@ fn native_turn(turn: NativeTurn, first: Response, first_log: RequestLog) -> Mess
                     && !called_a_tool
                     && guard.finish_reason.as_deref() != Some("length"))
                 .then(|| {
-                    super::formats::text_tool_calls::attempted_call(&shown_text, &tools)
-                        .filter(|call| !echoes_conversation(&payload, call))
-                        .map(|call| {
+                    super::formats::text_tool_calls::attempted_calls(&shown_text, &tools)
+                        .filter(|calls| {
+                            !calls.iter().any(|call| echoes_conversation(&payload, call))
+                        })
+                        .map(|calls| {
                             (
-                                attempted_call_nudge(&call, &tools),
+                                attempted_call_nudge(&calls, &tools),
                                 "the model's whole reply was a tool call written as text; asking \
                                  it once more to make it as a call",
                             )

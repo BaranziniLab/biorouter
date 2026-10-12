@@ -508,16 +508,90 @@ impl HeldThinking {
 ///
 /// Split out of [`Agent::stream_response_from_provider`] so the request
 /// plumbing and what is done to each item read separately.
+/// Watches a reply for the one shape that leaves a person reading JSON where an
+/// answer should be: a WHOLE reply of tool calls written as text, in a turn
+/// that offered tools and made no call. Nothing in it ran, and before this
+/// nothing said so.
+///
+/// Diagnostics 20261006_2: llama3.1:8b, in a Code Execution chat, answered
+/// three requests with `text_editor`, `shell` and `agent_drafter` calls
+/// written as JSON. None names a tool that chat offered, so the provider
+/// neither recovered them nor asked the model again, and each turn ended on the
+/// JSON. The person gave up and asked for code to run by hand. The calls are
+/// never run from here either; the person is only told.
+#[derive(Default)]
+struct UnrunCallWatch {
+    text: String,
+    called: bool,
+}
+
+impl UnrunCallWatch {
+    fn observe(&mut self, message: &Message) {
+        self.called |= message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ToolRequest(_) | MessageContent::FrontendToolRequest(_)
+            )
+        });
+        for content in &message.content {
+            if let MessageContent::Text(text) = content {
+                self.text.push_str(&text.text);
+            }
+        }
+    }
+
+    /// The notice for a finished reply, when it needs one.
+    fn notice(&self) -> Option<Message> {
+        if self.called {
+            return None;
+        }
+        let names = crate::providers::formats::text_tool_calls::whole_reply_call_names(&self.text)?;
+        Some(unrun_call_notice(&names))
+    }
+}
+
+/// What the person reads under a reply that is only tool calls written as
+/// text. User-only: the model never sees it.
+fn unrun_call_notice(names: &[String]) -> Message {
+    const SHOWN: usize = 3;
+    let mut quoted: Vec<String> = names
+        .iter()
+        .take(SHOWN)
+        .map(|name| format!("'{name}'"))
+        .collect();
+    if names.len() > SHOWN {
+        quoted.push(format!("{} more", names.len() - SHOWN));
+    }
+    let what = match quoted.as_slice() {
+        [one] => format!("a call to {one}"),
+        [first, second] => format!("calls to {first} and {second}"),
+        [init @ .., last] => format!("calls to {} and {last}", init.join(", ")),
+        [] => "a tool call".to_string(),
+    };
+    Message::assistant()
+        .with_system_notification(
+            crate::conversation::message::SystemNotificationType::InlineMessage,
+            format!(
+                "Nothing ran: this reply is {what} written as text, not a tool call Biorouter \
+                 can run. Smaller local models often do this. A larger model, or fewer \
+                 extensions turned on in this chat, may help."
+            ),
+        )
+        .user_only()
+}
+
 fn agent_facing_stream(
     mut stream: MessageStream,
     toolshim_interpreter: Option<OllamaInterpreter>,
     toolshim_tools: Vec<Tool>,
+    tools_offered: bool,
     streaming: bool,
     stream_open_start: std::time::Instant,
 ) -> MessageStream {
     Box::pin(try_stream! {
         let mut toolshim_reply = ToolshimReply::default();
         let mut held_thinking = HeldThinking::default();
+        let mut unrun_calls = UnrunCallWatch::default();
         while let Some(result) = stream.next().await {
             let (message, usage, pending) = match result {
                 Ok(item) => item,
@@ -541,6 +615,9 @@ fn agent_facing_stream(
             // still reaches the user token by token.
             if let (Some(message), Some(_)) = (message.as_ref(), toolshim_interpreter.as_ref()) {
                 toolshim_reply.observe(message);
+            }
+            if let (Some(message), true) = (message.as_ref(), tools_offered) {
+                unrun_calls.observe(message);
             }
 
             // Thinking waits for the end of its phase; see `HeldThinking`.
@@ -577,8 +654,15 @@ fn agent_facing_stream(
         // provider's own text-then-call stream has.
         if let Some(interpreter) = toolshim_interpreter.as_ref() {
             if let Some(calls) = toolshim_reply.interpret(interpreter, &toolshim_tools).await {
+                unrun_calls.observe(&calls);
                 yield (Some(calls), None, None);
             }
+        }
+
+        // Last, after any call the toolshim found: a reply that is nothing but
+        // calls written as text, none of which ran, gets one line saying so.
+        if let Some(notice) = unrun_calls.notice() {
+            yield (Some(notice), None, None);
         }
 
         // The stream is drained: generation is genuinely finished. This is
@@ -947,10 +1031,12 @@ impl Agent {
             }
         };
 
+        let tools_offered = !tools.is_empty() || !toolshim_tools.is_empty();
         Ok(agent_facing_stream(
             stream,
             toolshim_interpreter,
             toolshim_tools,
+            tools_offered,
             streaming,
             stream_open_start,
         ))
@@ -2390,6 +2476,14 @@ mod tests {
     async fn through_the_agent_stream(
         items: Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>>,
     ) -> Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>> {
+        through_the_agent_stream_offering(items, &[]).await
+    }
+
+    /// [`through_the_agent_stream`] for a request that offered `tools`.
+    async fn through_the_agent_stream_offering(
+        items: Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>>,
+        tools: &[Tool],
+    ) -> Vec<Result<crate::providers::base::ProviderStreamItem, ProviderError>> {
         let provider: Arc<dyn Provider> = Arc::new(ScriptedStreamProvider {
             items: std::sync::Mutex::new(Some(items)),
         });
@@ -2397,7 +2491,7 @@ mod tests {
             provider,
             "system",
             &[Message::user().with_text("how many rows?")],
-            &[],
+            tools,
             &[],
             None,
         )
@@ -2583,6 +2677,153 @@ mod tests {
         assert_eq!(
             one_thinking_block(&out[1]),
             ("second item".to_string(), Some("rs_2".to_string()))
+        );
+    }
+
+    /// Diagnostics 20261006_2: one of the reporter's exact assistant replies.
+    fn reporter_reply(index: u64) -> String {
+        let doc: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/ollama/diagnostics_20261006_2/replies.json"
+        ))
+        .unwrap();
+        doc["replies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|reply| reply["index"] == index)
+            .and_then(|reply| reply["reply"].as_str())
+            .unwrap_or_else(|| panic!("no reply {index} in the fixture"))
+            .to_string()
+    }
+
+    fn reply_item(text: &str) -> Result<crate::providers::base::ProviderStreamItem, ProviderError> {
+        Ok((
+            Some(Message::assistant().with_text(text).with_id("r1")),
+            None,
+            None,
+        ))
+    }
+
+    /// The inline notice text of an item, when it is one.
+    fn notice_text(
+        item: &Result<crate::providers::base::ProviderStreamItem, ProviderError>,
+    ) -> Option<String> {
+        let (Some(message), None, None) = item.as_ref().ok()? else {
+            return None;
+        };
+        match message.content.as_slice() {
+            [MessageContent::SystemNotification(note)]
+                if note.notification_type
+                    == crate::conversation::message::SystemNotificationType::InlineMessage =>
+            {
+                assert!(
+                    !message.is_agent_visible() && message.is_user_visible(),
+                    "the notice is for the person only: {message:?}"
+                );
+                assert_ne!(message.id.as_deref(), Some("r1"), "its own row");
+                Some(note.msg.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Diagnostics 20261006_2: llama3.1:8b, in a chat with Code Execution on,
+    /// answered three requests with a call written as JSON to `text_editor`,
+    /// `shell` and `agent_drafter`, none of them a tool that chat offered.
+    /// Nothing ran and nothing said so; the reporter read the JSON as the
+    /// answer and gave up. The reply still shows as it came, and one line
+    /// after it, for the person only, says that nothing ran.
+    #[tokio::test]
+    async fn a_reply_of_calls_written_as_text_says_that_nothing_ran() {
+        for (index, name) in [
+            (1, "'text_editor'"),
+            (7, "'shell'"),
+            (15, "'agent_drafter'"),
+        ] {
+            let reply = reporter_reply(index);
+            let out = through_the_agent_stream_offering(
+                vec![reply_item(&reply), usage_item()],
+                &[shell_tool()],
+            )
+            .await;
+            assert_eq!(out.len(), 3, "reply {index}: {out:?}");
+            let (Some(shown), None, None) = out[0].as_ref().unwrap() else {
+                panic!("reply {index}: the reply first: {:?}", out[0]);
+            };
+            assert_eq!(
+                shown.as_concat_text(),
+                reply,
+                "the reply is shown as it came"
+            );
+            assert!(matches!(out[1].as_ref().unwrap(), (None, Some(_), None)));
+            let notice = notice_text(&out[2])
+                .unwrap_or_else(|| panic!("reply {index}: a notice last: {:?}", out[2]));
+            assert!(
+                notice.starts_with("Nothing ran: this reply is a call to ")
+                    && notice.contains(name)
+                    && notice.contains("written as text"),
+                "{notice}"
+            );
+        }
+
+        // Reply 11, two calls in one reply.
+        let out = through_the_agent_stream_offering(
+            vec![reply_item(&reporter_reply(11)), usage_item()],
+            &[shell_tool()],
+        )
+        .await;
+        let notice = out.iter().find_map(notice_text).expect("a notice");
+        assert!(
+            notice.contains("calls to 'workspace_read_conversation' and 'workspace_read_panel'"),
+            "{notice}"
+        );
+    }
+
+    /// Answers are never noticed: the reporter's prose, its code for the person
+    /// to run, and the JSON it was asked for. Nor is a reply in a turn that
+    /// offered no tools, nor one whose call was made after all (Ollama's one
+    /// corrective retry turning reply 9 into a real `search_modules` call).
+    #[tokio::test]
+    async fn answers_and_made_calls_get_no_notice() {
+        for index in [3, 5, 13, 17, 19] {
+            let out = through_the_agent_stream_offering(
+                vec![reply_item(&reporter_reply(index)), usage_item()],
+                &[shell_tool()],
+            )
+            .await;
+            assert!(
+                out.iter().all(|item| notice_text(item).is_none()),
+                "reply {index}: {out:?}"
+            );
+        }
+
+        let out =
+            through_the_agent_stream(vec![reply_item(&reporter_reply(7)), usage_item()]).await;
+        assert!(out.iter().all(|item| notice_text(item).is_none()));
+
+        let call = Message::assistant()
+            .with_tool_request(
+                "call-1",
+                Ok(rmcp::model::CallToolRequestParams {
+                    task: None,
+                    name: "code_execution__search_modules".into(),
+                    arguments: Some(object!({"terms": "llama"})),
+                    meta: None,
+                }),
+            )
+            .with_id("r1");
+        let out = through_the_agent_stream_offering(
+            vec![
+                reply_item(&reporter_reply(9)),
+                Ok((Some(call), None, None)),
+                usage_item(),
+            ],
+            &[shell_tool()],
+        )
+        .await;
+        assert!(
+            out.iter().all(|item| notice_text(item).is_none()),
+            "{out:?}"
         );
     }
 }
