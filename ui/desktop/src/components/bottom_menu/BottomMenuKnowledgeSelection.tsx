@@ -47,6 +47,9 @@ export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker
     showAllKnowledgeBases,
     refresh,
     loading,
+    // Whether the selection (which bases are hidden) is this scope's answer and
+    // not the previous chat's or this renderer's cached guess.
+    selectionSettled,
   } = knowledge;
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -54,12 +57,6 @@ export function useKnowledgePicker({ open }: { open: boolean }): KnowledgePicker
   // again, after every turn) must not take a number already shown away.
   const [basesRead, setBasesRead] = useState(!loading);
   if (!basesRead && !loading) setBasesRead(true);
-  // Whether the selection (which bases are hidden) is this scope's answer and
-  // not the previous chat's or this renderer's cached guess. Read as optional:
-  // `KnowledgeContext` (WS-KNOWLEDGE) gains the field through request
-  // WS-COMPOSER-4; until it does there is nothing to wait for.
-  const selectionSettled =
-    (knowledge as Partial<{ selectionSettled: boolean }>).selectionSettled ?? true;
 
   useEffect(() => {
     if (open) void refresh();

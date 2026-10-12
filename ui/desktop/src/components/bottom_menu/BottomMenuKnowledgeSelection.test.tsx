@@ -39,11 +39,8 @@ const mocks = vi.hoisted(() => ({
   state: { bases: [] as { id: string; name: string }[], hiddenKbIds: [] as string[] },
   /** The context's `loading` (the base list is being read). */
   loading: false,
-  /**
-   * The context's `selectionSettled`, or `undefined` for a context that does
-   * not report it (WS-COMPOSER-4 asks `KnowledgeContext` to).
-   */
-  selectionSettled: undefined as boolean | undefined,
+  /** The context's `selectionSettled` (this scope's selection has answered). */
+  selectionSettled: true,
 }));
 
 // A faithful stand-in for the real context, because the defect is in *how* the
@@ -78,7 +75,7 @@ vi.mock('../knowledge/KnowledgeContext', () => ({
       },
       refresh: mocks.refresh,
       loading: mocks.loading,
-      ...(mocks.selectionSettled === undefined ? {} : { selectionSettled: mocks.selectionSettled }),
+      selectionSettled: mocks.selectionSettled,
     };
   },
 }));
@@ -114,7 +111,7 @@ describe('BottomMenuKnowledgeSelection', () => {
     mocks.state.bases = [...DEFAULT_BASES];
     mocks.state.hiddenKbIds = [];
     mocks.loading = false;
-    mocks.selectionSettled = undefined;
+    mocks.selectionSettled = true;
   });
 
   it('uses the one picker shell: a search field, a scope line and option rows', async () => {
@@ -256,11 +253,6 @@ describe('BottomMenuKnowledgeSelection', () => {
 
       mocks.selectionSettled = true;
       rerender(<BottomMenuKnowledgeSelection />);
-      expect(chip()).toHaveAttribute('data-answered', 'true');
-    });
-
-    it('has answered when the context does not report the selection’s state', () => {
-      render(<BottomMenuKnowledgeSelection />);
       expect(chip()).toHaveAttribute('data-answered', 'true');
     });
   });
